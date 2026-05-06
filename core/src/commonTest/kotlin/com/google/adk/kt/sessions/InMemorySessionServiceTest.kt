@@ -18,6 +18,10 @@ package com.google.adk.kt.sessions
 
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -312,5 +316,65 @@ class InMemorySessionServiceTest {
     assertEquals("value", retrievedSession?.state?.get("key"))
     assertTrue(session.state.containsKey("key"))
     assertEquals("value", session.state["key"])
+  }
+
+  @Test
+  fun injectFunctionResponse_appendsEventToSession() = runTest {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+
+    val functionName = "test_function"
+    val functionResponse = mapOf("result" to "success")
+    val functionCallId = "call_123"
+
+    val event =
+      sessionService.injectFunctionResponse(
+        session = session,
+        functionName = functionName,
+        functionResponse = functionResponse,
+        functionCallId = functionCallId,
+      )
+
+    assertNotNull(event)
+    assertEquals(Role.USER, event.author)
+    val parts = event.content?.parts
+    assertNotNull(parts)
+    assertEquals(1, parts.size)
+    val functionResponsePart = parts[0].functionResponse
+    assertNotNull(functionResponsePart)
+    assertEquals(functionName, functionResponsePart.name)
+    assertEquals(functionResponse, functionResponsePart.response)
+    assertEquals(functionCallId, functionResponsePart.id)
+
+    val retrievedSession = sessionService.getSession(session.key)
+    assertNotNull(retrievedSession)
+    assertEquals(1, retrievedSession.events.size)
+    assertEquals(event, retrievedSession.events[0])
+  }
+
+  private suspend fun SessionService.injectFunctionResponse(
+    session: Session,
+    functionName: String,
+    functionResponse: Map<String, Any?>,
+    functionCallId: String,
+  ): Event {
+    val responsePart =
+      Part(
+        functionResponse =
+          FunctionResponse(name = functionName, response = functionResponse, id = functionCallId)
+      )
+
+    val invocationId =
+      session.events
+        .lastOrNull { it.functionCalls().any { call -> call.id == functionCallId } }
+        ?.invocationId
+
+    val event =
+      Event(
+        author = Role.USER,
+        invocationId = invocationId,
+        content = Content(role = Role.USER, parts = listOf(responsePart)),
+      )
+    return appendEvent(session, event)
   }
 }

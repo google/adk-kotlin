@@ -113,4 +113,6 @@ interface SessionService {
     session.lastUpdateTime = Instant.fromEpochMilliseconds(event.timestamp)
     return event
   }
+
 }
+

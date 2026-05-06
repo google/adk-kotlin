@@ -50,11 +50,11 @@ import com.google.adk.kt.types.FunctionDeclaration
 class DummyTool(
   name: String = "dummy_tool",
   description: String = "A dummy tool for testing.",
-  isLongRunning: Boolean = false,
+  override val isLongRunning: Boolean = false,
   val onRun: suspend (context: ToolContext, args: Map<String, Any>) -> Any = { _, _ ->
     mapOf("status" to "done")
   },
-) : BaseTool(name, description, isLongRunning) {
+) : BaseTool(name, description) {
   override fun declaration(): FunctionDeclaration? = null
 
   override suspend fun run(context: ToolContext, args: Map<String, Any>): Any {

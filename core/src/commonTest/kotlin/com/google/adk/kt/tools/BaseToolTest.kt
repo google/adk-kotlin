@@ -50,9 +50,9 @@ class BaseToolTest {
     BaseTool(
       name = "extended_tool",
       description = "A generic extended tool",
-      isLongRunning = true,
       customMetadata = mapOf("key" to "value"),
     ) {
+    override val isLongRunning = true
     val expectedDeclaration = FunctionDeclaration("extended_tool", "A generic extended tool")
 
     override fun declaration(): FunctionDeclaration? = expectedDeclaration
