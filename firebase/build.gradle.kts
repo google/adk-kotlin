@@ -16,10 +16,13 @@
 
 plugins {
   id("com.android.library")
-  id("maven-publish")
-  id("signing")
+  id("com.vanniktech.maven.publish")
   kotlin("plugin.serialization")
   id("org.jetbrains.kotlin.android")
+}
+
+mavenPublishing {
+  coordinates(project.group.toString(), "google-adk-kotlin-firebase-android", project.version.toString())
 }
 
 dependencies {
@@ -48,9 +51,7 @@ android {
     }
   }
 
-  publishing { singleVariant("release") { withSourcesJar() } }
-
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  compileSdk = 35
 
   defaultConfig {
     minSdk = 26
@@ -66,16 +67,3 @@ android {
   }
 }
 
-afterEvaluate {
-  publishing {
-    publications {
-      create<MavenPublication>("release") {
-        groupId = project.group.toString()
-        artifactId = "google-adk-kotlin-firebase-android"
-        version = project.version.toString()
-
-        from(components["release"])
-      }
-    }
-  }
-}

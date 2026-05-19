@@ -16,8 +16,7 @@
 
 plugins {
   kotlin("multiplatform")
-  id("maven-publish")
-  id("signing")
+  id("com.vanniktech.maven.publish")
 }
 
 kotlin {
@@ -47,9 +46,3 @@ kotlin {
   }
 }
 
-publishing {
-  publications.withType<MavenPublication> {
-    artifactId =
-      if (name == "kotlinMultiplatform") "google-adk-kotlin-a2a" else "google-adk-kotlin-a2a-$name"
-  }
-}
