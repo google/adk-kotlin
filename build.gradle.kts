@@ -35,7 +35,7 @@ val releaseUrl =
 
 allprojects {
   group = "com.google.adk"
-  version = "0.1.0-SNAPSHOT"
+  version = "0.1.0-rc.1"
 
   repositories {
     mavenCentral()
