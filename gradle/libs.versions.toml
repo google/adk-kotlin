@@ -29,6 +29,7 @@ org-json = "20251224"
 robolectric = "4.11.1"
 slf4j = "2.0.9"
 snakeyaml = "2.2"
+vanniktech-publish = "0.35.0"
 # go/keep-sorted end
 
 [libraries]
@@ -82,4 +83,5 @@ snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
 # go/keep-sorted start
 dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+vanniktech-publish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktech-publish" }
 # go/keep-sorted end

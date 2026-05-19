@@ -16,18 +16,8 @@
 
 plugins {
   kotlin("jvm")
-  id("maven-publish")
-  id("signing")
+  id("com.vanniktech.maven.publish")
   id("application")
-}
-
-publishing {
-  publications {
-    create<MavenPublication>("maven") {
-      from(components["java"])
-      artifactId = "google-adk-kotlin-webserver"
-    }
-  }
 }
 
 sourceSets {

@@ -17,8 +17,7 @@
 plugins {
   kotlin("multiplatform")
   id("com.android.library")
-  id("maven-publish")
-  id("signing")
+  id("com.vanniktech.maven.publish")
 }
 
 kotlin {
@@ -109,10 +108,3 @@ android {
   }
 }
 
-publishing {
-  publications.withType<MavenPublication> {
-    artifactId =
-      if (name == "kotlinMultiplatform") "google-adk-kotlin-core"
-      else "google-adk-kotlin-core-$name"
-  }
-}

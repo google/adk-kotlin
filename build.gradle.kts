@@ -22,6 +22,7 @@ plugins {
   id("com.android.library") version "8.13.0" apply false
   id("com.google.cloud.artifactregistry.gradle-plugin") version "2.2.4" apply false
   kotlin("plugin.serialization") version "2.1.20" apply false
+  alias(libs.plugins.vanniktech.publish) apply false
 }
 
 val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
@@ -71,78 +72,49 @@ subprojects {
     }
   }
 
-  tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
-    compilerOptions { optIn.add("kotlin.time.ExperimentalTime") }
+  plugins.withId("com.vanniktech.maven.publish") {
+    configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
+      publishToMavenCentral()
+
+      val isRelease = !version.toString().endsWith("SNAPSHOT")
+      val isPublishTask = gradle.startParameter.taskNames.any { it.contains("publish") && !it.contains("Local") }
+      val signingKey = System.getenv("SIGNING_KEY")
+
+      if (signingKey != null) {
+        signAllPublications()
+      } else if (isRelease && isPublishTask) {
+        throw GradleException("Signing credentials are required for release versions. Please set SIGNING_KEY and SIGNING_PASSWORD environment variables.")
+      }
+
+      pom {
+        name.set("Google Agent Development Kit")
+        description.set("An open-source, code-first toolkit designed to simplify building, evaluating, and deploying advanced AI agents anywhere.")
+        url.set("https://github.com/google/adk-kotlin")
+        licenses {
+          license {
+            name.set("The Apache License, Version 2.0")
+            url.set("https://www.apache.org/licenses/LICENSE-2.0")
+          }
+        }
+        developers {
+          developer {
+            id.set("google")
+            name.set("Google LLC")
+            email.set("adk-java-repository-admins@google.com")
+            organization.set("Google LLC")
+            organizationUrl.set("https://www.google.com")
+          }
+        }
+        scm {
+          connection.set("scm:git:git@github.com:google/adk-kotlin.git")
+          developerConnection.set("scm:git:git@github.com:google/adk-kotlin.git")
+          url.set("https://github.com/google/adk-kotlin")
+        }
+      }
+    }
   }
 
-  afterEvaluate {
-    val isRemotePublish =
-      gradle.startParameter.taskNames.any {
-        it.contains("publish", ignoreCase = true) && !it.contains("Local", ignoreCase = true)
-      }
-
-    if (!isRemotePublish) return@afterEvaluate
-
-    if (plugins.hasPlugin("maven-publish")) {
-      configure<PublishingExtension> {
-        val effectiveStagingRepoUrl =
-          if (version.toString().endsWith("SNAPSHOT")) {
-            snapshotUrl
-          } else {
-            releaseUrl
-          }
-
-        val sonatypeUsername = System.getenv("SONATYPE_USERNAME")
-        val sonatypePassword = System.getenv("SONATYPE_PASSWORD")
-        repositories {
-          maven {
-            name = "sonatype"
-            url = uri(effectiveStagingRepoUrl)
-            credentials {
-              username = sonatypeUsername
-              password = sonatypePassword
-            }
-          }
-        }
-        publications.withType<MavenPublication> {
-          pom {
-            name.set("Google Agent Development Kit")
-            description.set("Google Agent Development Kit (ADK) for Kotlin")
-            url.set("https://github.com/google/adk-kotlin")
-            licenses {
-              license {
-                name.set("The Apache License, Version 2.0")
-                url.set("https://www.apache.org/licenses/LICENSE-2.0")
-              }
-            }
-            developers {
-              developer {
-                organization.set("Google Inc.")
-                organizationUrl.set("https://www.google.com")
-              }
-            }
-            scm {
-              connection.set("scm:git:git@github.com:google/adk-kotlin.git")
-              developerConnection.set("scm:git:git@github.com:google/adk-kotlin.git")
-              url.set("https://github.com/google/adk-kotlin")
-            }
-          }
-        }
-      }
-    }
-
-    if (plugins.hasPlugin("signing")) {
-      configure<SigningExtension> {
-        val signingKey = System.getenv("SIGNING_KEY")
-        val signingPassword = System.getenv("SIGNING_PASSWORD")
-
-        if (signingKey != null) {
-          useInMemoryPgpKeys(signingKey, signingPassword)
-        } else if (project.hasProperty("signing.gnupg.keyName")) {
-          useGpgCmd()
-        }
-        sign(extensions.getByType<PublishingExtension>().publications)
-      }
-    }
+  tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
+    compilerOptions { optIn.add("kotlin.time.ExperimentalTime") }
   }
 }

@@ -16,8 +16,7 @@
 
 plugins {
   kotlin("jvm")
-  id("maven-publish")
-  id("signing")
+  id("com.vanniktech.maven.publish")
   alias(libs.plugins.ksp)
 }
 
@@ -29,15 +28,6 @@ sourceSets {
   test {
     kotlin.setSrcDirs(listOf("src/jvmTest/kotlin"))
     resources.setSrcDirs(listOf("src/jvmTest/resources"))
-  }
-}
-
-publishing {
-  publications {
-    create<MavenPublication>("maven") {
-      from(components["java"])
-      artifactId = "google-adk-kotlin-processor"
-    }
   }
 }
 
