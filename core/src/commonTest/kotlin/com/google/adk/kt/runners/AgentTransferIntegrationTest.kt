@@ -18,10 +18,11 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LoopAgent
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_TOOL_NAME
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.textAgent
@@ -58,14 +59,17 @@ class AgentTransferIntegrationTest {
             "root-model",
             listOf(
               modelTransferToAgentResponse("single_sub"),
-              modelTextResponse("root-second-response"),
+              LlmResponse(content = modelMessage("root-second-response")),
             ),
           ),
         subAgents =
           listOf(
             LlmAgent(
               name = "single_sub",
-              model = DummyModel("sub-model") { flowOf(modelTextResponse("single-sub-response")) },
+              model =
+                DummyModel("sub-model") {
+                  flowOf(LlmResponse(content = modelMessage("single-sub-response")))
+                },
               disallowTransferToParent = true,
             )
           ),
@@ -107,8 +111,8 @@ class AgentTransferIntegrationTest {
                 DummyModel.createSequential(
                   "sub-model",
                   listOf(
-                    modelTextResponse("sub-first-response"),
-                    modelTextResponse("sub-second-response"),
+                    LlmResponse(content = modelMessage("sub-first-response")),
+                    LlmResponse(content = modelMessage("sub-second-response")),
                   ),
                 ),
             )
@@ -159,7 +163,9 @@ class AgentTransferIntegrationTest {
                     LlmAgent(
                       name = "leaf",
                       model =
-                        DummyModel("leaf-model") { flowOf(modelTextResponse("leaf-response")) },
+                        DummyModel("leaf-model") {
+                          flowOf(LlmResponse(content = modelMessage("leaf-response")))
+                        },
                     )
                   ),
               )
@@ -245,7 +251,7 @@ class AgentTransferIntegrationTest {
                     model =
                       DummyModel("loop-child-model") {
                         loopChildTurn++
-                        flowOf(modelTextResponse("iter-$loopChildTurn"))
+                        flowOf(LlmResponse(content = modelMessage("iter-$loopChildTurn")))
                       },
                   )
                 ),

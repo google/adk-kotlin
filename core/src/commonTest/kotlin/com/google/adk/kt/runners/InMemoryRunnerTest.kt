@@ -32,6 +32,8 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -59,7 +61,7 @@ class InMemoryRunnerTest {
           userId = "user1",
           sessionId = "session1",
           invocationId = "custom-inv-999",
-          newMessage = Content(role = Role.USER, parts = listOf(Part(text = "Hello"))),
+          newMessage = userMessage("Hello"),
         )
         .toList()
 
@@ -141,14 +143,7 @@ class InMemoryRunnerTest {
         agent =
           DummyAgent(
             name = "test-agent",
-            onRunAsync = {
-              emit(
-                Event(
-                  author = Role.MODEL,
-                  content = Content(role = Role.MODEL, parts = listOf(Part(text = "hello"))),
-                )
-              )
-            },
+            onRunAsync = { emit(Event(author = Role.MODEL, content = modelMessage("hello"))) },
           )
       )
 
@@ -157,7 +152,7 @@ class InMemoryRunnerTest {
         .runAsync(
           userId = "user1",
           sessionId = "session1",
-          newMessage = Content(role = Role.USER, parts = listOf(Part(text = "hi"))),
+          newMessage = userMessage("hi"),
           runConfig = RunConfig(customMetadata = mapOf("testKey" to "testValue")),
         )
         .toList()
@@ -185,7 +180,7 @@ class InMemoryRunnerTest {
               emit(
                 Event(
                   author = Role.MODEL,
-                  content = Content(role = Role.MODEL, parts = listOf(Part(text = "hello"))),
+                  content = modelMessage("hello"),
                   customMetadata = mapOf("sharedKey" to "agentValue"),
                 )
               )
@@ -198,7 +193,7 @@ class InMemoryRunnerTest {
         .runAsync(
           userId = "user1",
           sessionId = "session1",
-          newMessage = Content(role = Role.USER, parts = listOf(Part(text = "hi"))),
+          newMessage = userMessage("hi"),
           runConfig = RunConfig(customMetadata = mapOf("sharedKey" to "configValue")),
         )
         .toList()
@@ -225,7 +220,7 @@ class InMemoryRunnerTest {
               DummyModel(name = "test-model") { request ->
                 capturedSystemInstruction =
                   request.config.systemInstruction?.parts?.firstOrNull()?.text
-                flowOf(LlmResponse(content = Content(Role.MODEL, listOf(Part(text = "OK")))))
+                flowOf(LlmResponse(content = modelMessage("OK")))
               },
             instruction = Instruction("Hello {user_name}!"),
           )
@@ -237,11 +232,7 @@ class InMemoryRunnerTest {
       )
 
     runner
-      .runAsync(
-        userId = "user1",
-        sessionId = "session1",
-        newMessage = Content(role = Role.USER, parts = listOf(Part(text = "hi"))),
-      )
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
       .toList()
 
     assertThat(capturedSystemInstruction).isEqualTo("Hello Alice!")
@@ -250,11 +241,7 @@ class InMemoryRunnerTest {
   @Test
   fun applyStateDelta_mergesStateDeltaIntoEventActions() = runTest {
     val runner = InMemoryRunner(agent = dummyAgent)
-    val event =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "hello"))),
-      )
+    val event = Event(author = Role.USER, content = userMessage("hello"))
     val stateDelta = mapOf("key1" to "value1", "key2" to 42)
 
     runner.applyStateDelta(event, stateDelta)
@@ -342,7 +329,7 @@ class InMemoryRunnerTest {
           userId = "user1",
           sessionId = "session1",
           invocationId = "test-inv",
-          newMessage = Content(role = Role.USER, parts = listOf(Part(text = "New message"))),
+          newMessage = userMessage("New message"),
         )
         .toList()
 

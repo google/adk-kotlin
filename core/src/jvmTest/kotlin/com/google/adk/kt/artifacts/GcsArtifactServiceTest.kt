@@ -21,8 +21,9 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.api.gax.paging.Page
@@ -139,24 +140,14 @@ class GcsArtifactServiceTest {
           val artifactService = context.artifactService
           assertThat(artifactService).isNotNull()
           val unused = artifactService!!.saveArtifact(SESSION_KEY, FILENAME, artifact)
-          emit(
-            Event(
-              author = Role.MODEL,
-              content =
-                Content(role = Role.MODEL, parts = listOf(Part(text = "Saved tracking output"))),
-            )
-          )
+          emit(Event(author = Role.MODEL, content = modelMessage("Saved tracking output")))
         }
       }
 
     val runner = InMemoryRunner(agent = agent, artifactService = service)
     val events =
       runner
-        .runAsync(
-          userId = USER_ID,
-          sessionId = SESSION_ID,
-          newMessage = Content(role = Role.USER, parts = listOf(Part(text = "Execute run"))),
-        )
+        .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("Execute run"))
         .toList()
 
     assertThat(events).hasSize(1)

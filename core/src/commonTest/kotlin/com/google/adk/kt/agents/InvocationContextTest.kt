@@ -27,7 +27,9 @@ import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -130,11 +132,7 @@ class InvocationContextTest {
       )
     session.events.add(functionCallEvent)
     session.events.add(
-      Event(
-        invocationId = "inv-1",
-        author = "user",
-        content = Content(role = Role.USER, parts = listOf(Part(text = "processing..."))),
-      )
+      Event(invocationId = "inv-1", author = "user", content = userMessage("processing..."))
     )
 
     val match =
@@ -221,11 +219,7 @@ class InvocationContextTest {
 
     val match =
       context.findMatchingFunctionCall(
-        Event(
-          invocationId = "inv-1",
-          author = "user",
-          content = Content(role = Role.USER, parts = listOf(Part(text = "Hello"))),
-        )
+        Event(invocationId = "inv-1", author = "user", content = userMessage("Hello"))
       )
 
     assertNull(match)
@@ -409,12 +403,7 @@ class InvocationContextTest {
           invocationId = "inv-1",
         )
 
-      val event =
-        Event(
-          invocationId = "inv-1",
-          author = "agent-A",
-          content = Content(role = Role.MODEL, parts = listOf(Part(text = "Hello"))),
-        )
+      val event = Event(invocationId = "inv-1", author = "agent-A", content = modelMessage("Hello"))
       session.events.add(event)
 
       context.populateInvocationAgentStates()
@@ -462,12 +451,7 @@ class InvocationContextTest {
   @Test
   fun shouldPauseInvocation_resumableButNoFunctionCalls_returnsFalse() {
     val context = pausableInvocationContext(resumable = true)
-    val event =
-      Event(
-        invocationId = "inv-1",
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "hello"))),
-      )
+    val event = Event(invocationId = "inv-1", author = Role.USER, content = userMessage("hello"))
 
     assertFalse(context.shouldPauseInvocation(event))
   }

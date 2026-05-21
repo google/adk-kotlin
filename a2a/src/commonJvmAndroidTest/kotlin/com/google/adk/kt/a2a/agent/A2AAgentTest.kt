@@ -25,6 +25,8 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
@@ -102,11 +104,7 @@ class A2AAgentTest {
         key = SessionKey(appName = "demo", userId = "user", id = "session-1"),
         events =
           mutableListOf(
-            Event(
-              invocationId = "invocation-0",
-              author = "user",
-              content = Content(role = "user", parts = listOf(Part(text = "hello"))),
-            )
+            Event(invocationId = "invocation-0", author = "user", content = userMessage("hello"))
           ),
       )
 
@@ -460,20 +458,12 @@ class A2AAgentTest {
         key = SessionKey(appName = "demo", userId = "user", id = "session-2"),
         events =
           mutableListOf(
+            Event(invocationId = "invocation-1", author = "user", content = userMessage("hello")),
+            Event(invocationId = "invocation-1", author = "model", content = modelMessage("hi")),
             Event(
               invocationId = "invocation-1",
               author = "user",
-              content = Content(role = "user", parts = listOf(Part(text = "hello"))),
-            ),
-            Event(
-              invocationId = "invocation-1",
-              author = "model",
-              content = Content(role = "model", parts = listOf(Part(text = "hi"))),
-            ),
-            Event(
-              invocationId = "invocation-1",
-              author = "user",
-              content = Content(role = "user", parts = listOf(Part(text = "how are you?"))),
+              content = userMessage("how are you?"),
             ),
           ),
       )
@@ -596,7 +586,7 @@ class A2AAgentTest {
 
   @Test
   fun runAsync_beforeCallbackCanShortCircuit() = runTest {
-    val shortCircuitContent = Content(role = "model", parts = listOf(Part(text = "short circuit")))
+    val shortCircuitContent = modelMessage("short circuit")
     val agent =
       createTestAgent(
         beforeCallbacks =

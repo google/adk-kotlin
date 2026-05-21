@@ -20,10 +20,11 @@ import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.OnToolErrorCallback
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -235,6 +236,9 @@ class RunnerToolCallbacksIntegrationTest {
   ): DummyModel =
     DummyModel.createSequential(
       "mock-model",
-      listOf(modelFunctionCallResponse(toolName, args, id = "call_1"), modelTextResponse("Done.")),
+      listOf(
+        modelFunctionCallResponse(toolName, args, id = "call_1"),
+        LlmResponse(content = modelMessage("Done.")),
+      ),
     )
 }

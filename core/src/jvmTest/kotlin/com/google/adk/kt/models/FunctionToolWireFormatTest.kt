@@ -19,7 +19,7 @@ package com.google.adk.kt.models
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
@@ -311,7 +311,7 @@ class FunctionToolWireFormatTest {
         "scripted",
         listOf(
           modelFunctionCallResponse(toolName, id = "$toolName-call"),
-          modelTextResponse("done"),
+          LlmResponse(content = modelMessage("done")),
         ),
       )
     val capturingModel =

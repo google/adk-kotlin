@@ -28,6 +28,10 @@ import com.google.adk.kt.types.Role
 fun userMessage(text: String): Content =
   Content(role = Role.USER, parts = listOf(Part(text = text)))
 
+/** A `model`-role text [Content] (the typical model response body). */
+fun modelMessage(text: String): Content =
+  Content(role = Role.MODEL, parts = listOf(Part(text = text)))
+
 /**
  * A `user`-role [Content] carrying a single [FunctionResponse] - what the caller sends back when
  * resuming after a long-running tool, an HITL approval, or a manual function-response injection.
@@ -44,10 +48,6 @@ fun userFunctionResponse(
   )
 
 // -- LlmResponse builders ------------------------------------------------------------------------
-
-/** A model response containing a single text part. */
-fun modelTextResponse(text: String): LlmResponse =
-  LlmResponse(content = Content(Role.MODEL, listOf(Part(text = text))))
 
 /** A model response containing a single [FunctionCall] part. */
 fun modelFunctionCallResponse(

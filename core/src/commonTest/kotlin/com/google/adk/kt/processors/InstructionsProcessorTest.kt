@@ -22,6 +22,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -112,8 +113,7 @@ class InstructionsProcessorTest {
         name = "test",
         model = DummyModel("gemini"),
         staticInstruction = Content.fromText(Role.SYSTEM, "static"),
-        instruction =
-          Instruction.Provider { Content(role = Role.USER, parts = listOf(Part(text = "dynamic"))) },
+        instruction = Instruction.Provider { userMessage("dynamic") },
       )
     val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)

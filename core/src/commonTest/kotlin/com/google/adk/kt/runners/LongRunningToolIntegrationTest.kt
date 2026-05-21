@@ -21,11 +21,12 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
-import com.google.adk.kt.testing.modelTextResponse
 import com.google.adk.kt.testing.simplifyContent
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
@@ -524,7 +525,7 @@ class LongRunningToolIntegrationTest {
                   FunctionCall(name = TOOL_NAME_1, id = lrCallId),
                   FunctionCall(name = TOOL_NAME_2, id = regCallId),
                 )
-              else modelTextResponse("acknowledged")
+              else LlmResponse(content = modelMessage("acknowledged"))
             )
           },
         tools =
@@ -620,8 +621,8 @@ class LongRunningToolIntegrationTest {
             flowOf(
               when (modelInvocations) {
                 1 -> modelFunctionCallResponse(TOOL_NAME_1, id = callId)
-                2 -> modelTextResponse("sure, doing it")
-                else -> modelTextResponse("got the real result")
+                2 -> LlmResponse(content = modelMessage("sure, doing it"))
+                else -> LlmResponse(content = modelMessage("got the real result"))
               }
             )
           },
@@ -718,7 +719,7 @@ class LongRunningToolIntegrationTest {
           onModelInvoke()
           flowOf(
             if (invocations == 1) modelFunctionCallResponse(TOOL_NAME_1, id = callId)
-            else modelTextResponse("acknowledged")
+            else LlmResponse(content = modelMessage("acknowledged"))
           )
         },
       tools =
@@ -755,7 +756,7 @@ class LongRunningToolIntegrationTest {
           invocations++
           flowOf(
             if (invocations == 1) modelFunctionCallResponse(TOOL_NAME_1, id = callId)
-            else modelTextResponse("done")
+            else LlmResponse(content = modelMessage("done"))
           )
         },
       tools =

@@ -20,7 +20,9 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
@@ -527,43 +529,30 @@ class A2aConvertersTest {
 
   @Test
   fun toA2aMessage_withUserAuthor_returnsUserRole() {
-    val event = Event(author = "user", content = Content(parts = listOf(Part(text = "hello"))))
+    val event = Event(author = "user", content = userMessage("hello"))
     val result = event.toA2aMessage()
     assertThat(result.role).isEqualTo(Message.Role.USER)
   }
 
   @Test
   fun toA2aMessage_withAgentAuthor_returnsAgentRole() {
-    val event = Event(author = "agent", content = Content(parts = listOf(Part(text = "hello"))))
+    val event = Event(author = "agent", content = modelMessage("hello"))
     val result = event.toA2aMessage()
     assertThat(result.role).isEqualTo(Message.Role.AGENT)
   }
 
   @Test
   fun toA2aMessage_addsAuthorToMetadata() {
-    val event =
-      Event(author = "test_author", content = Content(parts = listOf(Part(text = "hello"))))
+    val event = Event(author = "test_author", content = userMessage("hello"))
     val result = event.toA2aMessage()
     assertThat(result.metadata?.get(MetadataKeys.AUTHOR)).isEqualTo("test_author")
   }
 
   @Test
   fun extractA2aParts_sessionHasEvents_returnsFormattedParts() {
-    val userEvent =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "hello"))),
-      )
-    val agentEvent =
-      Event(
-        author = "test_agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "hi"))),
-      )
-    val otherAgentEvent =
-      Event(
-        author = "other_agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "hey"))),
-      )
+    val userEvent = Event(author = Role.USER, content = userMessage("hello"))
+    val agentEvent = Event(author = "test_agent", content = modelMessage("hi"))
+    val otherAgentEvent = Event(author = "other_agent", content = modelMessage("hey"))
 
     val session =
       Session(

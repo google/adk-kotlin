@@ -30,9 +30,9 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.test.Test
@@ -82,7 +82,7 @@ class AgentToolTest {
 
   @Test
   fun run_executesInnerAgent_returnsResult() = runTest {
-    val responseContent = Content(parts = listOf(Part(text = "Response from inner agent")))
+    val responseContent = modelMessage("Response from inner agent")
     val model = DummyModel("test") { flowOf(LlmResponse(content = responseContent)) }
     val agent = LlmAgent(name = "inner-agent", model = model)
     val tool = AgentTool(agent)
@@ -95,7 +95,7 @@ class AgentToolTest {
 
   @Test
   fun run_executesInnerAgent_propagatesActions() = runTest {
-    val responseContent = Content(parts = listOf(Part(text = "Response from inner agent")))
+    val responseContent = modelMessage("Response from inner agent")
     val eventActions =
       EventActions(
         stateDelta = mutableMapOf("testStateKey" to "testStateValue"),
@@ -120,7 +120,7 @@ class AgentToolTest {
 
   @Test
   fun run_withSkipSummarization_setsFlagInContext() = runTest {
-    val responseContent = Content(parts = listOf(Part(text = "Response")))
+    val responseContent = modelMessage("Response")
     val model = DummyModel("test") { flowOf(LlmResponse(content = responseContent)) }
     val agent = LlmAgent(name = "inner-agent", model = model)
     val tool = AgentTool(agent, skipSummarization = true)
@@ -186,13 +186,7 @@ class AgentToolTest {
         LlmAgent(
           name = "inner-agent",
           model =
-            DummyModel("inner-model") {
-              flowOf(
-                LlmResponse(
-                  content = Content(parts = listOf(Part(text = "Response from inner agent")))
-                )
-              )
-            },
+            DummyModel("inner-model") { flowOf(LlmResponse(content = modelMessage("Response from inner agent"))) },
         )
       )
     val mainModel =
@@ -201,23 +195,12 @@ class AgentToolTest {
         flows =
           listOf(
             flowOf(
-              LlmResponse(
-                content =
-                  Content(
-                    parts =
-                      listOf(
-                        Part(
-                          functionCall =
-                            FunctionCall(
-                              name = "inner-agent",
-                              args = mapOf("request" to "Hello inner"),
-                            )
-                        )
-                      )
-                  )
+              modelFunctionCallResponse(
+                name = "inner-agent",
+                args = mapOf("request" to "Hello inner"),
               )
             ),
-            flowOf(LlmResponse(content = Content(parts = listOf(Part(text = "Final Answer"))))),
+            flowOf(LlmResponse(content = modelMessage("Final Answer"))),
           ),
       )
     val mainAgent = LlmAgent(name = "main-agent", model = mainModel, tools = listOf(agentTool))
@@ -225,11 +208,7 @@ class AgentToolTest {
 
     val events =
       runner
-        .runAsync(
-          userId = "user1",
-          sessionId = "session1",
-          newMessage = Content(parts = listOf(Part(text = "hi"))),
-        )
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
         .toList()
 
     assertEquals(3, events.size)
@@ -258,7 +237,7 @@ class AgentToolTest {
           mapOf("name" to Schema(type = Type.STRING), "age" to Schema(type = Type.INTEGER)),
         required = listOf("name"),
       )
-    val responseContent = Content(parts = listOf(Part(text = "Hello John")))
+    val responseContent = modelMessage("Hello John")
     val model = DummyModel("test") { flowOf(LlmResponse(content = responseContent)) }
     val agent = LlmAgent(name = "inner-agent", model = model, inputSchema = inputSchema)
     val tool = AgentTool(agent)

@@ -17,11 +17,12 @@ package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ParallelAgent
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -60,7 +61,10 @@ class ParallelAgentRunnerIntegrationTest {
             LlmAgent(
               name = "healthy",
               description = "Healthy.",
-              model = DummyModel("healthy-model") { flow { emit(modelTextResponse("ok")) } },
+              model =
+                DummyModel("healthy-model") {
+                  flow { emit(LlmResponse(content = modelMessage("ok"))) }
+                },
             ),
             LlmAgent(
               name = "failing",
@@ -97,7 +101,7 @@ class ParallelAgentRunnerIntegrationTest {
               "model-$idx",
               listOf(
                 modelFunctionCallResponse("writer_$idx", id = "call_$idx"),
-                modelTextResponse("child-$idx"),
+                LlmResponse(content = modelMessage("child-$idx")),
               ),
             ),
           tools =

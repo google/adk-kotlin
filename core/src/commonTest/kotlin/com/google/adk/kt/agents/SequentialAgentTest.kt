@@ -23,6 +23,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.toList
@@ -140,11 +141,7 @@ class SequentialAgentTest {
       id = Uuid.random(),
       invocationId = "inv-1",
       author = author,
-      content =
-        com.google.adk.kt.types.Content(
-          role = com.google.adk.kt.types.Role.USER,
-          parts = listOf(com.google.adk.kt.types.Part(text = text)),
-        ),
+      content = userMessage(text),
     )
   }
 }

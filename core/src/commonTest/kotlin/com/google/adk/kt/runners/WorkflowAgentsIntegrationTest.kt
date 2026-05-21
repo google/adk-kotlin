@@ -19,9 +19,10 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LoopAgent
 import com.google.adk.kt.agents.ParallelAgent
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.textAgent
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.ExitLoopTool
@@ -132,7 +133,7 @@ class WorkflowAgentsIntegrationTest {
                 DummyModel("loop-model") {
                   modelTurn++
                   flowOf(
-                    if (modelTurn == 1) modelTextResponse("iter-1")
+                    if (modelTurn == 1) LlmResponse(content = modelMessage("iter-1"))
                     else modelFunctionCallResponse("exit_loop", id = "exit_call_1")
                   )
                 },

@@ -25,9 +25,11 @@ import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userFunctionResponse
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
@@ -81,11 +83,7 @@ class AbstractRunnerTest {
     val responseEvent =
       Event(
         author = Role.USER,
-        content =
-          Content(
-            Role.USER,
-            listOf(Part(functionResponse = FunctionResponse("tool", emptyMap(), callId))),
-          ),
+        content = userFunctionResponse(name = "tool", id = callId),
         invocationId = "inv-1",
       )
 
@@ -115,18 +113,8 @@ class AbstractRunnerTest {
     val rootAgent = MockAgent("root", subAgents = listOf(subAgent))
     val runner = TestRunner(rootAgent)
 
-    val event1 =
-      Event(
-        author = "sub",
-        content = Content(Role.MODEL, listOf(Part(text = "Hello"))),
-        invocationId = "inv-1",
-      )
-    val event2 =
-      Event(
-        author = Role.USER,
-        content = Content(Role.USER, listOf(Part(text = "Hi"))),
-        invocationId = "inv-1",
-      )
+    val event1 = Event(author = "sub", content = modelMessage("Hello"), invocationId = "inv-1")
+    val event2 = Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1")
 
     val session =
       runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
@@ -154,18 +142,8 @@ class AbstractRunnerTest {
     val rootAgent = MockAgent("root", subAgents = listOf(subAgent))
     val runner = TestRunner(rootAgent)
 
-    val event1 =
-      Event(
-        author = "sub",
-        content = Content(Role.MODEL, listOf(Part(text = "Hello"))),
-        invocationId = "inv-1",
-      )
-    val event2 =
-      Event(
-        author = Role.USER,
-        content = Content(Role.USER, listOf(Part(text = "Hi"))),
-        invocationId = "inv-1",
-      )
+    val event1 = Event(author = "sub", content = modelMessage("Hello"), invocationId = "inv-1")
+    val event2 = Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1")
 
     val session =
       runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
@@ -193,20 +171,10 @@ class AbstractRunnerTest {
     val rootAgent = MockAgent("root", subAgents = listOf(subAgent))
     val runner = TestRunner(rootAgent)
 
-    val event1 =
-      Event(
-        author = "sub",
-        content = Content(Role.MODEL, listOf(Part(text = "Hello"))),
-        invocationId = "inv-1",
-      )
+    val event1 = Event(author = "sub", content = modelMessage("Hello"), invocationId = "inv-1")
     val event2 =
       Event(author = "sub", actions = EventActions(endOfAgent = true), invocationId = "inv-1")
-    val event3 =
-      Event(
-        author = Role.USER,
-        content = Content(Role.USER, listOf(Part(text = "Hi"))),
-        invocationId = "inv-1",
-      )
+    val event3 = Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1")
 
     val session =
       runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
@@ -242,12 +210,7 @@ class AbstractRunnerTest {
         actions = EventActions(transferToAgent = "sub2"),
         invocationId = "inv-1",
       )
-    val event2 =
-      Event(
-        author = Role.USER,
-        content = Content(Role.USER, listOf(Part(text = "Hi"))),
-        invocationId = "inv-1",
-      )
+    val event2 = Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1")
 
     val session =
       runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))

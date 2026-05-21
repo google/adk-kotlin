@@ -17,14 +17,14 @@ package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyModel
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -65,7 +65,7 @@ class InstructionsIntegrationTest {
                 ?.mapNotNull { it.text }
                 ?.joinToString(" ")
                 .orEmpty()
-            flowOf(modelTextResponse("ok"))
+            flowOf(LlmResponse(content = modelMessage("ok")))
           },
         instruction =
           Instruction { context ->
@@ -115,7 +115,7 @@ class InstructionsIntegrationTest {
                 ?.mapNotNull { it.text }
                 ?.joinToString(" ")
                 .orEmpty()
-            flowOf(modelTextResponse("turn ok"))
+            flowOf(LlmResponse(content = modelMessage("turn ok")))
           },
         instruction =
           Instruction { _ ->
@@ -159,13 +159,10 @@ class InstructionsIntegrationTest {
                   .flatMap { it.parts }
                   .mapNotNull { it.text }
                   .firstOrNull { it.contains("dynamic-instruction") }
-              flowOf(modelTextResponse("ok"))
+              flowOf(LlmResponse(content = modelMessage("ok")))
             },
           staticInstruction = Content(parts = listOf(Part(text = "static-instruction"))),
-          instruction =
-            Instruction { _ ->
-              Content(role = Role.USER, parts = listOf(Part(text = "dynamic-instruction")))
-            },
+          instruction = Instruction { _ -> userMessage("dynamic-instruction") },
         )
       val runner = InMemoryRunner(agent = agent)
 

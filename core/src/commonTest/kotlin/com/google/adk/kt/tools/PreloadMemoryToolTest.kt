@@ -27,6 +27,7 @@ import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyMemoryService
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -72,8 +73,7 @@ class PreloadMemoryToolTest {
               )
           )
       }
-    val userContent =
-      Content(role = Role.USER, parts = listOf(Part(text = "What is my favorite color?")))
+    val userContent = userMessage("What is my favorite color?")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(memoryService, userContent))
     val baseRequest = LlmRequest()
@@ -103,7 +103,7 @@ class PreloadMemoryToolTest {
   @Test
   fun processLlmRequest_missingMemoryService_returnsUnalteredRequest() = runTest {
     val tool = PreloadMemoryTool()
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "Hello")))
+    val userContent = userMessage("Hello")
     val context =
       ToolContext(
         invocationContext =
@@ -121,7 +121,7 @@ class PreloadMemoryToolTest {
     val tool = PreloadMemoryTool()
     val memoryService =
       DummyMemoryService().apply { searchMemoryResponse = SearchMemoryResponse(emptyList()) }
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "Hello")))
+    val userContent = userMessage("Hello")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(memoryService, userContent))
     val baseRequest = LlmRequest()
@@ -147,7 +147,7 @@ class PreloadMemoryToolTest {
               )
           )
       }
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "Anything?")))
+    val userContent = userMessage("Anything?")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(memoryService, userContent))
     val baseRequest = LlmRequest()
@@ -171,7 +171,7 @@ class PreloadMemoryToolTest {
               listOf(MemoryEntry(content = Content(parts = listOf(Part(text = "bare memory")))))
           )
       }
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "query")))
+    val userContent = userMessage("query")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(memoryService, userContent))
     val baseRequest = LlmRequest()
@@ -197,7 +197,7 @@ class PreloadMemoryToolTest {
               listOf(MemoryEntry(content = Content(parts = listOf(Part(text = "stale memory")))))
           )
       }
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "")))
+    val userContent = userMessage("")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(memoryService, userContent))
     val baseRequest = LlmRequest()
@@ -220,7 +220,7 @@ class PreloadMemoryToolTest {
           query: String,
         ): SearchMemoryResponse = throw IllegalStateException("boom")
       }
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "query")))
+    val userContent = userMessage("query")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(throwingService, userContent))
     val baseRequest = LlmRequest()
@@ -238,7 +238,7 @@ class PreloadMemoryToolTest {
             memories = listOf(MemoryEntry(content = Content(parts = listOf(Part(text = "")))))
           )
       }
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "query")))
+    val userContent = userMessage("query")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(memoryService, userContent))
     val baseRequest = LlmRequest()
@@ -264,7 +264,7 @@ class PreloadMemoryToolTest {
               )
           )
       }
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "query")))
+    val userContent = userMessage("query")
     val context =
       ToolContext(invocationContext = getTestInvocationContext(memoryService, userContent))
     val baseRequest = LlmRequest()

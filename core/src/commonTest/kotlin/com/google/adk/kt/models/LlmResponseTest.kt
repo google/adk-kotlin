@@ -16,12 +16,12 @@
 
 package com.google.adk.kt.models
 
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.types.BlockedReason
 import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentResponse
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.PromptFeedback
 import com.google.adk.kt.types.Role
 import kotlin.test.assertEquals
@@ -42,10 +42,7 @@ class LlmResponseTest {
       GenerateContentResponse(
         candidates =
           listOf(
-            Candidate(
-              content = Content(role = Role.MODEL, parts = listOf(Part(text = "Response text"))),
-              finishReason = FinishReason.STOP,
-            )
+            Candidate(content = modelMessage("Response text"), finishReason = FinishReason.STOP)
           )
       )
 
@@ -98,10 +95,7 @@ class LlmResponseTest {
         modelVersion = "gemini-2.0-flash",
         candidates =
           listOf(
-            Candidate(
-              content = Content(role = Role.MODEL, parts = listOf(Part(text = "Response text"))),
-              finishReason = FinishReason.STOP,
-            )
+            Candidate(content = modelMessage("Response text"), finishReason = FinishReason.STOP)
           ),
       )
     val llmResponse = LlmResponse.from(response)

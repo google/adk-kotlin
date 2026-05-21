@@ -23,8 +23,8 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
-import com.google.adk.kt.testing.modelTextResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.FunctionCall
 import kotlin.test.Test
@@ -65,7 +65,7 @@ class SequentialFunctionCallsIntegrationTest {
               modelFunctionCallResponse("increment", id = "call_0"),
               modelFunctionCallResponse("increment", id = "call_1"),
               modelFunctionCallResponse("increment", id = "call_2"),
-              modelTextResponse("Final answer."),
+              LlmResponse(content = modelMessage("Final answer.")),
             ),
           ),
         tools =
@@ -108,7 +108,7 @@ class SequentialFunctionCallsIntegrationTest {
           modelFunctionCallResponse("increment", id = "call_0"),
           modelFunctionCallResponse("increment", id = "call_1"),
           modelFunctionCallResponse("increment", id = "call_2"),
-          modelTextResponse("Final answer."),
+          LlmResponse(content = modelMessage("Final answer.")),
         ),
       )
     val capturingModel =
@@ -161,7 +161,7 @@ class SequentialFunctionCallsIntegrationTest {
                   FunctionCall(name = "tool_a", id = "call_a"),
                   FunctionCall(name = "tool_b", id = "call_b"),
                 ),
-                modelTextResponse("Final."),
+                LlmResponse(content = modelMessage("Final.")),
               ),
             ),
           tools =

@@ -20,9 +20,7 @@ import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyTracer
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
+import com.google.adk.kt.testing.userMessage
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -51,7 +49,7 @@ class RunnerTelemetryTest {
     // Arrange
     val agent = DummyAgent(name = "telemetry-agent")
     val runner = InMemoryRunner(agent = agent)
-    val message = Content(role = Role.USER, parts = listOf(Part(text = "Hello")))
+    val message = userMessage("Hello")
 
     // Act
     runner.runAsync(userId = "user1", sessionId = "session1", newMessage = message).toList()

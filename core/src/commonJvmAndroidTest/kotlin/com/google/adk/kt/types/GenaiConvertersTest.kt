@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -110,7 +111,7 @@ class GenaiConvertersTest {
   fun candidate_convertsCorrectly() {
     val adkCandidate =
       Candidate(
-        content = Content(role = Role.USER, parts = listOf(Part(text = "hello"))),
+        content = userMessage("hello"),
         finishReason = FinishReason.STOP,
         finishMessage = "Done",
         citationMetadata = CitationMetadata(citationSources = emptyList()),
@@ -146,7 +147,7 @@ class GenaiConvertersTest {
 
   @Test
   fun content_convertsCorrectly() {
-    val adkContent = Content(role = Role.USER, parts = listOf(Part(text = "hello")))
+    val adkContent = userMessage("hello")
     val genaiContent = adkContent.toGenaiSdk()
     assertEquals(Role.USER, genaiContent.role().get())
     assertEquals(1, genaiContent.parts().get().size)

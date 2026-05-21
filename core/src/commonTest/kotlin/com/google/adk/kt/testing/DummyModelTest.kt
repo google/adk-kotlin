@@ -18,8 +18,6 @@ package com.google.adk.kt.testing
 
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.flowOf
@@ -30,8 +28,8 @@ class DummyModelTest {
 
   @Test
   fun generateContent_withSequentialFlows_returnsFlowsInOrder() = runTest {
-    val response1 = LlmResponse(content = Content(parts = listOf(Part(text = "first"))))
-    val response2 = LlmResponse(content = Content(parts = listOf(Part(text = "second"))))
+    val response1 = LlmResponse(content = modelMessage("first"))
+    val response2 = LlmResponse(content = modelMessage("second"))
     val model = DummyModel("test", listOf(flowOf(response1), flowOf(response2)))
 
     val result1 = model.generateContent(LlmRequest()).toList()
@@ -45,8 +43,8 @@ class DummyModelTest {
 
   @Test
   fun createSequential_returnsResponsesInOrder() = runTest {
-    val response1 = LlmResponse(content = Content(parts = listOf(Part(text = "first"))))
-    val response2 = LlmResponse(content = Content(parts = listOf(Part(text = "second"))))
+    val response1 = LlmResponse(content = modelMessage("first"))
+    val response2 = LlmResponse(content = modelMessage("second"))
     val model = DummyModel.createSequential("test", listOf(response1, response2))
 
     val result1 = model.generateContent(LlmRequest()).toList()

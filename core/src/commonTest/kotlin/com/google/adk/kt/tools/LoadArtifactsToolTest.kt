@@ -25,6 +25,7 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyArtifactService
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -356,8 +357,7 @@ class LoadArtifactsToolTest {
     val tool = LoadArtifactsTool()
     val context = getTestToolContext(mockArtifactService(keysToReturn = listOf("file1.txt")))
     var request = LlmRequest()
-    request =
-      request.appendContent(Content(role = Role.USER, parts = listOf(Part(text = "some text"))))
+    request = request.appendContent(userMessage("some text"))
 
     request = tool.processLlmRequest(context, request)
 

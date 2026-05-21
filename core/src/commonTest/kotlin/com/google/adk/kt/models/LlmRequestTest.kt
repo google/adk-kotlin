@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.models
 
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Blob
@@ -61,7 +62,7 @@ class LlmRequestTest {
   @Test
   fun appendContent_contentProvided_addsToContents() {
     var request = LlmRequest()
-    val content = Content(role = Role.USER, parts = listOf(Part(text = "Hello")))
+    val content = userMessage("Hello")
 
     request = request.appendContent(content)
 

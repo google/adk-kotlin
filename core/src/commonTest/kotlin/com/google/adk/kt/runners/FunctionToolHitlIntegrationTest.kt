@@ -18,9 +18,10 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
@@ -251,7 +252,7 @@ class FunctionToolHitlIntegrationTest {
                 args = mapOf("amount" to 100),
                 id = "secure_call_1",
               )
-            else modelTextResponse("done")
+            else LlmResponse(content = modelMessage("done"))
           )
         },
       tools = listOf(secureTool),

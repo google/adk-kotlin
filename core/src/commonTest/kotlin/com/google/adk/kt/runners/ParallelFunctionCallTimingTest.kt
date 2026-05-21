@@ -16,11 +16,12 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
-import com.google.adk.kt.testing.modelTextResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.FunctionCall
 import kotlin.test.Test
@@ -70,7 +71,7 @@ class ParallelFunctionCallTimingTest {
                   }
                   .toTypedArray()
               ),
-              modelTextResponse("all done"),
+              LlmResponse(content = modelMessage("all done")),
             ),
           ),
         tools = toolNames.map { name -> delayingTool(name) },
@@ -107,7 +108,7 @@ class ParallelFunctionCallTimingTest {
               modelFunctionCallResponse(toolNames[0], id = "call_0"),
               modelFunctionCallResponse(toolNames[1], id = "call_1"),
               modelFunctionCallResponse(toolNames[2], id = "call_2"),
-              modelTextResponse("all done"),
+              LlmResponse(content = modelMessage("all done")),
             ),
           ),
         tools = toolNames.map { name -> delayingTool(name) },

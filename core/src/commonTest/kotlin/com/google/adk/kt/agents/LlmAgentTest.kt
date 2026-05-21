@@ -20,6 +20,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
+import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.OnModelErrorCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -32,6 +33,8 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
@@ -81,13 +84,12 @@ class LlmAgentTest {
           Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
         ),
       )
-    val secondContent =
-      Content("model", listOf(Part(text = "LLM response after function response")))
+    val secondText = "LLM response after function response"
 
     val testModel =
       DummyModel.createSequential(
         "test-model",
-        listOf(LlmResponse(content = firstContent), LlmResponse(content = secondContent)),
+        listOf(LlmResponse(content = firstContent), LlmResponse(content = modelMessage(secondText))),
       )
 
     val testResponse = mapOf("response" to "response for my_function")
@@ -114,7 +116,7 @@ class LlmAgentTest {
 
     // Third event is the final model response
     assertEquals("test-agent", events[2].author)
-    assertEquals(secondContent.parts[0].text, events[2].content?.parts?.get(0)?.text)
+    assertEquals(secondText, events[2].content?.parts?.get(0)?.text)
   }
 
   @Test
@@ -127,13 +129,12 @@ class LlmAgentTest {
           Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
         ),
       )
-    val secondContent =
-      Content("model", listOf(Part(text = "LLM response after function response")))
+    val secondText = "LLM response after function response"
 
     val testModel =
       DummyModel.createSequential(
         "test-model",
-        listOf(LlmResponse(content = firstContent), LlmResponse(content = secondContent)),
+        listOf(LlmResponse(content = firstContent), LlmResponse(content = modelMessage(secondText))),
       )
 
     val testResponse = mapOf("response" to "response for my_function")
@@ -160,7 +161,7 @@ class LlmAgentTest {
 
     // Third event is the final model response
     assertEquals("test-agent", events[2].author)
-    assertEquals(secondContent.parts[0].text, events[2].content?.parts?.get(0)?.text)
+    assertEquals(secondText, events[2].content?.parts?.get(0)?.text)
   }
 
   @Test
@@ -175,10 +176,8 @@ class LlmAgentTest {
           }
       }
 
-    val fallbackContent =
-      Content(role = Role.MODEL, parts = listOf(Part(text = "Fallback response")))
     val callback = OnModelErrorCallback { _, _, _ ->
-      com.google.adk.kt.callbacks.CallbackChoice.Break(LlmResponse(content = fallbackContent))
+      CallbackChoice.Break(LlmResponse(content = modelMessage("Fallback response")))
     }
 
     val agent =
@@ -224,7 +223,7 @@ class LlmAgentTest {
         override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
           flow {
             capturedRequest = request
-            emit(LlmResponse(content = Content(parts = listOf(Part(text = "Response")))))
+            emit(LlmResponse(content = modelMessage("Response")))
           }
       }
 
@@ -243,7 +242,7 @@ class LlmAgentTest {
         id = Uuid.random(),
         invocationId = "test-invocation",
         author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "Hello"))),
+        content = userMessage("Hello"),
       )
     )
 
@@ -311,9 +310,11 @@ class LlmAgentTest {
 
   @Test
   fun runAsync_resumableContext_emitsEndOfAgent() = runTest {
-    val modelContent = Content(role = Role.MODEL, parts = listOf(Part(text = "Final response")))
     val testModel =
-      DummyModel.createSequential("test-model", listOf(LlmResponse(content = modelContent)))
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Final response"))),
+      )
 
     val agent = LlmAgent(name = "test-agent", model = testModel)
     val sessionService = InMemorySessionService()
@@ -369,7 +370,7 @@ class LlmAgentTest {
         invocationId = invocationId,
         author = "user",
         branch = context.branch,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "start"))),
+        content = userMessage("start"),
       )
     )
     session.events.add(

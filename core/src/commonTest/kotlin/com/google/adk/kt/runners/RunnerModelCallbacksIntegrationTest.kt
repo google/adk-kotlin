@@ -24,11 +24,8 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.testing.DummyModel
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -59,11 +56,13 @@ class RunnerModelCallbacksIntegrationTest {
         model =
           DummyModel("mock-model") {
             modelCalls++
-            flowOf(modelTextResponse("from-real-model"))
+            flowOf(LlmResponse(content = modelMessage("from-real-model")))
           },
         beforeModelCallbacks =
           listOf(
-            BeforeModelCallback { _, _ -> CallbackChoice.Break(modelTextResponse("from-callback")) }
+            BeforeModelCallback { _, _ ->
+              CallbackChoice.Break(LlmResponse(content = modelMessage("from-callback")))
+            }
           ),
       )
     val runner = InMemoryRunner(agent = agent)
@@ -93,10 +92,10 @@ class RunnerModelCallbacksIntegrationTest {
         override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
           flow {
             capturedRequest = request
-            emit(modelTextResponse("ok"))
+            emit(LlmResponse(content = modelMessage("ok")))
           }
       }
-    val injected = Content(Role.USER, listOf(Part(text = "INJECTED")))
+    val injected = userMessage("INJECTED")
     val agent =
       LlmAgent(
         name = "test-agent",
@@ -124,9 +123,16 @@ class RunnerModelCallbacksIntegrationTest {
     val agent =
       LlmAgent(
         name = "test-agent",
-        model = DummyModel("mock-model") { flowOf(modelTextResponse("from-real-model")) },
+        model =
+          DummyModel("mock-model") {
+            flowOf(LlmResponse(content = modelMessage("from-real-model")))
+          },
         afterModelCallbacks =
-          listOf(AfterModelCallback { _, _ -> modelTextResponse("from-after-callback") }),
+          listOf(
+            AfterModelCallback { _, _ ->
+              LlmResponse(content = modelMessage("from-after-callback"))
+            }
+          ),
       )
     val runner = InMemoryRunner(agent = agent)
 
@@ -160,7 +166,9 @@ class RunnerModelCallbacksIntegrationTest {
           },
         onModelErrorCallbacks =
           listOf(
-            OnModelErrorCallback { _, _, _ -> CallbackChoice.Break(modelTextResponse("recovered")) }
+            OnModelErrorCallback { _, _, _ ->
+              CallbackChoice.Break(LlmResponse(content = modelMessage("recovered")))
+            }
           ),
       )
     val runner = InMemoryRunner(agent = agent)

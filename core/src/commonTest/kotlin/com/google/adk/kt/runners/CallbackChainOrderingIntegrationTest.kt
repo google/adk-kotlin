@@ -21,14 +21,14 @@ import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
-import com.google.adk.kt.testing.modelTextResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -208,7 +208,7 @@ class CallbackChainOrderingIntegrationTest {
                 ?.mapNotNull { it.text }
                 ?.joinToString(" ")
                 .orEmpty()
-            flowOf(modelTextResponse("ok"))
+            flowOf(LlmResponse(content = modelMessage("ok")))
           },
         beforeModelCallbacks =
           listOf(
@@ -259,15 +259,13 @@ class CallbackChainOrderingIntegrationTest {
       val agent =
         LlmAgent(
           name = "agent",
-          model = DummyModel("model") { flowOf(modelTextResponse("base")) },
+          model = DummyModel("model") { flowOf(LlmResponse(content = modelMessage("base"))) },
           afterModelCallbacks =
             listOf(
               AfterModelCallback { _, response ->
                 invocationOrder += "first"
                 val originalText = response.content?.parts?.singleOrNull()?.text.orEmpty()
-                response.copy(
-                  content = Content(Role.MODEL, listOf(Part(text = "$originalText|first")))
-                )
+                response.copy(content = modelMessage("$originalText|first"))
               },
               AfterModelCallback { _, response ->
                 invocationOrder += "second"
@@ -277,9 +275,7 @@ class CallbackChainOrderingIntegrationTest {
                   "second after-model callback must see response mutated by the first; got " +
                     "'$firstText'",
                 )
-                response.copy(
-                  content = Content(Role.MODEL, listOf(Part(text = "$firstText|second")))
-                )
+                response.copy(content = modelMessage("$firstText|second"))
               },
             ),
         )
@@ -306,7 +302,10 @@ class CallbackChainOrderingIntegrationTest {
       model =
         DummyModel.createSequential(
           "model",
-          listOf(modelFunctionCallResponse(toolName, id = "call_1"), modelTextResponse("done")),
+          listOf(
+            modelFunctionCallResponse(toolName, id = "call_1"),
+            LlmResponse(content = modelMessage("done")),
+          ),
         ),
       tools = listOf(tool),
       beforeToolCallbacks = beforeToolCallbacks,

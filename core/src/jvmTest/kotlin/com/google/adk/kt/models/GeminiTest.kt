@@ -16,12 +16,13 @@
 
 package com.google.adk.kt.models
 
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.fromGenaiSdk
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
@@ -82,11 +83,7 @@ class GeminiTest {
 
   @Test
   fun ensureModelResponse_lastRoleNotUser_addsContinueOutputMessage() {
-    val reqContents =
-      listOf(
-        Content(role = "user", parts = listOf(Part(text = "Prompt"))),
-        Content(role = "model", parts = listOf(Part(text = "Response"))),
-      )
+    val reqContents = listOf(userMessage("Prompt"), modelMessage("Response"))
 
     val ensured = reqContents.ensureModelResponse()
     assertThat(ensured).hasSize(3)
@@ -110,7 +107,7 @@ class GeminiTest {
 
   @Test
   fun ensureModelResponse_lastRoleUser_doesNothing() {
-    val reqContents = listOf(Content(role = "user", parts = listOf(Part(text = "Prompt"))))
+    val reqContents = listOf(userMessage("Prompt"))
 
     val ensured = reqContents.ensureModelResponse()
     assertThat(ensured).hasSize(1)
@@ -163,8 +160,7 @@ class GeminiTest {
 
   @Test
   fun sanitizeRequestForGeminiApi_withoutData_handlesSuccessfully() {
-    val reqContents =
-      mutableListOf(Content(role = "user", parts = listOf(Part(text = "Just text"))))
+    val reqContents = mutableListOf(userMessage("Just text"))
 
     val request = LlmRequest(model = null, contents = reqContents, config = GenerateContentConfig())
     val sanitized = request.sanitizeForGeminiApi()
@@ -242,10 +238,7 @@ class GeminiTest {
     val responses =
       model
         .generateContent(
-          LlmRequest(
-            contents = listOf(Content(role = Role.USER, parts = listOf(Part(text = "Hello")))),
-            config = GenerateContentConfig(),
-          ),
+          LlmRequest(contents = listOf(userMessage("Hello")), config = GenerateContentConfig()),
           stream = true,
         )
         .toList()

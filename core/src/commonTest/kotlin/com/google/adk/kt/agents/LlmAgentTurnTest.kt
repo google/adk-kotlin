@@ -20,9 +20,10 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelTransferToAgentResponse
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -59,53 +60,21 @@ class LlmAgentTurnTest {
           val isFunctionResponse = lastContent?.parts?.any { it.functionResponse != null } == true
           if (!isFunctionResponse) {
             emit(
-              LlmResponse(
-                content =
-                  Content(
-                    Role.MODEL,
-                    listOf(
-                      Part(
-                        functionCall =
-                          FunctionCall(
-                            name = "return_random_number",
-                            args = emptyMap(),
-                            id = "call_1",
-                          )
-                      )
-                    ),
-                  )
+              modelFunctionCallResponse(
+                name = "return_random_number",
+                args = emptyMap(),
+                id = "call_1",
               )
             )
           } else {
-            emit(
-              LlmResponse(content = Content(Role.MODEL, listOf(Part(text = "The answer is 42."))))
-            )
+            emit(LlmResponse(content = modelMessage("The answer is 42.")))
           }
         }
       }
     // Root agent model: unconditionally delegates to the HeartOfGold sub-agent.
     val rootModel =
       DummyModel("root-model") {
-        flow {
-          emit(
-            LlmResponse(
-              content =
-                Content(
-                  Role.MODEL,
-                  listOf(
-                    Part(
-                      functionCall =
-                        FunctionCall(
-                          name = "transfer_to_agent",
-                          args = mapOf("agent_name" to "HeartOfGold"),
-                          id = "transfer_call_1",
-                        )
-                    )
-                  ),
-                )
-            )
-          )
-        }
+        flow { emit(modelTransferToAgentResponse("HeartOfGold", id = "transfer_call_1")) }
       }
     val heartOfGoldAgent =
       LlmAgent(
@@ -122,7 +91,7 @@ class LlmAgentTurnTest {
         model = rootModel,
       )
     val runner = InMemoryRunner(agent = missionControlAgent)
-    val userMessage = Content(role = Role.USER, parts = listOf(Part(text = "What's the answer?")))
+    val userMessage = userMessage("What's the answer?")
 
     val flowEvents =
       runner

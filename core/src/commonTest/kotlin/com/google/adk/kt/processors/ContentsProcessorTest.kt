@@ -24,12 +24,13 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertEquals
 import kotlinx.coroutines.test.runTest
@@ -43,10 +44,7 @@ class ContentsProcessorTest {
     val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
 
-    var request =
-      LlmRequest(
-        contents = mutableListOf(Content(role = Role.USER, parts = listOf(Part(text = "hello"))))
-      )
+    var request = LlmRequest(contents = mutableListOf(userMessage("hello")))
 
     val processor = ContentsProcessor()
     request = processor.process(context, request)
@@ -58,7 +56,7 @@ class ContentsProcessorTest {
   @Test
   fun run_mixedHistory_insertsInstructionsBeforeLastUserBlock() = runTest {
     val processor = ContentsProcessor()
-    var request = LlmRequest(contents = mutableListOf(userContent("instruction")))
+    var request = LlmRequest(contents = mutableListOf(userMessage("instruction")))
     val context =
       createTestContext(userEvent("u1"), modelEvent("m1"), userEvent("u2"), userEvent("u3"))
 
@@ -77,7 +75,7 @@ class ContentsProcessorTest {
   @Test
   fun run_allUserHistory_insertsInstructionsAtStart() = runTest {
     val processor = ContentsProcessor()
-    var request = LlmRequest(contents = mutableListOf(userContent("instruction")))
+    var request = LlmRequest(contents = mutableListOf(userMessage("instruction")))
     val context = createTestContext(userEvent("u1"))
 
     request = processor.process(context, request)
@@ -92,7 +90,7 @@ class ContentsProcessorTest {
   @Test
   fun run_historyWithFunctionResponse_insertsInstructionsAfterFunctionResponse() = runTest {
     val processor = ContentsProcessor()
-    var request = LlmRequest(contents = listOf(userContent("instruction")))
+    var request = LlmRequest(contents = listOf(userMessage("instruction")))
     val context =
       createTestContext(
         userEvent("u1"),
@@ -1049,14 +1047,9 @@ class ContentsProcessorTest {
     )
   }
 
-  private fun userContent(text: String) = Content(role = "user", parts = listOf(Part(text = text)))
+  private fun userEvent(text: String) = Event(author = "user", content = userMessage(text))
 
-  private fun modelContent(text: String) =
-    Content(role = "model", parts = listOf(Part(text = text)))
-
-  private fun userEvent(text: String) = Event(author = "user", content = userContent(text))
-
-  private fun modelEvent(text: String) = Event(author = "testAgent", content = modelContent(text))
+  private fun modelEvent(text: String) = Event(author = "testAgent", content = modelMessage(text))
 
   private fun functionCallEvent(vararg calls: Pair<String, String>) =
     Event(

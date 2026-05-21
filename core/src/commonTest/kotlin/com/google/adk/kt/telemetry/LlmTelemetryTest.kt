@@ -23,9 +23,7 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTracer
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
+import com.google.adk.kt.testing.modelMessage
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -53,9 +51,7 @@ class LlmTelemetryTest {
 
   @Test
   fun runAsync_recordsCallLlmSpan() = runTest {
-    val content = Content(role = Role.MODEL, parts = listOf(Part(text = "Hello")))
-    val testModel =
-      DummyModel.createSequential("test-model", listOf(LlmResponse(content = content)))
+    val testModel = DummyModel.createSequential("test-model", listOf(LlmResponse(content = modelMessage("Hello"))))
     val agent = LlmAgent(name = "test-agent", model = testModel)
     val sessionService = InMemorySessionService()
     val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
@@ -71,12 +67,8 @@ class LlmTelemetryTest {
 
   @Test
   fun runAsync_recordsChunkReceivedEvents() = runTest {
-    val content1 = Content(role = Role.MODEL, parts = listOf(Part(text = "Hel")))
-    val content2 = Content(role = Role.MODEL, parts = listOf(Part(text = "lo")))
     val testModel =
-      DummyModel("test-model") {
-        flowOf(LlmResponse(content = content1), LlmResponse(content = content2))
-      }
+      DummyModel("test-model") { flowOf(LlmResponse(content = modelMessage("Hel")), LlmResponse(content = modelMessage("lo"))) }
     val agent = LlmAgent(name = "test-agent", model = testModel)
     val sessionService = InMemorySessionService()
     val session = sessionService.createSession(SessionKey("app", "user", "test-session"))

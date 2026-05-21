@@ -16,6 +16,7 @@
 package com.google.adk.kt.testing
 
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.models.LlmResponse
 import kotlinx.coroutines.flow.flowOf
 
 /**
@@ -23,6 +24,6 @@ import kotlinx.coroutines.flow.flowOf
  * child when the test cares only about ordering or routing, not about tool calls.
  */
 fun textAgent(name: String, text: String, description: String = ""): LlmAgent {
-  val model = DummyModel("model-$name") { flowOf(modelTextResponse(text)) }
+  val model = DummyModel("model-$name") { flowOf(LlmResponse(content = modelMessage(text))) }
   return LlmAgent(name = name, description = description, model = model)
 }

@@ -23,8 +23,8 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -90,7 +90,7 @@ class ReadonlyContextImplTest {
 
   @Test
   fun readonlyContext_userContent_isDefensiveCopy() {
-    val userContent = Content(role = Role.USER, parts = listOf(Part(text = "test")))
+    val userContent = userMessage("test")
     val context =
       InvocationContext(
         runConfig = RunConfig(),

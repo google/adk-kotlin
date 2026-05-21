@@ -34,10 +34,8 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -77,21 +75,10 @@ class ExitLoopToolTest {
       DummyModel.createSequential(
         "mock-model",
         listOf(
-          LlmResponse(content = Content(Role.MODEL, listOf(Part(text = "Counter: 1")))),
-          LlmResponse(content = Content(Role.MODEL, listOf(Part(text = "Counter: 2")))),
-          LlmResponse(content = Content(Role.MODEL, listOf(Part(text = "Counter: 3")))),
-          LlmResponse(
-            content =
-              Content(
-                Role.MODEL,
-                listOf(
-                  Part(
-                    functionCall =
-                      FunctionCall(name = "exit_loop", args = emptyMap(), id = "call_1")
-                  )
-                ),
-              )
-          ),
+          LlmResponse(content = modelMessage("Counter: 1")),
+          LlmResponse(content = modelMessage("Counter: 2")),
+          LlmResponse(content = modelMessage("Counter: 3")),
+          modelFunctionCallResponse("exit_loop", id = "call_1"),
         ),
       )
     val llmAgent = LlmAgent(name = "llm-agent", model = mockModel, tools = listOf(ExitLoopTool()))

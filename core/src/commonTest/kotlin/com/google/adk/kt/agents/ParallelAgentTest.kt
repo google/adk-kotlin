@@ -22,8 +22,7 @@ import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.testSession
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -36,16 +35,8 @@ class ParallelAgentTest {
 
   @Test
   fun runAsync_multipleSubAgents_mergesEvents() = runTest {
-    val event1 =
-      Event(
-        author = "sub1",
-        content = Content(role = "user", parts = listOf(Part(text = "Hello from sub1"))),
-      )
-    val event2 =
-      Event(
-        author = "sub2",
-        content = Content(role = "user", parts = listOf(Part(text = "Hello from sub2"))),
-      )
+    val event1 = Event(author = "sub1", content = userMessage("Hello from sub1"))
+    val event2 = Event(author = "sub2", content = userMessage("Hello from sub2"))
     val subAgent1 = DummyAgent("sub1", onRunAsync = { emit(event1) })
     val subAgent2 = DummyAgent("sub2", onRunAsync = { emit(event2) })
     val parallelAgent = ParallelAgent(name = "parallel", subAgents = listOf(subAgent1, subAgent2))
@@ -89,8 +80,7 @@ class ParallelAgentTest {
 
   @Test
   fun runAsync_allSubAgentsEnd_endsParallelAgent() = runTest {
-    val event =
-      Event(author = "sub1", content = Content(role = "user", parts = listOf(Part(text = "Hello"))))
+    val event = Event(author = "sub1", content = userMessage("Hello"))
     val subAgent =
       ContextAwareDummyAgent(
         "sub1",
@@ -137,11 +127,7 @@ class ParallelAgentTest {
 
   @Test
   fun runAsync_resuming_skipsCompletedAgents() = runTest {
-    val event2 =
-      Event(
-        author = "sub2",
-        content = Content(role = "user", parts = listOf(Part(text = "Hello from sub2"))),
-      )
+    val event2 = Event(author = "sub2", content = userMessage("Hello from sub2"))
 
     var sub1Run = false
     var sub2Run = false

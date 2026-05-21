@@ -25,12 +25,15 @@ import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
+import com.google.adk.kt.testing.modelTransferToAgentResponse
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -87,19 +90,15 @@ class RunnerTest {
 
           if (!isFunctionResponse) {
             // Return Function Calls
-            val call1 = FunctionCall(name = "get_weather", args = emptyMap())
-            val call2 = FunctionCall(name = "get_current_time", args = emptyMap())
-
-            val part1 = Part(functionCall = call1)
-            val part2 = Part(functionCall = call2)
-
-            val content = Content(Role.MODEL, listOf(part1, part2))
-            emit(LlmResponse(content = content))
+            emit(
+              modelParallelFunctionCallsResponse(
+                FunctionCall(name = "get_weather", args = emptyMap()),
+                FunctionCall(name = "get_current_time", args = emptyMap()),
+              )
+            )
           } else {
             // Return Final Answer
-            val part = Part(text = "The weather is sunny and it is 12:00 PM.")
-            val content = Content(Role.MODEL, listOf(part))
-            emit(LlmResponse(content = content))
+            emit(LlmResponse(content = modelMessage("The weather is sunny and it is 12:00 PM.")))
           }
         }
       }
@@ -109,8 +108,7 @@ class RunnerTest {
 
     val runner = InMemoryRunner(agent = agent)
 
-    val userMessage =
-      Content(role = Role.USER, parts = listOf(Part(text = "What is the weather and time?")))
+    val userMessage = userMessage("What is the weather and time?")
 
     runner.runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage).toList()
 
@@ -186,13 +184,13 @@ class RunnerTest {
           invocationContext: InvocationContext,
           userMessage: Content,
         ): Content {
-          return Content(Role.USER, listOf(Part(text = "Modified user message")))
+          return userMessage("Modified user message")
         }
       }
 
     val runner = InMemoryRunner(agent = spyAgent, pluginManager = PluginManager(listOf(plugin)))
 
-    val originalMessage = Content(Role.USER, listOf(Part(text = "Original message")))
+    val originalMessage = userMessage("Original message")
     runner.runAsync(userId = "user1", sessionId = "session1", newMessage = originalMessage).toList()
 
     val session = runner.sessionService.getSession(SessionKey(runner.appName, "user1", "session1"))
@@ -220,7 +218,7 @@ class RunnerTest {
         override suspend fun beforeRun(
           invocationContext: InvocationContext
         ): CallbackChoice<Unit, Content> {
-          return CallbackChoice.Break(Content(Role.MODEL, listOf(Part(text = "Short-circuited!"))))
+          return CallbackChoice.Break(modelMessage("Short-circuited!"))
         }
       }
 
@@ -245,7 +243,7 @@ class RunnerTest {
             Event(
               invocationId = context.invocationId,
               author = Role.MODEL,
-              content = Content(Role.MODEL, listOf(Part(text = "Original model response"))),
+              content = modelMessage("Original model response"),
             )
           )
         }
@@ -257,9 +255,7 @@ class RunnerTest {
 
         override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
           return if (event.author == Role.MODEL) {
-            event.copy(
-              content = Content(Role.MODEL, listOf(Part(text = "Modified model response")))
-            )
+            event.copy(content = modelMessage("Modified model response"))
           } else {
             event
           }
@@ -287,7 +283,7 @@ class RunnerTest {
             Event(
               invocationId = context.invocationId,
               author = Role.MODEL,
-              content = Content(Role.MODEL, listOf(Part(text = "Done"))),
+              content = modelMessage("Done"),
             )
           )
         }
@@ -313,13 +309,7 @@ class RunnerTest {
   @Test
   fun runAsync_withAgentTransfer_transfersCorrectly() = runTest {
     val subModel =
-      DummyModel("sub-model") {
-        flow {
-          emit(
-            LlmResponse(content = Content(Role.MODEL, listOf(Part(text = "Hello from sub-agent!"))))
-          )
-        }
-      }
+      DummyModel("sub-model") { flow { emit(LlmResponse(content = modelMessage("Hello from sub-agent!"))) } }
     val rootModel =
       DummyModel("root-model") { request ->
         flow {
@@ -328,20 +318,11 @@ class RunnerTest {
 
           if (!isFunctionResponse) {
             // Emulate root agent deciding to transfer to sub-agent
-            val call =
-              FunctionCall(
-                name = TRANSFER_TO_AGENT_TOOL_NAME_FOR_TESTING,
-                args = mapOf("agent_name" to "sub"),
-              )
-            emit(LlmResponse(content = Content(Role.MODEL, listOf(Part(functionCall = call)))))
+            emit(modelTransferToAgentResponse("sub"))
           } else {
             // Ideally, after transfer, root agent isn't called again for this turn,
             // but if it is, return empty or generic response
-            emit(
-              LlmResponse(
-                content = Content(Role.MODEL, listOf(Part(text = "Root agent finished.")))
-              )
-            )
+            emit(LlmResponse(content = modelMessage("Root agent finished.")))
           }
         }
       }
@@ -355,7 +336,7 @@ class RunnerTest {
       )
     val runner = InMemoryRunner(agent = rootAgent)
 
-    val userMessage = Content(role = Role.USER, parts = listOf(Part(text = "Talk to sub agent.")))
+    val userMessage = userMessage("Talk to sub agent.")
     val events =
       runner.runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage).toList()
 
@@ -391,11 +372,11 @@ class RunnerTest {
     val spyAgent =
       object : BaseAgent(name = "spy-agent") {
         override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
-          emit(Event(author = Role.MODEL, content = Content(Role.MODEL, listOf(Part(text = "OK")))))
+          emit(Event(author = Role.MODEL, content = modelMessage("OK")))
         }
       }
     val runner = InMemoryRunner(agent = spyAgent)
-    val userMessage = Content(role = Role.USER, parts = listOf(Part(text = "hi")))
+    val userMessage = userMessage("hi")
 
     val events = runner.run(userId = "user1", sessionId = "session1", newMessage = userMessage)
 
