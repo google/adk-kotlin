@@ -17,9 +17,8 @@
 package com.google.adk.kt.plugins
 
 import com.google.adk.kt.agents.InvocationContext
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
@@ -76,11 +75,7 @@ class PluginManagerTest {
     assertEquals(1, manager.onUserMessageCallbacks.size)
     val userMessage = Content(Role.USER)
     val invocationContext =
-      InvocationContext(
-        session = Session(key = SessionKey(appName = "a", userId = "u", id = "s")),
-        runConfig = null,
-        agent = DummyAgent("t"),
-      )
+      InvocationContext(session = testSession(), runConfig = null, agent = DummyAgent("t"))
     val result = manager.onUserMessageCallbacks.first().call(invocationContext, userMessage)
     assertEquals(userMessage, result)
     assertTrue(called)

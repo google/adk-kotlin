@@ -19,9 +19,8 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.LlmRequest
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.testSession
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -38,7 +37,7 @@ class AgentTransferProcessorTest {
       AgentTransferProcessor()
         .process(
           InvocationContext(
-            session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
+            session = testSession(),
             runConfig = null,
             agent =
               LlmAgent(
@@ -102,11 +101,7 @@ class AgentTransferProcessorTest {
     val processedRequest =
       AgentTransferProcessor()
         .process(
-          InvocationContext(
-            session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
-            runConfig = null,
-            agent = subAgent,
-          ),
+          InvocationContext(session = testSession(), runConfig = null, agent = subAgent),
           LlmRequest(),
         )
 
@@ -149,11 +144,7 @@ class AgentTransferProcessorTest {
     val processedRequest =
       AgentTransferProcessor()
         .process(
-          InvocationContext(
-            session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
-            runConfig = null,
-            agent = agent,
-          ),
+          InvocationContext(session = testSession(), runConfig = null, agent = agent),
           LlmRequest(),
         )
 
@@ -186,11 +177,7 @@ class AgentTransferProcessorTest {
     val processedRequest =
       AgentTransferProcessor()
         .process(
-          InvocationContext(
-            session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
-            runConfig = null,
-            agent = subAgent,
-          ),
+          InvocationContext(session = testSession(), runConfig = null, agent = subAgent),
           LlmRequest(),
         )
     assertNull(processedRequest.config.systemInstruction)
@@ -219,11 +206,7 @@ class AgentTransferProcessorTest {
     val processedRequest =
       AgentTransferProcessor()
         .process(
-          InvocationContext(
-            session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
-            runConfig = null,
-            agent = subAgent,
-          ),
+          InvocationContext(session = testSession(), runConfig = null, agent = subAgent),
           LlmRequest(),
         )
 
@@ -277,11 +260,7 @@ class AgentTransferProcessorTest {
     val processedRequest =
       AgentTransferProcessor()
         .process(
-          InvocationContext(
-            session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
-            runConfig = null,
-            agent = subAgent,
-          ),
+          InvocationContext(session = testSession(), runConfig = null, agent = subAgent),
           LlmRequest(),
         )
 
@@ -338,11 +317,7 @@ class AgentTransferProcessorTest {
       assertFailsWith<IllegalArgumentException> {
         AgentTransferProcessor()
           .process(
-            InvocationContext(
-              session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
-              runConfig = null,
-              agent = subAgentMain,
-            ),
+            InvocationContext(session = testSession(), runConfig = null, agent = subAgentMain),
             LlmRequest(),
           )
       }
@@ -368,11 +343,7 @@ class AgentTransferProcessorTest {
     val processedRequest =
       AgentTransferProcessor()
         .process(
-          InvocationContext(
-            session = Session(key = SessionKey(appName = "app", userId = "user", id = "1")),
-            runConfig = null,
-            agent = rootAgent,
-          ),
+          InvocationContext(session = testSession(), runConfig = null, agent = rootAgent),
           LlmRequest(),
         )
 

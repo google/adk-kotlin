@@ -20,9 +20,8 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.LlmRequest
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -41,7 +40,7 @@ class InstructionsProcessorTest {
         model = DummyModel("gemini"),
         staticInstruction = Content.fromText(Role.SYSTEM, "static"),
       )
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
     var request = LlmRequest()
 
@@ -61,7 +60,7 @@ class InstructionsProcessorTest {
         model = DummyModel("gemini"),
         instruction = Instruction.Provider { Content(parts = listOf(Part(text = "dynamic"))) },
       )
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
     var request = LlmRequest()
 
@@ -77,7 +76,7 @@ class InstructionsProcessorTest {
   fun run_withTextInstruction_setsSystemInstructionFromString() = runTest {
     val agent =
       LlmAgent(name = "test", model = DummyModel("gemini"), instruction = Instruction("hello"))
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
     var request = LlmRequest()
 
@@ -94,7 +93,7 @@ class InstructionsProcessorTest {
     val content = Content(parts = listOf(Part(text = "structured-instruction")))
     val agent =
       LlmAgent(name = "test", model = DummyModel("gemini"), instruction = Instruction(content))
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
     var request = LlmRequest()
 
@@ -116,7 +115,7 @@ class InstructionsProcessorTest {
         instruction =
           Instruction.Provider { Content(role = Role.USER, parts = listOf(Part(text = "dynamic"))) },
       )
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
     var request = LlmRequest()
 

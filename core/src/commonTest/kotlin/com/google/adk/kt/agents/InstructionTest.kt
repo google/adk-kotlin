@@ -20,7 +20,7 @@ import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import kotlin.test.assertEquals
@@ -113,12 +113,12 @@ class InstructionTest {
 
 /** Minimal [ReadonlyContext] implementation for unit-testing [Instruction.resolve]. */
 private class FakeReadonlyContext : ReadonlyContext {
-  override val session: Session = Session(key = SessionKey(appName = "app", userId = "u", id = "s"))
+  override val session: Session = testSession()
   override val runConfig: RunConfig? = null
   override val invocationId: String = "inv"
   override val agentName: String = "agent"
   override val state: Map<String, Any> = emptyMap()
-  override val userId: String = "u"
+  override val userId: String = "test_user_id"
   override val userContent: Content? = null
   override val branch: String? = null
   override val artifactService: ArtifactService? = null

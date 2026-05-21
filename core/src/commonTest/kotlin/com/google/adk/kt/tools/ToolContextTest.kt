@@ -19,15 +19,12 @@ package com.google.adk.kt.tools
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.artifacts.ArtifactService
-import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.sessions.InMemorySessionService
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyArtifactService
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -118,9 +115,9 @@ class ToolContextTest {
     val artifactService =
       DummyArtifactService(
         onListArtifactKeys = { sessionKey ->
-          assertEquals("app-name", sessionKey.appName)
-          assertEquals("user-id", sessionKey.userId)
-          assertEquals("session-id", sessionKey.id)
+          assertEquals("test_app_name", sessionKey.appName)
+          assertEquals("test_user_id", sessionKey.userId)
+          assertEquals("test_session_id", sessionKey.id)
           listOf("file1.txt", "file2.jpg")
         }
       )
@@ -147,9 +144,9 @@ class ToolContextTest {
     val artifactService =
       DummyArtifactService(
         onLoadArtifact = { sessionKey, filename, _ ->
-          assertEquals("app-name", sessionKey.appName)
-          assertEquals("user-id", sessionKey.userId)
-          assertEquals("session-id", sessionKey.id)
+          assertEquals("test_app_name", sessionKey.appName)
+          assertEquals("test_user_id", sessionKey.userId)
+          assertEquals("test_session_id", sessionKey.id)
           assertEquals("file1.txt", filename)
           expectedPart
         }
@@ -173,12 +170,7 @@ class ToolContextTest {
 
   private fun getTestInvocationContext(artifactService: ArtifactService? = null) =
     InvocationContext(
-      session =
-        Session(
-          key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-          state = State(concurrentMutableMapOf()),
-          events = mutableListOf(),
-        ),
+      session = testSession(),
       runConfig = com.google.adk.kt.agents.RunConfig(), // Add default RunConfig
       agent = DummyAgent("test-agent"),
       sessionService = InMemorySessionService(), // Add InMemorySessionService

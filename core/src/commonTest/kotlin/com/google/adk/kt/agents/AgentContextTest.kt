@@ -16,12 +16,8 @@
 
 package com.google.adk.kt.agents
 
-import com.google.adk.kt.collections.concurrentMutableMapOf
-import com.google.adk.kt.events.Event
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.runBlocking
@@ -41,39 +37,27 @@ class AgentContextTest {
 
   @Test
   fun invocationContext_creation_setsDefaultValues() {
-    val session =
-      Session(
-        key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-        state = State(concurrentMutableMapOf()),
-        events = mutableListOf<Event>(),
-      )
     val agent = DummyAgent("test-agent")
     val context =
       InvocationContext(
-        session = session,
+        session = testSession(),
         runConfig = null,
         agent = agent,
         userContent = Content(role = Role.USER),
         invocationId = "invocation-id",
       )
 
-    assertEquals("session-id", context.session.key.id)
+    assertEquals("test_session_id", context.session.key.id)
     assertEquals("test-agent", context.agent.name)
     assertEquals("invocation-id", context.invocationId)
   }
 
   @Test
   fun readonlyContext_creation_setsDefaultValues() {
-    val session =
-      Session(
-        key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-        state = State(concurrentMutableMapOf()),
-        events = mutableListOf<Event>(),
-      )
     val agent = DummyAgent("test-agent")
     val context =
       InvocationContext(
-        session = session,
+        session = testSession(),
         runConfig = null,
         agent = agent,
         userContent = Content(role = Role.USER),
@@ -81,22 +65,16 @@ class AgentContextTest {
       )
     val readonlyContext = context.toReadonlyContext()
 
-    assertEquals("session-id", readonlyContext.session.key.id)
+    assertEquals("test_session_id", readonlyContext.session.key.id)
     assertEquals("test-agent", readonlyContext.agentName)
   }
 
   @Test
   fun callbackContext_creation_setsDefaultValues() = runBlocking {
-    val session =
-      Session(
-        key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-        state = State(concurrentMutableMapOf()),
-        events = mutableListOf<Event>(),
-      )
     val agent = DummyAgent("test-agent")
     val context =
       InvocationContext(
-        session = session,
+        session = testSession(),
         runConfig = null,
         agent = agent,
         userContent = Content(role = Role.USER),

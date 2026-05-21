@@ -21,10 +21,10 @@ import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.sessions.InMemorySessionService
-import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -40,7 +40,7 @@ class ContentsProcessorTest {
   @Test
   fun run_withContent_addsContentToRequest() = runTest {
     val agent = DummyAgent(name = "test")
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
 
     var request =

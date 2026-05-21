@@ -19,9 +19,8 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.LlmRequest
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.GenerateContentConfig
 import kotlin.test.assertEquals
 import kotlinx.coroutines.test.runTest
@@ -34,7 +33,7 @@ class BasicRequestProcessorTest {
     val model = DummyModel("gemini")
     val config = GenerateContentConfig()
     val agent = LlmAgent(name = "test", model = model, generateContentConfig = config)
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
     var request = LlmRequest()
 

@@ -20,9 +20,8 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.events.Event
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
@@ -128,10 +127,8 @@ class ParallelAgentTest {
   }
 
   private fun createTestContext(agent: BaseAgent): InvocationContext {
-    val session =
-      Session(key = SessionKey(appName = "testApp", userId = "testUser", id = "testSession"))
     return InvocationContext(
-      session = session,
+      session = testSession(),
       runConfig = null,
       agent = agent,
       resumabilityConfig = ResumabilityConfig(isResumable = true),

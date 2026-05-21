@@ -18,9 +18,8 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.LlmRequest
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
@@ -44,7 +43,7 @@ class ToolProcessorTest {
     val model = DummyModel("gemini")
     val tool = MyTool()
     val agent = LlmAgent(name = "test", model = model, tools = listOf(tool))
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val invocationContext = InvocationContext(session = session, runConfig = null, agent = agent)
     val request = LlmRequest()
     val processor = ToolProcessor()
@@ -61,7 +60,7 @@ class ToolProcessorTest {
   fun process_withNoAgentTools_requestIsUnchanged() = runTest {
     val model = DummyModel("gemini")
     val agent = LlmAgent(name = "test", model = model, tools = emptyList())
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val invocationContext = InvocationContext(session = session, runConfig = null, agent = agent)
     val request = LlmRequest()
     val processor = ToolProcessor()

@@ -18,10 +18,9 @@ package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTracer
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionCall
@@ -99,8 +98,7 @@ class ToolTelemetryTest {
 
   private fun createInvocationContext(): InvocationContext =
     InvocationContext(
-      session =
-        Session(key = SessionKey(appName = "test_app", userId = "user_1", id = "session_1")),
+      session = testSession(),
       runConfig = null,
       agent = LlmAgent(name = "test_agent", model = DummyModel("mock_model")),
     )

@@ -18,17 +18,15 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.RunConfig
-import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.memory.SearchMemoryResponse
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyMemoryService
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -319,11 +317,7 @@ class PreloadMemoryToolTest {
     userContent: Content? = null,
   ) =
     InvocationContext(
-      session =
-        Session(
-          key = SessionKey("app-name", "user-id", "session-id"),
-          state = State(concurrentMutableMapOf()),
-        ),
+      session = testSession(),
       runConfig = RunConfig(),
       agent = DummyAgent("test-agent"),
       sessionService = InMemorySessionService(),

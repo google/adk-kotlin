@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
@@ -60,7 +61,7 @@ class A2aConvertersTest {
       invocationId = "invocation-1",
       agent = testAgent,
       branch = "main",
-      session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1")),
+      session = testSession(),
       runConfig = null,
     )
 

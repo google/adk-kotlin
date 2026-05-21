@@ -24,6 +24,7 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyMemoryService
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -115,7 +116,7 @@ class CallbackContextTest {
 
   @Test
   fun addSessionToMemory_throwsWhenServiceNotAvailable() = runBlocking {
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "session-id"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = DummyAgent("test"))
     val callbackContext = context.toCallbackContext()
 
@@ -128,7 +129,7 @@ class CallbackContextTest {
 
   @Test
   fun addSessionToMemory_callsMemoryService() = runBlocking {
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "session-id"))
+    val session = testSession()
     val memoryService = DummyMemoryService()
     val context =
       InvocationContext(
@@ -147,18 +148,12 @@ class CallbackContextTest {
 
   @Test
   fun callbackContext_creation_setsDefaultValues() = runBlocking {
-    val session =
-      Session(
-        key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-        state = State(concurrentMutableMapOf()),
-        events = mutableListOf(),
-      )
     val agent = DummyAgent("test-agent")
     val context =
       InvocationContext(
-        session = session,
         runConfig = RunConfig(), // Add default RunConfig
         agent = agent,
+        session = testSession(),
         userContent = Content(role = "user"),
         invocationId = "invocation-id",
         sessionService = InMemorySessionService(), // Add InMemorySessionService

@@ -19,8 +19,7 @@ package com.google.adk.kt.tools.mcp
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.tools.ToolContext
 import com.google.common.truth.Truth.assertThat
 import io.modelcontextprotocol.client.McpAsyncClient
@@ -37,8 +36,7 @@ import org.mockito.kotlin.whenever
 class ListMcpResourcesToolTest {
 
   private fun createToolContext(): ToolContext {
-    val session =
-      Session(key = SessionKey(appName = "app_name", userId = "user_id", id = "session_id"))
+    val session = testSession()
     val testAgent =
       object : BaseAgent(name = "test-agent") {
         override fun runAsyncImpl(context: InvocationContext): Flow<Event> = emptyFlow()

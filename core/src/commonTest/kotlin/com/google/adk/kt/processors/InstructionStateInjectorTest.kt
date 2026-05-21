@@ -25,6 +25,7 @@ import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertEquals
@@ -43,9 +44,7 @@ class InstructionStateInjectorTest {
     session: Session? = null,
     artifactService: ArtifactService? = null,
   ): CallbackContext {
-    val fakeSession =
-      session
-        ?: Session(key = SessionKey(appName = "app", userId = "user", id = "sess"), state = State())
+    val fakeSession = session ?: testSession()
     val fakeAgent =
       object : BaseAgent(name = "fake-agent") {
         override fun runAsyncImpl(context: InvocationContext): Flow<Event> = emptyFlow()
@@ -106,10 +105,7 @@ class InstructionStateInjectorTest {
 
   @Test
   fun injectSessionState_withMissingStateVariable_throwsException() = runTest {
-    val context =
-      createFakeContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "sess"))
-      )
+    val context = createFakeContext(session = testSession())
     val template = "Hello {missing_var}!"
 
     val exception =
@@ -122,10 +118,7 @@ class InstructionStateInjectorTest {
 
   @Test
   fun injectSessionState_withOptionalMissingStateVariable_replacesWithEmptyString() = runTest {
-    val context =
-      createFakeContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "sess"))
-      )
+    val context = createFakeContext(session = testSession())
     val template = "Hello {missing_var?}!"
 
     val result = InstructionStateInjector.injectSessionState(context = context, template = template)
@@ -152,10 +145,7 @@ class InstructionStateInjectorTest {
 
   @Test
   fun injectSessionState_withInvalidStateVariableName_leavesPlaceholderUntouched() = runTest {
-    val context =
-      createFakeContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "sess"))
-      )
+    val context = createFakeContext(session = testSession())
     val template = "Here is some JSON: { \"key\": \"value\" }"
 
     val result = InstructionStateInjector.injectSessionState(context = context, template = template)
@@ -185,11 +175,7 @@ class InstructionStateInjectorTest {
   fun injectSessionState_withMissingArtifact_throwsException() = runTest {
     val mockArtifactService =
       mock<ArtifactService> { onBlocking { loadArtifact(any(), any(), any()) } doReturn null }
-    val context =
-      createFakeContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "sess1")),
-        artifactService = mockArtifactService,
-      )
+    val context = createFakeContext(session = testSession(), artifactService = mockArtifactService)
     val template = "Read this document: {artifact.missing_doc}"
 
     val exception =
@@ -204,7 +190,7 @@ class InstructionStateInjectorTest {
   fun injectSessionState_withOptionalMissingArtifact_replacesWithEmptyString() = runTest {
     val context =
       createFakeContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "sess1")),
+        session = testSession(),
         artifactService =
           mock<ArtifactService> { onBlocking { loadArtifact(any(), any(), any()) } doReturn null },
       )
@@ -254,11 +240,7 @@ class InstructionStateInjectorTest {
 
   @Test
   fun injectSessionState_withInvalidPrefix_leavesPlaceholderUntouched() = runTest {
-    val context =
-      createFakeContext(
-        session =
-          Session(key = SessionKey(appName = "app", userId = "user", id = "sess"), state = State())
-      )
+    val context = createFakeContext(session = testSession())
     val template = "Unknown prefix: {unknown:variable}"
 
     val result = InstructionStateInjector.injectSessionState(context = context, template = template)

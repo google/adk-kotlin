@@ -22,6 +22,7 @@ import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
@@ -37,11 +38,7 @@ class LoopAgentTest {
 
   private fun createTestContext() =
     InvocationContext(
-      session =
-        com.google.adk.kt.sessions.Session(
-          key =
-            com.google.adk.kt.sessions.SessionKey(appName = "user", userId = "session", id = "app")
-        ),
+      session = testSession(),
       runConfig = null,
       agent = DummyAgent("dummy"),
       resumabilityConfig = ResumabilityConfig(isResumable = true),
@@ -201,10 +198,7 @@ class LoopAgentTest {
 
     val context =
       InvocationContext(
-        session =
-          com.google.adk.kt.sessions.Session(
-            com.google.adk.kt.sessions.SessionKey("app", "user", "session")
-          ),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("dummy"),
         resumabilityConfig = ResumabilityConfig(isResumable = true),
@@ -233,10 +227,7 @@ class LoopAgentTest {
 
     val context =
       InvocationContext(
-        session =
-          com.google.adk.kt.sessions.Session(
-            com.google.adk.kt.sessions.SessionKey("app", "user", "session")
-          ),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("dummy"),
         resumabilityConfig = ResumabilityConfig(isResumable = false),

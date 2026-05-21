@@ -22,6 +22,7 @@ import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -33,39 +34,27 @@ class ReadonlyContextImplTest {
 
   @Test
   fun readonlyContext_creation_setsDefaultValues() {
-    val session =
-      Session(
-        key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-        state = State(concurrentMutableMapOf()),
-        events = mutableListOf(),
-      )
     val context =
       InvocationContext(
-        session = session,
         runConfig = RunConfig(), // Add default RunConfig
         agent = DummyAgent("test-agent"), // Use local TestAgent
+        session = testSession(),
         userContent = Content(role = Role.USER),
         invocationId = "invocation-id",
         sessionService = InMemorySessionService(),
       )
     val readonlyContext = context.toReadonlyContext()
 
-    assertEquals("session-id", readonlyContext.session.key.id)
+    assertEquals("test_session_id", readonlyContext.session.key.id)
     assertEquals("test-agent", readonlyContext.agentName)
   }
 
   @Test
   fun readonlyContext_session_isDefensiveCopy() {
-    val session =
-      Session(
-        key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-        state = State(concurrentMutableMapOf()),
-        events = mutableListOf(),
-      )
     val context =
       InvocationContext(
-        session = session,
         runConfig = RunConfig(),
+        session = testSession(),
         agent = DummyAgent("agent"),
         invocationId = "test-id",
         // sessionService = InMemorySessionService(),
@@ -102,11 +91,10 @@ class ReadonlyContextImplTest {
   @Test
   fun readonlyContext_userContent_isDefensiveCopy() {
     val userContent = Content(role = Role.USER, parts = listOf(Part(text = "test")))
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "id"))
     val context =
       InvocationContext(
-        session = session,
         runConfig = RunConfig(),
+        session = testSession(),
         agent = DummyAgent("agent"),
         userContent = userContent,
         invocationId = "test-id",

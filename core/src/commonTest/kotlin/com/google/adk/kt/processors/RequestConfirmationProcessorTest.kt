@@ -21,9 +21,9 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
@@ -189,7 +189,7 @@ class RequestConfirmationProcessorTest {
         model = DummyModel("gemini"),
         tools = listOf(DummyTool(toolName) { _, _ -> mapOf("status" to "executed") }),
       )
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     session.events.add(
       agentEvent(
         priorInvocationId,
@@ -459,7 +459,7 @@ class RequestConfirmationProcessorTest {
     tools: List<DummyTool> = emptyList()
   ): Pair<Session, InvocationContext> {
     val agent = LlmAgent(name = "test", model = DummyModel("gemini"), tools = tools)
-    val session = Session(key = SessionKey(appName = "app", userId = "user", id = "1"))
+    val session = testSession()
     val context = InvocationContext(session = session, runConfig = null, agent = agent)
     return session to context
   }

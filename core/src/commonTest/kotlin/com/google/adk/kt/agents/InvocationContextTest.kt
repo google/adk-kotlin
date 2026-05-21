@@ -24,11 +24,10 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -50,15 +49,14 @@ class InvocationContextTest {
   fun invocationContext_creation_setsDefaultValues() {
     val context =
       InvocationContext(
-        session =
-          Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id")),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("test-agent"),
         userContent = Content(role = Role.USER),
         invocationId = "invocation-id",
       )
 
-    assertEquals("session-id", context.session.key.id)
+    assertEquals("test_session_id", context.session.key.id)
     assertEquals("test-agent", context.agent.name)
     assertEquals("invocation-id", context.invocationId)
     assertNotNull(context.pluginManager)
@@ -69,8 +67,7 @@ class InvocationContextTest {
     val pluginManager = PluginManager()
     val context =
       InvocationContext(
-        session =
-          Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id")),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("test-agent"),
         userContent = Content(role = Role.USER),
@@ -85,8 +82,7 @@ class InvocationContextTest {
   fun branch_withChildAgent_returnsNewContextWithUpdatedBranchAndAgent() {
     val context =
       InvocationContext(
-        session =
-          Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id")),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("parent-agent"),
         userContent = Content(role = Role.USER),
@@ -109,8 +105,7 @@ class InvocationContextTest {
 
   @Test
   fun findMatchingFunctionCall_withMatchingFunctionCall_returnsMatchingEvent() = runTest {
-    val session =
-      Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"))
+    val session = testSession()
     val context =
       InvocationContext(
         session = session,
@@ -167,8 +162,7 @@ class InvocationContextTest {
 
   @Test
   fun findMatchingFunctionCall_withoutMatchingFunctionCall_returnsNull() = runTest {
-    val session =
-      Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"))
+    val session = testSession()
     val context =
       InvocationContext(
         session = session,
@@ -219,8 +213,7 @@ class InvocationContextTest {
   fun findMatchingFunctionCall_withoutFunctionResponses_returnsNull() = runTest {
     val context =
       InvocationContext(
-        session =
-          Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id")),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("test-agent"),
         invocationId = "inv-1",
@@ -266,7 +259,7 @@ class InvocationContextTest {
 
       val context =
         InvocationContext(
-          session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+          session = testSession(),
           runConfig = null,
           agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
           invocationId = "inv",
@@ -289,11 +282,7 @@ class InvocationContextTest {
   @Test
   fun setAgentState_withNewState_updatesMap() {
     val context =
-      InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "u-1", id = "s-1")),
-        runConfig = null,
-        agent = DummyAgent("test-agent"),
-      )
+      InvocationContext(session = testSession(), runConfig = null, agent = DummyAgent("test-agent"))
 
     val state = TypedData.StringValue("some-state")
     context.setAgentState("agent-A", state)
@@ -305,11 +294,7 @@ class InvocationContextTest {
   @Test
   fun setAgentState_withEndOfAgent_removesStateAndSetsEndOfAgent() {
     val context =
-      InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "u-1", id = "s-1")),
-        runConfig = null,
-        agent = DummyAgent("test-agent"),
-      )
+      InvocationContext(session = testSession(), runConfig = null, agent = DummyAgent("test-agent"))
     context.agentStates["agent-A"] = TypedData.StringValue("some-state")
 
     context.setAgentState("agent-A", endOfAgent = true)
@@ -321,11 +306,7 @@ class InvocationContextTest {
   @Test
   fun setAgentState_withNullStateAndNotEnd_removesBoth() {
     val context =
-      InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "u-1", id = "s-1")),
-        runConfig = null,
-        agent = DummyAgent("test-agent"),
-      )
+      InvocationContext(session = testSession(), runConfig = null, agent = DummyAgent("test-agent"))
     context.agentStates["agent-A"] = TypedData.StringValue("some-state")
     context.endOfAgents["agent-A"] = false
 
@@ -339,7 +320,7 @@ class InvocationContextTest {
   fun isResumable_withConfigTrue_returnsTrue() {
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "u-1", id = "s-1")),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("test-agent"),
         resumabilityConfig = ResumabilityConfig(isResumable = true),
@@ -352,7 +333,7 @@ class InvocationContextTest {
   fun isResumable_withConfigFalse_returnsFalse() {
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "u-1", id = "s-1")),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("test-agent"),
         resumabilityConfig = ResumabilityConfig(isResumable = false),
@@ -365,7 +346,7 @@ class InvocationContextTest {
   fun isResumable_withNullConfig_returnsFalse() {
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "u-1", id = "s-1")),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("test-agent"),
         resumabilityConfig = null,
@@ -380,12 +361,7 @@ class InvocationContextTest {
     val subAgentC = DummyAgent("agent-C")
     val parentAgent = DummyAgent("agent-A", subAgents = listOf(subAgentB, subAgentC))
 
-    val context =
-      InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "u-1", id = "s-1")),
-        runConfig = null,
-        agent = parentAgent,
-      )
+    val context = InvocationContext(session = testSession(), runConfig = null, agent = parentAgent)
 
     context.agentStates["agent-B"] = TypedData.StringValue("state-B")
     context.agentStates["agent-C"] = TypedData.StringValue("state-C")
@@ -398,8 +374,7 @@ class InvocationContextTest {
 
   @Test
   fun populateInvocationAgentStates_withEndOfAgent_removesAgentState() = runTest {
-    val session =
-      Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"))
+    val session = testSession()
     val context =
       InvocationContext(
         session = session,
@@ -424,8 +399,7 @@ class InvocationContextTest {
   @Test
   fun populateInvocationAgentStates_withNewContentFromNonWorkflowAgent_initializesState() =
     runTest {
-      val session =
-        Session(key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"))
+      val session = testSession()
       val context =
         InvocationContext(
           session = session,
@@ -527,7 +501,7 @@ class InvocationContextTest {
 
   private fun pausableInvocationContext(resumable: Boolean): InvocationContext =
     InvocationContext(
-      session = Session(key = SessionKey(appName = "app", userId = "u", id = "s")),
+      session = testSession(),
       runConfig = null,
       agent = DummyAgent("test-agent"),
       invocationId = "inv-1",
@@ -576,7 +550,7 @@ class InvocationContextTest {
 
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+        session = testSession(),
         runConfig = null,
         agent = LlmAgent(name = "a", model = DummyModel("m")),
         pluginManager = PluginManager(listOf(plugin)),
@@ -603,7 +577,7 @@ class InvocationContextTest {
 
       val context =
         InvocationContext(
-          session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+          session = testSession(),
           agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
           invocationId = "inv",
         )
@@ -627,7 +601,7 @@ class InvocationContextTest {
 
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+        session = testSession(),
         agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
         invocationId = "inv",
       )
@@ -652,7 +626,7 @@ class InvocationContextTest {
 
       val context =
         InvocationContext(
-          session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+          session = testSession(),
           agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
           invocationId = "inv",
         )
@@ -677,7 +651,7 @@ class InvocationContextTest {
 
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+        session = testSession(),
         agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
         invocationId = "inv",
       )
@@ -705,7 +679,7 @@ class InvocationContextTest {
 
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+        session = testSession(),
         agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
         invocationId = "inv",
       )
@@ -733,7 +707,7 @@ class InvocationContextTest {
 
     val context =
       InvocationContext(
-        session = Session(key = SessionKey(appName = "app", userId = "user", id = "id")),
+        session = testSession(),
         agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
         invocationId = "inv",
       )

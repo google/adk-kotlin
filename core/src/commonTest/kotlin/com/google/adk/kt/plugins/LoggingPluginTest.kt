@@ -25,10 +25,9 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.LoggingPlugin.Companion.MAX_ARGS_LENGTH
 import com.google.adk.kt.plugins.LoggingPlugin.Companion.MAX_CONTENT_LENGTH
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -44,8 +43,7 @@ class LoggingPluginTest {
 
   private val mockTool = DummyTool("test_tool", "Test tool")
 
-  private val session =
-    Session(key = SessionKey(appName = "app_name", userId = "user_id", id = "session_id"))
+  private val session = testSession()
   private val invocationContext =
     InvocationContext(session = session, runConfig = null, agent = mockAgent)
   private val callbackContext = invocationContext.toCallbackContext()

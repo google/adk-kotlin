@@ -17,14 +17,11 @@
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.agents.InvocationContext
-import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GoogleMaps
 import com.google.adk.kt.types.GoogleSearch
@@ -42,11 +39,7 @@ class GoogleMapsToolTest {
   private fun getTestToolContext(): ToolContext {
     val invocationContext =
       InvocationContext(
-        session =
-          Session(
-            key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-            state = State(concurrentMutableMapOf()),
-          ),
+        session = testSession(),
         runConfig = null,
         agent = DummyAgent("test-agent"),
         artifactService = null,

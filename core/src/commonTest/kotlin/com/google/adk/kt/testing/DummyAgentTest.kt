@@ -17,11 +17,7 @@
 package com.google.adk.kt.testing
 
 import com.google.adk.kt.agents.InvocationContext
-import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.events.Event
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.toList
@@ -47,15 +43,9 @@ class DummyAgentTest {
     var asyncCalled = false
     val agent = DummyAgent(name = "test-agent", onRunAsync = { asyncCalled = true })
 
-    val session =
-      Session(
-        key = SessionKey(appName = "app-name", userId = "user-id", id = "session-id"),
-        state = State(concurrentMutableMapOf()),
-        events = mutableListOf(),
-      )
     val context =
       InvocationContext(
-        session = session,
+        session = testSession(),
         runConfig = null,
         agent = agent,
         userContent = Content(role = Role.USER),

@@ -21,9 +21,8 @@ package com.google.adk.kt.agents
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
-import com.google.adk.kt.sessions.Session
-import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.testSession
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.toList
@@ -31,8 +30,7 @@ import kotlinx.coroutines.test.runTest
 
 class SequentialAgentTest {
 
-  private val session =
-    Session(key = SessionKey(appName = "test-app", userId = "user-1", id = "session-1"))
+  private val session = testSession()
   private val baseContext =
     InvocationContext(session = session, runConfig = null, agent = DummyAgent("root"))
 
