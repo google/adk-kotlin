@@ -31,6 +31,7 @@ import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
@@ -45,10 +46,6 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 
 class RunnerTest {
-
-  companion object {
-    const val TRANSFER_TO_AGENT_TOOL_NAME_FOR_TESTING = "transfer_to_agent"
-  }
 
   // Mock Tools
   class GetWeatherTool : BaseTool("get_weather", "Get current weather") {
@@ -300,7 +297,9 @@ class RunnerTest {
   @Test
   fun runAsync_withAgentTransfer_transfersCorrectly() = runTest {
     val subModel =
-      DummyModel("sub-model") { flow { emit(LlmResponse(content = modelMessage("Hello from sub-agent!"))) } }
+      DummyModel("sub-model") {
+        flow { emit(LlmResponse(content = modelMessage("Hello from sub-agent!"))) }
+      }
     val rootModel =
       DummyModel("root-model") { request ->
         flow {
@@ -336,10 +335,10 @@ class RunnerTest {
     assertEquals(3, flowEvents.size)
     // 1. root agent -> function call transfer_to_agent
     assertEquals("root", flowEvents[0].author)
-    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME_FOR_TESTING, flowEvents[0].functionCalls()[0].name)
+    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME, flowEvents[0].functionCalls()[0].name)
     // 2. root agent -> function response (from ADK)
     assertEquals("root", flowEvents[1].author)
-    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME_FOR_TESTING, flowEvents[1].functionResponses()[0].name)
+    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME, flowEvents[1].functionResponses()[0].name)
     // 3. sub agent -> text response
     assertEquals("sub", flowEvents[2].author)
     assertEquals("Hello from sub-agent!", flowEvents[2].content?.parts?.get(0)?.text)
@@ -351,9 +350,9 @@ class RunnerTest {
     assertEquals(Role.USER, allEvents[0].author)
     assertEquals("Talk to sub agent.", allEvents[0].content?.parts?.get(0)?.text)
     assertEquals("root", allEvents[1].author)
-    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME_FOR_TESTING, allEvents[1].functionCalls()[0].name)
+    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME, allEvents[1].functionCalls()[0].name)
     assertEquals("root", allEvents[2].author)
-    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME_FOR_TESTING, allEvents[2].functionResponses()[0].name)
+    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME, allEvents[2].functionResponses()[0].name)
     assertEquals("sub", allEvents[3].author)
     assertEquals("Hello from sub-agent!", allEvents[3].content?.parts?.get(0)?.text)
   }

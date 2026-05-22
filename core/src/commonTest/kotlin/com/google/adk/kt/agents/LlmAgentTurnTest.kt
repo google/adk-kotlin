@@ -24,6 +24,7 @@ import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -102,9 +103,9 @@ class LlmAgentTurnTest {
     assertEquals("tool should have been invoked exactly once", 1, toolCallCount)
     assertEquals("events: $flowEvents", 5, flowEvents.size)
     assertEquals("MissionControl", flowEvents[0].author)
-    assertEquals("transfer_to_agent", flowEvents[0].functionCalls()[0].name)
+    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME, flowEvents[0].functionCalls()[0].name)
     assertEquals("MissionControl", flowEvents[1].author)
-    assertEquals("transfer_to_agent", flowEvents[1].functionResponses()[0].name)
+    assertEquals(TRANSFER_TO_AGENT_TOOL_NAME, flowEvents[1].functionResponses()[0].name)
     assertEquals("HeartOfGold", flowEvents[2].author)
     assertEquals("return_random_number", flowEvents[2].functionCalls()[0].name)
     assertEquals("HeartOfGold", flowEvents[3].author)

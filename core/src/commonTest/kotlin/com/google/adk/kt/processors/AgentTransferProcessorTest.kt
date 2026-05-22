@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -78,7 +79,7 @@ class AgentTransferProcessorTest {
     assertEquals(expectedInstruction, instructionText)
     assertTrue(
       processedRequest.config.tools.orEmpty().any {
-        it.functionDeclarations.orEmpty().any { fd -> fd.name == "transfer_to_agent" }
+        it.functionDeclarations.orEmpty().any { fd -> fd.name == TRANSFER_TO_AGENT_TOOL_NAME }
       }
     )
   }
@@ -319,7 +320,7 @@ class AgentTransferProcessorTest {
     val declaration =
       processedRequest.config.tools
         ?.flatMap { it.functionDeclarations.orEmpty() }
-        ?.firstOrNull { it.name == "transfer_to_agent" }
+        ?.firstOrNull { it.name == TRANSFER_TO_AGENT_TOOL_NAME }
     assertNotNull(declaration)
     val agentNameSchema = declaration.parameters?.properties?.get("agent_name")
     assertNotNull(agentNameSchema)

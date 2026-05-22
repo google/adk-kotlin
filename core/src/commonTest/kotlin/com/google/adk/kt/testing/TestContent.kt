@@ -16,6 +16,7 @@
 package com.google.adk.kt.testing
 
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -98,6 +99,3 @@ val TRANSFER_TO_AGENT_RESPONSE_PART: Part =
   Part(
     functionResponse = FunctionResponse(name = TRANSFER_TO_AGENT_TOOL_NAME, response = emptyMap())
   )
-
-/** Name of the framework's built-in agent-transfer tool. */
-const val TRANSFER_TO_AGENT_TOOL_NAME: String = "transfer_to_agent"
