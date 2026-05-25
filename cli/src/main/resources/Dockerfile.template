@@ -1,0 +1,6 @@
+# Dockerfile used in `adk deploy`
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY app /app
+EXPOSE ${serverPort}
+ENTRYPOINT ["/app/bin/${entryScript}"]
