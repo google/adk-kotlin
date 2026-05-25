@@ -1,0 +1,10 @@
+# Dockerfile used in `adk deploy`
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY app /app
+# GCP env vars baked at build time (mirroring the Python ADK's cloud_run deployer).
+# Empty values are emitted as blank ENV lines so they're harmless; deploy-time
+# `--set-env-vars` (or `--app-env`) still overrides them per Cloud Run semantics.
+${gcpEnvBlock}
+EXPOSE ${serverPort}
+ENTRYPOINT ["/app/bin/${entryScript}"]
