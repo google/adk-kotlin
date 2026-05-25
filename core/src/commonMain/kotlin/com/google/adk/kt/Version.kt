@@ -15,4 +15,4 @@
  */
 package com.google.adk.kt
 
-const val VERSION = "0.1.1-SNAPSHOT"
+const val VERSION = "0.1.1"
