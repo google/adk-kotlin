@@ -1,0 +1,230 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "943ba03734faa6b8b63152579791861b",
+    "entities": [
+      {
+        "tableName": "sessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`app_name` TEXT NOT NULL, `user_id` TEXT NOT NULL, `id` TEXT NOT NULL, `state` TEXT NOT NULL, `create_time` INTEGER NOT NULL, `update_time` INTEGER NOT NULL, PRIMARY KEY(`app_name`, `user_id`, `id`))",
+        "fields": [
+          {
+            "fieldPath": "appName",
+            "columnName": "app_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "user_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createTimeEpochMs",
+            "columnName": "create_time",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updateTimeEpochMs",
+            "columnName": "update_time",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "app_name",
+            "user_id",
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sessions_app_name_user_id_update_time",
+            "unique": false,
+            "columnNames": [
+              "app_name",
+              "user_id",
+              "update_time"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sessions_app_name_user_id_update_time` ON `${TABLE_NAME}` (`app_name`, `user_id`, `update_time`)"
+          }
+        ]
+      },
+      {
+        "tableName": "events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `app_name` TEXT NOT NULL, `user_id` TEXT NOT NULL, `session_id` TEXT NOT NULL, `invocation_id` TEXT, `timestamp` INTEGER NOT NULL, `event_data` TEXT NOT NULL, PRIMARY KEY(`app_name`, `user_id`, `session_id`, `id`), FOREIGN KEY(`app_name`, `user_id`, `session_id`) REFERENCES `sessions`(`app_name`, `user_id`, `id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appName",
+            "columnName": "app_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "user_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "session_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "invocationId",
+            "columnName": "invocation_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventData",
+            "columnName": "event_data",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "app_name",
+            "user_id",
+            "session_id",
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_events_app_name_user_id_session_id_timestamp",
+            "unique": false,
+            "columnNames": [
+              "app_name",
+              "user_id",
+              "session_id",
+              "timestamp"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_events_app_name_user_id_session_id_timestamp` ON `${TABLE_NAME}` (`app_name`, `user_id`, `session_id`, `timestamp`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sessions",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "app_name",
+              "user_id",
+              "session_id"
+            ],
+            "referencedColumns": [
+              "app_name",
+              "user_id",
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "app_states",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`app_name` TEXT NOT NULL, `state` TEXT NOT NULL, `update_time` INTEGER NOT NULL, PRIMARY KEY(`app_name`))",
+        "fields": [
+          {
+            "fieldPath": "appName",
+            "columnName": "app_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updateTimeEpochMs",
+            "columnName": "update_time",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "app_name"
+          ]
+        }
+      },
+      {
+        "tableName": "user_states",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`app_name` TEXT NOT NULL, `user_id` TEXT NOT NULL, `state` TEXT NOT NULL, `update_time` INTEGER NOT NULL, PRIMARY KEY(`app_name`, `user_id`))",
+        "fields": [
+          {
+            "fieldPath": "appName",
+            "columnName": "app_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "user_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updateTimeEpochMs",
+            "columnName": "update_time",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "app_name",
+            "user_id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '943ba03734faa6b8b63152579791861b')"
+    ]
+  }
+}
