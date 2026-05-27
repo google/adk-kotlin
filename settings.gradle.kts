@@ -49,3 +49,7 @@ project(":google-adk-kotlin-firebase").projectDir = file("firebase")
 include(":google-adk-kotlin-examples")
 
 project(":google-adk-kotlin-examples").projectDir = file("examples")
+
+include(":google-adk-kotlin-cli")
+
+project(":google-adk-kotlin-cli").projectDir = file("cli")
