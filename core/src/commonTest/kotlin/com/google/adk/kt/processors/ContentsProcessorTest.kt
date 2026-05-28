@@ -19,6 +19,7 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
@@ -1024,6 +1025,162 @@ class ContentsProcessorTest {
     assertThat(result[0].parts[0].text).isEqualTo("a")
     assertThat(result[1].parts[0].text).isEqualTo("b")
     assertThat(result[2].parts[0].text).isEqualTo("c")
+  }
+
+  @Test
+  fun process_rewindEvent_dropsRewoundInvocationAndRewindEvent() = runTest {
+    val processor = ContentsProcessor()
+    var request = LlmRequest()
+    val context =
+      createTestContext(
+        userEvent("first user").copy(invocationId = "inv1"),
+        modelEvent("first reply").copy(invocationId = "inv1"),
+        userEvent("rewound user").copy(invocationId = "inv2"),
+        modelEvent("rewound reply").copy(invocationId = "inv2"),
+        Event(
+          invocationId = "rewind_inv",
+          author = "testAgent",
+          actions = EventActions(rewindBeforeInvocationId = "inv2"),
+        ),
+        userEvent("third user").copy(invocationId = "inv3"),
+      )
+
+    request = processor.process(context, request)
+
+    val result = request.contents
+    assertThat(result).hasSize(3)
+    assertThat(result[0].parts[0].text).isEqualTo("first user")
+    assertThat(result[1].parts[0].text).isEqualTo("first reply")
+    assertThat(result[2].parts[0].text).isEqualTo("third user")
+  }
+
+  @Test
+  fun process_chainedRewindEvents_dropsAllRewoundInvocations() = runTest {
+    val processor = ContentsProcessor()
+    var request = LlmRequest()
+    val context =
+      createTestContext(
+        userEvent("first user").copy(invocationId = "inv1"),
+        modelEvent("first reply").copy(invocationId = "inv1"),
+        userEvent("second user").copy(invocationId = "inv2"),
+        modelEvent("second reply").copy(invocationId = "inv2"),
+        Event(
+          invocationId = "rewind_inv_a",
+          author = "testAgent",
+          actions = EventActions(rewindBeforeInvocationId = "inv2"),
+        ),
+        userEvent("third user").copy(invocationId = "inv3"),
+        Event(
+          invocationId = "rewind_inv_b",
+          author = "testAgent",
+          actions = EventActions(rewindBeforeInvocationId = "inv1"),
+        ),
+        userEvent("fourth user").copy(invocationId = "inv4"),
+      )
+
+    request = processor.process(context, request)
+
+    val result = request.contents
+    assertThat(result).hasSize(1)
+    assertThat(result[0].parts[0].text).isEqualTo("fourth user")
+  }
+
+  @Test
+  fun process_rewindEventTargetingUnknownInvocation_dropsOnlyRewindEvent() = runTest {
+    val processor = ContentsProcessor()
+    var request = LlmRequest()
+    val context =
+      createTestContext(
+        userEvent("first user").copy(invocationId = "inv1"),
+        modelEvent("first reply").copy(invocationId = "inv1"),
+        Event(
+          invocationId = "rewind_inv",
+          author = "testAgent",
+          actions = EventActions(rewindBeforeInvocationId = "nonexistent"),
+        ),
+        userEvent("second user").copy(invocationId = "inv2"),
+      )
+
+    request = processor.process(context, request)
+
+    val result = request.contents
+    assertThat(result).hasSize(3)
+    assertThat(result[0].parts[0].text).isEqualTo("first user")
+    assertThat(result[1].parts[0].text).isEqualTo("first reply")
+    assertThat(result[2].parts[0].text).isEqualTo("second user")
+  }
+
+  @Test
+  fun process_rewindEventWithNullBranch_appliesToBranchedEvents() = runTest {
+    val processor = ContentsProcessor()
+    var request = LlmRequest()
+    // Rewind event has no branch; should still annul same-branch events as the consumer agent.
+    val context =
+      createTestContext(
+        userEvent("first user").copy(invocationId = "inv1", branch = "parent.child"),
+        modelEvent("first reply").copy(invocationId = "inv1", branch = "parent.child"),
+        userEvent("rewound user").copy(invocationId = "inv2", branch = "parent.child"),
+        Event(
+          invocationId = "rewind_inv",
+          author = "user",
+          actions = EventActions(rewindBeforeInvocationId = "inv2"),
+        ),
+        branch = "parent.child",
+      )
+
+    request = processor.process(context, request)
+
+    val result = request.contents
+    assertThat(result).hasSize(2)
+    assertThat(result[0].parts[0].text).isEqualTo("first user")
+    assertThat(result[1].parts[0].text).isEqualTo("first reply")
+  }
+
+  @Test
+  fun process_includeContentsNone_rewindEventBeforeCurrentTurn_doesNotAffectCurrentTurn() =
+    runTest {
+      val processor = ContentsProcessor()
+      var request = LlmRequest()
+      // The current-turn boundary is the newest user event; the rewind event lives entirely in the
+      // prior turn and so does not interact with the IncludeContents.NONE slice.
+      val context =
+        createLlmAgentTestContext(
+          userEvent("old user").copy(invocationId = "old_inv"),
+          modelEvent("old reply").copy(invocationId = "old_inv"),
+          Event(
+            invocationId = "rewind_inv",
+            author = "user",
+            actions = EventActions(rewindBeforeInvocationId = "old_inv"),
+          ),
+          userEvent("current user").copy(invocationId = "current_inv"),
+          includeContents = IncludeContents.NONE,
+        )
+
+      request = processor.process(context, request)
+
+      val result = request.contents
+      assertThat(result).hasSize(1)
+      assertThat(result[0].parts[0].text).isEqualTo("current user")
+    }
+
+  @Test
+  fun process_rewindEventTargetingFirstEvent_dropsEverything() = runTest {
+    val processor = ContentsProcessor()
+    var request = LlmRequest()
+    val context =
+      createTestContext(
+        userEvent("first user").copy(invocationId = "inv1"),
+        Event(
+          invocationId = "rewind_inv",
+          author = "testAgent",
+          actions = EventActions(rewindBeforeInvocationId = "inv1"),
+        ),
+      )
+
+    request = processor.process(context, request)
+
+    val result = request.contents
+    assertThat(result).isEmpty()
   }
 
   // Helpers

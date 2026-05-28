@@ -43,8 +43,12 @@ internal class HistoryRewriterProcessor {
         IncludeContents.NONE -> getCurrentTurnEvents(events, agentName, currentBranch)
       }
 
+    val rewindFilteredEvents = applyRewinds(workingEvents)
+
     // Filter raw events
-    val rawFilteredEvents = workingEvents.filter { shouldIncludeEventInContext(currentBranch, it) }
+    val rawFilteredEvents = rewindFilteredEvents.filter {
+      shouldIncludeEventInContext(currentBranch, it)
+    }
 
     // Process events
     val filteredEvents = rawFilteredEvents.mapNotNull { event ->
@@ -86,6 +90,34 @@ internal class HistoryRewriterProcessor {
       }
     }
     return emptyList()
+  }
+
+  /**
+   * Returns [events] with rewound invocations removed.
+   *
+   * Iterates backward. When an event carries `actions.rewindBeforeInvocationId == X`, drops that
+   * event together with every event between it and the earliest event of invocation `X`
+   * (inclusive), then resumes the backward walk from there.
+   */
+  private fun applyRewinds(events: List<Event>): List<Event> {
+    val kept = mutableListOf<Event>()
+    var i = events.size - 1
+    while (i >= 0) {
+      val event = events[i]
+      val rewindInvocationId = event.actions.rewindBeforeInvocationId
+      if (!rewindInvocationId.isNullOrEmpty()) {
+        for (j in 0 until i) {
+          if (events[j].invocationId == rewindInvocationId) {
+            i = j
+            break
+          }
+        }
+      } else {
+        kept.add(event)
+      }
+      i--
+    }
+    return kept.asReversed()
   }
 
   /**
