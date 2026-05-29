@@ -3,6 +3,7 @@
 
 a2a = "0.3.2.Final"
 androidx-compose-ui = "1.11.2"
+androidx-room = "2.8.4"
 androidx-test-core = "1.5.0"
 androidx-test-espresso = "3.7.0"
 androidx-test-ext-junit = "1.1.5"
@@ -44,6 +45,9 @@ a2a-sdk-spec = { module = "io.github.a2asdk:a2a-java-sdk-spec", version.ref = "a
 a2a-sdk-transport-rest = { module = "io.github.a2asdk:a2a-java-sdk-transport-rest", version.ref = "a2a" }
 androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4", version.ref = "androidx-compose-ui" }
 androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest", version.ref = "androidx-compose-ui" }
+androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "androidx-room" }
+androidx-room-ktx = { module = "androidx.room:room-ktx", version.ref = "androidx-room" }
+androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "androidx-room" }
 androidx-test-core = { module = "androidx.test:core", version.ref = "androidx-test-core" }
 androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core", version.ref = "androidx-test-espresso" }
 androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidx-test-ext-junit" }
