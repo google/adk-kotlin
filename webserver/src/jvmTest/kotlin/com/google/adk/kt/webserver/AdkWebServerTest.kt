@@ -161,9 +161,7 @@ class AdkWebServerTest {
 
   @Test
   fun healthCheck_returnsOk() = testApplication {
-    application {
-      adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter())
-    }
+    application { adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter()) }
 
     val response = client.get("/api/health")
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
@@ -190,9 +188,7 @@ class AdkWebServerTest {
 
   @Test
   fun runRoute_returnsResponse() = testApplication {
-    application {
-      adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter())
-    }
+    application { adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter()) }
 
     val response =
       client.post("/run") {
@@ -209,9 +205,7 @@ class AdkWebServerTest {
 
   @Test
   fun runSseRoute_returnsStream() = testApplication {
-    application {
-      adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter())
-    }
+    application { adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter()) }
 
     val response =
       client.post("/run_sse") {

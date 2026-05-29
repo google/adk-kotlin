@@ -31,14 +31,19 @@ import com.google.adk.kt.callbacks.runBeforeRunCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnEventCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnUserMessageCallbacksPipeline
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.sessions.State
 import com.google.adk.kt.telemetry.trace
+import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
@@ -117,6 +122,134 @@ abstract class AbstractRunner(
         .toList()
         .iterator()
     }
+  }
+
+  override suspend fun rewindAsync(
+    userId: String,
+    sessionId: String,
+    rewindBeforeInvocationId: String,
+  ) {
+    val key = SessionKey(appName, userId, sessionId)
+    val session =
+      sessionService.getSession(key)
+        ?: throw IllegalArgumentException("Session not found: $sessionId")
+
+    val rewindEventIndex =
+      session.events.indexOfFirst { it.invocationId == rewindBeforeInvocationId }
+    if (rewindEventIndex == -1) {
+      throw IllegalArgumentException("Invocation ID not found: $rewindBeforeInvocationId")
+    }
+
+    val stateDelta = computeStateDeltaForRewind(session, rewindEventIndex)
+    val artifactDelta = computeArtifactDeltaForRewind(session, rewindEventIndex)
+
+    val rewindEvent =
+      Event(
+        invocationId = newInvocationId(),
+        author = Role.USER,
+        actions =
+          EventActions(
+            rewindBeforeInvocationId = rewindBeforeInvocationId,
+            stateDelta = stateDelta,
+            artifactDelta = artifactDelta,
+          ),
+      )
+
+    val unused = sessionService.appendEvent(session, rewindEvent)
+  }
+
+  /**
+   * Computes a state delta that, when applied, reverses every state mutation that happened on or
+   * after [rewindEventIndex]. Keys prefixed with [State.APP_PREFIX] or [State.USER_PREFIX] are left
+   * untouched. Mirrors Python ADK `runners.py:_compute_state_delta_for_rewind`.
+   */
+  private fun computeStateDeltaForRewind(
+    session: Session,
+    rewindEventIndex: Int,
+  ): MutableMap<String, Any> {
+    val stateAtRewindPoint = mutableMapOf<String, Any>()
+    for (i in 0 until rewindEventIndex) {
+      for ((k, v) in session.events[i].actions.stateDelta) {
+        if (k.startsWith(State.APP_PREFIX) || k.startsWith(State.USER_PREFIX)) continue
+        if (v === State.REMOVED) {
+          stateAtRewindPoint.remove(k)
+        } else {
+          stateAtRewindPoint[k] = v
+        }
+      }
+    }
+
+    val currentState = session.state
+    val rewindStateDelta = mutableMapOf<String, Any>()
+
+    // 1. Restore keys whose values changed or vanished since the rewind point.
+    for ((key, valueAtRewind) in stateAtRewindPoint) {
+      if (currentState[key] != valueAtRewind) {
+        rewindStateDelta[key] = valueAtRewind
+      }
+    }
+
+    // 2. Mark keys added after the rewind point for removal. `State.REMOVED` is the sentinel that
+    // `SessionService.appendEvent` is expected to recognize.
+    for (key in currentState.keys) {
+      if (key.startsWith(State.APP_PREFIX) || key.startsWith(State.USER_PREFIX)) continue
+      if (key !in stateAtRewindPoint) {
+        rewindStateDelta[key] = State.REMOVED
+      }
+    }
+
+    return rewindStateDelta
+  }
+
+  /**
+   * Computes an artifact delta that restores artifacts to their state at [rewindEventIndex] and
+   * re-saves them under fresh version numbers. Artifacts prefixed with [State.USER_PREFIX] are
+   * preserved. Mirrors Python ADK `runners.py:_compute_artifact_delta_for_rewind`.
+   */
+  private suspend fun computeArtifactDeltaForRewind(
+    session: Session,
+    rewindEventIndex: Int,
+  ): MutableMap<String, Int> {
+    val artifactService = this.artifactService ?: return mutableMapOf()
+
+    val versionsAtRewindPoint = mutableMapOf<String, Int>()
+    for (i in 0 until rewindEventIndex) {
+      versionsAtRewindPoint.putAll(session.events[i].actions.artifactDelta)
+    }
+
+    val currentVersions = mutableMapOf<String, Int>()
+    for (event in session.events) {
+      currentVersions.putAll(event.actions.artifactDelta)
+    }
+
+    val rewindArtifactDelta = mutableMapOf<String, Int>()
+    for ((filename, vn) in currentVersions) {
+      // User artifacts outlive the rewind window, mirroring the Python behavior.
+      if (filename.startsWith(State.USER_PREFIX)) continue
+      val vt = versionsAtRewindPoint[filename]
+      if (vt == vn) continue
+
+      rewindArtifactDelta[filename] = vn + 1
+      val artifact =
+        if (vt == null) {
+          // Artifact did not exist at rewind point. Mark it as inaccessible.
+          Part(inlineData = Blob(mimeType = "application/octet-stream", data = ByteArray(0)))
+        } else {
+          // Load actual data via the artifact service (rather than constructing a `fileData` part)
+          // because file-backed services (e.g. GCS) reject `fileData` writes.
+          artifactService.loadArtifact(session.key, filename, version = vt)
+            ?: run {
+              logger.warn {
+                "Artifact $filename version $vt not found during rewind for session " +
+                  "${session.key.id}. Replacing with empty data."
+              }
+              Part(inlineData = Blob(mimeType = "application/octet-stream", data = ByteArray(0)))
+            }
+        }
+      val unusedVersion = artifactService.saveArtifact(session.key, filename, artifact)
+    }
+
+    return rewindArtifactDelta
   }
 
   /**
@@ -512,5 +645,9 @@ abstract class AbstractRunner(
 
   private fun newInvocationId(): String {
     return "e-" + Uuid.random()
+  }
+
+  private companion object {
+    private val logger = LoggerFactory.getLogger(AbstractRunner::class)
   }
 }

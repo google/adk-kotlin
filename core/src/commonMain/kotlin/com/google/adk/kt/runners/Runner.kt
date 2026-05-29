@@ -73,4 +73,24 @@ interface Runner {
     newMessage: Content,
     runConfig: RunConfig? = null,
   ): Iterator<Event>
+
+  /**
+   * Rewinds the session to before the specified invocation.
+   *
+   * Appends a synthetic user-authored event with reversing `stateDelta` and `artifactDelta` entries
+   * that restore session state and artifacts to what they were at the start of
+   * [rewindBeforeInvocationId]. State and artifact keys prefixed with `app:` and `user:` are
+   * preserved (they outlive the rewound invocation). Mirrors Python ADK `runners.py:rewind_async`.
+   *
+   * The default implementation throws [NotImplementedError] for temporary backward compatibility
+   * with existing [Runner] implementations; override to support session rewind.
+   *
+   * @param userId The user ID of the session.
+   * @param sessionId The session ID of the session.
+   * @param rewindBeforeInvocationId The invocation to rewind before.
+   * @throws IllegalArgumentException if no event in the session has the given invocation id.
+   */
+  suspend fun rewindAsync(userId: String, sessionId: String, rewindBeforeInvocationId: String) {
+    throw NotImplementedError("rewindAsync for ${this::class.simpleName} is not implemented")
+  }
 }
