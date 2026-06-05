@@ -17,6 +17,7 @@
 plugins {
   kotlin("multiplatform")
   id("com.android.library")
+  alias(libs.plugins.ksp)
   alias(libs.plugins.vanniktech.maven.publish)
 }
 
@@ -80,6 +81,8 @@ kotlin {
           libs.google.auth.oauth2.http
         ) // Android compatible version or use separate for Android if needed.
         implementation(libs.google.mlkit.genai.prompt)
+        implementation(libs.androidx.room.runtime)
+        implementation(libs.androidx.room.ktx)
       }
     }
     val androidUnitTest by getting {
@@ -141,6 +144,10 @@ android {
     testApplicationId = "com.google.adk.kt.test"
   }
 }
+
+// Room's annotation processor runs via KSP. Wire it only against the Android target since the
+// Room runtime is androidMain-only.
+dependencies { add("kspAndroid", libs.androidx.room.compiler) }
 
 mavenPublishing {
   // The vanniktech plugin auto-creates publications for the multiplatform
