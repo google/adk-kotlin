@@ -33,6 +33,30 @@ import com.google.adk.kt.annotations.Tool
 
 @Tool fun returnsScoreboard(): Map<String, Int> = mapOf("alice" to 100, "bob" to 87, "carol" to 42)
 
+/** A data class; the processor decomposes its return field-by-field into a JSON object. */
+data class Player(val name: String, val score: Int)
+
+@Tool fun returnsPlayer(): Player = Player("alice", 100)
+
+/** Nested data classes with a list and a map, to verify the processor decomposes recursively. */
+data class Address(val city: String, val zip: String)
+
+data class Profile(
+  val name: String,
+  val address: Address,
+  val tags: List<String>,
+  val scores: Map<String, Int>,
+)
+
+@Tool
+fun returnsProfile(): Profile =
+  Profile(
+    name = "alice",
+    address = Address(city = "NYC", zip = "10001"),
+    tags = listOf("a", "b"),
+    scores = mapOf("x" to 1, "y" to 2),
+  )
+
 @Tool fun returnsUnit() {}
 
 @Tool fun requiresName(name: String): String = "hello, $name"

@@ -16,8 +16,9 @@
 
 package com.google.adk.kt.types
 
-import com.google.genai.types.FunctionDeclaration as JavaFunctionDeclaration
-import com.google.genai.types.Schema as JavaSchema
+import com.google.genai.kotlin.types.FunctionDeclaration as GenAiFunctionDeclaration
+import com.google.genai.kotlin.types.Schema as GenAiSchema
+import com.google.genai.kotlin.types.Type as GenAiType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -37,21 +38,21 @@ class FunctionDeclarationTest {
 
     val sdkObject = functionDeclaration.toGenaiSdk()
     assertNotNull(sdkObject)
-    assertEquals("myFunction", sdkObject.name().get())
-    assertEquals("This is a simple function", sdkObject.description().get())
-    assertEquals("OBJECT", sdkObject.parameters().get().type().get().toString())
+    assertEquals("myFunction", sdkObject.name)
+    assertEquals("This is a simple function", sdkObject.description)
+    assertEquals(GenAiType.OBJECT, sdkObject.parameters?.type)
   }
 
   @Test
   fun fromGenaiSdk_readsFromSdkObject() {
-    val javaFunctionDeclaration =
-      JavaFunctionDeclaration.builder()
-        .name("testFunction")
-        .description("A test description")
-        .parameters(JavaSchema.builder().type("STRING").build())
-        .build()
+    val genAiFunctionDeclaration =
+      GenAiFunctionDeclaration(
+        name = "testFunction",
+        description = "A test description",
+        parameters = GenAiSchema(type = GenAiType.STRING),
+      )
 
-    val functionDeclaration = javaFunctionDeclaration.fromGenaiSdk()
+    val functionDeclaration = genAiFunctionDeclaration.fromGenaiSdk()
 
     assertEquals("testFunction", functionDeclaration.name)
     assertEquals("A test description", functionDeclaration.description)

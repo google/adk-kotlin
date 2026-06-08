@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.serialization.json.JsonPrimitive
 
 class GenaiConvertersTest {
   @Test
@@ -34,9 +35,9 @@ class GenaiConvertersTest {
 
     val genaiFunctionResponse = adkFunctionResponse.toGenaiSdk()
 
-    assertEquals("myFunction", genaiFunctionResponse.name().get())
-    assertEquals(mapOf("result" to "success"), genaiFunctionResponse.response().get())
-    assertEquals("call-123", genaiFunctionResponse.id().get())
+    assertEquals("myFunction", genaiFunctionResponse.name)
+    assertEquals(mapOf("result" to JsonPrimitive("success")), genaiFunctionResponse.response)
+    assertEquals("call-123", genaiFunctionResponse.id)
 
     val convertedBack = genaiFunctionResponse.fromGenaiSdk()
     assertEquals(adkFunctionResponse, convertedBack)
@@ -49,11 +50,11 @@ class GenaiConvertersTest {
 
     val genaiFunctionCall = adkFunctionCall.toGenaiSdk()
 
-    assertEquals("myFunction", genaiFunctionCall.name().get())
-    assertEquals(mapOf("arg1" to "value1"), genaiFunctionCall.args().get())
-    assertEquals("call-123", genaiFunctionCall.id().get())
-    assertEquals(false, genaiFunctionCall.partialArgs().isPresent)
-    assertEquals(false, genaiFunctionCall.willContinue().isPresent)
+    assertEquals("myFunction", genaiFunctionCall.name)
+    assertEquals(mapOf("arg1" to JsonPrimitive("value1")), genaiFunctionCall.args)
+    assertEquals("call-123", genaiFunctionCall.id)
+    assertEquals(null, genaiFunctionCall.partialArgs)
+    assertEquals(null, genaiFunctionCall.willContinue)
 
     val convertedBack = genaiFunctionCall.fromGenaiSdk()
     assertEquals(adkFunctionCall, convertedBack)
@@ -65,12 +66,47 @@ class GenaiConvertersTest {
       FunctionCall(name = "myFunction", partialArgs = emptyList(), willContinue = false)
 
     val genaiFunctionCall = adkFunctionCall.toGenaiSdk()
-    assertEquals(false, genaiFunctionCall.partialArgs().isPresent)
-    assertEquals(false, genaiFunctionCall.willContinue().isPresent)
+    assertEquals(null, genaiFunctionCall.partialArgs)
+    assertEquals(null, genaiFunctionCall.willContinue)
 
     val convertedBack = genaiFunctionCall.fromGenaiSdk()
     assertEquals(null, convertedBack.partialArgs)
     assertEquals(null, convertedBack.willContinue)
+  }
+
+  @Test
+  fun jsonElementConversions_roundTripNestedValues() {
+    // Exercises Any?.toJsonElement() (Map null-stripping, Iterable, Array, primitives) and
+    // JsonElement.toAny() (JsonObject, JsonArray, primitive coercions) directly.
+    val original: Map<String, Any?> =
+      mapOf(
+        "string" to "text",
+        "boolean" to true,
+        "int" to 7,
+        "long" to 10_000_000_000L,
+        "double" to 1.5,
+        "list" to listOf("a", 1),
+        "array" to arrayOf<Any>("b", 2),
+        "nested" to mapOf("inner" to "v"),
+        "dropped" to null,
+      )
+
+    val roundTripped = original.toJsonElement().toAny()
+
+    // `dropped` is omitted (null map entries are stripped) and arrays come back as lists.
+    assertEquals(
+      mapOf(
+        "string" to "text",
+        "boolean" to true,
+        "int" to 7,
+        "long" to 10_000_000_000L,
+        "double" to 1.5,
+        "list" to listOf("a", 1),
+        "array" to listOf("b", 2),
+        "nested" to mapOf("inner" to "v"),
+      ),
+      roundTripped,
+    )
   }
 
   @Test
@@ -80,8 +116,8 @@ class GenaiConvertersTest {
       FunctionCall(name = "myFunction", partialArgs = partialArgs, willContinue = true)
 
     val genaiFunctionCall = adkFunctionCall.toGenaiSdk()
-    assertEquals(true, genaiFunctionCall.partialArgs().isPresent)
-    assertEquals(true, genaiFunctionCall.willContinue().isPresent)
+    assertNotNull(genaiFunctionCall.partialArgs)
+    assertEquals(true, genaiFunctionCall.willContinue)
 
     val convertedBack = genaiFunctionCall.fromGenaiSdk()
     assertEquals(partialArgs, convertedBack.partialArgs)
@@ -95,10 +131,10 @@ class GenaiConvertersTest {
 
     val genaiBlob = adkBlob.toGenaiSdk()
 
-    assertEquals("image/png", genaiBlob.mimeType().get())
-    assertEquals("myImage.png", genaiBlob.displayName().get())
-    // Genai Sdk Blob data is byte[]
-    val genaiData = genaiBlob.data().get()
+    assertEquals("image/png", genaiBlob.mimeType)
+    assertEquals("myImage.png", genaiBlob.displayName)
+    // Genai Sdk Blob data is ByteArray
+    val genaiData = genaiBlob.data!!
     assertEquals(1, genaiData[0])
     assertEquals(2, genaiData[1])
     assertEquals(3, genaiData[2])
@@ -118,13 +154,10 @@ class GenaiConvertersTest {
         citationMetadata = CitationMetadata(citationSources = emptyList()),
       )
     val genaiCandidate = adkCandidate.toGenaiSdk()
-    assertEquals(Role.USER, genaiCandidate.content().get().role().get())
-    assertEquals(
-      com.google.genai.types.FinishReason.Known.STOP,
-      genaiCandidate.finishReason().get().knownEnum(),
-    )
-    assertEquals("Done", genaiCandidate.finishMessage().get())
-    assertNotNull(genaiCandidate.citationMetadata().get())
+    assertEquals(Role.USER, genaiCandidate.content?.role)
+    assertEquals(com.google.genai.kotlin.types.FinishReason.STOP, genaiCandidate.finishReason)
+    assertEquals("Done", genaiCandidate.finishMessage)
+    assertNotNull(genaiCandidate.citationMetadata)
 
     val convertedBack = genaiCandidate.fromGenaiSdk()
     assertEquals(adkCandidate, convertedBack)
@@ -135,9 +168,9 @@ class GenaiConvertersTest {
     val adkCitation =
       Citation(title = "Example", uri = "https://example.com", startIndex = 3, endIndex = 17)
     val genaiCitation = adkCitation.toGenaiSdk()
-    assertEquals("https://example.com", genaiCitation.uri().get())
-    assertEquals(3, genaiCitation.startIndex().get())
-    assertEquals(17, genaiCitation.endIndex().get())
+    assertEquals("https://example.com", genaiCitation.uri)
+    assertEquals(3, genaiCitation.startIndex)
+    assertEquals(17, genaiCitation.endIndex)
 
     val convertedBack = genaiCitation.fromGenaiSdk()
     assertEquals(adkCitation, convertedBack)
@@ -155,9 +188,9 @@ class GenaiConvertersTest {
   fun content_convertsCorrectly() {
     val adkContent = userMessage("hello")
     val genaiContent = adkContent.toGenaiSdk()
-    assertEquals(Role.USER, genaiContent.role().get())
-    assertEquals(1, genaiContent.parts().get().size)
-    assertEquals("hello", genaiContent.parts().get()[0].text().get())
+    assertEquals(Role.USER, genaiContent.role)
+    assertEquals(1, genaiContent.parts?.size)
+    assertEquals("hello", genaiContent.parts?.get(0)?.text)
 
     val convertedBack = genaiContent.fromGenaiSdk()
     assertEquals(adkContent, convertedBack)
@@ -167,9 +200,9 @@ class GenaiConvertersTest {
   fun fileData_convertsCorrectly() {
     val adkFileData = FileData(mimeType = "text/plain", displayName = "test.txt", fileUri = "uri")
     val genaiFileData = adkFileData.toGenaiSdk()
-    assertEquals("text/plain", genaiFileData.mimeType().get())
-    assertEquals("test.txt", genaiFileData.displayName().get())
-    assertEquals("uri", genaiFileData.fileUri().get())
+    assertEquals("text/plain", genaiFileData.mimeType)
+    assertEquals("test.txt", genaiFileData.displayName)
+    assertEquals("uri", genaiFileData.fileUri)
 
     val convertedBack = genaiFileData.fromGenaiSdk()
     assertEquals(adkFileData, convertedBack)
@@ -184,9 +217,9 @@ class GenaiConvertersTest {
         parameters = Schema(type = Type.STRING),
       )
     val genaiFunctionDeclaration = adkFunctionDeclaration.toGenaiSdk()
-    assertEquals("myFunc", genaiFunctionDeclaration.name().get())
-    assertEquals("desc", genaiFunctionDeclaration.description().get())
-    assertNotNull(genaiFunctionDeclaration.parameters().get())
+    assertEquals("myFunc", genaiFunctionDeclaration.name)
+    assertEquals("desc", genaiFunctionDeclaration.description)
+    assertNotNull(genaiFunctionDeclaration.parameters)
 
     val convertedBack = genaiFunctionDeclaration.fromGenaiSdk()
     assertEquals(adkFunctionDeclaration, convertedBack)
@@ -203,86 +236,17 @@ class GenaiConvertersTest {
         thinkingConfig = ThinkingConfig(includeThoughts = true, thinkingLevel = ThinkingLevel.LOW),
       )
     val genaiConfig = adkConfig.toGenaiSdk()
-    val genaiTools = genaiConfig.tools().get()
+    val genaiTools = genaiConfig.tools!!
     assertEquals(1, genaiTools.size)
-    assertEquals(1, genaiTools[0].functionDeclarations().get().size)
-    assertEquals(true, genaiConfig.thinkingConfig().get().includeThoughts().get())
+    assertEquals(1, genaiTools[0].functionDeclarations?.size)
+    assertEquals(true, genaiConfig.thinkingConfig?.includeThoughts)
     assertEquals(
-      com.google.genai.types.ThinkingLevel.Known.LOW,
-      genaiConfig.thinkingConfig().get().thinkingLevel().get().knownEnum(),
+      com.google.genai.kotlin.types.ThinkingLevel.LOW,
+      genaiConfig.thinkingConfig?.thinkingLevel,
     )
 
     val convertedBack = genaiConfig.fromGenaiSdk()
     assertEquals(adkConfig, convertedBack)
-  }
-
-  @Test
-  fun generateContentConfig_toolConfig_convertsCorrectly() {
-    val adkConfig =
-      GenerateContentConfig(
-        toolConfig =
-          ToolConfig(
-            functionCallingConfig =
-              FunctionCallingConfig(allowedFunctionNames = listOf("getWeather", "getTime"))
-          )
-      )
-
-    val genaiConfig = adkConfig.toGenaiSdk()
-    assertEquals(
-      listOf("getWeather", "getTime"),
-      genaiConfig.toolConfig().get().functionCallingConfig().get().allowedFunctionNames().get(),
-    )
-
-    val convertedBack = genaiConfig.fromGenaiSdk()
-    assertEquals(adkConfig.toolConfig, convertedBack.toolConfig)
-  }
-
-  @Test
-  fun generateContentConfig_safetySettings_convertsCorrectly() {
-    val adkConfig =
-      GenerateContentConfig(
-        safetySettings =
-          listOf(
-            SafetySetting(
-              category = HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-              threshold = HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            )
-          )
-      )
-
-    val genaiConfig = adkConfig.toGenaiSdk()
-    val genaiSetting = genaiConfig.safetySettings().get().single()
-    assertEquals("HARM_CATEGORY_HATE_SPEECH", genaiSetting.category().get().toString())
-    assertEquals("BLOCK_ONLY_HIGH", genaiSetting.threshold().get().toString())
-
-    val convertedBack = genaiConfig.fromGenaiSdk()
-    assertEquals(adkConfig.safetySettings, convertedBack.safetySettings)
-  }
-
-  @Test
-  fun generateContentConfig_samplingAndMisc_convertsCorrectly() {
-    val adkConfig =
-      GenerateContentConfig(
-        presencePenalty = 0.5f,
-        frequencyPenalty = 0.25f,
-        responseLogprobs = true,
-        mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW,
-        serviceTier = ServiceTier.PRIORITY,
-      )
-
-    val genaiConfig = adkConfig.toGenaiSdk()
-    assertEquals(0.5f, genaiConfig.presencePenalty().get())
-    assertEquals(0.25f, genaiConfig.frequencyPenalty().get())
-    assertEquals(true, genaiConfig.responseLogprobs().get())
-    assertEquals("MEDIA_RESOLUTION_LOW", genaiConfig.mediaResolution().get().toString())
-    assertEquals("PRIORITY", genaiConfig.serviceTier().get().toString())
-
-    val convertedBack = genaiConfig.fromGenaiSdk()
-    assertEquals(adkConfig.presencePenalty, convertedBack.presencePenalty)
-    assertEquals(adkConfig.frequencyPenalty, convertedBack.frequencyPenalty)
-    assertEquals(adkConfig.responseLogprobs, convertedBack.responseLogprobs)
-    assertEquals(adkConfig.mediaResolution, convertedBack.mediaResolution)
-    assertEquals(adkConfig.serviceTier, convertedBack.serviceTier)
   }
 
   @Test
@@ -300,8 +264,8 @@ class GenaiConvertersTest {
 
     val genaiConfig = adkConfig.toGenaiSdk()
 
-    assertEquals("application/json", genaiConfig.responseMimeType().get())
-    assertNotNull(genaiConfig.responseSchema().get())
+    assertEquals("application/json", genaiConfig.responseMimeType)
+    assertNotNull(genaiConfig.responseSchema)
 
     val convertedBack = genaiConfig.fromGenaiSdk()
     assertEquals(adkConfig, convertedBack)
@@ -309,13 +273,16 @@ class GenaiConvertersTest {
 
   @Test
   fun generateContentConfig_topKIntegerRoundTrip_preservesValue() {
+    // 0.5f widens cleanly to 0.5 because 0.5 is exactly representable in binary floating point.
+    // 0.9f does NOT widen to 0.9 (it becomes 0.8999999761581421), so we compare via Float and
+    // tolerate the widening loss explicitly.
     val adkConfig = GenerateContentConfig(temperature = 0.5f, topP = 0.9f, topK = 40)
 
     val genaiConfig = adkConfig.toGenaiSdk()
 
-    assertEquals(40f, genaiConfig.topK().get())
-    assertEquals(0.5f, genaiConfig.temperature().get())
-    assertEquals(0.9f, genaiConfig.topP().get())
+    assertEquals(40.0, genaiConfig.topK)
+    assertEquals(0.5, genaiConfig.temperature)
+    assertEquals(0.9f, genaiConfig.topP?.toFloat())
 
     val convertedBack = genaiConfig.fromGenaiSdk()
     assertEquals(adkConfig, convertedBack)
@@ -323,8 +290,8 @@ class GenaiConvertersTest {
   }
 
   @Test
-  fun generateContentConfig_topKFloatFromGenaiSdk_truncatesToInt() {
-    val genaiConfig = com.google.genai.types.GenerateContentConfig.builder().topK(40.7f).build()
+  fun generateContentConfig_topKFractionalFromGenaiSdk_truncatesToInt() {
+    val genaiConfig = com.google.genai.kotlin.types.GenerateContentConfig(topK = 40.7)
 
     val adkConfig = genaiConfig.fromGenaiSdk()
 
@@ -342,11 +309,11 @@ class GenaiConvertersTest {
 
     val genaiThinkingConfig = adkThinkingConfig.toGenaiSdk()
 
-    assertEquals(true, genaiThinkingConfig.includeThoughts().get())
-    assertEquals(1024, genaiThinkingConfig.thinkingBudget().get())
+    assertEquals(true, genaiThinkingConfig.includeThoughts)
+    assertEquals(1024, genaiThinkingConfig.thinkingBudget)
     assertEquals(
-      com.google.genai.types.ThinkingLevel.Known.HIGH,
-      genaiThinkingConfig.thinkingLevel().get().knownEnum(),
+      com.google.genai.kotlin.types.ThinkingLevel.HIGH,
+      genaiThinkingConfig.thinkingLevel,
     )
 
     val convertedBack = genaiThinkingConfig.fromGenaiSdk()
@@ -359,9 +326,9 @@ class GenaiConvertersTest {
 
     val genaiThinkingConfig = adkThinkingConfig.toGenaiSdk()
 
-    assertEquals(false, genaiThinkingConfig.includeThoughts().isPresent)
-    assertEquals(false, genaiThinkingConfig.thinkingBudget().isPresent)
-    assertEquals(false, genaiThinkingConfig.thinkingLevel().isPresent)
+    assertEquals(null, genaiThinkingConfig.includeThoughts)
+    assertEquals(null, genaiThinkingConfig.thinkingBudget)
+    assertEquals(null, genaiThinkingConfig.thinkingLevel)
 
     val convertedBack = genaiThinkingConfig.fromGenaiSdk()
     assertEquals(adkThinkingConfig, convertedBack)
@@ -378,10 +345,10 @@ class GenaiConvertersTest {
         modelVersion = "1.0",
       )
     val genaiResponse = adkResponse.toGenaiSdk()
-    assertEquals("1.0", genaiResponse.modelVersion().get())
-    assertEquals(1, genaiResponse.candidates().get().size)
-    assertNotNull(genaiResponse.promptFeedback().get())
-    assertNotNull(genaiResponse.usageMetadata().get())
+    assertEquals("1.0", genaiResponse.modelVersion)
+    assertEquals(1, genaiResponse.candidates?.size)
+    assertNotNull(genaiResponse.promptFeedback)
+    assertNotNull(genaiResponse.usageMetadata)
 
     val convertedBack = genaiResponse.fromGenaiSdk()
     assertEquals(adkResponse, convertedBack)
@@ -424,11 +391,8 @@ class GenaiConvertersTest {
       )
 
     val genaiGroundingMetadata = adkGroundingMetadata.toGenaiSdk()
-    assertEquals(listOf("kotlin coroutines"), genaiGroundingMetadata.webSearchQueries().get())
-    assertEquals(
-      "example.com",
-      genaiGroundingMetadata.groundingChunks().get().single().web().get().domain().get(),
-    )
+    assertEquals(listOf("kotlin coroutines"), genaiGroundingMetadata.webSearchQueries)
+    assertEquals("example.com", genaiGroundingMetadata.groundingChunks?.single()?.web?.domain)
 
     val convertedBack = genaiGroundingMetadata.fromGenaiSdk()
     assertEquals(adkGroundingMetadata, convertedBack)
@@ -463,7 +427,7 @@ class GenaiConvertersTest {
     val adkTool = Tool(urlContext = UrlContext())
 
     val genaiTool = adkTool.toGenaiSdk()
-    assertEquals(true, genaiTool.urlContext().isPresent)
+    assertNotNull(genaiTool.urlContext)
 
     val convertedBack = genaiTool.fromGenaiSdk()
     assertNotNull(convertedBack.urlContext)
@@ -473,7 +437,7 @@ class GenaiConvertersTest {
   fun promptFeedback_convertsCorrectly() {
     val adkPromptFeedback = PromptFeedback(blockReasonMessage = "msg")
     val genaiPromptFeedback = adkPromptFeedback.toGenaiSdk()
-    assertEquals("msg", genaiPromptFeedback.blockReasonMessage().get())
+    assertEquals("msg", genaiPromptFeedback.blockReasonMessage)
 
     val convertedBack = genaiPromptFeedback.fromGenaiSdk()
     assertEquals(adkPromptFeedback, convertedBack)
@@ -488,12 +452,107 @@ class GenaiConvertersTest {
         googleMaps = GoogleMaps(),
       )
     val genaiTool = adkTool.toGenaiSdk()
-    assertNotNull(genaiTool.functionDeclarations().get())
-    assertNotNull(genaiTool.googleSearch().get())
-    assertNotNull(genaiTool.googleMaps().get())
+    assertNotNull(genaiTool.functionDeclarations)
+    assertNotNull(genaiTool.googleSearch)
+    assertNotNull(genaiTool.googleMaps)
 
     val convertedBack = genaiTool.fromGenaiSdk()
     assertEquals(adkTool, convertedBack)
+  }
+
+  @Test
+  fun tool_withRetrieval_convertsCorrectly() {
+    val adkTool =
+      Tool(
+        retrieval =
+          Retrieval(
+            vertexAiSearch =
+              VertexAISearch(
+                dataStoreSpecs =
+                  listOf(VertexAISearchDataStoreSpec(dataStore = "ds", filter = "f")),
+                datastore = "datastore",
+                engine = "engine",
+                filter = "filter",
+                maxResults = 5,
+              )
+          )
+      )
+
+    val genaiTool = adkTool.toGenaiSdk()
+    assertEquals("engine", genaiTool.retrieval?.vertexAiSearch?.engine)
+    assertEquals(5, genaiTool.retrieval?.vertexAiSearch?.maxResults)
+    assertEquals("ds", genaiTool.retrieval?.vertexAiSearch?.dataStoreSpecs?.single()?.dataStore)
+
+    val convertedBack = genaiTool.fromGenaiSdk()
+    assertEquals(adkTool, convertedBack)
+  }
+
+  @Test
+  fun generateContentConfig_toolConfig_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        toolConfig =
+          ToolConfig(
+            functionCallingConfig =
+              FunctionCallingConfig(allowedFunctionNames = listOf("getWeather", "getTime"))
+          )
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals(
+      listOf("getWeather", "getTime"),
+      genaiConfig.toolConfig?.functionCallingConfig?.allowedFunctionNames,
+    )
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.toolConfig, convertedBack.toolConfig)
+  }
+
+  @Test
+  fun generateContentConfig_samplingAndMisc_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        presencePenalty = 0.5f,
+        frequencyPenalty = 0.25f,
+        responseLogprobs = true,
+        mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW,
+        serviceTier = ServiceTier.PRIORITY,
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals(0.5, genaiConfig.presencePenalty)
+    assertEquals(0.25, genaiConfig.frequencyPenalty)
+    assertEquals(true, genaiConfig.responseLogprobs)
+    assertEquals("MEDIA_RESOLUTION_LOW", genaiConfig.mediaResolution?.value)
+    assertEquals("PRIORITY", genaiConfig.serviceTier?.value)
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.presencePenalty, convertedBack.presencePenalty)
+    assertEquals(adkConfig.frequencyPenalty, convertedBack.frequencyPenalty)
+    assertEquals(adkConfig.responseLogprobs, convertedBack.responseLogprobs)
+    assertEquals(adkConfig.mediaResolution, convertedBack.mediaResolution)
+    assertEquals(adkConfig.serviceTier, convertedBack.serviceTier)
+  }
+
+  @Test
+  fun generateContentConfig_safetySettings_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        safetySettings =
+          listOf(
+            SafetySetting(
+              category = HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+              threshold = HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            )
+          )
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals("HARM_CATEGORY_HATE_SPEECH", genaiConfig.safetySettings?.single()?.category?.value)
+    assertEquals("BLOCK_ONLY_HIGH", genaiConfig.safetySettings?.single()?.threshold?.value)
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.safetySettings, convertedBack.safetySettings)
   }
 
   @Test
@@ -505,22 +564,22 @@ class GenaiConvertersTest {
         logprobsResult =
           LogprobsResult(
             chosenCandidates =
-              listOf(LogprobsResultCandidate(token = "hi", tokenId = 7, logProbability = -0.5)),
+              listOf(LogprobsResultCandidate(token = "hi", tokenId = 7, logProbability = -0.1)),
             topCandidates =
               listOf(
                 LogprobsResultTopCandidates(
                   candidates =
                     listOf(
-                      LogprobsResultCandidate(token = "hi", tokenId = 7, logProbability = -0.5)
+                      LogprobsResultCandidate(token = "hi", tokenId = 7, logProbability = -0.1)
                     )
                 )
               ),
-            logProbabilitySum = -0.5,
+            logProbabilitySum = -0.1,
           ),
       )
 
     val genaiCandidate = adkCandidate.toGenaiSdk()
-    assertEquals(-0.25, genaiCandidate.avgLogprobs().get())
+    assertEquals(-0.25, genaiCandidate.avgLogprobs)
 
     val convertedBack = genaiCandidate.fromGenaiSdk()
     assertEquals(adkCandidate.avgLogprobs, convertedBack.avgLogprobs)
@@ -543,12 +602,12 @@ class GenaiConvertersTest {
           listOf(ModalityTokenCount(modality = MediaModality.IMAGE, tokenCount = 2)),
       )
     val genaiUsageMetadata = adkUsageMetadata.toGenaiSdk()
-    assertEquals(1, genaiUsageMetadata.promptTokenCount().get())
-    assertEquals(2, genaiUsageMetadata.candidatesTokenCount().get())
-    assertEquals(3, genaiUsageMetadata.totalTokenCount().get())
-    assertEquals(4, genaiUsageMetadata.thoughtsTokenCount().get())
-    assertEquals(5, genaiUsageMetadata.toolUsePromptTokenCount().get())
-    assertEquals(6, genaiUsageMetadata.cachedContentTokenCount().get())
+    assertEquals(1, genaiUsageMetadata.promptTokenCount)
+    assertEquals(2, genaiUsageMetadata.candidatesTokenCount)
+    assertEquals(3, genaiUsageMetadata.totalTokenCount)
+    assertEquals(4, genaiUsageMetadata.thoughtsTokenCount)
+    assertEquals(5, genaiUsageMetadata.toolUsePromptTokenCount)
+    assertEquals(6, genaiUsageMetadata.cachedContentTokenCount)
 
     val convertedBack = genaiUsageMetadata.fromGenaiSdk()
     assertEquals(adkUsageMetadata, convertedBack)
@@ -567,13 +626,13 @@ class GenaiConvertersTest {
         thoughtSignature = byteArrayOf(1, 2, 3),
       )
     val genaiPart = adkPart.toGenaiSdk()
-    assertEquals("hello", genaiPart.text().get())
-    assertNotNull(genaiPart.inlineData().get())
-    assertNotNull(genaiPart.fileData().get())
-    assertNotNull(genaiPart.functionCall().get())
-    assertNotNull(genaiPart.functionResponse().get())
-    assertEquals(true, genaiPart.thought().get())
-    assertNotNull(genaiPart.thoughtSignature().get())
+    assertEquals("hello", genaiPart.text)
+    assertNotNull(genaiPart.inlineData)
+    assertNotNull(genaiPart.fileData)
+    assertNotNull(genaiPart.functionCall)
+    assertNotNull(genaiPart.functionResponse)
+    assertEquals(true, genaiPart.thought)
+    assertNotNull(genaiPart.thoughtSignature)
 
     val convertedBack = genaiPart.fromGenaiSdk()
     assertEquals(adkPart, convertedBack)
@@ -589,7 +648,7 @@ class GenaiConvertersTest {
       )
 
     val genaiPart = adkPart.toGenaiSdk()
-    assertEquals(24.0, genaiPart.videoMetadata().get().fps().get())
+    assertEquals(24.0, genaiPart.videoMetadata?.fps)
 
     val convertedBack = genaiPart.fromGenaiSdk()
     assertEquals(adkPart, convertedBack)
@@ -600,10 +659,7 @@ class GenaiConvertersTest {
     val adkPartialArgNull =
       PartialArg(value = PartialArgValue.NullValue, jsonPath = "$.null", willContinue = false)
     val genaiPartialArgNull = adkPartialArgNull.toGenaiSdk()
-    assertEquals(
-      com.google.genai.types.NullValue.Known.NULL_VALUE,
-      genaiPartialArgNull.nullValue().get().knownEnum(),
-    )
+    assertEquals(com.google.genai.kotlin.types.NullValue.NULL_VALUE, genaiPartialArgNull.nullValue)
 
     val convertedBackNull = genaiPartialArgNull.fromGenaiSdk()
     assertEquals(adkPartialArgNull, convertedBackNull)
@@ -613,10 +669,10 @@ class GenaiConvertersTest {
   fun partialArg_empty_convertsCorrectly() {
     val adkPartialArgEmpty = PartialArg(value = null, jsonPath = "$.empty", willContinue = null)
     val genaiPartialArgEmpty = adkPartialArgEmpty.toGenaiSdk()
-    assertEquals(false, genaiPartialArgEmpty.nullValue().isPresent)
-    assertEquals(false, genaiPartialArgEmpty.stringValue().isPresent)
-    assertEquals(false, genaiPartialArgEmpty.boolValue().isPresent)
-    assertEquals(false, genaiPartialArgEmpty.numberValue().isPresent)
+    assertEquals(null, genaiPartialArgEmpty.nullValue)
+    assertEquals(null, genaiPartialArgEmpty.stringValue)
+    assertEquals(null, genaiPartialArgEmpty.boolValue)
+    assertEquals(null, genaiPartialArgEmpty.numberValue)
 
     val convertedBackEmpty = genaiPartialArgEmpty.fromGenaiSdk()
     assertEquals(adkPartialArgEmpty, convertedBackEmpty)
@@ -631,7 +687,7 @@ class GenaiConvertersTest {
         willContinue = true,
       )
     val genaiPartialArgString = adkPartialArgString.toGenaiSdk()
-    assertEquals("hello", genaiPartialArgString.stringValue().get())
+    assertEquals("hello", genaiPartialArgString.stringValue)
 
     val convertedBackString = genaiPartialArgString.fromGenaiSdk()
     assertEquals(adkPartialArgString, convertedBackString)
@@ -646,7 +702,7 @@ class GenaiConvertersTest {
         willContinue = false,
       )
     val genaiPartialArgNumber = adkPartialArgNumber.toGenaiSdk()
-    assertEquals(42.0, genaiPartialArgNumber.numberValue().get())
+    assertEquals(42.0, genaiPartialArgNumber.numberValue)
 
     val convertedBackNumber = genaiPartialArgNumber.fromGenaiSdk()
     assertEquals(adkPartialArgNumber, convertedBackNumber)
@@ -657,9 +713,48 @@ class GenaiConvertersTest {
     val adkPartialArgBool =
       PartialArg(value = PartialArgValue.BoolValue(true), jsonPath = "$.bool", willContinue = true)
     val genaiPartialArgBool = adkPartialArgBool.toGenaiSdk()
-    assertEquals(true, genaiPartialArgBool.boolValue().get())
+    assertEquals(true, genaiPartialArgBool.boolValue)
 
     val convertedBackBool = genaiPartialArgBool.fromGenaiSdk()
     assertEquals(adkPartialArgBool, convertedBackBool)
+  }
+
+  @Test
+  fun generateContentResponse_functionCallArgs_convertToPlainValues() {
+    // Mirrors the conversion path from the production crash stack trace:
+    // GenerateContentResponse -> Candidate -> Content -> Part -> FunctionCall.args.
+    // The GenAI SDK models args as Map<String, JsonElement>; fromGenaiSdk() must surface plain
+    // Kotlin values on the ADK FunctionCall.
+    val genaiResponse =
+      com.google.genai.kotlin.types.GenerateContentResponse(
+        candidates =
+          listOf(
+            com.google.genai.kotlin.types.Candidate(
+              content =
+                com.google.genai.kotlin.types.Content(
+                  role = "model",
+                  parts =
+                    listOf(
+                      com.google.genai.kotlin.types.Part(
+                        functionCall =
+                          com.google.genai.kotlin.types.FunctionCall(
+                            name = "getWeather",
+                            args =
+                              mapOf("city" to JsonPrimitive("Paris"), "days" to JsonPrimitive(3)),
+                          )
+                      )
+                    ),
+                )
+            )
+          )
+      )
+
+    val adkResponse = genaiResponse.fromGenaiSdk()
+
+    val functionCall = adkResponse.candidates.single().content.parts.single().functionCall
+    assertNotNull(functionCall)
+    assertEquals("getWeather", functionCall.name)
+    assertEquals("Paris", functionCall.args["city"])
+    assertEquals(3, functionCall.args["days"])
   }
 }
