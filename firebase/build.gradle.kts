@@ -44,6 +44,7 @@ android {
     unitTests {
       isReturnDefaultValues = true
       isIncludeAndroidResources = true
+      all { it.systemProperty("robolectric.logging", "stderr") }
     }
   }
 
