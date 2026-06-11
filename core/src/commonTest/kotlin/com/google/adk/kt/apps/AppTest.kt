@@ -16,10 +16,12 @@
 
 package com.google.adk.kt.apps
 
+import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyAgent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 
 class AppTest {
@@ -32,6 +34,22 @@ class AppTest {
 
     assertEquals("my_app", app.appName)
     assertSame(agent, app.rootAgent)
+  }
+
+  @Test
+  fun construct_noEventsCompactionConfig_defaultsToNull() {
+    val app = App(appName = "my_app", rootAgent = DummyAgent())
+
+    assertNull(app.eventsCompactionConfig)
+  }
+
+  @Test
+  fun construct_withEventsCompactionConfig_exposesIt() {
+    val config = EventsCompactionConfig(compactionInterval = 2, overlapSize = 1)
+
+    val app = App(appName = "my_app", rootAgent = DummyAgent(), eventsCompactionConfig = config)
+
+    assertSame(config, app.eventsCompactionConfig)
   }
 
   @Test

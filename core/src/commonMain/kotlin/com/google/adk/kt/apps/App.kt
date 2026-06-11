@@ -17,6 +17,7 @@
 package com.google.adk.kt.apps
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.summarizer.EventsCompactionConfig
 
 /**
  * Represents an LLM-backed agentic application.
@@ -31,8 +32,14 @@ import com.google.adk.kt.agents.BaseAgent
  *
  * @property appName The application name.
  * @property rootAgent The root agent of the application's agent tree.
+ * @property eventsCompactionConfig Optional configuration controlling context-compaction strategies
+ *   for sessions of this application. When `null`, no compaction runs.
  */
-data class App(val appName: String, val rootAgent: BaseAgent) {
+data class App(
+  val appName: String,
+  val rootAgent: BaseAgent,
+  val eventsCompactionConfig: EventsCompactionConfig? = null,
+) {
   init {
     require(IDENTIFIER_REGEX.matches(appName)) {
       "Invalid app name '$appName': must be a valid identifier consisting of letters, digits, " +
