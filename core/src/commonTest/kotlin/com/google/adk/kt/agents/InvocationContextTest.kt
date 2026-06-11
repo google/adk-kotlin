@@ -370,6 +370,136 @@ class InvocationContextTest {
     }
 
   @Test
+  fun populateInvocationAgentStates_notResumable_doesNothing() = runTest {
+    val session = testSession()
+    val context =
+      testInvocationContext(
+        session = session,
+        resumabilityConfig = ResumabilityConfig(isResumable = false),
+        invocationId = "inv-1",
+      )
+
+    session.events.add(
+      Event(invocationId = "inv-1", author = "agent-A", actions = EventActions(endOfAgent = true))
+    )
+
+    context.populateInvocationAgentStates()
+
+    assertTrue(context.agentStates.isEmpty())
+    assertTrue(context.endOfAgents.isEmpty())
+  }
+
+  @Test
+  fun populateInvocationAgentStates_withAgentStateFromEvent_setsAgentStateAndClearsEnd() = runTest {
+    val session = testSession()
+    val context =
+      testInvocationContext(
+        session = session,
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+        invocationId = "inv-1",
+      )
+
+    val savedState = TypedData.MapValue(mapOf("k" to TypedData.StringValue("v")))
+    session.events.add(
+      Event(
+        invocationId = "inv-1",
+        author = "agent-A",
+        actions = EventActions(agentState = savedState),
+      )
+    )
+
+    context.populateInvocationAgentStates()
+
+    assertEquals(savedState, context.agentStates["agent-A"])
+    assertEquals(false, context.endOfAgents["agent-A"])
+  }
+
+  @Test
+  fun populateInvocationAgentStates_withAgentStateAndEndOfAgent_endOfAgentWins() = runTest {
+    val session = testSession()
+    val context =
+      testInvocationContext(
+        session = session,
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+        invocationId = "inv-1",
+      )
+
+    // When both agent_state and end_of_agent are set on the same event, end_of_agent takes
+    // priority and the agent_state is discarded. Mirrors Python ADK
+    // `test_populate_invocation_agent_states_with_agent_state_and_end_of_agent`.
+    session.events.add(
+      Event(
+        invocationId = "inv-1",
+        author = "agent-A",
+        actions = EventActions(endOfAgent = true, agentState = TypedData.MapValue(emptyMap())),
+      )
+    )
+
+    context.populateInvocationAgentStates()
+
+    assertNull(context.agentStates["agent-A"])
+    assertEquals(true, context.endOfAgents["agent-A"])
+  }
+
+  @Test
+  fun populateInvocationAgentStates_userMessageEvent_ignoredForDefaultState() = runTest {
+    val session = testSession()
+    val context =
+      testInvocationContext(
+        session = session,
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+        invocationId = "inv-1",
+      )
+
+    // A `user`-authored event must never seed a default agent state, even though it has content.
+    session.events.add(Event(invocationId = "inv-1", author = "user", content = userMessage("hi")))
+
+    context.populateInvocationAgentStates()
+
+    assertTrue(context.agentStates.isEmpty())
+    assertTrue(context.endOfAgents.isEmpty())
+  }
+
+  @Test
+  fun populateInvocationAgentStates_eventWithNoContentAndNoState_ignored() = runTest {
+    val session = testSession()
+    val context =
+      testInvocationContext(
+        session = session,
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+        invocationId = "inv-1",
+      )
+
+    // No content and no state actions: the agent has not produced anything to checkpoint, so the
+    // default-state seeding branch is skipped.
+    session.events.add(Event(invocationId = "inv-1", author = "agent-A"))
+
+    context.populateInvocationAgentStates()
+
+    assertTrue(context.agentStates.isEmpty())
+    assertTrue(context.endOfAgents.isEmpty())
+  }
+
+  @Test
+  fun resetSubAgentStates_recursive_clearsNestedSubAgentStates() {
+    val subSubAgent = DummyAgent("sub-sub")
+    val subAgentB = DummyAgent("agent-B", subAgents = listOf(subSubAgent))
+    val subAgentC = DummyAgent("agent-C")
+    val parentAgent = DummyAgent("agent-A", subAgents = listOf(subAgentB, subAgentC))
+
+    val context = testInvocationContext(agent = parentAgent)
+    context.agentStates["agent-B"] = TypedData.StringValue("state-B")
+    context.endOfAgents["agent-C"] = true
+    context.agentStates["sub-sub"] = TypedData.StringValue("state-sub-sub")
+
+    context.resetSubAgentStates("agent-A")
+
+    assertNull(context.agentStates["agent-B"])
+    assertNull(context.endOfAgents["agent-C"])
+    assertNull(context.agentStates["sub-sub"])
+  }
+
+  @Test
   fun shouldPauseInvocation_resumableAndLongRunningToolIds_returnsTrue() {
     val context = pausableInvocationContext(resumable = true)
 
@@ -378,6 +508,9 @@ class InvocationContextTest {
 
   @Test
   fun shouldPauseInvocation_notResumable_returnsFalse() {
+    // Pausing requires resumability in 1.x: even with a long-running function call, a non-resumable
+    // app does not pause. Mirrors Python ADK 1.x
+    // `test_should_not_pause_invocation_with_non_resumable_app`.
     val context = pausableInvocationContext(resumable = false)
 
     assertFalse(context.shouldPauseInvocation(longRunningModelEvent()))

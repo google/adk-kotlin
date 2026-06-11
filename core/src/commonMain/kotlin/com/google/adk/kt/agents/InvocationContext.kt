@@ -266,9 +266,13 @@ data class InvocationContext(
    * Note that parallel sibling agents won't be affected, but their common ancestors will be paused
    * after all the non-blocking sub-agents finished running.
    *
-   * Should meet all following conditions to pause an invocation:
-   * 1. The app is resumable.
-   * 2. The current event has a long running function call.
+   * Both of the following conditions must hold to pause an invocation:
+   * 1. The app is resumable ([isResumable]).
+   * 2. The current event has a long running function call (this includes tool-confirmation / HITL
+   *    requests, which are emitted as a synthetic long-running `adk_request_confirmation` call).
+   *
+   * Mirrors Python ADK 1.x `InvocationContext.should_pause_invocation`. (Pausing is tied to
+   * resumability: only a resumable app checkpoints the paused point so a later turn can resume it.)
    *
    * @param event The current event.
    * @return Whether to pause the invocation right after this event.
