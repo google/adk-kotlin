@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.telemetry.otel
 
+import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -63,6 +64,16 @@ class OtelSpanTest {
     otelSpan.set("key", true)
 
     verify(mockSpan).setAttribute("key", true)
+  }
+
+  @Test
+  fun set_stringList_delegatesToStringArrayAttribute() {
+    val mockSpan = mock(OpenTelemetrySpan::class.java)
+    val otelSpan = OtelSpan(mockSpan)
+
+    otelSpan.set("key", listOf("a", "b"))
+
+    verify(mockSpan).setAttribute(AttributeKey.stringArrayKey("key"), listOf("a", "b"))
   }
 
   @Test

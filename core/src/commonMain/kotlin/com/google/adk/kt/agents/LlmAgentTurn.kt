@@ -28,7 +28,10 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
+import com.google.adk.kt.telemetry.EMPTY_JSON
+import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.tracedFlow
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -150,9 +153,14 @@ internal class LlmAgentTurn(
     tracedFlow<Event>(
       "call_llm",
       {
+        this[TelemetryAttributes.GEN_AI_SYSTEM] = TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT
         this[TelemetryAttributes.GEN_AI_REQUEST_MODEL] = agent.model.name
         this[TelemetryAttributes.GCP_VERTEX_AGENT_INVOCATION_ID] = context.invocationId
         context.session.key.id?.let { this[TelemetryAttributes.GCP_VERTEX_AGENT_SESSION_ID] = it }
+        // Safe defaults, refined once the request/response are known. Always present because the
+        // ADK Dev UI JSON.parses these on call_llm spans (including early-return paths).
+        this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = EMPTY_JSON
+        this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
       },
     ) { span, spanContext ->
       val callbackContext = CallbackContext(context)
@@ -177,8 +185,13 @@ internal class LlmAgentTurn(
           }
         }
 
+      span.recordCallLlmRequest(currentRequest)
+
       var modelResponseEvent = createModelResponseEvent()
       span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = modelResponseEvent.id
+      // Tracks the last response seen so response-derived span attributes (usage, finish reasons,
+      // serialized response) reflect the final value, matching Python's single `trace_call_llm`.
+      var lastResponse: LlmResponse? = null
 
       try {
         // flowOn(spanContext) puts the model client's stream under the span without affecting the
@@ -200,6 +213,7 @@ internal class LlmAgentTurn(
                 context = callbackContext,
                 response = response,
               )
+            lastResponse = currentResponse
 
             processModelResponse(currentRequest, currentResponse, modelResponseEvent) { event ->
               modelResponseEvent =
@@ -210,6 +224,9 @@ internal class LlmAgentTurn(
               emit(event)
             }
           }
+
+        // Response-derived span attributes (parity with Python `trace_call_llm`).
+        lastResponse?.let { span.recordCallLlmResponse(it) }
       } catch (e: Exception) {
         val allOnModelErrorCallbacks =
           context.pluginManager.onModelErrorCallbacks + agent.onModelErrorCallbacks
@@ -236,6 +253,35 @@ internal class LlmAgentTurn(
         }
       }
     }
+
+  /** Records request-derived `call_llm` span attributes (parity with Python `trace_call_llm`). */
+  private fun Span.recordCallLlmRequest(request: LlmRequest) {
+    request.config.topP?.let { this[TelemetryAttributes.GEN_AI_REQUEST_TOP_P] = it.toDouble() }
+    request.config.maxOutputTokens?.let {
+      this[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS] = it.toLong()
+    }
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = capturedJson {
+      mapOf(
+        "model" to request.model?.name,
+        "config" to request.config,
+        "contents" to request.contents,
+      )
+    }
+  }
+
+  /** Records response-derived `call_llm` span attributes (parity with Python `trace_call_llm`). */
+  private fun Span.recordCallLlmResponse(response: LlmResponse) {
+    response.usageMetadata?.promptTokenCount?.let {
+      this[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS] = it.toLong()
+    }
+    response.usageMetadata?.candidatesTokenCount?.let {
+      this[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] = it.toLong()
+    }
+    response.finishReason?.let {
+      this[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS] = listOf(it.name.lowercase())
+    }
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = capturedJson { response }
+  }
 
   private fun createModelResponseEvent() =
     Event(
