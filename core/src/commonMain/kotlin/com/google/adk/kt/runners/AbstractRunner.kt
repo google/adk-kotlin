@@ -566,8 +566,10 @@ abstract class AbstractRunner(
   ): BaseAgent {
     val lastEvent = context.session.events.lastOrNull()
 
-    // 1. If the last event is from USER and contains a function response,
-    // identify the calling agent.
+    // 1. If the last event is a USER function response, route it back to the agent that issued the
+    // corresponding function call, regardless of that agent's type or transferability (e.g. a
+    // remote a2a agent may surface a credential request as a long-running function call). Mirrors
+    // Python ADK 1.x `runners.py:_find_agent_to_run`.
     if (lastEvent?.author == Role.USER && lastEvent.functionResponses().isNotEmpty()) {
       val matchingCall = context.findMatchingFunctionCall(lastEvent)
       if (matchingCall != null && matchingCall.author != Role.USER) {
