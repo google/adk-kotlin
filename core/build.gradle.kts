@@ -17,7 +17,7 @@
 plugins {
   kotlin("multiplatform")
   id("com.android.library")
-  alias(libs.plugins.vanniktech.maven.publish)
+  id("maven-publish")
 }
 
 kotlin {
@@ -140,20 +140,25 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     testApplicationId = "com.google.adk.kt.test"
   }
+
+  // Required so the KMP `androidRelease` publication picks up sources. The
+  // Dokka-backed javadoc jar is attached by the root build.gradle.kts.
+  publishing { singleVariant("release") { withSourcesJar() } }
 }
 
-mavenPublishing {
-  // The vanniktech plugin auto-creates publications for the multiplatform
-  // root and each target (jvm, android), naming them `google-adk-kotlin-core`
-  // and `google-adk-kotlin-core-<target>` respectively, matching the previous
-  // `maven-publish` layout. Bundle Dokka's HTML output as the `-javadoc.jar`
-  // (the plugin's default is an empty jar because there is no built-in
-  // multiplatform javadoc task). Shared POM metadata and signing are
-  // configured in the root `build.gradle.kts`.
-  configure(
-    com.vanniktech.maven.publish.KotlinMultiplatform(
-      javadocJar = com.vanniktech.maven.publish.JavadocJar.Dokka("dokkaHtml")
-    )
-  )
-  coordinates(artifactId = "google-adk-kotlin-core")
+// Coordinates the Kotlin Multiplatform plugin uses for the publications it
+// auto-creates:
+//   - `kotlinMultiplatform` -> google-adk-kotlin-core         (root metadata)
+//   - `jvm`                 -> google-adk-kotlin-core-jvm     (KMP target)
+//   - `androidRelease`      -> google-adk-kotlin-core-android (KMP target)
+// We only need to set the root publication's artifactId explicitly; per-target
+// suffixes (`-jvm`, `-android`) are appended by the KMP plugin automatically.
+// POM metadata, Dokka javadoc, and GPG signing are configured in the root
+// build.gradle.kts.
+publishing {
+  publications.withType<MavenPublication>().configureEach {
+    if (name == "kotlinMultiplatform") {
+      artifactId = "google-adk-kotlin-core"
+    }
+  }
 }

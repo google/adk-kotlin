@@ -16,8 +16,9 @@
 
 plugins {
   kotlin("jvm")
-  alias(libs.plugins.vanniktech.maven.publish)
   alias(libs.plugins.ksp)
+  id("java-library")
+  id("maven-publish")
 }
 
 sourceSets {
@@ -31,20 +32,19 @@ sourceSets {
   }
 }
 
-mavenPublishing {
-  // `KotlinJvm` tells the vanniktech plugin to publish the Kotlin/JVM
-  // component with a sources jar and a `-javadoc.jar` containing Dokka's HTML
-  // output. The plugin defaults the javadoc jar to an empty one for Kotlin
-  // targets because Gradle's `javadoc` task does not understand `.kt` sources;
-  // wiring it to Dokka instead lets Central ship real API docs. Shared POM
-  // metadata and signing are configured in the root `build.gradle.kts`.
-  configure(
-    com.vanniktech.maven.publish.KotlinJvm(
-      javadocJar = com.vanniktech.maven.publish.JavadocJar.Dokka("dokkaHtml"),
-      sourcesJar = true,
-    )
-  )
-  coordinates(artifactId = "google-adk-kotlin-processor")
+// Attach a sources jar to the `java` component. The `-javadoc.jar` is
+// attached by the root build.gradle.kts and is fed from Dokka HTML (Gradle's
+// `javadoc` task can't process .kt sources). POM metadata and GPG signing
+// are configured in the root build.gradle.kts.
+java { withSourcesJar() }
+
+publishing {
+  publications {
+    create<MavenPublication>("maven") {
+      from(components["java"])
+      artifactId = "google-adk-kotlin-processor"
+    }
+  }
 }
 
 dependencies {

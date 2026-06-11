@@ -17,7 +17,6 @@
 plugins {
   // Define plugins but do not apply them to the root project
   alias(libs.plugins.dokka)
-  alias(libs.plugins.vanniktech.maven.publish) apply false
   kotlin("jvm") version "2.1.20" apply false
   kotlin("multiplatform") version "2.1.20" apply false
   id("com.android.library") version "8.13.0" apply false
@@ -84,52 +83,81 @@ subprojects {
     compilerOptions { optIn.add("kotlin.time.ExperimentalTime") }
   }
 
-  // Publishing is configured once here for any subproject that applies the
-  // vanniktech plugin (`com.vanniktech.maven.publish`). Per-module build files
-  // are responsible only for declaring coordinates via `mavenPublishing {
-  // coordinates(...) }`; POM metadata, signing, and the upload destination are
-  // all handled centrally.
-  //
-  // Credentials and signing material are read from environment variables when
-  // running on CI (see `.github/workflows/publish.yml`):
-  //   - ORG_GRADLE_PROJECT_mavenCentralUsername / ...Password
-  //   - ORG_GRADLE_PROJECT_signingInMemoryKey  / ...KeyId / ...KeyPassword
-  // For local publishing, the same values can be set as Gradle properties in
-  // ~/.gradle/gradle.properties.
-  plugins.withId("com.vanniktech.maven.publish") {
-    configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
-      // Publish releases to Maven Central via the new Central Portal and let
-      // Sonatype automatically release once validation passes. Snapshot
-      // versions are routed to the Central snapshots repo automatically based
-      // on the project version suffix.
-      publishToMavenCentral(
-        host = com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL,
-        automaticRelease = true,
-      )
-      signAllPublications()
+  // Publishing is configured once here for any subproject that applies
+  // Gradle's built-in `maven-publish` plugin. Per-module build files set the
+  // `artifactId` on the publications the Kotlin / Android plugins auto-create
+  // (see core/, a2a/, firebase/, processor/, webserver/). POM metadata,
+  // Dokka-fed javadoc jars, and GPG signing are configured centrally here.
+  plugins.withId("maven-publish") {
+    apply(plugin = "signing")
 
-      pom {
-        name.set("Google Agent Development Kit")
-        description.set("Google Agent Development Kit (ADK) for Kotlin")
-        url.set("https://github.com/google/adk-kotlin")
-        licenses {
-          license {
-            name.set("The Apache License, Version 2.0")
-            url.set("https://www.apache.org/licenses/LICENSE-2.0")
-          }
+    // Single Dokka-backed `-javadoc.jar`, attached to every JVM/KMP
+    // publication this project produces. AGP's Android single-variant
+    // publication (the firebase module) ships its own (empty-ish) javadoc
+    // jar via `withJavadocJar()`; we skip the Dokka one there to avoid a
+    // duplicate-artifact error at publish time.
+    val dokkaJavadocJar =
+      tasks.register<Jar>("dokkaJavadocJar") {
+        archiveClassifier.set("javadoc")
+        from(tasks.named("dokkaHtml"))
+      }
+
+    configure<PublishingExtension> {
+      publications.withType<MavenPublication>().configureEach {
+        if (name != "release") {
+          artifact(dokkaJavadocJar)
         }
-        developers {
-          developer {
-            organization.set("Google Inc.")
-            organizationUrl.set("https://www.google.com")
-          }
-        }
-        scm {
-          connection.set("scm:git:git@github.com:google/adk-kotlin.git")
-          developerConnection.set("scm:git:git@github.com:google/adk-kotlin.git")
+
+        pom {
+          name.set("Google Agent Development Kit")
+          description.set("Google Agent Development Kit (ADK) for Kotlin")
           url.set("https://github.com/google/adk-kotlin")
+          licenses {
+            license {
+              name.set("The Apache License, Version 2.0")
+              url.set("https://www.apache.org/licenses/LICENSE-2.0")
+            }
+          }
+          developers {
+            developer {
+              organization.set("Google Inc.")
+              organizationUrl.set("https://www.google.com")
+            }
+          }
+          scm {
+            connection.set("scm:git:git@github.com:google/adk-kotlin.git")
+            developerConnection.set("scm:git:git@github.com:google/adk-kotlin.git")
+            url.set("https://github.com/google/adk-kotlin")
+          }
         }
       }
+    }
+
+    configure<SigningExtension> {
+      val signingKey: String? = providers.gradleProperty("signingInMemoryKey").orNull
+      val signingKeyId: String? = providers.gradleProperty("signingInMemoryKeyId").orNull
+      val signingPassword: String? = providers.gradleProperty("signingInMemoryKeyPassword").orNull
+
+      if (signingKey != null) {
+        if (signingKeyId != null) {
+          useInMemoryPgpKeys(signingKeyId, signingKey, signingPassword)
+        } else {
+          useInMemoryPgpKeys(signingKey, signingPassword)
+        }
+        sign(extensions.getByType<PublishingExtension>().publications)
+      }
+    }
+
+    // Work around a known Gradle quirk where Kotlin Multiplatform creates
+    // multiple publications per project but Gradle's task graph does not
+    // automatically wire each `publishXxxPublicationTo...` task to its
+    // corresponding `signXxxPublication`. Without this, parallel publish
+    // tasks observe each other's unsigned artifacts and Gradle errors out
+    // with an "implicit dependency" validation problem. See
+    // https://github.com/gradle/gradle/issues/26091
+    tasks.withType<AbstractPublishToMaven>().configureEach {
+      val signingTasks = tasks.withType<Sign>()
+      mustRunAfter(signingTasks)
     }
   }
 }

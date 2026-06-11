@@ -16,9 +16,9 @@
 
 plugins {
   id("com.android.library")
-  alias(libs.plugins.vanniktech.maven.publish)
   kotlin("plugin.serialization")
   id("org.jetbrains.kotlin.android")
+  id("maven-publish")
 }
 
 dependencies {
@@ -48,9 +48,19 @@ android {
     }
   }
 
-  // The `singleVariant("release") { withSourcesJar() }` configuration that
-  // used to live here is now managed by the vanniktech plugin via the
-  // `AndroidSingleVariantLibrary` configurator below.
+  // Publishes the Android `release` variant as a single AAR with sources and
+  // javadoc jars. AGP's `withJavadocJar()` runs Gradle's `javadoc` task,
+  // which doesn't understand `.kt` sources, so the resulting jar is
+  // effectively empty - but it still satisfies Maven Central's per-module
+  // requirement. Replacing with Dokka HTML would require building the jar
+  // manually and attaching it to the AGP-created publication after
+  // evaluation; left as a follow-up.
+  publishing {
+    singleVariant("release") {
+      withSourcesJar()
+      withJavadocJar()
+    }
+  }
 
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
@@ -68,23 +78,22 @@ android {
   }
 }
 
-mavenPublishing {
-  // Publishes the Android `release` variant as a single AAR with sources and
-  // javadoc jars. The other modules wire their `-javadoc.jar` to Dokka's HTML
-  // output, but `AndroidSingleVariantLibrary` does not expose a Dokka hook;
-  // it always uses AGP's `withJavadocJar()`, which runs Gradle's `javadoc`
-  // task. For pure-Kotlin Android sources that produces an effectively empty
-  // jar, but it still satisfies Maven Central's per-module requirement.
-  // Replacing it with a Dokka-fed jar would require building the artifact
-  // manually and attaching it to the auto-created publication after
-  // evaluation; that is left as a follow-up. Shared POM metadata and signing
-  // are configured in the root `build.gradle.kts`.
-  configure(
-    com.vanniktech.maven.publish.AndroidSingleVariantLibrary(
-      variant = "release",
-      sourcesJar = true,
-      publishJavadocJar = true,
-    )
-  )
-  coordinates(artifactId = "google-adk-kotlin-firebase-android")
+// AGP registers a software component named `release` (created by the
+// `android { publishing { singleVariant("release") { ... } } }` block above),
+// but it does NOT auto-create a `MavenPublication` for it — that's our
+// responsibility. We have to do this inside `afterEvaluate` because the
+// component itself is only registered once the Android extension finishes
+// configuring. POM metadata and GPG signing are configured in the root
+// build.gradle.kts; the root script also intentionally skips attaching the
+// Dokka javadoc jar to this publication because AGP's `withJavadocJar()`
+// above already attaches one.
+afterEvaluate {
+  publishing {
+    publications {
+      create<MavenPublication>("release") {
+        from(components["release"])
+        artifactId = "google-adk-kotlin-firebase-android"
+      }
+    }
+  }
 }
