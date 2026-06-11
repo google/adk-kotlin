@@ -123,8 +123,11 @@ abstract class BaseAgent(
         }
       }
       .trace("invoke_agent $name") {
-        this[TelemetryAttributes.GEN_AI_SYSTEM] = "gcp.vertex.agent"
+        this[TelemetryAttributes.GEN_AI_OPERATION_NAME] = TelemetryAttributes.OPERATION_INVOKE_AGENT
+        this[TelemetryAttributes.GEN_AI_SYSTEM] = TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT
         this[TelemetryAttributes.GEN_AI_AGENT_NAME] = name
+        this[TelemetryAttributes.GEN_AI_AGENT_DESCRIPTION] = description
+        parentContext.session.key.id?.let { this[TelemetryAttributes.GEN_AI_CONVERSATION_ID] = it }
       }
 
   private suspend fun handleBeforeAgentCallback(context: InvocationContext): Event? {

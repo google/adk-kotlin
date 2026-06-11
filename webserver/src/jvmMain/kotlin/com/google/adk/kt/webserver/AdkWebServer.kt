@@ -19,9 +19,9 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.webserver.AdkWebServer.StatusAwareLogger
 import com.google.adk.kt.webserver.loaders.AgentLoader
-import com.google.adk.kt.webserver.models.RunResponse
 import com.google.adk.kt.webserver.routes.appRoutes
 import com.google.adk.kt.webserver.routes.artifactRoutes
 import com.google.adk.kt.webserver.routes.debugRoutes
@@ -39,7 +39,6 @@ import io.ktor.serialization.gson.gson
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
-import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -47,7 +46,6 @@ import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.uri
-import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
@@ -66,7 +64,10 @@ class AdkWebServer(
 ) {
   @Deprecated(
     message = "Use constructor without runner",
-    replaceWith = ReplaceWith("AdkWebServer(port, sessionService, artifactService, agentLoader, apiServerSpanExporter)"),
+    replaceWith =
+      ReplaceWith(
+        "AdkWebServer(port, sessionService, artifactService, agentLoader, apiServerSpanExporter)"
+      ),
     level = DeprecationLevel.WARNING,
   )
   constructor(
@@ -77,6 +78,7 @@ class AdkWebServer(
     agentLoader: AgentLoader,
     apiServerSpanExporter: ApiServerSpanExporter,
   ) : this(port, sessionService, artifactService, agentLoader, apiServerSpanExporter)
+
   companion object {
     private val logger = LoggerFactory.getLogger(AdkWebServer::class.java)
   }
@@ -157,6 +159,18 @@ fun Application.adkModule(
   val sdkTracerProvider = otelConfig.sdkTracerProvider()
   otelConfig.openTelemetrySdk(sdkTracerProvider)
 
+  // The Dev UI trace view renders span content (e.g. llm_request.contents), which is only populated
+  // when message-content capture is enabled. Turn it on for this dev/demo server.
+  // WARNING: this records prompt and response content (potential PII) into telemetry spans. It is
+  // intentionally left OFF by default in the core library; do not enable it in production.
+  TelemetryConfig.captureMessageContent = true
+  LoggerFactory.getLogger("com.google.adk.kt.webserver.AdkWebServer")
+    .warn(
+      "ADK web server enabled telemetry message-content capture: prompt/response content (which " +
+        "may contain PII) will be recorded in trace spans. This is intended for local development " +
+        "only."
+    )
+
   routing {
     get("/api/health") { call.respondText("OK") }
     appRoutes(agentLoader)
@@ -172,7 +186,8 @@ fun Application.adkModule(
 
 @Deprecated(
   message = "Use adkModule without runner",
-  replaceWith = ReplaceWith("adkModule(sessionService, artifactService, agentLoader, apiServerSpanExporter)"),
+  replaceWith =
+    ReplaceWith("adkModule(sessionService, artifactService, agentLoader, apiServerSpanExporter)"),
   level = DeprecationLevel.WARNING,
 )
 fun Application.adkModule(

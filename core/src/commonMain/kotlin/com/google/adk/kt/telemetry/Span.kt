@@ -53,6 +53,14 @@ interface Span {
   @CanIgnoreReturnValue operator fun set(key: String, value: Boolean): Span
 
   /**
+   * Sets a string-array attribute on the span (e.g. OTEL `gen_ai.response.finish_reasons`).
+   *
+   * @param key the attribute key.
+   * @param value the attribute value.
+   */
+  @CanIgnoreReturnValue operator fun set(key: String, value: List<String>): Span
+
+  /**
    * Adds an event to the span.
    *
    * @param name the name of the event.
