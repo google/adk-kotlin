@@ -43,9 +43,11 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.jvm.Volatile
+import kotlin.time.Duration
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
 
 /**
  * An invocation context represents the data of a single invocation of an agent.
@@ -376,7 +378,11 @@ data class InvocationContext(
         }
 
         try {
-          tool.run(toolContext, currentArgs)
+          if (tool.timeout == Duration.INFINITE) {
+            tool.run(toolContext, currentArgs)
+          } else {
+            withTimeout(tool.timeout) { tool.run(toolContext, currentArgs) }
+          }
         } catch (e: Exception) {
           val recoveredResult =
             runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e)

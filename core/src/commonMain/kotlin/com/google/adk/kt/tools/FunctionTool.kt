@@ -39,7 +39,7 @@ package com.google.adk.kt.tools
 abstract class FunctionTool(
   name: String,
   description: String,
-  isLongRunning: Boolean = false,
+  override val isLongRunning: Boolean = false,
   customMetadata: Map<String, Any> = emptyMap(),
   /**
    * Per-call predicate deciding whether this invocation should pause for human confirmation. The
@@ -48,7 +48,7 @@ abstract class FunctionTool(
    * wrapper around the constant cases.
    */
   protected val requiresConfirmation: (Map<String, Any>) -> Boolean = { false },
-) : BaseTool(name, description, isLongRunning, customMetadata) {
+) : BaseTool(name, description, customMetadata) {
 
   /**
    * Boolean convenience constructor: pass `true` to gate every invocation, `false` to skip the gate
