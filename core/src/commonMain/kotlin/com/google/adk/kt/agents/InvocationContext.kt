@@ -30,9 +30,10 @@ import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.telemetry.EMPTY_JSON
+import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
-import com.google.adk.kt.telemetry.TelemetryConfig
-import com.google.adk.kt.telemetry.TracePayloadFormatter
+import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.withSpan
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
@@ -325,7 +326,31 @@ data class InvocationContext(
       return@coroutineScope null
     }
 
-    return@coroutineScope mergeParallelFunctionResponseEvents(functionResponseEvents)
+    val mergedEvent = mergeParallelFunctionResponseEvents(functionResponseEvents)
+    // When multiple tool calls run in parallel, emit a synthetic merged span so the merged response
+    // event is traceable in the Dev UI (parity with Python `trace_merged_tool_calls`).
+    if (functionResponseEvents.size > 1) {
+      recordMergedToolCallSpan(mergedEvent)
+    }
+    return@coroutineScope mergedEvent
+  }
+
+  /** Emits the `execute_tool (merged)` span describing a merged parallel tool-call response. */
+  private suspend fun recordMergedToolCallSpan(mergedEvent: Event) {
+    withSpan("execute_tool (merged)") { span ->
+      val mergedLabel = "(merged tools)"
+      span[TelemetryAttributes.GEN_AI_OPERATION_NAME] = TelemetryAttributes.OPERATION_EXECUTE_TOOL
+      span[TelemetryAttributes.GEN_AI_TOOL_NAME] = mergedLabel
+      span[TelemetryAttributes.GEN_AI_TOOL_DESCRIPTION] = mergedLabel
+      span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = "N/A"
+      span[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = EMPTY_JSON
+      span[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
+      span[TelemetryAttributes.GEN_AI_TOOL_CALL_ID] = mergedEvent.id
+      span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = mergedEvent.id
+      span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
+        mergedEvent.functionResponses().map { it.response }
+      }
+    }
   }
 
   /** Executes a single function call synchronously and builds a corresponding response event. */
@@ -357,53 +382,70 @@ data class InvocationContext(
         is CallbackChoice.Continue -> beforeResult.value
       }
 
-    // 2. Execute tool.
-    var toolResult: Any =
-      withSpan("execute_tool [${tool.name}]") { span ->
-        span[TelemetryAttributes.GEN_AI_TOOL_NAME] = tool.name
-        span[TelemetryAttributes.GEN_AI_TOOL_TYPE] =
-          if (tool is FunctionTool) "function" else "unknown"
-        span[TelemetryAttributes.GCP_VERTEX_AGENT_INVOCATION_ID] =
-          this@InvocationContext.invocationId
-        this@InvocationContext.session.key.id?.let {
-          span[TelemetryAttributes.GCP_VERTEX_AGENT_SESSION_ID] = it
-        }
-        span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = responseEventId
+    // 2. Execute the tool within the `execute_tool` span (parity with Python `trace_tool_call`).
+    return withSpan("execute_tool ${tool.name}") { span ->
+      span.recordExecuteToolMeta(tool, toolContext, responseEventId, currentArgs)
 
-        if (TelemetryConfig.captureMessageContent) {
-          span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] =
-            TracePayloadFormatter.format(currentArgs)
-        }
-
+      var toolResult: Any =
         try {
           tool.run(toolContext, currentArgs)
         } catch (e: Exception) {
           val recoveredResult =
             runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e)
-          recoveredResult ?: throw e
+          if (recoveredResult == null) {
+            span[TelemetryAttributes.ERROR_TYPE] = e::class.simpleName ?: "Exception"
+            throw e
+          }
+          recoveredResult
         }
+
+      // Run before `runAfterToolCallbacks` to keep `Unit` from being wrapped as `{result: Unit}`.
+      // A long-running tool returning `Unit` means "no response yet": suppress the FR event so the
+      // FC event (which carries `longRunningToolIds`) terminates the turn. See
+      // [BaseTool.isLongRunning].
+      if (tool.isLongRunning && toolResult === Unit) {
+        return@withSpan null
+      }
+      // For regular tools, coerce `Unit` to `{}` so the wire form is clean.
+      if (toolResult === Unit) {
+        toolResult = emptyMap<String, Any>()
       }
 
-    // Run before `runAfterToolCallbacks` to keep `Unit` from being wrapped as `{result: Unit}`.
-    // A long-running tool returning `Unit` means "no response yet": suppress the FR event so the
-    // FC event (which carries `longRunningToolIds`) terminates the turn. See
-    // [BaseTool.isLongRunning].
-    if (tool.isLongRunning && toolResult === Unit) {
-      return null
-    }
-    // For regular tools, coerce `Unit` to `{}` so the wire form is clean.
-    if (toolResult === Unit) {
-      toolResult = emptyMap<String, Any>()
-    }
+      // 3. Run after tool callbacks
+      val afterResult = runAfterToolCallbacks(llmAgent, tool, currentArgs, toolContext, toolResult)
+      if (afterResult != null) {
+        toolResult = afterResult
+      }
 
-    // 3. Run after tool callbacks
-    val afterResult = runAfterToolCallbacks(llmAgent, tool, currentArgs, toolContext, toolResult)
-    if (afterResult != null) {
-      toolResult = afterResult
-    }
+      span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
+        toFinalResponseMap(toolResult)
+      }
 
-    // Build response event
-    return buildResponseEvent(tool, toolResult, toolContext, responseEventId)
+      // Build response event
+      buildResponseEvent(tool, toolResult, toolContext, responseEventId)
+    }
+  }
+
+  /** Records the static `execute_tool` span attributes (parity with Python `trace_tool_call`). */
+  private fun Span.recordExecuteToolMeta(
+    tool: BaseTool,
+    toolContext: ToolContext,
+    eventId: String,
+    args: Map<String, Any>,
+  ) {
+    this[TelemetryAttributes.GEN_AI_OPERATION_NAME] = TelemetryAttributes.OPERATION_EXECUTE_TOOL
+    this[TelemetryAttributes.GEN_AI_TOOL_NAME] = tool.name
+    this[TelemetryAttributes.GEN_AI_TOOL_DESCRIPTION] = tool.description
+    this[TelemetryAttributes.GEN_AI_TOOL_TYPE] = if (tool is FunctionTool) "function" else "unknown"
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_INVOCATION_ID] = invocationId
+    session.key.id?.let { this[TelemetryAttributes.GCP_VERTEX_AGENT_SESSION_ID] = it }
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = eventId
+    toolContext.functionCallId?.let { this[TelemetryAttributes.GEN_AI_TOOL_CALL_ID] = it }
+    // Empty placeholders; the ADK Dev UI JSON.parses these on every tool span. (Parity with
+    // Python.)
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = EMPTY_JSON
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = capturedJson { args }
   }
 
   private fun buildResponseEvent(

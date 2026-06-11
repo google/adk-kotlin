@@ -33,6 +33,8 @@ internal object NoOpSpan : Span {
 
   override operator fun set(key: String, value: Boolean): Span = this
 
+  override operator fun set(key: String, value: List<String>): Span = this
+
   override fun addEvent(name: String): Span = this
 
   override fun recordException(exception: Throwable): Span = this

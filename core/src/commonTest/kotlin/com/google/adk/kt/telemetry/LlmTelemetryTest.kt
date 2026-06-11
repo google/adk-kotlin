@@ -24,11 +24,16 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.types.FinishReason
+import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -51,7 +56,11 @@ class LlmTelemetryTest {
 
   @Test
   fun runAsync_recordsCallLlmSpan() = runTest {
-    val testModel = DummyModel.createSequential("test-model", listOf(LlmResponse(content = modelMessage("Hello"))))
+    val testModel =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Hello"))),
+      )
     val agent = LlmAgent(name = "test-agent", model = testModel)
     val sessionService = InMemorySessionService()
     val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
@@ -63,12 +72,20 @@ class LlmTelemetryTest {
     val span = dummyTracer.recordedSpans.find { it.name == "call_llm" }
     assertNotNull(span)
     assertEquals("test-model", span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MODEL])
+    // Payloads are emitted as "{}" (not omitted) so the ADK Dev UI can JSON.parse them.
+    assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST])
+    assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE])
   }
 
   @Test
   fun runAsync_recordsChunkReceivedEvents() = runTest {
     val testModel =
-      DummyModel("test-model") { flowOf(LlmResponse(content = modelMessage("Hel")), LlmResponse(content = modelMessage("lo"))) }
+      DummyModel("test-model") {
+        flowOf(
+          LlmResponse(content = modelMessage("Hel")),
+          LlmResponse(content = modelMessage("lo")),
+        )
+      }
     val agent = LlmAgent(name = "test-agent", model = testModel)
     val sessionService = InMemorySessionService()
     val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
@@ -84,5 +101,110 @@ class LlmTelemetryTest {
     assertEquals(2, events.size)
     assertEquals("chunk_received", events[0])
     assertEquals("chunk_received", events[1])
+  }
+
+  // ---------------------------------------------------------------------------
+  // Python parity: these mirror the Python suite
+  // tests/unittests/telemetry/test_spans.py::test_trace_call_llm.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun runAsync_callLlm_setsGenAiSystem() = runTest {
+    val testModel =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Hello"))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = testModel)
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals("gcp.vertex.agent", span.attributes[TelemetryAttributes.GEN_AI_SYSTEM])
+  }
+
+  @Test
+  fun runAsync_callLlm_setsRequestConfigAttributes() = runTest {
+    val testModel =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Hello"))),
+      )
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = testModel,
+        generateContentConfig = GenerateContentConfig(topP = 0.95f, maxOutputTokens = 1024),
+      )
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    val topP = span.attributes[TelemetryAttributes.GEN_AI_REQUEST_TOP_P]
+    assertNotNull(topP)
+    assertEquals(0.95, topP as Double, absoluteTolerance = 1e-4)
+    assertEquals(1024L, span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS])
+  }
+
+  @Test
+  fun runAsync_callLlm_setsUsageTokens() = runTest {
+    val response =
+      LlmResponse(
+        content = modelMessage("Hello"),
+        usageMetadata = UsageMetadata(promptTokenCount = 50, candidatesTokenCount = 60),
+      )
+    val testModel = DummyModel.createSequential("test-model", listOf(response))
+    val agent = LlmAgent(name = "test-agent", model = testModel)
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals(50L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
+    assertEquals(60L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
+  }
+
+  @Test
+  fun runAsync_callLlm_setsFinishReasons() = runTest {
+    val response = LlmResponse(content = modelMessage("Hello"), finishReason = FinishReason.STOP)
+    val testModel = DummyModel.createSequential("test-model", listOf(response))
+    val agent = LlmAgent(name = "test-agent", model = testModel)
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    // OTEL models finish reasons as a lower-cased string list, e.g. ["stop"].
+    assertEquals(
+      listOf("stop"),
+      span.attributes[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS],
+    )
+  }
+
+  @Test
+  fun runAsync_callLlm_capturesRequestAndResponseWhenEnabled() = runTest {
+    TelemetryConfig.captureMessageContent = true
+    val testModel =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Hello"))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = testModel)
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    val llmRequest = span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] as? String
+    assertNotNull(llmRequest)
+    assertNotEquals("{}", llmRequest)
+    assertTrue(llmRequest.isNotEmpty())
+    val llmResponse = span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] as? String
+    assertNotNull(llmResponse)
+    assertNotEquals("{}", llmResponse)
+    assertTrue(llmResponse.isNotEmpty())
+  }
+
+  private suspend fun newContext(agent: LlmAgent): InvocationContext {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    return InvocationContext(agent = agent, session = session, runConfig = null)
   }
 }

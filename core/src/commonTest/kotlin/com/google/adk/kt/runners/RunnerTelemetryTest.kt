@@ -16,10 +16,14 @@
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTracer
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -74,5 +78,28 @@ class RunnerTelemetryTest {
       "telemetry-agent",
       invokeAgentSpan.attributes[TelemetryAttributes.GEN_AI_AGENT_NAME],
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Python parity: mirrors the Python suite
+  // tests/unittests/telemetry/test_spans.py::test_trace_agent_invocation.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun runAsync_invokeAgent_setsParityAttributes() = runBlocking {
+    val model =
+      DummyModel.createSequential("mock-model", listOf(LlmResponse(content = modelMessage("hi"))))
+    val agent = LlmAgent(name = "telemetry-agent", model = model, description = "A telemetry agent")
+    val runner = InMemoryRunner(agent = agent)
+
+    runner
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hello"))
+      .toList()
+
+    val span = dummyTracer.recordedSpans.find { it.name == "invoke_agent telemetry-agent" }
+    assertTrue("Should have found 'invoke_agent' span", span != null)
+    assertEquals("invoke_agent", span!!.attributes[TelemetryAttributes.GEN_AI_OPERATION_NAME])
+    assertEquals("A telemetry agent", span.attributes[TelemetryAttributes.GEN_AI_AGENT_DESCRIPTION])
+    assertEquals("session1", span.attributes[TelemetryAttributes.GEN_AI_CONVERSATION_ID])
   }
 }

@@ -28,3 +28,17 @@ package com.google.adk.kt.telemetry
 object TelemetryConfig {
   @Volatile var captureMessageContent: Boolean = false
 }
+
+/** Placeholder emitted for content payloads when message-content capture is disabled. */
+internal const val EMPTY_JSON: String = "{}"
+
+/**
+ * Returns the JSON serialization of [payload] when [TelemetryConfig.captureMessageContent] is
+ * enabled, otherwise the [EMPTY_JSON] placeholder.
+ *
+ * The placeholder is always emitted (rather than omitting the attribute) because the ADK Dev UI
+ * `JSON.parse`s these span attributes unconditionally. [payload] is only evaluated when capture is
+ * enabled, so callers may build expensive payloads lazily.
+ */
+internal fun capturedJson(payload: () -> Any?): String =
+  if (TelemetryConfig.captureMessageContent) TracePayloadFormatter.format(payload()) else EMPTY_JSON
