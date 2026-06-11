@@ -45,8 +45,11 @@ import kotlinx.coroutines.test.runTest
 
 class AbstractRunnerTest {
 
-  class TestRunner(agent: BaseAgent) :
-    InMemoryRunner(agent = agent, resumabilityConfig = ResumabilityConfig(isResumable = true)) {
+  class TestRunner(agent: BaseAgent, resumable: Boolean = true) :
+    InMemoryRunner(
+      agent = agent,
+      resumabilityConfig = ResumabilityConfig(isResumable = resumable),
+    ) {
     suspend fun callFindAgentToRun(context: InvocationContext, rootAgent: BaseAgent): BaseAgent {
       return findAgentToRun(context, rootAgent)
     }
@@ -94,6 +97,147 @@ class AbstractRunnerTest {
     val result = runner.callFindAgentToRun(context, rootAgent)
 
     assertEquals("sub", result.name)
+  }
+
+  @Test
+  fun findAgentToRun_functionResponse_nonTransferableCallingAgent_returnsThatAgent() = runTest {
+    // Function-response routing returns the agent that issued the call regardless of its
+    // transferability -- the response belongs to that agent. Mirrors Python ADK 1.x
+    // `_find_agent_to_run` (unconditional `find_agent(event.author)` for a function response).
+    val subAgent = DummyAgent("specialist", disallowTransferToParent = true)
+    val rootAgent = DummyAgent("root", subAgents = listOf(subAgent))
+    val runner = TestRunner(rootAgent)
+
+    val callId = "call-nt"
+    val callEvent =
+      Event(
+        author = "specialist",
+        content =
+          Content(
+            Role.MODEL,
+            listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
+          ),
+        invocationId = "inv-1",
+      )
+    val responseEvent =
+      Event(
+        author = Role.USER,
+        content = userFunctionResponse(name = "tool", id = callId),
+        invocationId = "inv-1",
+      )
+
+    val session =
+      runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
+    val unused1 = runner.sessionService.appendEvent(session, callEvent)
+    val unused2 = runner.sessionService.appendEvent(session, responseEvent)
+
+    val updatedSession =
+      runner.sessionService.getSession(SessionKey("InMemoryRunner", "user", "session"))!!
+    val context =
+      InvocationContext(
+        session = updatedSession,
+        runConfig = null,
+        agent = rootAgent,
+        invocationId = "inv-1",
+        sessionService = runner.sessionService,
+      )
+    val result = runner.callFindAgentToRun(context, rootAgent)
+
+    assertEquals("specialist", result.name)
+  }
+
+  @Test
+  fun findAgentToRun_functionCallAuthorNotAnAgent_fallsBackToRoot() = runTest {
+    // The matching function-call event is authored by "user" (not an agent in the hierarchy), so
+    // function-response routing is skipped and the backward scan finds no agent event, leaving the
+    // root agent as the fallback.
+    val subAgent = DummyAgent("sub")
+    val rootAgent = DummyAgent("root", subAgents = listOf(subAgent))
+    val runner = TestRunner(rootAgent)
+
+    val callId = "call-unknown"
+    val callEvent =
+      Event(
+        author = Role.USER,
+        content =
+          Content(
+            Role.MODEL,
+            listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
+          ),
+        invocationId = "inv-1",
+      )
+    val responseEvent =
+      Event(
+        author = Role.USER,
+        content = userFunctionResponse(name = "tool", id = callId),
+        invocationId = "inv-1",
+      )
+
+    val session =
+      runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
+    val unused1 = runner.sessionService.appendEvent(session, callEvent)
+    val unused2 = runner.sessionService.appendEvent(session, responseEvent)
+
+    val updatedSession =
+      runner.sessionService.getSession(SessionKey("InMemoryRunner", "user", "session"))!!
+    val context =
+      InvocationContext(
+        session = updatedSession,
+        runConfig = null,
+        agent = rootAgent,
+        invocationId = "inv-1",
+        sessionService = runner.sessionService,
+      )
+    val result = runner.callFindAgentToRun(context, rootAgent)
+
+    assertEquals("root", result.name)
+  }
+
+  @Test
+  fun findAgentToRun_staleFunctionCallAuthor_fallsBackToRoot() = runTest {
+    // The matching function-call event is authored by an agent that is not in the current
+    // hierarchy (e.g. carried over from a previous session). `findAgent` returns null and the
+    // routing falls back to the root agent instead of propagating a null.
+    val subAgent = DummyAgent("sub")
+    val rootAgent = DummyAgent("root", subAgents = listOf(subAgent))
+    val runner = TestRunner(rootAgent)
+
+    val callId = "call-stale"
+    val callEvent =
+      Event(
+        author = "agent_from_a_previous_session",
+        content =
+          Content(
+            Role.MODEL,
+            listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
+          ),
+        invocationId = "inv-1",
+      )
+    val responseEvent =
+      Event(
+        author = Role.USER,
+        content = userFunctionResponse(name = "tool", id = callId),
+        invocationId = "inv-1",
+      )
+
+    val session =
+      runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
+    val unused1 = runner.sessionService.appendEvent(session, callEvent)
+    val unused2 = runner.sessionService.appendEvent(session, responseEvent)
+
+    val updatedSession =
+      runner.sessionService.getSession(SessionKey("InMemoryRunner", "user", "session"))!!
+    val context =
+      InvocationContext(
+        session = updatedSession,
+        runConfig = null,
+        agent = rootAgent,
+        invocationId = "inv-1",
+        sessionService = runner.sessionService,
+      )
+    val result = runner.callFindAgentToRun(context, rootAgent)
+
+    assertEquals("root", result.name)
   }
 
   @Test
