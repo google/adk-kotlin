@@ -17,6 +17,7 @@ package com.google.adk.kt.telemetry.otel
 
 import com.google.adk.kt.telemetry.Span
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
 
 /** OpenTelemetry implementation of [Span]. */
@@ -42,6 +43,12 @@ internal class OtelSpan(val otelSpan: OpenTelemetrySpan) : Span {
   @CanIgnoreReturnValue
   override fun set(key: String, value: Boolean): Span {
     otelSpan.setAttribute(key, value)
+    return this
+  }
+
+  @CanIgnoreReturnValue
+  override fun set(key: String, value: List<String>): Span {
+    otelSpan.setAttribute(AttributeKey.stringArrayKey(key), value)
     return this
   }
 

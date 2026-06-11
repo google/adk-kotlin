@@ -109,6 +109,11 @@ class DummySpan(
     return this
   }
 
+  override operator fun set(key: String, value: List<String>): Span {
+    attributes[key] = value
+    return this
+  }
+
   override fun addEvent(name: String): Span {
     events.add(name)
     return this

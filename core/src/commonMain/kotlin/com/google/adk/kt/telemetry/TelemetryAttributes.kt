@@ -23,6 +23,7 @@ object TelemetryAttributes {
   const val GEN_AI_SYSTEM = "gen_ai.system"
   const val GEN_AI_AGENT_NAME = "gen_ai.agent.name"
   const val GEN_AI_AGENT_DESCRIPTION = "gen_ai.agent.description"
+  const val GEN_AI_CONVERSATION_ID = "gen_ai.conversation.id"
   const val GEN_AI_TOOL_NAME = "gen_ai.tool.name"
   const val GEN_AI_TOOL_DESCRIPTION = "gen_ai.tool.description"
   const val GEN_AI_TOOL_TYPE = "gen_ai.tool.type"
@@ -34,11 +35,20 @@ object TelemetryAttributes {
   const val GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
   const val GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
 
+  // General OpenTelemetry attributes
+  const val ERROR_TYPE = "error.type"
+
+  // Common attribute values
+  const val SYSTEM_GCP_VERTEX_AGENT = "gcp.vertex.agent"
+  const val OPERATION_INVOKE_AGENT = "invoke_agent"
+  const val OPERATION_EXECUTE_TOOL = "execute_tool"
+
   // Custom ADK attributes
   const val GCP_VERTEX_AGENT_INVOCATION_ID = "gcp.vertex.agent.invocation_id"
   const val GCP_VERTEX_AGENT_SESSION_ID = "gcp.vertex.agent.session_id"
   const val GCP_VERTEX_AGENT_EVENT_ID = "gcp.vertex.agent.event_id"
   const val GCP_VERTEX_AGENT_TOOL_CALL_ARGS = "gcp.vertex.agent.tool_call_args"
+  const val GCP_VERTEX_AGENT_TOOL_RESPONSE = "gcp.vertex.agent.tool_response"
   const val GCP_VERTEX_AGENT_LLM_REQUEST = "gcp.vertex.agent.llm_request"
   const val GCP_VERTEX_AGENT_LLM_RESPONSE = "gcp.vertex.agent.llm_response"
 }
