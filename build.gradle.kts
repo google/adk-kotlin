@@ -81,7 +81,10 @@ subprojects {
   }
 
   tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
-    compilerOptions { optIn.add("kotlin.time.ExperimentalTime") }
+    compilerOptions {
+      optIn.add("kotlin.time.ExperimentalTime")
+      freeCompilerArgs.add("-Xskip-metadata-version-check")
+    }
   }
 
   // Publishing is configured once here for any subproject that applies
