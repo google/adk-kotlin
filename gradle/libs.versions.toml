@@ -16,6 +16,7 @@ google-gson = "2.10.1"
 google-mlkit-genai = "1.0.0-beta2"
 google-protobuf-javalite = "3.25.5"
 google-truth = "1.4.5"
+gradle-test-retry = "1.6.5"
 graphviz = "0.18.1"
 jackson = "2.16.1"
 junit = "4.13.2"
@@ -91,5 +92,6 @@ snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
 [plugins]
 # go/keep-sorted start
 dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
+gradle-test-retry = { id = "org.gradle.test-retry", version.ref = "gradle-test-retry"}
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 # go/keep-sorted end
