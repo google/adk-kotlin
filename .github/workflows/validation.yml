@@ -22,11 +22,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set up Java ${{ matrix.java-version }}
+      # JDK 21 is required by the litertlm/examples module toolchains (the
+      # upstream litert-lm artifacts are compiled for Java 21). The matrix JDK
+      # is used for the rest of the project; the last version listed becomes
+      # JAVA_HOME, so Gradle starts up on the matrix JDK.
+      - name: Set up JDK 21 and JDK ${{ matrix.java-version }}
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: ${{ matrix.java-version }}
+          java-version: |
+            21
+            ${{ matrix.java-version }}
 
       # The project contains `com.android.library` subprojects (see root
       # build.gradle.kts), so the Android SDK must be available on the runner
@@ -59,6 +65,7 @@ jobs:
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
         run: |
           ./gradlew \
+            -PjdkVersion=${{ matrix.java-version }} \
             -Pkotlin.daemon.jvmargs="-Xmx4g" \
             --no-daemon \
             --stacktrace \

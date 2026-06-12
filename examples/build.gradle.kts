@@ -19,6 +19,14 @@ plugins {
   alias(libs.plugins.ksp)
 }
 
+// The examples depend on the litertlm module and the litert-lm SDK, which are
+// compiled for Java 21 (class-file version 65). This module must therefore use
+// a JDK 21+ toolchain even though the rest of the project defaults to JDK 17.
+// Honor a higher `jdkVersion` if one is explicitly requested.
+val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
+
+kotlin { jvmToolchain(maxOf(21, jdkVersion)) }
+
 sourceSets { main { java.srcDirs("src/main/kotlin") } }
 
 dependencies {
@@ -27,6 +35,8 @@ dependencies {
   implementation(libs.a2a.sdk.client)
   implementation(libs.a2a.sdk.spec)
   implementation(libs.a2a.sdk.transport.jsonrpc)
+  implementation(project(":google-adk-kotlin-litertlm"))
+  implementation(libs.google.ai.edge.litertlm.jvm)
   implementation(libs.google.cloud.storage)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.opentelemetry.sdk)
