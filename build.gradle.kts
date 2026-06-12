@@ -22,6 +22,7 @@ plugins {
   id("com.android.library") version "8.13.0" apply false
   id("com.google.cloud.artifactregistry.gradle-plugin") version "2.2.4" apply false
   kotlin("plugin.serialization") version "2.1.20" apply false
+  alias(libs.plugins.gradle.test.retry) apply false
 }
 
 val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
