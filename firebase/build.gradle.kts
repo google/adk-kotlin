@@ -19,6 +19,7 @@ plugins {
   kotlin("plugin.serialization")
   id("org.jetbrains.kotlin.android")
   id("maven-publish")
+  alias(libs.plugins.gradle.test.retry)
 }
 
 dependencies {
@@ -44,7 +45,13 @@ android {
     unitTests {
       isReturnDefaultValues = true
       isIncludeAndroidResources = true
-      all { it.systemProperty("robolectric.logging", "stderr") }
+      all {
+        it.systemProperty("robolectric.logging", "stderr")
+        it.retry {
+          maxRetries = 2
+          filter { includeClasses.add("*IntegrationTest") }
+        }
+      }
     }
   }
 

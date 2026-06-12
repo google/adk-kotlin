@@ -57,6 +57,11 @@ jobs:
         # We override them here so CI does not OOM at daemon startup.
         env:
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_DISABLE_IT: ${{ vars.FIREBASE_DISABLE_IT }}
+          FIREBASE_MODEL_NAME: ${{ vars.FIREBASE_MODEL_NAME }}
         run: |
           ./gradlew \
             -Pkotlin.daemon.jvmargs="-Xmx4g" \
