@@ -16,6 +16,7 @@
 
 plugins {
   kotlin("multiplatform")
+  kotlin("plugin.serialization")
   id("com.android.library")
   alias(libs.plugins.ksp)
   id("maven-publish")
@@ -30,6 +31,7 @@ kotlin {
       dependencies {
         implementation(libs.kotlinx.coroutines.core)
         implementation(libs.kotlinx.datetime)
+        implementation(libs.kotlinx.serialization)
       }
     }
     val commonTest by getting {
