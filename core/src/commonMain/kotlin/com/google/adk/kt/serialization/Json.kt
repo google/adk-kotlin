@@ -16,6 +16,11 @@
 
 package com.google.adk.kt.serialization
 
+import kotlin.reflect.KClass
+import kotlinx.serialization.InternalSerializationApi
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.serializerOrNull
+
 /** Platform-independent utility for JSON serialization. */
 interface Json {
   /** Serializes an object to a JSON string. */
@@ -24,7 +29,23 @@ interface Json {
   /** Parses a JSON string to a map. */
   fun fromJsonToMap(json: String): Map<String, Any?>
 
-  companion object : Json by getJson()
+  companion object : Json by getJson() {
+    private val KMP_JSON = kotlinx.serialization.json.Json { explicitNulls = false }
+
+    /**
+     * Converts [value] to a [JsonElement]: kotlinx.serialization for `@Serializable` types,
+     * otherwise the platform [Json] fallback (best-effort, not round-trippable).
+     */
+    @OptIn(InternalSerializationApi::class)
+    internal fun serializeToJsonElement(value: Any): JsonElement {
+      @Suppress("UNCHECKED_CAST") val serializer = (value::class as KClass<Any>).serializerOrNull()
+      return if (serializer != null) {
+        KMP_JSON.encodeToJsonElement(serializer, value)
+      } else {
+        KMP_JSON.parseToJsonElement(toJsonString(value))
+      }
+    }
+  }
 }
 
 internal expect fun getJson(): Json
