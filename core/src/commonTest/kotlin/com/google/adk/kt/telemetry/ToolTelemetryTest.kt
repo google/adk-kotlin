@@ -62,7 +62,7 @@ class ToolTelemetryTest {
 
     assertEquals(1, fakeTracer.recordedSpans.size)
     val span = fakeTracer.recordedSpans[0]
-    assertEquals("execute_tool [test_tool]", span.name)
+    assertEquals("execute_tool test_tool", span.name)
     assertEquals("test_tool", span.attributes[TelemetryAttributes.GEN_AI_TOOL_NAME])
     assertEquals("function", span.attributes[TelemetryAttributes.GEN_AI_TOOL_TYPE])
     // Empty placeholders are emitted on tool spans for ADK Dev UI trace-view compatibility.
@@ -198,7 +198,7 @@ class ToolTelemetryTest {
           FunctionCall(name = "test_tool", args = mapOf("param" to "value"), id = "call_1"),
           mapOf("test_tool" to TestFunctionTool()),
         )
-    return fakeTracer.recordedSpans.single { it.name == "execute_tool [test_tool]" }
+    return fakeTracer.recordedSpans.single { it.name == "execute_tool test_tool" }
   }
 
   private fun createInvocationContext(): InvocationContext =

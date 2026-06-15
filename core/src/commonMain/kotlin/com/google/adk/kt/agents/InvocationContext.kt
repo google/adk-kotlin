@@ -383,7 +383,7 @@ data class InvocationContext(
       }
 
     // 2. Execute the tool within the `execute_tool` span (parity with Python `trace_tool_call`).
-    return withSpan("execute_tool [${tool.name}]") { span ->
+    return withSpan("execute_tool ${tool.name}") { span ->
       span.recordExecuteToolMeta(tool, toolContext, responseEventId, currentArgs)
 
       var toolResult: Any =
