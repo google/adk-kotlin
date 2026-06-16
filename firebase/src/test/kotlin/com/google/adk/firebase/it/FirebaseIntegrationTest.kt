@@ -62,6 +62,8 @@ class FirebaseIntegrationTest {
       const val FIREBASE_APP_ID = "FIREBASE_APP_ID"
       const val FIREBASE_PROJECT_ID = "FIREBASE_PROJECT_ID"
 
+      const val FIREBASE_DISABLE_IT = "FIREBASE_DISABLE_IT"
+
       const val FIREBASE_MODEL_NAME = "FIREBASE_MODEL_NAME"
     }
 
@@ -133,9 +135,9 @@ class FirebaseIntegrationTest {
         firebaseApp = it
         return
       }
-    val apiKey = System.getenv(EnvVars.FIREBASE_API_KEY)
-    val appId = System.getenv(EnvVars.FIREBASE_APP_ID)
-    val projectId = System.getenv(EnvVars.FIREBASE_PROJECT_ID)
+    val apiKey = System.getenv(EnvVars.FIREBASE_API_KEY)?.ifEmpty { null }
+    val appId = System.getenv(EnvVars.FIREBASE_APP_ID)?.ifEmpty { null }
+    val projectId = System.getenv(EnvVars.FIREBASE_PROJECT_ID)?.ifEmpty { null }
 
     if (apiKey != null && appId != null && projectId != null) {
       log.info { "initializing firebase app: $FIREBASE_APP_NAME" }
@@ -156,9 +158,14 @@ class FirebaseIntegrationTest {
 
   @Before
   fun setUp() {
+    val itDisabled =
+      setOf("true", "t", "yes", "y", "1")
+        .contains(System.getenv(EnvVars.FIREBASE_DISABLE_IT)?.lowercase())
+    Assume.assumeFalse("firebase integration test disabled", itDisabled)
     initFirebaseApp()
     Assume.assumeTrue("unable to initialize firebase app", this::firebaseApp.isInitialized)
-    val modelName = System.getenv(EnvVars.FIREBASE_MODEL_NAME) ?: "gemini-3.5-flash"
+    val modelName =
+      System.getenv(EnvVars.FIREBASE_MODEL_NAME)?.ifEmpty { null } ?: "gemini-3.5-flash"
     firebaseModel = Firebase.create(modelName, FirebaseAI.getInstance(firebaseApp))
   }
 
