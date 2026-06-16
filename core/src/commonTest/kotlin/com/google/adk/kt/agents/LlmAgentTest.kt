@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -376,6 +377,213 @@ class LlmAgentTest {
       "endOfAgent must be suppressed when the invocation is paused on a long-running call",
       events.none { it.actions.endOfAgent },
     )
+  }
+
+  @Test
+  fun runAsync_withOutputKey_savesFinalResponseToStateDelta() = runTest {
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Saved output"))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    assertTrue(events[0].isFinalResponse)
+    assertEquals("Saved output", events[0].actions.stateDelta["myOutput"])
+  }
+
+  @Test
+  fun runAsync_withOutputKey_concatenatesMultipleTextParts() = runTest {
+    val multiPartContent =
+      Content(role = Role.MODEL, parts = listOf(Part(text = "Part 1."), Part(text = " Part 2.")))
+    val model =
+      DummyModel.createSequential("test-model", listOf(LlmResponse(content = multiPartContent)))
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myMultiPartOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    assertEquals("Part 1. Part 2.", events[0].actions.stateDelta["myMultiPartOutput"])
+  }
+
+  @Test
+  fun runAsync_withOutputKey_ignoresThoughtParts() = runTest {
+    val mixedContent =
+      Content(
+        role = Role.MODEL,
+        parts = listOf(Part(text = "Saved output"), Part(text = "Ignored thought", thought = true)),
+      )
+    val model =
+      DummyModel.createSequential("test-model", listOf(LlmResponse(content = mixedContent)))
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    assertEquals("Saved output", events[0].actions.stateDelta["myOutput"])
+  }
+
+  @Test
+  fun runAsync_withoutOutputKey_leavesStateDeltaEmpty() = runTest {
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Some output"))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model) // no outputKey
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    assertTrue(events[0].actions.stateDelta.isEmpty())
+  }
+
+  @Test
+  fun runAsync_withOutputKey_doesNotOverwriteStateWhenOnlyThoughtPartsPresent() = runTest {
+    val thoughtOnlyContent =
+      Content(role = Role.MODEL, parts = listOf(Part(text = "thinking out loud", thought = true)))
+    val model =
+      DummyModel.createSequential("test-model", listOf(LlmResponse(content = thoughtOnlyContent)))
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    assertTrue(
+      "stateDelta must stay empty when the only text parts are thoughts",
+      events[0].actions.stateDelta.isEmpty(),
+    )
+  }
+
+  @Test
+  fun runAsync_withEmptyOutputKey_isTreatedAsUnset() = runTest {
+    // Mirrors Python's `if not self.output_key: return` falsy check: an empty string must not
+    // become a state-delta key.
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Some output"))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    assertTrue(
+      "stateDelta must stay empty when outputKey is the empty string",
+      events[0].actions.stateDelta.isEmpty(),
+    )
+  }
+
+  @Test
+  fun runAsync_withOutputKey_writesValueToSessionStateOnAppendEvent() = runTest {
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Saved output"))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Mirror what the runner does after each emitted event: persist via SessionService.
+    for (event in agent.runAsync(context).toList()) {
+      val unused = sessionService.appendEvent(session, event)
+    }
+
+    assertEquals("Saved output", session.state["myOutput"])
+  }
+
+  @Test
+  fun runAsync_withTempPrefixOutputKey_writesDeltaButIsNotPersisted() = runTest {
+    // The LlmAgent contract is to write to `event.actions.stateDelta` regardless of key prefix;
+    // it is the `State.applyDelta` layer that drops `temp:`-prefixed keys before persisting them
+    // into the session state. This test pins down both halves of that contract so a future change
+    // to either side is caught.
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Saved output"))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "temp:tempKey")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+    for (event in events) {
+      val unused = sessionService.appendEvent(session, event)
+    }
+
+    assertEquals(1, events.size)
+    // The agent must still publish the value via the event's state delta.
+    assertEquals("Saved output", events[0].actions.stateDelta["temp:tempKey"])
+    // But State.applyDelta strips temp:-prefixed keys, so the session state must not contain it.
+    assertFalse(
+      "temp: outputKey must not be persisted to session.state",
+      session.state.containsKey("temp:tempKey"),
+    )
+  }
+
+  @Test
+  fun runAsync_withPartialEvent_doesNotWriteStateDelta() = runTest {
+    // Sequential model calls: the first returns a partial event; the second returns the final
+    // response. Each LlmAgentTurn iteration constructs a fresh EventActions, so the partial
+    // event's stateDelta is independent of the final event's and can be asserted on its own.
+    //
+    // (Aside: within a single `model.generateContent` flow, LlmAgentTurn reuses one base event
+    // and emits shallow copies that share an EventActions instance; that path is harmless in
+    // practice because SessionService.appendEvent skips partial events, but it is unsuited to
+    // asserting per-event stateDelta state here.)
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(
+          LlmResponse(content = modelMessage("Partial chunk"), partial = true),
+          LlmResponse(content = modelMessage("Final response")),
+        ),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(2, events.size)
+    // Partial chunk: not a final response, no state delta write.
+    assertTrue("first event should be partial", events[0].partial)
+    assertFalse("first event must not be a final response", events[0].isFinalResponse)
+    assertTrue(
+      "partial events must not write to stateDelta",
+      events[0].actions.stateDelta.isEmpty(),
+    )
+    // Final response from a separate turn: stateDelta is populated.
+    assertFalse("second event should not be partial", events[1].partial)
+    assertTrue("second event must be a final response", events[1].isFinalResponse)
+    assertEquals("Final response", events[1].actions.stateDelta["myOutput"])
   }
 
   private fun createEvent(author: String, text: String): Event {

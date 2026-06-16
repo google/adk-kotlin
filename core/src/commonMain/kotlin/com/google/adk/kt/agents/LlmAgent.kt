@@ -25,6 +25,7 @@ import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.OnModelErrorCallback
 import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.processors.AgentTransferProcessor
 import com.google.adk.kt.processors.BasicRequestProcessor
@@ -90,6 +91,10 @@ import kotlinx.coroutines.flow.flow
  * @property beforeToolCallbacks List of callbacks to run before each tool call.
  * @property afterToolCallbacks List of callbacks to run after each tool call.
  * @property inputSchema The input schema of the agent.
+ * @property outputKey The key in session state to store the final text response of the agent. When
+ *   set, the agent's concatenated text output (excluding parts marked as thoughts) is written to
+ *   `event.actions.stateDelta[outputKey]` on each final-response event, which the session service
+ *   then merges into the session state.
  * @property onModelErrorCallbacks List of callbacks to run when a model call fails.
  * @property onToolErrorCallbacks List of callbacks to run when a tool call fails.
  * @property includeContents Controls how prior conversation history is included in the model
@@ -118,6 +123,7 @@ class LlmAgent(
   val beforeToolCallbacks: List<BeforeToolCallback> = emptyList(),
   val afterToolCallbacks: List<AfterToolCallback> = emptyList(),
   val inputSchema: Schema? = null,
+  val outputKey: String? = null,
   val onModelErrorCallbacks: List<OnModelErrorCallback> = emptyList(),
   val onToolErrorCallbacks: List<OnToolErrorCallback> = emptyList(),
   val includeContents: IncludeContents = IncludeContents.DEFAULT,
@@ -227,6 +233,7 @@ class LlmAgent(
     // `agents/llm_agent.py:486-505`.
     var shouldPause = false
     executeTurns(context).collect { event ->
+      maybeSaveOutputToState(event)
       emit(event)
       if (context.shouldPauseInvocation(event)) {
         shouldPause = true
@@ -260,6 +267,50 @@ class LlmAgent(
   /** Materializes the [instruction] for the current turn. */
   internal suspend fun canonicalInstruction(context: ReadonlyContext): Content? =
     instruction?.resolve(context)
+
+  /**
+   * If [outputKey] is set, writes this agent's final-response text into
+   * `event.actions.stateDelta[outputKey]` so that the session service merges it into session state.
+   *
+   * Mirrors `LlmAgent.__maybe_save_output_to_state` in the Python ADK and
+   * `LlmAgent.maybeSaveOutputToState` in the Java ADK. Behavior:
+   * - Skips events authored by other agents (e.g. after this agent has transferred control).
+   * - Skips when [outputKey] is null or empty (mirrors Python's `if not self.output_key` falsy
+   *   check; an empty string is treated as unset rather than written to `stateDelta[""]`).
+   * - Only fires on [Event.isFinalResponse] events that carry text content.
+   * - Concatenates the text from every non-thought part with no separator. Parts where
+   *   [Part.thought] is `true` are ignored.
+   * - If no non-thought text parts are present, leaves [Event.actions]`.stateDelta` untouched so
+   *   that values already written by other code paths (e.g. tool-side state updates on
+   *   function-response-only events) are not overwritten.
+   *
+   * NOTE on long-running tool events: when an event contains text alongside a long-running function
+   * call (i.e. [Event.longRunningToolIds] is non-empty), Kotlin's [Event.isFinalResponse] returns
+   * `true` (matching Python's `is_final_response()`), so the text portion is saved. The Java ADK's
+   * `Event.finalResponse()` returns `false` for the same shape (it has no long-running-tool special
+   * case), so it would not save. Kotlin intentionally follows Python here.
+   */
+  private fun maybeSaveOutputToState(event: Event) {
+    if (event.author != name) {
+      logger.debug { "Skipping output save for agent $name: event authored by ${event.author}" }
+      return
+    }
+    val outputKey = outputKey?.takeIf { it.isNotEmpty() } ?: return
+    if (!event.isFinalResponse) return
+    val parts = event.content?.parts ?: return
+
+    // An empty `parts` list is handled by the `textParts.isEmpty()` guard below (filtering an empty
+    // list yields an empty list), so no separate `parts.isEmpty()` check is needed.
+    val textParts = parts.filter { it.text != null && it.thought != true }
+    if (textParts.isEmpty()) return
+
+    val result = textParts.joinToString(separator = "") { it.text.orEmpty() }
+    event.actions.stateDelta[outputKey] = result
+  }
+
+  private companion object {
+    private val logger = LoggerFactory.getLogger(LlmAgent::class)
+  }
 }
 
 /** Ensures InvocationContext.agent is LlmAgent instance, throws exception otherwise. */
