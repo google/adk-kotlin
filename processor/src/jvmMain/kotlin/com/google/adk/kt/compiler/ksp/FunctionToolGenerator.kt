@@ -89,9 +89,17 @@ class FunctionToolGenerator(
     val requiresConfirmation =
       toolAnnotation?.arguments?.find { it.name?.asString() == "requireConfirmation" }?.value
         as? Boolean ?: false
+    val customName =
+      toolAnnotation?.arguments?.find { it.name?.asString() == "name" }?.value as? String
+    val toolName = if (!customName.isNullOrBlank()) customName else functionName
 
-    val baseDesc =
+    val customDescription =
+      toolAnnotation?.arguments?.find { it.name?.asString() == "description" }?.value as? String
+    val baseDesc = if (!customDescription.isNullOrBlank()) {
+      customDescription
+    } else {
       extractFunctionDescription(function.docString).ifBlank { "Function ${functionName}" }
+    }
     val functionDesc =
       if (isLongRunning) {
         if (baseDesc.isNotBlank()) {
@@ -103,7 +111,7 @@ class FunctionToolGenerator(
         baseDesc
       }
     // Add constructor parameters for base class
-    typeBuilder.addSuperclassConstructorParameter("%S", functionName)
+    typeBuilder.addSuperclassConstructorParameter("%S", toolName)
     typeBuilder.addSuperclassConstructorParameter("%S", functionDesc)
     typeBuilder.addSuperclassConstructorParameter("%L", isLongRunning)
     // The `customMetadata` constructor parameter is not exposed via @Tool today; pass the
@@ -121,7 +129,7 @@ class FunctionToolGenerator(
     }
     typeBuilder.addFunction(executeFun)
 
-    val declarationFun = buildDeclarationFunction(function, functionDesc)
+    val declarationFun = buildDeclarationFunction(function, toolName, functionDesc)
     if (declarationFun != null) {
       typeBuilder.addFunction(declarationFun)
     } else {
@@ -754,6 +762,7 @@ class FunctionToolGenerator(
 
   private fun buildDeclarationFunction(
     function: KSFunctionDeclaration,
+    toolName: String,
     functionDesc: String,
   ): FunSpec? {
     val funSpec =
@@ -762,7 +771,7 @@ class FunctionToolGenerator(
         .returns(FunctionDeclaration::class.asClassName().copy(nullable = true))
 
     funSpec.addCode("return %T(\n", FunctionDeclaration::class.asClassName())
-    funSpec.addCode("  name = %S,\n", function.simpleName.asString())
+    funSpec.addCode("  name = %S,\n", toolName)
     funSpec.addCode("  description = %S,\n", functionDesc)
 
     val paramTypes =

@@ -324,6 +324,17 @@ class FunctionToolProcessorTest {
     assertThat(tools).isNotEmpty()
     assertThat(tools.map { it.name }).containsAtLeast("topLevelOne", "topLevelTwo")
   }
+
+  @Test
+  fun compile_customNameAndDescription_generatesCorrectToolClass() {
+    val tool = CustomNamedToolTool()
+
+    assertThat(tool.name).isEqualTo("custom_name")
+    assertThat(tool.description).isEqualTo("Custom description")
+    val declaration = tool.declaration()!!
+    assertThat(declaration.name).isEqualTo("custom_name")
+    assertThat(declaration.description).isEqualTo("Custom description")
+  }
 }
 
 // -- Test Fixtures --
@@ -485,3 +496,8 @@ class MyAwesomeService {
 @Tool fun topLevelOne(): String = "One"
 
 @Tool fun topLevelTwo(): String = "Two"
+
+@Tool(name = "custom_name", description = "Custom description")
+fun customNamedTool(): String {
+  return "Custom"
+}
