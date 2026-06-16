@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.findAgent
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterRunCallbacksPipeline
@@ -52,7 +53,12 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
-/** An abstract base class for [Runner] implementations that provides common orchestration logic. */
+/**
+ * An abstract base class for [Runner] implementations that provides common orchestration logic.
+ *
+ * Subclasses may be constructed either from explicit fields or from an [App] (via the [App]-based
+ * constructor), which supplies the [App.appName] and [App.rootAgent].
+ */
 abstract class AbstractRunner(
   override val appName: String,
   override val agent: BaseAgent,
@@ -62,6 +68,24 @@ abstract class AbstractRunner(
   override val pluginManager: PluginManager,
   override val resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
 ) : Runner {
+
+  /** Creates a runner from an [App], taking its [App.appName] and [App.rootAgent]. */
+  constructor(
+    app: App,
+    sessionService: SessionService,
+    artifactService: ArtifactService?,
+    memoryService: MemoryService?,
+    pluginManager: PluginManager,
+    resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
+  ) : this(
+    app.appName,
+    app.rootAgent,
+    sessionService,
+    artifactService,
+    memoryService,
+    pluginManager,
+    resumabilityConfig,
+  )
 
   /**
    * Main entry method to run the agent in this runner.

@@ -21,6 +21,7 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.memory.InMemoryMemoryService
@@ -32,18 +33,21 @@ import com.google.adk.kt.sessions.SessionService
 /**
  * An in-memory implementation of a [Runner] that manages the lifecycle of a [BaseAgent] execution.
  *
- * It provides default in-memory implementations for session, artifact, and memory services.
+ * It provides default in-memory implementations for session, artifact, and memory services. It can
+ * be constructed either directly from a root agent or from an [App].
  */
-open class InMemoryRunner(
-  agent: BaseAgent,
-  appName: String = "InMemoryRunner",
-  sessionService: SessionService = InMemorySessionService(),
-  artifactService: ArtifactService? = InMemoryArtifactService(),
-  memoryService: MemoryService? = InMemoryMemoryService(),
-  pluginManager: PluginManager = PluginManager(),
-  resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
-) :
-  AbstractRunner(
+open class InMemoryRunner : AbstractRunner {
+
+  /** Creates an [InMemoryRunner] from a root [agent] and default in-memory services. */
+  constructor(
+    agent: BaseAgent,
+    appName: String = "InMemoryRunner",
+    sessionService: SessionService = InMemorySessionService(),
+    artifactService: ArtifactService? = InMemoryArtifactService(),
+    memoryService: MemoryService? = InMemoryMemoryService(),
+    pluginManager: PluginManager = PluginManager(),
+    resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
+  ) : super(
     appName,
     agent,
     sessionService,
@@ -52,3 +56,14 @@ open class InMemoryRunner(
     pluginManager,
     resumabilityConfig,
   )
+
+  /** Creates an [InMemoryRunner] from an [App], taking its [App.appName] and [App.rootAgent]. */
+  constructor(
+    app: App,
+    sessionService: SessionService = InMemorySessionService(),
+    artifactService: ArtifactService? = InMemoryArtifactService(),
+    memoryService: MemoryService? = InMemoryMemoryService(),
+    pluginManager: PluginManager = PluginManager(),
+    resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
+  ) : super(app, sessionService, artifactService, memoryService, pluginManager, resumabilityConfig)
+}

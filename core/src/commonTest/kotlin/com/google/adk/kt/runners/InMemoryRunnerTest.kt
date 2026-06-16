@@ -23,6 +23,7 @@ import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
@@ -47,6 +48,31 @@ import org.junit.Test
 class InMemoryRunnerTest {
 
   private val dummyAgent = DummyAgent(name = "dummy-agent")
+
+  @Test
+  fun runAsync_constructedFromApp_usesAppNameAndRootAgent() = runTest {
+    val app =
+      App(
+        appName = "dummy_app",
+        rootAgent =
+          DummyAgent(
+            name = "dummy_agent",
+            onRunAsync = { emit(Event(author = Role.MODEL, content = modelMessage("hello"))) },
+          ),
+      )
+    val runner = InMemoryRunner(app = app)
+
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    assertThat(runner.appName).isEqualTo("dummy_app")
+    assertThat(events.map { it.content?.parts?.firstOrNull()?.text }).containsExactly("hello")
+    val sessionEvents =
+      runner.sessionService.getSession(SessionKey("dummy_app", "user1", "session1"))!!.events
+    assertThat(sessionEvents.map { it.author }).containsExactly(Role.USER, Role.MODEL).inOrder()
+  }
 
   @Test
   fun runAsync_withoutFunctionResponse_usesProvidedInvocationId() = runTest {
