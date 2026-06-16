@@ -39,6 +39,7 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 
@@ -95,13 +96,10 @@ class ResumeInvocationTest {
       simplifyResumableEvents(inv2),
     )
 
+    // Re-running an already-final invocation (no new message) is a no-op.
     val inv2Id = inv2.first().invocationId
-    // TODO: Python ADK 1.x additionally asserts that re-running an already-final invocation
-    // (`runAsync(invocationId = inv2Id)` with no new message) is a no-op. Kotlin's runner instead
-    // re-runs the resolved agent and emits a fresh model turn, because
-    // `setupContextForResumedInvocation` only checks the root agent's end-of-agent status (here a
-    // sub-agent ran the invocation) and the sub-agent's checkpoint was cleared by its end-of-agent
-    // marker. Aligning this is deferred to a follow-up CL, so this step is omitted here.
+    val noop = runner.runAsync(USER_ID, SESSION_ID, invocationId = inv2Id).toList()
+    assertTrue(noop.isEmpty())
 
     // Simulate pausing on invocation 2: copy all but the last event to a fresh session.
     val key = SessionKey(APP_NAME, USER_ID, SESSION_ID)

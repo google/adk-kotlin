@@ -112,12 +112,19 @@ abstract class AbstractRunner(
         val key = SessionKey(appName, userId, sessionId)
         val session = sessionService.getSession(key) ?: sessionService.createSession(key)
 
-        // 2. Run agent with plugins
-        emitAll(
-          runAgentWithPlugins(
-            createInvocationContext(session, invocationId, newMessage, stateDelta, runConfig)
-          )
-        )
+        // 2. Build the invocation context (resolving the agent to run).
+        val context =
+          createInvocationContext(session, invocationId, newMessage, stateDelta, runConfig)
+
+        // 3. No-op if the resolved agent for a resumed invocation is already final -- there is
+        // nothing left to run. Mirrors Python ADK 1.x `runners.run_async`. For a new invocation
+        // `endOfAgents` is empty, so this never short-circuits a fresh run.
+        if (context.endOfAgents[context.agent.name] == true) {
+          return@flow
+        }
+
+        // 4. Run agent with plugins
+        emitAll(runAgentWithPlugins(context))
       }
       .trace("invocation")
 
