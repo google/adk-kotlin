@@ -30,6 +30,30 @@ fun simplifyEvents(events: List<Event>): List<Pair<String, Any>> = events.mapNot
   event.content?.let { event.author to simplifyContent(it) }
 }
 
+/** Constants for resumability event simplification. */
+object ResumableEvents {
+  /** Sentinel emitted by [simplifyResumableEvents] for an end-of-agent marker event. */
+  const val END_OF_AGENT: String = "end_of_agent"
+}
+
+/**
+ * Reduces events to `(author, payload)` pairs for asserting resumability flows, mirroring Python
+ * ADK 1.x `testing_utils.simplify_resumable_app_events`. Per event, in priority order: content ->
+ * simplified content; else an end-of-agent marker -> [ResumableEvents.END_OF_AGENT]; else an
+ * agent-state checkpoint -> the state value ([com.google.adk.kt.agents.TypedData]).
+ */
+fun simplifyResumableEvents(events: List<Event>): List<Pair<String, Any>> =
+  events.mapNotNull { event ->
+    val content = event.content
+    val agentState = event.actions.agentState
+    when {
+      content != null -> event.author to simplifyContent(content)
+      event.actions.endOfAgent -> event.author to ResumableEvents.END_OF_AGENT
+      agentState != null -> event.author to agentState
+      else -> null
+    }
+  }
+
 /**
  * Reduces a [Content] to a comparable form:
  * - one text part → its trimmed text as [String];
