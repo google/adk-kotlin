@@ -17,15 +17,24 @@ package com.google.adk.kt.testing
 
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.State
 
 /**
  * A [Session] with a [SessionKey] and otherwise default state and event list.
  *
  * Convenience for tests that need a session value object but don't care about its contents. For
- * tests that need a specific [SessionKey], pass `key = SessionKey(...)`.
+ * tests that need a specific [SessionKey], pass `key = SessionKey(...)`. For tests that need to
+ * pre-seed session state (e.g. the SkillToolset activation list), pass
+ * `state = mapOf("_adk_activated_skill_..." to listOf("skill_name"))` — it is wrapped in a [State]
+ * with no delta.
  */
 fun testSession(
   appName: String = "test_app_name",
   userId: String = "test_user_id",
   id: String? = "test_session_id",
-): Session = Session(key = SessionKey(appName = appName, userId = userId, id = id))
+  state: Map<String, Any> = emptyMap(),
+): Session =
+  Session(
+    key = SessionKey(appName = appName, userId = userId, id = id),
+    state = State(initialState = state),
+  )

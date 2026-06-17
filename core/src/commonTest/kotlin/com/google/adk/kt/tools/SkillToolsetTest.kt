@@ -16,9 +16,14 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.agents.ReadonlyContext
+import com.google.adk.kt.agents.toReadonlyContext
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.skills.Frontmatter
 import com.google.adk.kt.skills.SkillSource
 import com.google.adk.kt.skills.SkillSourceException
+import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.testToolContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -34,8 +39,22 @@ class SkillToolsetTest {
     listOf(
       Frontmatter(name = "skill1", description = "Description 1"),
       Frontmatter(name = "skill2", description = "Description 2"),
+      Frontmatter(
+        name = "skill3",
+        description = "Description 3",
+        metadata =
+          mapOf(
+            SkillToolset.ADK_ADDITIONAL_TOOLS_METADATA_KEY to
+              listOf("extra_tool_a", "extra_tool_b"),
+          ),
+      ),
     )
-  private val mockInstructions = mapOf("skill1" to "Instructions 1", "skill2" to "Instructions 2")
+  private val mockInstructions =
+    mapOf(
+      "skill1" to "Instructions 1",
+      "skill2" to "Instructions 2",
+      "skill3" to "Instructions 3",
+    )
 
   private val mockSource =
     object : SkillSource {
@@ -106,7 +125,7 @@ class SkillToolsetTest {
     val result = tool.run(testToolContext(), emptyMap()) as Map<*, *>
     val skillsList = result["skills"] as? List<Map<String, Any?>>
     assertNotNull(skillsList)
-    assertEquals(2, skillsList.size)
+    assertEquals(3, skillsList.size)
     assertEquals("skill1", skillsList[0]["name"])
     assertEquals("Description 1", skillsList[0]["description"])
     assertEquals("skill2", skillsList[1]["name"])
@@ -127,6 +146,23 @@ class SkillToolsetTest {
     val frontmatter = result[SkillToolset.KEY_FRONTMATTER] as Map<*, *>
     assertEquals("skill1", frontmatter["name"])
     assertEquals("Description 1", frontmatter["description"])
+  }
+
+  @Test
+  fun loadSkillTool_run_returnsAdkAdditionalToolsInFrontmatterMetadata() = runTest {
+    val tools = skillToolset.getTools(null)
+    val loadSkillTool = tools.first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    val result =
+      loadSkillTool.run(testToolContext(), mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"))
+        as Map<*, *>
+
+    val frontmatter = result[SkillToolset.KEY_FRONTMATTER] as Map<*, *>
+    val metadata = frontmatter["metadata"] as Map<*, *>
+    assertEquals(
+      listOf("extra_tool_a", "extra_tool_b"),
+      metadata[SkillToolset.ADK_ADDITIONAL_TOOLS_METADATA_KEY],
+    )
   }
 
   @Test
@@ -433,4 +469,143 @@ class SkillToolsetTest {
 
     kotlin.test.assertNull(instruction)
   }
+
+  @Test
+  fun getTools_returnsOnlyCoreTools_whenAdditionalToolsAndNoActivation() = runTest {
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools = listOf(makeAdditionalTool("extra_tool_a"), makeAdditionalTool("extra_tool_b")),
+      )
+    val tools = toolset.getTools(null)
+    assertEquals(3, tools.size)
+    assertTrue(tools.none { it.name == "extra_tool_a" || it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun getTools_exposesAdditionalTools_afterActivation() = runTest {
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools = listOf(makeAdditionalTool("extra_tool_a"), makeAdditionalTool("extra_tool_b")),
+      )
+    val session =
+      testSession(
+        state = mapOf(SkillToolset.activatedSkillStateKey("test-agent") to listOf("skill3")),
+      )
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+    val tools = toolset.getTools(readonlyCtx)
+    assertEquals(5, tools.size)
+    assertTrue(tools.any { it.name == "extra_tool_a" })
+    assertTrue(tools.any { it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun getTools_skipsUnknownSkillInActivationState() = runTest {
+    val toolset =
+      SkillToolset(source = mockSource, additionalTools = listOf(makeAdditionalTool("extra_tool_a")))
+    val session =
+      testSession(
+        state =
+          mapOf(SkillToolset.activatedSkillStateKey("test-agent") to listOf("does-not-exist")),
+      )
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+    val tools = toolset.getTools(readonlyCtx)
+    assertEquals(3, tools.size)
+    assertTrue(tools.none { it.name == "extra_tool_a" })
+  }
+
+  @Test
+  fun getTools_skipsToolNameNotInProvidedTools() = runTest {
+    // skill3 declares both extra_tool_a and extra_tool_b, but only extra_tool_a is provided.
+    val toolset =
+      SkillToolset(source = mockSource, additionalTools = listOf(makeAdditionalTool("extra_tool_a")))
+    val session =
+      testSession(
+        state = mapOf(SkillToolset.activatedSkillStateKey("test-agent") to listOf("skill3")),
+      )
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+    val tools = toolset.getTools(readonlyCtx)
+    assertEquals(4, tools.size)
+    assertTrue(tools.any { it.name == "extra_tool_a" })
+    assertTrue(tools.none { it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun getTools_resolvesAdditionalToolsFromProvidedToolsets_afterActivation() = runTest {
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools = emptyList(),
+        additionalToolsets =
+          listOf(
+            makeAdditionalToolset(
+              makeAdditionalTool("extra_tool_a"),
+              makeAdditionalTool("extra_tool_b"),
+            )
+          ),
+      )
+    val session =
+      testSession(
+        state = mapOf(SkillToolset.activatedSkillStateKey("test-agent") to listOf("skill3")),
+      )
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+
+    val tools = toolset.getTools(readonlyCtx)
+
+    assertEquals(5, tools.size)
+    assertTrue(tools.any { it.name == "extra_tool_a" })
+    assertTrue(tools.any { it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun loadSkillTool_run_writesActivationStateDelta() = runTest {
+    val actions = EventActions()
+    val ctx = testToolContext(actions = actions)
+    val toolset = SkillToolset(source = mockSource)
+    val loadSkillTool = toolset.getTools(null).first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    loadSkillTool.run(ctx, mapOf(SkillToolset.PARAM_SKILL_NAME to "skill1"))
+
+    val stateKey = SkillToolset.activatedSkillStateKey("test-agent")
+    val activated = actions.stateDelta[stateKey] as? List<*>
+    assertNotNull(activated)
+    assertTrue(activated.any { it?.toString() == "skill1" })
+  }
+
+  @Test
+  fun loadSkillTool_run_preservesPreviouslyActivatedSkills() = runTest {
+    // Session state already has skill3 activated; loading skill1 must produce a delta that
+    // contains both, otherwise the merge would drop skill3.
+    val session =
+      testSession(
+        state = mapOf(SkillToolset.activatedSkillStateKey("test-agent") to listOf("skill3")),
+      )
+    val actions = EventActions()
+    val ctx = testToolContext(invocationContext = testInvocationContext(session = session), actions = actions)
+    val toolset = SkillToolset(source = mockSource)
+    val loadSkillTool = toolset.getTools(null).first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    loadSkillTool.run(ctx, mapOf(SkillToolset.PARAM_SKILL_NAME to "skill1"))
+
+    val stateKey = SkillToolset.activatedSkillStateKey("test-agent")
+    val activated = actions.stateDelta[stateKey] as? List<*>
+    assertNotNull(activated)
+    assertTrue(activated.any { it?.toString() == "skill1" })
+    assertTrue(activated.any { it?.toString() == "skill3" })
+  }
 }
+
+/** Minimal [BaseTool] implementation for SkillToolset activation tests. */
+private fun makeAdditionalTool(name: String): BaseTool =
+  object :
+    BaseTool(name = name, description = "Additional tool $name for tests.") {
+    override fun declaration() = null
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any>): Any = emptyMap<String, Any>()
+  }
+
+private fun makeAdditionalToolset(vararg tools: BaseTool): Toolset =
+  object : Toolset {
+    override suspend fun getTools(readonlyContext: ReadonlyContext?) = tools.toList()
+  }
