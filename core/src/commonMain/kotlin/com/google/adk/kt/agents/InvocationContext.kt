@@ -164,8 +164,26 @@ data class InvocationContext(
     get() = resumabilityConfig?.isResumable == true
 
   /**
+   * Creates a new InvocationContext for running [childAgent], derived from this context, keeping
+   * the current [branch] unchanged.
+   *
+   * This is the default way an agent is entered (including via a `transfer_to_agent`): the branch
+   * is only deepened explicitly where conversation history must be segregated (see [branch], used
+   * by [ParallelAgent]). Mirrors Python ADK 1.x `BaseAgent._create_invocation_context`, which swaps
+   * only the agent.
+   *
+   * @param childAgent The agent that will run under the returned context.
+   * @return The new InvocationContext.
+   */
+  fun forAgent(childAgent: BaseAgent): InvocationContext = this.copy(agent = childAgent)
+
+  /**
    * Creates a new InvocationContext for a child agent, derived from this context. Appends the given
    * agent's name to the branch path.
+   *
+   * Use this only to isolate an agent's conversation history from its siblings (e.g.
+   * [ParallelAgent]); a plain agent entry or transfer should use [forAgent] so the child shares the
+   * parent's branch, matching Python ADK 1.x.
    *
    * @param childAgent The new agent for the branched context.
    * @return The new InvocationContext.

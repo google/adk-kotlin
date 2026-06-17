@@ -28,6 +28,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 
@@ -105,6 +106,33 @@ class ParallelAgentTest {
     val events = parallelAgent.runAsync(context).toList()
 
     assertTrue(events.isEmpty(), "Expected no events to be emitted")
+  }
+
+  /**
+   * Each parallel sub-agent runs on its own isolated branch `<parallel>.<sub>`, and a sub-agent's
+   * own descendants keep that same branch (a plain run does not deepen it). Ported from Python ADK
+   * 1.x `agents/test_parallel_agent.py::test_run_async_branches`.
+   */
+  @Test
+  fun runAsync_subAgentsRunOnIsolatedBranches() = runTest {
+    val branches = mutableMapOf<String, String?>()
+    val recordBranch: suspend FlowCollector<Event>.(InvocationContext) -> Unit = { ctx ->
+      branches[ctx.agent.name] = ctx.branch
+    }
+    val agent1 = DummyAgent("agent1", onRunAsync = recordBranch)
+    val agent2 = DummyAgent("agent2", onRunAsync = recordBranch)
+    val agent3 = DummyAgent("agent3", onRunAsync = recordBranch)
+    val sequential = SequentialAgent(name = "sequential", subAgents = listOf(agent2, agent3))
+    val parallel = ParallelAgent(name = "parallel", subAgents = listOf(sequential, agent1))
+    val context = testInvocationContext(agent = parallel)
+
+    parallel.runAsync(context).toList()
+
+    // A direct sub-agent runs on `<parallel>.<sub>`.
+    assertEquals("parallel.agent1", branches["agent1"])
+    // The sequential sub-agent's own children share the sequential's branch (no extra deepening).
+    assertEquals("parallel.sequential", branches["agent2"])
+    assertEquals("parallel.sequential", branches["agent3"])
   }
 
   private fun createTestContext(agent: BaseAgent): InvocationContext =

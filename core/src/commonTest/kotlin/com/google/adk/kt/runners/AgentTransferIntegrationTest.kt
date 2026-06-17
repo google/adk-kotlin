@@ -18,6 +18,7 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LoopAgent
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
@@ -31,6 +32,7 @@ import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_T
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -41,6 +43,99 @@ import kotlinx.coroutines.test.runTest
  * scenarios from Python ADK's `flows/llm_flows/test_agent_transfer.py`.
  */
 class AgentTransferIntegrationTest {
+
+  /**
+   * A `transfer_to_agent` keeps the parent's branch: the transferred-to sub-agent's events carry
+   * the same branch as the transferring parent's, rather than a deeper one. Mirrors Python ADK 1.x,
+   * where a transfer does not create a new branch. This is what lets the sub-agent see the
+   * conversation so far (and, across turns, its own replies).
+   */
+  @Test
+  fun runAsync_transfer_keepsParentBranch() = runTest {
+    val rootAgent =
+      LlmAgent(
+        name = "root",
+        model = DummyModel("root-model") { flowOf(modelTransferToAgentResponse("sub")) },
+        subAgents =
+          listOf(
+            LlmAgent(
+              name = "sub",
+              model =
+                DummyModel("sub-model") { flowOf(LlmResponse(content = modelMessage("done"))) },
+            )
+          ),
+      )
+    val runner = InMemoryRunner(agent = rootAgent)
+
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    val agentEvents = events.filter { it.author != Role.USER }
+    assertTrue(
+      agentEvents.any { it.author == "sub" },
+      "sub-agent should have run after the transfer",
+    )
+    // Root runs on the invocation's root (null) branch; the transfer must not deepen it for `sub`.
+    assertTrue(
+      agentEvents.all { it.branch == null },
+      "transfer should keep the parent branch; got ${agentEvents.map { it.author to it.branch }}",
+    )
+  }
+
+  /**
+   * Regression test for branch handling across turns. When a sub-agent keeps handling follow-up
+   * turns after a transfer, it must still see its own earlier replies. The model receives the
+   * conversation history filtered by the running agent's branch, so the sub-agent has to run on the
+   * same branch on every turn. Mirrors Python ADK 1.x, where a transfer keeps the parent's branch.
+   */
+  @Test
+  fun runAsync_continuingSubAgent_seesItsOwnPriorTurnReply() = runTest {
+    val subRequests = mutableListOf<LlmRequest>()
+    var subTurn = 0
+    val rootAgent =
+      LlmAgent(
+        name = "root",
+        model = DummyModel("root-model") { flowOf(modelTransferToAgentResponse("sub")) },
+        subAgents =
+          listOf(
+            LlmAgent(
+              name = "sub",
+              model =
+                DummyModel("sub-model") { request ->
+                  subRequests.add(request)
+                  subTurn++
+                  flowOf(LlmResponse(content = modelMessage("sub-reply-$subTurn")))
+                },
+            )
+          ),
+      )
+    val runner = InMemoryRunner(agent = rootAgent)
+
+    // Turn 1: root transfers to sub, which replies "sub-reply-1".
+    runner
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+      .toList()
+    // Turn 2: sub keeps handling the conversation.
+    runner
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("again"))
+      .toList()
+
+    val turn2Prompt =
+      subRequests.last().contents.flatMap { it.parts }.mapNotNull { it.text }.joinToString("")
+    // The sub-agent's turn-2 context: the original "hi", the transfer scaffolding, its own turn-1
+    // reply ("sub-reply-1"), then "again". The turn-1 reply is the part that used to be missing.
+    val expectedPrompt =
+      "hi" +
+        "For context:" +
+        "[root] called tool `transfer_to_agent` with parameters: {\"agent_name\":\"sub\"}" +
+        "For context:" +
+        "[root] `transfer_to_agent` tool returned result: {}" +
+        "sub-reply-1" +
+        "again"
+    assertEquals(expectedPrompt, turn2Prompt)
+  }
 
   /**
    * `disallowTransferToParent` has a slightly confusing name: it doesn't disable the *first*

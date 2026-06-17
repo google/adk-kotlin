@@ -117,6 +117,31 @@ class AgentToolTest {
     assertEquals(1, context.actions.artifactDelta["testArtifactKey"])
   }
 
+  /**
+   * The agent wrapped by an [AgentTool] runs in a separate runner/invocation, so it starts on a
+   * fresh (null) branch regardless of the caller's branch -- AgentTool isolates via its own runner,
+   * not via the branch field. Mirrors Python ADK 1.x.
+   */
+  @Test
+  fun run_wrappedAgent_runsOnFreshBranch() = runTest {
+    val branches = mutableListOf<String?>()
+    val inner =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = { ctx ->
+          branches.add(ctx.branch)
+          emit(Event(author = "inner-agent", content = modelMessage("done")))
+        },
+      )
+    val tool = AgentTool(inner)
+    // The caller runs on a non-null branch; the wrapped agent must still start fresh.
+    val context = testToolContext(testInvocationContext(agent = inner, branch = "caller.branch"))
+
+    val unused = tool.run(context, mapOf("request" to "Hello"))
+
+    assertEquals(listOf<String?>(null), branches)
+  }
+
   @Test
   fun run_withSkipSummarization_setsFlagInContext() = runTest {
     val responseContent = modelMessage("Response")

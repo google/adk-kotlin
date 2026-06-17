@@ -74,7 +74,13 @@ class ParallelAgent(
 
     var pauseInvocation = false
 
-    val flows = activeSubAgents.map { subAgent -> runBlock(subAgent, context) }
+    // Run each sub-agent on its own isolated branch (`<parent>.<parallel>.<sub>`) so parallel
+    // siblings cannot see each other's conversation history. This is the only place a branch is
+    // deepened; plain agent runs and transfers keep their parent's branch. Mirrors Python ADK 1.x
+    // `ParallelAgent._create_branch_ctx_for_sub_agent`.
+    val flows = activeSubAgents.map { subAgent ->
+      runBlock(subAgent, context.branch(this@ParallelAgent).branch(subAgent))
+    }
 
     flows.merge().collect { event ->
       emit(event)

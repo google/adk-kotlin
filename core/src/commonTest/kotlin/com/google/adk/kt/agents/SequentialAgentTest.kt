@@ -27,6 +27,7 @@ import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 
@@ -132,6 +133,29 @@ class SequentialAgentTest {
     val events = sequentialAgent.runAsync(context).toList()
 
     assertEquals(0, events.count { it.actions.endOfAgent })
+  }
+
+  /**
+   * A [SequentialAgent] runs each sub-agent on the parent's branch unchanged: a plain run does not
+   * deepen the branch (only [ParallelAgent] does). Mirrors Python ADK 1.x, where
+   * `_create_invocation_context` swaps only the agent and leaves the branch intact.
+   */
+  @Test
+  fun runAsync_subAgents_keepParentBranchUnchanged() = runTest {
+    val branches = mutableMapOf<String, String?>()
+    val recordBranch: suspend FlowCollector<Event>.(InvocationContext) -> Unit = { ctx ->
+      branches[ctx.agent.name] = ctx.branch
+    }
+    val agent1 = DummyAgent("agent1", onRunAsync = recordBranch)
+    val agent2 = DummyAgent("agent2", onRunAsync = recordBranch)
+    val sequentialAgent = SequentialAgent(name = "seq", subAgents = listOf(agent1, agent2))
+    val context = testInvocationContext(agent = sequentialAgent, branch = "root")
+
+    sequentialAgent.runAsync(context).toList()
+
+    // Both sub-agents share the parent branch; sequential does not create a new one.
+    assertEquals("root", branches["agent1"])
+    assertEquals("root", branches["agent2"])
   }
 
   private fun createEvent(author: String, text: String): Event {

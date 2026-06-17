@@ -100,8 +100,10 @@ abstract class BaseAgent(
    */
   fun runAsync(parentContext: InvocationContext): Flow<Event> =
     flow {
-        // 2. Context Creation
-        val context = parentContext.branch(this@BaseAgent)
+        // 2. Context Creation. Keep the parent's branch; entering an agent (including via a
+        // `transfer_to_agent`) does not deepen the branch -- only agents that segregate history do
+        // (e.g. `ParallelAgent`). Mirrors Python ADK 1.x `BaseAgent._create_invocation_context`.
+        val context = parentContext.forAgent(this@BaseAgent)
 
         // 3. Before Callbacks
         val beforeEvent = handleBeforeAgentCallback(context)
