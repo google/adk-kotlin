@@ -23,6 +23,7 @@ import com.google.adk.kt.callbacks.runOnModelErrorCallbacksPipeline
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.getLongRunningFunctionIds
 import com.google.adk.kt.ids.Uuid
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.toTracePayload
@@ -39,6 +40,7 @@ import com.google.adk.kt.telemetry.tracedFlow
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.GoogleSearchAgentTool
 import com.google.adk.kt.tools.GoogleSearchTool
+import com.google.adk.kt.tools.SkillToolset
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.VertexAiSearchAgentTool
 import com.google.adk.kt.tools.VertexAiSearchTool
@@ -52,6 +54,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+
+private fun Iterable<BaseTool>.associateByNameFirstWins(): Map<String, BaseTool> = buildMap {
+  for (tool in this@associateByNameFirstWins) {
+    if (tool.name !in this) put(tool.name, tool)
+  }
+}
 
 /**
  * Encapsulates the logic for a single turn of an [LlmAgent].
@@ -70,6 +78,7 @@ internal class LlmAgentTurn(
   private val requestProcessors: List<LlmRequestProcessor>,
   private val responseProcessors: List<LlmResponseProcessor>,
 ) {
+  private val logger = LoggerFactory.getLogger(LlmAgentTurn::class)
 
   /**
    * Executes the turn logic and returns a flow of events.
@@ -151,25 +160,73 @@ internal class LlmAgentTurn(
       }
 
     val toolContext = ToolContext(invocationContext = context)
+    val registeredToolsByName =
+      processedRequest.toolsDict.associateByNameFirstWins().toMutableMap()
+
+    suspend fun registerTool(req: LlmRequest, tool: BaseTool): LlmRequest {
+      val existing = registeredToolsByName[tool.name]
+      if (existing != null) {
+        if (existing !== tool) {
+          logger.warn {
+            "Duplicate tool name '${tool.name}'; keeping the first registered tool and skipping " +
+              "the later one."
+          }
+        }
+        return req
+      }
+      registeredToolsByName[tool.name] = tool
+      return tool.processLlmRequest(toolContext, req)
+    }
+
     val reqAfterCodeExecutor =
       canonicalDirectTools.fold(processedRequest) { req, tool ->
-        tool.processLlmRequest(toolContext, req)
+        registerTool(req, tool)
       }
 
-    val finalRequest =
+    val deferredSkillTools = mutableListOf<BaseTool>()
+    val reqAfterToolsets =
       agent.toolsets.fold(reqAfterCodeExecutor) { req, toolset ->
         val setReq = toolset.processLlmRequest(toolContext, req)
-        toolset.getTools(context.toReadonlyContext()).fold(setReq) { r, tool ->
-          tool.processLlmRequest(toolContext, r)
+        for (tool in setReq.toolsDict) {
+          if (tool.name !in registeredToolsByName) {
+            registeredToolsByName[tool.name] = tool
+          }
         }
+        toolset.getTools(context.toReadonlyContext()).fold(setReq) { r, tool ->
+          if (toolset is SkillToolset && toolset.isAdditionalTool(tool)) {
+            deferredSkillTools += tool
+            r
+          } else {
+            registerTool(r, tool)
+          }
+        }
+      }
+    val finalRequest =
+      deferredSkillTools.fold(reqAfterToolsets) { req, tool ->
+        registerTool(req, tool)
       }
     return RequestOrResponse.Request(finalRequest)
   }
 
   private suspend fun getToolMap(request: LlmRequest?): Map<String, BaseTool> {
     val readonlyCtx = context.toReadonlyContext()
-    val allTools = canonicalDirectTools + agent.toolsets.flatMap { it.getTools(readonlyCtx) }
-    return (allTools + request?.toolsDict.orEmpty()).associateBy { it.name }
+    val immediateToolsetTools = mutableListOf<BaseTool>()
+    val deferredSkillTools = mutableListOf<BaseTool>()
+    for (toolset in agent.toolsets) {
+      for (tool in toolset.getTools(readonlyCtx)) {
+        if (toolset is SkillToolset && toolset.isAdditionalTool(tool)) {
+          deferredSkillTools += tool
+        } else {
+          immediateToolsetTools += tool
+        }
+      }
+    }
+    val toolsInRegistrationOrder =
+      request?.toolsDict.orEmpty() +
+        canonicalDirectTools +
+        immediateToolsetTools +
+        deferredSkillTools
+    return toolsInRegistrationOrder.associateByNameFirstWins()
   }
 
   /**
