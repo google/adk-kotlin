@@ -36,10 +36,22 @@ dependencies {
   implementation(libs.a2a.sdk.spec)
   implementation(libs.a2a.sdk.transport.jsonrpc)
   implementation(project(":google-adk-kotlin-litertlm"))
+  implementation(libs.clikt)
+  implementation(libs.github.api)
   implementation(libs.google.ai.edge.litertlm.jvm)
   implementation(libs.google.cloud.storage)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.opentelemetry.sdk)
 
   ksp(project(":google-adk-kotlin-processor"))
+}
+
+// Convenience task to run the ADK Docs Release Analyzer sample, e.g.:
+//   ./gradlew :google-adk-kotlin-examples:runDocsReleaseAnalyzer \
+//       --args="--start-tag v0.1.0 --end-tag v0.2.0"
+tasks.register<JavaExec>("runDocsReleaseAnalyzer") {
+  group = "application"
+  description = "Runs the ADK Docs Release Analyzer agent."
+  mainClass.set("com.google.adk.kt.examples.github.adkreleasedocs.AdkDocsReleaseAnalyzerAgentKt")
+  classpath = sourceSets["main"].runtimeClasspath
 }

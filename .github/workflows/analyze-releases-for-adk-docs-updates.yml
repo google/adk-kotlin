@@ -1,0 +1,94 @@
+name: Analyze New Release for ADK Docs Updates
+
+on:
+  # Runs on every new release.
+  release:
+    types: [published]
+  # Manual trigger for testing and retrying.
+  workflow_dispatch:
+    inputs:
+      start_tag:
+        description: 'Older release tag (base), e.g. v0.1.0'
+        required: false
+        type: string
+      end_tag:
+        description: 'Newer release tag (head), e.g. v0.2.0'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run: preview only. Set to false to actually create the issue and PRs.'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  analyze-new-release-for-adk-docs-updates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # These permissions apply to this repo's GITHUB_TOKEN (used only for checkout).
+    # The agent writes issues, branches and pull requests to the docs repo via the
+    # ADK_TRIAGE_AGENT PAT, which must have issues + pull-requests + contents write there.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # The examples module targets the JDK 21 toolchain.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The root build contains `com.android.library` subprojects, so the
+      # Android SDK must be available for Gradle to configure the build.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-34 build-tools;34.0.0"
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Run the ADK Docs Release Analyzer
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY_FOR_DOCS_AGENTS }}
+          GOOGLE_GENAI_USE_VERTEXAI: '0'
+          DOC_OWNER: 'google'
+          CODE_OWNER: 'google'
+          DOC_REPO: 'adk-docs'
+          CODE_REPO: 'adk-kotlin'
+          GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
+          ANALYZER_START_TAG: ${{ github.event.inputs.start_tag }}
+          ANALYZER_END_TAG: ${{ github.event.inputs.end_tag }}
+          # Defaults to dry-run (preview only). Flip to false via manual dispatch
+          # to actually create the issue and PRs.
+          ANALYZER_DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${ANALYZER_DRY_RUN}" == "false" ]]; then
+            args="--no-dry-run"
+          else
+            args="--dry-run"
+          fi
+          if [[ -n "${ANALYZER_START_TAG:-}" ]]; then
+            args="${args} --start-tag ${ANALYZER_START_TAG}"
+          fi
+          if [[ -n "${ANALYZER_END_TAG:-}" ]]; then
+            args="${args} --end-tag ${ANALYZER_END_TAG}"
+          fi
+          ./gradlew :google-adk-kotlin-examples:runDocsReleaseAnalyzer \
+            -PjdkVersion=21 \
+            --no-daemon \
+            --args="${args}"
