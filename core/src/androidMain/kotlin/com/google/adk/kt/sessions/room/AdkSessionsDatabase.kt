@@ -32,7 +32,7 @@ import androidx.room.TypeConverters
   entities =
     [StorageSession::class, StorageEvent::class, StorageAppState::class, StorageUserState::class],
   version = 1,
-  exportSchema = false,
+  exportSchema = true,
 )
 @TypeConverters(JsonConverters::class)
 internal abstract class AdkSessionsDatabase : RoomDatabase() {

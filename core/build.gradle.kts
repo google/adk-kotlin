@@ -192,3 +192,7 @@ dependencies {
 // Room's annotation processor runs via KSP. Wire it only against the Android target since the
 // Room runtime is androidMain-only.
 dependencies { add("kspAndroid", libs.androidx.room.compiler) }
+
+// Export the Room schema so migrations can be validated/generated. Baselines are committed under
+// core/schemas (the same directory the Blaze build writes to via -Aroom.schemaLocation).
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }
