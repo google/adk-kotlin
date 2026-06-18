@@ -211,6 +211,28 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun generateContentConfig_responseSchema_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        responseMimeType = "application/json",
+        responseSchema =
+          Schema(
+            type = Type.OBJECT,
+            properties = mapOf("name" to Schema(type = Type.STRING)),
+            required = listOf("name"),
+          ),
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+
+    assertEquals("application/json", genaiConfig.responseMimeType().get())
+    assertNotNull(genaiConfig.responseSchema().get())
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig, convertedBack)
+  }
+
+  @Test
   fun generateContentConfig_topKIntegerRoundTrip_preservesValue() {
     val adkConfig = GenerateContentConfig(temperature = 0.5f, topP = 0.9f, topK = 40)
 

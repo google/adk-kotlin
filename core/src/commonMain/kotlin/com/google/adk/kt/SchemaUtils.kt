@@ -16,6 +16,7 @@
 
 package com.google.adk.kt
 
+import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 
@@ -113,4 +114,27 @@ object SchemaUtils {
     }
     return Result.success(Unit)
   }
+
+  /**
+   * Parses a model output string as JSON and validates it against a schema.
+   *
+   * Mirrors `SchemaUtils.validateOutputSchema` in the Java ADK and `validate_schema` in the Python
+   * ADK: the [output] is expected to be a JSON object that matches [schema].
+   *
+   * Only top-level object schemas are supported: [output] must parse to a JSON object (it is
+   * decoded via [Json.fromJsonToMap]). Top-level array or primitive schemas are not supported and
+   * will yield a [Result.failure]. This matches the Java ADK; the Python ADK additionally supports
+   * list/primitive output schemas.
+   *
+   * @param output The model output string to parse and validate.
+   * @param schema The schema to validate against.
+   * @return [Result.success] wrapping the parsed map if it is valid JSON matching [schema];
+   *   [Result.failure] if the string is not valid JSON object or does not match the schema.
+   */
+  fun validateOutputSchema(output: String, schema: Schema): Result<Map<String, Any?>> =
+    runCatching {
+      val parsed = Json.fromJsonToMap(output)
+      validateMapOnSchema(parsed, schema, "Output").getOrThrow()
+      parsed
+    }
 }

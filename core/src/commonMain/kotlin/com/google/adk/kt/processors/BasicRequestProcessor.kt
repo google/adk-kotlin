@@ -24,7 +24,11 @@ import com.google.adk.kt.types.GenerateContentConfig
 /**
  * A processor that handles basic information to build the LLM request.
  *
- * It sets the model and configuration from the agent to the request.
+ * It sets the model and configuration from the agent to the request. When the agent has an
+ * [LlmAgent.outputSchema] that [appliesOutputSchemaDirectly] (no tools, or a model that supports a
+ * response schema together with tools), the schema is applied as the request's response schema
+ * (with a JSON response MIME type). Otherwise the schema is handled via the [OutputSchemaProcessor]
+ * workaround.
  */
 internal class BasicRequestProcessor : LlmRequestProcessor {
   override suspend fun process(
@@ -34,9 +38,13 @@ internal class BasicRequestProcessor : LlmRequestProcessor {
   ): LlmRequest {
     require(context.agent is LlmAgent) { "BasicRequestProcessor requires an LlmAgent." }
     val agent = context.agent
-    return request.copy(
-      model = agent.model,
-      config = agent.generateContentConfig ?: GenerateContentConfig(),
-    )
+    val baseConfig = agent.generateContentConfig ?: GenerateContentConfig()
+    val config =
+      agent.outputSchema
+        ?.takeIf { agent.appliesOutputSchemaDirectly }
+        ?.let { outputSchema ->
+          baseConfig.copy(responseSchema = outputSchema, responseMimeType = "application/json")
+        } ?: baseConfig
+    return request.copy(model = agent.model, config = config)
   }
 }

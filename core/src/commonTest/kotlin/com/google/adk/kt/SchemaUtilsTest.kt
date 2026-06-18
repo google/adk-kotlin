@@ -339,4 +339,45 @@ class SchemaUtilsTest {
     assertTrue(result.isFailure)
     assertEquals("Output args does not contain required name", result.exceptionOrNull()?.message)
   }
+
+  @Test
+  fun validateOutputSchema_validJsonMatchingSchema_returnsParsedMap() {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("name" to Schema(type = Type.STRING), "city" to Schema(type = Type.STRING)),
+        required = listOf("name"),
+      )
+
+    val result = SchemaUtils.validateOutputSchema("""{"name": "John", "city": "NYC"}""", schema)
+
+    assertTrue(result.isSuccess)
+    assertEquals(mapOf("name" to "John", "city" to "NYC"), result.getOrNull())
+  }
+
+  @Test
+  fun validateOutputSchema_invalidJson_returnsFailure() {
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("name" to Schema(type = Type.STRING)))
+
+    val result = SchemaUtils.validateOutputSchema("not json", schema)
+
+    assertTrue(result.isFailure)
+  }
+
+  @Test
+  fun validateOutputSchema_jsonNotMatchingSchema_returnsFailure() {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("name" to Schema(type = Type.STRING)),
+        required = listOf("name"),
+      )
+
+    val result = SchemaUtils.validateOutputSchema("""{"unexpected": "value"}""", schema)
+
+    assertTrue(result.isFailure)
+    assertIs<IllegalArgumentException>(result.exceptionOrNull())
+  }
 }

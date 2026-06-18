@@ -51,3 +51,21 @@ internal val Model.isGemini2OrAbove: Boolean
     shortName.startsWith("gemini-") &&
       (shortName.removePrefix("gemini-").substringBefore("-").substringBefore(".").toIntOrNull()
         ?: 0) >= 2
+
+/** Matches Gemini 2.x model names (e.g. `gemini-2.0-flash`, `gemini-2.5-pro`). */
+private val GEMINI_2_PATTERN = Regex("^gemini-2\\..*")
+
+/**
+ * Whether the model supports configuring an output schema together with tools.
+ *
+ * Follows the Java ADK `ModelNameUtils.canUseOutputSchemaWithTools`: Gemini 2.x models cannot use a
+ * response schema while tools are present, so the ADK falls back to the `set_model_response` tool
+ * workaround (see `com.google.adk.kt.processors.OutputSchemaProcessor`).
+ *
+ * NOTE: this is deliberately *not* identical to the Python ADK's
+ * `output_schema_utils.can_use_output_schema_with_tools`, which gates on `VERTEX_AI &&
+ * is_gemini_eap_or_2_or_above(model)` and therefore returns the opposite answer for Vertex Gemini
+ * 2.x. This implementation matches Java's conservative rule instead.
+ */
+internal val Model.canUseOutputSchemaWithTools: Boolean
+  get() = !GEMINI_2_PATTERN.matches(shortName)

@@ -27,7 +27,9 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
+import com.google.adk.kt.processors.createFinalModelResponseEvent
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
+import com.google.adk.kt.processors.getStructuredModelResponse
 import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
@@ -390,6 +392,12 @@ internal class LlmAgentTurn(
     functionResponseEvent?.let { responseEvent ->
       generateRequestConfirmationEvent(context, actionEvent, responseEvent)?.let { emitEvent(it) }
       emitEvent(responseEvent)
+      // When the output-schema-with-tools workaround is active, the model produces its final answer
+      // by calling the `set_model_response` tool. Convert that structured response into a synthetic
+      // final model-response event so the turn terminates and the output is saved to state.
+      getStructuredModelResponse(responseEvent)?.let { json ->
+        emitEvent(createFinalModelResponseEvent(context, json))
+      }
     }
     return functionResponseEvent
   }

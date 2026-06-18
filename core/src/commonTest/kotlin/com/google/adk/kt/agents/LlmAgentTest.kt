@@ -40,8 +40,12 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -693,6 +697,179 @@ class LlmAgentTest {
     assertTrue("second event must be a final response", events[1].isFinalResponse)
     assertEquals("Final response", events[1].actions.stateDelta["myOutput"])
   }
+
+  @Test
+  fun runAsync_withOutputSchema_savesValidatedMapToState() = runBlocking {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING)),
+        required = listOf("answer"),
+      )
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage("""{"answer": "42"}"""))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    // The validated JSON is stored as a parsed map (mirrors Python/Java which save the parsed
+    // structure rather than the raw string).
+    assertEquals(mapOf("answer" to "42"), events[0].actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withOutputSchema_invalidJson_savesRawText() = runBlocking {
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("answer" to Schema(type = Type.STRING)))
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage("not json"))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    // When the output cannot be parsed/validated, the raw text is stored instead.
+    assertEquals("not json", events[0].actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withOutputSchema_validJsonNotMatchingSchema_savesRawText() = runBlocking {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING)),
+        required = listOf("answer"),
+      )
+    // Valid JSON, but it does not satisfy the schema (it lacks the required "answer" field and
+    // carries an unexpected one). This exercises the schema-mismatch branch of
+    // maybeSaveOutputToState, which falls back to storing the raw text (distinct from the
+    // parse-failure branch above).
+    val rawOutput = """{"unexpected": "value"}"""
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage(rawOutput))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, events.size)
+    assertEquals(rawOutput, events[0].actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withOutputSchemaAndTools_gemini2_usesSetModelResponseWorkaround() = runBlocking {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING)),
+        required = listOf("answer"),
+      )
+    // The model returns its final answer by calling the set_model_response tool (the workaround for
+    // Gemini 2.x, which cannot use a response schema together with tools).
+    val setResponseCall =
+      Content(
+        role = Role.MODEL,
+        parts =
+          listOf(
+            Part(
+              functionCall =
+                FunctionCall("set_model_response", mapOf("answer" to "42"), id = "call_1")
+            )
+          ),
+      )
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = setResponseCall)),
+      )
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = model,
+        tools = listOf(DummyTool("my_tool")),
+        outputSchema = schema,
+        outputKey = "result",
+      )
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    // Events: the set_model_response function call, its function response, and the synthetic final
+    // model response carrying the structured JSON.
+    assertEquals(3, events.size)
+    val finalEvent = events.last()
+    assertTrue(finalEvent.isFinalResponse)
+    assertEquals("""{"answer":"42"}""", finalEvent.content?.parts?.firstOrNull()?.text)
+    assertEquals(mapOf("answer" to "42"), finalEvent.actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withOutputSchemaAndTools_gemini2_invalidArgs_failsInvocation() =
+    runBlocking<Unit> {
+      val schema =
+        Schema(
+          type = Type.OBJECT,
+          properties = mapOf("answer" to Schema(type = Type.STRING)),
+          required = listOf("answer"),
+        )
+      // The model calls set_model_response with args that violate the schema (missing the required
+      // "answer"). Unlike the best-effort direct-schema path, the workaround validates strictly, so
+      // the tool throws and—absent any onToolError/onModelError recovery—the failure propagates out
+      // of
+      // the invocation rather than being saved as raw text.
+      val setResponseCall =
+        Content(
+          role = Role.MODEL,
+          parts =
+            listOf(
+              Part(
+                functionCall =
+                  FunctionCall("set_model_response", mapOf("wrong" to "value"), id = "call_1")
+              )
+            ),
+        )
+      val model =
+        DummyModel.createSequential(
+          "gemini-2.0-flash",
+          listOf(LlmResponse(content = setResponseCall)),
+        )
+      val agent =
+        LlmAgent(
+          name = "test-agent",
+          model = model,
+          tools = listOf(DummyTool("my_tool")),
+          outputSchema = schema,
+          outputKey = "result",
+        )
+      val sessionService = InMemorySessionService()
+      val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+      val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+      assertFailsWith<IllegalArgumentException> { agent.runAsync(context).toList() }
+    }
 
   private fun createEvent(author: String, text: String): Event {
     return Event(

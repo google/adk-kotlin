@@ -222,6 +222,7 @@ internal fun com.google.genai.types.GenerateContentConfig.fromGenaiSdk(): Genera
     maxOutputTokens = maxOutputTokens().getOrNull(),
     stopSequences = stopSequences().getOrNull(),
     responseMimeType = responseMimeType().getOrNull(),
+    responseSchema = responseSchema().getOrNull()?.toKtSchema(),
     thinkingConfig = thinkingConfig().getOrNull()?.fromGenaiSdk(),
   )
 
@@ -242,6 +243,7 @@ internal fun GenerateContentConfig.toGenaiSdk(): com.google.genai.types.Generate
       this@toGenaiSdk.maxOutputTokens?.let { maxOutputTokens(it) }
       this@toGenaiSdk.stopSequences?.let { stopSequences(it) }
       this@toGenaiSdk.responseMimeType?.let { responseMimeType(it) }
+      this@toGenaiSdk.responseSchema?.let { responseSchema(it.toGenAiSchema()) }
       this@toGenaiSdk.thinkingConfig?.let { thinkingConfig(it.toGenaiSdk()) }
     }
     .build()

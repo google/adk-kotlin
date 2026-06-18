@@ -51,33 +51,6 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
       .appendTools(listOf(transferTool))
   }
 
-  private fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
-    val targets = buildList {
-      // Sub-agents are always potential targets.
-      addAll(agent.subAgents)
-
-      val parent = agent.parentAgent
-      if (parent != null) {
-        // Parent agent is a potential target if allowed.
-        if (!agent.disallowTransferToParent) {
-          add(parent)
-        }
-
-        // Peer agents are potential targets if allowed.
-        if (!agent.disallowTransferToPeers) {
-          addAll(parent.subAgents.filter { it.name != agent.name })
-        }
-      }
-    }
-
-    val uniqueTargets = targets.distinctBy { it.name }
-    require(uniqueTargets.size == targets.size) {
-      val duplicateNames = targets.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
-      "Duplicate agent names found in transfer targets: ${duplicateNames.joinToString()}. Agent names must be unique within reachable transfer scope."
-    }
-    return uniqueTargets
-  }
-
   private fun buildTargetAgentsInfo(targetAgent: BaseAgent) =
     """|Agent name: ${targetAgent.name}
        |Agent description: ${targetAgent.description}"""
@@ -117,4 +90,40 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
       }
     }
   }
+}
+
+/**
+ * Returns the agents [agent] may transfer control to: its sub-agents, and (when permitted) its
+ * parent and peers.
+ *
+ * Exposed at package scope so the output-schema gating ([BasicRequestProcessor] and
+ * [OutputSchemaProcessor]) can tell whether [AgentTransferProcessor] will attach a
+ * `transfer_to_agent` tool to the request, since that tool is subject to the same Gemini 2.x
+ * "response schema cannot be combined with tools" limitation as user-declared tools.
+ */
+internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
+  val targets = buildList {
+    // Sub-agents are always potential targets.
+    addAll(agent.subAgents)
+
+    val parent = agent.parentAgent
+    if (parent != null) {
+      // Parent agent is a potential target if allowed.
+      if (!agent.disallowTransferToParent) {
+        add(parent)
+      }
+
+      // Peer agents are potential targets if allowed.
+      if (!agent.disallowTransferToPeers) {
+        addAll(parent.subAgents.filter { it.name != agent.name })
+      }
+    }
+  }
+
+  val uniqueTargets = targets.distinctBy { it.name }
+  require(uniqueTargets.size == targets.size) {
+    val duplicateNames = targets.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
+    "Duplicate agent names found in transfer targets: ${duplicateNames.joinToString()}. Agent names must be unique within reachable transfer scope."
+  }
+  return uniqueTargets
 }

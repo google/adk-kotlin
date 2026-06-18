@@ -28,5 +28,6 @@ data class GenerateContentConfig(
   val maxOutputTokens: Int? = null,
   val stopSequences: List<String>? = null,
   val responseMimeType: String? = null,
+  val responseSchema: Schema? = null,
   val thinkingConfig: ThinkingConfig? = null,
 )

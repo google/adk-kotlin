@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.AfterModelCallback
 import com.google.adk.kt.callbacks.AfterToolCallback
@@ -33,6 +34,7 @@ import com.google.adk.kt.processors.ContentsProcessor
 import com.google.adk.kt.processors.InstructionsProcessor
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
+import com.google.adk.kt.processors.OutputSchemaProcessor
 import com.google.adk.kt.processors.RequestConfirmationProcessor
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.Toolset
@@ -91,6 +93,14 @@ import kotlinx.coroutines.flow.flow
  * @property beforeToolCallbacks List of callbacks to run before each tool call.
  * @property afterToolCallbacks List of callbacks to run after each tool call.
  * @property inputSchema The input schema of the agent.
+ * @property outputSchema The schema the agent's final response must conform to. Only top-level
+ *   object schemas are supported (matching the Java ADK; the Python ADK additionally supports
+ *   list/primitive output schemas). When set, the agent asks the model to return JSON matching this
+ *   schema and validates the final response against it before saving it to [outputKey]. If the
+ *   agent also has tools (including the framework's `transfer_to_agent` tool when sub-agents/peers
+ *   are reachable), the schema is applied directly on models that support a response schema
+ *   together with tools; on models that do not (e.g. Gemini 2.x), the framework falls back to a
+ *   `set_model_response` tool to collect the structured output.
  * @property outputKey The key in session state to store the final text response of the agent. When
  *   set, the agent's concatenated text output (excluding parts marked as thoughts) is written to
  *   `event.actions.stateDelta[outputKey]` on each final-response event, which the session service
@@ -133,6 +143,7 @@ class LlmAgent(
   val beforeToolCallbacks: List<BeforeToolCallback> = emptyList(),
   val afterToolCallbacks: List<AfterToolCallback> = emptyList(),
   val inputSchema: Schema? = null,
+  val outputSchema: Schema? = null,
   val outputKey: String? = null,
   val onModelErrorCallbacks: List<OnModelErrorCallback> = emptyList(),
   val onToolErrorCallbacks: List<OnToolErrorCallback> = emptyList(),
@@ -179,6 +190,7 @@ class LlmAgent(
       InstructionsProcessor(),
       ContentsProcessor(),
       AgentTransferProcessor(),
+      OutputSchemaProcessor(),
     )
 
   internal val systemAfterTurnProcessors: List<LlmResponseProcessor> = emptyList()
@@ -302,6 +314,14 @@ class LlmAgent(
    * - If no non-thought text parts are present, leaves [Event.actions]`.stateDelta` untouched so
    *   that values already written by other code paths (e.g. tool-side state updates on
    *   function-response-only events) are not overwritten.
+   * - If [outputSchema] is set, the concatenated text is parsed as JSON and validated against the
+   *   schema; the parsed map is stored on success. A blank result is skipped (it represents an
+   *   empty final stream chunk). If parsing or validation fails, the raw text is stored instead and
+   *   an error is logged. Mirrors `validate_schema` in the Python ADK and `validateOutputSchema` in
+   *   the Java ADK. Note this best-effort fallback is the direct-schema path only; the
+   *   `set_model_response` workaround instead validates strictly and propagates a tool execution
+   *   error (failing the invocation if unrecovered) rather than saving best-effort text (see
+   *   [com.google.adk.kt.tools.SetModelResponseTool.run]).
    *
    * NOTE on long-running tool events: when an event contains text alongside a long-running function
    * call (i.e. [Event.longRunningToolIds] is non-empty), Kotlin's [Event.isFinalResponse] returns
@@ -324,7 +344,22 @@ class LlmAgent(
     if (textParts.isEmpty()) return
 
     val result = textParts.joinToString(separator = "") { it.text.orEmpty() }
-    event.actions.stateDelta[outputKey] = result
+
+    val output: Any =
+      if (outputSchema != null) {
+        // An empty/whitespace result is an empty final stream chunk; do not parse it as JSON.
+        if (result.isBlank()) return
+        SchemaUtils.validateOutputSchema(result, outputSchema).getOrElse { cause ->
+          logger.error(cause) {
+            "LlmAgent output for outputKey '$outputKey' did not match the outputSchema. " +
+              "Saving raw output to state."
+          }
+          result
+        }
+      } else {
+        result
+      }
+    event.actions.stateDelta[outputKey] = output
   }
 
   private companion object {
