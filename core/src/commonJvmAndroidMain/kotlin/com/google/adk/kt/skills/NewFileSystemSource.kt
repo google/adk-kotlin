@@ -24,10 +24,6 @@ import kotlin.io.path.isDirectory
 import kotlin.io.path.name
 import kotlin.io.path.readText
 import kotlin.streams.asSequence
-import org.yaml.snakeyaml.LoaderOptions
-import org.yaml.snakeyaml.Yaml
-import org.yaml.snakeyaml.constructor.SafeConstructor
-import org.yaml.snakeyaml.error.YAMLException
 
 class NewFileSystemSource(private val skillsBaseDir: String) : SkillSource {
 
@@ -157,23 +153,6 @@ class NewFileSystemSource(private val skillsBaseDir: String) : SkillSource {
   }
 }
 
-private const val SKILL_FILE_NAME = "SKILL.md"
-private const val FRONTMATTER_SEPARATOR = "---"
-
-/**
- * Runs [block] and wraps its outcome in a [Result].
- *
- * A successful return is wrapped in [Result.success]; a [SkillSourceException] thrown by [block] is
- * wrapped in [Result.failure] with the message preserved verbatim. Any other exception is
- * intentionally NOT caught and propagates to the caller.
- */
-private inline fun <R> sourceRunCatching(block: () -> R): Result<R> =
-  try {
-    Result.success(block())
-  } catch (e: SkillSourceException) {
-    Result.failure(e)
-  }
-
 private fun parseSkillFromDir(skillDirPath: Path): Pair<Frontmatter, String> {
   val skillName = skillDirPath.name
   if (!skillDirPath.exists() || !skillDirPath.isDirectory()) {
@@ -194,88 +173,5 @@ private fun parseSkillFromDir(skillDirPath: Path): Pair<Frontmatter, String> {
         e,
       )
     }
-  val (frontmatterMap, instructions) =
-    try {
-      parseSkillMdContent(content)
-    } catch (e: IllegalArgumentException) {
-      throw SkillSourceException(
-        "Skill $skillName is malformed: invalid frontmatter: ${e.message}",
-        e,
-      )
-    }
-
-  val name =
-    frontmatterMap["name"] as? String
-      ?: throw SkillSourceException(
-        "Skill $skillName is malformed: 'name' field missing from frontmatter."
-      )
-  val description =
-    frontmatterMap["description"] as? String
-      ?: throw SkillSourceException(
-        "Skill $skillName is malformed: 'description' field missing from frontmatter."
-      )
-  if (name != skillName) {
-    throw SkillSourceException(
-      "Skill $skillName is malformed: name '$name' in $SKILL_FILE_NAME does not match directory name '$skillName'"
-    )
-  }
-
-  val frontmatter =
-    try {
-      Frontmatter(
-        name = name,
-        description = description,
-        license = frontmatterMap["license"] as? String,
-        compatibility = frontmatterMap["compatibility"] as? String,
-        allowedTools =
-          frontmatterMap["allowed-tools"] as? String ?: frontmatterMap["allowed_tools"] as? String,
-        metadata =
-          (frontmatterMap["metadata"] as? Map<*, *>)
-            ?.mapNotNull { (k, v) -> if (k is String && v is String) k to v else null }
-            ?.toMap() ?: emptyMap(),
-      )
-    } catch (e: IllegalArgumentException) {
-      throw SkillSourceException("Skill $skillName is malformed: ${e.message}", e)
-    }
-
-  return frontmatter to instructions
-}
-
-/**
- * Parses a `SKILL.md` document into its YAML frontmatter map and the instruction body.
- *
- * @throws IllegalArgumentException if the document is malformed in any of the following ways: the
- *   leading `---` separator is missing; the trailing `---` separator is missing; the frontmatter
- *   body is empty or whitespace-only; the frontmatter is not valid YAML; the frontmatter root is
- *   not a YAML mapping (e.g. it is a list, scalar, or null).
- */
-private fun parseSkillMdContent(content: String): Pair<Map<String, Any>, String> {
-  if (!content.startsWith(FRONTMATTER_SEPARATOR)) {
-    throw IllegalArgumentException(
-      "$SKILL_FILE_NAME must start with YAML frontmatter ($FRONTMATTER_SEPARATOR)"
-    )
-  }
-  val parts = content.split(FRONTMATTER_SEPARATOR, limit = 3)
-  if (parts.size < 3) {
-    throw IllegalArgumentException(
-      "$SKILL_FILE_NAME frontmatter not properly closed with $FRONTMATTER_SEPARATOR"
-    )
-  }
-
-  val frontmatterStr = parts[1]
-  val instructions = parts[2].trim()
-
-  if (frontmatterStr.isBlank()) {
-    throw IllegalArgumentException("Frontmatter must not be empty.")
-  }
-
-  try {
-    val yaml = Yaml(SafeConstructor(LoaderOptions()))
-    val parsed: Map<String, Any> = yaml.load(frontmatterStr)
-    return parsed to instructions
-  } catch (e: YAMLException) {
-    throw IllegalArgumentException("Invalid YAML in frontmatter: ${e.message}", e)
-  } catch (e: ClassCastException) {
-    throw IllegalArgumentException("Frontmatter must be a YAML mapping.", e)
-  }
+  return parseSkillMd(skillName, content)
 }
