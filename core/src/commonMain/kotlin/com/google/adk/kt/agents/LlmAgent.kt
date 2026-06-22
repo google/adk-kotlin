@@ -37,11 +37,14 @@ import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.OutputSchemaProcessor
 import com.google.adk.kt.processors.RequestConfirmationProcessor
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -368,6 +371,34 @@ class LlmAgent(
 
   private companion object {
     private val logger = LoggerFactory.getLogger(LlmAgent::class)
+  }
+}
+
+/**
+ * A tool that takes a photo by delegating to a custom, injected [capture] lambda.
+ *
+ * This allows integrating with real camera hardware or providing simulated image frames.
+ *
+ * @property capture A suspending lambda that performs the photo capture and returns a map
+ *   containing image data.
+ */
+class TakePhotoTool(private val capture: suspend () -> Map<String, Any>) :
+  BaseTool(
+    name = "take_photo",
+    description =
+      "Takes a photo from the camera by delegating to a custom, injected capture lambda.",
+  ) {
+
+  override fun declaration(): FunctionDeclaration {
+    return FunctionDeclaration(
+      name = name,
+      description = description,
+      parameters = Schema(type = Type.OBJECT, properties = emptyMap()),
+    )
+  }
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any>): Any {
+    return capture()
   }
 }
 
