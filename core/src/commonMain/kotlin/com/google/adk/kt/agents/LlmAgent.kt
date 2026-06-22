@@ -37,11 +37,14 @@ import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.OutputSchemaProcessor
 import com.google.adk.kt.processors.RequestConfirmationProcessor
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -368,6 +371,29 @@ class LlmAgent(
 
   private companion object {
     private val logger = LoggerFactory.getLogger(LlmAgent::class)
+  }
+}
+
+/** A tool that takes a photo and returns a dummy blue frame. */
+class TakePhotoTool :
+  BaseTool(
+    name = "take_photo",
+    description = "Takes a photo from the camera and returns an image frame (all blue).",
+  ) {
+
+  override fun declaration(): FunctionDeclaration {
+    return FunctionDeclaration(
+      name = name,
+      description = description,
+      parameters = Schema(type = Type.OBJECT, properties = emptyMap()),
+    )
+  }
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any>): Any {
+    // A blue 1x1 pixel PNG represented as base64 string
+    val bluePngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgMAMAACYAA3Lcyj0AAAAASUVORK5CYII="
+    return mapOf("mime_type" to "image/png", "data" to bluePngBase64)
   }
 }
 
