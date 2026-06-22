@@ -17,6 +17,8 @@
 package com.google.adk.kt.apps
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 
 /**
@@ -24,7 +26,9 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
  *
  * An [App] is the top-level container for an agentic system powered by LLMs. It bundles an
  * application name together with the [rootAgent] that serves as the root of the agent tree,
- * enabling coordination and communication across all agents in the hierarchy.
+ * enabling coordination and communication across all agents in the hierarchy. It also carries
+ * application-wide configuration, such as [plugins] and [resumabilityConfig], that the runner
+ * applies to every session it runs.
  *
  * [appName] must be a valid identifier (letters, digits, and underscores only, not starting with a
  * digit) and must not be the reserved value `"user"`, which is reserved for end-user input.
@@ -32,12 +36,18 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
  *
  * @property appName The application name.
  * @property rootAgent The root agent of the application's agent tree.
+ * @property plugins Application-wide [Plugin]s providing shared callbacks and services to the
+ *   entire system. Defaults to an empty list.
+ * @property resumabilityConfig Optional resumability configuration applied to the application's
+ *   sessions. When `null`, resumability is disabled.
  * @property eventsCompactionConfig Optional configuration controlling context-compaction strategies
  *   for sessions of this application. When `null`, no compaction runs.
  */
 data class App(
   val appName: String,
   val rootAgent: BaseAgent,
+  val plugins: List<Plugin> = emptyList(),
+  val resumabilityConfig: ResumabilityConfig? = null,
   val eventsCompactionConfig: EventsCompactionConfig? = null,
 ) {
   init {

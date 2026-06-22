@@ -90,25 +90,30 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Creates a runner from an [App]. The compaction config is resolved at construction (failing fast
-   * if a default summarizer is required but the root agent is not an [LlmAgent]) and stored back on
-   * the [app], so [App.eventsCompactionConfig] returns the effective config.
+   * Creates a runner from an [App], deriving its [App.appName], [App.rootAgent], [App.plugins], and
+   * [App.resumabilityConfig].
+   *
+   * This is the recommended way to configure plugins and resumability: the [App] is the single
+   * source of truth. The field-based primary constructor still accepts a [pluginManager] and
+   * [resumabilityConfig] for backward compatibility.
+   *
+   * The compaction config is resolved at construction (failing fast if a default summarizer is
+   * required but the root agent is not an [LlmAgent]) and stored back on the [app], so
+   * [App.eventsCompactionConfig] returns the effective config.
    */
   constructor(
     app: App,
     sessionService: SessionService,
     artifactService: ArtifactService?,
     memoryService: MemoryService?,
-    pluginManager: PluginManager,
-    resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
   ) {
     this.appName = app.appName
     this.agent = app.rootAgent
     this.sessionService = sessionService
     this.artifactService = artifactService
     this.memoryService = memoryService
-    this.pluginManager = pluginManager
-    this.resumabilityConfig = resumabilityConfig
+    this.pluginManager = PluginManager(app.plugins)
+    this.resumabilityConfig = app.resumabilityConfig ?: ResumabilityConfig()
     this.app =
       app.copy(
         eventsCompactionConfig =

@@ -28,6 +28,8 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.plugins.Plugin
+import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
@@ -80,6 +82,52 @@ class InMemoryRunnerTest {
     val sessionEvents =
       runner.sessionService.getSession(SessionKey("dummy_app", "user1", "session1"))!!.events
     assertThat(sessionEvents.map { it.author }).containsExactly(Role.USER, Role.MODEL).inOrder()
+  }
+
+  @Test
+  fun constructedFromApp_appliesPluginsFromApp() {
+    val plugin =
+      object : Plugin {
+        override val name = "app-plugin"
+      }
+    val app = App(appName = "dummy_app", rootAgent = dummyAgent, plugins = listOf(plugin))
+
+    val runner = InMemoryRunner(app = app)
+
+    assertThat(runner.pluginManager.getPlugin("app-plugin")).isSameInstanceAs(plugin)
+  }
+
+  @Test
+  fun constructedFromApp_appliesResumabilityConfigFromApp() {
+    val app =
+      App(
+        appName = "dummy_app",
+        rootAgent = dummyAgent,
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+      )
+
+    val runner = InMemoryRunner(app = app)
+
+    assertThat(runner.resumabilityConfig.isResumable).isTrue()
+  }
+
+  @Test
+  fun constructedWithPluginManagerAndResumabilityConfig_appliesBoth() {
+    val plugin =
+      object : Plugin {
+        override val name = "direct-plugin"
+      }
+
+    @Suppress("DEPRECATION")
+    val runner =
+      InMemoryRunner(
+        agent = dummyAgent,
+        pluginManager = PluginManager(listOf(plugin)),
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+      )
+
+    assertThat(runner.pluginManager.getPlugin("direct-plugin")).isSameInstanceAs(plugin)
+    assertThat(runner.resumabilityConfig.isResumable).isTrue()
   }
 
   @Test

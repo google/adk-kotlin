@@ -45,8 +45,94 @@ open class InMemoryRunner : AbstractRunner {
     sessionService: SessionService = InMemorySessionService(),
     artifactService: ArtifactService? = InMemoryArtifactService(),
     memoryService: MemoryService? = InMemoryMemoryService(),
-    pluginManager: PluginManager = PluginManager(),
-    resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
+  ) : super(appName, agent, sessionService, artifactService, memoryService, PluginManager())
+
+  /**
+   * Creates an [InMemoryRunner] from an [App], deriving its [App.appName], [App.rootAgent],
+   * [App.plugins], and [App.resumabilityConfig].
+   *
+   * This is the recommended way to configure plugins and resumability.
+   */
+  constructor(
+    app: App,
+    sessionService: SessionService = InMemorySessionService(),
+    artifactService: ArtifactService? = InMemoryArtifactService(),
+    memoryService: MemoryService? = InMemoryMemoryService(),
+  ) : super(app, sessionService, artifactService, memoryService)
+
+  /**
+   * Creates an [InMemoryRunner] with an explicit [pluginManager].
+   *
+   * @deprecated Configure plugins on the [App] instead.
+   */
+  @Deprecated(
+    "Configure plugins via App.plugins instead, e.g. " +
+      "InMemoryRunner(App(appName, agent, plugins = listOf(...))). Passing a PluginManager " +
+      "directly to the runner is deprecated.",
+    ReplaceWith("InMemoryRunner(App(appName, agent, plugins = pluginManager.plugins))"),
+    DeprecationLevel.WARNING,
+  )
+  constructor(
+    agent: BaseAgent,
+    appName: String = "InMemoryRunner",
+    sessionService: SessionService = InMemorySessionService(),
+    artifactService: ArtifactService? = InMemoryArtifactService(),
+    memoryService: MemoryService? = InMemoryMemoryService(),
+    pluginManager: PluginManager,
+  ) : super(appName, agent, sessionService, artifactService, memoryService, pluginManager)
+
+  /**
+   * Creates an [InMemoryRunner] with an explicit [resumabilityConfig].
+   *
+   * @deprecated Configure resumability on the [App] instead.
+   */
+  @Deprecated(
+    "Configure resumability via App.resumabilityConfig instead, e.g. " +
+      "InMemoryRunner(App(appName, agent, resumabilityConfig = ...)). Passing a ResumabilityConfig " +
+      "directly to the runner is deprecated.",
+    ReplaceWith("InMemoryRunner(App(appName, agent, resumabilityConfig = resumabilityConfig))"),
+    DeprecationLevel.WARNING,
+  )
+  constructor(
+    agent: BaseAgent,
+    appName: String = "InMemoryRunner",
+    sessionService: SessionService = InMemorySessionService(),
+    artifactService: ArtifactService? = InMemoryArtifactService(),
+    memoryService: MemoryService? = InMemoryMemoryService(),
+    resumabilityConfig: ResumabilityConfig,
+  ) : super(
+    appName,
+    agent,
+    sessionService,
+    artifactService,
+    memoryService,
+    PluginManager(),
+    resumabilityConfig,
+  )
+
+  /**
+   * Creates an [InMemoryRunner] with both an explicit [pluginManager] and [resumabilityConfig].
+   *
+   * @deprecated Configure plugins and resumability on the [App] instead.
+   */
+  @Deprecated(
+    "Configure plugins and resumability via App instead, e.g. " +
+      "InMemoryRunner(App(appName, agent, plugins = listOf(...), resumabilityConfig = ...)). " +
+      "Passing them directly to the runner is deprecated.",
+    ReplaceWith(
+      "InMemoryRunner(App(appName, agent, plugins = pluginManager.plugins, " +
+        "resumabilityConfig = resumabilityConfig))"
+    ),
+    DeprecationLevel.WARNING,
+  )
+  constructor(
+    agent: BaseAgent,
+    appName: String = "InMemoryRunner",
+    sessionService: SessionService = InMemorySessionService(),
+    artifactService: ArtifactService? = InMemoryArtifactService(),
+    memoryService: MemoryService? = InMemoryMemoryService(),
+    pluginManager: PluginManager,
+    resumabilityConfig: ResumabilityConfig,
   ) : super(
     appName,
     agent,
@@ -56,14 +142,4 @@ open class InMemoryRunner : AbstractRunner {
     pluginManager,
     resumabilityConfig,
   )
-
-  /** Creates an [InMemoryRunner] from an [App], taking its [App.appName] and [App.rootAgent]. */
-  constructor(
-    app: App,
-    sessionService: SessionService = InMemorySessionService(),
-    artifactService: ArtifactService? = InMemoryArtifactService(),
-    memoryService: MemoryService? = InMemoryMemoryService(),
-    pluginManager: PluginManager = PluginManager(),
-    resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
-  ) : super(app, sessionService, artifactService, memoryService, pluginManager, resumabilityConfig)
 }
