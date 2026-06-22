@@ -280,7 +280,6 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
         metadataParser,
       )
     }
-    else -> null
   }
 }
 
