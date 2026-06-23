@@ -189,6 +189,10 @@ internal class LlmAgentTurn(
 
       span.recordCallLlmRequest(currentRequest)
 
+      // Enforce RunConfig.maxLlmCalls. After before-model callbacks so a short-circuiting callback
+      // doesn't consume the budget (parity with Python ADK base_llm_flow); throwing aborts the run.
+      context.incrementLlmCallsCount()
+
       var modelResponseEvent = createModelResponseEvent()
       span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = modelResponseEvent.id
       // Tracks the last response seen so response-derived span attributes (usage, finish reasons,

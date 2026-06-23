@@ -43,6 +43,7 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.jvm.Volatile
+import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -157,11 +158,27 @@ data class InvocationContext(
 
   /** The manager for keeping track of plugins in this invocation. */
   val pluginManager: PluginManager = PluginManager(),
+
+  /**
+   * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. Shared across contexts
+   * derived via [copy] (sub-agents, transfers) so the cap spans the whole invocation; a context
+   * built from the constructor starts fresh.
+   */
+  private val invocationCostManager: InvocationCostManager = InvocationCostManager(),
 ) {
 
   /** Returns whether the current invocation is resumable. */
   val isResumable: Boolean
     get() = resumabilityConfig?.isResumable == true
+
+  /**
+   * Counts this LLM call and enforces [RunConfig.maxLlmCalls].
+   *
+   * @throws LlmCallsLimitExceededException if the limit is exceeded.
+   */
+  fun incrementLlmCallsCount() {
+    invocationCostManager.incrementAndEnforceLlmCallsLimit(runConfig)
+  }
 
   /**
    * Creates a new InvocationContext for running [childAgent], derived from this context, keeping
@@ -604,5 +621,30 @@ data class InvocationContext(
         key to value
       }
       .toMap()
+  }
+}
+
+/**
+ * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only
+ * because it is an [InvocationContext] constructor-property type; its constructor and members are
+ * non-public.
+ */
+class InvocationCostManager internal constructor() {
+  // Atomic so concurrent turns (e.g. sub-agents under a ParallelAgent) count without races.
+  private val numberOfLlmCalls = atomic(0)
+
+  /**
+   * Counts one LLM call and throws once the count exceeds a positive [RunConfig.maxLlmCalls]. A
+   * null config or non-positive limit means unbounded.
+   *
+   * @throws LlmCallsLimitExceededException if the limit is exceeded.
+   */
+  internal fun incrementAndEnforceLlmCallsLimit(runConfig: RunConfig?) {
+    val currentCount = numberOfLlmCalls.incrementAndGet()
+    if (runConfig != null && runConfig.maxLlmCalls > 0 && currentCount > runConfig.maxLlmCalls) {
+      throw LlmCallsLimitExceededException(
+        "Max number of llm calls limit of `${runConfig.maxLlmCalls}` exceeded"
+      )
+    }
   }
 }

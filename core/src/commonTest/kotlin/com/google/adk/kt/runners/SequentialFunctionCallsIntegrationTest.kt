@@ -16,6 +16,8 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LlmCallsLimitExceededException
+import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
@@ -29,11 +31,13 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.FunctionCall
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 
@@ -203,4 +207,51 @@ class SequentialFunctionCallsIntegrationTest {
       assertEquals("value_a", session.state["key_a"])
       assertEquals("value_b", session.state["key_b"])
     }
+
+  /**
+   * The model is scripted to request a tool call on every turn, so the agent loop would never
+   * terminate on its own. Verifies that [RunConfig.maxLlmCalls] caps the invocation: the model is
+   * invoked exactly `maxLlmCalls` times and the run then fails with
+   * [LlmCallsLimitExceededException]. Mirrors Python ADK `test_run_async_with_max_llm_calls`.
+   */
+  @Test
+  fun runAsync_modelKeepsCallingTool_maxLlmCallsCapAbortsRun() = runTest {
+    var modelCalls = 0
+    var toolInvocations = 0
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model =
+          DummyModel("looping-model") {
+            modelCalls++
+            flowOf(modelFunctionCallResponse("increment", id = "call_$modelCalls"))
+          },
+        tools =
+          listOf(
+            DummyTool(
+              name = "increment",
+              onRun = { _, _ ->
+                toolInvocations++
+                mapOf("count" to toolInvocations)
+              },
+            )
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    assertFailsWith<LlmCallsLimitExceededException> {
+      runner
+        .runAsync(
+          userId = "user1",
+          sessionId = "session1",
+          newMessage = userMessage("go"),
+          runConfig = RunConfig(maxLlmCalls = 3),
+        )
+        .toList()
+    }
+
+    // The 4th turn trips the cap before the model is invoked again: exactly 3 LLM calls happen.
+    assertEquals(3, modelCalls)
+    assertEquals(3, toolInvocations)
+  }
 }

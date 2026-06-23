@@ -18,6 +18,7 @@ package com.google.adk.kt.agents
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class RunConfigTest {
 
@@ -25,6 +26,24 @@ class RunConfigTest {
   fun testRunConfigDefaults() {
     val config = RunConfig()
     assertEquals(StreamingMode.NONE, config.streamingMode)
+    assertEquals(500, config.maxLlmCalls)
     assertEquals(null, config.customMetadata)
+  }
+
+  @Test
+  fun maxLlmCalls_customValue_isRetained() {
+    assertEquals(42, RunConfig(maxLlmCalls = 42).maxLlmCalls)
+  }
+
+  @Test
+  fun maxLlmCalls_intMaxValue_throwsIllegalArgumentException() {
+    assertFailsWith<IllegalArgumentException> { RunConfig(maxLlmCalls = Int.MAX_VALUE) }
+  }
+
+  @Test
+  fun maxLlmCalls_nonPositiveValue_isAllowedAndDisablesEnforcement() {
+    // Non-positive values are valid (a warning is logged) and disable the cap.
+    assertEquals(0, RunConfig(maxLlmCalls = 0).maxLlmCalls)
+    assertEquals(-1, RunConfig(maxLlmCalls = -1).maxLlmCalls)
   }
 }

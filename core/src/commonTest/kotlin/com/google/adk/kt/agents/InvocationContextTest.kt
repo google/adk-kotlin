@@ -43,6 +43,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -79,6 +80,53 @@ class InvocationContextTest {
       )
 
     assertEquals(pluginManager, context.pluginManager)
+  }
+
+  @Test
+  fun incrementLlmCallsCount_whenLimitNotExceeded_doesNotThrow() {
+    val context = testInvocationContext(runConfig = RunConfig(maxLlmCalls = 2))
+
+    // Exactly maxLlmCalls calls are allowed without throwing.
+    context.incrementLlmCallsCount()
+    context.incrementLlmCallsCount()
+  }
+
+  @Test
+  fun incrementLlmCallsCount_whenLimitExceeded_throws() {
+    val context = testInvocationContext(runConfig = RunConfig(maxLlmCalls = 1))
+
+    context.incrementLlmCallsCount()
+
+    assertThrows(LlmCallsLimitExceededException::class.java) { context.incrementLlmCallsCount() }
+  }
+
+  @Test
+  fun incrementLlmCallsCount_whenLimitIsNonPositive_doesNotEnforce() {
+    val context = testInvocationContext(runConfig = RunConfig(maxLlmCalls = 0))
+
+    // A non-positive limit disables enforcement: many calls never throw.
+    repeat(1000) { context.incrementLlmCallsCount() }
+  }
+
+  @Test
+  fun incrementLlmCallsCount_whenNoRunConfig_doesNotEnforce() {
+    val context = testInvocationContext(runConfig = null)
+
+    repeat(1000) { context.incrementLlmCallsCount() }
+  }
+
+  @Test
+  fun incrementLlmCallsCount_counterIsSharedAcrossDerivedContexts() {
+    // The cap applies to the whole invocation: contexts derived via copy (sub-agents, transfers)
+    // share the same counter. One call via the parent and one via the child reach the limit of 2,
+    // so a third call throws.
+    val context = testInvocationContext(runConfig = RunConfig(maxLlmCalls = 2))
+    val childContext = context.forAgent(DummyAgent("child-agent"))
+
+    context.incrementLlmCallsCount()
+    childContext.incrementLlmCallsCount()
+
+    assertThrows(LlmCallsLimitExceededException::class.java) { context.incrementLlmCallsCount() }
   }
 
   @Test

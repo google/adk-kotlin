@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.logging.LoggerFactory
+
 /**
  * Streaming modes for agent execution.
  *
@@ -49,9 +51,25 @@ enum class StreamingMode {
  * Configs for runtime behavior of agents.
  *
  * @property streamingMode Streaming mode, NONE or SSE.
+ * @property maxLlmCalls Limit on the total number of LLM calls per run. A positive value is
+ *   enforced; a value <= 0 means unbounded.
  * @property customMetadata Custom metadata for the current invocation.
  */
 data class RunConfig(
   val streamingMode: StreamingMode = StreamingMode.NONE,
+  val maxLlmCalls: Int = 500,
   val customMetadata: Map<String, Any>? = null,
-)
+) {
+  init {
+    require(maxLlmCalls != Int.MAX_VALUE) { "maxLlmCalls should be less than Int.MAX_VALUE." }
+    if (maxLlmCalls <= 0) {
+      logger.warn {
+        "maxLlmCalls <= 0 disables the LLM-call limit, risking never-ending agent loops."
+      }
+    }
+  }
+
+  private companion object {
+    private val logger = LoggerFactory.getLogger(RunConfig::class)
+  }
+}
