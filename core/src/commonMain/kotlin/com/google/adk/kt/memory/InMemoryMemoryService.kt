@@ -22,6 +22,8 @@ import kotlin.time.Instant
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+private const val UNKNOWN_SESSION_ID = "__unknown_session_id__"
+
 /**
  * An in-memory memory service for prototyping purposes only.
  *
@@ -42,6 +44,34 @@ class InMemoryMemoryService : MemoryService {
       }
 
     userSessions[session.key.id!!] = nonEmptyEvents
+  }
+
+  override suspend fun addEventsToMemory(
+    appName: String,
+    userId: String,
+    events: List<Event>,
+    sessionId: String?,
+    customMetadata: Map<String, Any?>?,
+  ) = mutex.withLock {
+    val key = UserKey(appName, userId)
+    val userSessions = sessionEvents.getOrPut(key) { mutableMapOf() }
+    val scopedSessionId = sessionId ?: UNKNOWN_SESSION_ID
+
+    val eventsToAdd = events.filter { event ->
+      event.content?.parts?.any { part -> !part.text.isNullOrEmpty() } ?: false
+    }
+
+    val existingEvents = userSessions[scopedSessionId]?.toMutableList() ?: mutableListOf()
+    val existingIds = existingEvents.map { it.id }.toMutableSet()
+
+    for (event in eventsToAdd) {
+      if (event.id !in existingIds) {
+        existingEvents.add(event)
+        existingIds.add(event.id)
+      }
+    }
+
+    userSessions[scopedSessionId] = existingEvents
   }
 
   override suspend fun searchMemory(

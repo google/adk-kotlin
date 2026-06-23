@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.memory
 
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 
 /**
@@ -34,6 +35,34 @@ interface MemoryService {
    * @param session The session to add.
    */
   suspend fun addSessionToMemory(session: Session)
+
+  /**
+   * Adds an explicit list of events to the memory service.
+   *
+   * This is intended for cases where callers want to persist only a subset of events (e.g., the
+   * latest turn), rather than re-ingesting the full session.
+   *
+   * Implementations should treat `events` as an incremental update (delta) and must not assume it
+   * represents the full session.
+   *
+   * @param appName The application name for memory scope.
+   * @param userId The user ID for memory scope.
+   * @param events The events to add to memory.
+   * @param sessionId Optional session ID for memory scope/partitioning.
+   * @param customMetadata Optional, portable metadata for memory generation.
+   */
+  suspend fun addEventsToMemory(
+    appName: String,
+    userId: String,
+    events: List<Event>,
+    sessionId: String? = null,
+    customMetadata: Map<String, Any?>? = null,
+  ) {
+    throw UnsupportedOperationException(
+      "This memory service does not support adding event deltas. " +
+        "Call addSessionToMemory(session) to ingest the full session."
+    )
+  }
 
   /**
    * Searches for sessions that match the query asynchronously.

@@ -89,6 +89,83 @@ class InMemoryMemoryServiceTest {
     assertTrue(response.memories.isEmpty())
   }
 
+  @Test
+  fun addEventsToMemory_withExplicitEvents_addsFilteredEvents() = runTest {
+    val event = createEvent("event-1a", "The ADK is a great toolkit.")
+    val ignoredEvent = Event(id = "event-1b", author = Role.USER)
+
+    memoryService.addEventsToMemory(
+      appName = "app-1",
+      userId = "user-1",
+      sessionId = "session-1",
+      events = listOf(event, ignoredEvent),
+    )
+
+    val response = memoryService.searchMemory("app-1", "user-1", "toolkit")
+    assertEquals(1, response.memories.size)
+    assertEquals("The ADK is a great toolkit.", response.memories[0].content.parts[0].text)
+  }
+
+  @Test
+  fun addEventsToMemory_withoutSessionId_usesDefaultBucket() = runTest {
+    val event = createEvent("event-1a", "The ADK is a great toolkit.")
+
+    memoryService.addEventsToMemory(appName = "app-1", userId = "user-1", events = listOf(event))
+
+    val response = memoryService.searchMemory("app-1", "user-1", "toolkit")
+    assertEquals(1, response.memories.size)
+    assertEquals("The ADK is a great toolkit.", response.memories[0].content.parts[0].text)
+  }
+
+  @Test
+  fun addEventsToMemory_appendsWithoutReplacing() = runTest {
+    val session = createSession("app-1", "user-1", "session-1", "Hello world")
+    memoryService.addSessionToMemory(session)
+
+    val newEvent = createEvent("event-1d", "A new fact.")
+    memoryService.addEventsToMemory(
+      appName = "app-1",
+      userId = "user-1",
+      sessionId = "session-1",
+      events = listOf(newEvent),
+    )
+
+    val response = memoryService.searchMemory("app-1", "user-1", "world fact")
+    assertEquals(2, response.memories.size)
+  }
+
+  @Test
+  fun addEventsToMemory_deduplicatesEventIds() = runTest {
+    val session = createSession("app-1", "user-1", "session-1", "Hello world")
+    val sessionEvent = session.events[0]
+    memoryService.addSessionToMemory(session)
+
+    val duplicateEvent = createEvent(sessionEvent.id, "Updated duplicate text.")
+    memoryService.addEventsToMemory(
+      appName = "app-1",
+      userId = "user-1",
+      sessionId = "session-1",
+      events = listOf(duplicateEvent),
+    )
+
+    val responseUpdated = memoryService.searchMemory("app-1", "user-1", "updated")
+    assertTrue(responseUpdated.memories.isEmpty())
+
+    val responseHello = memoryService.searchMemory("app-1", "user-1", "hello")
+    assertEquals(1, responseHello.memories.size)
+    assertEquals("Hello world", responseHello.memories[0].content.parts[0].text)
+  }
+
+  private fun createEvent(id: String, text: String): Event {
+    val content = Content(role = null, parts = listOf(Part(text = text)))
+    return Event(
+      id = id,
+      timestamp = Clock.System.now().toEpochMilliseconds(),
+      content = content,
+      author = Role.USER,
+    )
+  }
+
   private fun createSession(
     appName: String,
     userId: String,
