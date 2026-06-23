@@ -224,6 +224,7 @@ internal fun com.google.genai.types.GenerateContentConfig.fromGenaiSdk(): Genera
     responseMimeType = responseMimeType().getOrNull(),
     responseSchema = responseSchema().getOrNull()?.toKtSchema(),
     thinkingConfig = thinkingConfig().getOrNull()?.fromGenaiSdk(),
+    cachedContent = cachedContent().getOrNull(),
   )
 
 /**
@@ -245,6 +246,7 @@ internal fun GenerateContentConfig.toGenaiSdk(): com.google.genai.types.Generate
       this@toGenaiSdk.responseMimeType?.let { responseMimeType(it) }
       this@toGenaiSdk.responseSchema?.let { responseSchema(it.toGenAiSchema()) }
       this@toGenaiSdk.thinkingConfig?.let { thinkingConfig(it.toGenaiSdk()) }
+      this@toGenaiSdk.cachedContent?.let { cachedContent(it) }
     }
     .build()
 

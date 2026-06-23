@@ -128,11 +128,28 @@ class Gemini(
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
     val preparedRequest = request.prepareGenerateContentRequest(!client.vertexAI())
-    val config = preparedRequest.config.toGenaiSdk()
-    val contents = preparedRequest.contents.map { it.toGenaiSdk() }
+
+    // Handle context caching when configured. The manager may rewrite the request to reference an
+    // existing cache (dropping the cached prefix) and returns the metadata to attach to responses.
+    val cacheManager =
+      preparedRequest.cacheConfig?.let {
+        GeminiContextCacheManager(name, GeminiContextCacheManager.RealCacheClient(client.caches))
+      }
+    val cacheResult = cacheManager?.handleContextCaching(preparedRequest)
+    val finalRequest = cacheResult?.request ?: preparedRequest
+    val cacheMetadata = cacheResult?.cacheMetadata
+
+    fun attachCacheMetadata(response: LlmResponse): LlmResponse {
+      // A non-null cacheMetadata implies a non-null cacheManager (both come from cacheResult).
+      val metadata = cacheMetadata ?: return response
+      return cacheManager.populateCacheMetadataInResponse(response, metadata)
+    }
+
+    val config = finalRequest.config.toGenaiSdk()
+    val contents = finalRequest.contents.map { it.toGenaiSdk() }
 
     logger.debug {
-      "LLM Request:\n${Json.toJsonString(buildLoggingRequestMap(preparedRequest, config))}"
+      "LLM Request:\n${Json.toJsonString(buildLoggingRequestMap(finalRequest, config))}"
     }
 
     if (stream) {
@@ -148,7 +165,7 @@ class Gemini(
       }
 
       // After stream loop ends, emit final aggregated response
-      aggregator.aggregate()?.let { emit(it) }
+      aggregator.aggregate()?.let { emit(attachCacheMetadata(it)) }
     } else {
       val response = models.generateContent(name, contents, config)
       logger.debug {
@@ -156,7 +173,7 @@ class Gemini(
           "finishReason=${response.finishReason()}"
       }
       val llmResponse = LlmResponse.from(response.fromGenaiSdk())
-      emit(llmResponse)
+      emit(attachCacheMetadata(llmResponse))
     }
   }
 

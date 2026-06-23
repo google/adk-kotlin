@@ -16,7 +16,13 @@
 
 package com.google.adk.kt.types
 
-/** Configuration for generating content. */
+/**
+ * Configuration for generating content.
+ *
+ * @property cachedContent Resource name of a context cache (e.g.
+ *   `projects/123/locations/us-central1/cachedContents/456`) to use for this request. When set, the
+ *   cached system instruction, tools, and contents are reused instead of being resent.
+ */
 data class GenerateContentConfig(
   val tools: List<Tool>? = null,
   val labels: Map<String, String>? = null,
@@ -30,4 +36,5 @@ data class GenerateContentConfig(
   val responseMimeType: String? = null,
   val responseSchema: Schema? = null,
   val thinkingConfig: ThinkingConfig? = null,
+  val cachedContent: String? = null,
 )

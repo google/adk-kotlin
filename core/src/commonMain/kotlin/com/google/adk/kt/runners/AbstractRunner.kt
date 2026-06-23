@@ -19,6 +19,7 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
@@ -69,6 +70,13 @@ abstract class AbstractRunner : Runner {
   final override val pluginManager: PluginManager
   final override val resumabilityConfig: ResumabilityConfig
 
+  /**
+   * The context cache configuration applied to invocations created by this runner, or `null` when
+   * context caching is disabled. Only the [App]-based constructor populates this from
+   * [App.contextCacheConfig].
+   */
+  val contextCacheConfig: ContextCacheConfig?
+
   /** Creates a runner from explicit fields, not using an [App]. */
   constructor(
     appName: String,
@@ -87,6 +95,7 @@ abstract class AbstractRunner : Runner {
     this.pluginManager = pluginManager
     this.resumabilityConfig = resumabilityConfig
     this.app = null
+    this.contextCacheConfig = null
   }
 
   /**
@@ -114,6 +123,7 @@ abstract class AbstractRunner : Runner {
     this.memoryService = memoryService
     this.pluginManager = PluginManager(app.plugins)
     this.resumabilityConfig = app.resumabilityConfig ?: ResumabilityConfig()
+    this.contextCacheConfig = app.contextCacheConfig
     this.app =
       app.copy(
         eventsCompactionConfig =
@@ -534,6 +544,7 @@ abstract class AbstractRunner : Runner {
         userContent = newMessage,
         pluginManager = pluginManager,
         resumabilityConfig = resumabilityConfig,
+        contextCacheConfig = contextCacheConfig,
       )
       .let {
         // Run callbacks and append user message to session
@@ -589,6 +600,7 @@ abstract class AbstractRunner : Runner {
         userContent = userMessage,
         pluginManager = pluginManager,
         resumabilityConfig = resumabilityConfig,
+        contextCacheConfig = contextCacheConfig,
       )
 
     val currentContext =

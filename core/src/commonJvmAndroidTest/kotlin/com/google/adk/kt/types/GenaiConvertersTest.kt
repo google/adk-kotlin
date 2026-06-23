@@ -257,6 +257,17 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun generateContentConfig_cachedContentRoundTrip_preservesValue() {
+    val cacheName = "projects/p/locations/l/cachedContents/456"
+    val adkConfig = GenerateContentConfig(cachedContent = cacheName)
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+
+    assertEquals(cacheName, genaiConfig.cachedContent().get())
+    assertEquals(cacheName, genaiConfig.fromGenaiSdk().cachedContent)
+  }
+
+  @Test
   fun thinkingConfig_convertsCorrectly() {
     val adkThinkingConfig =
       ThinkingConfig(
