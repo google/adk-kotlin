@@ -37,7 +37,7 @@ import com.google.adk.kt.types.VertexAISearchDataStoreSpec
  *   `projects/{project}/locations/{location}/collections/{collection}/engines/{engine}`.
  * @property filter The filter to apply to the search results.
  * @property maxResults The maximum number of results to return.
- * @property model The model name to use, overriding the one in [LlmRequest].
+ * @property model Deprecated and unused. Tool support is verified by the backend.
  */
 class VertexAiSearchTool(
   val dataStoreId: String? = null,
@@ -45,6 +45,10 @@ class VertexAiSearchTool(
   val searchEngineId: String? = null,
   val filter: String? = null,
   val maxResults: Int? = null,
+  @Deprecated(
+    "Model-based tool gating has been removed; tool support is verified by the backend. " +
+      "This parameter is unused and will be removed in a future release."
+  )
   val model: String? = null,
 ) : BaseTool(name = "vertex_ai_search", description = "vertex_ai_search") {
 
@@ -69,17 +73,6 @@ class VertexAiSearchTool(
     toolContext: ToolContext,
     llmRequest: LlmRequest,
   ): LlmRequest {
-    val effectiveModelName = model ?: llmRequest.model?.name
-    if (effectiveModelName == null) {
-      throw IllegalArgumentException("Model name was not defined.")
-    }
-
-    if (!isGeminiModel(effectiveModelName)) {
-      throw IllegalArgumentException(
-        "Vertex AI Search tool is not supported for model $effectiveModelName"
-      )
-    }
-
     val vertexAiSearch =
       VertexAISearch(
         datastore = dataStoreId,
@@ -94,9 +87,5 @@ class VertexAiSearchTool(
     val existingTools = llmRequest.config.tools?.toMutableList() ?: mutableListOf()
     existingTools.add(retrievalTool)
     return llmRequest.copy(config = llmRequest.config.copy(tools = existingTools))
-  }
-
-  private fun isGeminiModel(modelName: String): Boolean {
-    return modelName.startsWith("gemini")
   }
 }

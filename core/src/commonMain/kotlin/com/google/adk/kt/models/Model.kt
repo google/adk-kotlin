@@ -45,13 +45,6 @@ internal val Model.shortName: String
     PATH_PATTERNS.firstNotNullOfOrNull { it.matchEntire(name)?.groupValues?.get(1) }
       ?: name.removePrefix("models/")
 
-/** Whether the model is a Gemini 2.0 or newer model. */
-internal val Model.isGemini2OrAbove: Boolean
-  get() =
-    shortName.startsWith("gemini-") &&
-      (shortName.removePrefix("gemini-").substringBefore("-").substringBefore(".").toIntOrNull()
-        ?: 0) >= 2
-
 /** Matches Gemini 2.x model names (e.g. `gemini-2.0-flash`, `gemini-2.5-pro`). */
 private val GEMINI_2_PATTERN = Regex("^gemini-2\\..*")
 

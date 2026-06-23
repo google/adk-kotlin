@@ -18,7 +18,6 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.FunctionDeclaration
-import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.Tool
 
@@ -29,8 +28,14 @@ import com.google.adk.kt.types.Tool
  * This tool operates internally within the model and does not require or perform local code
  * execution.
  */
-class GoogleSearchTool(val bypassMultiToolsLimit: Boolean = false, val model: String? = null) :
-  BaseTool(name = "google_search", description = "google_search") {
+class GoogleSearchTool(
+  val bypassMultiToolsLimit: Boolean = false,
+  @Deprecated(
+    "Model-based tool gating has been removed; tool support is verified by the backend. " +
+      "This parameter is unused and will be removed in a future release."
+  )
+  val model: String? = null,
+) : BaseTool(name = "google_search", description = "google_search") {
 
   override fun declaration(): FunctionDeclaration? = null
 
@@ -42,11 +47,6 @@ class GoogleSearchTool(val bypassMultiToolsLimit: Boolean = false, val model: St
     toolContext: ToolContext,
     llmRequest: LlmRequest,
   ): LlmRequest {
-    val effectiveModelName = model ?: llmRequest.model?.name
-    if (effectiveModelName == null) {
-      throw IllegalArgumentException("Model name was not defined.")
-    }
-
     val config = llmRequest.config
     val existingTools = config.tools?.toMutableList() ?: mutableListOf()
 
@@ -56,17 +56,7 @@ class GoogleSearchTool(val bypassMultiToolsLimit: Boolean = false, val model: St
       return llmRequest
     }
 
-    if (!isGeminiModel(effectiveModelName)) {
-      throw IllegalArgumentException(
-        "Google search tool is not supported for model $effectiveModelName"
-      )
-    }
-
     existingTools.add(Tool(googleSearch = GoogleSearch()))
-    return llmRequest.copy(config = GenerateContentConfig(tools = existingTools))
-  }
-
-  private fun isGeminiModel(modelName: String): Boolean {
-    return modelName.startsWith("gemini")
+    return llmRequest.copy(config = config.copy(tools = existingTools))
   }
 }

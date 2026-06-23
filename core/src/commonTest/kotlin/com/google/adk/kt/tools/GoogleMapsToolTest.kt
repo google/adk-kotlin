@@ -25,7 +25,6 @@ import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.Tool
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlinx.coroutines.test.runTest
@@ -53,19 +52,10 @@ class GoogleMapsToolTest {
   }
 
   @Test
-  fun processLlmRequest_unsupportedModel_throwsException() = runTest {
+  fun processLlmRequest_nonGeminiModel_addsGoogleMaps() = runTest {
     val tool = GoogleMapsTool()
     val context = testToolContext()
-    val request = LlmRequest(model = DummyModel("gpt-4"))
-
-    assertFailsWith<IllegalArgumentException> { tool.processLlmRequest(context, request) }
-  }
-
-  @Test
-  fun processLlmRequest_overrideModel_usesOverride() = runTest {
-    val tool = GoogleMapsTool(model = "gemini-2.0-flash")
-    val context = testToolContext()
-    var request = LlmRequest(model = DummyModel("gemini-1.5-pro")) // Model on request is gemini-1
+    var request = LlmRequest(model = DummyModel("gpt-4"))
 
     request = tool.processLlmRequest(context, request)
 
@@ -76,12 +66,48 @@ class GoogleMapsToolTest {
   }
 
   @Test
-  fun processLlmRequest_noModel_throwsException() = runTest {
+  fun processLlmRequest_customModelName_addsGoogleMaps() = runTest {
     val tool = GoogleMapsTool()
     val context = testToolContext()
-    val request = LlmRequest()
+    // Any model name is accepted; the tool no longer inspects it.
+    var request = LlmRequest(model = DummyModel("custom-model"))
 
-    assertFailsWith<IllegalArgumentException> { tool.processLlmRequest(context, request) }
+    request = tool.processLlmRequest(context, request)
+
+    val tools = request.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].googleMaps)
+  }
+
+  @Test
+  fun processLlmRequest_existingConfigFields_preserved() = runTest {
+    val tool = GoogleMapsTool()
+    val context = testToolContext()
+    val request =
+      LlmRequest(
+        config = GenerateContentConfig(temperature = 0.5f),
+        model = DummyModel("gemini-2.0-flash"),
+      )
+
+    val result = tool.processLlmRequest(context, request)
+
+    assertEquals(0.5f, result.config.temperature)
+    assertNotNull(result.config.tools?.firstOrNull { it.googleMaps != null })
+  }
+
+  @Test
+  fun processLlmRequest_noModel_addsGoogleMaps() = runTest {
+    val tool = GoogleMapsTool()
+    val context = testToolContext()
+    var request = LlmRequest()
+
+    request = tool.processLlmRequest(context, request)
+
+    val tools = request.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].googleMaps)
   }
 
   @Test
@@ -120,5 +146,20 @@ class GoogleMapsToolTest {
     assertNotNull(tools)
     assertEquals(2, tools.size)
     assertNotNull(tools.find { it.googleMaps != null })
+  }
+
+  @Suppress("DEPRECATION")
+  @Test
+  fun processLlmRequest_deprecatedModelParamSet_isIgnored() = runTest {
+    val tool = GoogleMapsTool(model = "gpt-4")
+    val context = testToolContext()
+    var request = LlmRequest(model = DummyModel("gemini-2.0-flash"))
+
+    request = tool.processLlmRequest(context, request)
+
+    val tools = request.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].googleMaps)
   }
 }

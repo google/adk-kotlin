@@ -109,20 +109,60 @@ class VertexAiSearchToolTest {
   }
 
   @Test
-  fun processLlmRequest_unsupportedModel_throwsException() = runTest {
+  fun processLlmRequest_nonGeminiModel_addsRetrievalTool() = runTest {
     val tool = VertexAiSearchTool(dataStoreId = "ds1")
     val context = testToolContext()
     val request = LlmRequest(model = DummyModel("gpt-4"))
 
-    assertFailsWith<IllegalArgumentException> { tool.processLlmRequest(context, request) }
+    val updatedRequest = tool.processLlmRequest(context, request)
+
+    val tools = updatedRequest.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].retrieval?.vertexAiSearch)
   }
 
   @Test
-  fun processLlmRequest_noModel_throwsException() = runTest {
+  fun processLlmRequest_customModelName_addsRetrievalTool() = runTest {
+    val tool = VertexAiSearchTool(dataStoreId = "ds1")
+    val context = testToolContext()
+    // Any model name is accepted; the tool no longer inspects it.
+    val request = LlmRequest(model = DummyModel("custom-model"))
+
+    val updatedRequest = tool.processLlmRequest(context, request)
+
+    val tools = updatedRequest.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].retrieval?.vertexAiSearch)
+  }
+
+  @Test
+  fun processLlmRequest_noModel_addsRetrievalTool() = runTest {
     val tool = VertexAiSearchTool(dataStoreId = "ds1")
     val context = testToolContext()
     val request = LlmRequest()
 
-    assertFailsWith<IllegalArgumentException> { tool.processLlmRequest(context, request) }
+    val updatedRequest = tool.processLlmRequest(context, request)
+
+    val tools = updatedRequest.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].retrieval?.vertexAiSearch)
+  }
+
+  @Suppress("DEPRECATION")
+  @Test
+  fun processLlmRequest_deprecatedModelParamSet_isIgnored() = runTest {
+    val tool = VertexAiSearchTool(dataStoreId = "ds1", model = "gpt-4")
+    val context = testToolContext()
+    val request = LlmRequest(model = DummyModel("gemini-2.0-flash"))
+
+    val updatedRequest = tool.processLlmRequest(context, request)
+
+    val tools = updatedRequest.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].retrieval?.vertexAiSearch)
   }
 }

@@ -24,7 +24,6 @@ import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.Tool
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlinx.coroutines.test.runTest
@@ -52,19 +51,10 @@ class GoogleSearchToolTest {
   }
 
   @Test
-  fun processLlmRequest_unsupportedModel_throwsException() = runTest {
+  fun processLlmRequest_nonGeminiModel_addsGoogleSearch() = runTest {
     val tool = GoogleSearchTool()
     val context = testToolContext()
-    val request = LlmRequest(model = DummyModel("gpt-4"))
-
-    assertFailsWith<IllegalArgumentException> { tool.processLlmRequest(context, request) }
-  }
-
-  @Test
-  fun processLlmRequest_overrideModel_usesOverride() = runTest {
-    val tool = GoogleSearchTool(model = "gemini-2.0-flash")
-    val context = testToolContext()
-    var request = LlmRequest(model = DummyModel("gemini-2.0-pro"))
+    var request = LlmRequest(model = DummyModel("gpt-4"))
 
     request = tool.processLlmRequest(context, request)
 
@@ -75,12 +65,48 @@ class GoogleSearchToolTest {
   }
 
   @Test
-  fun processLlmRequest_noModel_throwsException() = runTest {
+  fun processLlmRequest_customModelName_addsGoogleSearch() = runTest {
     val tool = GoogleSearchTool()
     val context = testToolContext()
-    val request = LlmRequest()
+    // Any model name is accepted; the tool no longer inspects it.
+    var request = LlmRequest(model = DummyModel("custom-model"))
 
-    assertFailsWith<IllegalArgumentException> { tool.processLlmRequest(context, request) }
+    request = tool.processLlmRequest(context, request)
+
+    val tools = request.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].googleSearch)
+  }
+
+  @Test
+  fun processLlmRequest_existingConfigFields_preserved() = runTest {
+    val tool = GoogleSearchTool()
+    val context = testToolContext()
+    val request =
+      LlmRequest(
+        config = GenerateContentConfig(temperature = 0.5f),
+        model = DummyModel("gemini-2.0-flash"),
+      )
+
+    val result = tool.processLlmRequest(context, request)
+
+    assertEquals(0.5f, result.config.temperature)
+    assertNotNull(result.config.tools?.firstOrNull { it.googleSearch != null })
+  }
+
+  @Test
+  fun processLlmRequest_noModel_addsGoogleSearch() = runTest {
+    val tool = GoogleSearchTool()
+    val context = testToolContext()
+    var request = LlmRequest()
+
+    request = tool.processLlmRequest(context, request)
+
+    val tools = request.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].googleSearch)
   }
 
   @Test
@@ -93,6 +119,21 @@ class GoogleSearchToolTest {
         model = DummyModel("gemini-2.0-flash"),
         config = GenerateContentConfig(tools = listOf(existingTool)),
       )
+
+    request = tool.processLlmRequest(context, request)
+
+    val tools = request.config.tools
+    assertNotNull(tools)
+    assertEquals(1, tools.size)
+    assertNotNull(tools[0].googleSearch)
+  }
+
+  @Suppress("DEPRECATION")
+  @Test
+  fun processLlmRequest_deprecatedModelParamSet_isIgnored() = runTest {
+    val tool = GoogleSearchTool(model = "gpt-4")
+    val context = testToolContext()
+    var request = LlmRequest(model = DummyModel("gemini-2.0-flash"))
 
     request = tool.processLlmRequest(context, request)
 
