@@ -31,6 +31,7 @@ import com.google.adk.kt.models.Model
 import com.google.adk.kt.processors.AgentTransferProcessor
 import com.google.adk.kt.processors.BasicRequestProcessor
 import com.google.adk.kt.processors.ContentsProcessor
+import com.google.adk.kt.processors.ContextCacheRequestProcessor
 import com.google.adk.kt.processors.InstructionsProcessor
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
@@ -189,6 +190,7 @@ class LlmAgent(
       RequestConfirmationProcessor(),
       InstructionsProcessor(),
       ContentsProcessor(),
+      ContextCacheRequestProcessor(),
       AgentTransferProcessor(),
       OutputSchemaProcessor(),
     )

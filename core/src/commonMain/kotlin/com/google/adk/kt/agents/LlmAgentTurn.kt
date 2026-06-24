@@ -345,6 +345,7 @@ internal class LlmAgentTurn(
           errorMessage = response.errorMessage,
           partial = response.partial,
           interrupted = response.interrupted,
+          cacheMetadata = response.cacheMetadata,
         )
         .populateClientFunctionCallId()
 

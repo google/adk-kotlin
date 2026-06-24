@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.models
 
+import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -28,6 +29,7 @@ import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class LlmRequestTest {
@@ -197,5 +199,27 @@ class LlmRequestTest {
     assertNotNull(systemInstruction)
     val sysText = systemInstruction.parts.joinToString("") { it.text ?: "" }
     assertEquals("Initial\n\nAppended", sysText)
+  }
+
+  @Test
+  fun cacheFields_defaultToNull() {
+    val request = LlmRequest()
+
+    assertNull(request.cacheConfig)
+    assertNull(request.cacheMetadata)
+    assertNull(request.cacheableContentsTokenCount)
+  }
+
+  @Test
+  fun cacheFields_canBeSet() {
+    val config = ContextCacheConfig()
+    val metadata = CacheMetadata(fingerprint = "abc", contentsCount = 2)
+
+    val request =
+      LlmRequest(cacheConfig = config, cacheMetadata = metadata, cacheableContentsTokenCount = 5000)
+
+    assertEquals(config, request.cacheConfig)
+    assertEquals(metadata, request.cacheMetadata)
+    assertEquals(5000, request.cacheableContentsTokenCount)
   }
 }

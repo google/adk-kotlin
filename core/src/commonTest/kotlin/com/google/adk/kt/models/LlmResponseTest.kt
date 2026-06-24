@@ -101,4 +101,18 @@ class LlmResponseTest {
     val llmResponse = LlmResponse.from(response)
     assertEquals("gemini-2.0-flash", llmResponse.modelVersion)
   }
+
+  @Test
+  fun cacheMetadata_defaultsToNull() {
+    assertEquals(null, LlmResponse().cacheMetadata)
+  }
+
+  @Test
+  fun cacheMetadata_canBeSet() {
+    val metadata = CacheMetadata(fingerprint = "abc", contentsCount = 2)
+
+    val llmResponse = LlmResponse(cacheMetadata = metadata)
+
+    assertEquals(metadata, llmResponse.cacheMetadata)
+  }
 }

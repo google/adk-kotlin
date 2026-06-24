@@ -17,6 +17,7 @@
 package com.google.adk.kt.apps
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -42,6 +43,8 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
  *   sessions. When `null`, resumability is disabled.
  * @property eventsCompactionConfig Optional configuration controlling context-compaction strategies
  *   for sessions of this application. When `null`, no compaction runs.
+ * @property contextCacheConfig Optional context cache configuration that applies to all LLM agents
+ *   in the app. When `null`, context caching is disabled.
  */
 data class App(
   val appName: String,
@@ -49,6 +52,7 @@ data class App(
   val plugins: List<Plugin> = emptyList(),
   val resumabilityConfig: ResumabilityConfig? = null,
   val eventsCompactionConfig: EventsCompactionConfig? = null,
+  val contextCacheConfig: ContextCacheConfig? = null,
 ) {
   init {
     require(IDENTIFIER_REGEX.matches(appName)) {

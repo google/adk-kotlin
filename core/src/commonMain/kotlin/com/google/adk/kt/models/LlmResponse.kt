@@ -38,6 +38,8 @@ import com.google.adk.kt.types.UsageMetadata
  * @property modelVersion The model version used to generate the response.
  * @property citationMetadata The citation metadata of the response.
  * @property groundingMetadata The grounding metadata of the response.
+ * @property cacheMetadata Context cache metadata for this response, populated when context caching
+ *   is enabled. `null` when caching is disabled or no cache information is available.
  */
 data class LlmResponse(
   val content: Content? = null,
@@ -49,6 +51,7 @@ data class LlmResponse(
   val modelVersion: String? = null,
   val citationMetadata: CitationMetadata? = null,
   val groundingMetadata: GroundingMetadata? = null,
+  val cacheMetadata: CacheMetadata? = null,
 ) {
   companion object {
     /**
