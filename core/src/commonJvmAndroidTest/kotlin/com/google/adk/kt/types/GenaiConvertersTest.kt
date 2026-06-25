@@ -254,6 +254,32 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun generateContentConfig_samplingAndMisc_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        presencePenalty = 0.5f,
+        frequencyPenalty = 0.25f,
+        responseLogprobs = true,
+        mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW,
+        serviceTier = ServiceTier.PRIORITY,
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals(0.5f, genaiConfig.presencePenalty().get())
+    assertEquals(0.25f, genaiConfig.frequencyPenalty().get())
+    assertEquals(true, genaiConfig.responseLogprobs().get())
+    assertEquals("MEDIA_RESOLUTION_LOW", genaiConfig.mediaResolution().get().toString())
+    assertEquals("PRIORITY", genaiConfig.serviceTier().get().toString())
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.presencePenalty, convertedBack.presencePenalty)
+    assertEquals(adkConfig.frequencyPenalty, convertedBack.frequencyPenalty)
+    assertEquals(adkConfig.responseLogprobs, convertedBack.responseLogprobs)
+    assertEquals(adkConfig.mediaResolution, convertedBack.mediaResolution)
+    assertEquals(adkConfig.serviceTier, convertedBack.serviceTier)
+  }
+
+  @Test
   fun generateContentConfig_responseSchema_convertsCorrectly() {
     val adkConfig =
       GenerateContentConfig(

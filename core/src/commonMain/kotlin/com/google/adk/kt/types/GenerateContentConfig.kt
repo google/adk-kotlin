@@ -32,4 +32,9 @@ data class GenerateContentConfig(
   val thinkingConfig: ThinkingConfig? = null,
   val toolConfig: ToolConfig? = null,
   val safetySettings: List<SafetySetting>? = null,
+  val mediaResolution: MediaResolution? = null,
+  val serviceTier: ServiceTier? = null,
+  val presencePenalty: Float? = null,
+  val frequencyPenalty: Float? = null,
+  val responseLogprobs: Boolean? = null,
 )

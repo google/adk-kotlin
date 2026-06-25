@@ -102,3 +102,26 @@ internal fun com.google.genai.types.HarmBlockThreshold.toKt(): HarmBlockThreshol
  */
 internal fun HarmBlockThreshold.toJava(): com.google.genai.types.HarmBlockThreshold =
   com.google.genai.types.HarmBlockThreshold(this.name)
+
+/**
+ * Converts a [com.google.genai.types.MediaResolution] from the GenAI SDK to an ADK
+ * [MediaResolution].
+ */
+internal fun com.google.genai.types.MediaResolution.toKt(): MediaResolution =
+  runCatching { MediaResolution.valueOf(this.toString()) }
+    .getOrDefault(MediaResolution.MEDIA_RESOLUTION_UNSPECIFIED)
+
+/**
+ * Converts an ADK [MediaResolution] to a [com.google.genai.types.MediaResolution] for the GenAI
+ * SDK.
+ */
+internal fun MediaResolution.toJava(): com.google.genai.types.MediaResolution =
+  com.google.genai.types.MediaResolution(this.name)
+
+/** Converts a [com.google.genai.types.ServiceTier] from the GenAI SDK to an ADK [ServiceTier]. */
+internal fun com.google.genai.types.ServiceTier.toKt(): ServiceTier =
+  runCatching { ServiceTier.valueOf(this.toString()) }.getOrDefault(ServiceTier.UNSPECIFIED)
+
+/** Converts an ADK [ServiceTier] to a [com.google.genai.types.ServiceTier] for the GenAI SDK. */
+internal fun ServiceTier.toJava(): com.google.genai.types.ServiceTier =
+  com.google.genai.types.ServiceTier(this.name)

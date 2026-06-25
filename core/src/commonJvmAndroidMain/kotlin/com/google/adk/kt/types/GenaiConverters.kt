@@ -226,6 +226,11 @@ internal fun com.google.genai.types.GenerateContentConfig.fromGenaiSdk(): Genera
     thinkingConfig = thinkingConfig().getOrNull()?.fromGenaiSdk(),
     toolConfig = toolConfig().getOrNull()?.fromGenaiSdk(),
     safetySettings = safetySettings().getOrNull()?.map { it.fromGenaiSdk() },
+    mediaResolution = mediaResolution().getOrNull()?.toKt(),
+    serviceTier = serviceTier().getOrNull()?.toKt(),
+    presencePenalty = presencePenalty().getOrNull(),
+    frequencyPenalty = frequencyPenalty().getOrNull(),
+    responseLogprobs = responseLogprobs().getOrNull(),
   )
 
 /**
@@ -249,6 +254,11 @@ internal fun GenerateContentConfig.toGenaiSdk(): com.google.genai.types.Generate
       this@toGenaiSdk.thinkingConfig?.let { thinkingConfig(it.toGenaiSdk()) }
       this@toGenaiSdk.toolConfig?.let { toolConfig(it.toGenaiSdk()) }
       this@toGenaiSdk.safetySettings?.let { safetySettings(it.map { s -> s.toGenaiSdk() }) }
+      this@toGenaiSdk.mediaResolution?.let { mediaResolution(it.toJava()) }
+      this@toGenaiSdk.serviceTier?.let { serviceTier(it.toJava()) }
+      this@toGenaiSdk.presencePenalty?.let { presencePenalty(it) }
+      this@toGenaiSdk.frequencyPenalty?.let { frequencyPenalty(it) }
+      this@toGenaiSdk.responseLogprobs?.let { responseLogprobs(it) }
     }
     .build()
 
