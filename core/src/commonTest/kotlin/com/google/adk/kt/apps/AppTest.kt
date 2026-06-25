@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.apps
 
+import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.plugins.Plugin
@@ -55,6 +56,22 @@ class AppTest {
     val app = App(appName = "my_app", rootAgent = DummyAgent(), eventsCompactionConfig = config)
 
     assertSame(config, app.eventsCompactionConfig)
+  }
+
+  @Test
+  fun construct_noContextCacheConfig_defaultsToNull() {
+    val app = App(appName = "my_app", rootAgent = DummyAgent())
+
+    assertNull(app.contextCacheConfig)
+  }
+
+  @Test
+  fun construct_withContextCacheConfig_exposesIt() {
+    val config = ContextCacheConfig(maxInvocations = 5)
+
+    val app = App(appName = "my_app", rootAgent = DummyAgent(), contextCacheConfig = config)
+
+    assertSame(config, app.contextCacheConfig)
   }
 
   @Test
