@@ -22,6 +22,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
@@ -85,26 +86,36 @@ class AgentTool(val agent: BaseAgent, val skipSummarization: Boolean = false) :
         Content(parts = listOf(Part(text = request.toString())))
       }
 
+    // Run the wrapped agent in an isolated session so that it does not see the
+    // parent's history and does not append its events to the parent session.
+    val childAppName = context.invocationContext.session.key.appName
+    val childSessionService = InMemorySessionService()
     val runner =
-      InMemoryRunner(
-        agent = agent,
-        appName = context.invocationContext.session.key.appName,
-        sessionService = context.invocationContext.sessionService ?: InMemorySessionService(),
-      )
+      InMemoryRunner(agent = agent, appName = childAppName, sessionService = childSessionService)
 
-    // Pass non-internal state from the parent context to the child agent.
+    // Forward non-internal state from the parent context to the child session.
     val parentState =
       context.actions.stateDelta
         .filterKeys { key -> !key.startsWith("_adk") }
         .takeIf { it.isNotEmpty() }
 
+    val childSession =
+      childSessionService.createSession(
+        key =
+          SessionKey(
+            appName = childAppName,
+            userId = context.invocationContext.session.key.userId,
+            id = null,
+          ),
+        state = parentState,
+      )
+
     val lastEvent =
       runner
         .runAsync(
-          userId = context.invocationContext.session.key.userId,
-          sessionId = context.invocationContext.session.key.id!!,
+          userId = childSession.key.userId,
+          sessionId = childSession.key.id!!,
           newMessage = content,
-          stateDelta = parentState,
         )
         .lastOrNull()
 

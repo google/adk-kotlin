@@ -21,6 +21,8 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
@@ -140,6 +142,76 @@ class AgentToolTest {
     val unused = tool.run(context, mapOf("request" to "Hello"))
 
     assertEquals(listOf<String?>(null), branches)
+  }
+
+  /**
+   * The wrapped agent must run in an isolated session: it must not see the parent's history events,
+   * and it must observe a different session id than the parent. Mirrors Python ADK 1.x.
+   */
+  @Test
+  fun run_wrappedAgent_runsInIsolatedSession() = runTest {
+    var observedSession: Session? = null
+    val parentEvent =
+      Event(author = "user", content = modelMessage("parent history that should not leak"))
+    val parentSessionService = InMemorySessionService()
+    val parentSession =
+      parentSessionService.createSession(
+        key = com.google.adk.kt.sessions.SessionKey("parentApp", "user1", "parent-session"),
+        state = null,
+      )
+    parentSession.events.add(parentEvent)
+
+    val inner =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = { ctx ->
+          observedSession = ctx.session
+          emit(Event(author = "inner-agent", content = modelMessage("done")))
+        },
+      )
+    val tool = AgentTool(inner)
+    val context =
+      testToolContext(
+        testInvocationContext(
+          agent = inner,
+          session = parentSession,
+          sessionService = parentSessionService,
+        )
+      )
+
+    val unused = tool.run(context, mapOf("request" to "Hello"))
+
+    val childSession = assertNotNull(observedSession)
+    // Child must have a fresh session id, different from the parent's.
+    assertEquals(true, childSession.key.id != parentSession.key.id)
+    // Child must not see the parent's history events.
+    assertEquals(false, childSession.events.any { it === parentEvent })
+    // Parent session must not be appended to by the child run.
+    assertEquals(listOf(parentEvent), parentSession.events)
+  }
+
+  /** Non-internal parent state must still be forwarded into the child's isolated session. */
+  @Test
+  fun run_wrappedAgent_forwardsNonInternalParentState() = runTest {
+    var observedState: Map<String, Any>? = null
+    val inner =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = { ctx ->
+          observedState = ctx.session.state
+          emit(Event(author = "inner-agent", content = modelMessage("done")))
+        },
+      )
+    val tool = AgentTool(inner)
+    val context = testToolContext(testInvocationContext(agent = inner))
+    context.actions.stateDelta["userKey"] = "userValue"
+    context.actions.stateDelta["_adkInternal"] = "should-not-leak"
+
+    val unused = tool.run(context, mapOf("request" to "Hello"))
+
+    val state = assertNotNull(observedState)
+    assertEquals("userValue", state["userKey"])
+    assertEquals(false, state.containsKey("_adkInternal"))
   }
 
   @Test
