@@ -21,6 +21,8 @@
 package com.google.adk.kt.types
 
 import kotlin.jvm.optionals.getOrNull
+import kotlin.time.toJavaDuration
+import kotlin.time.toKotlinDuration
 
 // --- Blob ---
 /** Converts a [com.google.genai.types.Blob] from the GenAI SDK to an ADK [Blob]. */
@@ -702,6 +704,8 @@ internal fun com.google.genai.types.Part.fromGenaiSdk(): Part =
     functionResponse = functionResponse().getOrNull()?.fromGenaiSdk(),
     thought = thought().getOrNull(),
     thoughtSignature = thoughtSignature().getOrNull(),
+    videoMetadata = videoMetadata().getOrNull()?.fromGenaiSdk(),
+    partMetadata = partMetadata().getOrNull(),
   )
 
 /** Converts an ADK [Part] to a [com.google.genai.types.Part] for the GenAI SDK. */
@@ -715,6 +719,31 @@ internal fun Part.toGenaiSdk(): com.google.genai.types.Part =
       this@toGenaiSdk.functionResponse?.let { functionResponse(it.toGenaiSdk()) }
       this@toGenaiSdk.thought?.let { thought(it) }
       this@toGenaiSdk.thoughtSignature?.let { thoughtSignature(it) }
+      this@toGenaiSdk.videoMetadata?.let { videoMetadata(it.toGenaiSdk()) }
+      this@toGenaiSdk.partMetadata?.let { partMetadata(it) }
+    }
+    .build()
+
+// --- VideoMetadata ---
+/**
+ * Converts a [com.google.genai.types.VideoMetadata] from the GenAI SDK to an ADK [VideoMetadata].
+ */
+internal fun com.google.genai.types.VideoMetadata.fromGenaiSdk(): VideoMetadata =
+  VideoMetadata(
+    startOffset = startOffset().getOrNull()?.toKotlinDuration(),
+    endOffset = endOffset().getOrNull()?.toKotlinDuration(),
+    fps = fps().getOrNull(),
+  )
+
+/**
+ * Converts an ADK [VideoMetadata] to a [com.google.genai.types.VideoMetadata] for the GenAI SDK.
+ */
+internal fun VideoMetadata.toGenaiSdk(): com.google.genai.types.VideoMetadata =
+  com.google.genai.types.VideoMetadata.builder()
+    .apply {
+      this@toGenaiSdk.startOffset?.let { startOffset(it.toJavaDuration()) }
+      this@toGenaiSdk.endOffset?.let { endOffset(it.toJavaDuration()) }
+      this@toGenaiSdk.fps?.let { fps(it) }
     }
     .build()
 

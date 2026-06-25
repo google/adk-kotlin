@@ -20,6 +20,7 @@ import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.time.Duration.Companion.seconds
 
 class GenaiConvertersTest {
   @Test
@@ -535,6 +536,22 @@ class GenaiConvertersTest {
     assertNotNull(genaiPart.functionResponse().get())
     assertEquals(true, genaiPart.thought().get())
     assertNotNull(genaiPart.thoughtSignature().get())
+
+    val convertedBack = genaiPart.fromGenaiSdk()
+    assertEquals(adkPart, convertedBack)
+  }
+
+  @Test
+  fun part_videoMetadataAndPartMetadata_convertsCorrectly() {
+    val adkPart =
+      Part(
+        text = "clip",
+        videoMetadata = VideoMetadata(startOffset = 1.seconds, endOffset = 5.seconds, fps = 24.0),
+        partMetadata = mapOf("source" to "camera-1"),
+      )
+
+    val genaiPart = adkPart.toGenaiSdk()
+    assertEquals(24.0, genaiPart.videoMetadata().get().fps().get())
 
     val convertedBack = genaiPart.fromGenaiSdk()
     assertEquals(adkPart, convertedBack)

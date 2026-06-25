@@ -16,6 +16,7 @@
 package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
@@ -49,6 +50,10 @@ constructor(
   val thought: Boolean? = null,
   /** An opaque signature for the thought. */
   val thoughtSignature: ByteArray? = null,
+  /** Metadata for a video part (segment offsets and frame rate). */
+  val videoMetadata: VideoMetadata? = null,
+  /** Arbitrary key-value metadata associated with this part. The map must be JSON serializable. */
+  val partMetadata: Map<String, @Contextual Any?>? = null,
   /**
    * Other opaque data associated with the part to be interpreted by the agent. Reserved for ADK
    * internal use. Users should not set this field.
@@ -68,6 +73,8 @@ constructor(
     functionResponse: FunctionResponse? = null,
     thought: Boolean? = null,
     thoughtSignature: ByteArray? = null,
+    videoMetadata: VideoMetadata? = null,
+    partMetadata: Map<String, Any?>? = null,
   ) : this(
     text,
     inlineData,
@@ -76,6 +83,8 @@ constructor(
     functionResponse,
     thought,
     thoughtSignature,
+    videoMetadata,
+    partMetadata,
     opaqueData = null,
   )
 
@@ -91,6 +100,8 @@ constructor(
       functionResponse == other.functionResponse &&
       thought == other.thought &&
       thoughtSignature.contentEquals(other.thoughtSignature) &&
+      videoMetadata == other.videoMetadata &&
+      partMetadata == other.partMetadata &&
       opaqueData == other.opaqueData
   }
 
@@ -104,6 +115,8 @@ constructor(
 
     result = 31 * result + (thought?.hashCode() ?: 0)
     result = 31 * result + (thoughtSignature?.contentHashCode() ?: 0)
+    result = 31 * result + (videoMetadata?.hashCode() ?: 0)
+    result = 31 * result + (partMetadata?.hashCode() ?: 0)
     result = 31 * result + (opaqueData?.hashCode() ?: 0)
     return result
   }
@@ -117,6 +130,8 @@ constructor(
     functionResponse: FunctionResponse? = this.functionResponse,
     thought: Boolean? = this.thought,
     thoughtSignature: ByteArray? = this.thoughtSignature,
+    videoMetadata: VideoMetadata? = this.videoMetadata,
+    partMetadata: Map<String, Any?>? = this.partMetadata,
     opaqueData: Any?,
   ): Part =
     Part(
@@ -127,6 +142,8 @@ constructor(
       functionResponse,
       thought,
       thoughtSignature,
+      videoMetadata,
+      partMetadata,
       opaqueData,
     )
 
@@ -139,6 +156,8 @@ constructor(
     functionResponse: FunctionResponse? = this.functionResponse,
     thought: Boolean? = this.thought,
     thoughtSignature: ByteArray? = this.thoughtSignature,
+    videoMetadata: VideoMetadata? = this.videoMetadata,
+    partMetadata: Map<String, Any?>? = this.partMetadata,
   ): Part =
     Part(
       text,
@@ -148,6 +167,8 @@ constructor(
       functionResponse,
       thought,
       thoughtSignature,
+      videoMetadata,
+      partMetadata,
       opaqueData,
     )
 
