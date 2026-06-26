@@ -107,6 +107,25 @@ class LlmResponseTest {
   }
 
   @Test
+  fun testCreatePropagatesLogprobsFromCandidate() {
+    val response =
+      GenerateContentResponse(
+        candidates =
+          listOf(
+            Candidate(
+              content = modelMessage("Response text"),
+              finishReason = FinishReason.STOP,
+              avgLogprobs = -0.5,
+            )
+          )
+      )
+
+    val llmResponse = LlmResponse.from(response)
+
+    assertEquals(-0.5, llmResponse.avgLogprobs)
+  }
+
+  @Test
   fun testCustomMetadata() {
     val llmResponse =
       LlmResponse(

@@ -20,6 +20,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.LogprobsResult
 import com.google.adk.kt.types.UsageMetadata
 
 /**
@@ -54,6 +55,8 @@ data class LlmResponse(
   val groundingMetadata: GroundingMetadata? = null,
   val errorCode: String? = null,
   val customMetadata: Map<String, Any?>? = null,
+  val avgLogprobs: Double? = null,
+  val logprobsResult: LogprobsResult? = null,
 ) {
   companion object {
     /**
@@ -83,6 +86,8 @@ data class LlmResponse(
         modelVersion = response.modelVersion,
         citationMetadata = candidate?.citationMetadata,
         groundingMetadata = candidate?.groundingMetadata,
+        avgLogprobs = candidate?.avgLogprobs,
+        logprobsResult = candidate?.logprobsResult,
       )
     }
   }

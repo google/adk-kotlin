@@ -52,6 +52,8 @@ internal fun com.google.genai.types.Candidate.fromGenaiSdk(): Candidate =
     finishMessage = finishMessage().getOrNull(),
     citationMetadata = citationMetadata().getOrNull()?.fromGenaiSdk(),
     groundingMetadata = groundingMetadata().getOrNull()?.fromGenaiSdk(),
+    avgLogprobs = avgLogprobs().getOrNull(),
+    logprobsResult = logprobsResult().getOrNull()?.fromGenaiSdk(),
   )
 
 /** Converts an ADK [Candidate] to a [com.google.genai.types.Candidate] for the GenAI SDK. */
@@ -63,7 +65,75 @@ internal fun Candidate.toGenaiSdk(): com.google.genai.types.Candidate =
       this@toGenaiSdk.finishMessage?.let { finishMessage(it) }
       this@toGenaiSdk.citationMetadata?.let { citationMetadata(it.toGenaiSdk()) }
       this@toGenaiSdk.groundingMetadata?.let { groundingMetadata(it.toGenaiSdk()) }
+      this@toGenaiSdk.avgLogprobs?.let { avgLogprobs(it) }
+      this@toGenaiSdk.logprobsResult?.let { logprobsResult(it.toGenaiSdk()) }
     }
+    .build()
+
+// --- LogprobsResult ---
+/**
+ * Converts a [com.google.genai.types.LogprobsResult] from the GenAI SDK to an ADK [LogprobsResult].
+ */
+internal fun com.google.genai.types.LogprobsResult.fromGenaiSdk(): LogprobsResult =
+  LogprobsResult(
+    chosenCandidates = chosenCandidates().getOrNull()?.map { it.fromGenaiSdk() },
+    topCandidates = topCandidates().getOrNull()?.map { it.fromGenaiSdk() },
+    logProbabilitySum = logProbabilitySum().getOrNull()?.toDouble(),
+  )
+
+/** Converts an ADK [LogprobsResult] to a [com.google.genai.types.LogprobsResult] for the SDK. */
+internal fun LogprobsResult.toGenaiSdk(): com.google.genai.types.LogprobsResult =
+  com.google.genai.types.LogprobsResult.builder()
+    .apply {
+      this@toGenaiSdk.chosenCandidates?.let { chosenCandidates(it.map { c -> c.toGenaiSdk() }) }
+      this@toGenaiSdk.topCandidates?.let { topCandidates(it.map { c -> c.toGenaiSdk() }) }
+      this@toGenaiSdk.logProbabilitySum?.let { logProbabilitySum(it.toFloat()) }
+    }
+    .build()
+
+// --- LogprobsResultCandidate ---
+/**
+ * Converts a [com.google.genai.types.LogprobsResultCandidate] from the GenAI SDK to an ADK
+ * [LogprobsResultCandidate].
+ */
+internal fun com.google.genai.types.LogprobsResultCandidate.fromGenaiSdk():
+  LogprobsResultCandidate =
+  LogprobsResultCandidate(
+    token = token().getOrNull(),
+    tokenId = tokenId().getOrNull(),
+    logProbability = logProbability().getOrNull()?.toDouble(),
+  )
+
+/**
+ * Converts an ADK [LogprobsResultCandidate] to a [com.google.genai.types.LogprobsResultCandidate]
+ * for the GenAI SDK.
+ */
+internal fun LogprobsResultCandidate.toGenaiSdk(): com.google.genai.types.LogprobsResultCandidate =
+  com.google.genai.types.LogprobsResultCandidate.builder()
+    .apply {
+      this@toGenaiSdk.token?.let { token(it) }
+      this@toGenaiSdk.tokenId?.let { tokenId(it) }
+      this@toGenaiSdk.logProbability?.let { logProbability(it.toFloat()) }
+    }
+    .build()
+
+// --- LogprobsResultTopCandidates ---
+/**
+ * Converts a [com.google.genai.types.LogprobsResultTopCandidates] from the GenAI SDK to an ADK
+ * [LogprobsResultTopCandidates].
+ */
+internal fun com.google.genai.types.LogprobsResultTopCandidates.fromGenaiSdk():
+  LogprobsResultTopCandidates =
+  LogprobsResultTopCandidates(candidates = candidates().getOrNull()?.map { it.fromGenaiSdk() })
+
+/**
+ * Converts an ADK [LogprobsResultTopCandidates] to a
+ * [com.google.genai.types.LogprobsResultTopCandidates] for the GenAI SDK.
+ */
+internal fun LogprobsResultTopCandidates.toGenaiSdk():
+  com.google.genai.types.LogprobsResultTopCandidates =
+  com.google.genai.types.LogprobsResultTopCandidates.builder()
+    .apply { this@toGenaiSdk.candidates?.let { candidates(it.map { c -> c.toGenaiSdk() }) } }
     .build()
 
 // --- Citation ---

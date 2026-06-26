@@ -497,6 +497,37 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun candidate_logprobs_convertsCorrectly() {
+    val adkCandidate =
+      Candidate(
+        content = Content(role = Role.MODEL),
+        avgLogprobs = -0.25,
+        logprobsResult =
+          LogprobsResult(
+            chosenCandidates =
+              listOf(LogprobsResultCandidate(token = "hi", tokenId = 7, logProbability = -0.5)),
+            topCandidates =
+              listOf(
+                LogprobsResultTopCandidates(
+                  candidates =
+                    listOf(
+                      LogprobsResultCandidate(token = "hi", tokenId = 7, logProbability = -0.5)
+                    )
+                )
+              ),
+            logProbabilitySum = -0.5,
+          ),
+      )
+
+    val genaiCandidate = adkCandidate.toGenaiSdk()
+    assertEquals(-0.25, genaiCandidate.avgLogprobs().get())
+
+    val convertedBack = genaiCandidate.fromGenaiSdk()
+    assertEquals(adkCandidate.avgLogprobs, convertedBack.avgLogprobs)
+    assertEquals(adkCandidate.logprobsResult, convertedBack.logprobsResult)
+  }
+
+  @Test
   fun usageMetadata_convertsCorrectly() {
     val adkUsageMetadata =
       UsageMetadata(

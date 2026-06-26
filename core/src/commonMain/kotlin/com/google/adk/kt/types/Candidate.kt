@@ -28,4 +28,8 @@ data class Candidate(
   val citationMetadata: CitationMetadata? = null,
   /** The grounding metadata associated with the candidate. */
   val groundingMetadata: GroundingMetadata? = null,
+  /** The average log probability of the candidate's tokens. */
+  val avgLogprobs: Double? = null,
+  /** Detailed log probabilities for the chosen and top candidate tokens. */
+  val logprobsResult: LogprobsResult? = null,
 )
