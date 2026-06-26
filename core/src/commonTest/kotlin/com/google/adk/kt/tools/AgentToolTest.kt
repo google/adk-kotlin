@@ -42,6 +42,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.test.Test
@@ -100,6 +101,23 @@ class AgentToolTest {
     val result = tool.run(context, mapOf("request" to "Hello"))
 
     assertEquals("Response from inner agent", result)
+  }
+
+  @Test
+  fun run_executesInnerAgent_setsUserRoleOnContent() = runTest {
+    var capturedRole: String? = null
+    val model =
+      DummyModel("test") { request ->
+        capturedRole = request.contents.firstOrNull()?.role
+        flowOf(LlmResponse(content = modelMessage("Response")))
+      }
+    val agent = LlmAgent(name = "inner-agent", model = model)
+    val tool = AgentTool(agent)
+    val context = testToolContext(testInvocationContext(agent = agent))
+
+    val result = tool.run(context, mapOf("request" to "Hello"))
+    assertEquals("Response", result)
+    assertEquals(Role.USER, capturedRole)
   }
 
   /**

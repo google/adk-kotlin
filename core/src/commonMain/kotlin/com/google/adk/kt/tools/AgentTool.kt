@@ -29,6 +29,7 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlinx.coroutines.flow.lastOrNull
@@ -93,11 +94,11 @@ open class AgentTool(
     val content =
       if (inputSchema != null) {
         SchemaUtils.validateMapOnSchema(args, inputSchema!!, argsName = "Input").getOrThrow()
-        Content(parts = listOf(Part(text = Json.toJsonString(args))))
+        Content(role = Role.USER, parts = listOf(Part(text = Json.toJsonString(args))))
       } else {
         val request =
           args[REQUEST_KEY] ?: throw IllegalArgumentException("Missing '$REQUEST_KEY' argument")
-        Content(parts = listOf(Part(text = request.toString())))
+        Content(role = Role.USER, parts = listOf(Part(text = request.toString())))
       }
 
     // Run the wrapped agent in an isolated session so that it does not see the
