@@ -183,3 +183,26 @@ data class LlmRequest(
       )
   }
 }
+
+/**
+ * Builds the filtered view of this request recorded on the `call_llm` span's
+ * `gcp.vertex.agent.llm_request` attribute (parity with Python `_build_llm_request_for_trace`).
+ *
+ * Mirrors Python's deliberate exclusions, so the traced request carries the same fields Python
+ * traces -- no more, no less:
+ * - content parts carrying binary [Part.inlineData] are dropped (raw image/audio/video/file bytes
+ *   are never sent to traces);
+ * - the request [GenerateContentConfig.responseSchema] is excluded.
+ *
+ * Everything else is preserved. Null/empty omission (`exclude_none`) and JVM-vs-Android serializer
+ * parity are a separate concern handled by the trace payload formatter (b/524163028).
+ */
+internal fun LlmRequest.toTracePayload(): Map<String, Any?> =
+  mapOf(
+    "model" to model?.name,
+    "config" to config.copy(responseSchema = null),
+    "contents" to
+      contents.map { content ->
+        content.copy(parts = content.parts.filter { it.inlineData == null })
+      },
+  )

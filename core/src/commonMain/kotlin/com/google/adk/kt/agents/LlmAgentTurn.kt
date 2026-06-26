@@ -25,6 +25,7 @@ import com.google.adk.kt.events.getLongRunningFunctionIds
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.toTracePayload
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.createFinalModelResponseEvent
@@ -271,11 +272,7 @@ internal class LlmAgentTurn(
       this[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT] = it.toLong()
     }
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = capturedJson {
-      mapOf(
-        "model" to request.model?.name,
-        "config" to request.config,
-        "contents" to request.contents,
-      )
+      request.toTracePayload()
     }
   }
 

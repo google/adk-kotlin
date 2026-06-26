@@ -18,14 +18,20 @@ package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.toTracePayload
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.types.Blob
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.ThinkingConfig
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.AfterTest
@@ -264,6 +270,47 @@ class LlmTelemetryTest {
     assertNotNull(llmResponse)
     assertNotEquals("{}", llmResponse)
     assertTrue(llmResponse.isNotEmpty())
+  }
+
+  // ---------------------------------------------------------------------------
+  // Python parity: LlmRequest trace view mirrors `_build_llm_request_for_trace`
+  // (tests/unittests/telemetry/test_spans.py::test_trace_call_llm_with_binary_content).
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun toTracePayload_dropsInlineDataPartsAndExcludesResponseSchema() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(
+              role = "user",
+              parts =
+                listOf(
+                  Part(text = "hello"),
+                  Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
+                ),
+            )
+          ),
+        config =
+          GenerateContentConfig(
+            responseSchema = Schema(description = "result schema"),
+            temperature = 0.5f,
+          ),
+      )
+
+    val payload = request.toTracePayload()
+
+    // Binary inline_data parts are dropped; text parts are kept.
+    val contents = payload["contents"] as List<*>
+    val parts = (contents.single() as Content).parts
+    assertEquals(1, parts.size)
+    assertEquals("hello", parts.single().text)
+    assertNull(parts.single().inlineData)
+    // response_schema is excluded, other config is preserved.
+    val config = payload["config"] as GenerateContentConfig
+    assertNull(config.responseSchema)
+    assertEquals(0.5f, config.temperature)
   }
 
   private suspend fun newContext(agent: LlmAgent): InvocationContext {
