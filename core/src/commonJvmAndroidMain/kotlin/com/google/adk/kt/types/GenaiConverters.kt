@@ -698,6 +698,7 @@ internal fun GenAiGenerateContentResponseUsageMetadata.fromGenaiSdk(): UsageMeta
     totalTokenCount = totalTokenCount().getOrNull(),
     thoughtsTokenCount = thoughtsTokenCount().getOrNull(),
     toolUsePromptTokenCount = toolUsePromptTokenCount().getOrNull(),
+    cachedContentTokenCount = cachedContentTokenCount().getOrNull(),
     promptTokensDetails = promptTokensDetails().getOrNull()?.map { it.fromGenaiSdk() },
     candidatesTokensDetails = candidatesTokensDetails().getOrNull()?.map { it.fromGenaiSdk() },
   )
@@ -714,6 +715,7 @@ internal fun UsageMetadata.toGenaiSdk(): GenAiGenerateContentResponseUsageMetada
       this@toGenaiSdk.totalTokenCount?.let { totalTokenCount(it) }
       this@toGenaiSdk.thoughtsTokenCount?.let { thoughtsTokenCount(it) }
       this@toGenaiSdk.toolUsePromptTokenCount?.let { toolUsePromptTokenCount(it) }
+      this@toGenaiSdk.cachedContentTokenCount?.let { cachedContentTokenCount(it) }
       this@toGenaiSdk.promptTokensDetails?.let {
         promptTokensDetails(it.map { d -> d.toGenaiSdk() })
       }

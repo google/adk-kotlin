@@ -536,6 +536,7 @@ class GenaiConvertersTest {
         totalTokenCount = 3,
         thoughtsTokenCount = 4,
         toolUsePromptTokenCount = 5,
+        cachedContentTokenCount = 6,
         promptTokensDetails =
           listOf(ModalityTokenCount(modality = MediaModality.TEXT, tokenCount = 1)),
         candidatesTokensDetails =
@@ -547,6 +548,7 @@ class GenaiConvertersTest {
     assertEquals(3, genaiUsageMetadata.totalTokenCount().get())
     assertEquals(4, genaiUsageMetadata.thoughtsTokenCount().get())
     assertEquals(5, genaiUsageMetadata.toolUsePromptTokenCount().get())
+    assertEquals(6, genaiUsageMetadata.cachedContentTokenCount().get())
 
     val convertedBack = genaiUsageMetadata.fromGenaiSdk()
     assertEquals(adkUsageMetadata, convertedBack)

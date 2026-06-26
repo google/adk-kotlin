@@ -31,6 +31,8 @@ data class UsageMetadata(
   val thoughtsTokenCount: Int? = null,
   /** The number of tokens in tool-execution results provided back to the model as input. */
   val toolUsePromptTokenCount: Int? = null,
+  /** The number of tokens served from the cached content (cache read). */
+  val cachedContentTokenCount: Int? = null,
   /** A per-modality breakdown of the prompt token count. */
   val promptTokensDetails: List<ModalityTokenCount>? = null,
   /** A per-modality breakdown of the candidates token count. */

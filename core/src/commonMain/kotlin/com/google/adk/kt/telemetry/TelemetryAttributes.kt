@@ -34,6 +34,9 @@ object TelemetryAttributes {
   const val GEN_AI_RESPONSE_FINISH_REASONS = "gen_ai.response.finish_reasons"
   const val GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
   const val GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+  const val GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = "gen_ai.usage.cache_read.input_tokens"
+  const val GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = "gen_ai.usage.reasoning.output_tokens"
+  const val GEN_AI_USAGE_REASONING_TOKENS_LIMIT = "gen_ai.usage.experimental.reasoning_tokens_limit"
 
   // General OpenTelemetry attributes
   const val ERROR_TYPE = "error.type"

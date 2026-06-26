@@ -37,6 +37,7 @@ import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.tracedFlow
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -266,6 +267,9 @@ internal class LlmAgentTurn(
     request.config.maxOutputTokens?.let {
       this[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS] = it.toLong()
     }
+    request.config.thinkingConfig?.thinkingBudget?.let {
+      this[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT] = it.toLong()
+    }
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = capturedJson {
       mapOf(
         "model" to request.model?.name,
@@ -277,17 +281,42 @@ internal class LlmAgentTurn(
 
   /** Records response-derived `call_llm` span attributes (parity with Python `trace_call_llm`). */
   private fun Span.recordCallLlmResponse(response: LlmResponse) {
-    response.usageMetadata?.promptTokenCount?.let {
-      this[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS] = it.toLong()
-    }
-    response.usageMetadata?.candidatesTokenCount?.let {
-      this[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] = it.toLong()
-    }
+    response.usageMetadata?.let { recordTokenUsage(it) }
     response.finishReason?.let {
       this[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS] = listOf(it.name.lowercase())
     }
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = capturedJson { response }
   }
+
+  /**
+   * Records OTEL token-usage attributes from [usage] (parity with Python
+   * `TokenUsage.to_attributes`).
+   *
+   * Per OTEL GenAI semconv, `input_tokens` aggregates prompt and tool-use tokens, and
+   * `output_tokens` aggregates candidate and reasoning ("thoughts") tokens. Cache-read and
+   * reasoning counts are recorded separately when present.
+   */
+  private fun Span.recordTokenUsage(usage: UsageMetadata) {
+    aggregateTokens(usage.promptTokenCount, usage.toolUsePromptTokenCount)?.let {
+      this[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS] = it.toLong()
+    }
+    aggregateTokens(usage.candidatesTokenCount, usage.thoughtsTokenCount)?.let {
+      this[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] = it.toLong()
+    }
+    usage.cachedContentTokenCount?.let {
+      this[TelemetryAttributes.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = it.toLong()
+    }
+    usage.thoughtsTokenCount?.let {
+      this[TelemetryAttributes.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = it.toLong()
+    }
+  }
+
+  /**
+   * Sums two optional token counts, returning null only when both are absent (parity with Python
+   * `TokenUsage`, which treats a missing pair as "no value" rather than 0).
+   */
+  private fun aggregateTokens(first: Int?, second: Int?): Int? =
+    if (first == null && second == null) null else (first ?: 0) + (second ?: 0)
 
   private fun createModelResponseEvent() =
     Event(

@@ -26,6 +26,7 @@ import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.ThinkingConfig
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -162,6 +163,55 @@ class LlmTelemetryTest {
     val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
     assertEquals(50L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
     assertEquals(60L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
+  }
+
+  @Test
+  fun runAsync_callLlm_aggregatesInputOutputAndRecordsCacheAndReasoningTokens() = runTest {
+    // Parity with Python TokenUsage: input = prompt + tool-use, output = candidates + thoughts,
+    // plus separate cache-read and reasoning ("thoughts") counts.
+    val response =
+      LlmResponse(
+        content = modelMessage("Hello"),
+        usageMetadata =
+          UsageMetadata(
+            promptTokenCount = 50,
+            candidatesTokenCount = 60,
+            thoughtsTokenCount = 15,
+            toolUsePromptTokenCount = 10,
+            cachedContentTokenCount = 5,
+          ),
+      )
+    val testModel = DummyModel.createSequential("test-model", listOf(response))
+    val agent = LlmAgent(name = "test-agent", model = testModel)
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals(60L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
+    assertEquals(75L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
+    assertEquals(5L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS])
+    assertEquals(15L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS])
+  }
+
+  @Test
+  fun runAsync_callLlm_setsReasoningTokensLimitFromThinkingBudget() = runTest {
+    val testModel =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Hello"))),
+      )
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = testModel,
+        generateContentConfig =
+          GenerateContentConfig(thinkingConfig = ThinkingConfig(thinkingBudget = 2048)),
+      )
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals(2048L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT])
   }
 
   @Test
