@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.Session
@@ -25,6 +26,7 @@ import com.google.adk.kt.testing.DummyMemoryService
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -166,5 +168,53 @@ class CallbackContextTest {
     callbackContext.updateState("key", "value")
     assertEquals("value", callbackContext.state["key"])
     assertNotNull(callbackContext.eventActions.stateDelta["key"])
+  }
+
+  @Test
+  fun saveAndLoadArtifact_roundTrips_andRecordsDelta() = runBlocking {
+    val callbackContext =
+      testInvocationContext(artifactService = InMemoryArtifactService()).toCallbackContext()
+
+    val unused = callbackContext.saveArtifact("a", Part(text = "hello"))
+
+    assertEquals(Part(text = "hello"), callbackContext.loadArtifact("a"))
+  }
+
+  @Test
+  fun listArtifacts_returnsSavedKeys() = runBlocking {
+    val callbackContext =
+      testInvocationContext(artifactService = InMemoryArtifactService()).toCallbackContext()
+    val unused1 = callbackContext.saveArtifact("k1", Part(text = "v1"))
+    val unused2 = callbackContext.saveArtifact("k2", Part(text = "v2"))
+
+    assertEquals(listOf("k1", "k2"), callbackContext.listArtifacts().sorted())
+  }
+
+  @Test
+  fun loadArtifact_returnsNullWhenNoArtifactService() = runBlocking {
+    val context = testInvocationContext(artifactService = null)
+    val callbackContext = context.toCallbackContext()
+
+    assertNull(callbackContext.loadArtifact("missing"))
+  }
+
+  @Test
+  fun listArtifacts_returnsEmptyWhenNoArtifactService() = runBlocking {
+    val context = testInvocationContext(artifactService = null)
+    val callbackContext = context.toCallbackContext()
+
+    assertTrue(callbackContext.listArtifacts().isEmpty())
+  }
+
+  @Test
+  fun saveArtifact_throwsWhenNoArtifactService() = runBlocking {
+    val context = testInvocationContext(artifactService = null)
+    val callbackContext = context.toCallbackContext()
+
+    val ex =
+      assertThrows(IllegalStateException::class.java) {
+        runBlocking { callbackContext.saveArtifact("x", Part(text = "y")) }
+      }
+    assertTrue(ex.message!!.contains("artifactService not configured"))
   }
 }

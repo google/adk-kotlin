@@ -19,6 +19,9 @@ package com.google.adk.kt.tools
 import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.artifacts.InMemoryArtifactService
+import com.google.adk.kt.callbacks.AfterAgentCallback
+import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -98,29 +101,45 @@ class AgentToolTest {
     assertEquals("Response from inner agent", result)
   }
 
+  /**
+   * Parent [ToolContext] must see the wrapped agent's state changes (last-event `stateDelta`) and
+   * any artifacts the wrapped agent saved via the forwarding artifact service (recorded in
+   * `actions.artifactDelta` per save).
+   */
   @Test
   fun run_executesInnerAgent_propagatesActions() = runTest {
     val responseContent = modelMessage("Response from inner agent")
-    val eventActions =
-      EventActions(
-        stateDelta = mutableMapOf("testStateKey" to "testStateValue"),
-        artifactDelta = mutableMapOf("testArtifactKey" to 1),
-      )
+    val eventActions = EventActions(stateDelta = mutableMapOf("testStateKey" to "testStateValue"))
+    val artifactPart = Part(text = "artifact-bytes")
     val agent =
       DummyAgent(
         name = "inner-agent",
-        onRunAsync = {
+        onRunAsync = { ctx ->
+          // Drive an artifact save through the child's artifact service, which is
+          // [ForwardingArtifactService] when invoked via [AgentTool].
+          val service =
+            ctx.artifactService
+              ?: error("expected child invocation to have a (forwarding) artifact service")
+          val unused = service.saveArtifact(ctx.session.key, "testArtifactKey", artifactPart)
           emit(Event(author = "inner-agent", content = responseContent, actions = eventActions))
         },
       )
     val tool = AgentTool(agent)
-    val context = testToolContext(testInvocationContext(agent = agent))
+    val parentArtifactService = InMemoryArtifactService()
+    val context =
+      testToolContext(testInvocationContext(agent = agent, artifactService = parentArtifactService))
 
     val result = tool.run(context, mapOf("request" to "Hello"))
 
     assertEquals("Response from inner agent", result)
     assertEquals("testStateValue", context.actions.stateDelta["testStateKey"])
-    assertEquals(1, context.actions.artifactDelta["testArtifactKey"])
+    // The forwarding service must record the save into the parent's actions.artifactDelta...
+    assertEquals(0, context.actions.artifactDelta["testArtifactKey"])
+    // ...and the artifact bytes must land on the parent's artifact service.
+    assertEquals(
+      artifactPart,
+      parentArtifactService.loadArtifact(context.invocationContext.session.key, "testArtifactKey"),
+    )
   }
 
   /**
@@ -538,5 +557,104 @@ class AgentToolTest {
     // Plugin only fires for root_agent; the wrapped agent runs without parent plugins.
     assertEquals(1, plugin.beforeAgentCalls["root_agent"])
     assertEquals(null, plugin.beforeAgentCalls["tool_agent"])
+  }
+
+  /**
+   * Artifacts must flow bidirectionally between the parent and the wrapped agent: the parent writes
+   * `artifact_1`; the wrapped agent reads it and writes `artifact_2`; the parent then reads
+   * `artifact_2` and writes `artifact_3`. Mirrors Python ADK 1.x `test_update_artifacts`.
+   */
+  @Test
+  fun run_throughInMemoryRunner_forwardsArtifactsBetweenParentAndChild() = runTest {
+    val toolAgent =
+      LlmAgent(
+        name = "tool_agent",
+        model = DummyModel("inner-model") { flowOf(LlmResponse(content = modelMessage("ok"))) },
+        beforeAgentCallbacks =
+          listOf(
+            BeforeAgentCallback { cb ->
+              val a1 = cb.loadArtifact("artifact_1")
+              assertNotNull(a1)
+              assertEquals("test", a1.text)
+              val unused = cb.saveArtifact("artifact_2", Part(text = a1.text + " 2"))
+              CallbackChoice.Continue(EventActions())
+            }
+          ),
+      )
+    val rootAgent =
+      LlmAgent(
+        name = "root_agent",
+        model =
+          DummyModel(
+            name = "root-model",
+            flows =
+              listOf(
+                flowOf(
+                  modelFunctionCallResponse(
+                    name = "tool_agent",
+                    args = mapOf("request" to "Hello inner"),
+                  )
+                ),
+                flowOf(LlmResponse(content = modelMessage("Final Answer"))),
+              ),
+          ),
+        tools = listOf(AgentTool(toolAgent)),
+        beforeAgentCallbacks =
+          listOf(
+            BeforeAgentCallback { cb ->
+              val unused = cb.saveArtifact("artifact_1", Part(text = "test"))
+              CallbackChoice.Continue(EventActions())
+            }
+          ),
+        afterAgentCallbacks =
+          listOf(
+            AfterAgentCallback { cb ->
+              val a2 = cb.loadArtifact("artifact_2")
+              assertNotNull(a2)
+              assertEquals("test 2", a2.text)
+              val unused = cb.saveArtifact("artifact_3", Part(text = a2.text + " 3"))
+              CallbackChoice.Continue(Unit)
+            }
+          ),
+      )
+    val parentArtifactService = InMemoryArtifactService()
+    val sessionService = InMemorySessionService()
+    val app = App(appName = "test_app", rootAgent = rootAgent)
+    val runner =
+      InMemoryRunner(
+        app = app,
+        sessionService = sessionService,
+        artifactService = parentArtifactService,
+      )
+    val parentSession =
+      sessionService.createSession(
+        key = com.google.adk.kt.sessions.SessionKey("test_app", "test_user", "test_session"),
+        state = null,
+      )
+
+    val unused =
+      runner
+        .runAsync(
+          userId = parentSession.key.userId,
+          sessionId = parentSession.key.id!!,
+          newMessage = userMessage("hi"),
+        )
+        .toList()
+
+    // All three artifacts must land on the parent's artifact service under the parent session.
+    val keys = parentArtifactService.listArtifactKeys(parentSession.key).sorted()
+    assertEquals(listOf("artifact_1", "artifact_2", "artifact_3"), keys)
+    assertEquals(
+      Part(text = "test"),
+      parentArtifactService.loadArtifact(parentSession.key, "artifact_1"),
+    )
+    assertEquals(
+      Part(text = "test 2"),
+      parentArtifactService.loadArtifact(parentSession.key, "artifact_2"),
+    )
+    assertEquals(
+      Part(text = "test 2 3"),
+      parentArtifactService.loadArtifact(parentSession.key, "artifact_3"),
+    )
   }
 }

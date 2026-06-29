@@ -20,6 +20,7 @@ import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.artifacts.ForwardingArtifactService
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.sessions.InMemorySessionService
@@ -106,6 +107,11 @@ class AgentTool(
       InMemoryRunner(
         app = App(appName = childAppName, rootAgent = agent, plugins = childPlugins),
         sessionService = childSessionService,
+        // Share artifacts bidirectionally with the parent invocation: the wrapped agent reads
+        // and writes through the parent's [ArtifactService], and each save is recorded into the
+        // parent [ToolContext]'s `actions.artifactDelta`. Mirrors Python ADK 1.x
+        // `ForwardingArtifactService(tool_context)`.
+        artifactService = ForwardingArtifactService(context),
         skipClosingPlugins = includePlugins && childPlugins.isNotEmpty(),
       )
 
@@ -136,9 +142,11 @@ class AgentTool(
         .lastOrNull()
 
     if (lastEvent != null) {
-      // Propagate actions back to the parent context
+      // Propagate non-internal state back to the parent context. Artifact deltas are recorded
+      // per-save by [ForwardingArtifactService] into `context.actions.artifactDelta`, so no
+      // post-hoc merge is needed (and the child's last-event delta would refer to its throwaway
+      // session anyway).
       context.actions.stateDelta.putAll(lastEvent.actions.stateDelta)
-      context.actions.artifactDelta.putAll(lastEvent.actions.artifactDelta)
 
       val text =
         lastEvent.content

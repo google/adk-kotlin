@@ -78,12 +78,6 @@ class ToolContext(
     return service.loadArtifact(invocationContext.session.key, name, version)
   }
 
-  /**
-   * Saves [artifact] under [name] on the parent invocation's [ArtifactService], records the new
-   * version into [actions]' `artifactDelta`, and returns the version.
-   *
-   * Throws [IllegalStateException] if the parent invocation has no artifact service configured.
-   */
   suspend fun saveArtifact(name: String, artifact: Part): Int {
     val service =
       invocationContext.artifactService
