@@ -393,12 +393,15 @@ internal class LlmAgentTurn(
     // Execute function calls and code blocks identified in the model response.
     val functionResponseEvent = handleFunctionCalls(actionEvent, tools) { emit(it) }
 
-    // Check if any tool executions requested a confirmation.
-    // If so, pause execution and wait for the user to reply.
-    if (functionResponseEvent?.actions?.requestedToolConfirmations?.isNotEmpty() == true) {
-      context.isEndOfInvocation = true
-      return@flow
-    }
+    // The request turn terminates here because the placeholder function-response carries
+    // `actions.skipSummarization = true` (set by `FunctionTool` on the confirmation gate), so
+    // `Event.isFinalResponse` is true on the merged response event and `LlmAgent.executeTurns`
+    // exits its per-turn loop. This matches ADK Python's behavior. We do NOT mark the invocation
+    // ended (no `context.isEndOfInvocation = true`): doing so would prevent resume, since the
+    // pause has to be observable from outside via the synthetic `adk_request_confirmation`
+    // long-running event. `LlmAgent.runAsync` reads that long-running id per-event and triggers
+    // pause via `InvocationContext.shouldPauseInvocation`, suppressing `endOfAgent` so the
+    // session stays live for the eventual resume call.
 
     // If a tool requested a transfer to another agent, execute that agent's loop.
     functionResponseEvent?.actions?.transferToAgent?.let { agentName ->

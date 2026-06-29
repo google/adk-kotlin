@@ -87,14 +87,33 @@ data class Event(
   fun functionResponses(): List<FunctionResponse> =
     content?.parts?.mapNotNull { it.functionResponse } ?: emptyList()
 
-  /** Returns true if this is a final response. */
+  /**
+   * Returns true if this event is the final response of an agent turn — i.e. it terminates the
+   * per-turn model loop in [com.google.adk.kt.agents.LlmAgent.executeTurns]. Matches ADK Python's
+   * `Event.is_final_response()`: `skipSummarization` or a non-empty `longRunningToolIds` set both
+   * mark the event as final, otherwise the event is final iff it carries no function calls, no
+   * function responses, is not a partial streaming chunk, and has no trailing code-execution-result
+   * part.
+   */
   val isFinalResponse: Boolean
     get() {
-      if (actions.skipSummarization || longRunningToolIds.isNotEmpty()) {
-        return true
-      }
-      return functionCalls().isEmpty() && functionResponses().isEmpty() && !partial
+      if (actions.skipSummarization || longRunningToolIds.isNotEmpty()) return true
+      return functionCalls().isEmpty() &&
+        functionResponses().isEmpty() &&
+        !partial &&
+        !hasTrailingCodeExecutionResult()
     }
+
+  /**
+   * Returns true if the last part of this event is a code-execution result. Mirrors ADK Java's
+   * `Event.hasTrailingCodeExecutionResult()`.
+   *
+   * The Kotlin `Part` type does not yet model `codeExecutionResult` (see
+   * `com.google.adk.kt.types.Part`). Until it does, this helper is always `false`. The clause is
+   * still present in [isFinalResponse] so that the call structure matches Java verbatim and so a
+   * future `Part.codeExecutionResult` field is wired into the right gate by construction.
+   */
+  fun hasTrailingCodeExecutionResult(): Boolean = false
 
   /**
    * Scans a model response event's parts for function calls missing an ID and generates one for

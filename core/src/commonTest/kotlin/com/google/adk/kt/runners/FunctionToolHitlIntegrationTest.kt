@@ -20,8 +20,10 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
@@ -33,6 +35,7 @@ import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -124,6 +127,10 @@ class FunctionToolHitlIntegrationTest {
         .toList()
 
     assertEquals(1, executions)
+    // First turn: 1) model emits tool call; the placeholder function-response is `skipSummarization
+    // = true` so the per-turn loop exits without re-prompting the model on this turn (Python
+    // parity). Resume turn: 2) model is re-prompted with the real tool result and produces the
+    // final assistant text.
     assertEquals(2, modelInvocations)
     val realResponse = resumeEvents.firstOrNull { event ->
       event.functionResponses().any { it.name == SECURE_TOOL_NAME }
@@ -190,10 +197,124 @@ class FunctionToolHitlIntegrationTest {
       FunctionTool.REJECTED_ERROR,
       realResponse.functionResponses().single().response[FunctionTool.ERROR_KEY],
     )
-    // Model must be called twice: once to emit the original tool call and once more to summarise
-    // the rejection into a final response.
+    // Model is called twice: 1) emit the original tool call (request turn ends without re-prompt
+    // because the placeholder is `skipSummarization = true`); 2) on resume with the rejection
+    // error → final assistant response.
     assertEquals(2, modelInvocations)
   }
+
+  /**
+   * Parallel batch: one regular tool returns a completed function-response and one
+   * confirmation-gated tool returns the placeholder "requires confirmation" error. Python parity:
+   * the request turn terminates without re-prompting the model — the merged function-response event
+   * carries `skipSummarization = true` (set by `FunctionTool` on the placeholder), so
+   * `Event.isFinalResponse` is true and `LlmAgent.executeTurns` exits. The regular tool's completed
+   * response is held in session history and is summarized on the **resume turn** along with the
+   * real result for the gated tool.
+   */
+  @Test
+  fun runAsync_parallelRegularAndConfirmationGatedTools_requestTurnTerminatesAndResumeSummarizes() =
+    runTest {
+      val regCallId = "reg_call_1"
+      val secureCallId = "secure_call_1"
+      val regResponse = mapOf("ok" to true)
+      var modelInvocations = 0
+      var regInvocations = 0
+      var secureExecutions = 0
+      val secureTool = countingSecureTool { secureExecutions++ }
+      val agent =
+        LlmAgent(
+          name = AGENT_NAME,
+          model =
+            DummyModel("model") {
+              modelInvocations++
+              flowOf(
+                if (modelInvocations == 1) {
+                  modelParallelFunctionCallsResponse(
+                    FunctionCall(name = "regular_tool", args = mapOf("k" to "v"), id = regCallId),
+                    FunctionCall(
+                      name = SECURE_TOOL_NAME,
+                      args = mapOf("amount" to 100),
+                      id = secureCallId,
+                    ),
+                  )
+                } else {
+                  LlmResponse(content = modelMessage("done"))
+                }
+              )
+            },
+          tools =
+            listOf(
+              secureTool,
+              DummyTool(
+                name = "regular_tool",
+                onRun = { _, _ ->
+                  regInvocations++
+                  regResponse
+                },
+              ),
+            ),
+        )
+      val runner = InMemoryRunner(agent = agent)
+
+      val firstTurnEvents =
+        runner
+          .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+          .toList()
+
+      // Regular tool ran exactly once; the gated tool was NOT executed (still pending
+      // confirmation).
+      assertEquals(1, regInvocations)
+      assertEquals(0, secureExecutions)
+      // Request turn: model invoked exactly once (to emit the parallel calls). The
+      // `skipSummarization
+      // = true` placeholder terminates the per-turn loop without a second model call. The completed
+      // regular-tool response is in session history and will be summarized on resume.
+      assertEquals(1, modelInvocations)
+      // No final assistant text on the request turn — the run is paused on the synthetic
+      // `adk_request_confirmation` long-running call.
+      val firstTurnFinalText =
+        firstTurnEvents
+          .lastOrNull {
+            it.author == AGENT_NAME && it.content?.parts?.any { p -> p.text != null } == true
+          }
+          ?.content
+          ?.parts
+          ?.singleOrNull()
+          ?.text
+      assertNull(firstTurnFinalText)
+
+      // Resume with approval for the gated tool. The model is re-prompted with both completed
+      // function-responses in history (the regular tool's real response from the request turn AND
+      // the gated tool's real result produced now), and produces the final assistant text.
+      val confirmationCallId = synthCallId(firstTurnEvents)
+      val resumeEvents =
+        runner
+          .runAsync(
+            userId = USER_ID,
+            sessionId = SESSION_ID,
+            newMessage =
+              userFunctionResponse(
+                name = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                id = confirmationCallId,
+                response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
+              ),
+          )
+          .toList()
+
+      assertEquals(1, secureExecutions)
+      assertEquals(2, modelInvocations)
+      val resumeFinalText =
+        resumeEvents
+          .lastOrNull {
+            it.author == AGENT_NAME && it.content?.parts?.any { p -> p.text != null } == true
+          }
+          ?.content
+          ?.parts
+          ?.singleOrNull()
+          ?.text
+      assertEquals("done", resumeFinalText)
+    }
 
   // -- Fixtures ----------------------------------------------------------------------------------
 
