@@ -68,31 +68,21 @@ internal class LlmAgentTurn(
    * Executes the turn logic and returns a flow of events.
    *
    * The execution follows these stages:
-   * 1. **PREPARATION & RESUMPTION CHECK**: Checks if resuming from a tool call (Function Response)
-   *    OR builds a new request with instructions and tools.
-   * 2. **MODEL INVOCATION**: Calls the underlying model to generate content based on the request.
-   * 3. **POST-PROCESSING & ACTION EXECUTION**: Runs response processors on model outputs and
+   * 1. **REQUEST PREPARATION**: Builds the request with instructions and tools, registering
+   *    request-scoped tools -- notably `transfer_to_agent` -- before any resume path is chosen.
+   * 2. **RESUMPTION CHECK**: If this invocation paused (a long-running tool call, or an unresolved
+   *    function/transfer call), resume without re-invoking the model instead of starting a new
+   *    step.
+   * 3. **MODEL INVOCATION**: Calls the underlying model to generate content based on the request.
+   * 4. **POST-PROCESSING & ACTION EXECUTION**: Runs response processors on model outputs and
    *    executes tool calls, auth requests, or triggers agent transfers if applicable.
    */
   fun execute(): Flow<Event> = flow {
     if (context.isEndOfInvocation) return@flow
 
-    // STAGE 1: Preparation & Resumption Check
-    // If the last event in this invocation is an unresolved function call (i.e. a long-running
-    // tool that paused on its previous turn), resume by emitting the tool result events directly
-    // without re-invoking the model. HITL resumption follows a separate path: the user replies
-    // with a `FunctionResponse` for the synthetic `adk_request_confirmation` call, which the
-    // RequestConfirmationProcessor picks up at the top of the request pipeline.
-    val events = context.getEvents(currentInvocation = true, currentBranch = true)
-    val hasFunctionCall = events.lastOrNull()?.functionCalls()?.isNotEmpty() == true
-
-    if (context.isResumable && hasFunctionCall) {
-      val toolsDict = getToolMap(null)
-      emitAll(handleActions(events.last(), toolsDict))
-      return@flow
-    }
-
-    // Build the request using the pipeline of callbacks.
+    // STAGE 1: Build the request first so request-scoped tools -- notably the `transfer_to_agent`
+    // tool added by `AgentTransferProcessor` -- are registered before we choose a resume path.
+    // Mirrors Python ADK 1.x `_run_one_step_async`, which always preprocesses before resuming.
     val requestOrResponse = prepareRequest { emit(it) }
 
     val request =
@@ -113,12 +103,33 @@ internal class LlmAgentTurn(
         }
       }
 
-    // Check if the invocation context indicates we should pause (e.g., long-running tool results).
+    // STAGE 2: Resumption check.
+    // If this invocation paused on a long-running tool call, do not re-execute it. HITL resumption
+    // follows a separate path: the user replies with a `FunctionResponse` for the synthetic
+    // `adk_request_confirmation` call, handled by the RequestConfirmationProcessor in STAGE 1.
     if (context.shouldPause()) {
       return@flow
     }
 
-    // STAGES 2 & 3: Model Invocation & Post-processing
+    // If the last event in this invocation is an unresolved function call (a transfer or tool call
+    // that paused before producing a response), resume by executing it directly with the tools
+    // registered on the request above, without re-invoking the model. A transferred-to sub-agent
+    // shares its parent's branch (see `BaseAgent.runAsync`), so it sees the parent's transfer
+    // response here and won't re-run the parent's still-pending call. Mirrors Python ADK 1.x
+    // `base_llm_flow._run_one_step_async`.
+    //
+    // Ordering invariant with `shouldPause()` above: a paused long-running call always has its
+    // placeholder response persisted (and a resumed one arrives as a `FunctionResponse`, not a
+    // dangling call), so by this point a last function-call event is always a genuinely unresolved
+    // call -- never a long-running pause, which `shouldPause()` has already returned for.
+    val events = context.getEvents(currentInvocation = true, currentBranch = true)
+    val lastEvent = events.lastOrNull()
+    if (context.isResumable && lastEvent != null && lastEvent.functionCalls().isNotEmpty()) {
+      emitAll(handleActions(lastEvent, getToolMap(request)))
+      return@flow
+    }
+
+    // STAGES 3 & 4: Model Invocation & Post-processing
     invokeAndProcessModel(request).collect { emit(it) }
   }
 

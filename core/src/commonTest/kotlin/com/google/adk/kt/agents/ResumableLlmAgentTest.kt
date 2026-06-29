@@ -36,7 +36,6 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.test.runTest
@@ -52,16 +51,6 @@ import kotlinx.coroutines.test.runTest
  */
 class ResumableLlmAgentTest {
 
-  // TODO: known gap to fix in a follow-up CL. Resuming from a *pending* transfer call (a
-  // `transfer_to_agent` call with no response yet) fails in Kotlin: the resume "pickup" path in
-  // `LlmAgentTurn.execute()` builds its tool map via `getToolMap(null)`, which omits the
-  // request-scoped `transfer_to_agent` tool that `AgentTransferProcessor` normally adds, so
-  // executing the pending transfer call throws "BaseTool transfer_to_agent not found". (A naive fix
-  // that re-adds the transfer tool then trips a separate flow-buffering recursion when the
-  // transferred-to sub-agent re-reads session state.) Python ADK 1.x
-  // (`v1/tests/.../test_resumable_llm_agent.py::test_resume_from_transfer_call`) supports this.
-  // Re-enable once the resume pickup path makes request-scoped tools available.
-  @Ignore
   @Test
   fun resumeFromTransferCall_runsTransferredSubAgent() = runTest {
     val subAgent1 = llmAgent("sub_agent_1", "response from sub_agent_1")
