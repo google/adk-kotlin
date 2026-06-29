@@ -1,0 +1,35 @@
+# Fails the check if a pull request has more than one commit, prompting authors
+# to squash before merging (keeps a clean conventional-commit history).
+name: 'PR Commit Check'
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  check-commit-count:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          # Fetch all history so commits can be counted.
+          fetch-depth: 0
+
+      - name: Count Commits
+        id: count_commits
+        run: |
+          count=$(git rev-list --count ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          echo "commit_count=$count" >> $GITHUB_OUTPUT
+
+      - name: Check Commit Count
+        if: steps.count_commits.outputs.commit_count > 1
+        run: |
+          echo "This pull request has ${{ steps.count_commits.outputs.commit_count }} commits."
+          echo "Please squash them into a single commit before merging:"
+          echo "  git rebase -i HEAD~${{ steps.count_commits.outputs.commit_count }} && git push --force"
+          exit 1
+
+      - name: Success
+        if: steps.count_commits.outputs.commit_count <= 1
+        run: echo "This pull request has a single commit."
