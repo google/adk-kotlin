@@ -40,6 +40,7 @@ import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
@@ -656,5 +657,52 @@ class AgentToolTest {
       Part(text = "test 2 3"),
       parentArtifactService.loadArtifact(parentSession.key, "artifact_3"),
     )
+  }
+
+  @Test
+  fun run_withPropagateGroundingMetadata_propagatesToParentState() = runTest {
+    val grounding = GroundingMetadata()
+    val agent =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = {
+          emit(
+            Event(
+              author = "inner-agent",
+              content = modelMessage("done"),
+              groundingMetadata = grounding,
+            )
+          )
+        },
+      )
+    val tool = AgentTool(agent, propagateGroundingMetadata = true)
+    val context = testToolContext(testInvocationContext(agent = agent))
+
+    val unused = tool.run(context, mapOf("request" to "Hello"))
+
+    assertEquals(grounding, context.actions.stateDelta["temp:_adk_grounding_metadata"])
+  }
+
+  @Test
+  fun run_withoutPropagateGroundingMetadata_doesNotPropagate() = runTest {
+    val agent =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = {
+          emit(
+            Event(
+              author = "inner-agent",
+              content = modelMessage("done"),
+              groundingMetadata = GroundingMetadata(),
+            )
+          )
+        },
+      )
+    val tool = AgentTool(agent)
+    val context = testToolContext(testInvocationContext(agent = agent))
+
+    val unused = tool.run(context, mapOf("request" to "Hello"))
+
+    assertEquals(null, context.actions.stateDelta["temp:_adk_grounding_metadata"])
   }
 }

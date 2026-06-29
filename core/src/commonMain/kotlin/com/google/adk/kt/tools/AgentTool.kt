@@ -46,11 +46,15 @@ import kotlinx.coroutines.flow.lastOrNull
  *   agent's runner. When `true` (the default), the wrapped agent observes the same plugins as the
  *   parent (their plugin callbacks fire for the child invocation). When `false`, the wrapped agent
  *   runs with no plugins.
+ * @property propagateGroundingMetadata Whether grounding metadata produced by the wrapped agent
+ *   should be propagated back to the parent invocation. Used by the built-in-tool workaround (e.g.
+ *   [GoogleSearchAgentTool]) so the parent still surfaces the sub-agent's grounding metadata.
  */
-class AgentTool(
+open class AgentTool(
   val agent: BaseAgent,
   val skipSummarization: Boolean = false,
   val includePlugins: Boolean = true,
+  val propagateGroundingMetadata: Boolean = false,
 ) : BaseTool(name = agent.name, description = agent.description) {
 
   private val inputSchema: Schema? by lazy { getInputSchema(agent) }
@@ -148,6 +152,12 @@ class AgentTool(
       // session anyway).
       context.actions.stateDelta.putAll(lastEvent.actions.stateDelta)
 
+      if (propagateGroundingMetadata) {
+        lastEvent.groundingMetadata?.let {
+          context.actions.stateDelta[GROUNDING_METADATA_TEMP_KEY] = it
+        }
+      }
+
       val text =
         lastEvent.content
           ?.parts
@@ -162,5 +172,8 @@ class AgentTool(
 
   companion object {
     private const val REQUEST_KEY = "request"
+
+    /** Temp state key under which propagated grounding metadata is stored. */
+    private const val GROUNDING_METADATA_TEMP_KEY = "temp:_adk_grounding_metadata"
   }
 }

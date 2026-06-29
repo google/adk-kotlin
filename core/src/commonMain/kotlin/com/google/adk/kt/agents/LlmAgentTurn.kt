@@ -37,7 +37,10 @@ import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.tracedFlow
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.GoogleSearchAgentTool
+import com.google.adk.kt.tools.GoogleSearchTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.createGoogleSearchAgent
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
@@ -143,7 +146,7 @@ internal class LlmAgentTurn(
 
     val toolContext = ToolContext(invocationContext = context)
     val reqAfterCodeExecutor =
-      (agent.tools + context.extraTools.values).fold(processedRequest) { req, tool ->
+      canonicalDirectTools.fold(processedRequest) { req, tool ->
         tool.processLlmRequest(toolContext, req)
       }
 
@@ -159,9 +162,32 @@ internal class LlmAgentTurn(
 
   private suspend fun getToolMap(request: LlmRequest?): Map<String, BaseTool> {
     val readonlyCtx = context.toReadonlyContext()
-    val allTools =
-      agent.tools + agent.toolsets.flatMap { it.getTools(readonlyCtx) } + context.extraTools.values
+    val allTools = canonicalDirectTools + agent.toolsets.flatMap { it.getTools(readonlyCtx) }
     return (allTools + request?.toolsDict.orEmpty()).associateBy { it.name }
+  }
+
+  /**
+   * The agent's directly-declared tools (its own tools plus any injected by the runtime) with the
+   * built-in multi-tools-limit workaround applied, resolved once per turn.
+   *
+   * Built-in tools (e.g. `google_search`) cannot be combined with other tools in a single request,
+   * so when the agent exposes more than one tool a built-in that opted in via its
+   * `bypassMultiToolsLimit` flag is swapped for a function-tool equivalent. Mirrors the Python ADK
+   * `LlmAgent.canonical_tools`, which is likewise resolved once and cached per invocation.
+   */
+  private val canonicalDirectTools: List<BaseTool> by lazy {
+    val tools = agent.tools + context.extraTools.values
+    if (tools.size + agent.toolsets.size <= 1) {
+      tools
+    } else {
+      tools.map { tool ->
+        when {
+          tool is GoogleSearchTool && tool.bypassMultiToolsLimit ->
+            GoogleSearchAgentTool(createGoogleSearchAgent(agent.model))
+          else -> tool
+        }
+      }
+    }
   }
 
   private fun invokeAndProcessModel(request: LlmRequest): Flow<Event> =
