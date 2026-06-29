@@ -212,18 +212,26 @@ object GitHubTools {
   @Tool(
     name = "find_doc_issues",
     description =
-      "Lists OPEN issues in a repository that carry the 'docs updates' label. Call this before " +
-        "creating an issue to avoid filing a duplicate for the same release range.",
+      "Lists OPEN issues in a repository that carry the 'docs updates' label, restricted to a " +
+        "single code repository's release issues. Call this before creating an issue to avoid " +
+        "filing a duplicate for the same release range.",
   )
   fun findDocIssues(
     @Param("The repository owner.") repoOwner: String,
     @Param("The repository name.") repoName: String,
+    @Param(
+      "Only return issues whose title mentions this code repository (e.g. \"adk-kotlin\"), so " +
+        "results stay scoped to one language. Pass an empty string for no filter."
+    )
+    codeRepo: String,
   ): Map<String, Any> = guarded {
+    val filter = codeRepo.trim().lowercase()
     val issues =
       connect()
         .getRepository("$repoOwner/$repoName")
         .getIssues(GHIssueState.OPEN)
         .filter { !it.isPullRequest && it.labels.any { label -> label.name == DOCS_UPDATES_LABEL } }
+        .filter { it.title.lowercase().contains(filter) }
         .map {
           mapOf("number" to it.number, "title" to it.title, "html_url" to it.htmlUrl.toString())
         }

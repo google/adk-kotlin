@@ -27,6 +27,9 @@ object Settings {
   val docRepo: String = envOrDefault("DOC_REPO", "adk-docs")
   val codeRepo: String = envOrDefault("CODE_REPO", "adk-kotlin")
 
+  /** Implementation language documented by this analyzer; docs stay single-language. */
+  val codeLanguage: String = envOrDefault("CODE_LANGUAGE", "Kotlin")
+
   /** Only changes under this path in the code repo are analyzed. */
   val codeSourcePathFilter: String = envOrDefault("CODE_SOURCE_PATH_FILTER", "core/src/")
 

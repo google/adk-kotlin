@@ -17,7 +17,8 @@ function tools (`GitHubTools`) that talk to GitHub through the
 hand-rolled REST code, no local cloning):
 
 1.  `list_releases` — find the two most recent release tags to compare.
-2.  `find_doc_issues` — list open `docs updates` issues to avoid duplicates.
+2.  `find_doc_issues` — list open `docs updates` issues for this code repo (one
+    language) to avoid duplicates.
 3.  `find_pull_requests_for_issue` — check whether an issue already has PRs.
 4.  `get_changed_files` — list files changed between the two tags (compare API).
 5.  `get_file_diff` — fetch the patch for an individual file.
@@ -89,6 +90,11 @@ The rest of the configuration is read from environment variables:
 :                           :          :                     : name.           :
 | `CODE_REPO`               | no       | `adk-kotlin`        | Code repository |
 :                           :          :                     : name.           :
+| `CODE_LANGUAGE`           | no       | `Kotlin`            | Implementation  |
+:                           :          :                     : language        :
+:                           :          :                     : documented      :
+:                           :          :                     : (single-        :
+:                           :          :                     : language).      :
 | `CODE_SOURCE_PATH_FILTER` | no       | `core/src/`         | Only analyze    |
 :                           :          :                     : changes under   :
 :                           :          :                     : this path.      :
