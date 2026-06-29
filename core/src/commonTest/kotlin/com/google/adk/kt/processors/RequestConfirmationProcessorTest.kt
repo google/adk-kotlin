@@ -216,6 +216,75 @@ class RequestConfirmationProcessorTest {
   }
 
   @Test
+  fun process_userConfirmationInDefaultBranch_resolvesChildBranchRequest() = runTest {
+    // Mirrors Python's
+    // `test_request_confirmation_processor_finds_user_confirmation_in_default_branch`:
+    // the agent runs in "child_branch" and the confirmation request lives there, but the user's
+    // confirmation arrives on the default (null) branch (e.g. a top-level resume call). The
+    // processor scans the current branch OR the default branch, so it must still resolve the
+    // confirmation and re-execute the tool.
+    val toolName = "risky_tool"
+    var toolRuns = 0
+    val agent =
+      LlmAgent(
+        name = "test",
+        model = DummyModel("gemini"),
+        tools =
+          listOf(
+            DummyTool(toolName) { _, _ ->
+              toolRuns++
+              mapOf("status" to "executed")
+            }
+          ),
+      )
+    val session = testSession()
+    val context =
+      InvocationContext(session = session, runConfig = null, agent = agent, branch = "child_branch")
+    val originalCallId = "orig_1"
+    // The confirmation request is emitted on the agent's child branch.
+    session.events.add(
+      Event(
+        author = "test",
+        branch = "child_branch",
+        content =
+          Content(
+            role = Role.MODEL,
+            parts =
+              listOf(
+                synthConfirmationCallPart(
+                  synthId = "synth_1",
+                  originalToolName = toolName,
+                  originalCallId = originalCallId,
+                )
+              ),
+          ),
+        invocationId = context.invocationId,
+      )
+    )
+    // The user's confirmation arrives on the default (null) branch.
+    session.events.add(
+      Event(
+        author = Role.USER,
+        branch = null,
+        content =
+          userFunctionResponse(
+            name = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+            id = "synth_1",
+            response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
+          ),
+        invocationId = context.invocationId,
+      )
+    )
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(1, toolRuns)
+    val response = singleEmittedFunctionResponse(emittedEvents)
+    assertEquals(toolName, response.name)
+    assertEquals(originalCallId, response.id)
+  }
+
+  @Test
   fun process_realResponseAfterConfirmation_skipsReExecution() = runTest {
     // Locks the dedup window's other side: a real FunctionResponse that arrives AFTER the user
     // confirmation (e.g. because this processor already re-executed once on this turn) must
