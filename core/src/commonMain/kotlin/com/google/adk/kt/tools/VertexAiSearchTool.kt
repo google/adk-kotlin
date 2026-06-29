@@ -37,6 +37,9 @@ import com.google.adk.kt.types.VertexAISearchDataStoreSpec
  *   `projects/{project}/locations/{location}/collections/{collection}/engines/{engine}`.
  * @property filter The filter to apply to the search results.
  * @property maxResults The maximum number of results to return.
+ * @property bypassMultiToolsLimit When true, allows this built-in tool to be used alongside other
+ *   tools: it is exposed as a function tool (see [VertexAiSearchAgentTool]) since built-in tools
+ *   cannot otherwise be combined with other tools in a single request.
  * @property model Deprecated and unused. Tool support is verified by the backend.
  */
 class VertexAiSearchTool(
@@ -45,6 +48,7 @@ class VertexAiSearchTool(
   val searchEngineId: String? = null,
   val filter: String? = null,
   val maxResults: Int? = null,
+  val bypassMultiToolsLimit: Boolean = false,
   @Deprecated(
     "Model-based tool gating has been removed; tool support is verified by the backend. " +
       "This parameter is unused and will be removed in a future release."

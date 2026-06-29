@@ -40,7 +40,10 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.GoogleSearchAgentTool
 import com.google.adk.kt.tools.GoogleSearchTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.VertexAiSearchAgentTool
+import com.google.adk.kt.tools.VertexAiSearchTool
 import com.google.adk.kt.tools.createGoogleSearchAgent
+import com.google.adk.kt.tools.createVertexAiSearchAgent
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
@@ -184,6 +187,8 @@ internal class LlmAgentTurn(
         when {
           tool is GoogleSearchTool && tool.bypassMultiToolsLimit ->
             GoogleSearchAgentTool(createGoogleSearchAgent(agent.model))
+          tool is VertexAiSearchTool && tool.bypassMultiToolsLimit ->
+            VertexAiSearchAgentTool(createVertexAiSearchAgent(agent.model, tool))
           else -> tool
         }
       }
