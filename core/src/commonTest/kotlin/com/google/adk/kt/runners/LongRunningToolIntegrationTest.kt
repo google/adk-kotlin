@@ -20,10 +20,16 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
+import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.summarizer.EventSummarizer
+import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
@@ -35,8 +41,10 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -516,6 +524,116 @@ class LongRunningToolIntegrationTest {
     )
   }
 
+  /**
+   * Resuming a paused long-running tool call must still work after event compaction has summarized
+   * the window that contains that call.
+   *
+   * Scenario: a resumable app with sliding-window compaction. A long-running tool call pauses
+   * (invocation 2), which crosses the compaction interval, so post-invocation compaction summarizes
+   * a window that includes the long-running `FunctionCall`/placeholder-`FunctionResponse` pair. On
+   * resume with the real `FunctionResponse`, the framework must still deliver it and let the model
+   * produce its final reply.
+   *
+   * TODO(b/528182891): this currently fails, so the test is [Ignore]d. The compactor's
+   *   "self-contained prefix" guard only protects open function calls and open HITL confirmations;
+   *   a long-running call is already *balanced* by its placeholder response, so it gets summarized
+   *   (its `longRunningToolIds` is never treated as an open obligation -- see
+   *   [com.google.adk.kt.summarizer.SlidingWindowEventCompactor]). On resume,
+   *   [com.google.adk.kt.processors.HistoryRewriterProcessor] then drops the original
+   *   `FunctionCall` with the summarized window, so `rearrangeEventsForLatestFunctionResponse`
+   *   cannot match the resumed response and throws. Re-enable this test once the compactor treats
+   *   `longRunningToolIds` as open obligations (the long-running analog of the existing HITL
+   *   guard).
+   */
+  @Ignore
+  @Test
+  fun resume_afterCompactionSummarizedPausedLongRunningCall_resumesCleanly() = runTest {
+    val callId = "lr_call_compacted"
+    val placeholder = mapOf("status" to "working")
+    val realResult = mapOf("result" to "done")
+    val agent =
+      LlmAgent(
+        name = AGENT_NAME,
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              // Invocation 1: a normal chat turn (no tools).
+              LlmResponse(content = modelMessage("hello")),
+              // Invocation 2: issue the long-running tool call that pauses.
+              modelFunctionCallResponse(TOOL_NAME_1, id = callId),
+              // Resume turn: summarize the delivered real result into a final reply.
+              LlmResponse(content = modelMessage("resumed")),
+            ),
+          ),
+        tools =
+          listOf(
+            DummyTool(name = TOOL_NAME_1, isLongRunning = true, onRun = { _, _ -> placeholder })
+          ),
+      )
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = "test_app",
+            rootAgent = agent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+            // Compact every 2 invocations; the summarizer covers the whole window it is given.
+            eventsCompactionConfig =
+              EventsCompactionConfig(
+                compactionInterval = 2,
+                overlapSize = 0,
+                summarizer = WindowCoveringSummarizer,
+              ),
+          )
+      )
+
+    // Invocation 1: a plain turn. Invocation 2: the long-running call pauses, and post-invocation
+    // compaction then fires over invocations 1+2 -- summarizing away the long-running call.
+    runner
+      .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("hi"))
+      .toList()
+    runner
+      .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("start"))
+      .toList()
+
+    // Sanity: the long-running call/response were captured in a compaction summary.
+    val session =
+      assertNotNull(
+        runner.sessionService.getSession(SessionKey(runner.appName, USER_ID, SESSION_ID))
+      )
+    assertTrue(
+      session.events.any { it.actions.compaction != null },
+      "compaction must have fired over the paused long-running invocation",
+    )
+    assertTrue(
+      session.events.any { event -> event.functionCalls().any { it.id == callId } },
+      "raw long-running FunctionCall must still be in the log (compaction only appends a summary)",
+    )
+
+    // Resume with the real result. Despite the long-running call having been compacted, the resume
+    // must deliver the real response and let the model produce its final reply.
+    val resumeEvents =
+      runner
+        .runAsync(
+          userId = USER_ID,
+          sessionId = SESSION_ID,
+          newMessage = userFunctionResponse(name = TOOL_NAME_1, id = callId, response = realResult),
+        )
+        .toList()
+
+    val finalText =
+      resumeEvents
+        .lastOrNull {
+          it.author == AGENT_NAME && it.content?.parts?.any { p -> p.text != null } == true
+        }
+        ?.content
+        ?.parts
+        ?.singleOrNull()
+        ?.text
+    assertEquals("resumed", finalText)
+  }
+
   // -- Fixtures ----------------------------------------------------------------------------------
 
   /**
@@ -564,6 +682,17 @@ class LongRunningToolIntegrationTest {
    */
   private fun LlmRequest.simplifiedContents(): List<Pair<String, Any>> = contents.map { content ->
     (content.role ?: "") to simplifyContent(content)
+  }
+
+  /**
+   * An [EventSummarizer] that returns a compaction summary spanning the full window it is handed,
+   * so every event in the window (including a long-running call/response pair) is dropped from the
+   * rebuilt prompt and replaced by the summary.
+   */
+  private object WindowCoveringSummarizer : EventSummarizer {
+    override suspend fun summarizeEvents(events: List<Event>): Event? =
+      if (events.isEmpty()) null
+      else compactionEvent(startTs = events.first().timestamp, endTs = events.last().timestamp)
   }
 
   private companion object {
