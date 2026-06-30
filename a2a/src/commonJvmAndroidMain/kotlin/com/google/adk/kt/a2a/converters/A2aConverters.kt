@@ -13,55 +13,63 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:OptIn(FrameworkInternalApi::class)
+
 package com.google.adk.kt.a2a.converters
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
-import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
+import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
-import io.a2a.client.ClientEvent
-import io.a2a.client.MessageEvent
-import io.a2a.client.TaskEvent
-import io.a2a.client.TaskUpdateEvent
-import io.a2a.spec.Artifact
-import io.a2a.spec.DataPart
-import io.a2a.spec.FileContent
-import io.a2a.spec.FilePart
-import io.a2a.spec.FileWithBytes
-import io.a2a.spec.FileWithUri
-import io.a2a.spec.Message
-import io.a2a.spec.Part as A2APart
-import io.a2a.spec.Task
-import io.a2a.spec.TaskArtifactUpdateEvent
-import io.a2a.spec.TaskState
-import io.a2a.spec.TaskStatusUpdateEvent
-import io.a2a.spec.TextPart
+import com.google.adk.kt.types.UsageMetadata
 import java.util.Base64
+import kotlin.reflect.KClass
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.json.JsonElement
+import org.a2aproject.sdk.client.ClientEvent
+import org.a2aproject.sdk.client.MessageEvent
+import org.a2aproject.sdk.client.TaskEvent
+import org.a2aproject.sdk.client.TaskUpdateEvent
+import org.a2aproject.sdk.spec.Artifact
+import org.a2aproject.sdk.spec.DataPart
+import org.a2aproject.sdk.spec.FileContent
+import org.a2aproject.sdk.spec.FilePart
+import org.a2aproject.sdk.spec.FileWithBytes
+import org.a2aproject.sdk.spec.FileWithUri
+import org.a2aproject.sdk.spec.Message
+import org.a2aproject.sdk.spec.Part as A2APart
+import org.a2aproject.sdk.spec.Task
+import org.a2aproject.sdk.spec.TaskArtifactUpdateEvent
+import org.a2aproject.sdk.spec.TaskState
+import org.a2aproject.sdk.spec.TaskStatusUpdateEvent
+import org.a2aproject.sdk.spec.TextPart
 import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("A2aConverters")
-private val objectMapper =
-  ObjectMapper().registerModule(KotlinModule.Builder().build()).registerModule(JavaTimeModule())
 
 private val metadataParser =
   object : A2AMetadataParser {
-    override fun <T : Any> parse(metadata: Any?, clazz: kotlin.reflect.KClass<T>): T? {
+    override fun <T : Any> parse(metadata: Any?, clazz: KClass<T>): T? {
       if (metadata == null) return null
+      val serializer = serializerFor(clazz)
+      if (serializer == null) {
+        logger.warn("No serializer for metadata type ${clazz.simpleName}; skipping")
+        return null
+      }
       return try {
-        if (metadata is String) {
-          objectMapper.readValue(metadata, clazz.java)
-        } else {
-          objectMapper.convertValue(metadata, clazz.java)
-        }
+        @Suppress("UNCHECKED_CAST")
+        adkJson.decodeFromJsonElement(serializer, metadata.toMetadataJsonElement()) as T
       } catch (e: Exception) {
         logger.warn("Failed to parse metadata of type ${clazz.simpleName}", e)
         null
@@ -69,7 +77,25 @@ private val metadataParser =
     }
   }
 
-private val PENDING_STATES = setOf(TaskState.WORKING, TaskState.SUBMITTED)
+// A2A metadata is only ever parsed into these two ADK types; see [updateEventMetadata].
+// Visible for testing the defensive null fallback.
+internal fun serializerFor(clazz: KClass<*>): KSerializer<*>? =
+  when (clazz) {
+    GroundingMetadata::class -> GroundingMetadata.serializer()
+    UsageMetadata::class -> UsageMetadata.serializer()
+    else -> null
+  }
+
+// A2A metadata values arrive either as a JSON string or as an already-decoded Map/primitive tree.
+private fun Any.toMetadataJsonElement(): JsonElement =
+  if (this is String) adkJson.parseToJsonElement(this) else anyToJsonElement(this)
+
+private val PENDING_STATES = setOf(TaskState.TASK_STATE_WORKING, TaskState.TASK_STATE_SUBMITTED)
+
+// DataPart types
+internal const val TYPE_FUNCTION_CALL = "function_call"
+internal const val TYPE_FUNCTION_RESPONSE = "function_response"
+internal const val DEFAULT_ERROR_MESSAGE = "A2A task failed"
 
 /** Converts a A2A [ClientEvent] to an ADK [Event]. */
 internal fun ClientEvent.toAdkEvent(invocationContext: InvocationContext): Event? {
@@ -86,7 +112,7 @@ internal fun ClientEvent.shouldBuffer(): Boolean {
     return this.updateEvent !is TaskStatusUpdateEvent
   }
   if (this is TaskEvent) {
-    return this.task.artifacts.isNotEmpty()
+    return this.task.artifacts.orEmpty().isNotEmpty()
   }
   return true
 }
@@ -99,7 +125,7 @@ internal fun ClientEvent.shouldResetBuffer(): Boolean {
   if (this is TaskUpdateEvent) {
     val innerEvent = this.updateEvent
     if (innerEvent is TaskArtifactUpdateEvent) {
-      return innerEvent.isAppend == false && innerEvent.isLastChunk == false
+      return innerEvent.append == false && innerEvent.lastChunk == false
     }
   }
   return false
@@ -109,7 +135,7 @@ internal fun ClientEvent.isLastChunk(): Boolean {
   if (this is TaskUpdateEvent) {
     val innerEvent = this.updateEvent
     if (innerEvent is TaskArtifactUpdateEvent) {
-      return innerEvent.isLastChunk == true
+      return innerEvent.lastChunk == true
     }
   }
   return false
@@ -121,9 +147,9 @@ internal fun ClientEvent.isCompleted(): Boolean {
     when (this) {
       is TaskEvent -> this.task.status.state()
       is TaskUpdateEvent -> this.task.status.state()
-      else -> TaskState.UNKNOWN
+      else -> TaskState.UNRECOGNIZED
     }
-  return state == TaskState.COMPLETED
+  return state == TaskState.TASK_STATE_COMPLETED
 }
 
 /** Converts an artifact to an ADK event. */
@@ -156,7 +182,7 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
   val adkParts = mutableListOf<Part>()
   val longRunningToolIds = mutableSetOf<String>()
 
-  for (artifact in artifacts) {
+  for (artifact in artifacts.orEmpty()) {
     val converted = artifact.parts().toAdk()
     longRunningToolIds.addAll(longRunningToolIds(artifact.parts(), converted))
     adkParts.addAll(converted)
@@ -166,15 +192,20 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
   status.message()?.let { msg ->
     val msgParts = msg.parts.toAdk()
     longRunningToolIds.addAll(longRunningToolIds(msg.parts, msgParts))
-    if (status.state() == TaskState.FAILED && msgParts.size == 1 && msgParts[0].text != null) {
+    if (
+      status.state() == TaskState.TASK_STATE_FAILED &&
+        msgParts.size == 1 &&
+        msgParts[0].text != null
+    ) {
       errorMessage = msgParts[0].text
     } else {
       adkParts.addAll(msgParts)
     }
   }
 
-  errorMessage = errorMessage ?: DEFAULT_ERROR_MESSAGE.takeIf { status.state() == TaskState.FAILED }
-  val isFinal = status.state().isFinal || status.state() == TaskState.INPUT_REQUIRED
+  errorMessage =
+    errorMessage ?: DEFAULT_ERROR_MESSAGE.takeIf { status.state() == TaskState.TASK_STATE_FAILED }
+  val isFinal = status.state().isFinal || status.state() == TaskState.TASK_STATE_INPUT_REQUIRED
 
   if (adkParts.isEmpty() && !isFinal) {
     return emptyEvent(invocationContext)
@@ -185,7 +216,8 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
       .copy(
         content = if (adkParts.isNotEmpty()) Content(role = Role.MODEL, parts = adkParts) else null,
         longRunningToolIds =
-          if (status.state() == TaskState.INPUT_REQUIRED) longRunningToolIds else emptySet(),
+          if (status.state() == TaskState.TASK_STATE_INPUT_REQUIRED) longRunningToolIds
+          else emptySet(),
         turnComplete = isFinal,
         errorMessage = errorMessage,
       )
@@ -224,8 +256,8 @@ internal fun List<A2APart<*>>.toAdk(): List<Part> = map { it.toAdk() }
 private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
   return when (val update = updateEvent) {
     is TaskArtifactUpdateEvent -> {
-      val isAppend = update.isAppend == true
-      val isLastChunk = update.isLastChunk == true
+      val isAppend = update.append == true
+      val isLastChunk = update.lastChunk == true
 
       if (isLastChunk && update.metadata.isPartial()) {
         return null
@@ -246,7 +278,7 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
 
       val messageEvent =
         status.message()?.let { msg ->
-          if (taskState == TaskState.FAILED) {
+          if (taskState == TaskState.TASK_STATE_FAILED) {
             remoteAgentEvent(context)
               .copy(errorMessage = msg.parts.filterIsInstance<TextPart>().firstOrNull()?.text)
           } else {
@@ -262,7 +294,7 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
             partial = false,
             errorMessage =
               baseEvent.errorMessage
-                ?: DEFAULT_ERROR_MESSAGE.takeIf { taskState == TaskState.FAILED },
+                ?: DEFAULT_ERROR_MESSAGE.takeIf { taskState == TaskState.TASK_STATE_FAILED },
           )
         } else {
           messageEvent
@@ -279,7 +311,7 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
 }
 
 private fun longRunningToolIds(
-  a2aParts: List<io.a2a.spec.Part<*>>,
+  a2aParts: List<org.a2aproject.sdk.spec.Part<*>>,
   adkParts: List<Part>,
 ): Set<String> {
   return a2aParts
@@ -295,18 +327,23 @@ private fun longRunningToolIds(
 // Note: We use coerceToMap for arguments and response to handle cases where the data
 // is received as a string or non-map type, matching Java behavior.
 private fun DataPart.toAdk(): Part {
-  val type = metadata[MetadataKeys.TYPE] as? String
+  val type = metadata?.get(MetadataKeys.TYPE) as? String
+  // In A2A v1.0, DataPart.data is typed as Object (it may hold any JSON value). For ADK function
+  // call/response parts the payload is always a JSON object, so coerce it to a map here.
+  @Suppress("UNCHECKED_CAST") val dataMap = data as Map<String, Any?>
   return when (type) {
     TYPE_FUNCTION_CALL -> {
-      val coercedData = data.toMutableMap()
-      coercedData["args"] = coerceToMap(data["args"])
-      val fc = objectMapper.convertValue(coercedData, FunctionCall::class.java)
+      val coercedData = dataMap.toMutableMap()
+      coercedData["args"] = coerceToMap(dataMap["args"])
+      val fc =
+        adkJson.decodeFromJsonElement(FunctionCall.serializer(), anyToJsonElement(coercedData))
       Part(functionCall = fc)
     }
     TYPE_FUNCTION_RESPONSE -> {
-      val coercedData = data.toMutableMap()
-      coercedData["response"] = coerceToMap(data["response"])
-      val fr = objectMapper.convertValue(coercedData, FunctionResponse::class.java)
+      val coercedData = dataMap.toMutableMap()
+      coercedData["response"] = coerceToMap(dataMap["response"])
+      val fr =
+        adkJson.decodeFromJsonElement(FunctionResponse.serializer(), anyToJsonElement(coercedData))
       Part(functionResponse = fr)
     }
     else -> throw IllegalArgumentException("Unsupported A2A DataPart type: $type")
@@ -316,12 +353,12 @@ private fun DataPart.toAdk(): Part {
 private fun Map<String, Any?>?.isPartial() = this?.get(MetadataKeys.PARTIAL) == true
 
 /** Converts a GenAI Content object to a list of A2A Parts. */
-internal fun Content.toLegacyA2aParts(isPartial: Boolean): List<A2APart<*>> {
-  return parts.map { it.toLegacyA2aPart(isPartial) }
+internal fun Content.toA2aParts(isPartial: Boolean): List<A2APart<*>> {
+  return parts.map { it.toA2A(isPartial) }
 }
 
 /** Converts an ADK Part to an A2A Part. */
-internal fun Part.toLegacyA2aPart(isPartial: Boolean = false): A2APart<*> {
+internal fun Part.toA2A(isPartial: Boolean = false): A2APart<*> {
   text?.let {
     return TextPart(it)
   }
@@ -344,11 +381,11 @@ internal fun Part.toLegacyA2aPart(isPartial: Boolean = false): A2APart<*> {
 }
 
 /** Converts an ADK Event to an A2A Message. */
-internal fun Event.toLegacyA2aMessage(): Message {
-  return Message.Builder()
+internal fun Event.toA2aMessage(): Message {
+  return Message.builder()
     .messageId(id.ifEmpty { Uuid.random() })
-    .role(author.takeIf { it == "user" }?.let { Message.Role.USER } ?: Message.Role.AGENT)
-    .parts(content?.parts?.map { it.toLegacyA2aPart() } ?: emptyList())
+    .role(author.takeIf { it == "user" }?.let { Message.Role.ROLE_USER } ?: Message.Role.ROLE_AGENT)
+    .parts(content?.parts?.map { it.toA2A() } ?: emptyList())
     .apply {
       if (taskId.isNotEmpty()) taskId(taskId)
       if (contextId.isNotEmpty()) contextId(contextId)
@@ -358,7 +395,7 @@ internal fun Event.toLegacyA2aMessage(): Message {
 }
 
 /** Returns the parts from the context events that should be sent to the agent. */
-internal fun InvocationContext.extractLegacyA2aParts(): List<A2APart<*>> {
+internal fun InvocationContext.extractA2aParts(): List<A2APart<*>> {
   val preprocessedEvents = extractPreprocessedEvents()
   if (preprocessedEvents.isEmpty()) {
     return emptyList()
@@ -368,7 +405,7 @@ internal fun InvocationContext.extractLegacyA2aParts(): List<A2APart<*>> {
 
   return preprocessedEvents.flatMapIndexed { index, event ->
     val actualIndex = lastResponseIndex + 1 + index
-    val eventParts = event.content?.toLegacyA2aParts(event.partial) ?: emptyList()
+    val eventParts = event.content?.toA2aParts(event.partial) ?: emptyList()
     logger.debug(
       "Event index=$actualIndex author=${event.author} extracted parts=${eventParts.size}"
     )
@@ -382,13 +419,17 @@ private fun FunctionCall.toA2A(isPartial: Boolean): DataPart {
     metadata[MetadataKeys.PARTIAL] = true
   }
   @Suppress("UNCHECKED_CAST")
-  val dataMap = objectMapper.convertValue(this, Map::class.java) as Map<String, Any>
+  val dataMap =
+    jsonElementToAny(adkJson.encodeToJsonElement(FunctionCall.serializer(), this))
+      as Map<String, Any>
   return DataPart(dataMap, metadata)
 }
 
 private fun FunctionResponse.toA2A(): DataPart {
   @Suppress("UNCHECKED_CAST")
-  val dataMap = objectMapper.convertValue(this, Map::class.java) as Map<String, Any>
+  val dataMap =
+    jsonElementToAny(adkJson.encodeToJsonElement(FunctionResponse.serializer(), this))
+      as Map<String, Any>
   return DataPart(dataMap, mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_RESPONSE))
 }
 
@@ -402,7 +443,8 @@ private fun coerceToMap(value: Any?): Map<String, Any?> =
       } else {
         try {
           @Suppress("UNCHECKED_CAST")
-          objectMapper.readValue(value, Map::class.java) as Map<String, Any?>
+          (jsonElementToAny(adkJson.parseToJsonElement(value)) as? Map<String, Any?>)
+            ?: mapOf("value" to value)
         } catch (e: Exception) {
           logger.warn("Failed to parse map from string payload", e)
           mapOf("value" to value)

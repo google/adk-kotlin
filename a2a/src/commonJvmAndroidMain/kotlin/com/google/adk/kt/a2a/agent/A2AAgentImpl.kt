@@ -16,28 +16,18 @@
 
 package com.google.adk.kt.a2a.agent
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.google.adk.kt.a2a.converters.isCompleted
 import com.google.adk.kt.a2a.converters.isLastChunk
 import com.google.adk.kt.a2a.converters.shouldBuffer
 import com.google.adk.kt.a2a.converters.shouldResetBuffer
+import com.google.adk.kt.a2a.converters.toA2aMessage
 import com.google.adk.kt.a2a.converters.toAdkEvent
-import com.google.adk.kt.a2a.converters.toLegacyA2aMessage
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.logging.LoggerFactory
-import io.a2a.client.Client
-import io.a2a.client.ClientEvent
-import io.a2a.client.TaskEvent
-import io.a2a.client.TaskUpdateEvent
-import io.a2a.spec.AgentCard
-import io.a2a.spec.Message
-import io.a2a.spec.TaskIdParams
-import io.a2a.spec.TaskState
 import java.util.concurrent.atomic.AtomicReference
 import java.util.function.BiConsumer
 import java.util.function.Consumer
@@ -48,13 +38,23 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
+import org.a2aproject.sdk.client.Client
+import org.a2aproject.sdk.client.ClientEvent
+import org.a2aproject.sdk.client.MessageEvent
+import org.a2aproject.sdk.client.TaskEvent
+import org.a2aproject.sdk.client.TaskUpdateEvent
+import org.a2aproject.sdk.jsonrpc.common.json.JsonUtil
+import org.a2aproject.sdk.spec.AgentCard
+import org.a2aproject.sdk.spec.CancelTaskParams
+import org.a2aproject.sdk.spec.Message
+import org.a2aproject.sdk.spec.TaskState
 
 /** Agent that communicates with a remote A2A agent via an A2A client. */
-internal class LegacyA2AAgent(
+internal class A2AAgentImpl(
   name: String,
   private val userDescription: String? = null,
   private val a2aClient: Client,
-  private val agentCard: AgentCard? = null,
+  private val agentCard: AgentCard,
   private val streaming: Boolean = true,
   subAgents: List<BaseAgent> = emptyList(),
   beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList(),
@@ -67,21 +67,13 @@ internal class LegacyA2AAgent(
     beforeAgentCallbacks = beforeAgentCallbacks,
     afterAgentCallbacks = afterAgentCallbacks,
   ) {
-  private val logger = LoggerFactory.getLogger(LegacyA2AAgent::class)
-  private val objectMapper = ObjectMapper().registerModule(JavaTimeModule())
+  private val logger = LoggerFactory.getLogger(A2AAgentImpl::class)
 
   override val description: String
-    get() = userDescription ?: effectiveAgentCard.description() ?: ""
-
-  private val effectiveAgentCard: AgentCard by lazy {
-    // A missing card may be null or throw in the v0.3 SDK; treat both as unresolved.
-    agentCard
-      ?: runCatching { a2aClient.agentCard }.getOrNull()
-      ?: throw AgentCardResolutionError("Failed to resolve agent card")
-  }
+    get() = userDescription ?: agentCard.description() ?: ""
 
   override val isStreamingEnabled: Boolean by lazy {
-    streaming && effectiveAgentCard.capabilities().streaming()
+    streaming && agentCard.capabilities().streaming()
   }
 
   override fun createA2aCallbackFlow(
@@ -98,7 +90,7 @@ internal class LegacyA2AAgent(
     // responses, which are bounded by LLM limits.
     // Alternatively, block the thread using: runBlocking { eventChannel.send(responseEvent) }
     val eventChannel = Channel<ClientEvent>(Channel.UNLIMITED)
-    val message = outboundEvent.toLegacyA2aMessage()
+    val message = outboundEvent.toA2aMessage()
 
     // Suppress because processing is serialized via eventChannel, avoiding concurrent execution.
     @Suppress("UnsafeCoroutineCrossing")
@@ -126,16 +118,9 @@ internal class LegacyA2AAgent(
     // This handler may be called multiple times for each response from A2A.
     val handler =
       BiConsumer<ClientEvent, AgentCard> { responseEvent, _ ->
-        val send = eventChannel.trySend(responseEvent)
-        if (send.isFailure) {
-          val error =
-            IllegalStateException(
-              "LegacyA2AAgent internal event queue is full; downstream is too slow to consume events.",
-              send.exceptionOrNull(),
-            )
-          logger.error(error) { "Failed to queue client event" }
-          close(error)
-        }
+        // UNLIMITED channel: trySend only fails once the flow is closed; dropping a late event then
+        // is fine.
+        eventChannel.trySend(responseEvent).getOrNull()
       }
 
     val errorHandler =
@@ -203,17 +188,17 @@ internal class LegacyA2AAgent(
     val unusedJob =
       CoroutineScope(Dispatchers.IO).launch {
         try {
-          a2aClient.cancelTask(TaskIdParams(taskId))
+          a2aClient.cancelTask(CancelTaskParams(taskId))
         } catch (e: Exception) {
           logger.warn(e) { "Failed to cancel task $taskId" }
         }
       }
   }
 
-  private fun serializeMessageToJson(message: Message): Result<String> {
-    return runCatching { objectMapper.writeValueAsString(message) }
+  // Debug metadata via the SDK's reflection-free JsonUtil so it also works under Android R8.
+  private fun serializeMessageToJson(message: Message): Result<String> =
+    runCatching { JsonUtil.toJson(message) }
       .onFailure { e -> logger.warn(e) { "Failed to serialize request" } }
-  }
 
   private fun addMetadata(
     event: Event,
@@ -221,37 +206,20 @@ internal class LegacyA2AAgent(
     debugRequest: Result<String>,
   ): Event {
     val debugResponse = responseEvent?.let {
-      runCatching { objectMapper.writeValueAsString(it) }
+      runCatching { serializeClientEvent(it) }
         .onFailure { e -> logger.warn(e) { "Failed to serialize response metadata" } }
     }
     return addA2AMetadata(event = event, debugRequest = debugRequest, debugResponse = debugResponse)
   }
 
-  private fun isTerminal(state: TaskState): Boolean =
-    state.isFinal || state == TaskState.INPUT_REQUIRED
-}
+  // Unwrap to the underlying spec type, which JsonUtil can serialize (unlike the client wrapper).
+  private fun serializeClientEvent(event: ClientEvent): String =
+    when (event) {
+      is MessageEvent -> JsonUtil.toJson(event.message)
+      is TaskEvent -> JsonUtil.toJson(event.task)
+      is TaskUpdateEvent -> JsonUtil.toJson(event.task)
+    }
 
-/** Factory function to create a [BaseRemoteA2AAgent] for JVM/Android. */
-@Deprecated(
-  "Use A2AAgent with the A2A v1.0 SDK: build from an AgentCard or its URL " +
-    "(A2AAgent(name, agentCard, ...) / A2AAgent(name, agentCardUrl, ...)) instead of passing a Client."
-)
-fun JvmA2AAgent(
-  name: String,
-  client: Client,
-  agentCard: AgentCard? = null,
-  streaming: Boolean = true,
-  subAgents: List<BaseAgent> = emptyList(),
-  beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList(),
-  afterAgentCallbacks: List<AfterAgentCallback> = emptyList(),
-): BaseRemoteA2AAgent {
-  return LegacyA2AAgent(
-    name = name,
-    a2aClient = client,
-    agentCard = agentCard,
-    streaming = streaming,
-    subAgents = subAgents,
-    beforeAgentCallbacks = beforeAgentCallbacks,
-    afterAgentCallbacks = afterAgentCallbacks,
-  )
+  private fun isTerminal(state: TaskState): Boolean =
+    state.isFinal || state == TaskState.TASK_STATE_INPUT_REQUIRED
 }

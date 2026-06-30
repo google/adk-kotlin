@@ -16,10 +16,19 @@
 
 plugins {
   kotlin("multiplatform")
+  id("com.android.kotlin.multiplatform.library")
   id("maven-publish")
 }
 
 kotlin {
+  // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
+  android {
+    namespace = "com.google.adk.a2a"
+    compileSdk = rootProject.extra["androidCompileSdk"] as Int
+    // A2A requires API 35: the SDK's ClientBuilder.build() calls ServiceLoader.stream() (API 35+).
+    // Core stays at the shared androidMinSdk; only A2A gates higher.
+    minSdk = 35
+  }
   jvm()
 
   sourceSets {
@@ -38,14 +47,22 @@ kotlin {
     val commonJvmAndroidMain by creating {
       dependsOn(commonMain)
       dependencies {
-        implementation(libs.jackson.databind)
-        implementation(libs.jackson.datatype.jsr310)
+        implementation(libs.kotlinx.serialization)
+        implementation(libs.a2a.sdk.client)
+        implementation(libs.a2a.sdk.common)
+        implementation(libs.a2a.sdk.spec)
       }
     }
-    // jvmMain: deprecated v0.3 (`io.a2a.*`) path, JVM-only.
+    // jvmMain hosts the deprecated v0.3 path (JVM-only); androidMain stays v1.0-only.
     val jvmMain by getting {
       dependsOn(commonJvmAndroidMain)
       dependencies {
+        // JVM v1.0 factory uses the SDK's proto-based JSON-RPC transport; kept off the Android
+        // path.
+        implementation(libs.a2a.sdk.transport.jsonrpc)
+        // Jackson is JVM-only (deprecated v0.3 converters); kept off the Android artifact.
+        implementation(libs.jackson.databind)
+        implementation(libs.jackson.datatype.jsr310)
         implementation(libs.jackson.module.kotlin)
         implementation(libs.a2a.legacy.sdk.client)
         implementation(libs.a2a.legacy.sdk.common)
@@ -58,19 +75,26 @@ kotlin {
         implementation(libs.google.truth)
         implementation(libs.mockito.kotlin)
         implementation(libs.kotlinx.coroutines.test)
+        implementation(libs.okhttp.mockwebserver)
         implementation(libs.a2a.legacy.sdk.client)
         implementation(libs.a2a.legacy.sdk.spec)
       }
+    }
+    val androidMain by getting {
+      dependsOn(commonJvmAndroidMain)
+      dependencies { implementation(libs.a2a.sdk.http.client.android) }
     }
   }
 }
 
 // Coordinates the Kotlin Multiplatform plugin uses for the publications it
 // auto-creates:
-//   - `kotlinMultiplatform` -> google-adk-kotlin-a2a     (root metadata)
-//   - `jvm`                 -> google-adk-kotlin-a2a-jvm (KMP target)
-// POM metadata, Dokka javadoc, and GPG signing are configured in the root
-// build.gradle.kts.
+//   - `kotlinMultiplatform` -> google-adk-kotlin-a2a         (root metadata)
+//   - `jvm`                 -> google-adk-kotlin-a2a-jvm     (KMP target)
+//   - `androidRelease`      -> google-adk-kotlin-a2a-android (KMP target)
+// Per-target suffixes (`-jvm`, `-android`) are appended by the KMP plugin
+// automatically. POM metadata, Dokka javadoc, and GPG signing are configured in
+// the root build.gradle.kts.
 publishing {
   publications.withType<MavenPublication>().configureEach {
     if (name == "kotlinMultiplatform") {
