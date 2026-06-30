@@ -16,22 +16,28 @@
 
 package com.google.adk.kt.a2a.agent
 
-import com.fasterxml.jackson.databind.MapperFeature
-import com.fasterxml.jackson.databind.json.JsonMapper
-import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.google.adk.kt.a2a.converters.isCompleted
 import com.google.adk.kt.a2a.converters.isLastChunk
 import com.google.adk.kt.a2a.converters.shouldBuffer
 import com.google.adk.kt.a2a.converters.shouldResetBuffer
-import com.google.adk.kt.a2a.converters.toA2aMessage
 import com.google.adk.kt.a2a.converters.toAdkEvent
+import com.google.adk.kt.a2a.converters.toLegacyA2aMessage
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.logging.LoggerFactory
+import io.a2a.client.Client
+import io.a2a.client.ClientEvent
+import io.a2a.client.TaskEvent
+import io.a2a.client.TaskUpdateEvent
+import io.a2a.spec.AgentCard
+import io.a2a.spec.Message
+import io.a2a.spec.TaskIdParams
+import io.a2a.spec.TaskState
 import java.util.concurrent.atomic.AtomicReference
 import java.util.function.BiConsumer
 import java.util.function.Consumer
@@ -42,17 +48,14 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
-import org.a2aproject.sdk.client.Client
-import org.a2aproject.sdk.client.ClientEvent
-import org.a2aproject.sdk.client.TaskEvent
-import org.a2aproject.sdk.client.TaskUpdateEvent
-import org.a2aproject.sdk.spec.AgentCard
-import org.a2aproject.sdk.spec.CancelTaskParams
-import org.a2aproject.sdk.spec.Message
-import org.a2aproject.sdk.spec.TaskState
 
-/** Agent that communicates with a remote A2A agent via an A2A client. */
-internal class A2AAgent(
+/**
+ * Agent that communicates with a remote A2A agent via an A2A v0.3 client.
+ *
+ * This is the legacy (deprecated) implementation backed by the A2A Java SDK v0.3 (`io.a2a.*`). New
+ * code should use [A2AAgent], which is backed by the A2A Java SDK v1.0 and also runs on Android.
+ */
+internal class LegacyA2AAgent(
   name: String,
   private val userDescription: String? = null,
   private val a2aClient: Client,
@@ -69,21 +72,18 @@ internal class A2AAgent(
     beforeAgentCallbacks = beforeAgentCallbacks,
     afterAgentCallbacks = afterAgentCallbacks,
   ) {
-  private val logger = LoggerFactory.getLogger(A2AAgent::class)
-  // Write-only mapper for debug logging, hardened against unsafe polymorphic type resolution.
-  private val objectMapper =
-    JsonMapper.builder()
-      .enable(MapperFeature.BLOCK_UNSAFE_POLYMORPHIC_BASE_TYPES)
-      .polymorphicTypeValidator(BasicPolymorphicTypeValidator.builder().build())
-      .addModule(JavaTimeModule())
-      .build()
+  private val logger = LoggerFactory.getLogger(LegacyA2AAgent::class)
+  private val objectMapper = ObjectMapper().registerModule(JavaTimeModule())
 
   override val description: String
     get() = userDescription ?: effectiveAgentCard.description() ?: ""
 
-  // v1.0 `Client` has no agent-card accessor, so the caller supplies it.
   private val effectiveAgentCard: AgentCard by lazy {
-    agentCard ?: throw AgentCardResolutionError("Failed to resolve agent card")
+    // Depending on the A2A v0.3 SDK point version, a missing card surfaces as either a null return
+    // or a thrown exception; treat both as "unresolved".
+    agentCard
+      ?: runCatching { a2aClient.agentCard }.getOrNull()
+      ?: throw AgentCardResolutionError("Failed to resolve agent card")
   }
 
   override val isStreamingEnabled: Boolean by lazy {
@@ -104,7 +104,7 @@ internal class A2AAgent(
     // responses, which are bounded by LLM limits.
     // Alternatively, block the thread using: runBlocking { eventChannel.send(responseEvent) }
     val eventChannel = Channel<ClientEvent>(Channel.UNLIMITED)
-    val message = outboundEvent.toA2aMessage()
+    val message = outboundEvent.toLegacyA2aMessage()
 
     // Suppress because processing is serialized via eventChannel, avoiding concurrent execution.
     @Suppress("UnsafeCoroutineCrossing")
@@ -209,18 +209,16 @@ internal class A2AAgent(
     val unusedJob =
       CoroutineScope(Dispatchers.IO).launch {
         try {
-          a2aClient.cancelTask(CancelTaskParams(taskId))
+          a2aClient.cancelTask(TaskIdParams(taskId))
         } catch (e: Exception) {
           logger.warn(e) { "Failed to cancel task $taskId" }
         }
       }
   }
 
-  // Best-effort debug metadata: the A2A SDK POJOs aren't reflectable under Android R8, so log at
-  // debug (like Python) rather than warn to avoid per-event spam.
   private fun serializeMessageToJson(message: Message): Result<String> {
     return runCatching { objectMapper.writeValueAsString(message) }
-      .onFailure { e -> logger.debug(e) { "Failed to serialize request" } }
+      .onFailure { e -> logger.warn(e) { "Failed to serialize request" } }
   }
 
   private fun addMetadata(
@@ -230,22 +228,29 @@ internal class A2AAgent(
   ): Event {
     val debugResponse = responseEvent?.let {
       runCatching { objectMapper.writeValueAsString(it) }
-        .onFailure { e -> logger.debug(e) { "Failed to serialize response metadata" } }
+        .onFailure { e -> logger.warn(e) { "Failed to serialize response metadata" } }
     }
     return addA2AMetadata(event = event, debugRequest = debugRequest, debugResponse = debugResponse)
   }
 
   private fun isTerminal(state: TaskState): Boolean =
-    state.isFinal || state == TaskState.TASK_STATE_INPUT_REQUIRED
+    state.isFinal || state == TaskState.INPUT_REQUIRED
 }
 
 /**
- * Creates a [BaseRemoteA2AAgent] backed by the A2A Java SDK v1.0 [Client] for JVM and Android.
+ * Factory function to create a [BaseRemoteA2AAgent] backed by the A2A Java SDK v0.3 [Client].
  *
- * This is the recommended entry point for A2A clients. For the deprecated A2A SDK v0.3 path see the
- * JVM-only `JvmA2AAgent`.
+ * This path is JVM-only because the v0.3 SDK depends on `java.net.http`, which is unavailable on
+ * Android.
  */
-fun A2AAgent(
+@Deprecated(
+  "Use A2AAgent with the A2A v1.0 SDK",
+  ReplaceWith(
+    "A2AAgent(name, client, agentCard, streaming, subAgents, beforeAgentCallbacks," +
+      " afterAgentCallbacks)"
+  ),
+)
+fun JvmA2AAgent(
   name: String,
   client: Client,
   agentCard: AgentCard? = null,
@@ -254,7 +259,7 @@ fun A2AAgent(
   beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList(),
   afterAgentCallbacks: List<AfterAgentCallback> = emptyList(),
 ): BaseRemoteA2AAgent {
-  return A2AAgent(
+  return LegacyA2AAgent(
     name = name,
     a2aClient = client,
     agentCard = agentCard,

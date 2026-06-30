@@ -75,7 +75,7 @@ internal object AnySerializer : KSerializer<Any> {
   }
 }
 
-private fun anyToJsonElement(value: Any?): JsonElement =
+fun anyToJsonElement(value: Any?): JsonElement =
   when (value) {
     null -> JsonNull
     State.REMOVED -> JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true)))
@@ -99,7 +99,7 @@ private fun anyToJsonElement(value: Any?): JsonElement =
       )
   }
 
-private fun jsonElementToAny(element: JsonElement): Any? =
+fun jsonElementToAny(element: JsonElement): Any? =
   when (element) {
     is JsonNull -> null
     is JsonPrimitive ->
@@ -124,7 +124,7 @@ private fun jsonElementToAny(element: JsonElement): Any? =
  * persistence. Defaults are omitted to keep payloads small, unknown keys are ignored for
  * forward-compatibility, and [AnySerializer] is registered contextually for free-form `Any` values.
  */
-internal val adkJson: Json = Json {
+val adkJson: Json = Json {
   encodeDefaults = false
   explicitNulls = false
   ignoreUnknownKeys = true
