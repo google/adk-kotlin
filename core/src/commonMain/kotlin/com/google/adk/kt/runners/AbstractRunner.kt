@@ -463,6 +463,14 @@ abstract class AbstractRunner : Runner {
     newMessage: Content,
     stateDelta: Map<String, Any>?,
   ): InvocationContext {
+    // Pre-merge stateDelta into session.state so that onUserMessage callbacks (and the agent run
+    // that follows) observe it. The delta is still attached to the user event below and persisted
+    // via SessionService.appendEvent (which merges it idempotently). Mirrors ADK Java
+    // `Runner.runAsyncImpl`.
+    if (stateDelta != null && stateDelta.isNotEmpty()) {
+      context.session.state.putAll(stateDelta)
+    }
+
     val currentContext =
       context.copy(userContent = newMessage).let { updatedContext ->
         updatedContext.copy(

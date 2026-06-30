@@ -29,6 +29,7 @@ import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
@@ -837,6 +838,53 @@ class AbstractRunnerTest {
         .events
     val compaction = events.single { it.actions.compaction != null }
     assertEquals("OK", compaction.actions.compaction?.compactedContent?.parts?.firstOrNull()?.text)
+  }
+
+  @Test
+  fun runAsync_initialStateDelta_visibleToOnUserMessageAndAgent() = runTest {
+    val stateSeenByPlugin = mutableMapOf<String, Any?>()
+    val stateSeenByAgent = mutableMapOf<String, Any?>()
+
+    val plugin =
+      object : Plugin {
+        override val name = "state-observer"
+
+        override suspend fun onUserMessage(
+          invocationContext: InvocationContext,
+          userMessage: Content,
+        ): Content {
+          stateSeenByPlugin["k"] = invocationContext.session.state["k"]
+          return userMessage
+        }
+      }
+
+    val agent =
+      DummyAgent(
+        name = "agent",
+        onRunAsync = { context -> stateSeenByAgent["k"] = context.session.state["k"] },
+      )
+
+    val runner =
+      InMemoryRunner(
+        app = App(appName = "state_delta_app", rootAgent = agent, plugins = listOf(plugin))
+      )
+
+    runner
+      .runAsync(
+        userId = "user",
+        sessionId = "session",
+        newMessage = userMessage("hi"),
+        stateDelta = mapOf("k" to "v"),
+      )
+      .toList()
+
+    assertEquals("v", stateSeenByPlugin["k"])
+    assertEquals("v", stateSeenByAgent["k"])
+
+    // And the delta is still persisted to the session afterwards.
+    val session =
+      runner.sessionService.getSession(SessionKey("state_delta_app", "user", "session"))!!
+    assertEquals("v", session.state["k"])
   }
 }
 
