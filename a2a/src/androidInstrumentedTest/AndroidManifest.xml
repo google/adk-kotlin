@@ -1,0 +1,20 @@
+<!-- Android manifest for the A2A instrumented test app. -->
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.google.adk.kt.a2a.instrumentation">
+
+<uses-sdk android:minSdkVersion="26" />
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+<!-- Cleartext is needed only because the test talks to a local http MockWebServer; a real A2A
+     server uses https, so this is a test-only allowance (real Android blocks cleartext by default,
+     which Robolectric does not enforce). -->
+<application android:usesCleartextTraffic="true">
+    <uses-library android:name="android.test.runner" />
+</application>
+
+<instrumentation android:name="androidx.test.runner.AndroidJUnitRunner"
+    android:targetPackage="com.google.adk.kt.a2a.instrumentation" />
+
+</manifest>
