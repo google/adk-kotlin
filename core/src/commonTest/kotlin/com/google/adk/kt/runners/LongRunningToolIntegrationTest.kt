@@ -24,6 +24,7 @@ import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.processors.HistoryRewriterProcessor
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -37,6 +38,7 @@ import com.google.adk.kt.testing.simplifyContent
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
@@ -523,6 +525,237 @@ class LongRunningToolIntegrationTest {
       capturedRequests.last().simplifiedContents(),
     )
   }
+
+  /**
+   * Replays the same long-running call id multiple times. Each replay must produce the canonical
+   * `[user, model_fc, fr(latest)]` shape (matching Java's `asyncFunction_handlesPendingAndResults`
+   * and Python's `test_async_function`). Guards
+   * `HistoryRewriterProcessor.rearrangeEventsForLatestFunctionResponse` against drifting from the
+   * `[user, model_fc, tool_fr]` shape when out-of-band long-running results are replayed: the
+   * intermediate model "acknowledged" text and prior placeholder/real FRs must all be collapsed so
+   * the model sees only the latest real response. The tool itself is invoked exactly once across
+   * all replays.
+   */
+  @Test
+  fun runAsync_longRunningToolReplayedMultipleTimes_eachReplayProducesUserModelFcFrShape() =
+    runTest {
+      val callId = "lr_call_multi_replay"
+      val placeholder = mapOf("status" to "pending")
+      val stillWaiting = mapOf("status" to "still waiting")
+      val finalResult = mapOf("result" to 2)
+      val followUp = mapOf("result" to 3)
+      val capturedRequests = mutableListOf<LlmRequest>()
+      var toolInvocations = 0
+      val agent =
+        singleCallThenAcknowledgeAgent(
+          callId = callId,
+          toolPayload = placeholder,
+          captureRequest = { capturedRequests += it },
+          onToolInvoke = { toolInvocations++ },
+        )
+      val runner = InMemoryRunner(agent = agent)
+
+      runner
+        .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("start"))
+        .toList()
+      runner
+        .runAsync(
+          userId = USER_ID,
+          sessionId = SESSION_ID,
+          newMessage =
+            userFunctionResponse(name = TOOL_NAME_1, id = callId, response = stillWaiting),
+        )
+        .toList()
+      runner
+        .runAsync(
+          userId = USER_ID,
+          sessionId = SESSION_ID,
+          newMessage = userFunctionResponse(name = TOOL_NAME_1, id = callId, response = finalResult),
+        )
+        .toList()
+      runner
+        .runAsync(
+          userId = USER_ID,
+          sessionId = SESSION_ID,
+          newMessage = userFunctionResponse(name = TOOL_NAME_1, id = callId, response = followUp),
+        )
+        .toList()
+
+      // Model is invoked: initial user prompt, after the placeholder FR, and once per replay (3).
+      assertEquals(5, capturedRequests.size)
+      // The tool is invoked exactly once -- replayed responses must not re-execute it.
+      assertEquals(1, toolInvocations)
+
+      // After each replay, the model sees the canonical `[user, model_fc, fr(latest)]` shape.
+      assertEquals(
+        listOf(
+          Role.USER to "start",
+          Role.MODEL to Part(functionCall = FunctionCall(name = TOOL_NAME_1)),
+          Role.USER to
+            Part(functionResponse = FunctionResponse(name = TOOL_NAME_1, response = stillWaiting)),
+        ),
+        capturedRequests[2].simplifiedContents(),
+      )
+      assertEquals(
+        listOf(
+          Role.USER to "start",
+          Role.MODEL to Part(functionCall = FunctionCall(name = TOOL_NAME_1)),
+          Role.USER to
+            Part(functionResponse = FunctionResponse(name = TOOL_NAME_1, response = finalResult)),
+        ),
+        capturedRequests[3].simplifiedContents(),
+      )
+      assertEquals(
+        listOf(
+          Role.USER to "start",
+          Role.MODEL to Part(functionCall = FunctionCall(name = TOOL_NAME_1)),
+          Role.USER to
+            Part(functionResponse = FunctionResponse(name = TOOL_NAME_1, response = followUp)),
+        ),
+        capturedRequests[4].simplifiedContents(),
+      )
+    }
+
+  /**
+   * Two long-running calls issued in parallel; the user replays a real `FunctionResponse` for only
+   * one of them. The next model invocation must preserve the canonical `[user, model(fc1, fc2),
+   * fr(...)]` shape -- both FCs intact in a single model event -- with the replayed FR carrying the
+   * real result for the replayed id and the original placeholder for the other. Neither
+   * long-running tool is re-invoked.
+   */
+  @Test
+  fun runAsync_parallelLongRunningTools_partialReplay_preservesBothFunctionCalls() = runTest {
+    val lrCallId1 = "lr_call_parallel_1"
+    val lrCallId2 = "lr_call_parallel_2"
+    val placeholder1 = mapOf("status" to "pending_1")
+    val placeholder2 = mapOf("status" to "pending_2")
+    val realResult1 = mapOf("result" to "done_1")
+    val capturedRequests = mutableListOf<LlmRequest>()
+    var lr1Invocations = 0
+    var lr2Invocations = 0
+    var modelInvocations = 0
+    val agent =
+      LlmAgent(
+        name = AGENT_NAME,
+        model =
+          DummyModel("model") { request ->
+            capturedRequests += request
+            modelInvocations++
+            flowOf(
+              if (modelInvocations == 1) {
+                modelParallelFunctionCallsResponse(
+                  FunctionCall(name = TOOL_NAME_1, id = lrCallId1),
+                  FunctionCall(name = TOOL_NAME_2, id = lrCallId2),
+                )
+              } else {
+                LlmResponse(content = modelMessage("acknowledged"))
+              }
+            )
+          },
+        tools =
+          listOf(
+            DummyTool(
+              name = TOOL_NAME_1,
+              isLongRunning = true,
+              onRun = { _, _ ->
+                lr1Invocations++
+                placeholder1
+              },
+            ),
+            DummyTool(
+              name = TOOL_NAME_2,
+              isLongRunning = true,
+              onRun = { _, _ ->
+                lr2Invocations++
+                placeholder2
+              },
+            ),
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    runner
+      .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("start"))
+      .toList()
+    runner
+      .runAsync(
+        userId = USER_ID,
+        sessionId = SESSION_ID,
+        newMessage =
+          userFunctionResponse(name = TOOL_NAME_1, id = lrCallId1, response = realResult1),
+      )
+      .toList()
+
+    // Each long-running tool is invoked exactly once; partial replay must not re-execute.
+    assertEquals(1, lr1Invocations)
+    assertEquals(1, lr2Invocations)
+
+    // Resume-turn history: the parallel FC event is preserved verbatim, and the replayed FR for
+    // call-1 is merged with the original placeholder for call-2 (same canonical
+    // `[user, model(fc1, fc2), fr(fr1_real, fr2_placeholder)]` shape that Java/Python produce).
+    assertEquals(
+      listOf(
+        Role.USER to "start",
+        Role.MODEL to
+          listOf(
+            Part(functionCall = FunctionCall(name = TOOL_NAME_1)),
+            Part(functionCall = FunctionCall(name = TOOL_NAME_2)),
+          ),
+        Role.USER to
+          listOf(
+            Part(functionResponse = FunctionResponse(name = TOOL_NAME_1, response = realResult1)),
+            Part(functionResponse = FunctionResponse(name = TOOL_NAME_2, response = placeholder2)),
+          ),
+      ),
+      capturedRequests.last().simplifiedContents(),
+    )
+  }
+
+  @Test
+  fun rearrangeEventsForLatestFunctionResponse_penultimatePartiallyMatchesSplitIds_returnsUnchanged() {
+    // idA is in the penultimate FC event, idB in an earlier FC event; the latest FR answers both.
+    // Pre-CL: throws IllegalStateException. With the fix: returned unchanged (Python/Java parity).
+    val events =
+      listOf(
+        functionCallEvent("toolB" to "idB"),
+        functionCallEvent("toolA" to "idA"),
+        Event(
+          author = "testAgent",
+          content =
+            Content(
+              role = "function",
+              parts =
+                listOf(
+                  Part(
+                    functionResponse =
+                      FunctionResponse(name = "toolA", id = "idA", response = mapOf("r" to 1))
+                  ),
+                  Part(
+                    functionResponse =
+                      FunctionResponse(name = "toolB", id = "idB", response = mapOf("r" to 2))
+                  ),
+                ),
+            ),
+        ),
+      )
+    assertEquals(
+      events,
+      HistoryRewriterProcessor().rearrangeEventsForLatestFunctionResponse(events),
+    )
+  }
+
+  private fun functionCallEvent(vararg calls: Pair<String, String>) =
+    Event(
+      author = "testAgent",
+      content =
+        Content(
+          role = "model",
+          parts =
+            calls.map { (name, id) ->
+              Part(functionCall = FunctionCall(name = name, args = emptyMap(), id = id))
+            },
+        ),
+    )
 
   /**
    * Resuming a paused long-running tool call must still work after event compaction has summarized

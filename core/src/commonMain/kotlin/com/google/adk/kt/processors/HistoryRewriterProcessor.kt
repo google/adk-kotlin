@@ -345,6 +345,7 @@ internal class HistoryRewriterProcessor {
   private fun findMatchingFunctionCallEvent(
     events: List<Event>,
     currentFunctionResponseIds: Set<String>,
+    searchFromIndex: Int = events.size - 2,
   ): Int {
     // Find the historical Event that contains the FunctionCalls corresponding to the
     // FunctionResponses in our current (last) Event.
@@ -354,7 +355,7 @@ internal class HistoryRewriterProcessor {
     //
     // If it finds an imperfect match (where not all FunctionResponse IDs were contained in that
     // Event's calls), it throws an exception.
-    return (events.size - 2 downTo 0).firstOrNull { index ->
+    return (searchFromIndex downTo 0).firstOrNull { index ->
       val requestedCallIds = events[index].functionCalls().mapNotNull { it.id }.toSet()
       if (requestedCallIds.isEmpty()) return@firstOrNull false
 
@@ -394,7 +395,27 @@ internal class HistoryRewriterProcessor {
     if (functionResponses.isEmpty()) return events
 
     val currentFunctionResponseIds = functionResponses.mapNotNull { it.id }.toSet()
-    val functionCallEventIndex = findMatchingFunctionCallEvent(events, currentFunctionResponseIds)
+
+    // Fast-path (parity with Java/Python): if the immediately-preceding event already contains a
+    // matching function_call for the latest function_response, the history is already in the
+    // canonical [..., model(function_call), function_response] shape, so return as-is. This
+    // preserves the [user, model_fc, tool_fr] shape required when replaying out-of-band
+    // long-running tool results, and prevents the merge logic from collapsing unrelated
+    // intermediate events into the response.
+    val penultimateCallIds =
+      events[events.size - 2].functionCalls().mapNotNull { it.id }.toSet()
+    if (currentFunctionResponseIds.any { it in penultimateCallIds }) {
+      return events
+    }
+
+    // Otherwise scan backwards starting from the third-to-last event (skip the penultimate event
+    // which we already know does not match).
+    val functionCallEventIndex =
+      findMatchingFunctionCallEvent(
+        events,
+        currentFunctionResponseIds,
+        searchFromIndex = events.size - 3,
+      )
 
     // Collect all events containing matching function responses between the function call event
     // and
