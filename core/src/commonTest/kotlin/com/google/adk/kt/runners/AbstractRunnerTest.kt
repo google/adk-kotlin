@@ -22,6 +22,7 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
@@ -254,8 +255,11 @@ class AbstractRunnerTest {
 
   @Test
   fun findAgentToRun_noFunctionResponse_returnsMostRecentTransferableAgent() = runTest {
-    val subAgent = DummyAgent("sub")
-    val rootAgent = DummyAgent("root", subAgents = listOf(subAgent))
+    // isTransferableAcrossAgentTree requires every ancestor to be an LlmAgent (mirroring Python's
+    // _is_transferable_across_agent_tree hasattr check), so root and sub must be LlmAgents.
+    val subAgent = LlmAgent(name = "sub", model = DummyModel("model"))
+    val rootAgent =
+      LlmAgent(name = "root", model = DummyModel("model"), subAgents = listOf(subAgent))
     val runner = TestRunner(rootAgent)
 
     val event1 = Event(author = "sub", content = modelMessage("Hello"), invocationId = "inv-1")
@@ -312,8 +316,11 @@ class AbstractRunnerTest {
 
   @Test
   fun findAgentToRun_withStateEvents_skipsStateEvents() = runTest {
-    val subAgent = DummyAgent("sub")
-    val rootAgent = DummyAgent("root", subAgents = listOf(subAgent))
+    // isTransferableAcrossAgentTree requires LlmAgent ancestry (see
+    // findAgentToRun_noFunctionResponse_*).
+    val subAgent = LlmAgent(name = "sub", model = DummyModel("model"))
+    val rootAgent =
+      LlmAgent(name = "root", model = DummyModel("model"), subAgents = listOf(subAgent))
     val runner = TestRunner(rootAgent)
 
     val event1 = Event(author = "sub", content = modelMessage("Hello"), invocationId = "inv-1")
@@ -340,6 +347,41 @@ class AbstractRunnerTest {
     val result = runner.callFindAgentToRun(context, rootAgent)
 
     assertEquals("sub", result.name)
+  }
+
+  @Test
+  fun findAgentToRun_candidateUnderWorkflowAgent_fallsBackToRoot() = runTest {
+    // root (LlmAgent) -> seq (SequentialAgent) -> leaf (LlmAgent). The leaf authored the last
+    // (non-function-response) event, but it is nested under a workflow agent, so
+    // isTransferableAcrossAgentTree must reject it (a SequentialAgent ancestor is not an LlmAgent,
+    // mirroring Python's _is_transferable_across_agent_tree hasattr check). Expect fallback to
+    // root.
+    val leaf = LlmAgent(name = "leaf", model = DummyModel("model"))
+    val seq = SequentialAgent(name = "seq", subAgents = listOf(leaf))
+    val rootAgent = LlmAgent(name = "root", model = DummyModel("model"), subAgents = listOf(seq))
+    val runner = TestRunner(rootAgent)
+
+    val event1 = Event(author = "leaf", content = modelMessage("Hello"), invocationId = "inv-1")
+    val event2 = Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1")
+
+    val session =
+      runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
+    val unused1 = runner.sessionService.appendEvent(session, event1)
+    val unused2 = runner.sessionService.appendEvent(session, event2)
+
+    val updatedSession =
+      runner.sessionService.getSession(SessionKey("InMemoryRunner", "user", "session"))!!
+    val context =
+      InvocationContext(
+        session = updatedSession,
+        runConfig = null,
+        agent = rootAgent,
+        invocationId = "inv-1",
+        sessionService = runner.sessionService,
+      )
+    val result = runner.callFindAgentToRun(context, rootAgent)
+
+    assertEquals("root", result.name)
   }
 
   @Test

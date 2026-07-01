@@ -684,22 +684,34 @@ abstract class AbstractRunner : Runner {
       validatePeerTransfer(agentToRun, event.actions.transferToAgent, rootAgent)
 
       // Check for transferability up the tree.
-      var current: BaseAgent? = agentToRun
-      var isTransferable = true
-      while (current != null && current != rootAgent) {
-        if (current.disallowTransferToParent) {
-          isTransferable = false
-          break
-        }
-        current = current.parentAgent
-      }
-
-      if (isTransferable) {
+      if (isTransferableAcrossAgentTree(agentToRun)) {
         return agentToRun
       }
     }
 
     return rootAgent
+  }
+
+  /**
+   * Whether [agentToRun] can transfer across the agent tree, walking from [agentToRun] up through
+   * every ancestor to the root. Mirrors Python ADK's `_is_transferable_across_agent_tree`
+   * (`runners.py`): every agent in the chain must (a) be an [LlmAgent] -- only LLM agents can host
+   * a conversational follow-up, so a [com.google.adk.kt.agents.SequentialAgent] /
+   * [com.google.adk.kt.agents.LoopAgent] / [com.google.adk.kt.agents.ParallelAgent] ancestor is a
+   * hard stop (Python excludes them via `hasattr(agent, 'disallow_transfer_to_parent')`) -- and (b)
+   * have `disallowTransferToParent = false`. Otherwise the candidate is rejected so the next user
+   * turn falls back to a higher candidate (typically the root) instead of being trapped inside a
+   * workflow agent's child.
+   */
+  private fun isTransferableAcrossAgentTree(agentToRun: BaseAgent): Boolean {
+    var current: BaseAgent? = agentToRun
+    while (current != null) {
+      if (current !is LlmAgent || current.disallowTransferToParent) {
+        return false
+      }
+      current = current.parentAgent
+    }
+    return true
   }
 
   private fun validatePeerTransfer(agent: BaseAgent, targetName: String?, rootAgent: BaseAgent) {
