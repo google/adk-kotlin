@@ -443,7 +443,15 @@ internal class LlmAgentTurn(
     // pause has to be observable from outside via the synthetic `adk_request_confirmation`
     // long-running event. `LlmAgent.runAsync` reads that long-running id per-event and triggers
     // pause via `InvocationContext.shouldPauseInvocation`, suppressing `endOfAgent` so the
-    // session stays live for the eventual resume call.
+    // session stays live for the eventual resume call. The same "do NOT mark the invocation
+    // ended" rule applies to the agent-transfer branch below: after the transferred-to agent
+    // finishes, control must return to this (parent) LlmAgent's `executeTurns` loop so the
+    // parent can produce its own follow-up response. This mirrors Java ADK's
+    // `BaseLlmFlow.runOneStep`, which simply concatenates the transferred-to agent's events and
+    // lets the outer flow loop decide whether to continue (based on the last event being a final
+    // response or carrying `endInvocation`). Without this, transferring into a
+    // SequentialAgent/LoopAgent (or any workflow agent that doesn't itself emit a transfer back)
+    // would leave the parent unable to resume.
 
     // If a tool requested a transfer to another agent, execute that agent's loop.
     functionResponseEvent?.actions?.transferToAgent?.let { agentName ->
@@ -451,7 +459,6 @@ internal class LlmAgentTurn(
         agent.rootAgent.findAgent(agentName)
           ?: throw IllegalArgumentException("Agent '$agentName' not found in the agent tree.")
       emitAll(targetAgent.runAsync(context))
-      context.isEndOfInvocation = true
     }
   }
 
