@@ -39,7 +39,7 @@ extra["androidMinSdk"] = androidMinSdk
 
 allprojects {
   group = "com.google.adk"
-  version = "0.4.1-SNAPSHOT" // x-release-please-version
+  version = "0.5.0" // x-release-please-version
 
   repositories {
     mavenLocal()
