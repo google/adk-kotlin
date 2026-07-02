@@ -77,7 +77,7 @@ internal class ListSkillsTool(private val toolset: SkillToolset) :
   }
 }
 
-private fun Frontmatter.frontmatterDsl() =
+private fun Frontmatter.frontmatterDsl(): Map<String, Any?> =
   mapOf(
     "name" to name,
     "description" to description,
@@ -127,11 +127,41 @@ internal class LoadSkillTool(private val toolset: SkillToolset) :
         return e.toSkillSourceErrorResponse(logger)
       }
 
+    recordSkillActivation(context, skillName)
+
     return mapOf(
       SkillToolset.PARAM_SKILL_NAME to skillName,
       SkillToolset.KEY_INSTRUCTIONS to instructions,
       SkillToolset.KEY_FRONTMATTER to frontmatter.frontmatterDsl(),
     )
+  }
+
+  /**
+   * Appends [skillName] to the per-agent activation list for this invocation.
+   *
+   * The activation state is split across two stores in adk-kotlin: the pending
+   * [ToolContext.actions.stateDelta] (not yet applied to the session) and the already-applied
+   * [ToolContext.context.state]. To preserve other skills that have been activated earlier in the
+   * same invocation, both stores are merged before writing the updated list back into
+   * `stateDelta`. State is keyed by [SkillToolset.activatedSkillStateKey] so each agent keeps its
+   * own activation list.
+   *
+   * Note: when the LLM emits multiple `load_skill` calls in the same step, ADK runs them in
+   * parallel and the per-call deltas are merged with last-write-wins semantics
+   * ([EventActions.mergeWith]). Only the skill recorded by the final merge survives the step. This
+   * matches adk-python's behavior and is a known limitation; downstream tool exposure still works
+   * for serial `load_skill` calls across steps.
+   */
+  private fun recordSkillActivation(context: ToolContext, skillName: String) {
+    val agentName = context.context.agentName
+    val stateKey = SkillToolset.activatedSkillStateKey(agentName)
+    val pending = (context.actions.stateDelta[stateKey] as? List<*>).orEmpty()
+    val applied = (context.context.state[stateKey] as? List<*>).orEmpty()
+    val combined =
+      (applied + pending + skillName)
+        .mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }
+        .distinct()
+    context.actions.stateDelta[stateKey] = combined
   }
 }
 
@@ -207,7 +237,18 @@ internal class LoadSkillResourceTool(private val toolset: SkillToolset) :
 }
 
 /** Toolset that manages and provides access to a collection of [Skill]s. */
-class SkillToolset(internal val source: SkillSource) : Toolset {
+class SkillToolset(
+  internal val source: SkillSource,
+  additionalTools: List<BaseTool>,
+  additionalToolsets: List<Toolset>,
+) : Toolset {
+
+  constructor(source: SkillSource) : this(source, emptyList(), emptyList())
+
+  constructor(
+    source: SkillSource,
+    additionalTools: List<BaseTool>,
+  ) : this(source, additionalTools, emptyList())
 
   companion object {
     /** The name of the tool used to list available skills. */
@@ -235,14 +276,127 @@ class SkillToolset(internal val source: SkillSource) : Toolset {
 
     /** Message indicating that a loaded resource is a binary file. */
     const val MSG_BINARY_FILE = "Binary file detected. Content not shown."
+
+    /** Metadata key used by adk-python skills to declare tools activated by `load_skill`. */
+    internal const val ADK_ADDITIONAL_TOOLS_METADATA_KEY = "adk_additional_tools"
+
+    /**
+     * Prefix for the per-agent state key under which the SkillToolset records which skills the LLM
+     * has activated by calling `load_skill`. Mirrors adk-python's `_adk_activated_skill_` prefix.
+     */
+    const val STATE_KEY_PREFIX_ACTIVATED_SKILL = "_adk_activated_skill_"
+
+    /** Builds the activation-state key for the given agent name. */
+    fun activatedSkillStateKey(agentName: String): String =
+      STATE_KEY_PREFIX_ACTIVATED_SKILL + agentName
   }
 
   private val logger = LoggerFactory.getLogger(SkillToolset::class)
 
+  /**
+   * Additional tools that are hidden from the LLM until a skill declares them in its frontmatter's
+   * `adk_additional_tools` and that skill has been loaded via `load_skill`. Keyed by tool name;
+   * duplicates are dropped with a warning (last one wins).
+   */
+  internal val providedToolsByName: Map<String, BaseTool> =
+    run {
+      val byName = LinkedHashMap<String, BaseTool>()
+      for (tool in additionalTools) {
+        val previous = byName.put(tool.name, tool)
+        if (previous != null) {
+          logger.warn { "Duplicate additional tool name '${tool.name}'; last one wins." }
+        }
+      }
+      byName
+    }
+
+  /**
+   * Additional toolsets that can contribute tools after activation. This mirrors adk-python's
+   * ability to resolve additional tools from both tools and toolsets, while keeping the Kotlin API
+   * strongly typed.
+   */
+  private val providedToolsets: List<Toolset> = additionalToolsets
+
   private val tools: List<BaseTool> =
     listOf(ListSkillsTool(this), LoadSkillTool(this), LoadSkillResourceTool(this))
 
-  override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> = tools
+  override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
+    tools + resolveAdditionalToolsFromState(readonlyContext)
+
+  /**
+   * Resolves the additional tools that should be exposed for this invocation, based on which skills
+   * have been activated via `load_skill`.
+   *
+   * The activation list is read from [ReadonlyContext.state] under the agent-specific key built by
+   * [activatedSkillStateKey]. For each activated skill, its `adk_additional_tools` frontmatter is
+   * consulted to pick tools from the provided tools and toolsets. Unknown skill names (e.g. leftover
+   * state from a previous session) and tool names with no candidate match are skipped silently.
+   * Names that collide with the core skill tools are dropped with a warning.
+   */
+  private suspend fun resolveAdditionalToolsFromState(
+    readonlyContext: ReadonlyContext?,
+  ): List<BaseTool> {
+    if (readonlyContext == null) return emptyList()
+    if (providedToolsByName.isEmpty() && providedToolsets.isEmpty()) return emptyList()
+
+    val stateKey = activatedSkillStateKey(readonlyContext.agentName)
+    val rawActivated = readonlyContext.state[stateKey]
+    val skillNames =
+      (rawActivated as? List<*>)
+        .orEmpty()
+        .mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }
+    if (skillNames.isEmpty()) return emptyList()
+
+    val existingNames = tools.mapTo(mutableSetOf()) { it.name }
+    val additionalToolNames = LinkedHashSet<String>()
+    for (skillName in skillNames) {
+      val frontmatter =
+        source.loadFrontmatter(skillName).getOrElse { e ->
+          logger.warn(e) { "Activated skill '$skillName' could not be loaded; skipping." }
+          null
+        } ?: continue
+      additionalToolNames.addAll(frontmatter.additionalToolNames())
+    }
+    if (additionalToolNames.isEmpty()) return emptyList()
+
+    val candidateTools = getCandidateTools(readonlyContext)
+    val resolved = LinkedHashMap<String, BaseTool>()
+    for (toolName in additionalToolNames) {
+      if (toolName in existingNames) {
+        logger.warn {
+          "Tool name collision: additional tool '$toolName' shadows a core skill tool; skipping."
+        }
+        continue
+      }
+      val tool = candidateTools[toolName] ?: continue
+      if (resolved.put(toolName, tool) == null) {
+        existingNames.add(toolName)
+      }
+    }
+    return resolved.values.toList()
+  }
+
+  private fun Frontmatter.additionalToolNames(): List<String> {
+    val value = metadata[ADK_ADDITIONAL_TOOLS_METADATA_KEY] as? List<*> ?: return emptyList()
+    return value.filterIsInstance<String>()
+  }
+
+  private suspend fun getCandidateTools(readonlyContext: ReadonlyContext): Map<String, BaseTool> {
+    val candidateTools = LinkedHashMap<String, BaseTool>()
+    candidateTools.putAll(providedToolsByName)
+    for (toolset in providedToolsets) {
+      for (tool in toolset.getTools(readonlyContext)) {
+        candidateTools[tool.name] = tool
+      }
+    }
+    return candidateTools
+  }
+
+  override fun close() {
+    tools.forEach { it.close() }
+    providedToolsByName.values.forEach { it.close() }
+    providedToolsets.forEach { it.close() }
+  }
 
   override suspend fun processLlmRequest(
     toolContext: ToolContext,
