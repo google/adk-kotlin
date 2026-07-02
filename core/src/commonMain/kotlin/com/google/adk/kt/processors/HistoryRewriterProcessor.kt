@@ -250,14 +250,17 @@ internal class HistoryRewriterProcessor {
    * This filters out events that are considered empty (e.g., no text, function calls, or
    * transcriptions), do not belong to the current agent's branch, or are internal events like
    * authentication or confirmation requests.
+   *
+   * Note: `adk_request_input` events are kept. Unlike credential/confirmation requests (whose
+   * outcome the framework applies itself), request_input carries a free-form answer the model must
+   * read to continue. Matches Python, Java, and Go ADK.
    */
   private fun shouldIncludeEventInContext(currentBranch: String?, event: Event): Boolean {
     return !(containsEmptyContent(event) ||
       !isEventBelongsToBranch(currentBranch, event) ||
       isAdkFrameworkEvent(event) ||
       isAuthEvent(event) ||
-      isRequestConfirmationEvent(event) ||
-      isRequestInputEvent(event))
+      isRequestConfirmationEvent(event))
   }
 
   /**
@@ -314,10 +317,6 @@ internal class HistoryRewriterProcessor {
   /** Checks if the event is a request confirmation event. */
   private fun isRequestConfirmationEvent(event: Event): Boolean =
     isFunctionCallEvent(event, FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
-
-  /** Checks if the event is a request input event. */
-  private fun isRequestInputEvent(event: Event): Boolean =
-    isFunctionCallEvent(event, REQUEST_INPUT_FUNCTION_CALL_NAME)
 
   /** Checks if an event is a function call/response for a given function name. */
   private fun isFunctionCallEvent(event: Event, functionName: String): Boolean {
@@ -402,8 +401,7 @@ internal class HistoryRewriterProcessor {
     // preserves the [user, model_fc, tool_fr] shape required when replaying out-of-band
     // long-running tool results, and prevents the merge logic from collapsing unrelated
     // intermediate events into the response.
-    val penultimateCallIds =
-      events[events.size - 2].functionCalls().mapNotNull { it.id }.toSet()
+    val penultimateCallIds = events[events.size - 2].functionCalls().mapNotNull { it.id }.toSet()
     if (currentFunctionResponseIds.any { it in penultimateCallIds }) {
       return events
     }
@@ -586,6 +584,5 @@ internal class HistoryRewriterProcessor {
   companion object {
     private const val AF_FUNCTION_CALL_ID_PREFIX = "adk-"
     private const val REQUEST_EUC_FUNCTION_CALL_NAME = "adk_request_credential"
-    private const val REQUEST_INPUT_FUNCTION_CALL_NAME = "adk_request_input"
   }
 }

@@ -439,6 +439,31 @@ class ContentsProcessorTest {
   }
 
   @Test
+  fun run_requestInputEvents_areRetained() = runTest {
+    val processor = ContentsProcessor()
+    var request = LlmRequest()
+    val context =
+      createTestContext(
+        userEvent("What is your name?"),
+        functionCallEvent("adk_request_input" to "input_123"),
+        functionResponseEvent("adk_request_input", "input_123", mapOf("value" to "Alice")),
+        userEvent("Thanks"),
+      )
+
+    request = processor.process(context, request)
+
+    // adk_request_input stays in context so the model can read the user's answer (parity with
+    // Python, Java, and Go ADK).
+    assertThat(request.contents).hasSize(4)
+    assertThat(request.contents[0].parts[0].text).isEqualTo("What is your name?")
+    assertThat(request.contents[1].parts[0].functionCall?.name).isEqualTo("adk_request_input")
+    assertThat(request.contents[2].parts[0].functionResponse?.name).isEqualTo("adk_request_input")
+    assertThat(request.contents[2].parts[0].functionResponse?.response)
+      .isEqualTo(mapOf("value" to "Alice"))
+    assertThat(request.contents[3].parts[0].text).isEqualTo("Thanks")
+  }
+
+  @Test
   fun run_eventsWithEmptyContent_areSkipped() = runTest {
     val processor = ContentsProcessor()
     var request = LlmRequest()
