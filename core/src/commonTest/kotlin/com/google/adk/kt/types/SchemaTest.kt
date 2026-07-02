@@ -16,7 +16,8 @@
 
 package com.google.adk.kt.types
 
-import com.google.genai.types.Schema as JavaSchema
+import com.google.genai.kotlin.types.Schema as GenAiSchema
+import com.google.genai.kotlin.types.Type as GenAiType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -50,25 +51,25 @@ class SchemaTest {
         required = listOf("val"),
       )
 
-    val javaSchema = ktSchema.toGenAiSchema()
+    val genAiSchema = ktSchema.toGenAiSchema()
 
-    assertEquals("OBJECT", javaSchema.type().get().toString())
-    assertEquals("Test toGenAiSchema", javaSchema.description().get())
-    assertEquals(1, javaSchema.properties().get().size)
-    assertEquals("NUMBER", javaSchema.properties().get()["val"]?.type()?.get()?.toString())
-    assertEquals(listOf("val"), javaSchema.required().get())
+    assertEquals(GenAiType.OBJECT, genAiSchema.type)
+    assertEquals("Test toGenAiSchema", genAiSchema.description)
+    assertEquals(1, genAiSchema.properties?.size)
+    assertEquals(GenAiType.NUMBER, genAiSchema.properties?.get("val")?.type)
+    assertEquals(listOf("val"), genAiSchema.required)
   }
 
   @Test
   fun toKtSchema_convertsCorrectly() {
-    val javaSchema =
-      JavaSchema.builder()
-        .type("ARRAY")
-        .description("Test toKtSchema")
-        .items(JavaSchema.builder().type("INTEGER").build())
-        .build()
+    val genAiSchema =
+      GenAiSchema(
+        type = GenAiType.ARRAY,
+        description = "Test toKtSchema",
+        items = GenAiSchema(type = GenAiType.INTEGER),
+      )
 
-    val ktSchema = javaSchema.toKtSchema()
+    val ktSchema = genAiSchema.toKtSchema()
 
     assertEquals(Type.ARRAY, ktSchema.type)
     assertEquals("Test toKtSchema", ktSchema.description)

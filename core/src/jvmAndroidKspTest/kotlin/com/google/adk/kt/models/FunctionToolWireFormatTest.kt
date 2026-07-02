@@ -27,12 +27,13 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.toGenaiSdk
-import com.google.common.truth.Truth.assertThat
-import com.google.gson.JsonParser
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Verifies the JSON wire format of the `functionResponse` Gemini receives for a [FunctionTool]'s
@@ -40,7 +41,9 @@ import kotlinx.coroutines.test.runTest
  * Each runs `execute`, wraps the result, converts via [Content.toGenaiSdk], and asserts the
  * payload.
  *
- * Asserts via the Java SDK's `toJson()` for now; the SDK-swap CL switches to the Kotlin SDK.
+ * The checked payload is the converted `response` map (`Map<String, JsonElement>`) -- exactly what
+ * the SDK puts on the wire -- so primitives keep their JSON type and `null` entries are dropped,
+ * verified without a live model call.
  */
 class FunctionToolWireFormatTest {
 
@@ -74,6 +77,35 @@ class FunctionToolWireFormatTest {
     assertWireResponse(
       ReturnsScoreboardTool(),
       expected = """{"result":{"alice":100,"bob":87,"carol":42}}""",
+    )
+  }
+
+  @Test
+  fun toolReturningDataClass_emitsJsonObjectInResponseMap() = runTest {
+    // The processor decomposes a data-class return field-by-field into a JSON object.
+    assertWireResponse(
+      ReturnsPlayerTool(),
+      expected = """{"result":{"name":"alice","score":100}}""",
+    )
+  }
+
+  @Test
+  fun toolReturningNestedDataClass_emitsRecursivelyDecomposedJsonObject() = runTest {
+    // A data class with a nested data class, a list, and a map is decomposed recursively.
+    assertWireResponse(
+      ReturnsProfileTool(),
+      expected =
+        """
+        {
+          "result": {
+            "name": "alice",
+            "address": {"city": "NYC", "zip": "10001"},
+            "tags": ["a", "b"],
+            "scores": {"x": 1, "y": 2}
+          }
+        }
+        """
+          .trimIndent(),
     )
   }
 
@@ -172,8 +204,8 @@ class FunctionToolWireFormatTest {
 
   /**
    * Runs [tool] with [args], converts the resulting function response through the real ADK -> GenAI
-   * SDK converter, and asserts the converted `functionResponse` (name, id, and the serialized
-   * `response` object) matches [expected].
+   * SDK converter, and asserts the converted `functionResponse` (name, id, and the `JsonElement`
+   * response map) matches [expected].
    */
   private suspend fun assertWireResponse(
     tool: FunctionTool,
@@ -201,19 +233,13 @@ class FunctionToolWireFormatTest {
         )
         .toGenaiSdk()
 
-    // This module still runs on the Java GenAI SDK, so assert via the SDK's own JSON serialization.
-    val functionResponse =
-      JsonParser.parseString(genaiContent.toJson())
-        .asJsonObject
-        .getAsJsonArray("parts")
-        .get(0)
-        .asJsonObject
-        .getAsJsonObject("functionResponse")
-
-    assertThat(functionResponse.get("name").asString).isEqualTo(tool.name)
-    assertThat(functionResponse.get("id").asString).isEqualTo("${tool.name}-call")
-    assertThat(JsonParser.parseString(functionResponse.getAsJsonObject("response").toString()))
-      .isEqualTo(JsonParser.parseString(expected))
+    val functionResponse = genaiContent.parts!!.single().functionResponse!!
+    assertEquals(tool.name, functionResponse.name)
+    assertEquals("${tool.name}-call", functionResponse.id)
+    assertEquals(
+      Json.parseToJsonElement(expected),
+      JsonObject(functionResponse.response ?: emptyMap()),
+    )
   }
 
   private fun dummyToolContext(): ToolContext =

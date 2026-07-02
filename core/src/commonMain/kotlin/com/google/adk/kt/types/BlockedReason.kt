@@ -53,6 +53,7 @@ enum class BlockedReason {
       BlockedReason.SAFETY -> FinishReason.SAFETY
       BlockedReason.BLOCKLIST -> FinishReason.BLOCKLIST
       BlockedReason.PROHIBITED_CONTENT -> FinishReason.PROHIBITED_CONTENT
+      BlockedReason.IMAGE_SAFETY -> FinishReason.IMAGE_SAFETY
       else -> FinishReason.OTHER
     }
 }

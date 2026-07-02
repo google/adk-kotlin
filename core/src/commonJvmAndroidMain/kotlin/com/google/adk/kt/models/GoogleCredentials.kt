@@ -16,6 +16,11 @@
 package com.google.adk.kt.models
 
 import com.google.auth.oauth2.GoogleCredentials as JavaGoogleCredentials
+import com.google.genai.kotlin.GoogleCredentials as GenAiGoogleCredentials
 
 /** On JVM and Android, ADK credentials are the Java Auth Library's `GoogleCredentials`. */
 actual typealias GoogleCredentials = JavaGoogleCredentials
+
+// The ADK alias, the GenAI SDK alias, and the Java type are the same class here, so this is
+// identity.
+internal actual fun GoogleCredentials.toGenaiSdk(): GenAiGoogleCredentials = this

@@ -16,40 +16,21 @@
 
 package com.google.adk.kt.serialization
 
-import com.google.genai.JsonSerializable
 import com.google.gson.Gson
-import com.google.gson.TypeAdapter
-import com.google.gson.stream.JsonReader
-import com.google.gson.stream.JsonWriter
 
 /** JVM implementation of JSON serialization utility using Gson. */
 private object JvmJson : Json {
-  class JsonSerializableTypeAdapter : TypeAdapter<JsonSerializable>() {
-    override fun write(out: JsonWriter, value: JsonSerializable?) {
-      if (value == null) {
-        out.nullValue()
-        return
-      }
-      out.jsonValue(value.toJson())
-    }
-
-    override fun read(reader: JsonReader): JsonSerializable? {
-      throw UnsupportedOperationException("Not supported")
-    }
-  }
-
-  private val gson =
-    Gson()
-      .newBuilder()
-      .registerTypeHierarchyAdapter(JsonSerializable::class.java, JsonSerializableTypeAdapter())
-      .create()
+  private val gson = Gson()
 
   override fun toJsonString(obj: Any?): String {
     return gson.toJson(obj)
   }
 
   override fun fromJsonToMap(json: String): Map<String, Any?> {
-    return gson.fromJson(json, object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type)
+    return gson.fromJson(
+      json,
+      object : com.google.gson.reflect.TypeToken<Map<String, Any?>>() {}.type,
+    )
   }
 }
 

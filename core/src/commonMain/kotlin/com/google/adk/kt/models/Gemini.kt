@@ -24,12 +24,11 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.fromGenaiSdk
 import com.google.adk.kt.types.toGenaiSdk
-import com.google.common.annotations.VisibleForTesting
-import com.google.genai.Client
-import com.google.genai.types.Content as GenAiContent
-import com.google.genai.types.GenerateContentConfig
-import com.google.genai.types.GenerateContentResponse as GenAiGenerateContentResponse
-import com.google.genai.types.HttpOptions
+import com.google.genai.kotlin.Client
+import com.google.genai.kotlin.types.Content as GenAiContent
+import com.google.genai.kotlin.types.GenerateContentConfig
+import com.google.genai.kotlin.types.GenerateContentResponse as GenAiGenerateContentResponse
+import com.google.genai.kotlin.types.HttpOptions
 import kotlin.jvm.JvmOverloads
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -45,40 +44,37 @@ import kotlinx.coroutines.flow.flow
  * @param name The name of the specific Gemini model to use (e.g., "gemini-3.1-flash-lite-preview").
  */
 class Gemini(
-  private val client: Client,
+  internal val client: Client,
   override val name: String,
   private val models: GeminiModels = RealGeminiModels(client.models),
 ) : Model {
 
-  /** Internal wrapper around GenAI SDK Models to allow mocking in tests. */
-  @VisibleForTesting
+  /** Wrapper around GenAI SDK Models to allow mocking in tests. */
   interface GeminiModels {
     fun generateContentStream(
       model: String,
       contents: List<GenAiContent>,
-      config: com.google.genai.types.GenerateContentConfig,
-    ): Iterable<GenAiGenerateContentResponse>
+      config: com.google.genai.kotlin.types.GenerateContentConfig,
+    ): Flow<GenAiGenerateContentResponse>
 
-    fun generateContent(
+    suspend fun generateContent(
       model: String,
       contents: List<GenAiContent>,
-      config: com.google.genai.types.GenerateContentConfig,
+      config: com.google.genai.kotlin.types.GenerateContentConfig,
     ): GenAiGenerateContentResponse
   }
 
-  @VisibleForTesting
-  class RealGeminiModels(private val delegate: com.google.genai.Models) : GeminiModels {
+  class RealGeminiModels(private val delegate: com.google.genai.kotlin.Models) : GeminiModels {
     override fun generateContentStream(
       model: String,
       contents: List<GenAiContent>,
-      config: com.google.genai.types.GenerateContentConfig,
-    ): Iterable<GenAiGenerateContentResponse> =
-      delegate.generateContentStream(model, contents, config)
+      config: com.google.genai.kotlin.types.GenerateContentConfig,
+    ): Flow<GenAiGenerateContentResponse> = delegate.generateContentStream(model, contents, config)
 
-    override fun generateContent(
+    override suspend fun generateContent(
       model: String,
       contents: List<GenAiContent>,
-      config: com.google.genai.types.GenerateContentConfig,
+      config: com.google.genai.kotlin.types.GenerateContentConfig,
     ): GenAiGenerateContentResponse = delegate.generateContent(model, contents, config)
   }
 
@@ -94,15 +90,7 @@ class Gemini(
   constructor(
     name: String,
     apiKey: String? = null,
-  ) : this(
-    Client.builder()
-      .apply {
-        apiKey?.let { apiKey(it) }
-        httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
-      }
-      .build(),
-    name,
-  )
+  ) : this(Client(apiKey = apiKey, httpOptions = HttpOptions(headers = TRACKING_HEADERS)), name)
 
   /**
    * Creates a [Gemini] instance using Vertex AI credentials for authentication.
@@ -115,20 +103,35 @@ class Gemini(
     name: String,
     vertexCredentials: VertexCredentials,
   ) : this(
-    Client.builder()
-      .apply {
-        vertexAI(true)
-        httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
-        vertexCredentials.project?.let { project(it) }
-        vertexCredentials.location?.let { location(it) }
-        vertexCredentials.credentials?.let { credentials(it) }
-      }
-      .build(),
+    Client(
+      project = vertexCredentials.project,
+      location = vertexCredentials.location,
+      credentials = vertexCredentials.credentials?.toGenaiSdk(),
+      enterprise = true,
+      httpOptions = HttpOptions(headers = TRACKING_HEADERS),
+    ),
+    name,
+  )
+
+  /**
+   * Test-only constructor that targets [baseUrl] (e.g. a local server) while still applying the
+   * same ADK tracking headers the public [apiKey] constructor sets, so tests can assert those
+   * headers reach the wire.
+   */
+  internal constructor(
+    name: String,
+    apiKey: String?,
+    baseUrl: String,
+  ) : this(
+    Client(
+      apiKey = apiKey,
+      httpOptions = HttpOptions(baseUrl = baseUrl, headers = TRACKING_HEADERS),
+    ),
     name,
   )
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
-    val preparedRequest = request.prepareGenerateContentRequest(!client.vertexAI())
+    val preparedRequest = request.prepareGenerateContentRequest(!client.enterprise)
     val config = preparedRequest.config.toGenaiSdk()
     val contents = preparedRequest.contents.map { it.toGenaiSdk() }
 
@@ -137,13 +140,12 @@ class Gemini(
     }
 
     if (stream) {
-      val stream = models.generateContentStream(name, contents, config)
       val aggregator = StreamingResponseAggregator()
 
-      for (response in stream) {
+      models.generateContentStream(name, contents, config).collect { response ->
         logger.debug {
-          "LLM Streaming Response chunk: ${response.candidates().map { it.size }.orElse(0)} candidates, " +
-            "finishReason=${response.finishReason()}"
+          "LLM Streaming Response chunk: ${response.candidates?.size ?: 0} candidates, " +
+            "finishReason=${response.candidates?.firstOrNull()?.finishReason}"
         }
         emit(aggregator.processResponse(response.fromGenaiSdk()))
       }
@@ -153,8 +155,8 @@ class Gemini(
     } else {
       val response = models.generateContent(name, contents, config)
       logger.debug {
-        "LLM Response: ${response.candidates().map { it.size }.orElse(0)} candidates, " +
-          "finishReason=${response.finishReason()}"
+        "LLM Response: ${response.candidates?.size ?: 0} candidates, " +
+          "finishReason=${response.candidates?.firstOrNull()?.finishReason}"
       }
       val llmResponse = LlmResponse.from(response.fromGenaiSdk())
       emit(llmResponse)
