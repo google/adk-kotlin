@@ -385,6 +385,52 @@ class AbstractRunnerTest {
   }
 
   @Test
+  fun findAgentToRun_leafNotTransferable_returnsNearestTransferableAncestor() = runTest {
+    // root (LlmAgent) -> mid (LlmAgent, transferable) -> leaf (LlmAgent, disallowTransferToParent).
+    // The leaf authored the last event but cannot host the next turn, so the runner walks up and
+    // routes to the nearest transferable ancestor -- the intermediate `mid` -- rather than all the
+    // way to root. Mirrors Python ADK's
+    // tests/unittests/workflow/test_agent_transfer.py::test_auto_to_auto_to_single (the middle
+    // agent
+    // handles the second turn).
+    val leaf =
+      LlmAgent(
+        name = "leaf",
+        model = DummyModel("model"),
+        disallowTransferToParent = true,
+        disallowTransferToPeers = true,
+      )
+    val mid = LlmAgent(name = "mid", model = DummyModel("model"), subAgents = listOf(leaf))
+    val rootAgent = LlmAgent(name = "root", model = DummyModel("model"), subAgents = listOf(mid))
+    val runner = TestRunner(rootAgent)
+
+    // mid acted (transferable), then leaf produced the last model event, then the user replied.
+    val event1 = Event(author = "mid", content = modelMessage("mid"), invocationId = "inv-1")
+    val event2 = Event(author = "leaf", content = modelMessage("leaf"), invocationId = "inv-1")
+    val event3 = Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1")
+
+    val session =
+      runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
+    val unused1 = runner.sessionService.appendEvent(session, event1)
+    val unused2 = runner.sessionService.appendEvent(session, event2)
+    val unused3 = runner.sessionService.appendEvent(session, event3)
+
+    val updatedSession =
+      runner.sessionService.getSession(SessionKey("InMemoryRunner", "user", "session"))!!
+    val context =
+      InvocationContext(
+        session = updatedSession,
+        runConfig = null,
+        agent = rootAgent,
+        invocationId = "inv-1",
+        sessionService = runner.sessionService,
+      )
+    val result = runner.callFindAgentToRun(context, rootAgent)
+
+    assertEquals("mid", result.name)
+  }
+
+  @Test
   fun findAgentToRun_withDisallowTransferToPeers_throwsException() = runTest {
     val sub1 = DummyAgent("sub1", disallowTransferToPeers = true)
     val sub2 = DummyAgent("sub2")
