@@ -16,13 +16,13 @@
 package com.google.adk.kt.a2a.converters
 
 import com.google.adk.kt.a2a.testing.DummyAgent
+import com.google.adk.kt.a2a.testing.modelMessage
+import com.google.adk.kt.a2a.testing.testSession
+import com.google.adk.kt.a2a.testing.userMessage
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.testing.modelMessage
-import com.google.adk.kt.testing.testSession
-import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
@@ -31,30 +31,30 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
+import io.a2a.client.MessageEvent
+import io.a2a.client.TaskEvent
+import io.a2a.client.TaskUpdateEvent
+import io.a2a.spec.Artifact
+import io.a2a.spec.DataPart
+import io.a2a.spec.FilePart
+import io.a2a.spec.FileWithBytes
+import io.a2a.spec.FileWithUri
+import io.a2a.spec.Message
+import io.a2a.spec.Part as A2APart
+import io.a2a.spec.Task
+import io.a2a.spec.TaskArtifactUpdateEvent
+import io.a2a.spec.TaskState
+import io.a2a.spec.TaskStatus
+import io.a2a.spec.TaskStatusUpdateEvent
+import io.a2a.spec.TextPart
 import java.util.Base64
 import kotlin.test.assertFailsWith
-import org.a2aproject.sdk.client.MessageEvent
-import org.a2aproject.sdk.client.TaskEvent
-import org.a2aproject.sdk.client.TaskUpdateEvent
-import org.a2aproject.sdk.spec.Artifact
-import org.a2aproject.sdk.spec.DataPart
-import org.a2aproject.sdk.spec.FilePart
-import org.a2aproject.sdk.spec.FileWithBytes
-import org.a2aproject.sdk.spec.FileWithUri
-import org.a2aproject.sdk.spec.Message
-import org.a2aproject.sdk.spec.Part as A2APart
-import org.a2aproject.sdk.spec.Task
-import org.a2aproject.sdk.spec.TaskArtifactUpdateEvent
-import org.a2aproject.sdk.spec.TaskState
-import org.a2aproject.sdk.spec.TaskStatus
-import org.a2aproject.sdk.spec.TaskStatusUpdateEvent
-import org.a2aproject.sdk.spec.TextPart
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
 @RunWith(JUnit4::class)
-class A2aConvertersTest {
+class LegacyA2aConvertersTest {
 
   private val testAgent = DummyAgent(name = "test_agent")
 
@@ -77,7 +77,7 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withTextPart_returnsTextPart() {
     val part = Part(text = "Hello")
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     assertThat((result as TextPart).text).isEqualTo("Hello")
   }
 
@@ -94,7 +94,7 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withFileDataPart_returnsFilePartWithUri() {
     val part = Part(fileData = FileData(mimeType = "text/plain", fileUri = "http://file.txt"))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     assertThat((result as FilePart).file.mimeType()).isEqualTo("text/plain")
     assertThat((result.file as FileWithUri).uri()).isEqualTo("http://file.txt")
   }
@@ -118,7 +118,7 @@ class A2aConvertersTest {
     val bytes = "content".toByteArray()
     val part =
       Part(inlineData = Blob(mimeType = "text/plain", displayName = "file.txt", data = bytes))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     assertThat((result as FilePart).file.mimeType()).isEqualTo("text/plain")
     assertThat(result.file.name()).isEqualTo("file.txt")
     assertThat((result.file as FileWithBytes).bytes())
@@ -141,12 +141,11 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withFunctionCallPart_returnsDataPart() {
     val part = Part(functionCall = FunctionCall(name = "func", id = "1", args = mapOf()))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     val dataPart = result as DataPart
-    val data = dataPart.data as Map<*, *>
-    assertThat(data["name"]).isEqualTo("func")
-    assertThat(data["id"]).isEqualTo("1")
-    assertThat(dataPart.metadata?.get(MetadataKeys.TYPE)).isEqualTo(TYPE_FUNCTION_CALL)
+    assertThat(dataPart.data["name"]).isEqualTo("func")
+    assertThat(dataPart.data["id"]).isEqualTo("1")
+    assertThat(dataPart.metadata[MetadataKeys.TYPE]).isEqualTo(TYPE_FUNCTION_CALL)
   }
 
   @Test
@@ -166,12 +165,11 @@ class A2aConvertersTest {
   fun toA2A_withFunctionResponsePart_returnsDataPart() {
     val part =
       Part(functionResponse = FunctionResponse(name = "func", id = "1", response = mapOf()))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     val dataPart = result as DataPart
-    val data = dataPart.data as Map<*, *>
-    assertThat(data["name"]).isEqualTo("func")
-    assertThat(data["id"]).isEqualTo("1")
-    assertThat(dataPart.metadata?.get(MetadataKeys.TYPE)).isEqualTo(TYPE_FUNCTION_RESPONSE)
+    assertThat(dataPart.data["name"]).isEqualTo("func")
+    assertThat(dataPart.data["id"]).isEqualTo("1")
+    assertThat(dataPart.metadata[MetadataKeys.TYPE]).isEqualTo(TYPE_FUNCTION_RESPONSE)
   }
 
   @Test
@@ -203,8 +201,7 @@ class A2aConvertersTest {
     val result = dataPart.toAdk()
     val functionCall = result.functionCall
     assertThat(functionCall).isNotNull()
-    // gson's LONG_OR_DOUBLE number strategy decodes untyped integers as Long.
-    assertThat(functionCall!!.args).isEqualTo(mapOf("value" to 123L))
+    assertThat(functionCall!!.args).isEqualTo(mapOf("value" to 123))
   }
 
   @Test
@@ -236,11 +233,17 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun toAdk_withFilePartBytes_handlesNullBytes_throwsException() {
+    val filePart = FilePart(FileWithBytes("text/plain", "file.txt", null))
+    assertFailsWith<NullPointerException> { filePart.toAdk() }
+  }
+
+  @Test
   fun clientEventToEvent_withMessageEvent_returnsEvent() {
     val a2aMessage =
-      Message.builder()
+      Message.Builder()
         .messageId("msg-1")
-        .role(Message.Role.ROLE_USER)
+        .role(Message.Role.USER)
         .parts(listOf(TextPart("Hello")))
         .build()
     val messageEvent = MessageEvent(a2aMessage)
@@ -254,9 +257,9 @@ class A2aConvertersTest {
   @Test
   fun messageToEvent_convertsMessage() {
     val a2aMessage =
-      Message.builder()
+      Message.Builder()
         .messageId("msg-1")
-        .role(Message.Role.ROLE_USER)
+        .role(Message.Role.USER)
         .parts(listOf(TextPart("test-message")))
         .build()
 
@@ -270,12 +273,12 @@ class A2aConvertersTest {
   @Test
   fun taskToEvent_withArtifacts_returnsEventFromLastArtifact() {
     val a2aPart = TextPart("Artifact content")
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+        .status(TaskStatus(TaskState.COMPLETED))
         .artifacts(listOf(artifact))
         .build()
 
@@ -287,13 +290,10 @@ class A2aConvertersTest {
   @Test
   fun taskToEvent_withStatusMessage_returnsEvent() {
     val statusMessage =
-      Message.builder()
-        .role(Message.Role.ROLE_AGENT)
-        .parts(listOf(TextPart("Status message")))
-        .build()
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart("Status message"))).build()
+    val status = TaskStatus(TaskState.WORKING, statusMessage, null)
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -308,10 +308,10 @@ class A2aConvertersTest {
   @Test
   fun taskToEvent_withFailedState_setsErrorCode() {
     val statusMessage =
-      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(TextPart("Task failed"))).build()
-    val status = TaskStatus(TaskState.TASK_STATE_FAILED, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart("Task failed"))).build()
+    val status = TaskStatus(TaskState.FAILED, statusMessage, null)
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -337,12 +337,12 @@ class A2aConvertersTest {
     val statusDataPart = DataPart(statusData, statusMetadata)
 
     val statusMessage =
-      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(statusDataPart)).build()
-    val status = TaskStatus(TaskState.TASK_STATE_INPUT_REQUIRED, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(statusDataPart)).build()
+    val status = TaskStatus(TaskState.INPUT_REQUIRED, statusMessage, null)
 
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(dataPart)).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(listOf(dataPart)).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -357,15 +357,12 @@ class A2aConvertersTest {
   @Test
   fun taskToEvent_withGroundingMetadata_returnsEvent() {
     val statusMessage =
-      Message.builder()
-        .role(Message.Role.ROLE_AGENT)
-        .parts(listOf(TextPart("Status message")))
-        .build()
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart("Status message"))).build()
+    val status = TaskStatus(TaskState.WORKING, statusMessage, null)
 
     val groundingMetadataJson = "{\"imageSearchQueries\":[\"test-query\"]}"
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -380,15 +377,12 @@ class A2aConvertersTest {
   @Test
   fun taskToEvent_withCustomMetadata_returnsEvent() {
     val statusMessage =
-      Message.builder()
-        .role(Message.Role.ROLE_AGENT)
-        .parts(listOf(TextPart("Status message")))
-        .build()
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart("Status message"))).build()
+    val status = TaskStatus(TaskState.WORKING, statusMessage, null)
 
     val customMetadataMap = mapOf("test-key" to "test-value")
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -405,14 +399,11 @@ class A2aConvertersTest {
   @Test
   fun taskToEvent_withErrorCode_returnsEvent() {
     val statusMessage =
-      Message.builder()
-        .role(Message.Role.ROLE_AGENT)
-        .parts(listOf(TextPart("Status message")))
-        .build()
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart("Status message"))).build()
+    val status = TaskStatus(TaskState.WORKING, statusMessage, null)
 
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -427,11 +418,11 @@ class A2aConvertersTest {
   @Test
   fun clientEventToEvent_withTaskUpdateEventAndThought_returnsThoughtEvent() {
     val statusMessage =
-      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(TextPart("thought-1"))).build()
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart("thought-1"))).build()
+    val status = TaskStatus(TaskState.WORKING, statusMessage, null)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
 
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", false, null)
     val event = TaskUpdateEvent(task, updateEvent)
 
     val result = event.toAdkEvent(invocationContext)
@@ -443,17 +434,17 @@ class A2aConvertersTest {
   @Test
   fun clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkTrue_returnsTaskEvent() {
     val a2aPart = TextPart("Artifact content")
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+        .status(TaskStatus(TaskState.COMPLETED))
         .artifacts(listOf(artifact))
         .build()
 
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .lastChunk(true)
         .contextId("context-1")
         .artifact(artifact)
@@ -469,17 +460,17 @@ class A2aConvertersTest {
   @Test
   fun clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkFalse_returnsHandlingPartialEvent() {
     val a2aPart = TextPart("Artifact content")
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+        .status(TaskStatus(TaskState.COMPLETED))
         .artifacts(listOf(artifact))
         .build()
 
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .lastChunk(false)
         .append(false)
         .contextId("context-1")
@@ -496,13 +487,13 @@ class A2aConvertersTest {
   @Test
   fun clientEventToEvent_withFinalTaskStatusUpdateEvent_withMessage_returnsEvent() {
     val statusMessage =
-      Message.builder()
-        .role(Message.Role.ROLE_AGENT)
+      Message.Builder()
+        .role(Message.Role.AGENT)
         .parts(listOf(TextPart("Final status message")))
         .build()
-    val status = TaskStatus(TaskState.TASK_STATE_COMPLETED, statusMessage, null)
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val status = TaskStatus(TaskState.COMPLETED, statusMessage, null)
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", true, null)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
     val event = TaskUpdateEvent(task, updateEvent)
 
     val result = event.toAdkEvent(invocationContext)
@@ -515,10 +506,10 @@ class A2aConvertersTest {
   @Test
   fun clientEventToEvent_withFailedTaskStatusUpdateEvent_returnsErrorEvent() {
     val statusMessage =
-      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(TextPart("Task failed"))).build()
-    val status = TaskStatus(TaskState.TASK_STATE_FAILED, statusMessage, null)
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart("Task failed"))).build()
+    val status = TaskStatus(TaskState.FAILED, statusMessage, null)
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", true, null)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
     val event = TaskUpdateEvent(task, updateEvent)
 
     val result = event.toAdkEvent(invocationContext)
@@ -531,7 +522,7 @@ class A2aConvertersTest {
   fun toA2aParts_validContent_returnsParts() {
     val textPart = Part(text = "hello")
     val content = Content(parts = listOf(textPart))
-    val list = content.toA2aParts(false)
+    val list = content.toLegacyA2aParts(false)
     assertThat(list.size).isEqualTo(1)
     assertThat((list[0] as TextPart).text).isEqualTo("hello")
   }
@@ -539,21 +530,21 @@ class A2aConvertersTest {
   @Test
   fun toA2aMessage_withUserAuthor_returnsUserRole() {
     val event = Event(author = "user", content = userMessage("hello"))
-    val result = event.toA2aMessage()
-    assertThat(result.role).isEqualTo(Message.Role.ROLE_USER)
+    val result = event.toLegacyA2aMessage()
+    assertThat(result.role).isEqualTo(Message.Role.USER)
   }
 
   @Test
   fun toA2aMessage_withAgentAuthor_returnsAgentRole() {
     val event = Event(author = "agent", content = modelMessage("hello"))
-    val result = event.toA2aMessage()
-    assertThat(result.role).isEqualTo(Message.Role.ROLE_AGENT)
+    val result = event.toLegacyA2aMessage()
+    assertThat(result.role).isEqualTo(Message.Role.AGENT)
   }
 
   @Test
   fun toA2aMessage_addsAuthorToMetadata() {
     val event = Event(author = "test_author", content = userMessage("hello"))
-    val result = event.toA2aMessage()
+    val result = event.toLegacyA2aMessage()
     assertThat(result.metadata?.get(MetadataKeys.AUTHOR)).isEqualTo("test_author")
   }
 
@@ -572,7 +563,7 @@ class A2aConvertersTest {
     val mockAgent = DummyAgent(name = "test_agent")
     val ctx = InvocationContext(agent = mockAgent, session = session, runConfig = null)
 
-    val parts = ctx.extractA2aParts()
+    val parts = ctx.extractLegacyA2aParts()
     assertThat(parts.size).isEqualTo(2)
     assertThat((parts[0] as TextPart).text).isEqualTo("For context:")
     assertThat((parts[1] as TextPart).text).isEqualTo("[other_agent] said: hey")
@@ -581,18 +572,18 @@ class A2aConvertersTest {
   @Test
   fun shouldBuffer_withTaskUpdateEventNonStatus_returnsTrue() {
     val artifact =
-      Artifact.builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
+      Artifact.Builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .artifact(artifact)
         .taskId("task-1")
         .contextId("context-1")
         .build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .status(TaskStatus(TaskState.WORKING))
         .build()
     val event = TaskUpdateEvent(task, updateEvent)
 
@@ -601,9 +592,9 @@ class A2aConvertersTest {
 
   @Test
   fun shouldBuffer_withTaskUpdateEventStatus_returnsFalse() {
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING)
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val status = TaskStatus(TaskState.WORKING)
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", false, null)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
     val event = TaskUpdateEvent(task, updateEvent)
 
     assertThat(event.shouldBuffer()).isFalse()
@@ -612,13 +603,13 @@ class A2aConvertersTest {
   @Test
   fun shouldBuffer_withTaskEventWithArtifacts_returnsTrue() {
     val artifact =
-      Artifact.builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
+      Artifact.Builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .artifacts(listOf(artifact))
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .status(TaskStatus(TaskState.WORKING))
         .build()
     val event = TaskEvent(task)
 
@@ -628,11 +619,11 @@ class A2aConvertersTest {
   @Test
   fun shouldBuffer_withTaskEventWithoutArtifacts_returnsFalse() {
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .artifacts(emptyList())
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .status(TaskStatus(TaskState.WORKING))
         .build()
     val event = TaskEvent(task)
 
@@ -642,9 +633,9 @@ class A2aConvertersTest {
   @Test
   fun shouldBuffer_withOtherEvent_returnsTrue() {
     val message =
-      Message.builder()
+      Message.Builder()
         .messageId("msg-1")
-        .role(Message.Role.ROLE_USER)
+        .role(Message.Role.USER)
         .parts(listOf(TextPart("hello")))
         .build()
     val event = MessageEvent(message)
@@ -655,9 +646,9 @@ class A2aConvertersTest {
   @Test
   fun shouldResetBuffer_withTaskUpdateEventArtifactNotAppendNotLast_returnsTrue() {
     val artifact =
-      Artifact.builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
+      Artifact.Builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .artifact(artifact)
         .append(false)
         .lastChunk(false)
@@ -665,10 +656,10 @@ class A2aConvertersTest {
         .contextId("context-1")
         .build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .status(TaskStatus(TaskState.WORKING))
         .build()
     val event = TaskUpdateEvent(task, updateEvent)
 
@@ -678,9 +669,9 @@ class A2aConvertersTest {
   @Test
   fun shouldResetBuffer_withTaskUpdateEventArtifactAppend_returnsFalse() {
     val artifact =
-      Artifact.builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
+      Artifact.Builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .artifact(artifact)
         .append(true)
         .lastChunk(false)
@@ -688,10 +679,10 @@ class A2aConvertersTest {
         .contextId("context-1")
         .build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .status(TaskStatus(TaskState.WORKING))
         .build()
     val event = TaskUpdateEvent(task, updateEvent)
 
@@ -701,9 +692,9 @@ class A2aConvertersTest {
   @Test
   fun shouldResetBuffer_withTaskUpdateEventArtifactLast_returnsFalse() {
     val artifact =
-      Artifact.builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
+      Artifact.Builder().artifactId("artifact-1").parts(listOf(TextPart("content"))).build()
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .artifact(artifact)
         .append(false)
         .lastChunk(true)
@@ -711,10 +702,10 @@ class A2aConvertersTest {
         .contextId("context-1")
         .build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .status(TaskStatus(TaskState.WORKING))
         .build()
     val event = TaskUpdateEvent(task, updateEvent)
 
@@ -723,9 +714,9 @@ class A2aConvertersTest {
 
   @Test
   fun shouldResetBuffer_withTaskUpdateEventNonArtifact_returnsFalse() {
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING)
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val status = TaskStatus(TaskState.WORKING)
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", false, null)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
     val event = TaskUpdateEvent(task, updateEvent)
 
     assertThat(event.shouldResetBuffer()).isFalse()
@@ -734,9 +725,9 @@ class A2aConvertersTest {
   @Test
   fun shouldResetBuffer_withNonTaskUpdateEvent_returnsFalse() {
     val message =
-      Message.builder()
+      Message.Builder()
         .messageId("msg-1")
-        .role(Message.Role.ROLE_USER)
+        .role(Message.Role.USER)
         .parts(listOf(TextPart("hello")))
         .build()
     val event = MessageEvent(message)
@@ -747,10 +738,10 @@ class A2aConvertersTest {
   @Test
   fun shouldResetBuffer_withTaskEvent_returnsTrue() {
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .status(TaskStatus(TaskState.WORKING))
         .build()
     val event = TaskEvent(task)
 
@@ -759,8 +750,8 @@ class A2aConvertersTest {
 
   @Test
   fun isCompleted_withTaskEventCompleted_returnsTrue() {
-    val status = TaskStatus(TaskState.TASK_STATE_COMPLETED)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val status = TaskStatus(TaskState.COMPLETED)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
     val event = TaskEvent(task)
 
     assertThat(event.isCompleted()).isTrue()
@@ -768,8 +759,8 @@ class A2aConvertersTest {
 
   @Test
   fun isCompleted_withTaskEventNotCompleted_returnsFalse() {
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val status = TaskStatus(TaskState.WORKING)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
     val event = TaskEvent(task)
 
     assertThat(event.isCompleted()).isFalse()
@@ -777,9 +768,9 @@ class A2aConvertersTest {
 
   @Test
   fun isCompleted_withTaskUpdateEventCompleted_returnsTrue() {
-    val status = TaskStatus(TaskState.TASK_STATE_COMPLETED)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
+    val status = TaskStatus(TaskState.COMPLETED)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", true, null)
     val event = TaskUpdateEvent(task, updateEvent)
 
     assertThat(event.isCompleted()).isTrue()
@@ -787,9 +778,9 @@ class A2aConvertersTest {
 
   @Test
   fun isCompleted_withTaskUpdateEventNotCompleted_returnsFalse() {
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
+    val status = TaskStatus(TaskState.WORKING)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", false, null)
     val event = TaskUpdateEvent(task, updateEvent)
 
     assertThat(event.isCompleted()).isFalse()
@@ -798,9 +789,9 @@ class A2aConvertersTest {
   @Test
   fun isCompleted_withOtherEvent_returnsFalse() {
     val message =
-      Message.builder()
+      Message.Builder()
         .messageId("msg-1")
-        .role(Message.Role.ROLE_USER)
+        .role(Message.Role.USER)
         .parts(listOf(TextPart("hello")))
         .build()
     val event = MessageEvent(message)
@@ -811,17 +802,17 @@ class A2aConvertersTest {
   @Test
   fun clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkAndPartial_returnsNull() {
     val a2aPart = TextPart("Artifact content")
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+        .status(TaskStatus(TaskState.COMPLETED))
         .artifacts(listOf(artifact))
         .build()
 
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .lastChunk(true)
         .metadata(mapOf(MetadataKeys.PARTIAL to true))
         .contextId("context-1")
@@ -837,18 +828,18 @@ class A2aConvertersTest {
   @Test
   fun clientEventToEvent_withTaskArtifactUpdateEvent_withEmptyParts_returnsNull() {
     val partsList = mutableListOf<A2APart<*>>(TextPart("dummy"))
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(partsList).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(partsList).build()
     partsList.clear()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+        .status(TaskStatus(TaskState.COMPLETED))
         .artifacts(listOf(artifact))
         .build()
 
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .lastChunk(true)
         .contextId("context-1")
         .artifact(artifact)
@@ -874,12 +865,12 @@ class A2aConvertersTest {
     val statusDataPart = DataPart(statusData, statusMetadata)
 
     val statusMessage =
-      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(statusDataPart)).build()
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(statusDataPart)).build()
+    val status = TaskStatus(TaskState.WORKING, statusMessage, null)
 
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(dataPart)).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(listOf(dataPart)).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -895,10 +886,10 @@ class A2aConvertersTest {
   fun clientEventToEvent_withFailedTaskStatusUpdateEvent_noTextPart_returnsFallbackErrorMessage() {
     val nonTextPart = FilePart(FileWithUri("text/plain", "file.txt", "http://file.txt"))
     val statusMessage =
-      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(nonTextPart)).build()
-    val status = TaskStatus(TaskState.TASK_STATE_FAILED, statusMessage, null)
-    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
-    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(nonTextPart)).build()
+    val status = TaskStatus(TaskState.FAILED, statusMessage, null)
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", true, null)
+    val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
     val event = TaskUpdateEvent(task, updateEvent)
 
     val result = event.toAdkEvent(invocationContext)
@@ -911,10 +902,10 @@ class A2aConvertersTest {
   fun taskToEvent_withFailedState_noTextPart_returnsFallbackErrorMessage() {
     val nonTextPart = FilePart(FileWithUri("text/plain", "file.txt", "http://file.txt"))
     val statusMessage =
-      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(nonTextPart)).build()
-    val status = TaskStatus(TaskState.TASK_STATE_FAILED, statusMessage, null)
+      Message.Builder().role(Message.Role.AGENT).parts(listOf(nonTextPart)).build()
+    val status = TaskStatus(TaskState.FAILED, statusMessage, null)
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(status)
@@ -928,7 +919,12 @@ class A2aConvertersTest {
 
   @Test
   fun toAdk_withUnsupportedPartType_throwsException() {
-    val unsupportedPart = object : A2APart<Any> {}
+    val unsupportedPart =
+      object : A2APart<Any>() {
+        override fun getKind(): A2APart.Kind = A2APart.Kind.TEXT
+
+        override fun getMetadata(): Map<String, Any> = emptyMap()
+      }
     val exception = assertFailsWith<IllegalArgumentException> { unsupportedPart.toAdk() }
     assertThat(exception.message).contains("Unsupported A2A Part type")
   }
@@ -936,7 +932,7 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withUnsupportedAdkPart_throwsException() {
     val emptyPart = Part()
-    val exception = assertFailsWith<IllegalArgumentException> { emptyPart.toA2A() }
+    val exception = assertFailsWith<IllegalArgumentException> { emptyPart.toLegacyA2aPart() }
     assertThat(exception.message).contains("Unsupported ADK Part content")
   }
 
@@ -948,76 +944,6 @@ class A2aConvertersTest {
     val result = dataPart.toAdk()
     val functionResponse = result.functionResponse
     assertThat(functionResponse).isNotNull()
-    // gson's LONG_OR_DOUBLE number strategy decodes untyped integers as Long.
-    assertThat(functionResponse!!.response).isEqualTo(mapOf("value" to 456L))
-  }
-
-  @Test
-  fun taskToEvent_withUsageMetadata_returnsEvent() {
-    val statusMessage =
-      Message.builder()
-        .role(Message.Role.ROLE_AGENT)
-        .parts(listOf(TextPart("Status message")))
-        .build()
-    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
-
-    val usageJson = "{\"promptTokenCount\":5,\"totalTokenCount\":12}"
-    val task =
-      Task.builder()
-        .id("task-1")
-        .contextId("context-1")
-        .status(status)
-        .metadata(mapOf(MetadataKeys.USAGE to usageJson))
-        .build()
-
-    val result = task.toAdkEvent(invocationContext)
-    assertThat(result.usageMetadata).isNotNull()
-    assertThat(result.usageMetadata?.promptTokenCount).isEqualTo(5)
-    assertThat(result.usageMetadata?.totalTokenCount).isEqualTo(12)
-  }
-
-  @Test
-  fun taskToEvent_withInputRequiredState_emptyContent_returnsFinalEvent() {
-    val task =
-      Task.builder()
-        .id("task-1")
-        .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_INPUT_REQUIRED))
-        .artifacts(emptyList())
-        .build()
-
-    val result = task.toAdkEvent(invocationContext)
-    assertThat(result.turnComplete).isTrue()
-    assertThat(result.content).isNull()
-  }
-
-  @Test
-  fun taskToEvent_withCompletedState_emptyContent_returnsFinalEvent() {
-    val task =
-      Task.builder()
-        .id("task-1")
-        .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
-        .artifacts(emptyList())
-        .build()
-
-    val result = task.toAdkEvent(invocationContext)
-    assertThat(result.turnComplete).isTrue()
-    assertThat(result.content).isNull()
-  }
-
-  @Test
-  fun taskToEvent_withWorkingState_emptyContent_returnsEmptyEvent() {
-    val task =
-      Task.builder()
-        .id("task-1")
-        .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
-        .artifacts(emptyList())
-        .build()
-
-    val result = task.toAdkEvent(invocationContext)
-    assertThat(result.content?.parts).isEmpty()
-    assertThat(result.turnComplete).isNotEqualTo(true)
+    assertThat(functionResponse!!.response).isEqualTo(mapOf("value" to 456))
   }
 }

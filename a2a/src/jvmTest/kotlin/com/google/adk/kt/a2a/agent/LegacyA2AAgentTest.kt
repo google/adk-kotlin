@@ -16,6 +16,9 @@
 
 package com.google.adk.kt.a2a.agent
 
+import com.google.adk.kt.a2a.testing.DummyAgent
+import com.google.adk.kt.a2a.testing.modelMessage
+import com.google.adk.kt.a2a.testing.userMessage
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
@@ -24,58 +27,51 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.testing.DummyAgent
-import com.google.adk.kt.testing.modelMessage
-import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
+import io.a2a.client.Client
+import io.a2a.client.ClientEvent
+import io.a2a.client.TaskEvent
+import io.a2a.client.TaskUpdateEvent
+import io.a2a.spec.AgentCapabilities
+import io.a2a.spec.AgentCard
+import io.a2a.spec.Artifact
+import io.a2a.spec.DataPart
+import io.a2a.spec.FilePart
+import io.a2a.spec.FileWithUri
+import io.a2a.spec.Message
+import io.a2a.spec.Part as A2APart
+import io.a2a.spec.Task
+import io.a2a.spec.TaskArtifactUpdateEvent
+import io.a2a.spec.TaskState
+import io.a2a.spec.TaskStatus
+import io.a2a.spec.TaskStatusUpdateEvent
+import io.a2a.spec.TextPart
 import java.util.function.BiConsumer
 import java.util.function.Consumer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
-import org.a2aproject.sdk.client.Client
-import org.a2aproject.sdk.client.ClientEvent
-import org.a2aproject.sdk.client.TaskEvent
-import org.a2aproject.sdk.client.TaskUpdateEvent
-import org.a2aproject.sdk.spec.AgentCapabilities
-import org.a2aproject.sdk.spec.AgentCard
-import org.a2aproject.sdk.spec.Artifact
-import org.a2aproject.sdk.spec.DataPart
-import org.a2aproject.sdk.spec.FilePart
-import org.a2aproject.sdk.spec.FileWithUri
-import org.a2aproject.sdk.spec.Message
-import org.a2aproject.sdk.spec.Part as A2APart
-import org.a2aproject.sdk.spec.Task
-import org.a2aproject.sdk.spec.TaskArtifactUpdateEvent
-import org.a2aproject.sdk.spec.TaskState
-import org.a2aproject.sdk.spec.TaskStatus
-import org.a2aproject.sdk.spec.TaskStatusUpdateEvent
-import org.a2aproject.sdk.spec.TextPart
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
-import org.mockito.kotlin.after
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.isNull
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
-import org.mockito.kotlin.timeout
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.whenever
 
 @RunWith(JUnit4::class)
-class A2AAgentTest {
+class LegacyA2AAgentTest {
 
   private lateinit var mockClient: Client
   private lateinit var agentCard: AgentCard
@@ -85,18 +81,19 @@ class A2AAgentTest {
   fun setUp() {
     mockClient = mock()
     agentCard =
-      AgentCard.builder()
+      AgentCard.Builder()
         .name("remote-agent")
         .description("Remote Agent")
         .url("http://example.com")
         .version("1.0.0")
+        .protocolVersion("0.3.0")
         .defaultInputModes(listOf("text"))
         .defaultOutputModes(listOf("text"))
         .skills(listOf())
-        .supportedInterfaces(listOf())
-        .capabilities(AgentCapabilities.builder().streaming(true).build())
+        .capabilities(AgentCapabilities.Builder().streaming(true).build())
         .build()
 
+    whenever(mockClient.agentCard).thenReturn(agentCard)
     whenever(mockClient.cancelTask(any())).thenReturn(null)
 
     val mockAgent = DummyAgent()
@@ -149,7 +146,7 @@ class A2AAgentTest {
   @Test
   fun description_userDescriptionProvided_returnsUserDescription() {
     val agent =
-      A2AAgent(
+      LegacyA2AAgent(
         name = "test-agent",
         userDescription = "Custom User Description",
         a2aClient = mockClient,
@@ -160,9 +157,9 @@ class A2AAgentTest {
 
   @Test
   fun description_userDescriptionNull_agentCardProvided_returnsAgentCardDescription() {
-    val card = AgentCard.builder(agentCard).description("Card Description").build()
+    val card = AgentCard.Builder(agentCard).description("Card Description").build()
     val agent =
-      A2AAgent(
+      LegacyA2AAgent(
         name = "test-agent",
         userDescription = null,
         a2aClient = mockClient,
@@ -172,11 +169,22 @@ class A2AAgentTest {
   }
 
   @Test
-  fun description_userDescriptionNull_andCardResolutionFails_throwsAgentCardResolutionError() {
-    // The A2A v1.0 `Client` does not expose its agent card, so a null `agentCard` cannot be
-    // resolved and surfaces as an AgentCardResolutionError.
+  fun description_userDescriptionNull_agentCardNull_resolvesFromClient() {
     val agent =
-      A2AAgent(
+      LegacyA2AAgent(
+        name = "test-agent",
+        userDescription = null,
+        a2aClient = mockClient,
+        agentCard = null,
+      )
+    assertThat(agent.description).isEqualTo("Remote Agent")
+  }
+
+  @Test
+  fun description_userDescriptionNull_andCardResolutionFails_throwsAgentCardResolutionError() {
+    whenever(mockClient.agentCard).thenReturn(null)
+    val agent =
+      LegacyA2AAgent(
         name = "test-agent",
         userDescription = null,
         a2aClient = mockClient,
@@ -194,7 +202,7 @@ class A2AAgentTest {
     val agent = createTestAgent(streaming = false)
 
     mockStreamResponse(this) { consumer ->
-      consumer.accept(createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Done"), agentCard)
+      consumer.accept(createTaskEvent(TaskState.COMPLETED, "Done"), agentCard)
     }
 
     val events = agent.runAsync(invocationContext).toList()
@@ -211,7 +219,7 @@ class A2AAgentTest {
     val agent = createTestAgent()
 
     mockStreamResponse(this) { consumer ->
-      consumer.accept(createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Done"), agentCard)
+      consumer.accept(createTaskEvent(TaskState.COMPLETED, "Done"), agentCard)
     }
 
     val events = agent.runAsync(invocationContext).toList()
@@ -229,7 +237,7 @@ class A2AAgentTest {
     mockStreamResponse(this) { consumer ->
       consumer.accept(createPartialEvent("Hello ", true, false), agentCard)
       consumer.accept(createPartialEvent("world", true, true), agentCard)
-      consumer.accept(createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Final"), agentCard)
+      consumer.accept(createTaskEvent(TaskState.COMPLETED, "Final"), agentCard)
     }
 
     val events = agent.runAsync(invocationContext).toList()
@@ -300,10 +308,10 @@ class A2AAgentTest {
       consumer.accept(createPartialEvent("World!", true, false), agentCard)
 
       val task =
-        Task.builder()
+        Task.Builder()
           .id("task-1")
           .contextId("context-1")
-          .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+          .status(TaskStatus(TaskState.COMPLETED))
           .build()
       consumer.accept(TaskEvent(task), agentCard)
     }
@@ -324,9 +332,9 @@ class A2AAgentTest {
       consumer.accept(createPartialEvent("Hello ", true, false), agentCard)
       consumer.accept(createPartialEvent("World!", true, false), agentCard)
 
-      val status = TaskStatus(TaskState.TASK_STATE_COMPLETED)
-      val update = TaskStatusUpdateEvent("task-1", status, "context-1", null)
-      val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+      val status = TaskStatus(TaskState.COMPLETED)
+      val update = TaskStatusUpdateEvent("task-1", status, "context-1", true, null)
+      val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
       consumer.accept(TaskUpdateEvent(task, update), agentCard)
     }
 
@@ -371,9 +379,9 @@ class A2AAgentTest {
       consumer.accept(createPartialEvent("3", false, false), agentCard)
       consumer.accept(createPartialEvent("4", true, false), agentCard)
 
-      val status = TaskStatus(TaskState.TASK_STATE_COMPLETED)
-      val update = TaskStatusUpdateEvent("task-1", status, "context-1", null)
-      val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+      val status = TaskStatus(TaskState.COMPLETED)
+      val update = TaskStatusUpdateEvent("task-1", status, "context-1", true, null)
+      val task = Task.Builder().id("task-1").contextId("context-1").status(status).build()
       consumer.accept(TaskUpdateEvent(task, update), agentCard)
     }
 
@@ -392,7 +400,7 @@ class A2AAgentTest {
   fun runAsync_handlesTasksWithStatusMessage() = runTest {
     val agent = createTestAgent()
     mockStreamResponse(this) { consumer ->
-      consumer.accept(createTaskEvent(TaskState.TASK_STATE_COMPLETED, "hello"), agentCard)
+      consumer.accept(createTaskEvent(TaskState.COMPLETED, "hello"), agentCard)
     }
     val events = agent.runAsync(invocationContext).toList()
     assertThat(events).hasSize(1)
@@ -406,7 +414,7 @@ class A2AAgentTest {
       consumer.accept(
         createTestEvent(
           listOf(TextPart("hello"), TextPart("world")),
-          TaskState.TASK_STATE_COMPLETED,
+          TaskState.COMPLETED,
           append = false,
           lastChunk = false,
         ),
@@ -425,14 +433,8 @@ class A2AAgentTest {
   fun runAsync_handlesNonFinalStatusUpdatesAsThoughts() = runTest {
     val agent = createTestAgent()
     mockStreamResponse(this) { consumer ->
-      consumer.accept(
-        createStatusUpdateEvent(TaskState.TASK_STATE_SUBMITTED, "submitted..."),
-        agentCard,
-      )
-      consumer.accept(
-        createStatusUpdateEvent(TaskState.TASK_STATE_WORKING, "working..."),
-        agentCard,
-      )
+      consumer.accept(createStatusUpdateEvent(TaskState.SUBMITTED, "submitted..."), agentCard)
+      consumer.accept(createStatusUpdateEvent(TaskState.WORKING, "working..."), agentCard)
       consumer.accept(createFinalEvent("done"), agentCard)
     }
 
@@ -479,7 +481,7 @@ class A2AAgentTest {
       )
 
     val message = messageCaptor.firstValue
-    assertThat(message.role).isEqualTo(Message.Role.ROLE_USER)
+    assertThat(message.role).isEqualTo(Message.Role.USER)
     assertThat(message.parts).hasSize(4)
     assertThat((message.parts[0] as TextPart).text).isEqualTo("hello")
     assertThat((message.parts[1] as TextPart).text).isEqualTo("For context:")
@@ -535,10 +537,9 @@ class A2AAgentTest {
     val part = message.parts[0]
     assertThat(part).isInstanceOf(DataPart::class.java)
     val dataPart = part as DataPart
-    val data = dataPart.data as Map<*, *>
-    assertThat(data["name"]).isEqualTo("fn")
-    assertThat(data["id"]).isEqualTo("call-1")
-    assertThat(dataPart.metadata?.get("adk_type")).isEqualTo("function_response")
+    assertThat(dataPart.data["name"]).isEqualTo("fn")
+    assertThat(dataPart.data["id"]).isEqualTo("call-1")
+    assertThat(dataPart.metadata["adk_type"]).isEqualTo("function_response")
   }
 
   @Test
@@ -599,47 +600,13 @@ class A2AAgentTest {
     verifyNoInteractions(mockClient)
   }
 
-  // Uses runBlocking (real time) because task cancellation runs on Dispatchers.IO.
-  @Test
-  fun runAsync_nonTerminalTaskAbandoned_cancelsRemoteTask() = runBlocking {
-    val agent = createTestAgent()
-    mockStreamResponse(this) { consumer ->
-      consumer.accept(
-        createStatusUpdateEvent(TaskState.TASK_STATE_WORKING, "working..."),
-        agentCard,
-      )
-    }
-
-    // Collecting a single event abandons the still-open task, triggering cleanup.
-    agent.runAsync(invocationContext).first()
-
-    verify(mockClient, timeout(5000)).cancelTask(any())
-    Unit
-  }
-
-  @Test
-  fun runAsync_terminalInputRequiredTaskAbandoned_doesNotCancelRemoteTask() = runBlocking {
-    val agent = createTestAgent()
-    mockStreamResponse(this) { consumer ->
-      consumer.accept(
-        createStatusUpdateEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "need input"),
-        agentCard,
-      )
-    }
-
-    // An input-required task is terminal, so abandoning the flow must not cancel it.
-    agent.runAsync(invocationContext).first()
-
-    verify(mockClient, after(500).never()).cancelTask(any())
-    Unit
-  }
-
+  @Suppress("DEPRECATION")
   private fun createTestAgent(
     streaming: Boolean = true,
     beforeCallbacks: List<BeforeAgentCallback> = emptyList(),
     afterCallbacks: List<AfterAgentCallback> = emptyList(),
   ): BaseRemoteA2AAgent {
-    return A2AAgent(
+    return JvmA2AAgent(
       name = "remote-agent",
       client = mockClient,
       agentCard = agentCard,
@@ -647,10 +614,6 @@ class A2AAgentTest {
       beforeAgentCallbacks = beforeCallbacks,
       afterAgentCallbacks = afterCallbacks,
     )
-  }
-
-  private fun assertEventText(event: Event?, expectedText: String) {
-    assertThat(event?.content?.parts?.firstOrNull()?.text).isEqualTo(expectedText)
   }
 
   private fun mockStreamError(scope: CoroutineScope, error: Throwable) {
@@ -695,13 +658,13 @@ class A2AAgentTest {
 
   private fun createTaskEvent(state: TaskState, text: String): TaskEvent {
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(
           TaskStatus(
             state,
-            Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(TextPart(text))).build(),
+            Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart(text))).build(),
             null,
           )
         )
@@ -710,15 +673,15 @@ class A2AAgentTest {
   }
 
   private fun createStatusUpdateEvent(state: TaskState, text: String): ClientEvent {
-    val task = Task.builder().id("task-1").contextId("context-1").status(TaskStatus(state)).build()
+    val task = Task.Builder().id("task-1").contextId("context-1").status(TaskStatus(state)).build()
     val update =
-      TaskStatusUpdateEvent.builder()
+      TaskStatusUpdateEvent.Builder()
         .taskId("task-1")
         .contextId("context-1")
         .status(
           TaskStatus(
             state,
-            Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(TextPart(text))).build(),
+            Message.Builder().role(Message.Role.AGENT).parts(listOf(TextPart(text))).build(),
             null,
           )
         )
@@ -727,26 +690,26 @@ class A2AAgentTest {
   }
 
   private fun createPartialEvent(text: String, append: Boolean, lastChunk: Boolean): ClientEvent {
-    return createTestEvent(TextPart(text), TaskState.TASK_STATE_WORKING, append, lastChunk)
+    return createTestEvent(TextPart(text), TaskState.WORKING, append, lastChunk)
   }
 
   private fun createPartialFunctionCallEvent(name: String, id: String): ClientEvent {
     val data = mapOf("name" to name, "id" to id, "args" to mapOf<String, Any>())
     val metadata = mapOf("adk_type" to "function_call")
-    return createTestEvent(DataPart(data, metadata), TaskState.TASK_STATE_WORKING, true, false)
+    return createTestEvent(DataPart(data, metadata), TaskState.WORKING, true, false)
   }
 
   private fun createPartialFileEvent(uri: String, mimeType: String): ClientEvent {
     return createTestEvent(
       FilePart(FileWithUri(mimeType, "file", uri)),
-      TaskState.TASK_STATE_WORKING,
+      TaskState.WORKING,
       true,
       false,
     )
   }
 
   private fun createFinalEvent(text: String): ClientEvent {
-    return createTestEvent(TextPart(text), TaskState.TASK_STATE_COMPLETED, false, false)
+    return createTestEvent(TextPart(text), TaskState.COMPLETED, false, false)
   }
 
   private fun createTestEvent(
@@ -762,21 +725,21 @@ class A2AAgentTest {
     append: Boolean,
     lastChunk: Boolean,
   ): ClientEvent {
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(parts).build()
+    val artifact = Artifact.Builder().artifactId("artifact-1").parts(parts).build()
     val task =
-      Task.builder()
+      Task.Builder()
         .id("task-1")
         .contextId("context-1")
         .status(TaskStatus(state))
         .artifacts(listOf(artifact))
         .build()
 
-    if (state == TaskState.TASK_STATE_COMPLETED && !append && !lastChunk) {
+    if (state == TaskState.COMPLETED && !append && !lastChunk) {
       return TaskEvent(task)
     }
 
     val updateEvent =
-      TaskArtifactUpdateEvent.builder()
+      TaskArtifactUpdateEvent.Builder()
         .lastChunk(lastChunk)
         .append(append)
         .contextId("context-1")

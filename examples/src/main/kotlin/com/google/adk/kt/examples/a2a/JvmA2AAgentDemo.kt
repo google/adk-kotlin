@@ -16,21 +16,24 @@
 
 package com.google.adk.kt.examples.a2a
 
-import com.google.adk.kt.a2a.agent.JvmA2AAgent
-import io.a2a.client.Client
-import io.a2a.client.transport.jsonrpc.JSONRPCTransport
-import io.a2a.client.transport.jsonrpc.JSONRPCTransportConfig
-import io.a2a.spec.AgentCapabilities
-import io.a2a.spec.AgentCard
+import com.google.adk.kt.a2a.agent.A2AAgent
+import org.a2aproject.sdk.client.Client
+import org.a2aproject.sdk.client.http.JdkA2AHttpClient
+import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransport
+import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransportConfig
+import org.a2aproject.sdk.spec.AgentCapabilities
+import org.a2aproject.sdk.spec.AgentCard
+import org.a2aproject.sdk.spec.AgentInterface
 
 /**
  * Example agent demonstrating how to use [RemoteA2AAgent] to communicate with a remote
  * A2A-compliant agent.
  *
  * This demo showcases:
- * 1. Initializing an [io.a2a.client.Client] with a specific transport (REST).
- * 2. Using [ServiceLoader] (implicit via A2ACardResolver) for platform-specific HTTP client
- *    resolution (JDK vs Android).
+ * 1. Initializing an [Client] with the JSON-RPC transport.
+ * 2. Injecting a [JdkA2AHttpClient] explicitly as the JVM HTTP client. (On Android, inject
+ *    `AndroidA2AHttpClient` instead. Explicit injection is preferred over relying on SDK
+ *    ServiceLoader auto-resolution.)
  * 3. Wrapping the remote agent as a standard ADK [com.google.adk.kt.agents.Agent].
  */
 object JvmA2AAgentDemo {
@@ -43,35 +46,31 @@ object JvmA2AAgentDemo {
     val agentName = System.getenv("A2A_AGENT_NAME") ?: "remote-agent"
 
     val agentCard =
-      AgentCard.Builder()
+      AgentCard.builder()
         .name(agentName)
         .url(agentUrl)
         .description("A remote A2A agent")
         .version("1.0.0")
-        .protocolVersion("0.3.0")
         .preferredTransport("JSONRPC")
         .defaultInputModes(listOf("text"))
         .defaultOutputModes(listOf("text"))
         .capabilities(
           // Advertise non-streaming so the a2a Client uses `message/send` instead
           // of SSE `message/stream`. This is what selects the transport in
-          // io.a2a.client.Client (it checks agentCard.capabilities().streaming()).
-          AgentCapabilities.Builder()
-            .streaming(false)
-            .pushNotifications(false)
-            .stateTransitionHistory(false)
-            .build()
+          // Client (it checks agentCard.capabilities().streaming()).
+          AgentCapabilities.builder().streaming(false).pushNotifications(false).build()
         )
         .skills(emptyList())
+        .supportedInterfaces(listOf(AgentInterface("JSONRPC", agentUrl)))
         .build()
 
     val a2aClient =
       Client.builder(agentCard)
-        .withTransport(JSONRPCTransport::class.java, JSONRPCTransportConfig())
+        .withTransport(JSONRPCTransport::class.java, JSONRPCTransportConfig(JdkA2AHttpClient()))
         .build()
 
     // Use non-streaming (message/send) so the demo works against any A2A server
     // regardless of its streaming support.
-    JvmA2AAgent(name = agentName, client = a2aClient, agentCard = agentCard, streaming = false)
+    A2AAgent(name = agentName, client = a2aClient, agentCard = agentCard, streaming = false)
   }
 }
