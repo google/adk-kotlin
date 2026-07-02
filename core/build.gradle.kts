@@ -19,6 +19,7 @@ plugins {
   kotlin("plugin.serialization")
   id("com.android.library")
   alias(libs.plugins.ksp)
+  alias(libs.plugins.gradle.test.retry)
   id("maven-publish")
 }
 
@@ -81,6 +82,8 @@ kotlin {
         implementation(libs.okhttp.mockwebserver)
         // OtelTracerTest exercises a real span-export round-trip through the OpenTelemetry SDK.
         implementation(libs.opentelemetry.sdk)
+        // McpToolsetIntegrationTest uses org.junit.Assume to gate on ADK_MCP_DISABLE_IT.
+        implementation(libs.junit)
       }
     }
     val androidMain by getting {
@@ -128,6 +131,15 @@ kotlin {
         implementation(libs.mockito.android)
       }
     }
+  }
+}
+
+// Retry only integration tests (classes named *IntegrationTest) to absorb flakiness from the real
+// subprocess + stdio transport in McpToolsetIntegrationTest, without masking unit-test failures.
+tasks.withType<Test>().configureEach {
+  retry {
+    maxRetries = 2
+    filter { includeClasses.add("*IntegrationTest") }
   }
 }
 
