@@ -194,4 +194,33 @@ class EventSerializationTest {
   fun anySerializer_jsonNullForNonNull_throws() {
     assertFailsWith<IllegalStateException> { adkJson.decodeFromString(AnySerializer, "null") }
   }
+
+  @Test
+  fun anyToJsonElement_jsonElementToAny_roundTripsPlainTree() {
+    // Integral numbers round-trip as Long and fractional numbers as Double.
+    val tree =
+      mapOf(
+        "s" to "text",
+        "n" to 42L,
+        "d" to 1.5,
+        "b" to true,
+        "nested" to mapOf("list" to listOf(1L, 2L, 3L)),
+      )
+
+    assertEquals(tree, jsonElementToAny(anyToJsonElement(tree)))
+  }
+
+  @Test
+  fun functionCall_throughAnyTreeBridge_roundTrips() {
+    val functionCall = FunctionCall(id = "call-1", name = "lookup", args = mapOf("q" to "weather"))
+
+    // The bridge A2A relies on: a @Serializable type <-> a plain Map/List tree (DataPart payload).
+    val asMap =
+      jsonElementToAny(adkJson.encodeToJsonElement(FunctionCall.serializer(), functionCall))
+    assertTrue(asMap is Map<*, *>)
+
+    val decoded = adkJson.decodeFromJsonElement(FunctionCall.serializer(), anyToJsonElement(asMap))
+
+    assertEquals(functionCall, decoded)
+  }
 }
