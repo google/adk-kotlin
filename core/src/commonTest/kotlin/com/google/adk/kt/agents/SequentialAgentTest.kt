@@ -118,6 +118,32 @@ class SequentialAgentTest {
   }
 
   @Test
+  fun testSequentialResumable_emitsEndOfAgent() = runTest {
+    // Positive counterpart to testSequentialNotResumable_doesNotEmitEndOfAgent: in resumable mode
+    // the SequentialAgent emits a trailing end-of-agent marker once all children complete (so a
+    // resume knows the composite finished). Sub-agent end-of-agent markers come from the real agent
+    // run wrapper and are covered end-to-end in the transfer integration tests. Mirrors the
+    // resumable
+    // markers in Python ADK's
+    // tests/unittests/workflow/test_agent_transfer.py::test_auto_to_sequential.
+    val agent1 = DummyAgent("agent1", onRunAsync = { emit(createEvent("agent1", "msg1")) })
+    val agent2 = DummyAgent("agent2", onRunAsync = { emit(createEvent("agent2", "msg2")) })
+    val sequentialAgent = SequentialAgent(name = "seq", subAgents = listOf(agent1, agent2))
+
+    val context =
+      testInvocationContext(
+        session = session,
+        agent = DummyAgent("root"),
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+      )
+
+    val events = sequentialAgent.runAsync(context).toList()
+    val endOfAgentAuthors = events.filter { it.actions.endOfAgent }.map { it.author }
+
+    assertEquals(listOf("seq"), endOfAgentAuthors)
+  }
+
+  @Test
   fun testSequentialNotResumable_doesNotEmitEndOfAgent() = runTest {
     val agent1 = DummyAgent("agent1", onRunAsync = { emit(createEvent("agent1", "msg1")) })
 

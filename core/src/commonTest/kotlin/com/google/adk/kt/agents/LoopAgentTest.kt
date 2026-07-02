@@ -198,6 +198,22 @@ class LoopAgentTest {
   }
 
   @Test
+  fun testLoopResumable_emitsEndOfAgent() = runTest {
+    // Positive counterpart to testLoopNotResumable_doesNotEmitEndOfAgent: in resumable mode the
+    // LoopAgent emits a trailing end-of-agent marker once the loop finishes, so a resume knows the
+    // composite completed. Mirrors the resumable markers in Python ADK's
+    // tests/unittests/workflow/test_agent_transfer.py::test_auto_to_loop.
+    val agent1 = DummyAgent("agent1", onRunAsync = { emit(createEvent("agent1", "msg1")) })
+
+    val loopAgent = LoopAgent(name = "loop", subAgents = listOf(agent1), maxIterations = 1)
+
+    // createTestContext() is resumable.
+    val events = loopAgent.runAsync(createTestContext()).toList()
+
+    assertEquals(listOf("loop"), events.filter { it.actions.endOfAgent }.map { it.author })
+  }
+
+  @Test
   fun testLoopNotResumable_doesNotEmitEndOfAgent() = runTest {
     var count = 0
     val agent1 =
