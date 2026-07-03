@@ -25,7 +25,9 @@ interface Toolset : AutoCloseable {
   /**
    * Return all tools in the toolset based on the provided context.
    *
-   * @param readonlyContext Context used to filter tools available to the agent.
+   * @param readonlyContext Context used to filter tools available to the agent. Defaults to `null`,
+   *   meaning no filtering context is supplied and all tools in the toolset are returned. Toolsets
+   *   that do not filter by context may ignore this parameter.
    * @return A list of tools available under the specified context.
    */
   suspend fun getTools(readonlyContext: ReadonlyContext? = null): List<BaseTool>
