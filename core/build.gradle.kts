@@ -116,10 +116,8 @@ kotlin {
         implementation(libs.androidx.room.ktx)
       }
     }
-    // Host-test source set (was `androidUnitTest`); keep the existing source tree.
     val androidHostTest by getting {
       dependsOn(commonJvmAndroidTest)
-      kotlin.srcDir("src/androidUnitTest/kotlin")
       // See the `jvmTest` note: dedicated platform-test source dir for KSP-generated tools.
       kotlin.srcDir("src/jvmAndroidKspTest/kotlin")
       dependencies {
@@ -134,9 +132,7 @@ kotlin {
       }
     }
 
-    // Device-test source set (was `androidInstrumentedTest`); keep the existing source tree.
     val androidDeviceTest by getting {
-      kotlin.srcDir("src/androidInstrumentedTest/kotlin")
       dependencies {
         implementation(libs.androidx.compose.ui.test.junit4)
         implementation(libs.androidx.compose.ui.test.manifest)
@@ -148,16 +144,6 @@ kotlin {
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.mockito.android)
       }
-    }
-  }
-}
-
-// Host-test sources stay under src/androidUnitTest; surface that tree's fixture
-// assets to the Android host-test (Robolectric) AssetManager.
-androidComponents {
-  onVariants { variant ->
-    variant.hostTests.values.forEach { hostTest ->
-      hostTest.sources.assets?.addStaticSourceDirectory("src/androidUnitTest/assets")
     }
   }
 }
