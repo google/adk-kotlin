@@ -93,6 +93,69 @@ class AgentTransferIntegrationTest {
   }
 
   /**
+   * End-to-end counterpart to `findAgentToRun_candidateUnderWorkflowAgent_fallsBackToRoot`: root
+   * (an [LlmAgent]) transfers to a [SequentialAgent] whose child handles the first turn. On the
+   * second turn the child cannot host the conversation -- its ancestor is a workflow agent -- so
+   * routing falls back to the root. Mirrors Python ADK's
+   * `tests/unittests/workflow/test_agent_transfer.py::test_auto_to_sequential`
+   * (`is_resumable=False`).
+   */
+  @Test
+  fun runAsync_transferToAgentUnderWorkflow_secondTurnFallsBackToRoot() = runTest {
+    val rootModel =
+      DummyModel.createSequential(
+        "root-model",
+        listOf(
+          modelTransferToAgentResponse("seq"),
+          LlmResponse(content = modelMessage("root turn 2")),
+        ),
+      )
+    val rootAgent =
+      LlmAgent(
+        name = "root",
+        model = rootModel,
+        subAgents =
+          listOf(
+            SequentialAgent(
+              name = "seq",
+              subAgents =
+                listOf(
+                  LlmAgent(
+                    name = "child",
+                    model =
+                      DummyModel("child-model") {
+                        flowOf(LlmResponse(content = modelMessage("child response")))
+                      },
+                  )
+                ),
+            )
+          ),
+      )
+    val runner = InMemoryRunner(agent = rootAgent)
+
+    val turn1 =
+      simplifyEvents(
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t1")).toList()
+      )
+    val turn2 =
+      simplifyEvents(
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t2")).toList()
+      )
+
+    assertEquals(
+      listOf(
+        "root" to transferToAgentCallPart("seq"),
+        "root" to TRANSFER_TO_AGENT_RESPONSE_PART,
+        "child" to "child response",
+      ),
+      turn1,
+    )
+    // The child sits under a SequentialAgent, so it is not transferable; the next turn is the
+    // root's.
+    assertEquals(listOf("root" to "root turn 2"), turn2)
+  }
+
+  /**
    * Regression test for branch handling across turns. When a sub-agent keeps handling follow-up
    * turns after a transfer, it must still see its own earlier replies. The model receives the
    * conversation history filtered by the running agent's branch, so the sub-agent has to run on the
