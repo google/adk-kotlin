@@ -13,13 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+@file:OptIn(ExperimentalResumabilityFeature::class)
+
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LoopAgent
+import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmRequest
@@ -154,6 +160,173 @@ class AgentTransferIntegrationTest {
     // root's.
     assertEquals(listOf("root" to "root turn 2"), turn2)
   }
+
+  /**
+   * Resumable variant of [runAsync_transferToAgentUnderWorkflow_secondTurnFallsBackToRoot]: the
+   * LlmAgent-ancestry routing rule holds with resumability enabled too. State-checkpoint and
+   * end-of-agent events carry no content and are dropped by [simplifyEvents], leaving just the
+   * content-bearing routing. Mirrors Python ADK's
+   * `tests/unittests/workflow/test_agent_transfer.py::test_auto_to_sequential`
+   * (`is_resumable=True`).
+   */
+  @Test
+  fun runAsync_resumable_transferToAgentUnderWorkflow_secondTurnFallsBackToRoot() = runTest {
+    val rootModel =
+      DummyModel.createSequential(
+        "root-model",
+        listOf(
+          modelTransferToAgentResponse("seq"),
+          LlmResponse(content = modelMessage("root turn 2")),
+        ),
+      )
+    val rootAgent =
+      LlmAgent(
+        name = "root",
+        model = rootModel,
+        subAgents =
+          listOf(
+            SequentialAgent(
+              name = "seq",
+              subAgents =
+                listOf(
+                  LlmAgent(
+                    name = "child",
+                    model =
+                      DummyModel("child-model") {
+                        flowOf(LlmResponse(content = modelMessage("child response")))
+                      },
+                  )
+                ),
+            )
+          ),
+      )
+    val runner = resumableRunner(rootAgent)
+
+    runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t1")).toList()
+    val turn2 =
+      simplifyEvents(
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t2")).toList()
+      )
+
+    assertEquals(listOf("root" to "root turn 2"), turn2)
+  }
+
+  /**
+   * Resumable auto -> auto -> single: the leaf handles turn 1 but cannot host turn 2
+   * (`disallowTransferToParent`), so routing falls back to the transferable intermediate `mid`, not
+   * the root. Mirrors Python ADK's
+   * `tests/unittests/workflow/test_agent_transfer.py::test_auto_to_auto_to_single`
+   * (`is_resumable=True`).
+   */
+  @Test
+  fun runAsync_resumable_transferChainToNonTransferableLeaf_secondTurnGoesToIntermediate() =
+    runTest {
+      val rootModel =
+        DummyModel.createSequential("root-model", listOf(modelTransferToAgentResponse("mid")))
+      val midModel =
+        DummyModel.createSequential(
+          "mid-model",
+          listOf(
+            modelTransferToAgentResponse("leaf"),
+            LlmResponse(content = modelMessage("mid turn 2")),
+          ),
+        )
+      val rootAgent =
+        LlmAgent(
+          name = "root",
+          model = rootModel,
+          subAgents =
+            listOf(
+              LlmAgent(
+                name = "mid",
+                model = midModel,
+                subAgents =
+                  listOf(
+                    LlmAgent(
+                      name = "leaf",
+                      model =
+                        DummyModel("leaf-model") {
+                          flowOf(LlmResponse(content = modelMessage("leaf response")))
+                        },
+                      disallowTransferToParent = true,
+                      disallowTransferToPeers = true,
+                    )
+                  ),
+              )
+            ),
+        )
+      val runner = resumableRunner(rootAgent)
+
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t1")).toList()
+      val turn2 =
+        simplifyEvents(
+          runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t2")).toList()
+        )
+
+      assertEquals(listOf("mid" to "mid turn 2"), turn2)
+    }
+
+  /**
+   * Resumable auto -> auto -> auto that transfers back to the root: the chain ends at the root,
+   * which then handles the second turn too. Mirrors Python ADK's
+   * `tests/unittests/workflow/test_agent_transfer.py::test_transfer_cyclic_loop`
+   * (`is_resumable=True`).
+   */
+  @Test
+  fun runAsync_resumable_transferLoopBackToRoot_secondTurnHandledByRoot() = runTest {
+    val rootModel =
+      DummyModel.createSequential(
+        "root-model",
+        listOf(
+          modelTransferToAgentResponse("sub1"),
+          LlmResponse(content = modelMessage("response from root")),
+          LlmResponse(content = modelMessage("response 2 from root")),
+        ),
+      )
+    val rootAgent =
+      LlmAgent(
+        name = "root",
+        model = rootModel,
+        subAgents =
+          listOf(
+            LlmAgent(
+              name = "sub1",
+              model =
+                DummyModel.createSequential(
+                  "sub1-model",
+                  listOf(modelTransferToAgentResponse("sub2")),
+                ),
+            ),
+            LlmAgent(
+              name = "sub2",
+              model =
+                DummyModel.createSequential(
+                  "sub2-model",
+                  listOf(modelTransferToAgentResponse("root")),
+                ),
+            ),
+          ),
+      )
+    val runner = resumableRunner(rootAgent)
+
+    runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t1")).toList()
+    val turn2 =
+      simplifyEvents(
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("t2")).toList()
+      )
+
+    assertEquals(listOf("root" to "response 2 from root"), turn2)
+  }
+
+  private fun resumableRunner(rootAgent: LlmAgent): InMemoryRunner =
+    InMemoryRunner(
+      app =
+        App(
+          appName = "test_app",
+          rootAgent = rootAgent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+    )
 
   /**
    * Regression test for branch handling across turns. When a sub-agent keeps handling follow-up
