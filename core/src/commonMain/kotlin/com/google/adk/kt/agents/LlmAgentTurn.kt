@@ -44,6 +44,7 @@ import com.google.adk.kt.tools.VertexAiSearchAgentTool
 import com.google.adk.kt.tools.VertexAiSearchTool
 import com.google.adk.kt.tools.createGoogleSearchAgent
 import com.google.adk.kt.tools.createVertexAiSearchAgent
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
@@ -124,10 +125,12 @@ internal class LlmAgentTurn(
     // response here and won't re-run the parent's still-pending call. Mirrors Python ADK 1.x
     // `base_llm_flow._run_one_step_async`.
     //
-    // Ordering invariant with `shouldPause()` above: a paused long-running call always has its
-    // placeholder response persisted (and a resumed one arrives as a `FunctionResponse`, not a
-    // dangling call), so by this point a last function-call event is always a genuinely unresolved
-    // call -- never a long-running pause, which `shouldPause()` has already returned for.
+    // Ordering invariant with `shouldPause()` above: it has already returned for a still-pending
+    // long-running pause (whether or not a placeholder response was persisted; a resumed one
+    // arrives
+    // as a user `FunctionResponse`, not a dangling call), so by this point a last function-call
+    // event
+    // is always a genuinely unresolved call (e.g. a transfer) -- never a long-running pause.
     val events = context.getEvents(currentInvocation = true, currentBranch = true)
     val lastEvent = events.lastOrNull()
     if (context.isResumable && lastEvent != null && lastEvent.functionCalls().isNotEmpty()) {
@@ -488,7 +491,22 @@ internal class LlmAgentTurn(
     if (!isResumable) return false
     val events = getEvents(currentInvocation = true, currentBranch = true)
     if (events.size < 2) return false
-    return shouldPauseInvocation(events.last()) || shouldPauseInvocation(events[events.size - 2])
+    // A user-authored function-response that resolves the pending long-running call is a resume
+    // (the
+    // awaited result arrived), not the tool's own same-turn placeholder -- so proceed and re-invoke
+    // the model rather than pausing again. This is what lets a suppressed-response long-running
+    // tool
+    // (e.g. request_input, whose Unit return emits no placeholder FR) resume: its resumed response
+    // sits directly after the still-pending FC. An agent-authored placeholder FR still pauses.
+    val last = events.last()
+    if (last.author == Role.USER && last.functionResponses().isNotEmpty()) {
+      val pending = events[events.size - 2]
+      val pausedIds =
+        pending.functionCalls().mapNotNull { it.id }.filter { it in pending.longRunningToolIds }
+      val resolvedIds = last.functionResponses().mapNotNull { it.id }.toSet()
+      if (pausedIds.isNotEmpty() && resolvedIds.containsAll(pausedIds)) return false
+    }
+    return shouldPauseInvocation(last) || shouldPauseInvocation(events[events.size - 2])
   }
 }
 

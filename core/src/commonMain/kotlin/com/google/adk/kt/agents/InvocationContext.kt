@@ -437,20 +437,20 @@ data class InvocationContext(
           recoveredResult
         }
 
-      // For a long-running tool, coerce `Unit`/`null`/empty Map to `{}` explicitly so the FR
-      // event always carries payload `{}` for the "no response yet" cases -- matching Java's
-      // `LongRunningFunctionTool` semantics. The function-call event carries `longRunningToolIds`,
-      // which triggers the resumable-mode pause gate so the invocation can be resumed later via a
-      // user-injected function-response. See [BaseTool.isLongRunning].
-      if (tool.isLongRunning) {
-        val isNullOrUnit = toolResult === Unit || (toolResult as Any?) == null
-        val isEmptyMap = toolResult is Map<*, *> && toolResult.isEmpty()
-        if (isNullOrUnit || isEmptyMap) {
-          toolResult = emptyMap<String, Any>()
-        }
-      } else if (toolResult === Unit) {
-        // For regular tools, coerce `Unit` to `{}` so the wire form is clean (never leak the
-        // `kotlin.Unit` sentinel as `{result: kotlin.Unit}`).
+      // A long-running tool returning `Unit` defers: suppress the FR event so the function-call
+      // event (which carries `longRunningToolIds`, hence is the turn's final response) ends the
+      // turn
+      // instead of re-invoking the model with an empty payload -- otherwise a tool that keeps
+      // requesting input (e.g. request_input) loops. Every other value is emitted as a response.
+      // Done before `runAfterToolCallbacks` to avoid wrapping `Unit` as `{result: Unit}`. See
+      // [BaseTool.isLongRunning].
+      if (tool.isLongRunning && toolResult === Unit) {
+        return@withSpan null
+      }
+      // Coerce `Unit` (regular tools) and a `null` leaked by a Java tool that breaks the non-null
+      // `run` contract to `{}` -- an emitted empty response, matching Java. Only a long-running
+      // tool's `Unit` defers (handled above).
+      if (toolResult === Unit || (toolResult as Any?) == null) {
         toolResult = emptyMap<String, Any>()
       }
 

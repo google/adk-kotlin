@@ -26,11 +26,13 @@ import com.google.adk.kt.types.FunctionDeclaration
  * @property description The description of the tool.
  * @property isLongRunning Whether the tool's final result will be delivered out-of-band. When
  *   `true`, the framework marks the call as long-running and uses the tool's return value as the
- *   function-response payload. A `Unit` return is coerced to an empty Map so the wire form is
- *   clean; the function-response event is still emitted (matching Java's `LongRunningFunctionTool`
- *   semantics). The function-call event carries the call id in `longRunningToolIds`, which triggers
- *   the resumable-mode pause gate so the invocation can be resumed later via a user-injected
- *   function-response.
+ *   function-response payload. Returning `Unit` means "no response yet": the FR event is suppressed
+ *   so the function-call event (which carries the call id in `longRunningToolIds` and is thus the
+ *   turn's final response) ends the turn without re-invoking the model. A non-`Unit` return --
+ *   including an explicit empty `Map` -- is treated as a real response and emitted. (`Unit`
+ *   suppression aligns with Python; Java instead always emits `{}`.) The `longRunningToolIds` id
+ *   also drives the resumable-mode pause gate so the invocation can be resumed later via a
+ *   user-injected function-response.
  * @property customMetadata The custom metadata of the tool.
  */
 abstract class BaseTool(

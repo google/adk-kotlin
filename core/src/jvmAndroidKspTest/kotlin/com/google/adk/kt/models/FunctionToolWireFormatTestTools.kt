@@ -18,7 +18,7 @@ package com.google.adk.kt.models
 
 import com.google.adk.kt.annotations.Tool
 
-// `@Tool` fixtures for FunctionToolWireFormatTest; the KSP `FunctionToolGenerator` emits a
+// `@Tool` fixtures shared by the `jvmAndroidKspTest` tests; the KSP `FunctionToolGenerator` emits a
 // `<Name>Tool` `FunctionTool` subclass for each, built in a per-backend library.
 
 @Tool fun returnsInt(): Int = 42
@@ -34,6 +34,11 @@ import com.google.adk.kt.annotations.Tool
 @Tool fun returnsScoreboard(): Map<String, Int> = mapOf("alice" to 100, "bob" to 87, "carol" to 42)
 
 @Tool fun returnsUnit() {}
+
+// A long-running tool returning `Unit` ("no response yet"), e.g. an HITL tool awaiting input.
+// Drives KspLongRunningToolIntegrationTest: the generated `execute` returns the `Unit` singleton,
+// which the framework treats as a signal to suppress the function-response event.
+@Tool(isLongRunning = true) fun longRunningReturnsUnit() {}
 
 @Tool fun requiresName(name: String): String = "hello, $name"
 

@@ -713,13 +713,33 @@ class InvocationContextTest {
     }
 
   @Test
-  fun executeSingleFunctionCall_longRunningToolReturnsUnit_buildsEmptyResponseEvent() = runTest {
-    // A long-running tool returning `Unit` (the "no response yet" Kotlin idiom) emits an FR event
-    // with payload `{}`, matching Java's `LongRunningFunctionTool` null/`{}` semantics. The
-    // framework coerces the `Unit` singleton to `emptyMap()` so the wire form never leaks the
-    // Kotlin sentinel as `{result: kotlin.Unit}`. The FC event carries `longRunningToolIds`, so
-    // the agent loop terminates after the FR is emitted.
+  fun executeSingleFunctionCall_longRunningToolReturnsUnit_suppressesResponseEvent() = runTest {
+    // A `Unit` return ("no response yet") suppresses the FR event: the framework returns `null` so
+    // the long-running FC (the turn's final response) ends the turn instead of re-emitting an empty
+    // placeholder.
     val tool = DummyTool(name = "test_tool", isLongRunning = true) { _, _ -> Unit }
+
+    val context =
+      testInvocationContext(
+        agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
+        invocationId = "inv",
+      )
+
+    val result =
+      context.executeSingleFunctionCall(
+        FunctionCall(name = "test_tool", args = emptyMap(), id = "call_id"),
+        mapOf("test_tool" to tool),
+      )
+
+    assertNull(result)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_longRunningToolReturnsNull_emitsEmptyResponseEvent() = runTest {
+    // A Java-implemented tool can break the non-null `run(): Any` contract and return `null`.
+    // Unlike
+    // `Unit` (which defers/suppresses), `null` is coerced to `{}` and emitted, matching Java.
+    val tool = DummyTool(name = "test_tool", isLongRunning = true) { _, _ -> forceNull() }
 
     val context =
       testInvocationContext(
@@ -738,6 +758,11 @@ class InvocationContextTest {
     assertNotNull(functionResponse)
     assertEquals(emptyMap<String, Any>(), functionResponse!!.response)
   }
+
+  /**
+   * Produces a `null` typed as a non-null [T] (via erasure), simulating a Java platform-type leak.
+   */
+  @Suppress("UNCHECKED_CAST") private fun <T> forceNull(): T = null as T
 
   @Test
   fun executeSingleFunctionCall_longRunningToolReturnsEmptyMap_buildsEmptyResponseEvent() =

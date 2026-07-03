@@ -57,41 +57,48 @@ import kotlinx.coroutines.test.runTest
  * [BaseTool.isLongRunning] -- is:
  * - A long-running tool is a regular tool whose [BaseTool.isLongRunning] flag is `true`.
  * - The tool's return value becomes the function-response payload. The framework adds the call's id
- *   to the model event's `longRunningToolIds`. A `Unit` return is coerced to an empty Map so the
- *   wire form is clean; the FR event is still emitted (matching Java's `LongRunningFunctionTool`
- *   semantics).
+ *   to the model event's `longRunningToolIds`. Returning `Unit` means "no response yet": the FR
+ *   event is suppressed so the FC event (the turn's final response) ends the turn. A non-`Unit`
+ *   return -- including an empty Map -- is emitted as the FR payload. (The `Unit` suppression
+ *   aligns with Python's intent, where a long-running tool that yields no response suppresses the
+ *   FR; Java instead always emits an empty `{}`.)
  * - The caller resumes by sending a follow-up `runAsync(newMessage = userFunctionResponse(...))`.
  *   The runner routes it to the agent that issued the call and re-invokes the model with the
  *   updated history. The original tool is not re-executed.
  */
 class LongRunningToolIntegrationTest {
 
-  // The four scenarios immediately below cover every combination of `is_resumable` x
-  // long-running tool return value (empty vs non-empty dict). `Unit` and an empty Map both
-  // produce the same observable behaviour as any other empty-dict return (matching Java's
-  // `LongRunningFunctionTool` semantics). `end_of_agent` is short for "the
-  // framework emits an event with `actions.endOfAgent = true` for this agent."
+  // The scenarios immediately below cover every combination of `is_resumable` x long-running tool
+  // return value. `Unit` ("no response yet") suppresses the FR event, so the turn ends on the FC
+  // event alone; a non-`Unit` return -- an empty Map or a dict -- is emitted as the FR payload.
+  // (The `Unit` suppression aligns with Python's intent; Java always emits an empty `{}`.)
+  // `end_of_agent` is short for "the framework emits an event with `actions.endOfAgent = true`."
   //
   // | # | resumable | tool return       | calls | events         | end_of_agent |
   // | - | --------- | ----------------- | ----- | -------------- | ------------ |
-  // | 1 | off       | Unit/{}           | 2     | [FC, FR, text] | n/a          |
-  // | 2 | off       | {status: pending} | 2     | [FC, FR, text] | n/a          |
-  // | 3 | on        | Unit/{}           | 1     | [FC, FR]       | suppressed   |
-  // | 4 | on        | {status: pending} | 1     | [FC, FR]       | suppressed   |
+  // | 1 | off       | Unit              | 1     | [FC]           | n/a          |
+  // | 2 | off       | {} (empty map)    | 2     | [FC, FR, text] | n/a          |
+  // | 3 | off       | {status: pending} | 2     | [FC, FR, text] | n/a          |
+  // | 4 | on        | Unit              | 1     | [FC]           | suppressed   |
+  // | 5 | on        | {status: pending} | 1     | [FC, FR]       | suppressed   |
   //
-  // For non-resumable mode (1, 2) the framework never emits `end_of_agent` at all -- the marker
-  // only exists in resumable mode. For resumable mode (3, 4) the marker is suppressed by the
-  // pause gates in `LlmAgent.runAsyncImpl` so the agent state stays live for an eventual resume.
+  // A `Unit` return (1, 4) suppresses the FR: the FC event carries `longRunningToolIds` and is
+  // therefore `isFinalResponse`, so the turn ends without re-invoking the model -- this is what
+  // stops a HITL tool (e.g. request_input) from looping in non-resumable mode. For non-resumable
+  // mode (1-3) the framework never emits `end_of_agent`. For resumable mode (4, 5) the marker is
+  // suppressed by the pause gates in `LlmAgent.runAsyncImpl` so the agent state stays live for an
+  // eventual resume.
 
   /**
-   * Non-resumable + `Unit`-returning long-running tool: `Unit` is coerced to `{}` and emitted as
-   * the function-response payload (matching Java's `LongRunningFunctionTool` semantics). The model
-   * is then re-invoked once with the empty placeholder in history and acknowledges. Across the
-   * turn, the model is invoked twice and the tool is invoked once. No `endOfAgent` (never emitted
-   * in non-resumable mode).
+   * Non-resumable + `Unit`-returning long-running tool: `Unit` means "no response yet", so the
+   * framework suppresses the function-response event. The function-call event carries
+   * `longRunningToolIds` and is therefore the turn's final response, so the model is NOT re-invoked
+   * -- the turn ends after `[FC]`. Across the turn the model is invoked once and the tool once.
+   * This is the behaviour that stops a HITL tool (e.g. request_input) from looping. No `endOfAgent`
+   * (never emitted in non-resumable mode).
    */
   @Test
-  fun runAsync_longRunningToolReturnsUnit_emitsEmptyFunctionResponseAndAcknowledges() = runTest {
+  fun runAsync_longRunningToolReturnsUnit_suppressesFunctionResponseAndEndsTurn() = runTest {
     val callId = "lr_call_unit"
     var modelInvocations = 0
     var toolInvocations = 0
@@ -111,12 +118,14 @@ class LongRunningToolIntegrationTest {
 
     val modelEvent = events.first { event -> event.functionCalls().any { it.id == callId } }
     assertEquals(setOf(callId), modelEvent.longRunningToolIds)
-    val functionResponse = events.first { event ->
-      event.functionResponses().any { it.id == callId }
-    }
-    assertEquals(emptyMap<String, Any>(), functionResponse.functionResponses().single().response)
-    assertEquals("acknowledged", events.last().content?.parts?.singleOrNull()?.text)
-    assertEquals(2, modelInvocations)
+    // The FR event is suppressed: no function-response for the call is emitted.
+    assertTrue(
+      events.none { event -> event.functionResponses().any { it.id == callId } },
+      "a Unit-returning long-running tool must not emit a function-response event",
+    )
+    // The model is not re-invoked, so no acknowledgement text is produced.
+    assertTrue(events.none { it.content?.parts?.any { p -> p.text == "acknowledged" } == true })
+    assertEquals(1, modelInvocations, "the FC is final, so the model is not re-invoked")
     assertEquals(1, toolInvocations)
     assertTrue(
       events.none { it.actions.endOfAgent },
@@ -170,15 +179,13 @@ class LongRunningToolIntegrationTest {
 
   /**
    * Resumable-mode counterpart of
-   * [runAsync_longRunningToolReturnsUnit_emitsEmptyFunctionResponseAndAcknowledges]. `Unit` is
-   * coerced to `{}` and emitted as the FR payload (matching Java's `LongRunningFunctionTool`
-   * semantics). Externally-observable events are `[FC, FR]`; the model is invoked only once because
-   * `LlmAgentTurn.shouldPause` short-circuits the second step when it sees the long-running FC in
-   * `events[-2:]`. `endOfAgent` is suppressed by the resumable pause gates so the agent state stays
-   * "live" for an eventual resume.
+   * [runAsync_longRunningToolReturnsUnit_suppressesFunctionResponseAndEndsTurn]. `Unit` suppresses
+   * the FR event, so externally-observable events are just `[FC]`; the model is invoked only once.
+   * `endOfAgent` is suppressed by the resumable pause gates so the agent state stays "live" for an
+   * eventual resume.
    */
   @Test
-  fun runAsync_resumable_longRunningToolReturnsUnit_emitsEmptyFunctionResponseAndPauses() =
+  fun runAsync_resumable_longRunningToolReturnsUnit_suppressesFunctionResponseAndPauses() =
     runTest {
       val callId = "lr_call_unit_resumable"
       var modelInvocations = 0
@@ -214,12 +221,15 @@ class LongRunningToolIntegrationTest {
       val agentEvents = events.filter { it.author == AGENT_NAME }
       val fcEvent = agentEvents.first { it.functionCalls().any { call -> call.id == callId } }
       assertEquals(setOf(callId), fcEvent.longRunningToolIds)
-      val frEvent = agentEvents.first { it.functionResponses().any { resp -> resp.id == callId } }
-      assertEquals(emptyMap<String, Any>(), frEvent.functionResponses().single().response)
+      // The FR event is suppressed for a `Unit` return.
+      assertTrue(
+        agentEvents.none { it.functionResponses().any { resp -> resp.id == callId } },
+        "a Unit-returning long-running tool must not emit a function-response event",
+      )
       assertEquals(
         1,
         modelInvocations,
-        "the flow's pause-check at step 2 prevents the second model invocation",
+        "the long-running FC is final, so the model is not re-invoked",
       )
       assertEquals(1, toolInvocations)
       assertTrue(
@@ -324,9 +334,9 @@ class LongRunningToolIntegrationTest {
   }
 
   /**
-   * A long-running tool returning an empty map emits an FR event with that payload (matching Java's
-   * `LongRunningFunctionTool` semantics). The framework re-invokes the model with the empty
-   * placeholder in history and acknowledges.
+   * A long-running tool returning an empty map (a non-`Unit` value) emits an FR event with that
+   * payload -- unlike a `Unit` return, which is suppressed. The framework re-invokes the model with
+   * the empty placeholder in history and acknowledges.
    */
   @Test
   fun runAsync_longRunningToolReturnsEmptyMap_emitsFunctionResponseAndContinues() = runTest {
@@ -429,11 +439,12 @@ class LongRunningToolIntegrationTest {
     }
 
   /**
-   * Scenario: the model issues a long-running call and a regular call in parallel. Both FRs are
-   * delivered immediately (the long-running tool's `Unit` is coerced to `{}`). The model is
-   * re-invoked once with both FRs and acknowledges. Later the caller injects the real FR for the
-   * long-running call; on resume the model sees the real result (the prior `{}` placeholder is
-   * merged-replaced by `rearrangeEventsForLatestFunctionResponse`).
+   * Scenario: the model issues a long-running call and a regular call in parallel. The long-running
+   * tool returns an empty-map placeholder (a non-`Unit` return, so its FR IS emitted), so both FRs
+   * are delivered immediately. The model is re-invoked once with both FRs and acknowledges. Later
+   * the caller injects the real FR for the long-running call; on resume the model sees the real
+   * result (the prior `{}` placeholder is merged-replaced by
+   * `rearrangeEventsForLatestFunctionResponse`).
    */
   @Test
   fun runAsync_longRunningPlusParallelRegularTool_resumeDeliversBothResponses() = runTest {
@@ -470,7 +481,7 @@ class LongRunningToolIntegrationTest {
               isLongRunning = true,
               onRun = { _, _ ->
                 lrInvocations++
-                Unit
+                emptyMap<String, Any>()
               },
             ),
             DummyTool(
