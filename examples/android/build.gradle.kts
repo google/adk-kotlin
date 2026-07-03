@@ -15,8 +15,8 @@
  */
 
 plugins {
+  // Kotlin is compiled by AGP's built-in Kotlin support (no kotlin-android plugin).
   id("com.android.application")
-  kotlin("android")
 }
 
 // This sample transitively depends on androidx.core:core:1.16.0 (via the ML Kit GenAI / Gemini Nano

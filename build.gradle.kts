@@ -17,17 +17,21 @@
 plugins {
   // Define plugins but do not apply them to the root project
   alias(libs.plugins.dokka)
-  kotlin("jvm") version "2.1.20" apply false
-  kotlin("multiplatform") version "2.1.20" apply false
-  kotlin("android") version "2.1.20" apply false
-  id("com.android.library") version "8.13.0" apply false
-  id("com.android.application") version "8.13.0" apply false
+  kotlin("jvm") version "2.3.21" apply false
+  kotlin("multiplatform") version "2.3.21" apply false
+  id("com.android.library") version "9.2.1" apply false
+  id("com.android.application") version "9.2.1" apply false
+  id("com.android.kotlin.multiplatform.library") version "9.2.1" apply false
   id("com.google.cloud.artifactregistry.gradle-plugin") version "2.2.4" apply false
-  kotlin("plugin.serialization") version "2.1.20" apply false
+  kotlin("plugin.serialization") version "2.3.21" apply false
   alias(libs.plugins.gradle.test.retry) apply false
 }
 
 val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
+// Kotlin language and API level for emitted metadata/bytecode. Pinned below the
+// compiler version so published artifacts stay consumable by projects on this
+// Kotlin version and downstream apps aren't forced to upgrade.
+val kotlinCompatVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_1
 val androidCompileSdk = providers.gradleProperty("androidCompileSdk").getOrElse("34").toInt()
 val androidMinSdk = providers.gradleProperty("androidMinSdk").getOrElse("26").toInt()
 
@@ -57,22 +61,26 @@ subprojects {
     }
   }
 
-  plugins.withId("org.jetbrains.kotlin.android") {
-    configure<org.jetbrains.kotlin.gradle.dsl.KotlinAndroidProjectExtension> {
-      jvmToolchain(jdkVersion)
-    }
-  }
-
   plugins.withId("org.jetbrains.kotlin.multiplatform") {
     configure<org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension> {
       jvmToolchain(jdkVersion)
     }
   }
 
+  // AGP built-in Kotlin: the Android modules no longer apply kotlin-android, so
+  // pin the Java/Kotlin target via `compileOptions` (Kotlin's jvmTarget follows
+  // `targetCompatibility`).
+  val androidJavaVersion = JavaVersion.toVersion(jdkVersion)
+
   plugins.withId("com.android.library") {
-    configure<com.android.build.gradle.LibraryExtension> {
+    configure<com.android.build.api.dsl.LibraryExtension> {
       compileSdk = androidCompileSdk
       defaultConfig { minSdk = androidMinSdk }
+
+      compileOptions {
+        sourceCompatibility = androidJavaVersion
+        targetCompatibility = androidJavaVersion
+      }
 
       packaging {
         resources {
@@ -83,10 +91,23 @@ subprojects {
     }
   }
 
+  plugins.withId("com.android.application") {
+    configure<com.android.build.api.dsl.ApplicationExtension> {
+      compileOptions {
+        sourceCompatibility = androidJavaVersion
+        targetCompatibility = androidJavaVersion
+      }
+    }
+  }
+
   tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
     compilerOptions {
       optIn.add("kotlin.time.ExperimentalTime")
       freeCompilerArgs.add("-Xskip-metadata-version-check")
+      // Compile with the current Kotlin toolchain but emit metadata/bytecode
+      // for kotlinCompatVersion so downstream consumers aren't forced to upgrade.
+      languageVersion.set(kotlinCompatVersion)
+      apiVersion.set(kotlinCompatVersion)
     }
   }
 

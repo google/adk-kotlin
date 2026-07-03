@@ -17,14 +17,28 @@
 plugins {
   kotlin("multiplatform")
   kotlin("plugin.serialization")
-  id("com.android.library")
+  id("com.android.kotlin.multiplatform.library")
   alias(libs.plugins.ksp)
   alias(libs.plugins.gradle.test.retry)
   id("maven-publish")
 }
 
 kotlin {
-  androidTarget { publishLibraryVariants("release") }
+  // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
+  android {
+    namespace = "com.google.adk"
+    compileSdk = rootProject.extra["androidCompileSdk"] as Int
+    minSdk = rootProject.extra["androidMinSdk"] as Int
+
+    // Host-side (Robolectric) unit tests; opt-in with the new plugin.
+    withHostTest {
+      isIncludeAndroidResources = true
+      isReturnDefaultValues = true
+    }
+
+    // Device-side (instrumented) tests; opt-in with the new plugin.
+    withDeviceTest { instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+  }
   jvm()
 
   sourceSets {
@@ -102,8 +116,10 @@ kotlin {
         implementation(libs.androidx.room.ktx)
       }
     }
-    val androidUnitTest by getting {
+    // Host-test source set (was `androidUnitTest`); keep the existing source tree.
+    val androidHostTest by getting {
       dependsOn(commonJvmAndroidTest)
+      kotlin.srcDir("src/androidUnitTest/kotlin")
       // See the `jvmTest` note: dedicated platform-test source dir for KSP-generated tools.
       kotlin.srcDir("src/jvmAndroidKspTest/kotlin")
       dependencies {
@@ -118,7 +134,9 @@ kotlin {
       }
     }
 
-    val androidInstrumentedTest by getting {
+    // Device-test source set (was `androidInstrumentedTest`); keep the existing source tree.
+    val androidDeviceTest by getting {
+      kotlin.srcDir("src/androidInstrumentedTest/kotlin")
       dependencies {
         implementation(libs.androidx.compose.ui.test.junit4)
         implementation(libs.androidx.compose.ui.test.manifest)
@@ -134,6 +152,16 @@ kotlin {
   }
 }
 
+// Host-test sources stay under src/androidUnitTest; surface that tree's fixture
+// assets to the Android host-test (Robolectric) AssetManager.
+androidComponents {
+  onVariants { variant ->
+    variant.hostTests.values.forEach { hostTest ->
+      hostTest.sources.assets?.addStaticSourceDirectory("src/androidUnitTest/assets")
+    }
+  }
+}
+
 // Retry only integration tests (classes named *IntegrationTest) to absorb flakiness from the real
 // subprocess + stdio transport in McpToolsetIntegrationTest, without masking unit-test failures.
 tasks.withType<Test>().configureEach {
@@ -141,40 +169,6 @@ tasks.withType<Test>().configureEach {
     maxRetries = 2
     filter { includeClasses.add("*IntegrationTest") }
   }
-}
-
-android {
-  namespace = "com.google.adk"
-
-  // Reuse the test image bundled with the unit tests (androidUnitTest) in the instrumented
-  // tests as well, so it gets packaged into the androidTest APK and is readable via the
-  // instrumentation context's AssetManager.
-  sourceSets { getByName("androidTest") { assets.srcDir("src/androidUnitTest/assets") } }
-
-  // The instrumentation tests need compileSdk >= 35, so pass -PandroidCompileSdk=35:
-  //   ./gradlew :google-adk-kotlin-core:assembleDebugAndroidTest -PandroidCompileSdk=35
-  //   ./gradlew :google-adk-kotlin-core:connectedDebugAndroidTest -PandroidCompileSdk=35
-  testOptions {
-
-    // Injected into the generated test manifest (libraries have no
-    // targetSdk). This avoids displaying a warning saying that the app
-    // was built for an older version of android
-    targetSdk = rootProject.extra["androidCompileSdk"] as Int
-
-    unitTests {
-      isReturnDefaultValues = true
-      isIncludeAndroidResources = true
-    }
-  }
-
-  defaultConfig {
-    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    testApplicationId = "com.google.adk.kt.test"
-  }
-
-  // Required so the KMP `androidRelease` publication picks up sources. The
-  // Dokka-backed javadoc jar is attached by the root build.gradle.kts.
-  publishing { singleVariant("release") { withSourcesJar() } }
 }
 
 // Coordinates the Kotlin Multiplatform plugin uses for the publications it
@@ -195,11 +189,12 @@ publishing {
 }
 
 dependencies {
-  // Run the KSP `FunctionTool` processor on the JVM and Android unit-test compilations so the
-  // `jvmAndroidKspTest` `@Tool` fixtures generate their `FunctionTool` subclasses.
+  // Run the KSP `FunctionTool` processor on the JVM and Android host-test compilations so the
+  // `jvmAndroidKspTest` `@Tool` fixtures generate their `FunctionTool` subclasses. The
+  // single-variant
+  // KMP Android library plugin exposes just `kspAndroidHostTest`.
   add("kspJvmTest", project(":google-adk-kotlin-processor"))
-  add("kspAndroidTestDebug", project(":google-adk-kotlin-processor"))
-  add("kspAndroidTestRelease", project(":google-adk-kotlin-processor"))
+  add("kspAndroidHostTest", project(":google-adk-kotlin-processor"))
 }
 
 // Room's annotation processor runs via KSP. Wire it only against the Android target since the
@@ -209,3 +204,11 @@ dependencies { add("kspAndroid", libs.androidx.room.compiler) }
 // Export the Room schema so migrations can be validated/generated. Baselines are committed under
 // core/schemas (the same directory the Blaze build writes to via -Aroom.schemaLocation).
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
+
+// Gradle 9 strictly validates task dependencies, and AGP's Android lint tasks
+// read the KSP-generated sources; declare the dependency explicitly.
+val kspTasks = tasks.matching { it.name.startsWith("ksp") }
+
+tasks
+  .matching { it.name.startsWith("lintAnalyze") || it.name.endsWith("LintModel") }
+  .configureEach { dependsOn(kspTasks) }

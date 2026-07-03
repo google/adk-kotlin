@@ -16,7 +16,7 @@
 
 plugins {
   kotlin("multiplatform")
-  id("com.android.library")
+  id("com.android.kotlin.multiplatform.library")
   id("maven-publish")
 }
 
@@ -28,7 +28,12 @@ val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
 
 kotlin {
   jvmToolchain(maxOf(21, jdkVersion))
-  androidTarget { publishLibraryVariants("release") }
+  // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
+  android {
+    namespace = "com.google.adk.litertlm"
+    compileSdk = rootProject.extra["androidCompileSdk"] as Int
+    minSdk = rootProject.extra["androidMinSdk"] as Int
+  }
   jvm()
 
   sourceSets {
@@ -56,25 +61,7 @@ kotlin {
       dependsOn(commonJvmAndroidMain)
       dependencies { implementation(libs.google.ai.edge.litertlm.android) }
     }
-    val androidUnitTest by getting { dependsOn(commonJvmAndroidTest) }
   }
-}
-
-android {
-  namespace = "com.google.adk.litertlm"
-
-  testOptions {
-    targetSdk = rootProject.extra["androidCompileSdk"] as Int
-
-    unitTests {
-      isReturnDefaultValues = true
-      isIncludeAndroidResources = true
-    }
-  }
-
-  // Required so the KMP `androidRelease` publication picks up sources. The
-  // Dokka-backed javadoc jar is attached by the root build.gradle.kts.
-  publishing { singleVariant("release") { withSourcesJar() } }
 }
 
 // Coordinates the Kotlin Multiplatform plugin uses for the publications it

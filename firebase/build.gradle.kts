@@ -15,9 +15,9 @@
  */
 
 plugins {
+  // Kotlin is compiled by AGP's built-in Kotlin support (no kotlin-android plugin).
   id("com.android.library")
   kotlin("plugin.serialization")
-  id("org.jetbrains.kotlin.android")
   id("maven-publish")
   alias(libs.plugins.ksp)
   alias(libs.plugins.gradle.test.retry)
@@ -29,7 +29,7 @@ dependencies {
   implementation(libs.google.firebase.ai)
   implementation(libs.kotlinx.serialization)
 
-  testImplementation(kotlin("test"))
+  testImplementation(libs.kotlin.test.junit)
   testImplementation(libs.androidx.test.core)
   testImplementation(libs.androidx.test.ext.junit)
   testImplementation(libs.androidx.test.runner)
