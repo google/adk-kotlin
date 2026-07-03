@@ -44,6 +44,14 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
    */
   private var pendingConfirmations: Map<String, ToolConfirmation> = emptyMap()
 
+  /**
+   * A paused long-running call (other than a confirmation) awaiting a user-provided response --
+   * e.g. `adk_request_input` or `get_user_choice`. When set, the next line the user types is sent
+   * back as a wire-format `FunctionResponse` to resume the invocation instead of starting a new
+   * turn. Resolved by [resolvePendingInputRequest] from a paused function-call event.
+   */
+  private var pendingInputRequest: PendingInputRequest? = null
+
   fun start() {
     val scanner = Scanner(System.`in`)
     println("Agent ${agent.name} is ready. Type 'exit' to quit.")
@@ -61,11 +69,13 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
 
   private fun displayPrompt() {
     val prompt =
-      if (pendingConfirmations.isNotEmpty()) {
-        val toolNames = pendingConfirmations.keys.joinToString(", ")
-        "\n${agent.name} > Awaiting confirmation for '$toolNames'. Type 'yes' to confirm, 'no' to deny > "
-      } else {
-        "\nYou > "
+      when {
+        pendingConfirmations.isNotEmpty() -> {
+          val toolNames = pendingConfirmations.keys.joinToString(", ")
+          "\n${agent.name} > Awaiting confirmation for '$toolNames'. Type 'yes' to confirm, 'no' to deny > "
+        }
+        pendingInputRequest != null -> "\n${agent.name} > Your response > "
+        else -> "\nYou > "
       }
     print(prompt)
   }
@@ -75,14 +85,46 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
 
   private suspend fun execute(input: String) {
     val confirmations = pendingConfirmations
+    val inputRequest = pendingInputRequest
     pendingConfirmations = emptyMap()
+    pendingInputRequest = null
 
-    if (confirmations.isNotEmpty()) {
-      val approved = input.trim().lowercase().let { it == "yes" || it == "y" }
-      handleConfirmation(approved, confirmations)
-    } else {
-      handleNewMessage(input)
+    when {
+      confirmations.isNotEmpty() -> {
+        val approved = input.trim().lowercase().let { it == "yes" || it == "y" }
+        handleConfirmation(approved, confirmations)
+      }
+      inputRequest != null -> handleInputResponse(inputRequest, input)
+      else -> handleNewMessage(input)
     }
+  }
+
+  /**
+   * Resumes a paused long-running call (e.g. `adk_request_input`, `get_user_choice`) by sending the
+   * user's line back as a wire-format `FunctionResponse` keyed by the paused call id. For a choice
+   * with options, a numeric reply selects that option; otherwise the raw text is used.
+   */
+  private suspend fun handleInputResponse(request: PendingInputRequest, input: String) {
+    val options = request.options
+    val answer =
+      if (options != null) input.trim().toIntOrNull()?.let { options.getOrNull(it - 1) } ?: input
+      else input
+    val resumeMessage =
+      Content(
+        role = Role.USER,
+        parts =
+          listOf(
+            Part(
+              functionResponse =
+                FunctionResponse(
+                  name = request.toolName,
+                  id = request.callId,
+                  response = mapOf(RESPONSE_VALUE_KEY to answer),
+                )
+            )
+          ),
+      )
+    collectEvents(runAsync(userId, sessionId, invocationId = null, newMessage = resumeMessage))
   }
 
   /**
@@ -139,9 +181,16 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
       print("\n${event.author} > ")
     }
 
+    val inputRequest = resolvePendingInputRequest(event)
     for (part in parts) {
       part.text?.let { text -> println(text) }
-      part.functionCall?.let { fc -> println("calls tool: ${fc.name}") }
+      part.functionCall?.let { fc ->
+        if (inputRequest != null && fc.id == inputRequest.callId) {
+          printInputRequest(fc)
+        } else {
+          println("calls tool: ${fc.name}")
+        }
+      }
       part.functionResponse?.let { fr ->
         val stdout = fr.response["stdout"] as? String
         if (!stdout.isNullOrBlank()) {
@@ -161,9 +210,56 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
     if (newPending.isNotEmpty()) {
       pendingConfirmations = newPending
     }
+    if (inputRequest != null) {
+      pendingInputRequest = inputRequest
+    }
   }
 
+  /** Renders a paused input request: its `message`, or a numbered list of its `options`. */
+  private fun printInputRequest(functionCall: FunctionCall) {
+    val message = functionCall.args["message"] as? String
+    val options = functionCall.args["options"] as? List<*>
+    if (message != null) {
+      println(message)
+    }
+    if (options != null) {
+      options.forEachIndexed { index, option -> println("  ${index + 1}. $option") }
+    }
+    if (message == null && options == null) {
+      println("waiting for your input (${functionCall.name})")
+    }
+  }
+
+  /** A paused long-running call awaiting a user-provided response (not a confirmation). */
+  data class PendingInputRequest(
+    val callId: String,
+    val toolName: String,
+    val options: List<String>?,
+  )
+
   companion object {
+    /** Key under which the user's reply is placed in the resume [FunctionResponse]. */
+    const val RESPONSE_VALUE_KEY = "value"
+
+    /**
+     * Resolves a paused long-running call awaiting user input (e.g. `adk_request_input`,
+     * `get_user_choice`) from an event. Returns the call whose id is in [Event.longRunningToolIds]
+     * and is not a confirmation call (those have dedicated handling), or null if there is none. Its
+     * `options` arg, when present, is captured so a numeric reply can select an option.
+     */
+    @VisibleForTesting
+    fun resolvePendingInputRequest(event: Event): PendingInputRequest? {
+      val call =
+        event.functionCalls().firstOrNull { fc ->
+          val id = fc.id
+          id != null &&
+            id in event.longRunningToolIds &&
+            fc.name != FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+        } ?: return null
+      val options = (call.args["options"] as? List<*>)?.map { it.toString() }
+      return PendingInputRequest(callId = call.id!!, toolName = call.name, options = options)
+    }
+
     /**
      * Returns true when the given non-null `error` string from a [FunctionResponse] should be
      * surfaced to the operator. Suppresses blank values and

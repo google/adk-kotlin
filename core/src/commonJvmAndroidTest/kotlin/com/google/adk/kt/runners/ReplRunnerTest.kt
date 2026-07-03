@@ -110,6 +110,67 @@ class ReplRunnerTest {
   }
 
   @Test
+  fun resolvePendingInputRequest_getUserChoice_capturesOptions() {
+    val event =
+      longRunningCallEvent(
+        "get_user_choice",
+        "choice-1",
+        mapOf("options" to listOf("red", "green", "blue")),
+      )
+
+    val resolved = ReplRunner.resolvePendingInputRequest(event)
+
+    assertThat(resolved)
+      .isEqualTo(
+        ReplRunner.PendingInputRequest(
+          "choice-1",
+          "get_user_choice",
+          listOf("red", "green", "blue"),
+        )
+      )
+  }
+
+  @Test
+  fun resolvePendingInputRequest_requestInput_hasNoOptions() {
+    val event =
+      longRunningCallEvent("adk_request_input", "input-1", mapOf("message" to "What is your name?"))
+
+    val resolved = ReplRunner.resolvePendingInputRequest(event)
+
+    assertThat(resolved)
+      .isEqualTo(ReplRunner.PendingInputRequest("input-1", "adk_request_input", null))
+  }
+
+  @Test
+  fun resolvePendingInputRequest_confirmationCall_returnsNull() {
+    // Confirmation calls have dedicated handling and must not be treated as input requests.
+    val event =
+      longRunningCallEvent(
+        FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+        "synth-1",
+        emptyMap(),
+      )
+
+    assertThat(ReplRunner.resolvePendingInputRequest(event)).isNull()
+  }
+
+  @Test
+  fun resolvePendingInputRequest_callNotLongRunning_returnsNull() {
+    // A function call whose id is absent from longRunningToolIds is not a pause.
+    val event =
+      Event(
+        author = AGENT,
+        content =
+          Content(
+            role = Role.MODEL,
+            parts = listOf(Part(functionCall = FunctionCall(name = "get_user_choice", id = "c1"))),
+          ),
+      )
+
+    assertThat(ReplRunner.resolvePendingInputRequest(event)).isNull()
+  }
+
+  @Test
   fun shouldDisplayError_realError_returnsTrue() {
     assertThat(ReplRunner.shouldDisplayError("Something actually went wrong")).isTrue()
   }
@@ -138,6 +199,17 @@ class ReplRunnerTest {
   fun shouldDisplayError_whitespaceOnly_returnsFalse() {
     assertThat(ReplRunner.shouldDisplayError("   ")).isFalse()
   }
+
+  private fun longRunningCallEvent(name: String, callId: String, args: Map<String, Any>): Event =
+    Event(
+      author = AGENT,
+      content =
+        Content(
+          role = Role.MODEL,
+          parts = listOf(Part(functionCall = FunctionCall(name = name, id = callId, args = args))),
+        ),
+      longRunningToolIds = setOf(callId),
+    )
 
   private fun syntheticConfirmationEvent(
     originalCallId: String,
