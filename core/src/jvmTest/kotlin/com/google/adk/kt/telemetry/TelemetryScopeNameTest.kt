@@ -29,8 +29,8 @@ import org.junit.runners.JUnit4
 
 /**
  * Verifies that a tracer built with the ADK instrumentation scope name records spans under the
- * `gcp.vertex.agent` scope, matching Python, Java, and Go ADK. The production `defaultTracer()`
- * uses the same [TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT] constant.
+ * `gcp.vertex.agent` scope, matching Python, Java, and Go ADK. The production `OtelTracer(...)`
+ * factory uses the same [TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT] constant.
  *
  * This is intentionally self-contained (a local in-memory SDK, no
  * [io.opentelemetry.api .GlobalOpenTelemetry]) so it is robust when the whole `jvmTest` suite runs
@@ -57,7 +57,7 @@ class TelemetryScopeNameTest {
       SdkTracerProvider.builder().addSpanProcessor(SimpleSpanProcessor.create(exporter)).build()
 
     try {
-      // Build the tracer exactly as defaultTracer() does, via the ADK instrumentation scope name.
+      // Build the tracer exactly as OtelTracer(...) does, via the ADK instrumentation scope name.
       val tracer = OtelTracer(tracerProvider.get(TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT))
       tracer.spanBuilder("scope-check").startSpan().end()
 

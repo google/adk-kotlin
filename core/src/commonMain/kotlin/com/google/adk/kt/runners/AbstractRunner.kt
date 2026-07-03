@@ -45,6 +45,8 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.summarizer.LlmEventSummarizer
 import com.google.adk.kt.summarizer.SlidingWindowEventCompactor
+import com.google.adk.kt.telemetry.Tracer
+import com.google.adk.kt.telemetry.TracerElement
 import com.google.adk.kt.telemetry.trace
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -53,6 +55,7 @@ import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -61,6 +64,10 @@ import kotlinx.coroutines.runBlocking
 abstract class AbstractRunner : Runner {
 
   val app: App?
+
+  /** Tracer for runners built from a bare agent (no [App]); [app]'s tracer takes precedence. */
+  private val tracer: Tracer?
+
   final override val appName: String
   final override val agent: BaseAgent
   final override val sessionService: SessionService
@@ -78,6 +85,7 @@ abstract class AbstractRunner : Runner {
     memoryService: MemoryService?,
     pluginManager: PluginManager,
     resumabilityConfig: ResumabilityConfig = ResumabilityConfig(),
+    tracer: Tracer? = null,
   ) {
     this.appName = appName
     this.agent = agent
@@ -87,6 +95,7 @@ abstract class AbstractRunner : Runner {
     this.pluginManager = pluginManager
     this.resumabilityConfig = resumabilityConfig
     this.app = null
+    this.tracer = tracer
   }
 
   /**
@@ -120,6 +129,7 @@ abstract class AbstractRunner : Runner {
         eventsCompactionConfig =
           resolveEventsCompactionConfig(app.rootAgent, app.eventsCompactionConfig)
       )
+    this.tracer = null
   }
 
   /**
@@ -141,31 +151,40 @@ abstract class AbstractRunner : Runner {
     newMessage: Content?,
     stateDelta: Map<String, Any>?,
     runConfig: RunConfig?,
-  ): Flow<Event> =
-    flow {
-        // 1. Get or create session
-        val key = SessionKey(appName, userId, sessionId)
-        val session = sessionService.getSession(key) ?: sessionService.createSession(key)
+  ): Flow<Event> {
+    val invocationFlow =
+      flow {
+          // 1. Get or create session
+          val key = SessionKey(appName, userId, sessionId)
+          val session = sessionService.getSession(key) ?: sessionService.createSession(key)
 
-        // 2. Build the invocation context (resolving the agent to run).
-        val context =
-          createInvocationContext(session, invocationId, newMessage, stateDelta, runConfig)
+          // 2. Build the invocation context (resolving the agent to run).
+          val context =
+            createInvocationContext(session, invocationId, newMessage, stateDelta, runConfig)
 
-        // 3. No-op if the resolved agent for a resumed invocation is already final -- there is
-        // nothing left to run. Mirrors Python ADK 1.x `runners.run_async`. For a new invocation
-        // `endOfAgents` is empty, so this never short-circuits a fresh run.
-        if (context.endOfAgents[context.agent.name] == true) {
-          return@flow
+          // 3. No-op if the resolved agent for a resumed invocation is already final -- there is
+          // nothing left to run. Mirrors Python ADK 1.x `runners.run_async`. For a new invocation
+          // `endOfAgents` is empty, so this never short-circuits a fresh run.
+          if (context.endOfAgents[context.agent.name] == true) {
+            return@flow
+          }
+
+          // 4. Run agent with plugins
+          emitAll(runAgentWithPlugins(context))
+
+          // 5. Post-invocation context compaction. Runs once the agent has finished emitting and
+          // all its events have been appended to `session`.
+          runPostInvocationCompaction(session)
         }
+        .trace("invocation")
 
-        // 4. Run agent with plugins
-        emitAll(runAgentWithPlugins(context))
-
-        // 5. Post-invocation context compaction. Runs once the agent has finished emitting and all
-        // its events have been appended to `session`.
-        runPostInvocationCompaction(session)
-      }
-      .trace("invocation")
+    // Install the run's tracer (from `App.tracer`, or the explicit one passed to the field-based
+    // constructor) onto the coroutine context so every span operator resolves it via
+    // `currentTracer()`, with no global state. When neither is set, operators fall back to
+    // `NoOpTracer`, so tracing is off unless a tracer is configured.
+    val runTracer = (app?.tracer ?: tracer) ?: return invocationFlow
+    return invocationFlow.flowOn(TracerElement(runTracer))
+  }
 
   /**
    * Sync interface for local testing and convenience purpose.

@@ -17,14 +17,12 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.agents.LlmAgent
-import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.TracerElement
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.types.FunctionCall
-import kotlin.test.AfterTest
-import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.test.runTest
@@ -41,30 +39,23 @@ class ToolNameTelemetryTest {
 
   private val fakeTracer = DummyTracer()
 
-  @BeforeTest
-  fun setUp() {
-    Telemetry.setTracerForTest(fakeTracer)
-  }
-
-  @AfterTest
-  fun tearDown() {
-    Telemetry.resetTracer()
-  }
-
   @Test
-  fun executeSingleFunctionCall_toolFromToolAnnotation_recordsFunctionNameInSpan() = runTest {
-    val tool = RequiresNameTool()
-    assertEquals("requiresName", tool.name)
+  fun executeSingleFunctionCall_toolFromToolAnnotation_recordsFunctionNameInSpan() =
+    runTest(TracerElement(fakeTracer)) {
+      val tool = RequiresNameTool()
+      assertEquals("requiresName", tool.name)
 
-    val unused =
-      testInvocationContext(agent = LlmAgent(name = "test_agent", model = DummyModel("mock_model")))
-        .executeSingleFunctionCall(
-          FunctionCall(name = tool.name, args = mapOf("name" to "world"), id = "call_1"),
-          mapOf(tool.name to tool),
-        )
+      val unused =
+        testInvocationContext(
+            agent = LlmAgent(name = "test_agent", model = DummyModel("mock_model"))
+          )
+          .executeSingleFunctionCall(
+            FunctionCall(name = tool.name, args = mapOf("name" to "world"), id = "call_1"),
+            mapOf(tool.name to tool),
+          )
 
-    val span = fakeTracer.recordedSpans.single()
-    assertEquals("execute_tool requiresName", span.name)
-    assertEquals("requiresName", span.attributes[TelemetryAttributes.GEN_AI_TOOL_NAME])
-  }
+      val span = fakeTracer.recordedSpans.single()
+      assertEquals("execute_tool requiresName", span.name)
+      assertEquals("requiresName", span.attributes[TelemetryAttributes.GEN_AI_TOOL_NAME])
+    }
 }

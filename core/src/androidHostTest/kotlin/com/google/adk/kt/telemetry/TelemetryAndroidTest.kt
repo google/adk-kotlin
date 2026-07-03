@@ -17,15 +17,15 @@
 package com.google.adk.kt.telemetry
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.google.adk.kt.telemetry.otel.OtelTracer
+import com.google.adk.kt.telemetry.otel.OtelTracer as OtelTracerImpl
 import com.google.common.truth.Truth.assertThat
+import io.opentelemetry.api.OpenTelemetry
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Android-specific telemetry tests verifying the OpenTelemetry-backed tracer is the default on
- * Android (it was previously a No-Op) and that the Android-compiled span path executes end-to-end.
- * See b/524162719.
+ * Android-specific telemetry tests verifying the OpenTelemetry-backed tracer built via [OtelTracer]
+ * works on Android and that the Android-compiled span path executes end-to-end. See b/524162719.
  *
  * The full span-export round-trip is verified on the JVM (see `OtelTracerTest`) because the
  * OpenTelemetry SDK is JVM-only here; the production tracer code is shared (commonJvmAndroidMain),
@@ -34,14 +34,16 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class TelemetryAndroidTest {
 
+  private val tracer = OtelTracer(OpenTelemetry.noop())
+
   @Test
-  fun tracer_byDefaultOnAndroid_isOtelTracer() {
-    assertThat(Telemetry.tracer).isInstanceOf(OtelTracer::class.java)
+  fun otelTracer_onAndroid_buildsOtelTracer() {
+    assertThat(tracer).isInstanceOf(OtelTracerImpl::class.java)
   }
 
   @Test
   fun span_whenExercisedOnAndroid_doesNotCrash() {
-    val span = Telemetry.tracer.spanBuilder("android-span").set("key", "value").startSpan()
+    val span = tracer.spanBuilder("android-span").set("key", "value").startSpan()
 
     span
       .set("long", 1L)
@@ -52,6 +54,6 @@ class TelemetryAndroidTest {
       .recordException(RuntimeException("boom"))
       .end()
 
-    assertThat(Telemetry.tracer.contextWithSpan(span)).isNotNull()
+    assertThat(tracer.contextWithSpan(span)).isNotNull()
   }
 }

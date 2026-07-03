@@ -18,9 +18,11 @@ package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.telemetry.Tracer
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.models.AgentRunRequest
 import com.google.gson.Gson
@@ -41,6 +43,7 @@ fun Route.runRoutes(
   agentLoader: AgentLoader,
   sessionService: SessionService,
   artifactService: ArtifactService,
+  tracer: Tracer,
 ) {
   route("/run") {
     post {
@@ -51,10 +54,9 @@ fun Route.runRoutes(
       }
       val runner =
         InMemoryRunner(
-          agent = agent,
+          App(appName = request.appName, rootAgent = agent, tracer = tracer),
           sessionService = sessionService,
           artifactService = artifactService,
-          appName = request.appName,
         )
 
       val runConfig =
@@ -86,10 +88,9 @@ fun Route.runRoutes(
     }
     val runner =
       InMemoryRunner(
-        agent = agent,
+        App(appName = request.appName, rootAgent = agent, tracer = tracer),
         sessionService = sessionService,
         artifactService = artifactService,
-        appName = request.appName,
       )
 
     val runConfig =

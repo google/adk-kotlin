@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.telemetry
 
+import com.google.adk.kt.telemetry.noop.NoOpTracer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -38,12 +39,14 @@ internal suspend fun <T> withSpan(
   builder: SpanBuilder.() -> Unit = {},
   block: suspend CoroutineScope.(Span) -> T,
 ): T {
-  val spanBuilder = Telemetry.tracer.spanBuilder(name)
+  val tracer = currentTracer()
+  val spanBuilder = tracer.spanBuilder(name)
+  // No explicit parent: the span inherits the enclosing span from the ambient coroutine context.
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
 
   return try {
-    withContext(Telemetry.tracer.contextWithSpan(span).asContextElement()) { block(span) }
+    withContext(tracer.contextWithSpan(span).asContextElement()) { block(span) }
   } catch (e: Throwable) {
     if (e !is CancellationException) {
       span.recordException(e)
@@ -60,6 +63,9 @@ internal suspend fun <T> withSpan(
  * This function handles span lifecycle for non-suspending code: starting the span, recording any
  * exceptions, and ensuring the span is ended.
  *
+ * Being non-suspending, this cannot read the run-scoped tracer from the coroutine context, so it
+ * always uses [NoOpTracer]. It is only for synchronous code paths that are not part of a run.
+ *
  * @param name the name of the new span.
  * @param builder a lambda to configure the [SpanBuilder] before starting the span.
  * @param block the block of code to execute within the span.
@@ -69,10 +75,10 @@ internal inline fun <T> inSpan(
   builder: SpanBuilder.() -> Unit = {},
   block: (Span) -> T,
 ): T {
-  val spanBuilder = Telemetry.tracer.spanBuilder(name)
+  val spanBuilder = NoOpTracer.spanBuilder(name)
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
-  val context = Telemetry.tracer.contextWithSpan(span)
+  val context = NoOpTracer.contextWithSpan(span)
   val scope = context.attach()
 
   return try {
@@ -99,7 +105,9 @@ internal inline fun <T> inSpan(
  * @param builder a lambda to configure the [SpanBuilder] before starting the span.
  */
 internal fun <T> Flow<T>.trace(name: String, builder: SpanBuilder.() -> Unit = {}): Flow<T> = flow {
-  val spanBuilder = Telemetry.tracer.spanBuilder(name)
+  val tracer = currentTracer()
+  val spanBuilder = tracer.spanBuilder(name)
+  // No explicit parent: the span inherits the enclosing span from the ambient coroutine context.
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
 
@@ -107,7 +115,7 @@ internal fun <T> Flow<T>.trace(name: String, builder: SpanBuilder.() -> Unit = {
     // We use flowOn to inject the span into the upstream coroutine context safely,
     // honoring Kotlin's Flow context preservation invariants without affecting the
     // downstream emission context.
-    emitAll(this@trace.flowOn(Telemetry.tracer.contextWithSpan(span).asContextElement()))
+    emitAll(this@trace.flowOn(tracer.contextWithSpan(span).asContextElement()))
   } catch (e: Throwable) {
     if (e !is CancellationException) {
       span.recordException(e)
@@ -132,10 +140,12 @@ internal fun <T> tracedFlow(
   builder: SpanBuilder.() -> Unit = {},
   block: suspend FlowCollector<T>.(span: Span, spanContext: TelemetryContextElement) -> Unit,
 ): Flow<T> = flow {
-  val spanBuilder = Telemetry.tracer.spanBuilder(name)
+  val tracer = currentTracer()
+  val spanBuilder = tracer.spanBuilder(name)
+  // No explicit parent: the span inherits the enclosing span from the ambient coroutine context.
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
-  val spanContext = Telemetry.tracer.contextWithSpan(span).asContextElement()
+  val spanContext = tracer.contextWithSpan(span).asContextElement()
 
   try {
     block(span, spanContext)

@@ -91,16 +91,16 @@ class FakeArtifactService : ArtifactService {
     emptyList()
 }
 
-class FakeAgent : BaseAgent(name = "mock-agent", description = "Fake Agent") {
+class FakeAgent : BaseAgent(name = "mockAgent", description = "Fake Agent") {
   override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
     emit(
       Event(
         invocationId = context.invocationId,
-        author = "mock-agent",
+        author = "mockAgent",
         content =
           Content(
             role = "model",
-            parts = listOf(Part(text = "This is a mocked response from Agent mock-agent")),
+            parts = listOf(Part(text = "This is a mocked response from Agent mockAgent")),
           ),
         turnComplete = true,
       )
@@ -109,13 +109,13 @@ class FakeAgent : BaseAgent(name = "mock-agent", description = "Fake Agent") {
 }
 
 class FakeAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("mock-agent")
+  override fun listAgents() = listOf("mockAgent")
 
-  override fun loadAgent(agentName: String) = if (agentName == "mock-agent") FakeAgent() else null
+  override fun loadAgent(agentName: String) = if (agentName == "mockAgent") FakeAgent() else null
 }
 
 class FakeRunner : Runner {
-  override val appName = "mock-agent"
+  override val appName = "mockAgent"
   override val agent = FakeAgent()
   override val sessionService = FakeSessionService()
   override val artifactService = FakeArtifactService()
@@ -134,11 +134,11 @@ class FakeRunner : Runner {
     emit(
       Event(
         invocationId = invocationId ?: "test-invocation",
-        author = "mock-agent",
+        author = "mockAgent",
         content =
           Content(
             role = "model",
-            parts = listOf(Part(text = "This is a mocked response from Agent mock-agent")),
+            parts = listOf(Part(text = "This is a mocked response from Agent mockAgent")),
           ),
         turnComplete = true,
       )
@@ -194,7 +194,7 @@ class AdkWebServerTest {
       client.post("/run") {
         contentType(ContentType.Application.Json)
         setBody(
-          "{\"appName\":\"mock-agent\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"streaming\":false,\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hello agent\"}]}}"
+          "{\"appName\":\"mockAgent\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"streaming\":false,\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hello agent\"}]}}"
         )
       }
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
@@ -211,10 +211,30 @@ class AdkWebServerTest {
       client.post("/run_sse") {
         contentType(ContentType.Application.Json)
         setBody(
-          "{\"appName\":\"mock-agent\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"streaming\":true,\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hello agent\"}]}}"
+          "{\"appName\":\"mockAgent\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"streaming\":true,\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hello agent\"}]}}"
         )
       }
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
     assertThat(response.headers["Content-Type"]).contains("text/event-stream")
+  }
+
+  @Test
+  fun runRoute_emitsEngineSpansToExporter() = testApplication {
+    val spanExporter = ApiServerSpanExporter()
+    application { adkModule(sessionService, artifactService, agentLoader, spanExporter) }
+
+    val response =
+      client.post("/run") {
+        contentType(ContentType.Application.Json)
+        setBody(
+          "{\"appName\":\"mockAgent\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"streaming\":false,\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hello agent\"}]}}"
+        )
+      }
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+
+    // Regression guard: a hosted run must emit engine spans to the server's exporter (which feeds
+    // the Dev UI trace view). Without wiring the server's tracer into the runner, currentTracer()
+    // is a no-op and nothing is exported.
+    assertThat(spanExporter.getAllExportedSpans().map { it.name }).contains("invocation")
   }
 }

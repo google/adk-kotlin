@@ -17,8 +17,10 @@
 package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.telemetry.otel.OtelSpan
+import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.common.truth.Truth.assertThat
 import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
+import io.opentelemetry.sdk.trace.SdkTracerProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -33,31 +35,39 @@ import org.junit.runners.JUnit4
 class CoroutinesConcurrencyTest {
 
   @Test
-  fun withSpan_withDispatcherSwitch_maintainsContext() = runBlocking {
-    withSpan("concurrent_span") { span ->
-      val nativeSpan = (span as OtelSpan).otelSpan
+  fun withSpan_withDispatcherSwitch_maintainsContext() {
+    val provider = SdkTracerProvider.builder().build()
+    try {
+      // Provide a real tracer via the coroutine context (as the runner does from App.tracer).
+      runBlocking(TracerElement(OtelTracer(provider.get("test")))) {
+        withSpan("concurrent_span") { span ->
+          val nativeSpan = (span as OtelSpan).otelSpan
 
-      // Before thread switch
-      assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
+          // Before thread switch
+          assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
 
-      withContext(Dispatchers.Default) {
-        // hopped to background thread dispatcher
-        assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
+          withContext(Dispatchers.Default) {
+            // hopped to background thread dispatcher
+            assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
 
-        // Spawn multiple child coroutines
-        val def1 = async {
-          delay(10) // Force suspension and potential thread switch
+            // Spawn multiple child coroutines
+            val def1 = async {
+              delay(10) // Force suspension and potential thread switch
+              assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
+            }
+            val def2 = async {
+              delay(10)
+              assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
+            }
+            awaitAll(def1, def2)
+          }
+
+          // Back to original dispatcher
           assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
         }
-        val def2 = async {
-          delay(10)
-          assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
-        }
-        awaitAll(def1, def2)
       }
-
-      // Back to original dispatcher
-      assertThat(OpenTelemetrySpan.current()).isSameInstanceAs(nativeSpan)
+    } finally {
+      provider.close()
     }
   }
 }

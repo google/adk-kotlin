@@ -29,6 +29,7 @@ import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.telemetry.Tracer
 
 /**
  * An in-memory implementation of a [Runner] that manages the lifecycle of a [BaseAgent] execution.
@@ -38,14 +39,28 @@ import com.google.adk.kt.sessions.SessionService
  */
 open class InMemoryRunner : AbstractRunner {
 
-  /** Creates an [InMemoryRunner] from a root [agent] and default in-memory services. */
+  /**
+   * Creates an [InMemoryRunner] from a root [agent] and default in-memory services.
+   *
+   * @param tracer Optional telemetry [Tracer] for this runner's runs, for hosts that build a runner
+   *   from a bare agent rather than an [App]. When `null`, tracing is a no-op.
+   */
   constructor(
     agent: BaseAgent,
     appName: String = "InMemoryRunner",
     sessionService: SessionService = InMemorySessionService(),
     artifactService: ArtifactService? = InMemoryArtifactService(),
     memoryService: MemoryService? = InMemoryMemoryService(),
-  ) : super(appName, agent, sessionService, artifactService, memoryService, PluginManager())
+    tracer: Tracer? = null,
+  ) : super(
+    appName,
+    agent,
+    sessionService,
+    artifactService,
+    memoryService,
+    PluginManager(),
+    tracer = tracer,
+  )
 
   /**
    * Creates an [InMemoryRunner] from an [App], deriving its [App.appName], [App.rootAgent],

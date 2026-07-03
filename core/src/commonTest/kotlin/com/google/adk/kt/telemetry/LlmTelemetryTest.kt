@@ -52,64 +52,64 @@ class LlmTelemetryTest {
 
   @BeforeTest
   fun setUp() {
-    Telemetry.setTracerForTest(dummyTracer)
     TelemetryConfig.captureMessageContent = false
   }
 
   @AfterTest
   fun tearDown() {
-    Telemetry.resetTracer()
     TelemetryConfig.captureMessageContent = false
   }
 
   @Test
-  fun runAsync_recordsCallLlmSpan() = runTest {
-    val testModel =
-      DummyModel.createSequential(
-        "test-model",
-        listOf(LlmResponse(content = modelMessage("Hello"))),
-      )
-    val agent = LlmAgent(name = "test-agent", model = testModel)
-    val sessionService = InMemorySessionService()
-    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
-    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+  fun runAsync_recordsCallLlmSpan() =
+    runTest(TracerElement(dummyTracer)) {
+      val testModel =
+        DummyModel.createSequential(
+          "test-model",
+          listOf(LlmResponse(content = modelMessage("Hello"))),
+        )
+      val agent = LlmAgent(name = "test-agent", model = testModel)
+      val sessionService = InMemorySessionService()
+      val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+      val context = InvocationContext(agent = agent, session = session, runConfig = null)
 
-    agent.runAsync(context).toList()
+      agent.runAsync(context).toList()
 
-    assertEquals(2, dummyTracer.recordedSpans.size)
-    val span = dummyTracer.recordedSpans.find { it.name == "call_llm" }
-    assertNotNull(span)
-    assertEquals("test-model", span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MODEL])
-    // Payloads are emitted as "{}" (not omitted) so the ADK Dev UI can JSON.parse them.
-    assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST])
-    assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE])
-  }
+      assertEquals(2, dummyTracer.recordedSpans.size)
+      val span = dummyTracer.recordedSpans.find { it.name == "call_llm" }
+      assertNotNull(span)
+      assertEquals("test-model", span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MODEL])
+      // Payloads are emitted as "{}" (not omitted) so the ADK Dev UI can JSON.parse them.
+      assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST])
+      assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE])
+    }
 
   @Test
-  fun runAsync_recordsChunkReceivedEvents() = runTest {
-    val testModel =
-      DummyModel("test-model") {
-        flowOf(
-          LlmResponse(content = modelMessage("Hel")),
-          LlmResponse(content = modelMessage("lo")),
-        )
-      }
-    val agent = LlmAgent(name = "test-agent", model = testModel)
-    val sessionService = InMemorySessionService()
-    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
-    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+  fun runAsync_recordsChunkReceivedEvents() =
+    runTest(TracerElement(dummyTracer)) {
+      val testModel =
+        DummyModel("test-model") {
+          flowOf(
+            LlmResponse(content = modelMessage("Hel")),
+            LlmResponse(content = modelMessage("lo")),
+          )
+        }
+      val agent = LlmAgent(name = "test-agent", model = testModel)
+      val sessionService = InMemorySessionService()
+      val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+      val context = InvocationContext(agent = agent, session = session, runConfig = null)
 
-    agent.runAsync(context).toList()
+      agent.runAsync(context).toList()
 
-    assertEquals(2, dummyTracer.recordedSpans.size)
-    val span = dummyTracer.recordedSpans.find { it.name == "call_llm" }
-    assertNotNull(span)
+      assertEquals(2, dummyTracer.recordedSpans.size)
+      val span = dummyTracer.recordedSpans.find { it.name == "call_llm" }
+      assertNotNull(span)
 
-    val events = span.events
-    assertEquals(2, events.size)
-    assertEquals("chunk_received", events[0])
-    assertEquals("chunk_received", events[1])
-  }
+      val events = span.events
+      assertEquals(2, events.size)
+      assertEquals("chunk_received", events[0])
+      assertEquals("chunk_received", events[1])
+    }
 
   // ---------------------------------------------------------------------------
   // Python parity: these mirror the Python suite
@@ -117,160 +117,169 @@ class LlmTelemetryTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun runAsync_callLlm_setsGenAiSystem() = runTest {
-    val testModel =
-      DummyModel.createSequential(
-        "test-model",
-        listOf(LlmResponse(content = modelMessage("Hello"))),
-      )
-    val agent = LlmAgent(name = "test-agent", model = testModel)
+  fun runAsync_callLlm_setsGenAiSystem() =
+    runTest(TracerElement(dummyTracer)) {
+      val testModel =
+        DummyModel.createSequential(
+          "test-model",
+          listOf(LlmResponse(content = modelMessage("Hello"))),
+        )
+      val agent = LlmAgent(name = "test-agent", model = testModel)
 
-    agent.runAsync(newContext(agent)).toList()
+      agent.runAsync(newContext(agent)).toList()
 
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    assertEquals("gcp.vertex.agent", span.attributes[TelemetryAttributes.GEN_AI_SYSTEM])
-  }
-
-  @Test
-  fun runAsync_callLlm_setsRequestConfigAttributes() = runTest {
-    val testModel =
-      DummyModel.createSequential(
-        "test-model",
-        listOf(LlmResponse(content = modelMessage("Hello"))),
-      )
-    val agent =
-      LlmAgent(
-        name = "test-agent",
-        model = testModel,
-        generateContentConfig = GenerateContentConfig(topP = 0.95f, maxOutputTokens = 1024),
-      )
-
-    agent.runAsync(newContext(agent)).toList()
-
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    val topP = span.attributes[TelemetryAttributes.GEN_AI_REQUEST_TOP_P]
-    assertNotNull(topP)
-    assertEquals(0.95, topP as Double, absoluteTolerance = 1e-4)
-    assertEquals(1024L, span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS])
-  }
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      assertEquals("gcp.vertex.agent", span.attributes[TelemetryAttributes.GEN_AI_SYSTEM])
+    }
 
   @Test
-  fun runAsync_callLlm_setsUsageTokens() = runTest {
-    val response =
-      LlmResponse(
-        content = modelMessage("Hello"),
-        usageMetadata = UsageMetadata(promptTokenCount = 50, candidatesTokenCount = 60),
-      )
-    val testModel = DummyModel.createSequential("test-model", listOf(response))
-    val agent = LlmAgent(name = "test-agent", model = testModel)
+  fun runAsync_callLlm_setsRequestConfigAttributes() =
+    runTest(TracerElement(dummyTracer)) {
+      val testModel =
+        DummyModel.createSequential(
+          "test-model",
+          listOf(LlmResponse(content = modelMessage("Hello"))),
+        )
+      val agent =
+        LlmAgent(
+          name = "test-agent",
+          model = testModel,
+          generateContentConfig = GenerateContentConfig(topP = 0.95f, maxOutputTokens = 1024),
+        )
 
-    agent.runAsync(newContext(agent)).toList()
+      agent.runAsync(newContext(agent)).toList()
 
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    assertEquals(50L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
-    assertEquals(60L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
-  }
-
-  @Test
-  fun runAsync_callLlm_aggregatesInputOutputAndRecordsCacheAndReasoningTokens() = runTest {
-    // Parity with Python TokenUsage: input = prompt + tool-use, output = candidates + thoughts,
-    // plus separate cache-read and reasoning ("thoughts") counts.
-    val response =
-      LlmResponse(
-        content = modelMessage("Hello"),
-        usageMetadata =
-          UsageMetadata(
-            promptTokenCount = 50,
-            candidatesTokenCount = 60,
-            thoughtsTokenCount = 15,
-            toolUsePromptTokenCount = 10,
-            cachedContentTokenCount = 5,
-          ),
-      )
-    val testModel = DummyModel.createSequential("test-model", listOf(response))
-    val agent = LlmAgent(name = "test-agent", model = testModel)
-
-    agent.runAsync(newContext(agent)).toList()
-
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    assertEquals(60L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
-    assertEquals(75L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
-    assertEquals(5L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS])
-    assertEquals(15L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS])
-  }
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      val topP = span.attributes[TelemetryAttributes.GEN_AI_REQUEST_TOP_P]
+      assertNotNull(topP)
+      assertEquals(0.95, topP as Double, absoluteTolerance = 1e-4)
+      assertEquals(1024L, span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS])
+    }
 
   @Test
-  fun runAsync_callLlm_setsReasoningTokensLimitFromThinkingBudget() = runTest {
-    val testModel =
-      DummyModel.createSequential(
-        "test-model",
-        listOf(LlmResponse(content = modelMessage("Hello"))),
-      )
-    val agent =
-      LlmAgent(
-        name = "test-agent",
-        model = testModel,
-        generateContentConfig =
-          GenerateContentConfig(thinkingConfig = ThinkingConfig(thinkingBudget = 2048)),
-      )
+  fun runAsync_callLlm_setsUsageTokens() =
+    runTest(TracerElement(dummyTracer)) {
+      val response =
+        LlmResponse(
+          content = modelMessage("Hello"),
+          usageMetadata = UsageMetadata(promptTokenCount = 50, candidatesTokenCount = 60),
+        )
+      val testModel = DummyModel.createSequential("test-model", listOf(response))
+      val agent = LlmAgent(name = "test-agent", model = testModel)
 
-    agent.runAsync(newContext(agent)).toList()
+      agent.runAsync(newContext(agent)).toList()
 
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    assertEquals(2048L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT])
-  }
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      assertEquals(50L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
+      assertEquals(60L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
+    }
 
   @Test
-  fun runAsync_callLlm_noUsageMetadata_omitsUsageTokens() = runTest {
-    val response = LlmResponse(content = modelMessage("Hello"))
-    val testModel = DummyModel.createSequential("test-model", listOf(response))
-    val agent = LlmAgent(name = "test-agent", model = testModel)
+  fun runAsync_callLlm_aggregatesInputOutputAndRecordsCacheAndReasoningTokens() =
+    runTest(TracerElement(dummyTracer)) {
+      // Parity with Python TokenUsage: input = prompt + tool-use, output = candidates + thoughts,
+      // plus separate cache-read and reasoning ("thoughts") counts.
+      val response =
+        LlmResponse(
+          content = modelMessage("Hello"),
+          usageMetadata =
+            UsageMetadata(
+              promptTokenCount = 50,
+              candidatesTokenCount = 60,
+              thoughtsTokenCount = 15,
+              toolUsePromptTokenCount = 10,
+              cachedContentTokenCount = 5,
+            ),
+        )
+      val testModel = DummyModel.createSequential("test-model", listOf(response))
+      val agent = LlmAgent(name = "test-agent", model = testModel)
 
-    agent.runAsync(newContext(agent)).toList()
+      agent.runAsync(newContext(agent)).toList()
 
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    assertNull(span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
-    assertNull(span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
-  }
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      assertEquals(60L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
+      assertEquals(75L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
+      assertEquals(5L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS])
+      assertEquals(15L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS])
+    }
 
   @Test
-  fun runAsync_callLlm_setsFinishReasons() = runTest {
-    val response = LlmResponse(content = modelMessage("Hello"), finishReason = FinishReason.STOP)
-    val testModel = DummyModel.createSequential("test-model", listOf(response))
-    val agent = LlmAgent(name = "test-agent", model = testModel)
+  fun runAsync_callLlm_setsReasoningTokensLimitFromThinkingBudget() =
+    runTest(TracerElement(dummyTracer)) {
+      val testModel =
+        DummyModel.createSequential(
+          "test-model",
+          listOf(LlmResponse(content = modelMessage("Hello"))),
+        )
+      val agent =
+        LlmAgent(
+          name = "test-agent",
+          model = testModel,
+          generateContentConfig =
+            GenerateContentConfig(thinkingConfig = ThinkingConfig(thinkingBudget = 2048)),
+        )
 
-    agent.runAsync(newContext(agent)).toList()
+      agent.runAsync(newContext(agent)).toList()
 
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    // OTEL models finish reasons as a lower-cased string list, e.g. ["stop"].
-    assertEquals(
-      listOf("stop"),
-      span.attributes[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS],
-    )
-  }
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      assertEquals(2048L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT])
+    }
 
   @Test
-  fun runAsync_callLlm_capturesRequestAndResponseWhenEnabled() = runTest {
-    TelemetryConfig.captureMessageContent = true
-    val testModel =
-      DummyModel.createSequential(
-        "test-model",
-        listOf(LlmResponse(content = modelMessage("Hello"))),
+  fun runAsync_callLlm_noUsageMetadata_omitsUsageTokens() =
+    runTest(TracerElement(dummyTracer)) {
+      val response = LlmResponse(content = modelMessage("Hello"))
+      val testModel = DummyModel.createSequential("test-model", listOf(response))
+      val agent = LlmAgent(name = "test-agent", model = testModel)
+
+      agent.runAsync(newContext(agent)).toList()
+
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      assertNull(span.attributes[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS])
+      assertNull(span.attributes[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS])
+    }
+
+  @Test
+  fun runAsync_callLlm_setsFinishReasons() =
+    runTest(TracerElement(dummyTracer)) {
+      val response = LlmResponse(content = modelMessage("Hello"), finishReason = FinishReason.STOP)
+      val testModel = DummyModel.createSequential("test-model", listOf(response))
+      val agent = LlmAgent(name = "test-agent", model = testModel)
+
+      agent.runAsync(newContext(agent)).toList()
+
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      // OTEL models finish reasons as a lower-cased string list, e.g. ["stop"].
+      assertEquals(
+        listOf("stop"),
+        span.attributes[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS],
       )
-    val agent = LlmAgent(name = "test-agent", model = testModel)
+    }
 
-    agent.runAsync(newContext(agent)).toList()
+  @Test
+  fun runAsync_callLlm_capturesRequestAndResponseWhenEnabled() =
+    runTest(TracerElement(dummyTracer)) {
+      TelemetryConfig.captureMessageContent = true
+      val testModel =
+        DummyModel.createSequential(
+          "test-model",
+          listOf(LlmResponse(content = modelMessage("Hello"))),
+        )
+      val agent = LlmAgent(name = "test-agent", model = testModel)
 
-    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    val llmRequest = span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] as? String
-    assertNotNull(llmRequest)
-    assertNotEquals("{}", llmRequest)
-    assertTrue(llmRequest.isNotEmpty())
-    val llmResponse = span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] as? String
-    assertNotNull(llmResponse)
-    assertNotEquals("{}", llmResponse)
-    assertTrue(llmResponse.isNotEmpty())
-  }
+      agent.runAsync(newContext(agent)).toList()
+
+      val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+      val llmRequest = span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] as? String
+      assertNotNull(llmRequest)
+      assertNotEquals("{}", llmRequest)
+      assertTrue(llmRequest.isNotEmpty())
+      val llmResponse =
+        span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] as? String
+      assertNotNull(llmResponse)
+      assertNotEquals("{}", llmResponse)
+      assertTrue(llmResponse.isNotEmpty())
+    }
 
   // ---------------------------------------------------------------------------
   // Python parity: LlmRequest trace view mirrors `_build_llm_request_for_trace`

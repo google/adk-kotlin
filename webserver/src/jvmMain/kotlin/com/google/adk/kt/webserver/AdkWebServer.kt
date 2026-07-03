@@ -19,6 +19,7 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.telemetry.OtelTracer
 import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.webserver.AdkWebServer.StatusAwareLogger
 import com.google.adk.kt.webserver.loaders.AgentLoader
@@ -178,7 +179,11 @@ fun Application.adkModule(
 
   val otelConfig = OpenTelemetryConfig(apiServerSpanExporter)
   val sdkTracerProvider = otelConfig.sdkTracerProvider()
-  otelConfig.openTelemetrySdk(sdkTracerProvider)
+  // Build the SDK and pass it as each run's `App.tracer`: the ADK engine resolves its tracer from
+  // the run's coroutine context, not from `GlobalOpenTelemetry`, so hosted agents only emit spans
+  // (to the Dev UI trace view) when the `App` carries this tracer.
+  val openTelemetry = otelConfig.openTelemetrySdk(sdkTracerProvider)
+  val tracer = OtelTracer(openTelemetry)
 
   // Message-content capture is controlled by the caller (AdkWebServer(captureMessageContent =
   // ...)).
@@ -204,7 +209,7 @@ fun Application.adkModule(
     debugRoutes(apiServerSpanExporter)
     evalRoutes()
     graphRoutes(agentLoader, sessionService)
-    runRoutes(agentLoader, sessionService, artifactService)
+    runRoutes(agentLoader, sessionService, artifactService, tracer)
     sessionRoutes(sessionService)
     staticRoutes(this@adkModule)
   }

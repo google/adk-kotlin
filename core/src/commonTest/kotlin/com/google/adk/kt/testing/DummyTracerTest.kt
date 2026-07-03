@@ -16,13 +16,10 @@
 
 package com.google.adk.kt.testing
 
-import com.google.adk.kt.telemetry.Telemetry
 import kotlinx.coroutines.runBlocking
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Test
 
 /** Tests for [DummyTracer] verifying span recording and hierarchy tracking. */
@@ -30,19 +27,9 @@ class DummyTracerTest {
 
   private val dummyTracer = DummyTracer()
 
-  @Before
-  fun setUp() {
-    Telemetry.setTracerForTest(dummyTracer)
-  }
-
-  @After
-  fun tearDown() {
-    Telemetry.resetTracer()
-  }
-
   @Test
   fun testSpanRecordingAndAttributes() {
-    val tracer = Telemetry.tracer
+    val tracer = dummyTracer
     val builder = tracer.spanBuilder("test-span")
     builder["key1"] = "value1"
     builder["key2"] = 42L
@@ -60,7 +47,7 @@ class DummyTracerTest {
 
   @Test
   fun testSpanEvents() {
-    val tracer = Telemetry.tracer
+    val tracer = dummyTracer
     val span = tracer.spanBuilder("test-span").startSpan()
 
     span.addEvent("event1")
@@ -73,7 +60,7 @@ class DummyTracerTest {
 
   @Test
   fun testHierarchyTracking() = runBlocking {
-    val tracer = Telemetry.tracer
+    val tracer = dummyTracer
 
     // Create parent span
     val parentSpan = tracer.spanBuilder("parent").startSpan()
@@ -97,7 +84,7 @@ class DummyTracerTest {
 
   @Test
   fun testSpanAttributesSetAfterStart() {
-    val tracer = Telemetry.tracer
+    val tracer = dummyTracer
     val span = tracer.spanBuilder("test-span").startSpan()
 
     span["key1"] = "value1"

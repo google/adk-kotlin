@@ -16,9 +16,10 @@
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.LlmResponse
-import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
@@ -27,49 +28,37 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Test
 
-/** Tests for telemetry emission in [InMemoryRunner] and [BaseAgent]. */
+/**
+ * Tests for telemetry emission in [InMemoryRunner] and [BaseAgent].
+ *
+ * The tracer is provided per-application via [App.tracer] (no global state); recording it in
+ * [tracer] proves the app-scoped tracer is what the runner actually uses.
+ */
 class RunnerTelemetryTest {
 
-  private val dummyTracer = DummyTracer()
+  private val tracer = DummyTracer()
 
-  @Before
-  fun setUp() {
-    Telemetry.setTracerForTest(dummyTracer)
-  }
-
-  @After
-  fun tearDown() {
-    Telemetry.resetTracer()
-  }
+  private fun runnerFor(agent: BaseAgent): InMemoryRunner =
+    InMemoryRunner(App(appName = "telemetryapp", rootAgent = agent, tracer = tracer))
 
   @Test
   fun runAsync_emitsTelemetrySpans() = runBlocking {
-    // Arrange
-    val agent = DummyAgent(name = "telemetry-agent")
-    val runner = InMemoryRunner(agent = agent)
-    val message = userMessage("Hello")
+    val runner = runnerFor(DummyAgent(name = "telemetry-agent"))
 
-    // Act
-    runner.runAsync(userId = "user1", sessionId = "session1", newMessage = message).toList()
+    runner
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hello"))
+      .toList()
 
-    // Assert
-    val spans = dummyTracer.recordedSpans
+    val spans = tracer.recordedSpans
     assertTrue("Should have recorded spans", spans.isNotEmpty())
+    assertTrue("Should have found 'invocation' span", spans.any { it.name == "invocation" })
 
-    // Verify 'invocation' span
-    val invocationSpan = spans.find { it.name == "invocation" }
-    assertTrue("Should have found 'invocation' span", invocationSpan != null)
-
-    // Verify 'invoke_agent' span
     val invokeAgentSpan = spans.find { it.name == "invoke_agent telemetry-agent" }
     assertTrue("Should have found 'invoke_agent' span", invokeAgentSpan != null)
-
     assertEquals(
       "gcp.vertex.agent",
       invokeAgentSpan!!.attributes[TelemetryAttributes.GEN_AI_SYSTEM],
@@ -77,6 +66,23 @@ class RunnerTelemetryTest {
     assertEquals(
       "telemetry-agent",
       invokeAgentSpan.attributes[TelemetryAttributes.GEN_AI_AGENT_NAME],
+    )
+  }
+
+  @Test
+  fun runAsync_withTracerOnBareAgentRunner_emitsSpans() = runBlocking {
+    // Runners built from a bare agent (no [App]) -- e.g. hosts that don't construct an App -- can
+    // still get telemetry by passing a tracer to the field-based constructor.
+    val runner = InMemoryRunner(agent = DummyAgent(name = "telemetry-agent"), tracer = tracer)
+
+    runner
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hello"))
+      .toList()
+
+    assertTrue("Should have recorded spans", tracer.recordedSpans.isNotEmpty())
+    assertTrue(
+      "Should have found 'invocation' span",
+      tracer.recordedSpans.any { it.name == "invocation" },
     )
   }
 
@@ -90,13 +96,13 @@ class RunnerTelemetryTest {
     val model =
       DummyModel.createSequential("mock-model", listOf(LlmResponse(content = modelMessage("hi"))))
     val agent = LlmAgent(name = "telemetry-agent", model = model, description = "A telemetry agent")
-    val runner = InMemoryRunner(agent = agent)
+    val runner = runnerFor(agent)
 
     runner
       .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hello"))
       .toList()
 
-    val span = dummyTracer.recordedSpans.find { it.name == "invoke_agent telemetry-agent" }
+    val span = tracer.recordedSpans.find { it.name == "invoke_agent telemetry-agent" }
     assertTrue("Should have found 'invoke_agent' span", span != null)
     assertEquals("invoke_agent", span!!.attributes[TelemetryAttributes.GEN_AI_OPERATION_NAME])
     assertEquals("A telemetry agent", span.attributes[TelemetryAttributes.GEN_AI_AGENT_DESCRIPTION])

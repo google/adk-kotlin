@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
+import com.google.adk.kt.telemetry.Tracer
 
 /**
  * Represents an LLM-backed agentic application.
@@ -42,6 +43,10 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
  *   sessions. When `null`, resumability is disabled.
  * @property eventsCompactionConfig Optional configuration controlling context-compaction strategies
  *   for sessions of this application. When `null`, no compaction runs.
+ * @property tracer Optional telemetry [Tracer] for this application's runs. When set, the runner
+ *   uses it for all engine spans, propagated via the coroutine context. When `null`, tracing is a
+ *   no-op; there is no global fallback. On JVM/Android, build one from an `OpenTelemetry` with
+ *   `OtelTracer(...)`.
  */
 data class App(
   val appName: String,
@@ -49,6 +54,7 @@ data class App(
   val plugins: List<Plugin> = emptyList(),
   val resumabilityConfig: ResumabilityConfig? = null,
   val eventsCompactionConfig: EventsCompactionConfig? = null,
+  val tracer: Tracer? = null,
 ) {
   init {
     require(IDENTIFIER_REGEX.matches(appName)) {

@@ -16,9 +16,8 @@
 package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.telemetry.noop.NoOpTracer
-import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.common.truth.Truth.assertThat
-import org.junit.After
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -26,78 +25,33 @@ import org.junit.runners.JUnit4
 @RunWith(JUnit4::class)
 class TelemetryTest {
 
-  @After
-  fun tearDown() {
-    Telemetry.resetTracer()
+  @Test
+  fun currentTracer_withoutAppTracer_isNoOp() = runBlocking {
+    // No TracerElement in the coroutine context (no App.tracer): telemetry is off by default, with
+    // no global fallback.
+    assertThat(currentTracer()).isSameInstanceAs(NoOpTracer)
   }
 
   @Test
-  fun tracer_byDefault_isOtelTracer() {
-    assertThat(Telemetry.tracer).isInstanceOf(OtelTracer::class.java)
+  fun noOpTracer_whenMethodsCalled_doesNotCrash() = runBlocking {
+    val tracer = NoOpTracer
+    assertThat(tracer).isInstanceOf(NoOpTracer::class.java)
+
+    // Verify we can call all methods without crashing.
+    val span =
+      tracer
+        .spanBuilder("test-span")
+        .set("key", "value")
+        .set("key", 1L)
+        .set("key", 2.0)
+        .set("key", true)
+        .startSpan()
+
+    span.addEvent("event")
+    span.recordException(RuntimeException("test"))
+
+    tracer.spanBuilder("child").setParent(tracer.currentContext()).startSpan().end()
+
+    span.end()
   }
-
-  @Test
-  fun setTracerForTest_withCustomTracer_overridesTracer() {
-    val customTracer =
-      object : Tracer {
-        override fun spanBuilder(spanName: String): SpanBuilder = throw NotImplementedError()
-
-        override suspend fun currentContext(): TelemetryContext = throw NotImplementedError()
-
-        override fun contextWithSpan(span: Span): TelemetryContext = throw NotImplementedError()
-      }
-
-    Telemetry.setTracerForTest(customTracer)
-
-    assertThat(Telemetry.tracer).isSameInstanceAs(customTracer)
-  }
-
-  @Test
-  fun setTracerForTest_whenSetInOneThread_doesNotAffectOtherThreads() {
-    val customTracer =
-      object : Tracer {
-        override fun spanBuilder(spanName: String): SpanBuilder = throw NotImplementedError()
-
-        override suspend fun currentContext(): TelemetryContext = throw NotImplementedError()
-
-        override fun contextWithSpan(span: Span): TelemetryContext = throw NotImplementedError()
-      }
-
-    Telemetry.setTracerForTest(customTracer)
-    assertThat(Telemetry.tracer).isSameInstanceAs(customTracer)
-
-    var tracerInOtherThread: Tracer? = null
-    val thread = Thread { tracerInOtherThread = Telemetry.tracer }
-    thread.start()
-    thread.join()
-
-    // The other thread should see the default OtelTracer, not the custom one set in the current
-    // thread.
-    assertThat(tracerInOtherThread).isInstanceOf(OtelTracer::class.java)
-  }
-
-  @Test
-  fun noOpTracer_whenMethodsCalled_doesNotCrash() =
-    kotlinx.coroutines.runBlocking {
-      val tracer = NoOpTracer
-      assertThat(tracer).isInstanceOf(NoOpTracer::class.java)
-
-      // Verify we can call all methods without crashing
-      val span =
-        tracer
-          .spanBuilder("test-span")
-          .set("key", "value")
-          .set("key", 1L)
-          .set("key", 2.0)
-          .set("key", true)
-          .startSpan()
-
-      span.addEvent("event")
-      span.recordException(RuntimeException("test"))
-
-      // Set parent
-      tracer.spanBuilder("child").setParent(tracer.currentContext()).startSpan().end()
-
-      span.end()
-    }
 }
