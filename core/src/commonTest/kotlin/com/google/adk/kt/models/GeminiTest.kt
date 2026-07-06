@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.models
 
-import com.google.adk.kt.VERSION
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
@@ -25,116 +24,36 @@ import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.fromGenaiSdk
-import com.google.auth.oauth2.AccessToken
-import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
-import com.google.genai.Client
-import com.google.genai.types.Candidate as GenAiCandidate
-import com.google.genai.types.Content as GenAiContent
-import com.google.genai.types.GenerateContentConfig as GenAiGenerateContentConfig
-import com.google.genai.types.GenerateContentResponse as GenAiGenerateContentResponse
-import com.google.genai.types.Part as GenAiPart
-import java.time.Instant
-import java.time.temporal.ChronoUnit
-import java.util.Date
-import java.util.Optional
-import java.util.concurrent.TimeUnit
+import com.google.genai.kotlin.Client
+import com.google.genai.kotlin.types.Candidate as GenAiCandidate
+import com.google.genai.kotlin.types.Content as GenAiContent
+import com.google.genai.kotlin.types.FinishReason as GenAiFinishReason
+import com.google.genai.kotlin.types.GenerateContentConfig as GenAiGenerateContentConfig
+import com.google.genai.kotlin.types.GenerateContentResponse as GenAiGenerateContentResponse
+import com.google.genai.kotlin.types.Part as GenAiPart
+import kotlin.test.Test
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
-import okhttp3.mockwebserver.RecordedRequest
-import org.junit.AfterClass
-import org.junit.BeforeClass
-import org.junit.Test
-import org.junit.runner.RunWith
-import org.junit.runners.JUnit4
 import org.mockito.kotlin.any
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 
-@RunWith(JUnit4::class)
 class GeminiTest {
 
   @Test
   fun init_withApiKey_initializesClient() {
     val model = Gemini(name = "gemini-test", apiKey = "fake-key")
-    val client =
-      model::class.java.getDeclaredField("client").apply { isAccessible = true }.get(model)
-        as Client
-
-    assertThat(client.vertexAI()).isFalse()
+    assertThat(model.client.enterprise).isFalse()
   }
 
-  @Test
-  fun init_withVertexCredentials_initializesClient() {
-    val vertexCredentials =
-      VertexCredentials(
-        project = "test-project",
-        location = "us-central1",
-        credentials =
-          GoogleCredentials.newBuilder()
-            .setAccessToken(
-              AccessToken("fake-token", Date(Instant.now().plus(1, ChronoUnit.DAYS).toEpochMilli()))
-            )
-            .build(),
-      )
-    val model = Gemini(name = "gemini-test", vertexCredentials = vertexCredentials)
-
-    val client =
-      model::class.java.getDeclaredField("client").apply { isAccessible = true }.get(model)
-        as Client
-
-    assertThat(client.vertexAI()).isTrue()
-  }
-
-  @Test
-  fun generateContent_nonStreaming_attachesAdkTrackingHeaders() {
-    mockServer.enqueue(
-      MockResponse()
-        .setHeader("Content-Type", "application/json")
-        .setBody(GENERATE_CONTENT_RESPONSE)
-    )
-
-    runBlocking { collectGenerateContent(stream = false) }
-
-    assertTrackingHeaders(mockServer.takeRequest(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-  }
-
-  @Test
-  fun generateContent_streaming_attachesAdkTrackingHeaders() {
-    // The streaming endpoint returns server-sent events ("data: <json>" terminated by a blank
-    // line).
-    mockServer.enqueue(
-      MockResponse()
-        .setHeader("Content-Type", "text/event-stream")
-        .setBody("data: $GENERATE_CONTENT_RESPONSE\n\n")
-    )
-
-    runBlocking { collectGenerateContent(stream = true) }
-
-    assertTrackingHeaders(mockServer.takeRequest(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-  }
-
-  /** Collects a [Gemini.generateContent] flow so the genai SDK issues exactly one HTTP request. */
-  private suspend fun collectGenerateContent(stream: Boolean) {
-    Gemini(name = "gemini-3.1-flash-preview", apiKey = "fake-key")
-      .generateContent(
-        LlmRequest(contents = listOf(userMessage("Hello")), config = GenerateContentConfig()),
-        stream = stream,
-      )
-      .toList()
-  }
-
-  private fun assertTrackingHeaders(request: RecordedRequest?) {
-    checkNotNull(request) { "Expected the genai SDK to send a request to the mock server." }
-    // The genai SDK appends its own label, so assert our value is present rather than equal.
-    val expected = "google-adk/$VERSION gl-kotlin/${KotlinVersion.CURRENT}"
-    assertThat(request.getHeader("x-goog-api-client")).contains(expected)
-    assertThat(request.getHeader("user-agent")).contains(expected)
-  }
+  // The `init_withVertexCredentials_initializesClient` test lives in `jvmTest/GeminiJvmTest.kt`
+  // because it constructs a `com.google.auth.oauth2.GoogleCredentials` via its JVM builder, which
+  // isn't reachable from `commonTest`. `VertexCredentials.credentials` itself is typed against the
+  // SDK's `expect class GoogleCredentials` and is therefore commonTest-visible, but there is no
+  // KMP-friendly way to materialize a non-null instance for the assertion.
 
   @Test
   fun ensureModelResponse_lastRoleNotUser_addsContinueOutputMessage() {
@@ -273,7 +192,7 @@ class GeminiTest {
 
   @Test
   fun generateContent_streaming_emitsPartialAndFinalResponses() = runTest {
-    val client = Client.builder().apiKey("fake").build()
+    val client = Client(apiKey = "fake")
     val mockModels = mock<Gemini.GeminiModels>()
     whenever(
         mockModels.generateContentStream(
@@ -283,9 +202,9 @@ class GeminiTest {
         )
       )
       .thenReturn(
-        mutableListOf(
+        flowOf(
           buildGenAiResponse("chunk 1 "),
-          buildGenAiResponse("chunk 2", finishReason = "STOP"),
+          buildGenAiResponse("chunk 2", finishReason = GenAiFinishReason.STOP),
         )
       )
     val model = Gemini(client, "gemini-3.1-flash-preview", models = mockModels)
@@ -313,7 +232,7 @@ class GeminiTest {
 
   @Test
   fun generateContent_nonStreaming_returnsResponse() = runTest {
-    val client = Client.builder().apiKey("fake").build()
+    val client = Client(apiKey = "fake")
     val mockModels = mock<Gemini.GeminiModels>()
     whenever(
         mockModels.generateContent(
@@ -322,16 +241,13 @@ class GeminiTest {
           any<GenAiGenerateContentConfig>(),
         )
       )
-      .thenReturn(buildGenAiResponse("full response", finishReason = "STOP"))
+      .thenReturn(buildGenAiResponse("full response", finishReason = GenAiFinishReason.STOP))
     val model = Gemini(client, "gemini-3.1-flash-preview", models = mockModels)
 
     val responses =
       model
         .generateContent(
-          LlmRequest(
-            contents = listOf(userMessage("Hello")),
-            config = GenerateContentConfig(),
-          ),
+          LlmRequest(contents = listOf(userMessage("Hello")), config = GenerateContentConfig()),
           stream = false,
         )
         .toList()
@@ -349,22 +265,16 @@ class GeminiTest {
   @Test
   fun from_finishReasonStop_nullsOutErrorMessage() {
     val genAiResponse =
-      GenAiGenerateContentResponse.builder()
-        .candidates(
+      GenAiGenerateContentResponse(
+        candidates =
           listOf(
-            GenAiCandidate.builder()
-              .content(
-                GenAiContent.builder()
-                  .role("model")
-                  .parts(listOf(GenAiPart.builder().text("hello").build()))
-                  .build()
-              )
-              .finishReason("STOP")
-              .finishMessage("Should be ignored")
-              .build()
+            GenAiCandidate(
+              content = GenAiContent(role = "model", parts = listOf(GenAiPart(text = "hello"))),
+              finishReason = GenAiFinishReason.STOP,
+              finishMessage = "Should be ignored",
+            )
           )
-        )
-        .build()
+      )
 
     val llmResponse = LlmResponse.from(genAiResponse.fromGenaiSdk())
     assertThat(llmResponse.finishReason?.name).isEqualTo("STOP")
@@ -374,13 +284,12 @@ class GeminiTest {
   @Test
   fun from_finishReasonNotStop_keepsErrorMessage() {
     val genAiResponse =
-      GenAiGenerateContentResponse.builder()
-        .candidates(
+      GenAiGenerateContentResponse(
+        candidates =
           listOf(
-            GenAiCandidate.builder().finishReason("MAX_TOKENS").finishMessage("Too long").build()
+            GenAiCandidate(finishReason = GenAiFinishReason.MAX_TOKENS, finishMessage = "Too long")
           )
-        )
-        .build()
+      )
 
     val llmResponse = LlmResponse.from(genAiResponse.fromGenaiSdk())
     assertThat(llmResponse.finishReason?.name).isEqualTo("MAX_TOKENS")
@@ -389,23 +298,17 @@ class GeminiTest {
 
   private fun buildGenAiResponse(
     text: String,
-    finishReason: String? = null,
+    finishReason: GenAiFinishReason? = null,
   ): GenAiGenerateContentResponse {
-    return GenAiGenerateContentResponse.builder()
-      .candidates(
+    return GenAiGenerateContentResponse(
+      candidates =
         listOf(
-          GenAiCandidate.builder()
-            .content(
-              GenAiContent.builder()
-                .role("model")
-                .parts(listOf(GenAiPart.builder().text(text).build()))
-                .build()
-            )
-            .apply { finishReason?.let { finishReason(it) } }
-            .build()
+          GenAiCandidate(
+            content = GenAiContent(role = "model", parts = listOf(GenAiPart(text = text))),
+            finishReason = finishReason,
+          )
         )
-      )
-      .build()
+    )
   }
 
   private fun assertResponse(
@@ -419,31 +322,6 @@ class GeminiTest {
     assertThat(actualText).isEqualTo(expectedText)
     if (expectedFinishReason != null) {
       assertThat(response.finishReason?.name).isEqualTo(expectedFinishReason)
-    }
-  }
-
-  companion object {
-    private const val GENERATE_CONTENT_RESPONSE =
-      """{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"""
-    private const val REQUEST_TIMEOUT_SECONDS = 10L
-
-    /** Shared across all tests so we don't spin up a server per test method. */
-    private lateinit var mockServer: MockWebServer
-
-    @JvmStatic
-    @BeforeClass
-    fun startMockServer() {
-      mockServer = MockWebServer()
-      mockServer.start()
-      // Route the genai Gemini API at the shared mock server for every test in this class.
-      Client.setDefaultBaseUrls(Optional.of(mockServer.url("/").toString()), Optional.empty())
-    }
-
-    @JvmStatic
-    @AfterClass
-    fun stopMockServer() {
-      Client.setDefaultBaseUrls(Optional.empty(), Optional.empty())
-      mockServer.shutdown()
     }
   }
 }

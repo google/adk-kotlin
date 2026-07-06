@@ -17,9 +17,8 @@
 package com.google.adk.kt.serialization
 
 import com.google.common.truth.Truth.assertThat
-import com.google.genai.JsonSerializable
-import com.google.genai.types.Content
-import com.google.genai.types.Part
+import com.google.genai.kotlin.types.Content
+import com.google.genai.kotlin.types.Part
 import com.google.gson.Gson
 import org.junit.Before
 import org.junit.Test
@@ -31,17 +30,21 @@ class JsonTest {
 
   @Before fun setUp() {}
 
-  class TestJsonSerializable(
+  /**
+   * Plain Kotlin class used to verify Gson's default reflective serialization continues to cover
+   * arbitrary user-defined types when ADK calls [Json.toJsonString].
+   */
+  class TestSerializable(
     val name: String,
     val number: Int,
     val props: Map<String, Any>,
     val items: List<String>,
-  ) : JsonSerializable() {}
+  )
 
   @Test
-  fun toJsonString_withJsonSerializable() {
+  fun toJsonString_withPlainClass() {
     val obj =
-      TestJsonSerializable(
+      TestSerializable(
         "test",
         123,
         mapOf("a" to 1, "b" to "two", "c" to 3.0),
@@ -50,15 +53,14 @@ class JsonTest {
     val json = Json.toJsonString(obj)
     val abstractJson = Gson().fromJson(json, Map::class.java)
     assertThat(abstractJson["name"]).isEqualTo("test")
-    assertThat(abstractJson["number"]).isEqualTo(123)
+    assertThat(abstractJson["number"]).isEqualTo(123.0)
     assertThat(abstractJson["props"]).isEqualTo(mapOf("a" to 1.0, "b" to "two", "c" to 3.0))
     assertThat(abstractJson["items"]).isEqualTo(listOf("a", "b", "c"))
   }
 
   @Test
   fun toJsonString_withContent() {
-    val content =
-      Content.builder().role("USER").parts(listOf(Part.builder().text("hello").build())).build()
+    val content = Content(role = "USER", parts = listOf(Part(text = "hello")))
     val json = Json.toJsonString(content)
     val abstractJson = Gson().fromJson(json, Map::class.java)
     assertThat(abstractJson["role"]).isEqualTo("USER")
@@ -66,12 +68,12 @@ class JsonTest {
   }
 
   @Test
-  fun toJsonString_withNullJsonSerializable() {
-    data class TestJsonSerializable(val jsonSerializable: JsonSerializable?)
-    val obj = TestJsonSerializable(null)
+  fun toJsonString_withNullField() {
+    data class Wrapper(val payload: Content?)
+    val obj = Wrapper(null)
     val json = Json.toJsonString(obj)
     val abstractJson = Gson().fromJson(json, Map::class.java)
-    assertThat(abstractJson["jsonSerializable"]).isNull()
+    assertThat(abstractJson["payload"]).isNull()
   }
 
   @Test

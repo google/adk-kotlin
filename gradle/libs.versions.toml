@@ -14,7 +14,7 @@ github-api = "1.330"
 google-auth = "1.20.0"
 google-cloud-storage = "2.35.0"
 google-firebase-platform = "34.13.0"
-google-genai = "1.58.0"
+google-genai-kotlin = "0.1.0"
 google-gson = "2.10.1"
 google-mlkit-genai = "1.0.0-beta2"
 google-protobuf-javalite = "3.25.5"
@@ -69,7 +69,7 @@ google-cloud-storage = { module = "com.google.cloud:google-cloud-storage", versi
 google-firebase-ai = { module = "com.google.firebase:firebase-ai" }
 google-firebase-platform = { module = "com.google.firebase:firebase-bom", version.ref = "google-firebase-platform" }
 google-flogger-extensions = { module = "com.google.flogger:google-extensions", version.ref = "flogger" }
-google-genai = { module = "com.google.genai:google-genai", version.ref = "google-genai" }
+google-genai-kotlin = { module = "com.google.genai:google-genai-kotlin", version.ref = "google-genai-kotlin" }
 google-gson = { module = "com.google.code.gson:gson", version.ref = "google-gson" }
 google-mlkit-genai-prompt = { module = "com.google.mlkit:genai-prompt", version.ref = "google-mlkit-genai" }
 google-protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "google-protobuf-javalite" }

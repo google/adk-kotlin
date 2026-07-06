@@ -15,8 +15,14 @@
  */
 package com.google.adk.kt.models
 
+import com.google.genai.kotlin.GoogleCredentials as GenAiGoogleCredentials
+
 /**
  * ADK-owned handle to Google Cloud credentials for Vertex AI (see [VertexCredentials]). On JVM and
- * Android it is a `typealias` for `com.google.auth.oauth2.GoogleCredentials`.
+ * Android it is a `typealias` for `com.google.auth.oauth2.GoogleCredentials`; [toGenaiSdk] bridges
+ * it to the GenAI SDK.
  */
 expect class GoogleCredentials
+
+/** Bridges an ADK [GoogleCredentials] to the GenAI SDK credentials type. */
+internal expect fun GoogleCredentials.toGenaiSdk(): GenAiGoogleCredentials

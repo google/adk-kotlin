@@ -48,6 +48,7 @@ kotlin {
         implementation(libs.kotlinx.coroutines.core)
         implementation(libs.kotlinx.datetime)
         implementation(libs.kotlinx.serialization)
+        api(libs.google.genai.kotlin)
       }
     }
     val commonTest by getting {
@@ -75,7 +76,6 @@ kotlin {
       dependencies {
         implementation(libs.google.gson)
         implementation(libs.google.cloud.storage)
-        implementation(libs.google.genai)
         implementation(libs.mcp)
         implementation(libs.kotlinx.coroutines.reactor)
         implementation(libs.slf4j.api)
@@ -92,7 +92,7 @@ kotlin {
         implementation(libs.mockito.kotlin)
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.google.truth)
-        // GeminiTest asserts tracking headers on real requests via a local MockWebServer.
+        // GeminiJvmTest asserts tracking headers on real requests via a local MockWebServer.
         implementation(libs.okhttp.mockwebserver)
         // OtelTracerTest exercises a real span-export round-trip through the OpenTelemetry SDK.
         implementation(libs.opentelemetry.sdk)
@@ -103,11 +103,6 @@ kotlin {
     val androidMain by getting {
       dependsOn(commonJvmAndroidMain)
       dependencies {
-        // Use standard Android genai or similar if available for OSS
-        implementation(libs.google.genai.get().toString()) {
-          exclude(group = "com.google.protobuf", module = "protobuf-java")
-        } // Same as JVM if it's multiplatform, or use specific android one if separate.
-        implementation(libs.google.protobuf.javalite)
         implementation(
           libs.google.auth.oauth2.http
         ) // Android compatible version or use separate for Android if needed.
