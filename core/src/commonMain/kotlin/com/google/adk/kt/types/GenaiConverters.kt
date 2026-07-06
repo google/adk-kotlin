@@ -61,6 +61,8 @@ import com.google.genai.kotlin.types.ToolConfig as GenAiToolConfig
 import com.google.genai.kotlin.types.UrlContext as GenAiUrlContext
 import com.google.genai.kotlin.types.VertexAISearch as GenAiVertexAISearch
 import com.google.genai.kotlin.types.VertexAISearchDataStoreSpec as GenAiVertexAISearchDataStoreSpec
+import com.google.genai.kotlin.types.VertexRagStore as GenAiVertexRagStore
+import com.google.genai.kotlin.types.VertexRagStoreRagResource as GenAiVertexRagStoreRagResource
 import com.google.genai.kotlin.types.VideoMetadata as GenAiVideoMetadata
 import kotlinx.serialization.json.Json as KmpJson
 import kotlinx.serialization.json.JsonArray
@@ -589,11 +591,17 @@ internal fun Tool.toGenaiSdk(): GenAiTool =
 // --- Retrieval ---
 /** Converts a [GenAiRetrieval] from the GenAI SDK to an ADK [Retrieval]. */
 internal fun GenAiRetrieval.fromGenaiSdk(): Retrieval =
-  Retrieval(vertexAiSearch = vertexAiSearch?.fromGenaiSdk())
+  Retrieval(
+    vertexAiSearch = vertexAiSearch?.fromGenaiSdk(),
+    vertexRagStore = vertexRagStore?.fromGenaiSdk(),
+  )
 
 /** Converts an ADK [Retrieval] to a [GenAiRetrieval] for the GenAI SDK. */
 internal fun Retrieval.toGenaiSdk(): GenAiRetrieval =
-  GenAiRetrieval(vertexAiSearch = vertexAiSearch?.toGenaiSdk())
+  GenAiRetrieval(
+    vertexAiSearch = vertexAiSearch?.toGenaiSdk(),
+    vertexRagStore = vertexRagStore?.toGenaiSdk(),
+  )
 
 // --- VertexAISearch ---
 /** Converts a [GenAiVertexAISearch] from the GenAI SDK to an ADK [VertexAISearch]. */
@@ -630,6 +638,40 @@ internal fun GenAiVertexAISearchDataStoreSpec.fromGenaiSdk(): VertexAISearchData
  */
 internal fun VertexAISearchDataStoreSpec.toGenaiSdk(): GenAiVertexAISearchDataStoreSpec =
   GenAiVertexAISearchDataStoreSpec(dataStore = dataStore, filter = filter)
+
+// --- VertexRagStore ---
+/** Converts a [GenAiVertexRagStore] from the GenAI SDK to an ADK [VertexRagStore]. */
+internal fun GenAiVertexRagStore.fromGenaiSdk(): VertexRagStore =
+  VertexRagStore(
+    ragCorpora = ragCorpora,
+    ragResources = ragResources?.map { it.fromGenaiSdk() },
+    similarityTopK = similarityTopK,
+    vectorDistanceThreshold = vectorDistanceThreshold,
+  )
+
+/** Converts an ADK [VertexRagStore] to a [GenAiVertexRagStore] for the GenAI SDK. */
+internal fun VertexRagStore.toGenaiSdk(): GenAiVertexRagStore =
+  GenAiVertexRagStore(
+    ragCorpora = ragCorpora,
+    ragResources = ragResources?.map { it.toGenaiSdk() },
+    similarityTopK = similarityTopK,
+    vectorDistanceThreshold = vectorDistanceThreshold,
+  )
+
+// --- VertexRagStoreRagResource ---
+/**
+ * Converts a [GenAiVertexRagStoreRagResource] from the GenAI SDK to an ADK
+ * [VertexRagStoreRagResource].
+ */
+internal fun GenAiVertexRagStoreRagResource.fromGenaiSdk(): VertexRagStoreRagResource =
+  VertexRagStoreRagResource(ragCorpus = ragCorpus, ragFileIds = ragFileIds)
+
+/**
+ * Converts an ADK [VertexRagStoreRagResource] to a [GenAiVertexRagStoreRagResource] for the GenAI
+ * SDK.
+ */
+internal fun VertexRagStoreRagResource.toGenaiSdk(): GenAiVertexRagStoreRagResource =
+  GenAiVertexRagStoreRagResource(ragCorpus = ragCorpus, ragFileIds = ragFileIds)
 
 // --- ModalityTokenCount ---
 /** Converts a [GenAiModalityTokenCount] from the GenAI SDK to an ADK [ModalityTokenCount]. */

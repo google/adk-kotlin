@@ -17,12 +17,16 @@
 package com.google.adk.kt.types
 
 /**
- * Defines a retrieval tool that model can call to access external knowledge.
+ * Retrieve from a Vertex RAG store for grounding.
  *
- * @property vertexAiSearch Set to use data source powered by Vertex AI Search.
- * @property vertexRagStore Set to use data source powered by a Vertex RAG store.
+ * @property ragCorpora Deprecated. Use [ragResources] instead. RagCorpora resource names.
+ * @property ragResources The RAG sources to retrieve from (one corpus, or files from one corpus).
+ * @property similarityTopK Number of top k results to return from the selected corpora.
+ * @property vectorDistanceThreshold Only return results with a vector distance below the threshold.
  */
-data class Retrieval(
-  val vertexAiSearch: VertexAISearch? = null,
-  val vertexRagStore: VertexRagStore? = null,
+data class VertexRagStore(
+  val ragCorpora: List<String>? = null,
+  val ragResources: List<VertexRagStoreRagResource>? = null,
+  val similarityTopK: Int? = null,
+  val vectorDistanceThreshold: Double? = null,
 )

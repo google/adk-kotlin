@@ -757,4 +757,30 @@ class GenaiConvertersTest {
     assertEquals("Paris", functionCall.args["city"])
     assertEquals(3, functionCall.args["days"])
   }
+
+  @Test
+  fun retrieval_withVertexRagStore_convertsCorrectly() {
+    val adkRetrieval =
+      Retrieval(
+        vertexRagStore =
+          VertexRagStore(
+            ragCorpora = listOf("corpus1"),
+            ragResources =
+              listOf(VertexRagStoreRagResource(ragCorpus = "corpus2", ragFileIds = listOf("f1"))),
+            similarityTopK = 3,
+            vectorDistanceThreshold = 0.5,
+          )
+      )
+
+    val genaiRetrieval = adkRetrieval.toGenaiSdk()
+
+    val store = genaiRetrieval.vertexRagStore
+    assertNotNull(store)
+    assertEquals(listOf("corpus1"), store.ragCorpora)
+    assertEquals("corpus2", store.ragResources?.single()?.ragCorpus)
+    assertEquals(listOf("f1"), store.ragResources?.single()?.ragFileIds)
+    assertEquals(3, store.similarityTopK)
+    assertEquals(0.5, store.vectorDistanceThreshold)
+    assertEquals(adkRetrieval, genaiRetrieval.fromGenaiSdk())
+  }
 }

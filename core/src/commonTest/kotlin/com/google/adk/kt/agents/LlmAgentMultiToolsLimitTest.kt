@@ -24,6 +24,7 @@ import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.GoogleSearchTool
+import com.google.adk.kt.tools.VertexAiRagRetrieval
 import com.google.adk.kt.tools.VertexAiSearchTool
 import kotlin.test.Test
 import kotlin.test.assertNotNull
@@ -141,5 +142,70 @@ class LlmAgentMultiToolsLimitTest {
     assertNull(tools.firstOrNull { it.retrieval != null })
     val declaredNames = tools.flatMap { it.functionDeclarations ?: emptyList() }.map { it.name }
     assertTrue(declaredNames.contains("vertex_ai_search_agent"))
+  }
+
+  @Test
+  fun multipleTools_ragRetrievalWithBypass_swappedToFunctionTool() = runTest {
+    var captured: LlmRequest? = null
+    val model =
+      DummyModel("m") { request ->
+        captured = request
+        flowOf(LlmResponse(content = modelMessage("done")))
+      }
+    val agent =
+      LlmAgent(
+        name = "main",
+        model = model,
+        tools =
+          listOf(
+            VertexAiRagRetrieval(
+              name = "rag",
+              description = "d",
+              ragCorpora = listOf("corpus1"),
+              bypassMultiToolsLimit = true,
+            ),
+            DummyTool("calc"),
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    val unused =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    val tools = captured?.config?.tools
+    assertNotNull(tools)
+    // The built-in RAG retrieval is replaced and re-exposed as a function tool.
+    assertNull(tools.firstOrNull { it.retrieval != null })
+    val declaredNames = tools.flatMap { it.functionDeclarations ?: emptyList() }.map { it.name }
+    assertTrue(declaredNames.contains("vertex_ai_rag_retrieval_agent"))
+  }
+
+  @Test
+  fun multipleTools_ragRetrievalWithoutBypass_keptAsBuiltIn() = runTest {
+    var captured: LlmRequest? = null
+    val model =
+      DummyModel("m") { request ->
+        captured = request
+        flowOf(LlmResponse(content = modelMessage("done")))
+      }
+    val agent =
+      LlmAgent(
+        name = "main",
+        model = model,
+        tools =
+          listOf(
+            VertexAiRagRetrieval(name = "rag", description = "d", ragCorpora = listOf("corpus1")),
+            DummyTool("calc"),
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    val unused =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    val tools = captured?.config?.tools
+    assertNotNull(tools)
+    // Did not opt in: the built-in RAG retrieval is left as-is.
+    assertNotNull(tools.firstOrNull { it.retrieval?.vertexRagStore != null })
   }
 }

@@ -40,9 +40,12 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.GoogleSearchAgentTool
 import com.google.adk.kt.tools.GoogleSearchTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.VertexAiRagRetrieval
+import com.google.adk.kt.tools.VertexAiRagRetrievalAgentTool
 import com.google.adk.kt.tools.VertexAiSearchAgentTool
 import com.google.adk.kt.tools.VertexAiSearchTool
 import com.google.adk.kt.tools.createGoogleSearchAgent
+import com.google.adk.kt.tools.createVertexAiRagRetrievalAgent
 import com.google.adk.kt.tools.createVertexAiSearchAgent
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
@@ -192,6 +195,8 @@ internal class LlmAgentTurn(
             GoogleSearchAgentTool(createGoogleSearchAgent(agent.model))
           tool is VertexAiSearchTool && tool.bypassMultiToolsLimit ->
             VertexAiSearchAgentTool(createVertexAiSearchAgent(agent.model, tool))
+          tool is VertexAiRagRetrieval && tool.bypassMultiToolsLimit ->
+            VertexAiRagRetrievalAgentTool(createVertexAiRagRetrievalAgent(agent.model, tool))
           else -> tool
         }
       }
