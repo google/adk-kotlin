@@ -26,6 +26,9 @@ import io.modelcontextprotocol.server.McpSyncServer
 import io.modelcontextprotocol.server.McpSyncServerExchange
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider
 import io.modelcontextprotocol.spec.McpSchema
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -37,6 +40,12 @@ object FakeMcpServer {
   /** Environment variable the test sets to a random token; the server reflects it back. */
   const val TOKEN_ENV = "ADK_MCP_FAKE_TOKEN"
 
+  /**
+   * Environment variable holding a file path. When set, the server writes its PID there at startup
+   * so a test can kill this child; each respawn overwrites it.
+   */
+  const val PID_FILE_ENV = "ADK_MCP_FAKE_PID_FILE"
+
   const val SERVER_NAME = "adk-fake-mcp-server"
   const val SERVER_VERSION = "0.1.0"
 
@@ -46,6 +55,10 @@ object FakeMcpServer {
   const val TOOL_COUNTER = "counter"
   const val TOOL_WHOAMI = "whoami"
   const val TOOL_SLOW = "slow"
+  const val TOOL_FAIL = "fail"
+
+  /** Message the [TOOL_FAIL] tool returns inside its `isError: true` result. */
+  const val FAIL_MESSAGE = "intentional tool execution error from the 'fail' tool"
 
   // Resource URIs
   const val RESOURCE_GREETING_URI = "mem://greeting"
@@ -69,6 +82,7 @@ fun main() {
   System.err.println(
     "[fake-mcp] starting ${FakeMcpServer.SERVER_NAME} ${FakeMcpServer.SERVER_VERSION}"
   )
+  writePidFileIfRequested()
 
   // The transport reads JSON-RPC requests from System.in and writes responses to System.out. We use
   // the same default JSON mapper the ADK client uses (see DefaultMcpTransportBuilder) so the two
@@ -111,7 +125,7 @@ fun main() {
 // Tools
 
 private fun toolSpecifications(): List<SyncToolSpecification> =
-  listOf(echoTool(), addTool(), counterTool(), whoamiTool(), slowTool())
+  listOf(echoTool(), addTool(), counterTool(), whoamiTool(), slowTool(), failTool())
 
 /**
  * Builds a [SyncToolSpecification] from a tool's [name], [description], [inputSchema], and
@@ -208,6 +222,23 @@ private fun slowTool(): SyncToolSpecification =
     textResult("done")
   }
 
+/**
+ * `fail() -> isError result`: a spec-compliant tool execution error — a successful JSON-RPC result
+ * with [McpSchema.CallToolResult.isError] = true (MCP spec, Server/Tools → "Error Handling"), the
+ * in-band error channel. Unlike a protocol error the call completes normally, so `McpTool.run`
+ * returns it verbatim without retrying.
+ */
+private fun failTool(): SyncToolSpecification =
+  syncTool(
+    name = FakeMcpServer.TOOL_FAIL,
+    description = "Always returns a tool-execution error (isError = true).",
+  ) { _, _ ->
+    McpSchema.CallToolResult.builder()
+      .addTextContent(FakeMcpServer.FAIL_MESSAGE)
+      .isError(true)
+      .build()
+  }
+
 // Resources
 
 private fun resourceSpecifications(): List<SyncResourceSpecification> = listOf(greetingResource())
@@ -229,6 +260,20 @@ private fun greetingResource(): SyncResourceSpecification {
 // Small helpers
 
 private fun injectedToken(): String = System.getenv(FakeMcpServer.TOKEN_ENV) ?: "<no-token>"
+
+/**
+ * If [FakeMcpServer.PID_FILE_ENV] points at a path, record this process's PID there so a test can
+ * kill it. Written via a temp file + atomic move so a concurrent reader never sees a half-written
+ * value.
+ */
+private fun writePidFileIfRequested() {
+  val target = System.getenv(FakeMcpServer.PID_FILE_ENV)?.let { Path.of(it) } ?: return
+  val pid = ProcessHandle.current().pid()
+  val tmp = Files.createTempFile(target.parent ?: Path.of("."), "fake-mcp-pid", ".tmp")
+  Files.writeString(tmp, pid.toString())
+  Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE)
+  System.err.println("[fake-mcp] pid=$pid written to $target")
+}
 
 /** Wraps [text] in a successful, single-text-content tool result. */
 private fun textResult(text: String): McpSchema.CallToolResult =

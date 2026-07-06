@@ -22,11 +22,15 @@ import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
 import io.modelcontextprotocol.client.transport.ServerParameters
 import io.modelcontextprotocol.spec.McpSchema
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assume
 
 /**
@@ -61,6 +65,7 @@ class McpToolsetIntegrationTest {
           FakeMcpServer.TOOL_COUNTER,
           FakeMcpServer.TOOL_WHOAMI,
           FakeMcpServer.TOOL_SLOW,
+          FakeMcpServer.TOOL_FAIL,
         )
     }
   }
@@ -80,6 +85,7 @@ class McpToolsetIntegrationTest {
           FakeMcpServer.TOOL_COUNTER,
           FakeMcpServer.TOOL_WHOAMI,
           FakeMcpServer.TOOL_SLOW,
+          FakeMcpServer.TOOL_FAIL,
           "list_mcp_resources",
           "load_mcp_resource",
           "list_mcp_resource_templates",
@@ -128,6 +134,52 @@ class McpToolsetIntegrationTest {
   }
 
   @Test
+  fun run_failingTool_returnsToolExecutionErrorVerbatim(): Unit = runBlocking {
+    newToolset().use { toolset ->
+      val fail = toolset.getTools().single { it.name == FakeMcpServer.TOOL_FAIL }
+      val result = fail.run(testToolContext(), emptyMap()) as McpSchema.CallToolResult
+      // In-band tool error: returned verbatim (isError=true), not thrown, so no retry path.
+      assertThat(result.isError()).isTrue()
+      assertThat(textOf(result)).isEqualTo(FakeMcpServer.FAIL_MESSAGE)
+    }
+  }
+
+  @Test
+  fun run_afterServerProcessKilled_respawnsFreshProcessAndRecovers(): Unit = runBlocking {
+    val pidFile = Files.createTempFile("adk-mcp-it-pid", ".txt")
+    try {
+      newToolset(pidFile = pidFile, requestTimeout = KILL_TEST_REQUEST_TIMEOUT).use { toolset ->
+        val counter = toolset.getTools().single { it.name == FakeMcpServer.TOOL_COUNTER }
+
+        // First call boots the child process and advances its in-memory counter to 1.
+        assertThat(textOf(counter.run(testToolContext(), emptyMap()))).isEqualTo("1")
+
+        // The server records its PID only once it is serving, so the file is populated by now.
+        val firstPid = readPid(pidFile)
+        val firstHandle = ProcessHandle.of(firstPid).orElseThrow()
+
+        // Unexpected death: external SIGKILL, none of the graceful stdio shutdown. Recovery means
+        // respawn + re-initialize (McpTool.reinitializeSession); the spec has no stdio reconnect.
+        firstHandle.destroyForcibly()
+        withTimeout(TimeUnit.SECONDS.toMillis(KILL_TIMEOUT_SECONDS)) {
+          val unused = firstHandle.onExit().await()
+        }
+        assertThat(firstHandle.isAlive).isFalse()
+
+        // Recovered call lands on a fresh respawned process, so the counter resets: reads 1, not 2.
+        assertThat(textOf(counter.run(testToolContext(), emptyMap()))).isEqualTo("1")
+
+        // A different, live PID confirms a genuinely new OS process now backs the session.
+        val secondPid = readPid(pidFile)
+        assertThat(secondPid).isNotEqualTo(firstPid)
+        assertThat(ProcessHandle.of(secondPid).orElseThrow().isAlive).isTrue()
+      }
+    } finally {
+      Files.deleteIfExists(pidFile)
+    }
+  }
+
+  @Test
   fun declaration_addTool_convertsServerSchemaToTypedParameters(): Unit = runBlocking {
     newToolset().use { toolset ->
       val add = toolset.getTools().single { it.name == FakeMcpServer.TOOL_ADD }
@@ -150,13 +202,15 @@ class McpToolsetIntegrationTest {
   private fun newToolset(
     token: String = INJECTED_TOKEN,
     useMcpResources: Boolean = false,
+    pidFile: Path? = null,
+    requestTimeout: Duration = REQUEST_TIMEOUT,
     progressConsumers: List<(McpSchema.ProgressNotification) -> Unit> = emptyList(),
   ): McpToolset =
     McpToolsetConfig(
         stdioConnectionParams =
           McpConnectionParameters.Stdio(
-            serverParameters = fakeServerParameters(token),
-            timeoutDuration = REQUEST_TIMEOUT,
+            serverParameters = fakeServerParameters(token, pidFile),
+            timeoutDuration = requestTimeout,
           ),
         useMcpResources = useMcpResources,
       )
@@ -166,12 +220,25 @@ class McpToolsetIntegrationTest {
   private fun textOf(toolResult: Any): String =
     ((toolResult as McpSchema.CallToolResult).content().single() as McpSchema.TextContent).text()
 
+  /** Reads the PID the fake server wrote to [pidFile] (see [FakeMcpServer.PID_FILE_ENV]). */
+  private fun readPid(pidFile: Path): Long = Files.readString(pidFile).trim().toLong()
+
   private companion object {
     /** Env var that, when truthy, skips this suite (e.g. sandboxes that forbid subprocesses). */
     private const val DISABLE_IT_ENV = "ADK_MCP_DISABLE_IT"
 
     /** Request timeout for stdio calls; generous to absorb cold child-JVM startup on CI. */
     private val REQUEST_TIMEOUT: Duration = Duration.ofSeconds(30)
+
+    /** How long to wait for a SIGKILL'd child process to actually exit before failing. */
+    private const val KILL_TIMEOUT_SECONDS: Long = 10
+
+    /**
+     * Request timeout for the process-kill test. Kept short because the first post-kill call blocks
+     * for the entire timeout (ADK doesn't fail fast on a broken stdio pipe) before recovery kicks
+     * in; still ample for the trivial retried call on the respawned process.
+     */
+    private val KILL_TEST_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(5)
 
     /**
      * A fixed, non-semantic token injected into the server's environment and reflected back by the
@@ -184,13 +251,19 @@ class McpToolsetIntegrationTest {
      *
      * We reuse this test JVM's own `java` binary and classpath, which already contain the fake
      * server class and the MCP SDK (the SDK is a `jvmMain` dependency, visible on the test runtime
-     * classpath).
+     * classpath). When [pidFile] is non-null, the server is told to record its PID there so a test
+     * can kill the child process.
      */
-    private fun fakeServerParameters(token: String): ServerParameters =
-      ServerParameters.builder(javaBinary())
-        .args("-cp", System.getProperty("java.class.path"), FakeMcpServer.MAIN_CLASS)
-        .addEnvVar(FakeMcpServer.TOKEN_ENV, token)
-        .build()
+    private fun fakeServerParameters(token: String, pidFile: Path? = null): ServerParameters {
+      val builder =
+        ServerParameters.builder(javaBinary())
+          .args("-cp", System.getProperty("java.class.path"), FakeMcpServer.MAIN_CLASS)
+          .addEnvVar(FakeMcpServer.TOKEN_ENV, token)
+      if (pidFile != null) {
+        builder.addEnvVar(FakeMcpServer.PID_FILE_ENV, pidFile.toString())
+      }
+      return builder.build()
+    }
 
     private fun javaBinary(): String =
       Path.of(System.getProperty("java.home")!!, "bin", "java").toString()
