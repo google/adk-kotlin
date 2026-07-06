@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.5.0](https://github.com/google/adk-kotlin/compare/v0.4.0...v0.5.0) (2026-07-03)
+
+
+### Features
+
+* add `addEventsToMemory` to MemoryService ([93e40d9](https://github.com/google/adk-kotlin/commit/93e40d9a5ad97df44813c6473bc58920c79988f4))
+* add `addMemory` to MemoryService ([ebe280e](https://github.com/google/adk-kotlin/commit/ebe280ec3bee8f6fdaed39df15e501425232f1c0))
+* add built-in request_input and get_user_choice human-in-the-loop tools ([7c0de10](https://github.com/google/adk-kotlin/commit/7c0de10705fac5cf9bdd21bbc288f5aa0b91012e))
+* **agents:** support RunConfig.maxLlmCalls ([70f69c3](https://github.com/google/adk-kotlin/commit/70f69c3b6c9beb5568dadc0177dc5681f4d12778))
+* **firebase:** map citation/usage/grounding fields and errorCode in Firebase conversions ([932e2e1](https://github.com/google/adk-kotlin/commit/932e2e14162c15d0c4d6cca894987066f4c4d78c))
+* handle long-running input requests in the debug REPL ([1e0d96e](https://github.com/google/adk-kotlin/commit/1e0d96eaa4970f755f20f18882d42799062e31b5))
+* implement bypassMultiToolsLimit for google_search ([1ed4481](https://github.com/google/adk-kotlin/commit/1ed44811f070a7fa6c689ff1062b68c639bb7d29))
+* implement bypassMultiToolsLimit for vertex_ai_search ([d4e9353](https://github.com/google/adk-kotlin/commit/d4e93530b13f0f4a7ff5bd4d152cc07385b35603))
+* **models:** add errorCode and customMetadata to LlmResponse ([9834ded](https://github.com/google/adk-kotlin/commit/9834ded59cc60ff94dc94331b03b53f695ae6e1a))
+* **telemetry:** honor ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS env var ([23250e6](https://github.com/google/adk-kotlin/commit/23250e617e2bad7fb77c8c65a240264e0d7b628e))
+* **telemetry:** propagate gcp.mcp.server.destination.id on execute_tool ([7b13efd](https://github.com/google/adk-kotlin/commit/7b13efd214d47975d433e80dea1edc4d3e6ef036))
+* **telemetry:** record full token-usage and reasoning-budget attributes ([89cf418](https://github.com/google/adk-kotlin/commit/89cf41801f860ca3fbfef7d2352cdf6451b4dbd1))
+* **types:** add avgLogprobs and logprobsResult to LlmResponse ([37a5fbf](https://github.com/google/adk-kotlin/commit/37a5fbf8c781a0da59a0472b2d50e3bb642e7119))
+* **types:** add penalties, responseLogprobs, mediaResolution and serviceTier to GenerateContentConfig ([2bb2ac2](https://github.com/google/adk-kotlin/commit/2bb2ac2e761e7eca5377551b9ab7703da98f8a69))
+* **types:** add safetySettings to GenerateContentConfig ([e6d7bce](https://github.com/google/adk-kotlin/commit/e6d7bce808056fc06b8fe1d766b7c5fb8fb2485e))
+* **types:** add thoughts/tool-use token counts and modality details to UsageMetadata ([79330ef](https://github.com/google/adk-kotlin/commit/79330ef3d7194a0466d4d9889566f34ac9e55673))
+* **types:** add toolConfig/FunctionCallingConfig to GenerateContentConfig ([8898fe2](https://github.com/google/adk-kotlin/commit/8898fe29d496bb0855b645789c21f419c6b0b926))
+* **types:** add videoMetadata and partMetadata to Part ([40775ea](https://github.com/google/adk-kotlin/commit/40775ea7fe92ebc0a991bf0353ffdf96247ef283))
+* **types:** carry grounding chunks/supports/search payload in GroundingMetadata ([af3c573](https://github.com/google/adk-kotlin/commit/af3c57343ef36bddc81854bfce9aac3e1997a04d))
+* **types:** carry uri and span indices on Citation ([46ac924](https://github.com/google/adk-kotlin/commit/46ac924a8ec11a37a9148d87167f3e90ff8db5e0))
+
+
+### Bug Fixes
+
+* add artifact sharing in `AgentTool` between the parent and wrapped agent ([b26adbe](https://github.com/google/adk-kotlin/commit/b26adbeaa8a235c0e898123fe9c616cd175dc31e))
+* **agents:** don't route the next user turn into a workflow agent's child ([1a686e9](https://github.com/google/adk-kotlin/commit/1a686e9e231551be5527636bed6ed55523af388e))
+* **agents:** support resuming from a pending transfer_to_agent call ([ead993d](https://github.com/google/adk-kotlin/commit/ead993d2c21b0d8a9b0b7038e2b6ed36a26c4c94))
+* **build:** avoid OOM in adk-kotlin gradle build ([0e61328](https://github.com/google/adk-kotlin/commit/0e61328e71f1eb6daecbeee30fad613809cd675f))
+* fix agent transfer to return control to the parent after a sub-agent completes ([339deca](https://github.com/google/adk-kotlin/commit/339deca1883fa2c2bff7adef84be9dbecef6e577))
+* fix long-running result replay ([895827e](https://github.com/google/adk-kotlin/commit/895827eb00fec744b296c07669d81bb13844d788))
+* fix per-turn loop termination for tool confirmations ([8e31b5b](https://github.com/google/adk-kotlin/commit/8e31b5b93a04ed05916bb3309daeae79cc25f2b7))
+* keep adk_request_input events in LLM context so the model sees the answer ([d28e7ed](https://github.com/google/adk-kotlin/commit/d28e7edf7600dec2ff34d7bd01462ab39f1e815a))
+* make `AgentTool` run wrapped agent in an isolated session ([7b280cf](https://github.com/google/adk-kotlin/commit/7b280cfe0ed384904bf6a2ce12f1cace8719b91b))
+* merge`stateDelta` into session state before `onUserMessage/agent` run ([faa9816](https://github.com/google/adk-kotlin/commit/faa98161e5a6c5e9373762d361a3d398cae8a2c2))
+* pass plugins from parent to wrapped agent's runner ([e107906](https://github.com/google/adk-kotlin/commit/e107906af70b9f2e41575a2b19efbe288a99e5e8))
+* scope ADK Kotlin docs release analyzer to a single language ([563a4f7](https://github.com/google/adk-kotlin/commit/563a4f72501b0cdecc35935f5dd042c24c792963))
+* stop gating built-in tools on model name ([0858301](https://github.com/google/adk-kotlin/commit/0858301c26c680140b2d0e204f27d9ba8a55eee8))
+* suppress function-response for long-running tools that return Unit ([1269fa6](https://github.com/google/adk-kotlin/commit/1269fa69ec668fad627f7308aeea146c1a38c60f))
+* **telemetry:** drop inline_data and response_schema from traced llm_request ([553e5ed](https://github.com/google/adk-kotlin/commit/553e5ed566130aaeba3de839ace3d8ec6121588e))
+* **types:** tolerate unknown FinishReason values when deserializing ([5bf2036](https://github.com/google/adk-kotlin/commit/5bf20365fe149ab68d924252dcb0af5e0589378d))
+* widen ADK Kotlin Frontmatter.metadata type to Map&lt;String, Any?&gt; ([2f69ddd](https://github.com/google/adk-kotlin/commit/2f69ddd017695e58c9f3c5fd02e81bf386013e91))
+
+
+### Documentation
+
+* document the null default of Toolset.getTools readonlyContext ([f7f4e81](https://github.com/google/adk-kotlin/commit/f7f4e8136e5d54a846800e1130378daa62b0f965))
+
 ## [0.4.0](https://github.com/google/adk-kotlin/compare/v0.3.0...v0.4.0) (2026-06-22)
 
 
