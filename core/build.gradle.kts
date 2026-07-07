@@ -53,6 +53,7 @@ kotlin {
     }
     val commonTest by getting {
       dependencies {
+        implementation(project(":google-adk-kotlin-testing"))
         implementation(kotlin("test"))
         implementation(libs.mockito.kotlin)
         implementation(libs.kotlinx.coroutines.test)

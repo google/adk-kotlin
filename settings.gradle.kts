@@ -30,6 +30,10 @@ include(":google-adk-kotlin-core")
 
 project(":google-adk-kotlin-core").projectDir = file("core")
 
+include(":google-adk-kotlin-testing")
+
+project(":google-adk-kotlin-testing").projectDir = file("testing")
+
 include(":google-adk-kotlin-processor")
 
 project(":google-adk-kotlin-processor").projectDir = file("processor")
