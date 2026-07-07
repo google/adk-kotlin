@@ -32,6 +32,11 @@ val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
 // compiler version so published artifacts stay consumable by projects on this
 // Kotlin version and downstream apps aren't forced to upgrade.
 val kotlinCompatVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_1
+// kotlin-stdlib version the Kotlin plugin adds and publishes transitively. Pinned
+// to a 2.1 release so its metadata stays readable by consumers on the Kotlin 2.1
+// compiler; without this the 2.3 compiler would leak a 2.3 stdlib into the POMs
+// and break the kotlinCompatVersion promise above.
+val kotlinCoreLibrariesVersion = "2.1.20"
 val androidCompileSdk = providers.gradleProperty("androidCompileSdk").getOrElse("34").toInt()
 val androidMinSdk = providers.gradleProperty("androidMinSdk").getOrElse("26").toInt()
 
@@ -40,6 +45,10 @@ val androidMinSdk = providers.gradleProperty("androidMinSdk").getOrElse("26").to
 extra["androidCompileSdk"] = androidCompileSdk
 
 extra["androidMinSdk"] = androidMinSdk
+
+// Shared so Android modules on AGP's built-in Kotlin (which don't apply the
+// kotlin.jvm/multiplatform plugins configured below) can reuse the same pin.
+extra["kotlinCoreLibrariesVersion"] = kotlinCoreLibrariesVersion
 
 allprojects {
   group = "com.google.adk"
@@ -58,12 +67,14 @@ subprojects {
   plugins.withId("org.jetbrains.kotlin.jvm") {
     configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
       jvmToolchain(jdkVersion)
+      coreLibrariesVersion = kotlinCoreLibrariesVersion
     }
   }
 
   plugins.withId("org.jetbrains.kotlin.multiplatform") {
     configure<org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension> {
       jvmToolchain(jdkVersion)
+      coreLibrariesVersion = kotlinCoreLibrariesVersion
     }
   }
 

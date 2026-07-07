@@ -23,6 +23,11 @@ plugins {
   alias(libs.plugins.gradle.test.retry)
 }
 
+// AGP's built-in Kotlin doesn't apply the kotlin.jvm/multiplatform plugins that
+// the root project pins coreLibrariesVersion on, so set it here too. Keeps the
+// published AAR on the 2.1 stdlib and consumable by Kotlin 2.1 projects.
+kotlin { coreLibrariesVersion = rootProject.extra["kotlinCoreLibrariesVersion"] as String }
+
 dependencies {
   implementation(platform(libs.google.firebase.platform))
   implementation(project(":google-adk-kotlin-core"))
