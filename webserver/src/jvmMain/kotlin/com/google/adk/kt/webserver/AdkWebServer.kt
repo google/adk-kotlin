@@ -39,17 +39,16 @@ import io.ktor.serialization.gson.gson
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
-import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
-import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.plugins.callloging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.uri
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import io.ktor.server.sse.SSE
 import kotlinx.datetime.Instant
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -99,7 +98,7 @@ class AdkWebServer(
     private val logger = LoggerFactory.getLogger(AdkWebServer::class.java)
   }
 
-  private var server: EmbeddedServer<*, *>? = null
+  private var server: ApplicationEngine? = null
 
   fun start(wait: Boolean = false) {
     if (server != null) return
@@ -170,7 +169,6 @@ fun Application.adkModule(
       "Status: $status, HTTP method: $httpMethod, URI: $uri"
     }
   }
-  install(SSE)
   install(ContentNegotiation) {
     gson {
       setPrettyPrinting()

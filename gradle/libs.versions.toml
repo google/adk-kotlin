@@ -25,11 +25,11 @@ jackson = "2.16.1"
 junit = "4.13.2"
 kotlin = "2.3.21"
 kotlinx-atomicfu = "0.27.0"
-kotlinx-coroutines = "1.10.2"
+kotlinx-coroutines = "1.8.1"
 kotlinx-datetime = "0.6.2"
 kotlinx-serialization = "1.6.3"
 ksp = "2.3.9"
-ktor = "3.0.3"
+ktor = "2.3.8"
 kxml2 = "2.3.0"
 litertlm = "0.13.1"
 mcp = "1.1.2"
@@ -91,7 +91,6 @@ ktor-server-call-logging = { module = "io.ktor:ktor-server-call-logging", versio
 ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
-ktor-server-sse = { module = "io.ktor:ktor-server-sse", version.ref = "ktor" }
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 kxml2 = { module = "net.sf.kxml:kxml2", version.ref = "kxml2" }
 mcp = { module = "io.modelcontextprotocol.sdk:mcp", version.ref = "mcp" }

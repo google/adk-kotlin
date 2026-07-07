@@ -20,17 +20,11 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.runners.InMemoryRunner
-import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.models.AgentRunRequest
-import com.google.adk.kt.webserver.models.RunResponse
-import com.google.adk.kt.webserver.models.SessionModel
-import com.google.adk.kt.webserver.models.TurnModel
 import com.google.gson.Gson
 import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
@@ -39,10 +33,7 @@ import io.ktor.server.response.respondTextWriter
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import io.ktor.server.sse.sse
-import io.ktor.sse.ServerSentEvent
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.toList
 
@@ -87,27 +78,27 @@ fun Route.runRoutes(
     }
   }
 
-  route("/run_sse", method = HttpMethod.Post) {
-    sse {
-      val request = call.receive<AgentRunRequest>()
-      val agent = agentLoader.loadAgent(request.appName)
-      if (agent == null) {
-        call.respond(HttpStatusCode.NotFound, "Agent not found")
-        return@sse
-      }
-      val runner =
-        InMemoryRunner(
-          agent = agent,
-          sessionService = sessionService,
-          artifactService = artifactService,
-          appName = request.appName,
-        )
+  post("/run_sse") {
+    val request = call.receive<AgentRunRequest>()
+    val agent = agentLoader.loadAgent(request.appName)
+    if (agent == null) {
+      return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
+    }
+    val runner =
+      InMemoryRunner(
+        agent = agent,
+        sessionService = sessionService,
+        artifactService = artifactService,
+        appName = request.appName,
+      )
 
-      val runConfig =
-        RunConfig(streamingMode = if (request.streaming) StreamingMode.SSE else StreamingMode.NONE)
+    val runConfig =
+      RunConfig(streamingMode = if (request.streaming) StreamingMode.SSE else StreamingMode.NONE)
 
-      val sessionId = request.sessionId ?: UUID.randomUUID().toString()
+    val sessionId = request.sessionId ?: UUID.randomUUID().toString()
 
+    // Ktor 2.x has no SSE plugin; stream events manually as text/event-stream.
+    call.respondTextWriter(contentType = ContentType.Text.EventStream) {
       runner
         .runAsync(
           request.userId,
@@ -119,7 +110,8 @@ fun Route.runRoutes(
         )
         .collect { event ->
           val data = Gson().toJson(event)
-          send(ServerSentEvent(data = data))
+          write("data: $data\n\n")
+          flush()
         }
     }
   }
