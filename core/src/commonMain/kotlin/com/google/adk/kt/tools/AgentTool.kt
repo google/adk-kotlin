@@ -25,6 +25,7 @@ import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
@@ -119,10 +120,12 @@ open class AgentTool(
         skipClosingPlugins = includePlugins && childPlugins.isNotEmpty(),
       )
 
-    // Forward non-internal state from the parent context to the child session.
+    // Seed the child session from the parent's merged session state, excluding ADK-internal
+    // ("_adk") and temporary ("temp:") keys. Temp state is invocation-scoped and must not cross
+    // into the child session.
     val parentState =
-      context.actions.stateDelta
-        .filterKeys { key -> !key.startsWith("_adk") }
+      context.context.state
+        .filterKeys { key -> !key.startsWith("_adk") && !key.startsWith(State.TEMP_PREFIX) }
         .takeIf { it.isNotEmpty() }
 
     val childSession =

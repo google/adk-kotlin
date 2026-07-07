@@ -214,9 +214,13 @@ class AgentToolTest {
     assertEquals(listOf(parentEvent), parentSession.events)
   }
 
-  /** Non-internal parent state must still be forwarded into the child's isolated session. */
+  /**
+   * The child session must be seeded from the parent session's merged state (not the current tool
+   * call's empty `actions.stateDelta`), with ADK-internal (`_adk`) and temporary (`temp:`) keys
+   * excluded.
+   */
   @Test
-  fun run_wrappedAgent_forwardsNonInternalParentState() = runTest {
+  fun run_wrappedAgent_seedsChildFromParentSessionState() = runTest {
     var observedState: Map<String, Any>? = null
     val inner =
       DummyAgent(
@@ -227,15 +231,30 @@ class AgentToolTest {
         },
       )
     val tool = AgentTool(inner)
-    val context = testToolContext(testInvocationContext(agent = inner))
-    context.actions.stateDelta["userKey"] = "userValue"
-    context.actions.stateDelta["_adkInternal"] = "should-not-leak"
+    val parentSession =
+      Session(
+        key = com.google.adk.kt.sessions.SessionKey("parentApp", "user1", "parent-session"),
+        state =
+          com.google.adk.kt.sessions.State(
+            initialState =
+              mapOf(
+                "userKey" to "userValue",
+                "_adkInternal" to "should-not-leak",
+                "temp:ephemeral" to "should-not-cross",
+              )
+          ),
+      )
+    val context = testToolContext(testInvocationContext(agent = inner, session = parentSession))
+    // The buggy path seeded from actions.stateDelta; ensure that path is not the source.
+    context.actions.stateDelta["fromDelta"] = "should-not-be-used"
 
     val unused = tool.run(context, mapOf("request" to "Hello"))
 
     val state = assertNotNull(observedState)
     assertEquals("userValue", state["userKey"])
     assertEquals(false, state.containsKey("_adkInternal"))
+    assertEquals(false, state.containsKey("temp:ephemeral"))
+    assertEquals(false, state.containsKey("fromDelta"))
   }
 
   @Test
