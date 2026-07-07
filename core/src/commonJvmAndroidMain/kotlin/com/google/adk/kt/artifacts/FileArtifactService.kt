@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.artifacts
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionKey
@@ -64,6 +65,7 @@ import kotlinx.serialization.SerializationException
  *
  * @property baseDir path to the root directory under which all artifacts are stored.
  */
+@OptIn(FrameworkInternalApi::class)
 class FileArtifactService(private val baseDir: String) : ArtifactService {
 
   private val logger = LoggerFactory.getLogger(FileArtifactService::class)

@@ -17,6 +17,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.LlmRequest
@@ -43,6 +44,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
  *
  * Mirrors Python ADK's `flows/llm_flows/request_confirmation.py`.
  */
+@OptIn(FrameworkInternalApi::class)
 internal class RequestConfirmationProcessor : LlmRequestProcessor {
 
   override suspend fun process(

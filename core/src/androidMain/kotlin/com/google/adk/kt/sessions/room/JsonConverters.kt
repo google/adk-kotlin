@@ -17,6 +17,7 @@
 package com.google.adk.kt.sessions.room
 
 import androidx.room.TypeConverter
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.AnySerializer
 import com.google.adk.kt.serialization.adkJson
@@ -33,6 +34,7 @@ import kotlinx.serialization.builtins.serializer
  * (the DAO strips removed keys before a map reaches [toStateJson]); the append-only event log keeps
  * deltas verbatim, and [AnySerializer] preserves the sentinel across the event round-trip.
  */
+@OptIn(FrameworkInternalApi::class)
 internal object JsonConverters {
 
   private val stateSerializer = MapSerializer(String.serializer(), AnySerializer)

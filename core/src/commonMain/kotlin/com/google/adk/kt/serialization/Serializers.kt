@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.serialization
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.sessions.State
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -54,6 +55,7 @@ private const val REMOVED_MARKER = "__ADK_SENTINEL_REMOVED__"
  * numbers round-trip as [Long] and fractional numbers as [Double]. The [State.REMOVED] sentinel is
  * preserved via [REMOVED_MARKER].
  */
+@OptIn(FrameworkInternalApi::class)
 internal object AnySerializer : KSerializer<Any> {
   // The serialized form is an arbitrary JSON value (object, array, or primitive), so the descriptor
   // delegates to [JsonElement]'s rather than claiming a single primitive kind.
@@ -75,7 +77,8 @@ internal object AnySerializer : KSerializer<Any> {
   }
 }
 
-private fun anyToJsonElement(value: Any?): JsonElement =
+@FrameworkInternalApi
+fun anyToJsonElement(value: Any?): JsonElement =
   when (value) {
     null -> JsonNull
     State.REMOVED -> JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true)))
@@ -99,7 +102,8 @@ private fun anyToJsonElement(value: Any?): JsonElement =
       )
   }
 
-private fun jsonElementToAny(element: JsonElement): Any? =
+@FrameworkInternalApi
+fun jsonElementToAny(element: JsonElement): Any? =
   when (element) {
     is JsonNull -> null
     is JsonPrimitive ->
@@ -124,7 +128,8 @@ private fun jsonElementToAny(element: JsonElement): Any? =
  * persistence. Defaults are omitted to keep payloads small, unknown keys are ignored for
  * forward-compatibility, and [AnySerializer] is registered contextually for free-form `Any` values.
  */
-internal val adkJson: Json = Json {
+@FrameworkInternalApi
+val adkJson: Json = Json {
   encodeDefaults = false
   explicitNulls = false
   ignoreUnknownKeys = true

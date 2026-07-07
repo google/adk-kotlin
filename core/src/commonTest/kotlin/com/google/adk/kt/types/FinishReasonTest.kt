@@ -16,11 +16,13 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
 import kotlin.test.assertEquals
 import org.junit.Test
 
 /** Tests for [FinishReason] serialization, including unknown-value robustness. */
+@OptIn(FrameworkInternalApi::class)
 class FinishReasonTest {
 
   @Test
