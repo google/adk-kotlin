@@ -276,9 +276,14 @@ class FileArtifactService(private val baseDir: String) : ArtifactService {
     // Normalize Windows separators so the same name resolves identically on every platform.
     val stripped = stripUserNamespace(filename).trim().replace('\\', '/')
     val relative = Paths.get(stripped).normalize()
-    require(!relative.isAbsolute && !relative.startsWith(Paths.get(".."))) {
+    require(
+      !stripped.startsWith("/") &&
+          !relative.isAbsolute &&
+          !relative.startsWith(Paths.get("..")) &&
+          !Regex("^[A-Za-z]:").containsMatchIn(stripped)
+    ) {
       "Artifact filename '$filename' must be relative to the storage scope and must not traverse " +
-        "outside it."
+          "outside it."
     }
     val relativeString = relative.toString()
     return if (relativeString.isEmpty()) {
