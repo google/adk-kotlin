@@ -22,8 +22,8 @@ import com.google.adk.kt.a2a.converters.isCompleted
 import com.google.adk.kt.a2a.converters.isLastChunk
 import com.google.adk.kt.a2a.converters.shouldBuffer
 import com.google.adk.kt.a2a.converters.shouldResetBuffer
-import com.google.adk.kt.a2a.converters.toA2aMessage
 import com.google.adk.kt.a2a.converters.toAdkEvent
+import com.google.adk.kt.a2a.converters.toLegacyA2aMessage
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.callbacks.AfterAgentCallback
@@ -50,7 +50,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 
 /** Agent that communicates with a remote A2A agent via an A2A client. */
-internal class A2AAgent(
+internal class LegacyA2AAgent(
   name: String,
   private val userDescription: String? = null,
   private val a2aClient: Client,
@@ -67,15 +67,16 @@ internal class A2AAgent(
     beforeAgentCallbacks = beforeAgentCallbacks,
     afterAgentCallbacks = afterAgentCallbacks,
   ) {
-  private val logger = LoggerFactory.getLogger(A2AAgent::class)
+  private val logger = LoggerFactory.getLogger(LegacyA2AAgent::class)
   private val objectMapper = ObjectMapper().registerModule(JavaTimeModule())
 
   override val description: String
     get() = userDescription ?: effectiveAgentCard.description() ?: ""
 
   private val effectiveAgentCard: AgentCard by lazy {
+    // A missing card may be null or throw in the v0.3 SDK; treat both as unresolved.
     agentCard
-      ?: a2aClient.agentCard
+      ?: runCatching { a2aClient.agentCard }.getOrNull()
       ?: throw AgentCardResolutionError("Failed to resolve agent card")
   }
 
@@ -97,7 +98,7 @@ internal class A2AAgent(
     // responses, which are bounded by LLM limits.
     // Alternatively, block the thread using: runBlocking { eventChannel.send(responseEvent) }
     val eventChannel = Channel<ClientEvent>(Channel.UNLIMITED)
-    val message = outboundEvent.toA2aMessage()
+    val message = outboundEvent.toLegacyA2aMessage()
 
     // Suppress because processing is serialized via eventChannel, avoiding concurrent execution.
     @Suppress("UnsafeCoroutineCrossing")
@@ -129,7 +130,7 @@ internal class A2AAgent(
         if (send.isFailure) {
           val error =
             IllegalStateException(
-              "A2AAgent internal event queue is full; downstream is too slow to consume events.",
+              "LegacyA2AAgent internal event queue is full; downstream is too slow to consume events.",
               send.exceptionOrNull(),
             )
           logger.error(error) { "Failed to queue client event" }
@@ -240,7 +241,7 @@ fun JvmA2AAgent(
   beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList(),
   afterAgentCallbacks: List<AfterAgentCallback> = emptyList(),
 ): BaseRemoteA2AAgent {
-  return A2AAgent(
+  return LegacyA2AAgent(
     name = name,
     a2aClient = client,
     agentCard = agentCard,

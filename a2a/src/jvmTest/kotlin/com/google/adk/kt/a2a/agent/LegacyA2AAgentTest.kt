@@ -71,7 +71,7 @@ import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.whenever
 
 @RunWith(JUnit4::class)
-class A2AAgentTest {
+class LegacyA2AAgentTest {
 
   private lateinit var mockClient: Client
   private lateinit var agentCard: AgentCard
@@ -146,7 +146,7 @@ class A2AAgentTest {
   @Test
   fun description_userDescriptionProvided_returnsUserDescription() {
     val agent =
-      A2AAgent(
+      LegacyA2AAgent(
         name = "test-agent",
         userDescription = "Custom User Description",
         a2aClient = mockClient,
@@ -159,7 +159,7 @@ class A2AAgentTest {
   fun description_userDescriptionNull_agentCardProvided_returnsAgentCardDescription() {
     val card = AgentCard.Builder(agentCard).description("Card Description").build()
     val agent =
-      A2AAgent(
+      LegacyA2AAgent(
         name = "test-agent",
         userDescription = null,
         a2aClient = mockClient,
@@ -171,7 +171,7 @@ class A2AAgentTest {
   @Test
   fun description_userDescriptionNull_agentCardNull_resolvesFromClient() {
     val agent =
-      A2AAgent(
+      LegacyA2AAgent(
         name = "test-agent",
         userDescription = null,
         a2aClient = mockClient,
@@ -184,7 +184,7 @@ class A2AAgentTest {
   fun description_userDescriptionNull_andCardResolutionFails_throwsAgentCardResolutionError() {
     whenever(mockClient.agentCard).thenReturn(null)
     val agent =
-      A2AAgent(
+      LegacyA2AAgent(
         name = "test-agent",
         userDescription = null,
         a2aClient = mockClient,

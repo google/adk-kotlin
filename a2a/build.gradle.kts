@@ -29,20 +29,39 @@ kotlin {
         implementation(libs.kotlinx.coroutines.core)
       }
     }
-    val commonTest by getting { dependencies { implementation(kotlin("test")) } }
+    val commonTest by getting {
+      dependencies {
+        implementation(project(":google-adk-kotlin-testing"))
+        implementation(kotlin("test"))
+      }
+    }
     val commonJvmAndroidMain by creating {
       dependsOn(commonMain)
       dependencies {
         implementation(libs.jackson.databind)
         implementation(libs.jackson.datatype.jsr310)
-        implementation(libs.jackson.module.kotlin)
-        implementation(libs.a2a.sdk.client)
-        implementation(libs.a2a.sdk.common)
-        implementation(libs.a2a.sdk.spec)
-        implementation(libs.a2a.sdk.transport.rest)
       }
     }
-    val jvmMain by getting { dependsOn(commonJvmAndroidMain) }
+    // jvmMain: deprecated v0.3 (`io.a2a.*`) path, JVM-only.
+    val jvmMain by getting {
+      dependsOn(commonJvmAndroidMain)
+      dependencies {
+        implementation(libs.jackson.module.kotlin)
+        implementation(libs.a2a.legacy.sdk.client)
+        implementation(libs.a2a.legacy.sdk.common)
+        implementation(libs.a2a.legacy.sdk.spec)
+      }
+    }
+    val jvmTest by getting {
+      dependencies {
+        implementation(libs.junit)
+        implementation(libs.google.truth)
+        implementation(libs.mockito.kotlin)
+        implementation(libs.kotlinx.coroutines.test)
+        implementation(libs.a2a.legacy.sdk.client)
+        implementation(libs.a2a.legacy.sdk.spec)
+      }
+    }
   }
 }
 

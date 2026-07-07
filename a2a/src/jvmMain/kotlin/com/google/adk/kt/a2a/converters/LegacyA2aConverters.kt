@@ -321,12 +321,12 @@ private fun DataPart.toAdk(): Part {
 private fun Map<String, Any?>?.isPartial() = this?.get(MetadataKeys.PARTIAL) == true
 
 /** Converts a GenAI Content object to a list of A2A Parts. */
-internal fun Content.toA2aParts(isPartial: Boolean): List<A2APart<*>> {
-  return parts.map { it.toA2A(isPartial) }
+internal fun Content.toLegacyA2aParts(isPartial: Boolean): List<A2APart<*>> {
+  return parts.map { it.toLegacyA2aPart(isPartial) }
 }
 
 /** Converts an ADK Part to an A2A Part. */
-internal fun Part.toA2A(isPartial: Boolean = false): A2APart<*> {
+internal fun Part.toLegacyA2aPart(isPartial: Boolean = false): A2APart<*> {
   text?.let {
     return TextPart(it)
   }
@@ -349,11 +349,11 @@ internal fun Part.toA2A(isPartial: Boolean = false): A2APart<*> {
 }
 
 /** Converts an ADK Event to an A2A Message. */
-internal fun Event.toA2aMessage(): Message {
+internal fun Event.toLegacyA2aMessage(): Message {
   return Message.Builder()
     .messageId(id.ifEmpty { Uuid.random() })
     .role(author.takeIf { it == "user" }?.let { Message.Role.USER } ?: Message.Role.AGENT)
-    .parts(content?.parts?.map { it.toA2A() } ?: emptyList())
+    .parts(content?.parts?.map { it.toLegacyA2aPart() } ?: emptyList())
     .apply {
       if (taskId.isNotEmpty()) taskId(taskId)
       if (contextId.isNotEmpty()) contextId(contextId)
@@ -363,7 +363,7 @@ internal fun Event.toA2aMessage(): Message {
 }
 
 /** Returns the parts from the context events that should be sent to the agent. */
-internal fun InvocationContext.extractA2aParts(): List<A2APart<*>> {
+internal fun InvocationContext.extractLegacyA2aParts(): List<A2APart<*>> {
   val preprocessedEvents = extractPreprocessedEvents()
   if (preprocessedEvents.isEmpty()) {
     return emptyList()
@@ -373,7 +373,7 @@ internal fun InvocationContext.extractA2aParts(): List<A2APart<*>> {
 
   return preprocessedEvents.flatMapIndexed { index, event ->
     val actualIndex = lastResponseIndex + 1 + index
-    val eventParts = event.content?.toA2aParts(event.partial) ?: emptyList()
+    val eventParts = event.content?.toLegacyA2aParts(event.partial) ?: emptyList()
     logger.debug(
       "Event index=$actualIndex author=${event.author} extracted parts=${eventParts.size}"
     )

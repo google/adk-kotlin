@@ -2,6 +2,7 @@
 # go/keep-sorted start
 
 a2a = "0.3.2.Final"
+a2a-legacy = "0.3.3.Final"
 androidx-compose-ui = "1.11.2"
 androidx-room = "2.8.4"
 androidx-test-core = "1.5.0"
@@ -45,6 +46,9 @@ snakeyaml = "2.2"
 
 [libraries]
 # go/keep-sorted start
+a2a-legacy-sdk-client = { module = "io.github.a2asdk:a2a-java-sdk-client", version.ref = "a2a-legacy" }
+a2a-legacy-sdk-common = { module = "io.github.a2asdk:a2a-java-sdk-common", version.ref = "a2a-legacy" }
+a2a-legacy-sdk-spec = { module = "io.github.a2asdk:a2a-java-sdk-spec", version.ref = "a2a-legacy" }
 a2a-sdk-client = { module = "io.github.a2asdk:a2a-java-sdk-client", version.ref = "a2a" }
 a2a-sdk-common = { module = "io.github.a2asdk:a2a-java-sdk-common", version.ref = "a2a" }
 a2a-sdk-spec = { module = "io.github.a2asdk:a2a-java-sdk-spec", version.ref = "a2a" }

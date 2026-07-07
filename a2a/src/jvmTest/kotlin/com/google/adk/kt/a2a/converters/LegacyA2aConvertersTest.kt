@@ -15,11 +15,11 @@
  */
 package com.google.adk.kt.a2a.converters
 
-import com.google.adk.kt.a2a.testing.DummyAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userMessage
@@ -54,7 +54,7 @@ import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
 @RunWith(JUnit4::class)
-class A2aConvertersTest {
+class LegacyA2aConvertersTest {
 
   private val testAgent = DummyAgent(name = "test_agent")
 
@@ -77,7 +77,7 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withTextPart_returnsTextPart() {
     val part = Part(text = "Hello")
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     assertThat((result as TextPart).text).isEqualTo("Hello")
   }
 
@@ -94,7 +94,7 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withFileDataPart_returnsFilePartWithUri() {
     val part = Part(fileData = FileData(mimeType = "text/plain", fileUri = "http://file.txt"))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     assertThat((result as FilePart).file.mimeType()).isEqualTo("text/plain")
     assertThat((result.file as FileWithUri).uri()).isEqualTo("http://file.txt")
   }
@@ -118,7 +118,7 @@ class A2aConvertersTest {
     val bytes = "content".toByteArray()
     val part =
       Part(inlineData = Blob(mimeType = "text/plain", displayName = "file.txt", data = bytes))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     assertThat((result as FilePart).file.mimeType()).isEqualTo("text/plain")
     assertThat(result.file.name()).isEqualTo("file.txt")
     assertThat((result.file as FileWithBytes).bytes())
@@ -141,7 +141,7 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withFunctionCallPart_returnsDataPart() {
     val part = Part(functionCall = FunctionCall(name = "func", id = "1", args = mapOf()))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     val dataPart = result as DataPart
     assertThat(dataPart.data["name"]).isEqualTo("func")
     assertThat(dataPart.data["id"]).isEqualTo("1")
@@ -165,7 +165,7 @@ class A2aConvertersTest {
   fun toA2A_withFunctionResponsePart_returnsDataPart() {
     val part =
       Part(functionResponse = FunctionResponse(name = "func", id = "1", response = mapOf()))
-    val result = part.toA2A()
+    val result = part.toLegacyA2aPart()
     val dataPart = result as DataPart
     assertThat(dataPart.data["name"]).isEqualTo("func")
     assertThat(dataPart.data["id"]).isEqualTo("1")
@@ -519,37 +519,37 @@ class A2aConvertersTest {
   }
 
   @Test
-  fun toA2aParts_validContent_returnsParts() {
+  fun toLegacyA2aParts_validContent_returnsParts() {
     val textPart = Part(text = "hello")
     val content = Content(parts = listOf(textPart))
-    val list = content.toA2aParts(false)
+    val list = content.toLegacyA2aParts(false)
     assertThat(list.size).isEqualTo(1)
     assertThat((list[0] as TextPart).text).isEqualTo("hello")
   }
 
   @Test
-  fun toA2aMessage_withUserAuthor_returnsUserRole() {
+  fun toLegacyA2aMessage_withUserAuthor_returnsUserRole() {
     val event = Event(author = "user", content = userMessage("hello"))
-    val result = event.toA2aMessage()
+    val result = event.toLegacyA2aMessage()
     assertThat(result.role).isEqualTo(Message.Role.USER)
   }
 
   @Test
-  fun toA2aMessage_withAgentAuthor_returnsAgentRole() {
+  fun toLegacyA2aMessage_withAgentAuthor_returnsAgentRole() {
     val event = Event(author = "agent", content = modelMessage("hello"))
-    val result = event.toA2aMessage()
+    val result = event.toLegacyA2aMessage()
     assertThat(result.role).isEqualTo(Message.Role.AGENT)
   }
 
   @Test
-  fun toA2aMessage_addsAuthorToMetadata() {
+  fun toLegacyA2aMessage_addsAuthorToMetadata() {
     val event = Event(author = "test_author", content = userMessage("hello"))
-    val result = event.toA2aMessage()
+    val result = event.toLegacyA2aMessage()
     assertThat(result.metadata?.get(MetadataKeys.AUTHOR)).isEqualTo("test_author")
   }
 
   @Test
-  fun extractA2aParts_sessionHasEvents_returnsFormattedParts() {
+  fun extractLegacyA2aParts_sessionHasEvents_returnsFormattedParts() {
     val userEvent = Event(author = Role.USER, content = userMessage("hello"))
     val agentEvent = Event(author = "test_agent", content = modelMessage("hi"))
     val otherAgentEvent = Event(author = "other_agent", content = modelMessage("hey"))
@@ -563,7 +563,7 @@ class A2aConvertersTest {
     val mockAgent = DummyAgent(name = "test_agent")
     val ctx = InvocationContext(agent = mockAgent, session = session, runConfig = null)
 
-    val parts = ctx.extractA2aParts()
+    val parts = ctx.extractLegacyA2aParts()
     assertThat(parts.size).isEqualTo(2)
     assertThat((parts[0] as TextPart).text).isEqualTo("For context:")
     assertThat((parts[1] as TextPart).text).isEqualTo("[other_agent] said: hey")
@@ -932,7 +932,7 @@ class A2aConvertersTest {
   @Test
   fun toA2A_withUnsupportedAdkPart_throwsException() {
     val emptyPart = Part()
-    val exception = assertFailsWith<IllegalArgumentException> { emptyPart.toA2A() }
+    val exception = assertFailsWith<IllegalArgumentException> { emptyPart.toLegacyA2aPart() }
     assertThat(exception.message).contains("Unsupported ADK Part content")
   }
 

@@ -15,12 +15,12 @@
  */
 package com.google.adk.kt.a2a.converters
 
-import com.google.adk.kt.a2a.testing.DummyAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
