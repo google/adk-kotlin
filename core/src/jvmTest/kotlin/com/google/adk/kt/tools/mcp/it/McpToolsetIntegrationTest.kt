@@ -24,7 +24,6 @@ import java.nio.file.Files
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 import kotlin.test.BeforeTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
@@ -152,7 +151,8 @@ class McpToolsetIntegrationTest {
         val firstHandle = ProcessHandle.of(firstPid).orElseThrow()
 
         // Unexpected death: external SIGKILL, none of the graceful stdio shutdown. Recovery means
-        // respawn + re-initialize (McpTool.reinitializeSession); the spec has no stdio reconnect.
+        // the next call reinitializes the pooled session (SessionManager.reinitializeSession),
+        // respawning the child; the spec has no stdio reconnect.
         firstHandle.destroyForcibly()
         withTimeout(TimeUnit.SECONDS.toMillis(KILL_TIMEOUT_SECONDS)) {
           val unused = firstHandle.onExit().await()
@@ -168,8 +168,8 @@ class McpToolsetIntegrationTest {
         assertThat(ProcessHandle.of(secondPid).orElseThrow().isAlive).isTrue()
       }
     } finally {
-      // close() won't kill the process McpTool respawned during recovery; kill the last PID
-      // explicitly.
+      // Belt-and-suspenders: the toolset's close() (via use{}) already tears down the respawned
+      // pooled session, but kill the last PID explicitly in case the assertions above failed early.
       killIfRunning(pidFile)
       Files.deleteIfExists(pidFile)
     }
@@ -182,8 +182,8 @@ class McpToolsetIntegrationTest {
       newToolset(pidFile = pidFile, requestTimeout = HANG_TEST_REQUEST_TIMEOUT).use { toolset ->
         val hang = toolset.getTools().single { it.name == FakeMcpServer.TOOL_HANG }
 
-        // Each attempt hits the real per-request timeout; McpTool retries (respawning a process
-        // that also hangs) and ultimately throws.
+        // Each attempt hits the real per-request timeout; the tool retries (reinitializing the
+        // pooled session, respawning a process that also hangs) and ultimately throws.
         val start = System.nanoTime()
         val thrown = runCatching { hang.run(testToolContext(), emptyMap()) }.exceptionOrNull()
         val elapsedMs = (System.nanoTime() - start) / 1_000_000
@@ -195,18 +195,17 @@ class McpToolsetIntegrationTest {
         assertThat(thrown!!.causedByTimeout()).isTrue()
       }
     } finally {
-      // close() won't kill the process McpTool respawned during recovery; kill the last PID
-      // explicitly.
+      // Belt-and-suspenders: the toolset's close() (via use{}) already tears down the respawned
+      // pooled session, but kill the last PID explicitly in case the assertions above failed early.
       killIfRunning(pidFile)
       Files.deleteIfExists(pidFile)
     }
   }
 
-  // Regression guard for the session-ownership leak. It FAILS today: when the shared server dies,
-  // each tool reinitializes into its OWN session, but McpToolset.close() closes only its stale
-  // cached reference -- so the respawned processes are orphaned. A TODO in
-  // McpTool.reinitializeSession() marks where the fix belongs; drop @Ignore once it lands.
-  @Ignore
+  // Regression guard for the session-ownership leak. Tools no longer own sessions: they share one
+  // pooled session owned by the SessionManager, reinit replaces that pooled entry in place, and
+  // McpToolset.close() -> SessionManager.closeAll() tears down every session it created. So after a
+  // shared-server death, recovery, and close(), no recorded process is left alive.
   @Test
   fun close_afterToolsReinitialize_leavesNoOrphanProcesses(): Unit = runBlocking {
     val pidDir = Files.createTempDirectory("adk-mcp-it-pids")
@@ -216,30 +215,29 @@ class McpToolsetIntegrationTest {
       val echo = tools.single { it.name == FakeMcpServer.TOOL_ECHO }
       val add = tools.single { it.name == FakeMcpServer.TOOL_ADD }
 
-      // Both tools share the toolset's single cached session: exactly one process so far.
+      // Both tools share the single pooled session: exactly one process so far.
       val shared = liveRecordedProcesses(pidDir)
       assertThat(shared).hasSize(1)
 
-      // Kill the shared server so the next call on each tool must reinitialize independently.
+      // Kill the shared server so the next call must reinitialize the pooled session.
       shared.single().destroyForcibly()
       withTimeout(TimeUnit.SECONDS.toMillis(KILL_TIMEOUT_SECONDS)) {
         val unused = shared.single().onExit().await()
       }
 
-      // Force each tool to reinitialize, then only confirm recovery (≥1 live process). We
-      // deliberately don't pin the count: today each tool respawns its own session (two), but a
-      // single-session fix would keep it at one and must still pass. The binding invariant is the
-      // post-close check.
+      // Drive recovery on both tools, then only confirm recovery (≥1 live process). We don't pin
+      // the count: the shared-pool fix keeps it at one (the second call reuses the reinitialized
+      // pooled session), but the binding invariant is the post-close check below.
       val unused1 = echo.run(testToolContext(), mapOf("message" to "x"))
       val unused2 = add.run(testToolContext(), mapOf("a" to 1, "b" to 2))
       assertThat(liveRecordedProcesses(pidDir)).isNotEmpty()
 
       // The invariant under test: after close(), no recorded process is still alive — the toolset
-      // must tear down every session it caused. Today it closes only its stale cached reference.
+      // tears down every session it caused, including the one respawned during recovery.
       toolset.close()
       assertThat(awaitRecordedProcessesSettle(pidDir, SETTLE_TIMEOUT_SECONDS)).isEmpty()
     } finally {
-      // Belt-and-suspenders: never leave orphans behind, even when this guard is failing.
+      // Belt-and-suspenders: never leave orphans behind, even if the guard regresses.
       toolset.close()
       liveRecordedProcesses(pidDir).forEach { it.destroyForcibly() }
       pidDir.toFile().deleteRecursively()
