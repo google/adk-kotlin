@@ -171,9 +171,30 @@ class FileArtifactServiceTest {
   }
 
   @Test
-  fun saveArtifact_absoluteFilename_throws() = runTest {
+  fun saveArtifact_posixAbsoluteFilename_throws() = runTest {
     assertFailsWith<IllegalArgumentException> {
       service.saveArtifact(SESSION_KEY, "/etc/passwd", part("x"))
+    }
+  }
+
+  @Test
+  fun saveArtifact_windowsRootedAbsoluteFilename_throws() = runTest {
+    assertFailsWith<IllegalArgumentException> {
+      service.saveArtifact(SESSION_KEY, """C:\\etc\\passwd""", part("x"))
+    }
+  }
+
+  @Test
+  fun saveArtifact_windowsRootRelativeFilename_throws() = runTest {
+    assertFailsWith<IllegalArgumentException> {
+      service.saveArtifact(SESSION_KEY, """\etc\passwd""", part("x"))
+    }
+  }
+
+  @Test
+  fun saveArtifact_windowsDriveRelativeFilename_throws() = runTest {
+    assertFailsWith<IllegalArgumentException> {
+      service.saveArtifact(SESSION_KEY, """C:etc\passwd""", part("x"))
     }
   }
 
