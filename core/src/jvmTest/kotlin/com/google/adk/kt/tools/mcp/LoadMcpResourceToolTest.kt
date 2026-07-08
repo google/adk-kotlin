@@ -25,27 +25,17 @@ import kotlin.test.assertFailsWith
 import kotlinx.coroutines.reactor.mono
 import kotlinx.coroutines.test.runTest
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 
 class LoadMcpResourceToolTest {
 
-  private val mockInitializeResult =
-    McpSchema.InitializeResult(
-      "1.0",
-      McpSchema.ServerCapabilities(null, null, null, null, null, null),
-      McpSchema.Implementation("test-server", "1.0", null),
-      "instructions",
-      null,
-    )
-
-  private suspend fun createMcpToolset(mockMcpSession: McpAsyncClient): McpToolset {
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
-    val mockSessionManager = mock<SessionManager>()
-    // Mock for loadTools which might be called if we don't ensure it is initialized
-    // But getOrInitSession handles it.
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+  private fun createMcpToolset(mockMcpSession: McpAsyncClient): McpToolset {
+    // The toolset fetches the pooled session from the manager; hand it the mock session.
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
     return McpToolset(mockSessionManager)
   }
 
