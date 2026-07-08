@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterToolCallbacksPipeline
@@ -132,6 +133,12 @@ data class InvocationContext(
   val endOfAgents: MutableMap<String, Boolean> = concurrentMutableMapOf(),
   /** Extra tools injected dynamically during invocation (e.g., by SequentialAgent). */
   val extraTools: MutableMap<String, BaseTool> = concurrentMutableMapOf(),
+  /**
+   * Framework-internal per-invocation data (see [ContextFrameworkData]). Kept as a dedicated holder
+   * so its opt-in-requiring members stay off this public constructor. Not a public API by contract,
+   * but the reference itself needs no opt-in; its fields do.
+   */
+  val frameworkData: ContextFrameworkData = ContextFrameworkData(),
   /**
    * Whether to end this invocation.
    *
@@ -628,6 +635,19 @@ data class InvocationContext(
       .toMap()
   }
 }
+
+/**
+ * Framework-internal per-invocation data holder. Groups scratch state used by ADK's own machinery
+ * and the ADK Java interop so it stays off [InvocationContext]'s public constructor. The type
+ * itself needs no opt-in; its members are marked [FrameworkInternalApi].
+ */
+data class ContextFrameworkData(
+  /**
+   * Per-invocation scratch data shared across the invocation's callbacks and its sub-agent/branch
+   * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
+   */
+  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
+)
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

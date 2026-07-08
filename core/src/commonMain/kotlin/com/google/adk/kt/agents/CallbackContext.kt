@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Part
@@ -33,6 +34,11 @@ class CallbackContext(
 
   var eventActions: EventActions = eventActions ?: EventActions()
     private set
+
+  /** Per-invocation scratch data; see [ContextFrameworkData.callbackContextData]. */
+  @FrameworkInternalApi
+  val callbackContextData: MutableMap<String, Any>
+    get() = invocationContext.frameworkData.callbackContextData
 
   override val state: Map<String, Any>
     get() =
