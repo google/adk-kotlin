@@ -77,8 +77,9 @@ internal class StreamingResponseAggregator {
     llmResponse.citationMetadata?.let { citationMetadata = it }
     llmResponse.finishReason?.let { finishReason = it }
 
-    // Accumulate parts while preserving their order
-    val parts = llmResponse.content?.parts ?: emptyList()
+    // Assign a client id to any function call missing one up front, so the partial chunk and the
+    // final response share it.
+    val parts = (llmResponse.content?.parts ?: emptyList()).map { it.ensureFunctionCallId() }
     for (part in parts) {
       when {
         part.text != null -> processTextPart(part)
@@ -91,8 +92,8 @@ internal class StreamingResponseAggregator {
       }
     }
 
-    // In Progressive SSE mode, all intermediate chunks are partial
-    llmResponse.copy(partial = true)
+    // In Progressive SSE mode, all intermediate chunks are partial (with any generated ids).
+    llmResponse.copy(content = llmResponse.content?.copy(parts = parts), partial = true)
   }
 
   /**
@@ -114,6 +115,12 @@ internal class StreamingResponseAggregator {
 
     if (partsSequence.isEmpty()) return@withLock null
 
+    // Attach a trailing thought signature from the final chunk to the last aggregated part.
+    candidate.content.parts.firstOrNull()?.thoughtSignature?.let { signature ->
+      partsSequence[partsSequence.lastIndex] =
+        partsSequence[partsSequence.lastIndex].copy(thoughtSignature = signature)
+    }
+
     val finalFinishReason = finishReason ?: candidate.finishReason
 
     LlmResponse(
@@ -131,20 +138,35 @@ internal class StreamingResponseAggregator {
 
   private fun flushTextBufferToSequence() {
     if (currentTextBuffer.isNotEmpty()) {
-      partsSequence.add(Part(text = currentTextBuffer.toString(), thought = currentTextIsThought))
+      partsSequence.add(
+        Part(
+          text = currentTextBuffer.toString(),
+          thought = currentTextIsThought,
+          thoughtSignature = currentThoughtSignature,
+        )
+      )
       currentTextBuffer.clear()
       currentTextIsThought = null
+      currentThoughtSignature = null
     }
   }
 
   private fun processTextPart(part: Part) {
-    // Flush if text type changes
+    // Flush on text-type change, then capture any signature so it rides on the flushed text.
     if (currentTextBuffer.isNotEmpty() && part.thought != currentTextIsThought) {
       flushTextBufferToSequence()
     }
 
+    part.thoughtSignature?.let { currentThoughtSignature = it }
     currentTextIsThought = part.thought
     currentTextBuffer.append(part.text)
+  }
+
+  /** Returns a copy with a generated client id if this is a function call missing one. */
+  private fun Part.ensureFunctionCallId(): Part {
+    val fc = functionCall ?: return this
+    if (!fc.id.isNullOrEmpty()) return this
+    return copy(functionCall = fc.copy(id = FunctionCall.generateId()))
   }
 
   private fun processFunctionCallPart(part: Part) {

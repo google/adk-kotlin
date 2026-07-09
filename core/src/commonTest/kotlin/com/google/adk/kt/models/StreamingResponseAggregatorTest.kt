@@ -18,11 +18,13 @@ package com.google.adk.kt.models
 
 import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.PartialArg
 import com.google.adk.kt.types.PartialArgValue
+import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -155,6 +157,201 @@ class StreamingResponseAggregatorTest {
     val resultNumbers =
       resultText?.split(';')?.filter { it.isNotBlank() }?.map { it.toInt() }?.sorted()
     assertEquals((0 until jobCount).toList(), resultNumbers)
+  }
+
+  @Test
+  fun processResponse_marksChunkPartial() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val partial = aggregator.processResponse(createResp("Hi"))
+    assertEquals(true, partial.partial)
+  }
+
+  @Test
+  fun parallelFunctionCalls_areContiguousInSingleFinalResponse() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused1 = aggregator.processResponse(createFcResp(FunctionCall(name = "get_weather")))
+    val unused2 = aggregator.processResponse(createFcResp(FunctionCall(name = "get_time")))
+    val finalResp = aggregator.aggregate()
+
+    assertNotNull(finalResp)
+    assertEquals(false, finalResp.partial)
+    val parts = finalResp.content?.parts
+    assertEquals(2, parts?.size)
+    assertEquals("get_weather", parts?.get(0)?.functionCall?.name)
+    assertEquals("get_time", parts?.get(1)?.functionCall?.name)
+  }
+
+  @Test
+  fun singleChunkWithTextAndFunctionCall_bothAggregated() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused =
+      aggregator.processResponse(
+        GenerateContentResponse(
+          candidates =
+            listOf(
+              Candidate(
+                content =
+                  Content(
+                    parts =
+                      listOf(Part(text = "Calling"), Part(functionCall = FunctionCall(name = "do")))
+                  )
+              )
+            )
+        )
+      )
+    val finalResp = aggregator.aggregate()
+
+    assertNotNull(finalResp)
+    val parts = finalResp.content?.parts
+    assertEquals(2, parts?.size)
+    assertEquals("Calling", parts?.get(0)?.text)
+    assertEquals("do", parts?.get(1)?.functionCall?.name)
+  }
+
+  @Test
+  fun functionCallMissingId_sharesGeneratedIdBetweenPartialAndFinal() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val partial = aggregator.processResponse(createFcResp(FunctionCall(name = "do_thing")))
+    val finalResp = aggregator.aggregate()
+
+    val partialId = partial.content?.parts?.get(0)?.functionCall?.id
+    val finalId = finalResp?.content?.parts?.get(0)?.functionCall?.id
+    assertNotNull(partialId)
+    assertTrue(partialId.startsWith("adk-"))
+    assertEquals(partialId, finalId)
+  }
+
+  @Test
+  fun functionCallWithModelId_isPreserved() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused =
+      aggregator.processResponse(createFcResp(FunctionCall(name = "do_thing", id = "m1")))
+    val finalResp = aggregator.aggregate()
+
+    assertEquals("m1", finalResp?.content?.parts?.get(0)?.functionCall?.id)
+  }
+
+  @Test
+  fun streamedFunctionCall_capturesThoughtSignature() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val signature = byteArrayOf(9, 8, 7)
+
+    val chunk1 =
+      GenerateContentResponse(
+        candidates =
+          listOf(
+            Candidate(
+              content =
+                Content(
+                  parts =
+                    listOf(
+                      Part(
+                        functionCall =
+                          FunctionCall(
+                            name = "search",
+                            partialArgs =
+                              listOf(
+                                PartialArg(
+                                  jsonPath = "$.q",
+                                  value = PartialArgValue.StringValue("hel"),
+                                )
+                              ),
+                            willContinue = true,
+                          ),
+                        thoughtSignature = signature,
+                      )
+                    )
+                )
+            )
+          )
+      )
+    val unused1 = aggregator.processResponse(chunk1)
+    val unused2 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.q", "lo", willContinue = false))
+      )
+    val finalResp = aggregator.aggregate()
+
+    val part = finalResp?.content?.parts?.get(0)
+    assertEquals("search", part?.functionCall?.name)
+    assertEquals("hello", part?.functionCall?.args?.get("q"))
+    assertNotNull(part?.thoughtSignature)
+    assertTrue(signature.contentEquals(part.thoughtSignature))
+  }
+
+  @Test
+  fun textThoughtSignature_reattachedToAggregatedText() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val signature = byteArrayOf(1, 2, 3)
+
+    val unused =
+      aggregator.processResponse(
+        GenerateContentResponse(
+          candidates =
+            listOf(
+              Candidate(
+                content =
+                  Content(parts = listOf(Part(text = "Answer", thoughtSignature = signature)))
+              )
+            )
+        )
+      )
+    val finalResp = aggregator.aggregate()
+
+    val part = finalResp?.content?.parts?.get(0)
+    assertEquals("Answer", part?.text)
+    assertNotNull(part?.thoughtSignature)
+    assertTrue(signature.contentEquals(part.thoughtSignature))
+  }
+
+  @Test
+  fun finalResponse_carriesFinishReasonAndUsageMetadata() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused =
+      aggregator.processResponse(
+        GenerateContentResponse(
+          candidates =
+            listOf(
+              Candidate(
+                content = Content(parts = listOf(Part(text = "Done"))),
+                finishReason = FinishReason.STOP,
+              )
+            ),
+          usageMetadata = UsageMetadata(totalTokenCount = 42),
+        )
+      )
+    val finalResp = aggregator.aggregate()
+
+    assertEquals(FinishReason.STOP, finalResp?.finishReason)
+    assertEquals(42, finalResp?.usageMetadata?.totalTokenCount)
+    assertEquals(null, finalResp?.errorCode)
+  }
+
+  @Test
+  fun nonStopFinishReason_isSurfacedAsError() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused =
+      aggregator.processResponse(
+        GenerateContentResponse(
+          candidates =
+            listOf(
+              Candidate(
+                content = Content(parts = listOf(Part(text = "Partial"))),
+                finishReason = FinishReason.MAX_TOKENS,
+              )
+            )
+        )
+      )
+    val finalResp = aggregator.aggregate()
+
+    assertEquals(FinishReason.MAX_TOKENS, finalResp?.finishReason)
+    assertEquals("MAX_TOKENS", finalResp?.errorCode)
   }
 
   private fun createResp(text: String, thought: Boolean? = null): GenerateContentResponse {
