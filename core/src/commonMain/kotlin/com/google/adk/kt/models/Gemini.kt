@@ -30,7 +30,6 @@ import com.google.genai.kotlin.types.GenerateContentConfig
 import com.google.genai.kotlin.types.GenerateContentResponse as GenAiGenerateContentResponse
 import com.google.genai.kotlin.types.HttpOptions
 import kotlin.jvm.JvmOverloads
-import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -133,17 +132,6 @@ class Gemini(
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
     val preparedRequest = request.prepareGenerateContentRequest(!client.enterprise)
-    if (
-      !preparedRequest.config.labels.isNullOrEmpty() &&
-        labelsDropWarningLogged.compareAndSet(false, true)
-    ) {
-      // Reachable only on the Vertex path; the API-key path clears labels in
-      // sanitizeForGeminiApi(). toGenaiSdk() then drops them (the Kotlin SDK lacks the field).
-      logger.warn {
-        "GenerateContentConfig.labels is set but not supported by the Kotlin GenAI SDK; " +
-          "the labels will be dropped from the request."
-      }
-    }
     val config = preparedRequest.config.toGenaiSdk()
     val contents = preparedRequest.contents.map { it.toGenaiSdk() }
 
@@ -215,9 +203,6 @@ class Gemini(
     }
 
     private val logger = LoggerFactory.getLogger(Gemini::class)
-
-    // Guards the one-time warning about dropped GenerateContentConfig.labels (see generateContent).
-    private val labelsDropWarningLogged = atomic(false)
   }
 }
 

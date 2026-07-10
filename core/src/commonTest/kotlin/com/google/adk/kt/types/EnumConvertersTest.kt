@@ -18,6 +18,7 @@ package com.google.adk.kt.types
 
 import com.google.genai.kotlin.types.BlockedReason as SdkBlockedReason
 import com.google.genai.kotlin.types.FinishReason as SdkFinishReason
+import com.google.genai.kotlin.types.ModelRoutingPreference as SdkModelRoutingPreference
 import com.google.genai.kotlin.types.ThinkingLevel as SdkThinkingLevel
 import com.google.genai.kotlin.types.Type as SdkType
 import kotlin.test.Test
@@ -56,12 +57,20 @@ class EnumConvertersTest {
   }
 
   @Test
+  fun modelRoutingPreference_roundTripsThroughSdk() {
+    for (value in ModelRoutingPreference.entries) {
+      assertEquals(value, value.toGenaiSdk().toKt())
+    }
+  }
+
+  @Test
   fun toKt_unknownSdkValue_fallsBackToDefault() {
     // An SDK value with no matching ADK constant degrades to the catch-all (or null for `Type`)
     // rather than throwing.
     assertEquals(BlockedReason.OTHER, SdkBlockedReason("UNRECOGNIZED").toKt())
     assertEquals(FinishReason.OTHER, SdkFinishReason("UNRECOGNIZED").toKt())
     assertEquals(ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, SdkThinkingLevel("UNRECOGNIZED").toKt())
+    assertEquals(ModelRoutingPreference.UNKNOWN, SdkModelRoutingPreference("UNRECOGNIZED").toKt())
     assertNull(SdkType("UNRECOGNIZED").toKt())
   }
 

@@ -37,4 +37,5 @@ data class GenerateContentConfig(
   val presencePenalty: Float? = null,
   val frequencyPenalty: Float? = null,
   val responseLogprobs: Boolean? = null,
+  val routingConfig: GenerationConfigRoutingConfig? = null,
 )

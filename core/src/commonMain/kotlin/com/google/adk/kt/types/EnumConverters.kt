@@ -21,6 +21,7 @@ import com.google.genai.kotlin.types.HarmBlockThreshold as GenAiHarmBlockThresho
 import com.google.genai.kotlin.types.HarmCategory as GenAiHarmCategory
 import com.google.genai.kotlin.types.MediaModality as GenAiMediaModality
 import com.google.genai.kotlin.types.MediaResolution as GenAiMediaResolution
+import com.google.genai.kotlin.types.ModelRoutingPreference as GenAiModelRoutingPreference
 import com.google.genai.kotlin.types.ServiceTier as GenAiServiceTier
 import com.google.genai.kotlin.types.ThinkingLevel as GenAiThinkingLevel
 import com.google.genai.kotlin.types.Type as GenAiType
@@ -111,3 +112,18 @@ internal fun GenAiServiceTier.toKt(): ServiceTier =
 
 /** Converts an ADK [ServiceTier] to a [GenAiServiceTier] for the SDK. */
 internal fun ServiceTier.toGenaiSdk(): GenAiServiceTier = GenAiServiceTier(this.name)
+
+/**
+ * Converts a [GenAiModelRoutingPreference] from the GenAI SDK to an ADK [ModelRoutingPreference].
+ * The SDK models enums as `value class` wrappers, so unknown values map to
+ * [ModelRoutingPreference.UNKNOWN].
+ */
+internal fun GenAiModelRoutingPreference.toKt(): ModelRoutingPreference =
+  runCatching { ModelRoutingPreference.valueOf(this.value) }
+    .getOrDefault(ModelRoutingPreference.UNKNOWN)
+
+/**
+ * Converts an ADK [ModelRoutingPreference] to a [GenAiModelRoutingPreference] for the GenAI SDK.
+ */
+internal fun ModelRoutingPreference.toGenaiSdk(): GenAiModelRoutingPreference =
+  GenAiModelRoutingPreference(this.name)

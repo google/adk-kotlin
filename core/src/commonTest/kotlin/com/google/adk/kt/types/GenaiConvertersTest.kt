@@ -556,6 +556,57 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun generateContentConfig_labels_convertsCorrectly() {
+    val adkConfig = GenerateContentConfig(labels = mapOf("team" to "search", "env" to "prod"))
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals(mapOf("team" to "search", "env" to "prod"), genaiConfig.labels)
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.labels, convertedBack.labels)
+  }
+
+  @Test
+  fun generateContentConfig_routingConfigAutoMode_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        routingConfig =
+          GenerationConfigRoutingConfig(
+            autoMode =
+              GenerationConfigRoutingConfigAutoRoutingMode(
+                modelRoutingPreference = ModelRoutingPreference.PRIORITIZE_QUALITY
+              )
+          )
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals(
+      "PRIORITIZE_QUALITY",
+      genaiConfig.routingConfig?.autoMode?.modelRoutingPreference?.value,
+    )
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.routingConfig, convertedBack.routingConfig)
+  }
+
+  @Test
+  fun generateContentConfig_routingConfigManualMode_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        routingConfig =
+          GenerationConfigRoutingConfig(
+            manualMode = GenerationConfigRoutingConfigManualRoutingMode(modelName = "gemini-pro")
+          )
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals("gemini-pro", genaiConfig.routingConfig?.manualMode?.modelName)
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.routingConfig, convertedBack.routingConfig)
+  }
+
+  @Test
   fun candidate_logprobs_convertsCorrectly() {
     val adkCandidate =
       Candidate(

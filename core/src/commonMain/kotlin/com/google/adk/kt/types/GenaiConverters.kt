@@ -35,6 +35,9 @@ import com.google.genai.kotlin.types.GenerateContentConfig as GenAiGenerateConte
 import com.google.genai.kotlin.types.GenerateContentResponse as GenAiGenerateContentResponse
 import com.google.genai.kotlin.types.GenerateContentResponsePromptFeedback as GenAiGenerateContentResponsePromptFeedback
 import com.google.genai.kotlin.types.GenerateContentResponseUsageMetadata as GenAiGenerateContentResponseUsageMetadata
+import com.google.genai.kotlin.types.GenerationConfigRoutingConfig as GenAiGenerationConfigRoutingConfig
+import com.google.genai.kotlin.types.GenerationConfigRoutingConfigAutoRoutingMode as GenAiGenerationConfigRoutingConfigAutoRoutingMode
+import com.google.genai.kotlin.types.GenerationConfigRoutingConfigManualRoutingMode as GenAiGenerationConfigRoutingConfigManualRoutingMode
 import com.google.genai.kotlin.types.GoogleMaps as GenAiGoogleMaps
 import com.google.genai.kotlin.types.GoogleSearch as GenAiGoogleSearch
 import com.google.genai.kotlin.types.GroundingChunk as GenAiGroundingChunk
@@ -291,16 +294,11 @@ internal fun FunctionResponse.toGenaiSdk(): GenAiFunctionResponse =
   )
 
 // --- GenerateContentConfig ---
-/**
- * Converts a [GenAiGenerateContentConfig] from the GenAI SDK to an ADK [GenerateContentConfig].
- *
- * Note: the Kotlin SDK does not model the `labels` field on `GenerateContentConfig`, so it is left
- * as `null` after a round-trip from SDK to ADK.
- */
+/** Converts a [GenAiGenerateContentConfig] from the GenAI SDK to an ADK [GenerateContentConfig]. */
 internal fun GenAiGenerateContentConfig.fromGenaiSdk(): GenerateContentConfig =
   GenerateContentConfig(
     tools = tools?.map { it.fromGenaiSdk() },
-    labels = null,
+    labels = labels,
     systemInstruction = systemInstruction?.fromGenaiSdk(),
     temperature = temperature?.toFloat(),
     topP = topP?.toFloat(),
@@ -318,16 +316,14 @@ internal fun GenAiGenerateContentConfig.fromGenaiSdk(): GenerateContentConfig =
     safetySettings = safetySettings?.map { it.fromGenaiSdk() },
     mediaResolution = mediaResolution?.toKt(),
     serviceTier = serviceTier?.toKt(),
+    routingConfig = routingConfig?.fromGenaiSdk(),
   )
 
-/**
- * Converts an ADK [GenerateContentConfig] to a [GenAiGenerateContentConfig] for the GenAI SDK.
- *
- * Note: the Kotlin SDK does not currently model the `labels` field, so it is dropped on conversion.
- */
+/** Converts an ADK [GenerateContentConfig] to a [GenAiGenerateContentConfig] for the GenAI SDK. */
 internal fun GenerateContentConfig.toGenaiSdk(): GenAiGenerateContentConfig =
   GenAiGenerateContentConfig(
     tools = tools?.map { it.toGenaiSdk() },
+    labels = labels,
     systemInstruction = systemInstruction?.toGenaiSdk(),
     temperature = temperature?.toDouble(),
     topP = topP?.toDouble(),
@@ -345,7 +341,67 @@ internal fun GenerateContentConfig.toGenaiSdk(): GenAiGenerateContentConfig =
     safetySettings = safetySettings?.map { it.toGenaiSdk() },
     mediaResolution = mediaResolution?.toGenaiSdk(),
     serviceTier = serviceTier?.toGenaiSdk(),
+    routingConfig = routingConfig?.toGenaiSdk(),
   )
+
+// --- GenerationConfigRoutingConfig ---
+/**
+ * Converts a [GenAiGenerationConfigRoutingConfig] from the GenAI SDK to an ADK
+ * [GenerationConfigRoutingConfig].
+ */
+internal fun GenAiGenerationConfigRoutingConfig.fromGenaiSdk(): GenerationConfigRoutingConfig =
+  GenerationConfigRoutingConfig(
+    autoMode = autoMode?.fromGenaiSdk(),
+    manualMode = manualMode?.fromGenaiSdk(),
+  )
+
+/**
+ * Converts an ADK [GenerationConfigRoutingConfig] to a [GenAiGenerationConfigRoutingConfig] for the
+ * GenAI SDK.
+ */
+internal fun GenerationConfigRoutingConfig.toGenaiSdk(): GenAiGenerationConfigRoutingConfig =
+  GenAiGenerationConfigRoutingConfig(
+    autoMode = autoMode?.toGenaiSdk(),
+    manualMode = manualMode?.toGenaiSdk(),
+  )
+
+// --- GenerationConfigRoutingConfigAutoRoutingMode ---
+/**
+ * Converts a [GenAiGenerationConfigRoutingConfigAutoRoutingMode] from the GenAI SDK to an ADK
+ * [GenerationConfigRoutingConfigAutoRoutingMode].
+ */
+internal fun GenAiGenerationConfigRoutingConfigAutoRoutingMode.fromGenaiSdk():
+  GenerationConfigRoutingConfigAutoRoutingMode =
+  GenerationConfigRoutingConfigAutoRoutingMode(
+    modelRoutingPreference = modelRoutingPreference?.toKt()
+  )
+
+/**
+ * Converts an ADK [GenerationConfigRoutingConfigAutoRoutingMode] to a
+ * [GenAiGenerationConfigRoutingConfigAutoRoutingMode] for the GenAI SDK.
+ */
+internal fun GenerationConfigRoutingConfigAutoRoutingMode.toGenaiSdk():
+  GenAiGenerationConfigRoutingConfigAutoRoutingMode =
+  GenAiGenerationConfigRoutingConfigAutoRoutingMode(
+    modelRoutingPreference = modelRoutingPreference?.toGenaiSdk()
+  )
+
+// --- GenerationConfigRoutingConfigManualRoutingMode ---
+/**
+ * Converts a [GenAiGenerationConfigRoutingConfigManualRoutingMode] from the GenAI SDK to an ADK
+ * [GenerationConfigRoutingConfigManualRoutingMode].
+ */
+internal fun GenAiGenerationConfigRoutingConfigManualRoutingMode.fromGenaiSdk():
+  GenerationConfigRoutingConfigManualRoutingMode =
+  GenerationConfigRoutingConfigManualRoutingMode(modelName = modelName)
+
+/**
+ * Converts an ADK [GenerationConfigRoutingConfigManualRoutingMode] to a
+ * [GenAiGenerationConfigRoutingConfigManualRoutingMode] for the GenAI SDK.
+ */
+internal fun GenerationConfigRoutingConfigManualRoutingMode.toGenaiSdk():
+  GenAiGenerationConfigRoutingConfigManualRoutingMode =
+  GenAiGenerationConfigRoutingConfigManualRoutingMode(modelName = modelName)
 
 // --- FunctionCallingConfig ---
 /** Converts a [GenAiFunctionCallingConfig] from the GenAI SDK to an ADK [FunctionCallingConfig]. */
