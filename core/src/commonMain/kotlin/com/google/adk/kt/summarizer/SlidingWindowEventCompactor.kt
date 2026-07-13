@@ -111,35 +111,6 @@ class SlidingWindowEventCompactor(private val config: EventsCompactionConfig) : 
     }
 
     if (invocationsToCompact.size < compactionInterval) return null
-    return eventsToCompact.asReversed().longestSelfContainedPrefix().ifEmpty { null }
+    return longestSelfContainedPrefix(eventsToCompact.asReversed()).ifEmpty { null }
   }
-}
-
-private fun Event.isCompactionEvent(): Boolean = actions.compaction != null
-
-/**
- * Returns the longest prefix of the given window that can be summarized without splitting a
- * function-call/response pair or leaving a tool-confirmation (HITL) request unresolved.
- *
- * Performs a single left-to-right pass tracking "open" obligations keyed by call ID: a function
- * call or a tool-confirmation request opens one, and a function response with the same ID closes
- * it. The prefix is safe to summarize exactly at the points where no obligation is open, so the
- * longest prefix ending at such a balanced point is returned (empty if the window never reaches a
- * balanced point).
- */
-private fun List<Event>.longestSelfContainedPrefix(): List<Event> {
-  val openIds = mutableSetOf<String>()
-  var safeLength = 0
-  for ((index, event) in withIndex()) {
-    for (response in event.functionResponses()) {
-      response.id?.let(openIds::remove)
-    }
-    for (call in event.functionCalls()) {
-      call.id?.let(openIds::add)
-    }
-    openIds.addAll(event.actions.requestedToolConfirmations.keys)
-    // TODO(b/505630632): Add authentication requests handling.
-    if (openIds.isEmpty()) safeLength = index + 1
-  }
-  return subList(0, safeLength)
 }
