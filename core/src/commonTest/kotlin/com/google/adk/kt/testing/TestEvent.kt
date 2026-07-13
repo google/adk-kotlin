@@ -23,6 +23,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.UsageMetadata
 
 /** A `user`-authored [Event] carrying a single text part. */
 fun userEvent(text: String, timestamp: Long = 0L, invocationId: String? = null): Event =
@@ -39,6 +40,21 @@ fun modelEvent(text: String, timestamp: Long = 0L, invocationId: String? = null)
     author = Role.MODEL,
     invocationId = invocationId,
     content = modelMessage(text),
+    timestamp = timestamp,
+  )
+
+/** A `model`-authored [Event] reporting [promptTokenCount] in its [Event.usageMetadata]. */
+fun modelEventWithPromptTokens(
+  promptTokenCount: Int,
+  text: String = "ok",
+  timestamp: Long = 0L,
+  invocationId: String? = null,
+): Event =
+  Event(
+    author = Role.MODEL,
+    invocationId = invocationId,
+    content = modelMessage(text),
+    usageMetadata = UsageMetadata(promptTokenCount = promptTokenCount),
     timestamp = timestamp,
   )
 
