@@ -29,6 +29,7 @@ class EventsCompactionConfigTest {
     val config = EventsCompactionConfig()
 
     assertFalse(config.hasSlidingWindowConfig())
+    assertFalse(config.hasTokenThresholdConfig())
   }
 
   @Test
@@ -80,6 +81,77 @@ class EventsCompactionConfigTest {
   fun construct_overlapSizeWithoutCompactionInterval_throwsIllegalArgumentException() {
     assertFailsWith<IllegalArgumentException> {
       EventsCompactionConfig(compactionInterval = null, overlapSize = 1)
+    }
+  }
+
+  @Test
+  fun construct_validTokenThreshold_succeeds() {
+    val config =
+      EventsCompactionConfig(
+        tokenThreshold = 50000,
+        eventRetentionSize = 5,
+        summarizer = NoopSummarizer,
+      )
+
+    assertTrue(config.hasTokenThresholdConfig())
+    assertFalse(config.hasSlidingWindowConfig())
+    assertEquals(50000, config.tokenThreshold)
+    assertEquals(5, config.eventRetentionSize)
+  }
+
+  @Test
+  fun construct_eventRetentionSizeZero_succeeds() {
+    val config = EventsCompactionConfig(tokenThreshold = 50000, eventRetentionSize = 0)
+
+    assertTrue(config.hasTokenThresholdConfig())
+  }
+
+  @Test
+  fun construct_bothStrategiesConfigured_succeeds() {
+    val config =
+      EventsCompactionConfig(
+        compactionInterval = 3,
+        overlapSize = 1,
+        tokenThreshold = 50000,
+        eventRetentionSize = 5,
+      )
+
+    assertTrue(config.hasSlidingWindowConfig())
+    assertTrue(config.hasTokenThresholdConfig())
+  }
+
+  @Test
+  fun construct_tokenThresholdZero_throwsIllegalArgumentException() {
+    assertFailsWith<IllegalArgumentException> {
+      EventsCompactionConfig(tokenThreshold = 0, eventRetentionSize = 5)
+    }
+  }
+
+  @Test
+  fun construct_tokenThresholdNegative_throwsIllegalArgumentException() {
+    assertFailsWith<IllegalArgumentException> {
+      EventsCompactionConfig(tokenThreshold = -1, eventRetentionSize = 5)
+    }
+  }
+
+  @Test
+  fun construct_eventRetentionSizeNegative_throwsIllegalArgumentException() {
+    assertFailsWith<IllegalArgumentException> {
+      EventsCompactionConfig(tokenThreshold = 50000, eventRetentionSize = -1)
+    }
+  }
+
+  @Test
+  fun construct_tokenThresholdWithoutEventRetentionSize_throwsIllegalArgumentException() {
+    assertFailsWith<IllegalArgumentException> {
+      EventsCompactionConfig(tokenThreshold = 50000, eventRetentionSize = null)
+    }
+  }
+
+  @Test
+  fun construct_eventRetentionSizeWithoutTokenThreshold_throwsIllegalArgumentException() {
+    assertFailsWith<IllegalArgumentException> {
+      EventsCompactionConfig(tokenThreshold = null, eventRetentionSize = 5)
     }
   }
 

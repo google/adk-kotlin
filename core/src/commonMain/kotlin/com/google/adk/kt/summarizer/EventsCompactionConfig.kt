@@ -27,11 +27,19 @@ package com.google.adk.kt.summarizer
  * @property summarizer The [EventSummarizer] used to produce the compaction summary. When `null`,
  *   the runner defaults it to an [LlmEventSummarizer] backed by the root agent's model, requiring
  *   the root to be an `LlmAgent` (otherwise it throws at construction).
+ * @property tokenThreshold The most recent prompt token count that triggers intra-invocation
+ *   token-threshold (tail-retention) compaction before an LLM call. Must be strictly positive when
+ *   set, and must be set together with [eventRetentionSize].
+ * @property eventRetentionSize The number of most recent events kept raw (un-compacted) when
+ *   token-threshold compaction fires; the older events are summarized into a single event. Must be
+ *   non-negative when set, and must be set together with [tokenThreshold].
  */
 data class EventsCompactionConfig(
   val compactionInterval: Int? = null,
   val overlapSize: Int? = null,
   val summarizer: EventSummarizer? = null,
+  val tokenThreshold: Int? = null,
+  val eventRetentionSize: Int? = null,
 ) {
   init {
     if (compactionInterval != null) {
@@ -46,8 +54,23 @@ data class EventsCompactionConfig(
       "compactionInterval and overlapSize must be set together or both null " +
         "(got compactionInterval=$compactionInterval, overlapSize=$overlapSize)."
     }
+    if (tokenThreshold != null) {
+      require(tokenThreshold > 0) { "tokenThreshold must be > 0, but was $tokenThreshold." }
+    }
+    if (eventRetentionSize != null) {
+      require(eventRetentionSize >= 0) {
+        "eventRetentionSize must be >= 0, but was $eventRetentionSize."
+      }
+    }
+    require((tokenThreshold == null) == (eventRetentionSize == null)) {
+      "tokenThreshold and eventRetentionSize must be set together or both null " +
+        "(got tokenThreshold=$tokenThreshold, eventRetentionSize=$eventRetentionSize)."
+    }
   }
 
   /** Returns true when sliding-window compaction is fully configured. */
   fun hasSlidingWindowConfig(): Boolean = compactionInterval != null && overlapSize != null
+
+  /** Returns true when token-threshold compaction is fully configured. */
+  fun hasTokenThresholdConfig(): Boolean = tokenThreshold != null && eventRetentionSize != null
 }
