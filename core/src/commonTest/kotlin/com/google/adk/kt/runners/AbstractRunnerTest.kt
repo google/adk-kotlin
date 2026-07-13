@@ -31,12 +31,16 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
+import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userFunctionResponse
@@ -46,6 +50,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -787,8 +792,6 @@ class AbstractRunnerTest {
     )
   }
 
-  // ----- Post-invocation context compaction wiring (configured via App) -----
-
   @Test
   fun runAsync_slidingWindowConfigured_compactsAfterInterval() = runTest {
     val summarizer = RecordingSummarizer(returning = compactionEvent(startTs = 0L, endTs = 0L))
@@ -856,6 +859,35 @@ class AbstractRunnerTest {
     assertTrue(events.none { it.actions.compaction != null })
     // Two invocations, each appending a user and a model event, and no compaction event added.
     assertEquals(4, events.size)
+  }
+
+  @Test
+  fun runAsync_threadsEventsCompactionConfigIntoInvocationContext() = runTest {
+    // A token-threshold-only config (no sliding-window fields) must reach the InvocationContext so
+    // intra-invocation request processors can read it.
+    val summarizer = RecordingSummarizer()
+    val config =
+      EventsCompactionConfig(tokenThreshold = 100, eventRetentionSize = 2, summarizer = summarizer)
+    var captured: EventsCompactionConfig? = null
+    val agent =
+      DummyAgent(name = "agent") { context ->
+        captured = context.eventsCompactionConfig
+        emit(
+          Event(
+            author = Role.MODEL,
+            invocationId = context.invocationId,
+            content = modelMessage("resp"),
+          )
+        )
+      }
+    val runner =
+      InMemoryRunner(
+        app = App(appName = "test_app", rootAgent = agent, eventsCompactionConfig = config)
+      )
+
+    runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi")).toList()
+
+    assertEquals(config, captured)
   }
 
   @Test
@@ -974,6 +1006,226 @@ class AbstractRunnerTest {
       runner.sessionService.getSession(SessionKey("state_delta_app", "user", "session"))!!
     assertEquals("v", session.state["k"])
   }
+
+  @Test
+  fun runAsync_tokenThresholdConfigured_compactsWhenPromptExceedsThreshold() = runTest {
+    val summarizer = RecordingSummarizer(returning = compactionEvent(startTs = 0L, endTs = 0L))
+    // The model reports a prompt token count of 200 on every call, exceeding the threshold of 100.
+    val model =
+      DummyModel(name = "model") {
+        flowOf(
+          LlmResponse(
+            content = modelMessage("resp"),
+            usageMetadata = UsageMetadata(promptTokenCount = 200),
+          )
+        )
+      }
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = "test_app",
+            rootAgent = LlmAgent(name = "agent", model = model),
+            eventsCompactionConfig =
+              EventsCompactionConfig(
+                tokenThreshold = 100,
+                eventRetentionSize = 1,
+                summarizer = summarizer,
+              ),
+          )
+      )
+
+    // First turn: no prior usage metadata, the char estimate is tiny, so no compaction fires.
+    runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi")).toList()
+    assertTrue(summarizer.calls.isEmpty())
+
+    // Second turn: the prior model response reported 200 prompt tokens (>= 100), so the compaction
+    // request processor fires before the model call of this turn.
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi again"))
+      .toList()
+
+    assertEquals(1, summarizer.calls.size)
+    val events =
+      assertNotNull(runner.sessionService.getSession(SessionKey(runner.appName, "user", "session")))
+        .events
+    assertEquals(1, events.count { it.actions.compaction != null })
+  }
+
+  @Test
+  fun runAsync_bothStrategiesConfigured_tokenCompactionSuppressesSlidingWindow() = runTest {
+    // Records calls and produces a realistic compaction range from the window.
+    val summarizer =
+      object : EventSummarizer {
+        val calls: MutableList<List<Event>> = mutableListOf()
+
+        override suspend fun summarizeEvents(events: List<Event>): Event {
+          calls.add(events.toList())
+          return compactionEvent(
+            startTs = events.first().timestamp,
+            endTs = events.last().timestamp,
+          )
+        }
+      }
+    // Reports a prompt token count over the threshold, enabling intra-invocation compaction.
+    val model =
+      DummyModel(name = "model") {
+        flowOf(
+          LlmResponse(
+            content = modelMessage("resp"),
+            usageMetadata = UsageMetadata(promptTokenCount = 200),
+          )
+        )
+      }
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = "test_app",
+            rootAgent = LlmAgent(name = "agent", model = model),
+            // Both strategies on: sliding-window (post-invocation) and token-threshold
+            // (intra-invocation).
+            eventsCompactionConfig =
+              EventsCompactionConfig(
+                compactionInterval = 2,
+                overlapSize = 0,
+                tokenThreshold = 100,
+                eventRetentionSize = 1,
+                summarizer = summarizer,
+              ),
+          )
+      )
+
+    // Turn 1: neither fires yet -- no reported token count, and below the sliding interval.
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("first"))
+      .toList()
+    assertTrue(summarizer.calls.isEmpty())
+
+    // Turn 2: token-threshold fires before the model call and advances the compaction boundary, so
+    // the post-invocation sliding-window sees only one new invocation (< interval) and is
+    // suppressed.
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("second"))
+      .toList()
+
+    // Exactly one compaction fired, and it was token-threshold's: its window is the tail-retention
+    // selection (older events, "second" kept raw). A sliding-window compaction would instead have
+    // used an invocation window that includes "second".
+    val windowTexts =
+      summarizer.calls.single().flatMap { it.content?.parts.orEmpty() }.mapNotNull { it.text }
+    assertEquals(listOf("first", "resp"), windowTexts)
+
+    val events =
+      assertNotNull(runner.sessionService.getSession(SessionKey(runner.appName, "user", "session")))
+        .events
+    assertEquals(1, events.count { it.actions.compaction != null })
+  }
+
+  @Test
+  fun runAsync_tokenThreshold_firesMidInvocationInToolLoopAndFoldsPriorSummary() = runTest {
+    // Records each compaction window and returns a summary tagged with the call index, so a
+    // folded-in prior summary is identifiable by its text.
+    val summarizer =
+      object : EventSummarizer {
+        val calls: MutableList<List<Event>> = mutableListOf()
+
+        override suspend fun summarizeEvents(events: List<Event>): Event {
+          calls.add(events.toList())
+          return compactionEvent(
+            startTs = events.first().timestamp,
+            endTs = events.last().timestamp,
+            summary = "SUMMARY_${calls.size}",
+          )
+        }
+      }
+    // Model calls in order: turn 1 (text), turn 2 call 1 (function call), turn 2 call 2 (final
+    // text). The first two report a prompt token count over the threshold so the pre-call
+    // token-threshold compaction fires before the model calls that follow them.
+    var modelCalls = 0
+    val model =
+      DummyModel(name = "model") { _ ->
+        modelCalls++
+        when (modelCalls) {
+          1 ->
+            flowOf(
+              LlmResponse(
+                content = modelMessage("answer-1"),
+                usageMetadata = UsageMetadata(promptTokenCount = 200),
+              )
+            )
+          2 ->
+            flowOf(
+              LlmResponse(
+                content =
+                  Content(
+                    role = Role.MODEL,
+                    parts =
+                      listOf(Part(functionCall = FunctionCall(name = "dummy_tool", id = "call_1"))),
+                  ),
+                usageMetadata = UsageMetadata(promptTokenCount = 200),
+              )
+            )
+          else -> flowOf(LlmResponse(content = modelMessage("answer-2")))
+        }
+      }
+    var toolCalls = 0
+    val tool =
+      DummyTool(name = "dummy_tool") { _, _ ->
+        toolCalls++
+        mapOf("status" to "done")
+      }
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = "test_app",
+            rootAgent = LlmAgent(name = "agent", model = model, tools = listOf(tool)),
+            // Token-threshold only, so the post-invocation sliding window stays out of the way.
+            eventsCompactionConfig =
+              EventsCompactionConfig(
+                tokenThreshold = 100,
+                eventRetentionSize = 1,
+                summarizer = summarizer,
+              ),
+          ),
+        // Strictly increasing timestamps keep the compaction boundary deterministic across
+        // platforms (Robolectric freezes the wall clock).
+        sessionService = IncrementingTimestampSessionService(),
+      )
+
+    // Turn 1: seeds a reported prompt token count; nothing to compact yet.
+    runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi")).toList()
+    assertTrue(summarizer.calls.isEmpty())
+
+    // Turn 2: a single invocation with a tool-call loop => two model calls. Token-threshold
+    // compaction fires before each: once at invocation start, then again mid-invocation before the
+    // post-tool model call.
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi2"))
+      .toList()
+
+    // Two model calls happened in the single turn-2 invocation, and the tool ran once.
+    assertEquals(3, modelCalls)
+    assertEquals(1, toolCalls)
+
+    // Compaction fired twice in turn 2: at invocation start and again mid-invocation (before the
+    // post-tool model call).
+    assertEquals(2, summarizer.calls.size)
+
+    // The mid-invocation compaction folded in the prior summary: its window starts with the first
+    // compaction's summary followed by the turn-2 user message (older events are compacted; the
+    // function-call/response tail is kept raw).
+    val secondWindowTexts =
+      summarizer.calls[1].flatMap { it.content?.parts.orEmpty() }.mapNotNull { it.text }
+    assertEquals(listOf("SUMMARY_1", "hi2"), secondWindowTexts)
+
+    // Both summaries are persisted to the session.
+    val events =
+      assertNotNull(runner.sessionService.getSession(SessionKey(runner.appName, "user", "session")))
+        .events
+    assertEquals(2, events.count { it.actions.compaction != null })
+  }
 }
 
 /** A [DummyAgent] that emits one model [Event] tagged with the current invocation id per turn. */
@@ -1038,4 +1290,22 @@ private class MissingVersionedArtifactService(
   }
 
   fun lastSavedArtifact(filename: String): Part? = lastSaved[filename]
+}
+
+/**
+ * A [SessionService] that stamps each appended event with a strictly increasing timestamp.
+ *
+ * [Event.timestamp] defaults to the wall clock, and compaction uses those timestamps to decide
+ * which events a summary covers. Under Robolectric (the Android unit-test runtime) the clock is
+ * frozen, so every event gets the *same* timestamp and the compaction boundary can no longer
+ * separate covered events from retained ones. Assigning monotonic timestamps keeps the
+ * runner-driven compaction tests deterministic on every platform.
+ */
+private class IncrementingTimestampSessionService(
+  private val delegate: SessionService = InMemorySessionService()
+) : SessionService by delegate {
+  private var nextTimestamp = 1L
+
+  override suspend fun appendEvent(session: Session, event: Event): Event =
+    delegate.appendEvent(session, event.copy(timestamp = nextTimestamp++))
 }

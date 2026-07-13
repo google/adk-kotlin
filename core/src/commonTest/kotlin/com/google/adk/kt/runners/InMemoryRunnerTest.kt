@@ -49,6 +49,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.UsageMetadata
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -194,6 +195,105 @@ class InMemoryRunnerTest {
       .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("first question"))
       .toList()
     // Turn 2: its prompt should now show the summary instead of turn 1's raw messages.
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("second question"))
+      .toList()
+
+    val turn2Prompt =
+      agentPrompts.last().contents.flatMap { it.parts }.mapNotNull { it.text }.joinToString("\n")
+    assertThat(turn2Prompt).contains("SUMMARY_OF_EARLIER_TURNS")
+    assertThat(turn2Prompt).contains("second question")
+    assertThat(turn2Prompt).doesNotContain("first question")
+  }
+
+  @Test
+  fun runAsync_constructedFromApp_wiresTokenThresholdCompactionConfig() = runTest {
+    val summarizer = RecordingEventSummarizer()
+    // The model reports a prompt token count above the threshold on every call.
+    val model =
+      DummyModel(name = "model") {
+        flowOf(
+          LlmResponse(
+            content = modelMessage("answer"),
+            usageMetadata = UsageMetadata(promptTokenCount = 200),
+          )
+        )
+      }
+    val app =
+      App(
+        appName = "compaction_app",
+        rootAgent = LlmAgent(name = "agent", model = model),
+        eventsCompactionConfig =
+          EventsCompactionConfig(
+            tokenThreshold = 100,
+            eventRetentionSize = 1,
+            summarizer = summarizer,
+          ),
+      )
+    val runner = InMemoryRunner(app = app)
+
+    // Turn 1 records a prompt token count; turn 2's pre-call token-threshold compaction then fires.
+    runner
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+      .toList()
+    runner
+      .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi again"))
+      .toList()
+
+    assertThat(runner.appName).isEqualTo("compaction_app")
+    assertThat(summarizer.calls).isNotEmpty()
+    val events =
+      runner.sessionService.getSession(SessionKey(runner.appName, "user1", "session1"))!!.events
+    assertThat(events.any { it.actions.compaction != null }).isTrue()
+  }
+
+  /**
+   * Full end-to-end of token-threshold compaction through [InMemoryRunner.runAsync]: turn 1's model
+   * reports a prompt token count over the threshold, so before turn 2's model call the compaction
+   * request processor summarizes the earlier turn; turn 2's prompt then shows the summary in place
+   * of turn 1's raw messages. Uses [MonotonicTimestampSessionService] so event ordering doesn't
+   * depend on the wall clock.
+   */
+  @Test
+  fun runAsync_tokenThresholdCompactionEndToEnd_summaryReplacesHistoryInNextPrompt() = runTest {
+    val agentPrompts = mutableListOf<LlmRequest>()
+    // The agent's model records every prompt and reports a prompt token count over the threshold.
+    val agentModel =
+      DummyModel(name = "agent-model") { request ->
+        agentPrompts += request
+        flowOf(
+          LlmResponse(
+            content = modelMessage("answer"),
+            usageMetadata = UsageMetadata(promptTokenCount = 200),
+          )
+        )
+      }
+    // The compaction summarizer's model returns a recognizable summary sentinel.
+    val summarizerModel =
+      DummyModel(name = "summarizer-model") {
+        flowOf(LlmResponse(content = modelMessage("SUMMARY_OF_EARLIER_TURNS")))
+      }
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = "compaction_app",
+            rootAgent = LlmAgent(name = "agent", model = agentModel),
+            eventsCompactionConfig =
+              EventsCompactionConfig(
+                tokenThreshold = 100,
+                eventRetentionSize = 1,
+                summarizer = LlmEventSummarizer(summarizerModel),
+              ),
+          ),
+        sessionService = MonotonicTimestampSessionService(),
+      )
+
+    // Turn 1: no prior reported count on entry, so no compaction; the model then reports one.
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("first question"))
+      .toList()
+    // Turn 2: before its model call, token-threshold compaction summarizes turn 1.
     runner
       .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("second question"))
       .toList()

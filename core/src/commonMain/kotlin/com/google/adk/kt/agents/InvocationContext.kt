@@ -31,6 +31,7 @@ import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
@@ -121,6 +122,14 @@ data class InvocationContext(
    * `@OptIn(ExperimentalResumabilityFeature::class)`.
    */
   val resumabilityConfig: ResumabilityConfig? = null,
+
+  /**
+   * Optional event-compaction configuration for this invocation.
+   *
+   * Threaded from the runner's [com.google.adk.kt.apps.App] so intra-invocation request processors
+   * (e.g. token-threshold compaction) can read it. `null` when no compaction is configured.
+   */
+  val eventsCompactionConfig: EventsCompactionConfig? = null,
 
   // State
   /** The user content that started this invocation. Readonly. */
