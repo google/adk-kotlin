@@ -494,7 +494,10 @@ class GenaiConvertersTest {
         toolConfig =
           ToolConfig(
             functionCallingConfig =
-              FunctionCallingConfig(allowedFunctionNames = listOf("getWeather", "getTime"))
+              FunctionCallingConfig(
+                allowedFunctionNames = listOf("getWeather", "getTime"),
+                streamFunctionCallArguments = true,
+              )
           )
       )
 
@@ -503,6 +506,7 @@ class GenaiConvertersTest {
       listOf("getWeather", "getTime"),
       genaiConfig.toolConfig?.functionCallingConfig?.allowedFunctionNames,
     )
+    assertEquals(true, genaiConfig.toolConfig?.functionCallingConfig?.streamFunctionCallArguments)
 
     val convertedBack = genaiConfig.fromGenaiSdk()
     assertEquals(adkConfig.toolConfig, convertedBack.toolConfig)

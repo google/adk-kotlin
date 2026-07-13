@@ -406,11 +406,17 @@ internal fun GenerationConfigRoutingConfigManualRoutingMode.toGenaiSdk():
 // --- FunctionCallingConfig ---
 /** Converts a [GenAiFunctionCallingConfig] from the GenAI SDK to an ADK [FunctionCallingConfig]. */
 internal fun GenAiFunctionCallingConfig.fromGenaiSdk(): FunctionCallingConfig =
-  FunctionCallingConfig(allowedFunctionNames = allowedFunctionNames)
+  FunctionCallingConfig(
+    allowedFunctionNames = allowedFunctionNames,
+    streamFunctionCallArguments = streamFunctionCallArguments,
+  )
 
 /** Converts an ADK [FunctionCallingConfig] to a [GenAiFunctionCallingConfig] for the GenAI SDK. */
 internal fun FunctionCallingConfig.toGenaiSdk(): GenAiFunctionCallingConfig =
-  GenAiFunctionCallingConfig(allowedFunctionNames = allowedFunctionNames)
+  GenAiFunctionCallingConfig(
+    allowedFunctionNames = allowedFunctionNames,
+    streamFunctionCallArguments = streamFunctionCallArguments,
+  )
 
 // --- ToolConfig ---
 /** Converts a [GenAiToolConfig] from the GenAI SDK to an ADK [ToolConfig]. */

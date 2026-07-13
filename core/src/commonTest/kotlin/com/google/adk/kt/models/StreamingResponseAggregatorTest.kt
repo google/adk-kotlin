@@ -133,6 +133,130 @@ class StreamingResponseAggregatorTest {
     assertEquals("CA", location["state"])
   }
 
+  // The last partialArgs chunk keeps willContinue=true; completion arrives on a separate empty
+  // willContinue=false marker, then trailing text follows. The marker must flush the call so it
+  // precedes the text. Without handling the marker, aggregate() flushes the call after the text,
+  // reversing their order (a single call alone would be masked by that end-of-stream flush).
+  @Test
+  fun testStreamedCallEndedByEmptyMarker_flushesCallBeforeTrailingText() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused1 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("book_flight", "$.origin", "Krak", willContinue = true))
+      )
+    val unused2 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.origin", "ow", willContinue = true))
+      )
+    val unused3 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.destination", "Warsaw", willContinue = true))
+      )
+    val unused4 = aggregator.processResponse(createFcResp(FunctionCall(willContinue = false)))
+    val unused5 = aggregator.processResponse(createResp("Booked."))
+    val finalResp = aggregator.aggregate()
+
+    assertNotNull(finalResp)
+    val parts = finalResp.content?.parts
+    assertNotNull(parts)
+    assertEquals(2, parts.size)
+    val fc = parts[0].functionCall
+    assertNotNull(fc)
+    assertEquals("book_flight", fc.name)
+    assertEquals("Krakow", fc.args["origin"])
+    assertEquals("Warsaw", fc.args["destination"])
+    assertEquals("Booked.", parts[1].text)
+  }
+
+  // Two multi-arg streamed calls each ended by an empty willContinue=false marker must not drop the
+  // first call nor bleed its args into the second (distinct values catch any bleed).
+  @Test
+  fun testTwoStreamedCallsEndedByEmptyMarkers_keepArgsSeparate() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused1 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("get_temperature", "$.city", "Krakow", willContinue = true))
+      )
+    val unused2 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.unit", "C", willContinue = true))
+      )
+    val unused3 = aggregator.processResponse(createFcResp(FunctionCall(willContinue = false)))
+    val unused4 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("get_condition", "$.city", "Warsaw", willContinue = true))
+      )
+    val unused5 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.unit", "F", willContinue = true))
+      )
+    val unused6 = aggregator.processResponse(createFcResp(FunctionCall(willContinue = false)))
+    val finalResp = aggregator.aggregate()
+
+    assertNotNull(finalResp)
+    assertEquals(2, finalResp.content?.parts?.size)
+    val first = finalResp.content?.parts?.get(0)?.functionCall
+    val second = finalResp.content?.parts?.get(1)?.functionCall
+    assertNotNull(first)
+    assertNotNull(second)
+    assertEquals("get_temperature", first.name)
+    assertEquals("Krakow", first.args["city"])
+    assertEquals("C", first.args["unit"])
+    assertEquals("get_condition", second.name)
+    assertEquals("Warsaw", second.args["city"])
+    assertEquals("F", second.args["unit"])
+  }
+
+  // Safety guard for non-conforming output: a streamed call still in progress (the model should
+  // have terminated it with willContinue=false) followed by a complete non-streaming call. The
+  // in-progress call is flushed before appending, so neither is dropped nor merged.
+  @Test
+  fun testStreamedCallFollowedByCompleteCall_flushesInProgressFirst() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused1 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("stream_call", "$.a", "1", willContinue = true))
+      )
+    val unused2 =
+      aggregator.processResponse(
+        createFcResp(FunctionCall(name = "plain_call", args = mapOf("b" to "2")))
+      )
+    val finalResp = aggregator.aggregate()
+
+    assertNotNull(finalResp)
+    assertEquals(2, finalResp.content?.parts?.size)
+    val first = finalResp.content?.parts?.get(0)?.functionCall
+    val second = finalResp.content?.parts?.get(1)?.functionCall
+    assertNotNull(first)
+    assertNotNull(second)
+    assertEquals("stream_call", first.name)
+    assertEquals("1", first.args["a"])
+    assertEquals("plain_call", second.name)
+    assertEquals("2", second.args["b"])
+  }
+
+  // A stray nameless willContinue=false marker with no call in progress must be a safe no-op (the
+  // currentFcName != null half of the guard): it must not add a function call nor split the
+  // surrounding text. Without that half it would be treated as a streamed part and prematurely
+  // flush the text buffer, splitting "Hello world" into two parts.
+  @Test
+  fun testStrayNamelessMarker_isNoOp_doesNotSplitSurroundingText() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused1 = aggregator.processResponse(createResp("Hello "))
+    val unused2 = aggregator.processResponse(createFcResp(FunctionCall(willContinue = false)))
+    val unused3 = aggregator.processResponse(createResp("world"))
+    val finalResp = aggregator.aggregate()
+
+    assertNotNull(finalResp)
+    assertEquals(1, finalResp.content?.parts?.size)
+    assertEquals("Hello world", finalResp.content?.parts?.get(0)?.text)
+    assertTrue(finalResp.content?.parts?.none { it.functionCall != null } == true)
+  }
+
   @Test
   fun processResponse_concurrentCalls_isThreadSafe() = runTest {
     val aggregator = StreamingResponseAggregator()

@@ -19,5 +19,10 @@ package com.google.adk.kt.types
 /** Configuration for how the model uses the provided function declarations. */
 data class FunctionCallingConfig(
   /** Function names the model is allowed to call. */
-  val allowedFunctionNames: List<String>? = null
+  val allowedFunctionNames: List<String>? = null,
+  /**
+   * When true, a single function call's arguments are streamed across chunks (partialArgs) rather
+   * than returned all at once. Vertex-only; not supported by the Gemini Developer API.
+   */
+  val streamFunctionCallArguments: Boolean? = null,
 )

@@ -176,18 +176,26 @@ internal class StreamingResponseAggregator {
           "Expected functionCall to be non-null when processing a function call part."
         )
 
-    if (fc.partialArgs?.isNotEmpty() == true || fc.willContinue == true) {
-      // Streaming function call
+    val hasName = fc.name.isNotEmpty()
+    // A streamed call: it has partialArgs or willContinue, or is the nameless terminal
+    // marker of an in-progress call. Gemini may end a call with a separate empty
+    // willContinue=false part, so that marker completes it.
+    val streamedPart =
+      fc.partialArgs?.isNotEmpty() == true ||
+        fc.willContinue == true ||
+        (currentFcName != null && !hasName)
+    if (streamedPart) {
       if (part.thoughtSignature != null && currentThoughtSignature == null) {
         currentThoughtSignature = part.thoughtSignature
       }
       processStreamingFunctionCall(fc)
-    } else {
-      // Non-streaming function call
-      if (fc.name.isNotEmpty()) {
-        flushTextBufferToSequence()
-        partsSequence.add(part)
-      }
+    } else if (hasName) {
+      // Non-streaming call. Safety guard: the model should terminate a streamed call with
+      // willContinue=false before starting a new one; flush any still-in-progress call so it is
+      // neither dropped nor merged.
+      flushTextBufferToSequence()
+      flushFunctionCallToSequence()
+      partsSequence.add(part)
     }
   }
 
