@@ -30,16 +30,14 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
-import com.google.adk.kt.sessions.InMemorySessionService
-import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.summarizer.LlmEventSummarizer
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.MonotonicTimestampSessionService
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyEvents
@@ -606,23 +604,4 @@ private class RecordingEventSummarizer(
     calls.add(events.toList())
     return returning
   }
-}
-
-/**
- * A [SessionService] that stamps each appended event with a strictly increasing timestamp.
- *
- * [Event.timestamp] defaults to the wall clock, and compaction uses those timestamps to decide
- * which events a summary covers. Under Robolectric (the Android unit-test runtime) the clock is
- * frozen, so every event gets the *same* timestamp: the compaction range collapses to a single
- * point that also covers the next turn's message, which then gets compacted away and breaks the
- * assertions. (On the JVM the real clock advances, so this passes there.) Assigning monotonic
- * timestamps makes the runner-driven compaction test deterministic on every platform.
- */
-private class MonotonicTimestampSessionService(
-  private val delegate: SessionService = InMemorySessionService()
-) : SessionService by delegate {
-  private var nextTimestamp = 1L
-
-  override suspend fun appendEvent(session: Session, event: Event): Event =
-    delegate.appendEvent(session, event.copy(timestamp = nextTimestamp++))
 }

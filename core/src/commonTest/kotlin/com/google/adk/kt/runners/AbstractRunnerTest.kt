@@ -31,16 +31,14 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.sessions.InMemorySessionService
-import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.MonotonicTimestampSessionService
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userFunctionResponse
@@ -1191,7 +1189,7 @@ class AbstractRunnerTest {
           ),
         // Strictly increasing timestamps keep the compaction boundary deterministic across
         // platforms (Robolectric freezes the wall clock).
-        sessionService = IncrementingTimestampSessionService(),
+        sessionService = MonotonicTimestampSessionService(),
       )
 
     // Turn 1: seeds a reported prompt token count; nothing to compact yet.
@@ -1290,22 +1288,4 @@ private class MissingVersionedArtifactService(
   }
 
   fun lastSavedArtifact(filename: String): Part? = lastSaved[filename]
-}
-
-/**
- * A [SessionService] that stamps each appended event with a strictly increasing timestamp.
- *
- * [Event.timestamp] defaults to the wall clock, and compaction uses those timestamps to decide
- * which events a summary covers. Under Robolectric (the Android unit-test runtime) the clock is
- * frozen, so every event gets the *same* timestamp and the compaction boundary can no longer
- * separate covered events from retained ones. Assigning monotonic timestamps keeps the
- * runner-driven compaction tests deterministic on every platform.
- */
-private class IncrementingTimestampSessionService(
-  private val delegate: SessionService = InMemorySessionService()
-) : SessionService by delegate {
-  private var nextTimestamp = 1L
-
-  override suspend fun appendEvent(session: Session, event: Event): Event =
-    delegate.appendEvent(session, event.copy(timestamp = nextTimestamp++))
 }
