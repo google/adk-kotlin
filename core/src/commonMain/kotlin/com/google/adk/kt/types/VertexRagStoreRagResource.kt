@@ -17,12 +17,12 @@
 package com.google.adk.kt.types
 
 /**
- * Defines a retrieval tool that model can call to access external knowledge.
+ * The representation of a RAG source for a [VertexRagStore].
  *
- * @property vertexAiSearch Set to use data source powered by Vertex AI Search.
- * @property vertexRagStore Set to use data source powered by a Vertex RAG store.
+ * @property ragCorpus RagCorpora resource name.
+ * @property ragFileIds `rag_file_id`s, which should belong to the corpus in [ragCorpus].
  */
-data class Retrieval(
-  val vertexAiSearch: VertexAISearch? = null,
-  val vertexRagStore: VertexRagStore? = null,
+data class VertexRagStoreRagResource(
+  val ragCorpus: String? = null,
+  val ragFileIds: List<String>? = null,
 )
