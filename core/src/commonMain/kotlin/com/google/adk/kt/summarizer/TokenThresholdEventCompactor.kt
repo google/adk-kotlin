@@ -95,7 +95,21 @@ class TokenThresholdEventCompactor(
     if (candidateEvents.size <= eventRetentionSize) return null
 
     // Where the kept-raw tail begins; candidates before it are compacted.
-    val firstRetainedIndex = candidateEvents.size - eventRetentionSize
+    var firstRetainedIndex = candidateEvents.size
+    if (eventRetentionSize > 0) {
+      firstRetainedIndex -= eventRetentionSize
+      val retentionBoundaryTimestamp = candidateEvents[firstRetainedIndex].timestamp
+
+      // Move the cut back so it never splits a same-timestamp group; the summary's endTimestamp
+      // must stay below every retained event, or coverage would drop the event that ties it.
+      while (
+        firstRetainedIndex > 0 &&
+          candidateEvents[firstRetainedIndex - 1].timestamp >= retentionBoundaryTimestamp
+      ) {
+        firstRetainedIndex--
+      }
+    }
+
     val eventsToCompact = longestSelfContainedPrefix(candidateEvents.subList(0, firstRetainedIndex))
     if (eventsToCompact.isEmpty()) return null
 

@@ -120,12 +120,16 @@ internal class HistoryRewriterProcessor {
       )
     }
 
-    // Pass 2: append raw (non-compaction) events that don't fall into a kept compaction range.
+    // Pass 2: append raw (non-compaction) events that don't fall into a kept compaction range. A
+    // raw event is only covered by a compaction that appears after it in the stream (`index <
+    // it.index`).
     finalItems +=
       events
         .withIndex()
         .filter { (_, event) -> event.actions.compaction == null }
-        .filter { (_, event) -> keptCompactionRanges.none { event.timestamp in it.start..it.end } }
+        .filter { (index, event) ->
+          keptCompactionRanges.none { index < it.index && event.timestamp in it.start..it.end }
+        }
         .map { (index, event) -> Item(event.timestamp, index, event) }
 
     return finalItems.sortedWith(compareBy({ it.timestamp }, { it.index })).map { it.event }

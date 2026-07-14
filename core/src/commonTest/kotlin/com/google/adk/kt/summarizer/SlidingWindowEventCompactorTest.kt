@@ -467,6 +467,48 @@ class SlidingWindowEventCompactorTest {
     }
   }
 
+  @Test
+  fun compact_newInvocationTiesPriorSummaryBoundary_includesTiedInvocationInWindow() = runTest {
+    // Window-selection boundary tie. A prior summary ends at ts=200, and a genuinely-new invocation
+    // (inv_3) lands in the same wall-clock millisecond (ts=200). The crossing check uses `<=`, so
+    // this pins that the tied new invocation is still included in the compaction window -- not
+    // skipped as "already compacted".
+    val summarizer =
+      object : EventSummarizer {
+        val windows = mutableListOf<List<Event>>()
+
+        override suspend fun summarizeEvents(events: List<Event>): Event {
+          windows.add(events.toList())
+          return compactionEvent(
+            startTs = events.first().timestamp,
+            endTs = events.last().timestamp,
+            summary = "S2",
+          )
+        }
+      }
+    val sessionService = RecordingSessionService()
+    val compactor =
+      SlidingWindowEventCompactor(
+        EventsCompactionConfig(compactionInterval = 2, overlapSize = 0, summarizer = summarizer)
+      )
+    val session = testSession()
+    // A prior summary S1 already covers inv_1 and inv_2 (endTimestamp = 200).
+    session.events.add(userEvent("u1", invocationId = "inv_1", timestamp = 100L))
+    session.events.add(userEvent("u2", invocationId = "inv_2", timestamp = 200L))
+    session.events.add(compactionEvent(startTs = 100L, endTs = 200L, summary = "S1"))
+    // Two new invocations; inv_3 lands in the same millisecond as S1's endTimestamp.
+    session.events.add(userEvent("u3", invocationId = "inv_3", timestamp = 200L))
+    session.events.add(userEvent("u4", invocationId = "inv_4", timestamp = 300L))
+
+    compactor.compact(session, sessionService)
+
+    // The tied new invocation (u3) is included in the compaction window, not skipped.
+    assertEquals(1, sessionService.appended.size)
+    val windowTexts =
+      summarizer.windows.single().flatMap { it.content?.parts.orEmpty() }.mapNotNull { it.text }
+    assertEquals(listOf("u3", "u4"), windowTexts)
+  }
+
   // ----- helpers -----
 
   /**

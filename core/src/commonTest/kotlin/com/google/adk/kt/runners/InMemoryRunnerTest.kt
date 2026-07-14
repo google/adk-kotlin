@@ -228,7 +228,9 @@ class InMemoryRunnerTest {
             summarizer = summarizer,
           ),
       )
-    val runner = InMemoryRunner(app = app)
+    // Monotonic timestamps so the retention boundary never lands on a same-millisecond tie, which
+    // would empty the window and skip compaction (see MonotonicTimestampSessionService).
+    val runner = InMemoryRunner(app = app, sessionService = MonotonicTimestampSessionService())
 
     // Turn 1 records a prompt token count; turn 2's pre-call token-threshold compaction then fires.
     runner

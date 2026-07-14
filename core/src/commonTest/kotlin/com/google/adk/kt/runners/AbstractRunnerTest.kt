@@ -1030,7 +1030,10 @@ class AbstractRunnerTest {
                 eventRetentionSize = 1,
                 summarizer = summarizer,
               ),
-          )
+          ),
+        // Deterministic, strictly-increasing timestamps so the retention boundary never lands on a
+        // same-millisecond wall-clock tie (which would empty the window and skip compaction).
+        sessionService = MonotonicTimestampSessionService(),
       )
 
     // First turn: no prior usage metadata, the char estimate is tiny, so no compaction fires.
@@ -1091,7 +1094,10 @@ class AbstractRunnerTest {
                 eventRetentionSize = 1,
                 summarizer = summarizer,
               ),
-          )
+          ),
+        // Deterministic, strictly-increasing timestamps so the token-threshold retention boundary
+        // does not land on a same-millisecond wall-clock tie (which would retain "resp" too).
+        sessionService = MonotonicTimestampSessionService(),
       )
 
     // Turn 1: neither fires yet -- no reported token count, and below the sliding interval.

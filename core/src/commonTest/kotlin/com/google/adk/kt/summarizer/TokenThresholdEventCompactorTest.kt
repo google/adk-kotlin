@@ -343,6 +343,43 @@ class TokenThresholdEventCompactorTest {
     assertSame(b, latestCompactionEvent(events))
   }
 
+  @Test
+  fun compact_sameTimestampAtRetentionBoundary_retainsWholeTieGroup() = runTest {
+    // A same-timestamp group is never split across the compaction boundary: only events strictly
+    // below the first retained event's timestamp are summarized. A and B share ts=200, so with
+    // retention=1 both stay retained and only e1 (ts=100) is summarized, keeping the summary's
+    // endTimestamp below every retained event.
+    val summarizer =
+      object : EventSummarizer {
+        val windows = mutableListOf<List<Event>>()
+
+        override suspend fun summarizeEvents(events: List<Event>): Event {
+          windows.add(events.toList())
+          return compactionEvent(
+            startTs = events.first().timestamp,
+            endTs = events.last().timestamp,
+            summary = "SUM",
+          )
+        }
+      }
+    val sessionService = RecordingSessionService()
+    val compactor =
+      tokenThresholdCompactor(tokenThreshold = 100, eventRetentionSize = 1, summarizer)
+    val session = testSession()
+    val e1 = userEvent("u1", invocationId = "inv_1", timestamp = 100L)
+    val a = modelEvent("A", invocationId = "inv_2", timestamp = 200L)
+    val b = modelEventWithPromptTokens(150, text = "B", invocationId = "inv_2", timestamp = 200L)
+    session.events.addAll(listOf(e1, a, b))
+
+    compactor.compact(session, sessionService)
+
+    // Only e1 is summarized; the whole same-timestamp group (A, B) is retained, and the summary's
+    // endTimestamp (100) stays strictly below the retained events' timestamp (200).
+    assertEquals(1, sessionService.appended.size)
+    assertEquals(listOf(e1), summarizer.windows.single())
+    assertEquals(100L, sessionService.appended.single().actions.compaction?.endTimestamp)
+  }
+
   // ----- helpers -----
 
   private fun tokenThresholdCompactor(
