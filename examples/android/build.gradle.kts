@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+
 plugins {
   // Kotlin is compiled by AGP's built-in Kotlin support (no kotlin-android plugin).
   id("com.android.application")
@@ -54,13 +58,62 @@ android {
     resources {
       merges += "**/META-INF/INDEX.LIST"
       merges += "**/META-INF/DEPENDENCIES"
+      // The jakarta.* API jars (transitive via the A2A SDK) each ship duplicate license files.
+      excludes += "**/META-INF/LICENSE.md"
+      excludes += "**/META-INF/LICENSE-notice.md"
+      excludes += "**/META-INF/NOTICE.md"
+      excludes += "**/META-INF/beans.xml"
     }
   }
 }
 
 dependencies {
   implementation(project(":google-adk-kotlin-core"))
+  implementation(project(":google-adk-kotlin-a2a"))
+  implementation(libs.a2a.sdk.client)
+  implementation(libs.a2a.sdk.spec)
   implementation(libs.google.mlkit.genai.prompt)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.androidx.core)
+}
+
+// a2a-java-sdk-common and -spec split the org.a2aproject.sdk.util package, so each ships its own
+// package-info.class -> duplicate on the Android classpath. Strip it from the spec jar.
+abstract class StripDuplicatePackageInfo : TransformAction<TransformParameters.None> {
+  @get:Classpath @get:InputArtifact abstract val inputArtifact: Provider<FileSystemLocation>
+
+  override fun transform(outputs: TransformOutputs) {
+    val input = inputArtifact.get().asFile
+    if (!input.name.startsWith("a2a-java-sdk-spec")) {
+      outputs.file(input)
+      return
+    }
+    val output = outputs.file(input.name)
+    ZipFile(input).use { zip ->
+      ZipOutputStream(output.outputStream().buffered()).use { out ->
+        val entries = zip.entries()
+        while (entries.hasMoreElements()) {
+          val entry = entries.nextElement()
+          if (entry.name == "org/a2aproject/sdk/util/package-info.class") continue
+          out.putNextEntry(ZipEntry(entry.name))
+          zip.getInputStream(entry).use { it.copyTo(out) }
+          out.closeEntry()
+        }
+      }
+    }
+  }
+}
+
+run {
+  val artifactType = Attribute.of("artifactType", String::class.java)
+  val stripped = Attribute.of("adk.stripped-package-info", Boolean::class.javaObjectType)
+  dependencies {
+    attributesSchema { attribute(stripped) }
+    artifactTypes.getByName("jar") { attributes.attribute(stripped, false) }
+    registerTransform(StripDuplicatePackageInfo::class) {
+      from.attribute(stripped, false).attribute(artifactType, "jar")
+      to.attribute(stripped, true).attribute(artifactType, "jar")
+    }
+  }
+  configurations.configureEach { if (isCanBeResolved) attributes.attribute(stripped, true) }
 }
