@@ -26,6 +26,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.examples.android.common.setExampleContentView
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.Content
@@ -67,7 +68,7 @@ class SkillsAssetSourceActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    setContentView(buildUi())
+    setExampleContentView("Skills (AssetSkillSource)", buildContent())
 
     apiKey = resolveApiKey()
     if (apiKey == null) {
@@ -140,7 +141,7 @@ class SkillsAssetSourceActivity : Activity() {
     runOnUiThread { transcript.append("$line\n\n") }
   }
 
-  private fun buildUi(): LinearLayout {
+  private fun buildContent(): LinearLayout {
     transcript = TextView(this).apply { setPadding(24, 24, 24, 24) }
     val scroll =
       ScrollView(this).apply {

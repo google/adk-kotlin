@@ -62,4 +62,5 @@ dependencies {
   implementation(project(":google-adk-kotlin-core"))
   implementation(libs.google.mlkit.genai.prompt)
   implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.androidx.core)
 }

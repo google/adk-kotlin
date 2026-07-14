@@ -26,6 +26,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.examples.android.common.setExampleContentView
 import com.google.adk.kt.models.mlkit.GenaiPrompt
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
@@ -67,7 +68,7 @@ class RoomSessionActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    setContentView(buildUi())
+    setExampleContentView("Room session", buildContent())
 
     scope.launch {
       // Reload any conversation persisted by a previous run to demonstrate durability.
@@ -141,7 +142,7 @@ class RoomSessionActivity : Activity() {
     runOnUiThread { transcript.append("$line\n\n") }
   }
 
-  private fun buildUi(): LinearLayout {
+  private fun buildContent(): LinearLayout {
     transcript = TextView(this).apply { setPadding(24, 24, 24, 24) }
     val scroll =
       ScrollView(this).apply {

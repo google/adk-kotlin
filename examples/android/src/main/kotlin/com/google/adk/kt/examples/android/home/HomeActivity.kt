@@ -21,7 +21,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.TextView
+import com.google.adk.kt.examples.android.common.setExampleContentView
 import com.google.adk.kt.examples.android.roomsession.RoomSessionActivity
 import com.google.adk.kt.examples.android.skillsassetsource.SkillsAssetSourceActivity
 
@@ -39,20 +39,13 @@ class HomeActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    setContentView(buildUi())
+    setExampleContentView("ADK Android examples", buildContent())
   }
 
-  private fun buildUi(): LinearLayout {
-    val title =
-      TextView(this).apply {
-        text = "ADK Android examples"
-        textSize = 20f
-        setPadding(0, 0, 0, 24)
-      }
-    return LinearLayout(this).apply {
+  private fun buildContent(): LinearLayout =
+    LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       setPadding(24, 24, 24, 24)
-      addView(title)
       addView(
         exampleButton(
           "Room session — on-device agent, persistent across restarts",
@@ -66,7 +59,6 @@ class HomeActivity : Activity() {
         )
       )
     }
-  }
 
   private fun exampleButton(label: String, activity: Class<out Activity>): Button =
     Button(this).apply {

@@ -25,7 +25,7 @@
     <application
         android:allowBackup="true"
         android:label="ADK Android Examples"
-        android:theme="@android:style/Theme.DeviceDefault.Light">
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
 
         <!--
             GEMINI_API_KEY is baked into the APK at build time via the ${GEMINI_API_KEY} manifest
@@ -52,9 +52,11 @@
              own, so not exported). -->
         <activity
             android:name=".roomsession.RoomSessionActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".skillsassetsource.SkillsAssetSourceActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>
