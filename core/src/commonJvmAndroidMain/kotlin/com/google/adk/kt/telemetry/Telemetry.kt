@@ -16,8 +16,10 @@
 package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.telemetry.otel.OtelTelemetryContext
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import io.opentelemetry.api.GlobalOpenTelemetry
+import io.opentelemetry.context.Context
 import java.lang.ThreadLocal
 
 /**
@@ -39,6 +41,10 @@ internal actual fun defaultTracer(): Tracer =
       .setInstrumentationVersion(VERSION)
       .build()
   )
+
+/** Captures the ambient OpenTelemetry [Context] (the host's active span, if any) on this thread. */
+internal actual fun currentTelemetryContext(): TelemetryContext =
+  OtelTelemetryContext(Context.current())
 
 private val testTracerOverride = ThreadLocal<Tracer>()
 

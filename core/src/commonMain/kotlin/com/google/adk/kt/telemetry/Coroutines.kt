@@ -96,10 +96,18 @@ internal inline fun <T> inSpan(
  * ensuring the span is ended when collection finishes.
  *
  * @param name the name of the new span.
+ * @param parent optional explicit parent context. When provided, the span is parented to it (e.g.
+ *   the caller's ambient span captured at an entry point) so the resulting trace joins the caller's
+ *   trace. When null, the span inherits the ambient context active at collection time.
  * @param builder a lambda to configure the [SpanBuilder] before starting the span.
  */
-internal fun <T> Flow<T>.trace(name: String, builder: SpanBuilder.() -> Unit = {}): Flow<T> = flow {
+internal fun <T> Flow<T>.trace(
+  name: String,
+  parent: TelemetryContext? = null,
+  builder: SpanBuilder.() -> Unit = {},
+): Flow<T> = flow {
   val spanBuilder = Telemetry.tracer.spanBuilder(name)
+  if (parent != null) spanBuilder.setParent(parent)
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
 

@@ -28,6 +28,13 @@ internal expect fun getTestTracer(): Tracer?
 /** Internal test tracer resetter for concurrent overrides on JVM. */
 internal expect fun internalResetTestTracer()
 
+/**
+ * Captures the caller's current ambient telemetry context synchronously (e.g. the host's active
+ * OpenTelemetry span on this thread). Used to parent ADK's root span under the caller's span so
+ * engine spans join the host's trace instead of starting a new one.
+ */
+internal expect fun currentTelemetryContext(): TelemetryContext
+
 /** Global entry point for the Telemetry abstraction. */
 object Telemetry {
   // In actual implementation, defaultTracer() provides the platform default

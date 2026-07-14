@@ -45,6 +45,7 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.summarizer.LlmEventSummarizer
 import com.google.adk.kt.summarizer.SlidingWindowEventCompactor
+import com.google.adk.kt.telemetry.currentTelemetryContext
 import com.google.adk.kt.telemetry.trace
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -141,8 +142,11 @@ abstract class AbstractRunner : Runner {
     newMessage: Content?,
     stateDelta: Map<String, Any>?,
     runConfig: RunConfig?,
-  ): Flow<Event> =
-    flow {
+  ): Flow<Event> {
+    // Capture on the calling thread now: the flow is cold and may be collected later on another
+    // thread where the caller's ambient context is gone, so parent the invocation span here.
+    val parentContext = currentTelemetryContext()
+    return flow {
         // 1. Get or create session
         val key = SessionKey(appName, userId, sessionId)
         val session = sessionService.getSession(key) ?: sessionService.createSession(key)
@@ -165,7 +169,8 @@ abstract class AbstractRunner : Runner {
         // its events have been appended to `session`.
         runPostInvocationCompaction(session)
       }
-      .trace("invocation")
+      .trace("invocation", parent = parentContext)
+  }
 
   /**
    * Sync interface for local testing and convenience purpose.
