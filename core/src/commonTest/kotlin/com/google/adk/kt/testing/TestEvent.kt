@@ -58,12 +58,17 @@ fun modelEventWithPromptTokens(
     timestamp = timestamp,
   )
 
-/** A `model`-authored [Event] carrying a single [FunctionCall]. */
+/**
+ * A `model`-authored [Event] carrying a single [FunctionCall].
+ *
+ * Set [longRunning] to mark [callId] as a long-running call via [Event.longRunningToolIds].
+ */
 fun eventWithFunctionCall(
   invocationId: String,
   timestamp: Long,
   callName: String,
   callId: String,
+  longRunning: Boolean = false,
 ): Event =
   Event(
     author = Role.MODEL,
@@ -73,20 +78,25 @@ fun eventWithFunctionCall(
         role = Role.MODEL,
         parts = listOf(Part(functionCall = FunctionCall(name = callName, id = callId))),
       ),
+    longRunningToolIds = if (longRunning) setOf(callId) else emptySet(),
     timestamp = timestamp,
   )
 
-/** A `user`-authored [Event] carrying the [name] function response that closes [callId]. */
+/**
+ * A `user`-authored [Event] carrying the [name] function response that closes [callId], with an
+ * optional [response] payload (defaults to an empty map).
+ */
 fun eventWithFunctionResponse(
   invocationId: String,
   timestamp: Long,
   name: String,
   callId: String,
+  response: Map<String, Any?> = emptyMap(),
 ): Event =
   Event(
     author = Role.USER,
     invocationId = invocationId,
-    content = userFunctionResponse(name = name, id = callId),
+    content = userFunctionResponse(name = name, id = callId, response = response),
     timestamp = timestamp,
   )
 

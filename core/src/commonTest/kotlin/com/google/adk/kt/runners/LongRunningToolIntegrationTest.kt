@@ -31,6 +31,8 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.eventWithFunctionCall
+import com.google.adk.kt.testing.eventWithFunctionResponse
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
@@ -43,9 +45,9 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
@@ -769,8 +771,8 @@ class LongRunningToolIntegrationTest {
     )
 
   /**
-   * Resuming a paused long-running tool call must still work after event compaction has summarized
-   * the window that contains that call.
+   * Resuming a paused long-running tool call still works after event compaction has summarized the
+   * window that contains that call.
    *
    * Scenario: a resumable app with sliding-window compaction. A long-running tool call pauses
    * (invocation 2), which crosses the compaction interval, so post-invocation compaction summarizes
@@ -778,18 +780,12 @@ class LongRunningToolIntegrationTest {
    * resume with the real `FunctionResponse`, the framework must still deliver it and let the model
    * produce its final reply.
    *
-   * TODO(b/528182891): this currently fails, so the test is [Ignore]d. The compactor's
-   *   "self-contained prefix" guard only protects open function calls and open HITL confirmations;
-   *   a long-running call is already *balanced* by its placeholder response, so it gets summarized
-   *   (its `longRunningToolIds` is never treated as an open obligation -- see
-   *   [com.google.adk.kt.summarizer.SlidingWindowEventCompactor]). On resume,
-   *   [com.google.adk.kt.processors.HistoryRewriterProcessor] then drops the original
-   *   `FunctionCall` with the summarized window, so `rearrangeEventsForLatestFunctionResponse`
-   *   cannot match the resumed response and throws. Re-enable this test once the compactor treats
-   *   `longRunningToolIds` as open obligations (the long-running analog of the existing HITL
-   *   guard).
+   * The compactor summarizes the long-running call (its placeholder response balances it, so it is
+   * not treated as an open obligation). On resume,
+   * [com.google.adk.kt.processors.HistoryRewriterProcessor] restores the compacted call from the
+   * pre-compaction events so `rearrangeEventsForLatestFunctionResponse` can match the resumed
+   * response instead of throwing.
    */
-  @Ignore
   @Test
   fun resume_afterCompactionSummarizedPausedLongRunningCall_resumesCleanly() = runTest {
     val callId = "lr_call_compacted"
@@ -876,6 +872,420 @@ class LongRunningToolIntegrationTest {
         ?.singleOrNull()
         ?.text
     assertEquals("resumed", finalText)
+  }
+
+  /**
+   * Recovery restores a whole parallel call event (and its compacted sibling response) when only
+   * one of the calls is resumed.
+   *
+   * The model issues a long-running call (`lr-1`) and a regular call (`reg-1`) together. Both
+   * calls, `reg-1`'s response, and `lr-1`'s placeholder are summarized away; only `lr-1`'s real
+   * result survives (delivered on resume). [HistoryRewriterProcessor] must re-inject the entire
+   * call event (both calls) and restore `reg-1`'s response, so neither call is left unpaired -- and
+   * it must keep the freshest `lr-1` response (the real result, not the compacted placeholder).
+   */
+  @Test
+  fun rewrite_recoversCompactedParallelLongRunningCall_reinjectsSiblingResponse() {
+    val parallelCall =
+      Event(
+        author = "model",
+        invocationId = "inv2",
+        timestamp = 2L,
+        longRunningToolIds = setOf("lr-1"),
+        content =
+          Content(
+            role = "model",
+            parts =
+              listOf(
+                Part(functionCall = FunctionCall(name = "lr_tool", id = "lr-1", args = emptyMap())),
+                Part(
+                  functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())
+                ),
+              ),
+          ),
+      )
+    val placeholderLr =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 3L,
+        name = "lr_tool",
+        callId = "lr-1",
+        response = mapOf("status" to "pending"),
+      )
+    val regResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 4L,
+        name = "reg_tool",
+        callId = "reg-1",
+        response = mapOf("result" to "ok"),
+      )
+    // Summarizes the invocation window up to and including reg-1's response and lr-1's placeholder.
+    val compaction = compactionEvent(startTs = 1L, endTs = 4L, timestamp = 4L)
+    // The real lr-1 result arrives on resume, outside the compacted range.
+    val resumeLr =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 5L,
+        name = "lr_tool",
+        callId = "lr-1",
+        response = mapOf("result" to "done"),
+      )
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(
+          events = listOf(parallelCall, placeholderLr, regResponse, compaction, resumeLr),
+          agentName = "model",
+          currentBranch = null,
+        )
+
+    assertEquals(3, contents.size)
+
+    // [0] the compaction summary.
+    assertEquals(Role.MODEL, contents[0].role)
+    assertEquals("summary", contents[0].parts.single().text?.trim())
+
+    // [1] the recovered call event, both calls preserved in order.
+    assertEquals(Role.MODEL, contents[1].role)
+    assertEquals(
+      listOf("lr-1" to "lr_tool", "reg-1" to "reg_tool"),
+      contents[1].parts.map { it.functionCall?.id to it.functionCall?.name },
+    )
+
+    // [2] the merged responses.
+    assertEquals(Role.USER, contents[2].role)
+    assertEquals(
+      listOf(
+        Triple("reg-1", "reg_tool", mapOf("result" to "ok")),
+        Triple("lr-1", "lr_tool", mapOf("result" to "done")),
+      ),
+      contents[2].parts.map {
+        Triple(it.functionResponse?.id, it.functionResponse?.name, it.functionResponse?.response)
+      },
+    )
+  }
+
+  /**
+   * Recovery handles two long-running calls plus a regular call issued in one parallel event.
+   *
+   * Both long-running calls (`lr-1`, `lr-2`) resume; `reg-1`'s response and both placeholders are
+   * compacted. The shared call event must be re-injected exactly once (not once per resumed call),
+   * `reg-1`'s compacted response must be restored, and each long-running call must keep its own
+   * freshest result.
+   */
+  @Test
+  fun rewrite_recoversTwoCompactedLongRunningCalls_reinjectsSharedCallEventOnce() {
+    val parallelCall =
+      Event(
+        author = "model",
+        invocationId = "inv2",
+        timestamp = 2L,
+        longRunningToolIds = setOf("lr-1", "lr-2"),
+        content =
+          Content(
+            role = "model",
+            parts =
+              listOf(
+                Part(
+                  functionCall = FunctionCall(name = "lr_tool_1", id = "lr-1", args = emptyMap())
+                ),
+                Part(
+                  functionCall = FunctionCall(name = "lr_tool_2", id = "lr-2", args = emptyMap())
+                ),
+                Part(
+                  functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())
+                ),
+              ),
+          ),
+      )
+    val placeholderLr1 =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 3L,
+        name = "lr_tool_1",
+        callId = "lr-1",
+        response = mapOf("status" to "pending"),
+      )
+    val placeholderLr2 =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 4L,
+        name = "lr_tool_2",
+        callId = "lr-2",
+        response = mapOf("status" to "pending"),
+      )
+    val regResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 5L,
+        name = "reg_tool",
+        callId = "reg-1",
+        response = mapOf("result" to "ok"),
+      )
+    // Summarizes the window through reg-1's response and both placeholders.
+    val compaction = compactionEvent(startTs = 1L, endTs = 5L, timestamp = 5L)
+    // Both long-running results arrive on resume, outside the compacted range.
+    val resumeLr1 =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 6L,
+        name = "lr_tool_1",
+        callId = "lr-1",
+        response = mapOf("result" to "done-1"),
+      )
+    val resumeLr2 =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 7L,
+        name = "lr_tool_2",
+        callId = "lr-2",
+        response = mapOf("result" to "done-2"),
+      )
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(
+          events =
+            listOf(
+              parallelCall,
+              placeholderLr1,
+              placeholderLr2,
+              regResponse,
+              compaction,
+              resumeLr1,
+              resumeLr2,
+            ),
+          agentName = "model",
+          currentBranch = null,
+        )
+
+    // [summary, shared call event, merged responses] -- one call content proves single
+    // re-injection.
+    assertEquals(3, contents.size)
+    assertEquals(
+      setOf("lr-1", "lr-2", "reg-1"),
+      contents[1].parts.mapNotNull { it.functionCall?.id }.toSet(),
+    )
+    val responses = contents[2].parts.mapNotNull { it.functionResponse }
+    assertEquals(setOf("lr-1", "lr-2", "reg-1"), responses.mapNotNull { it.id }.toSet())
+    assertEquals(mapOf("result" to "done-1"), responses.single { it.id == "lr-1" }.response)
+    assertEquals(mapOf("result" to "done-2"), responses.single { it.id == "lr-2" }.response)
+    assertEquals(mapOf("result" to "ok"), responses.single { it.id == "reg-1" }.response)
+  }
+
+  /**
+   * Recovery restores compacted calls that span two different invocations.
+   *
+   * Invocation 1 issues a parallel call (`reg-1` + long-running `lr-1`); invocation 2 issues a
+   * separate long-running call (`lr-2`). Both call events, `reg-1`'s response, and both
+   * placeholders are compacted; later both long-running calls resume. Each compacted call event
+   * must be recovered independently (the parallel one with `reg-1`'s restored response, the
+   * standalone one on its own), so the assembled prompt pairs every call with its freshest
+   * response.
+   */
+  @Test
+  fun rewrite_recoversCompactedCallsAcrossInvocations_reinjectsEachCallEvent() {
+    // inv1: parallel (normal reg-1 + long-running lr-1).
+    val parallelCall =
+      Event(
+        author = "model",
+        invocationId = "inv1",
+        timestamp = 1L,
+        longRunningToolIds = setOf("lr-1"),
+        content =
+          Content(
+            role = "model",
+            parts =
+              listOf(
+                Part(
+                  functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())
+                ),
+                Part(
+                  functionCall = FunctionCall(name = "lr_tool_1", id = "lr-1", args = emptyMap())
+                ),
+              ),
+          ),
+      )
+    val placeholderLr1 =
+      eventWithFunctionResponse(
+        invocationId = "inv1",
+        timestamp = 2L,
+        name = "lr_tool_1",
+        callId = "lr-1",
+        response = mapOf("status" to "pending"),
+      )
+    val regResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv1",
+        timestamp = 3L,
+        name = "reg_tool",
+        callId = "reg-1",
+        response = mapOf("result" to "ok"),
+      )
+    // inv2: a separate long-running call.
+    val lrCall2 =
+      eventWithFunctionCall(
+        invocationId = "inv2",
+        timestamp = 4L,
+        callName = "lr_tool_2",
+        callId = "lr-2",
+        longRunning = true,
+      )
+    val placeholderLr2 =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 5L,
+        name = "lr_tool_2",
+        callId = "lr-2",
+        response = mapOf("status" to "pending"),
+      )
+    // Summarizes both invocations (both call events, reg-1's response, both placeholders).
+    val compaction = compactionEvent(startTs = 1L, endTs = 5L, timestamp = 5L)
+    // Both long-running calls resume, outside the compacted range.
+    val resumeLr1 =
+      eventWithFunctionResponse(
+        invocationId = "inv1",
+        timestamp = 6L,
+        name = "lr_tool_1",
+        callId = "lr-1",
+        response = mapOf("result" to "done-1"),
+      )
+    val resumeLr2 =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 7L,
+        name = "lr_tool_2",
+        callId = "lr-2",
+        response = mapOf("result" to "done-2"),
+      )
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(
+          events =
+            listOf(
+              parallelCall,
+              placeholderLr1,
+              regResponse,
+              lrCall2,
+              placeholderLr2,
+              compaction,
+              resumeLr1,
+              resumeLr2,
+            ),
+          agentName = "model",
+          currentBranch = null,
+        )
+
+    // Each compacted call event is recovered independently, giving one [call, responses] pair per
+    // invocation after the summary:
+    //  [0] model : "summary"
+    //  [1] model : functionCall(reg-1), functionCall(lr-1)      (recovered inv1 parallel call)
+    //  [2] user  : functionResponse(reg-1 -> ok), functionResponse(lr-1 -> done-1)
+    //  [3] model : functionCall(lr-2)                           (recovered inv2 standalone call)
+    //  [4] user  : functionResponse(lr-2 -> done-2)
+    assertEquals(5, contents.size)
+
+    assertEquals(Role.MODEL, contents[0].role)
+    assertEquals("summary", contents[0].parts.single().text?.trim())
+
+    assertEquals(Role.MODEL, contents[1].role)
+    assertEquals(
+      listOf("reg-1" to "reg_tool", "lr-1" to "lr_tool_1"),
+      contents[1].parts.map { it.functionCall?.id to it.functionCall?.name },
+    )
+
+    assertEquals(Role.USER, contents[2].role)
+    assertEquals(
+      listOf(
+        Triple("reg-1", "reg_tool", mapOf("result" to "ok")),
+        Triple("lr-1", "lr_tool_1", mapOf("result" to "done-1")),
+      ),
+      contents[2].parts.map {
+        Triple(it.functionResponse?.id, it.functionResponse?.name, it.functionResponse?.response)
+      },
+    )
+
+    assertEquals(Role.MODEL, contents[3].role)
+    assertEquals(
+      listOf("lr-2" to "lr_tool_2"),
+      contents[3].parts.map { it.functionCall?.id to it.functionCall?.name },
+    )
+
+    assertEquals(Role.USER, contents[4].role)
+    assertEquals(
+      listOf(Triple("lr-2", "lr_tool_2", mapOf("result" to "done-2"))),
+      contents[4].parts.map {
+        Triple(it.functionResponse?.id, it.functionResponse?.name, it.functionResponse?.response)
+      },
+    )
+  }
+
+  /**
+   * Recovery must not swallow a genuinely unmatched response: an orphaned response whose call is
+   * *not* long-running is left unrecovered, so `rearrangeEventsForLatestFunctionResponse` still
+   * throws.
+   */
+  @Test
+  fun rewrite_orphanedNonLongRunningResponse_stillThrows() {
+    val regCall =
+      eventWithFunctionCall(
+        invocationId = "inv2",
+        timestamp = 2L,
+        callName = "reg_tool",
+        callId = "reg-1",
+        longRunning = false,
+      )
+    // Summarizes away the call event (its later response survives outside the range).
+    val compaction = compactionEvent(startTs = 1L, endTs = 2L, timestamp = 3L)
+    val orphanedResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 4L,
+        name = "reg_tool",
+        callId = "reg-1",
+        response = mapOf("result" to "done"),
+      )
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        HistoryRewriterProcessor()
+          .rewrite(
+            events = listOf(regCall, compaction, orphanedResponse),
+            agentName = "model",
+            currentBranch = null,
+          )
+      }
+    assertTrue(error.message?.contains("reg-1") == true, "unexpected message: ${error.message}")
+  }
+
+  /**
+   * Recovery must not swallow a response whose call is absent from the pre-compaction events: with
+   * no originating call to restore, the unmatched response still surfaces as a throw.
+   */
+  @Test
+  fun rewrite_orphanedResponseWithNoSourceCall_stillThrows() {
+    val compaction = compactionEvent(startTs = 1L, endTs = 5L, timestamp = 5L)
+    val orphanedResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv2",
+        timestamp = 6L,
+        name = "ghost_tool",
+        callId = "ghost-1",
+        response = mapOf("result" to "done"),
+      )
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        HistoryRewriterProcessor()
+          .rewrite(
+            events = listOf(compaction, orphanedResponse),
+            agentName = "model",
+            currentBranch = null,
+          )
+      }
+    assertTrue(error.message?.contains("ghost-1") == true, "unexpected message: ${error.message}")
   }
 
   // -- Fixtures ----------------------------------------------------------------------------------

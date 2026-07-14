@@ -70,8 +70,13 @@ internal class HistoryRewriterProcessor {
         filteredEvents
       }
 
+    // Compaction may have summarized away a function_call whose response survives (e.g. a
+    // long-running call resumed after it was compacted). Recover the missing call from the
+    // pre-compaction events so call/response pairing stays intact for the steps below.
+    val recoveredEvents = recoverCompactedFunctionCalls(eventsWithCompactionApplied, filteredEvents)
+
     // Rearrange for latest function response (merge scenarios) and async function responses
-    return eventsWithCompactionApplied
+    return recoveredEvents
       .let { rearrangeEventsForLatestFunctionResponse(it) }
       .let { rearrangeEventsForAsyncFunctionResponsesInHistory(it) }
       .mapNotNull { event ->
@@ -144,6 +149,109 @@ internal class HistoryRewriterProcessor {
         start <= other.start &&
         end >= other.end &&
         (start < other.start || end > other.end || index > other.index)
+  }
+
+  /**
+   * Re-injects function-call events that compaction removed but whose responses came later.
+   *
+   * The canonical case is a paused long-running tool call: the call and its intermediate
+   * placeholder response are compacted, then the real result arrives on resume -- a later event not
+   * covered by the summary. That surviving response would be orphaned, which breaks call/response
+   * pairing in [rearrangeEventsForLatestFunctionResponse] (it throws).
+   *
+   * For each response whose call is no longer present, the original call event is restored from
+   * [sourceEvents] (the pre-compaction list) and inserted immediately before the first surviving
+   * response that references it. The whole call event is recovered so parallel calls stay intact;
+   * for every call in that event whose response was *also* compacted away, the freshest (latest)
+   * response for that call is re-injected too, so a parallel sibling is not surfaced as a phantom
+   * pending call.
+   *
+   * Only long-running calls are recovered: a response whose call was compacted is only expected for
+   * a long-running call (its placeholder response balanced the call, so the compactor did not treat
+   * it as an open obligation). A response whose call is not long-running -- or whose call is absent
+   * from [sourceEvents] entirely -- is left unrecovered, so a genuinely unmatched response still
+   * surfaces via the throw in [rearrangeEventsForLatestFunctionResponse].
+   *
+   * @param events The post-compaction events being assembled into request contents.
+   * @param sourceEvents The pre-compaction events to recover missing calls (and responses) from.
+   * @return [events] with recovered long-running call events re-injected; the same list is returned
+   *   when nothing needs recovery.
+   */
+  private fun recoverCompactedFunctionCalls(
+    events: List<Event>,
+    sourceEvents: List<Event>,
+  ): List<Event> {
+    val callIdsPresent = mutableSetOf<String>()
+    val responseIdsPresent = mutableSetOf<String>()
+    for (event in events) {
+      for (call in event.functionCalls()) {
+        call.id?.let(callIdsPresent::add)
+      }
+      for (response in event.functionResponses()) {
+        response.id?.let(responseIdsPresent::add)
+      }
+    }
+
+    // Responses whose originating call is no longer present in the assembled events.
+    val orphanedIds = responseIdsPresent - callIdsPresent
+    if (orphanedIds.isEmpty()) return events
+
+    // The call events that match the orphaned responses, limited to long-running calls.
+    val callEventByOrphanId = mutableMapOf<String, Event>()
+    for (event in sourceEvents) {
+      for (call in event.functionCalls()) {
+        val id = call.id ?: continue
+        if (id in orphanedIds && id in event.longRunningToolIds && id !in callEventByOrphanId) {
+          callEventByOrphanId[id] = event
+        }
+      }
+    }
+    // No long-running calls to recover: leave the list as-is so the downstream rearrange still
+    // throws for any unmatched response.
+    if (callEventByOrphanId.isEmpty()) return events
+
+    // Final response event per call id, taken from the pre-compaction source. Selected by max
+    // timestamp so the newest result is kept.
+    val finalResponseEventByID = mutableMapOf<String, Event>()
+    for (event in sourceEvents) {
+      for (response in event.functionResponses()) {
+        val id = response.id ?: continue
+        val existing = finalResponseEventByID[id]
+        if (existing == null || event.timestamp >= existing.timestamp) {
+          finalResponseEventByID[id] = event
+        }
+      }
+    }
+
+    val result = mutableListOf<Event>()
+    val reinjectedCallIds = mutableSetOf<String>()
+    for (event in events) {
+      for (response in event.functionResponses()) {
+        val id = response.id ?: continue
+        val callEvent = callEventByOrphanId[id] ?: continue
+        if (id in reinjectedCallIds) continue
+
+        // Re-inject the whole call event (the call with orphaned response and all its siblings).
+        result.add(callEvent)
+
+        // Mark all calls in the event as reinjected so we don't re-inject the sibling calls later
+        // again.
+        val callIdsInEvent = callEvent.functionCalls().mapNotNull { it.id }
+        reinjectedCallIds.addAll(callIdsInEvent)
+
+        // Restore the final response for any sibling call whose response was also compacted
+        // away, so the sibling is not left looking like a pending call.
+        val siblingResponsesToReinject = LinkedHashSet<Event>()
+        for (callId in callIdsInEvent) {
+          if (callId !in responseIdsPresent) {
+            finalResponseEventByID[callId]?.let(siblingResponsesToReinject::add)
+          }
+        }
+        result.addAll(siblingResponsesToReinject)
+      }
+      result.add(event)
+    }
+    return result
   }
 
   /**
