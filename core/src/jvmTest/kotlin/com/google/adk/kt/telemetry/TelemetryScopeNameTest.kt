@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.telemetry
 
+import com.google.adk.kt.VERSION
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.common.truth.Truth.assertThat
 import io.opentelemetry.sdk.common.CompletableResultCode
@@ -28,19 +29,15 @@ import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
 /**
- * Verifies that a tracer built with the ADK instrumentation scope name records spans under the
- * `gcp.vertex.agent` scope, matching Python, Java, and Go ADK. The production `defaultTracer()`
- * uses the same [TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT] constant.
- *
- * This is intentionally self-contained (a local in-memory SDK, no
- * [io.opentelemetry.api .GlobalOpenTelemetry]) so it is robust when the whole `jvmTest` suite runs
- * in a single JVM.
+ * Verifies the ADK tracer records spans under the `gcp.vertex.agent` instrumentation scope name and
+ * the ADK library [VERSION]. Self-contained (a local in-memory SDK) so it is robust when the whole
+ * `jvmTest` suite runs in a single JVM.
  */
 @RunWith(JUnit4::class)
 class TelemetryScopeNameTest {
 
   @Test
-  fun adkScopeName_recordsGcpVertexAgentInstrumentationScope() {
+  fun adkScope_recordsGcpVertexAgentNameAndAdkVersion() {
     val exportedSpans = mutableListOf<SpanData>()
     val exporter =
       object : SpanExporter {
@@ -57,13 +54,20 @@ class TelemetryScopeNameTest {
       SdkTracerProvider.builder().addSpanProcessor(SimpleSpanProcessor.create(exporter)).build()
 
     try {
-      // Build the tracer exactly as defaultTracer() does, via the ADK instrumentation scope name.
-      val tracer = OtelTracer(tracerProvider.get(TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT))
-      tracer.spanBuilder("scope-check").startSpan().end()
+      // Build the tracer the way defaultTracer() does: ADK scope name + library version.
+      OtelTracer(
+          tracerProvider
+            .tracerBuilder(TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT)
+            .setInstrumentationVersion(VERSION)
+            .build()
+        )
+        .spanBuilder("scope-check")
+        .startSpan()
+        .end()
 
-      assertThat(TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT).isEqualTo("gcp.vertex.agent")
-      assertThat(exportedSpans).hasSize(1)
-      assertThat(exportedSpans.single().instrumentationScopeInfo.name).isEqualTo("gcp.vertex.agent")
+      val scope = exportedSpans.single().instrumentationScopeInfo
+      assertThat(scope.name).isEqualTo("gcp.vertex.agent")
+      assertThat(scope.version).isEqualTo(VERSION)
     } finally {
       tracerProvider.close()
     }
