@@ -76,13 +76,13 @@ data class LlmResponse(
         finishReason = finishReason,
         errorCode = finishReason?.takeIf { it != FinishReason.STOP }?.name,
         errorMessage =
-          if (finishReason == FinishReason.STOP) {
-            null
-          } else {
-            candidate?.finishMessage
-              ?: response.promptFeedback?.blockReasonMessage
-              ?: "Unknown error."
-          },
+          finishReason
+            ?.takeIf { it != FinishReason.STOP }
+            ?.let {
+              candidate?.finishMessage
+                ?: response.promptFeedback?.blockReasonMessage
+                ?: "Unknown error."
+            },
         modelVersion = response.modelVersion,
         citationMetadata = candidate?.citationMetadata,
         groundingMetadata = candidate?.groundingMetadata,

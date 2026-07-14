@@ -54,6 +54,21 @@ class LlmResponseTest {
   }
 
   @Test
+  fun testCreatePartialStreamingChunkHasNoError() {
+    // Partial streaming chunks have no finishReason until the stream completes.
+    val response =
+      GenerateContentResponse(
+        candidates = listOf(Candidate(content = modelMessage("partial text"), finishReason = null))
+      )
+
+    val llmResponse = LlmResponse.from(response)
+
+    assertNull(llmResponse.finishReason)
+    assertNull(llmResponse.errorCode)
+    assertNull(llmResponse.errorMessage)
+  }
+
+  @Test
   fun testCreateErrorCase() {
     val response =
       GenerateContentResponse(
