@@ -113,14 +113,7 @@ data class InvocationContext(
   val sessionService: SessionService? = null,
 
   // Configs
-  /**
-   * Optional resumability configuration for this invocation.
-   *
-   * The opt-in requirement is carried by `ResumabilityConfig`'s constructor (which is annotated
-   * `@ExperimentalResumabilityFeature`), so any code that constructs a `ResumabilityConfig` to pass
-   * here -- whether via the primary constructor or `copy(...)` -- requires
-   * `@OptIn(ExperimentalResumabilityFeature::class)`.
-   */
+  /** Optional resumability configuration for this invocation. */
   val resumabilityConfig: ResumabilityConfig? = null,
 
   /**

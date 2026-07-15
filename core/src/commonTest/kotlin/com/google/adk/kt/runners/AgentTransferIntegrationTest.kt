@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalResumabilityFeature::class)
-
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
@@ -24,7 +22,6 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LoopAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.SequentialAgent
-import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions

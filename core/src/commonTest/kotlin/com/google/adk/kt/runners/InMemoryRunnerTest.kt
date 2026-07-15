@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-@file:OptIn(ExperimentalResumabilityFeature::class)
 
 package com.google.adk.kt.runners
 
@@ -22,7 +21,6 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.TypedData
-import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions

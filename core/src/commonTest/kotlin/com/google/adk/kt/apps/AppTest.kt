@@ -14,12 +14,9 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalResumabilityFeature::class)
-
 package com.google.adk.kt.apps
 
 import com.google.adk.kt.agents.ResumabilityConfig
-import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyAgent

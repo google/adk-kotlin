@@ -16,15 +16,9 @@
 
 package com.google.adk.kt.agents
 
-import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
-
 /**
  * Configuration for resumability in ADK.
  *
- * Constructing this type requires `@OptIn(ExperimentalResumabilityFeature::class)`.
- *
  * @property isResumable Whether the invocation is resumable.
  */
-data class ResumabilityConfig
-@ExperimentalResumabilityFeature
-constructor(val isResumable: Boolean = false)
+data class ResumabilityConfig(val isResumable: Boolean = false)

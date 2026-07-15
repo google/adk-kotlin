@@ -14,15 +14,12 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalResumabilityFeature::class)
-
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
-import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryService

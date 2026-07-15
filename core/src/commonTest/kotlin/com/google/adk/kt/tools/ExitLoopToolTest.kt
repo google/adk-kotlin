@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalResumabilityFeature::class)
-
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.agents.LlmAgent
@@ -23,7 +21,6 @@ import com.google.adk.kt.agents.LoopAgent
 import com.google.adk.kt.agents.LoopAgentState
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.TypedData
-import com.google.adk.kt.annotations.ExperimentalResumabilityFeature
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
