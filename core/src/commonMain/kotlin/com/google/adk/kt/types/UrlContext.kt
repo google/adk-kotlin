@@ -16,5 +16,7 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** Tool to support URL context retrieval. */
-class UrlContext
+@Serializable class UrlContext

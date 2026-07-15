@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** The number of thoughts tokens that the model should generate. */
+@Serializable
 enum class ThinkingLevel {
   /** Unspecified thinking level. */
   THINKING_LEVEL_UNSPECIFIED,

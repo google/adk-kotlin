@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** The value type of the schema. */
+@Serializable
 enum class Type {
   TYPE_UNSPECIFIED,
   STRING,

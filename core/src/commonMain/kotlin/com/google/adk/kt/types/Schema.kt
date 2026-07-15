@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Schema is used to define the format of input/output data.
  *
@@ -31,6 +33,7 @@ package com.google.adk.kt.types
  * @property description A human-readable description of the schema.
  * @property enum Restricts a value to a fixed set of values.
  */
+@Serializable
 data class Schema(
   val type: Type? = null,
   val properties: Map<String, Schema>? = null,

@@ -29,6 +29,7 @@ import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.PluginManager
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -49,6 +50,7 @@ import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonElement
 
 /**
  * An invocation context represents the data of a single invocation of an agent.
@@ -395,7 +397,7 @@ data class InvocationContext(
       span[TelemetryAttributes.GEN_AI_TOOL_CALL_ID] = mergedEvent.id
       span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = mergedEvent.id
       span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
-        mergedEvent.functionResponses().map { it.response }
+        toTraceJson(mergedEvent.functionResponses().map { it.response })
       }
     }
   }
@@ -470,7 +472,7 @@ data class InvocationContext(
       }
 
       span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
-        toFinalResponseMap(toolResult)
+        toTraceJson(toFinalResponseMap(toolResult))
       }
 
       // Build response event
@@ -502,7 +504,7 @@ data class InvocationContext(
     // Python.)
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = EMPTY_JSON
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
-    this[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = capturedJson { args }
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = capturedJson { toTraceJson(args) }
   }
 
   private fun buildResponseEvent(
@@ -625,6 +627,14 @@ data class InvocationContext(
     safeCastToMapStringAny(
       if (payload !is Map<*, *>) mapOf(BaseTool.RESULT_KEY to payload) else payload
     )
+
+  /**
+   * Converts a tool-call args or tool-response payload (JSON-native maps/lists/primitives) into a
+   * [JsonElement] via the shared `adkJson` serializer, so tool span payloads serialize identically
+   * on every platform.
+   */
+  @OptIn(FrameworkInternalApi::class)
+  private fun toTraceJson(payload: Any?): JsonElement = anyToJsonElement(payload)
 
   private fun safeCastToMapStringAny(value: Any?): Map<String, Any> {
     if (value !is Map<*, *>) return emptyMap()

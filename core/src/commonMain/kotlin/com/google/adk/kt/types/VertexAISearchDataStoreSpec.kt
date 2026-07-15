@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Define data stores within engine to filter on in a search call and configurations for those data
  * stores.
@@ -25,4 +27,5 @@ package com.google.adk.kt.types
  * @property filter Optional. Filter specification to filter documents in the data store specified
  *   by data_store field.
  */
+@Serializable
 data class VertexAISearchDataStoreSpec(val dataStore: String? = null, val filter: String? = null)

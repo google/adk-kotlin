@@ -16,10 +16,13 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Configuration for automated routing, where the model is selected by the pretrained routing model
  * and the customer-provided [modelRoutingPreference]. Not supported in the Gemini API.
  */
+@Serializable
 data class GenerationConfigRoutingConfigAutoRoutingMode(
   val modelRoutingPreference: ModelRoutingPreference? = null
 )

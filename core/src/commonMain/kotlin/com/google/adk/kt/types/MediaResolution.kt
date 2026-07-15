@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** The resolution used when processing media inputs. */
+@Serializable
 enum class MediaResolution {
   /** The media resolution is unspecified. */
   MEDIA_RESOLUTION_UNSPECIFIED,

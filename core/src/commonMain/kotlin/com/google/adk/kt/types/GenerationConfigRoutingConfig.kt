@@ -16,10 +16,13 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Configuration for routing a request to a specific model, either automatically via [autoMode] or
  * manually via [manualMode]. Not supported in the Gemini API.
  */
+@Serializable
 data class GenerationConfigRoutingConfig(
   val autoMode: GenerationConfigRoutingConfigAutoRoutingMode? = null,
   val manualMode: GenerationConfigRoutingConfigManualRoutingMode? = null,

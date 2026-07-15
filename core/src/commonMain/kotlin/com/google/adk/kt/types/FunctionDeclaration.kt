@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** Represents a function declaration for tool calling. */
+@Serializable
 data class FunctionDeclaration(
   /** The name of the function. */
   val name: String,

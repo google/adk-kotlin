@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** Represents a GenAI tool definition. */
+@Serializable
 data class Tool(
   /** The function declarations associated with this tool. */
   val functionDeclarations: List<FunctionDeclaration>? = null,

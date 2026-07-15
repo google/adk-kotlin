@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** The service tier requested for a generate content request. */
+@Serializable
 enum class ServiceTier {
   /** The service tier is unspecified. */
   UNSPECIFIED,

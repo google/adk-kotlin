@@ -327,7 +327,9 @@ internal class LlmAgentTurn(
     response.finishReason?.let {
       this[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS] = listOf(it.name.lowercase())
     }
-    this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = capturedJson { response }
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = capturedJson {
+      response.toTracePayload()
+    }
   }
 
   /**

@@ -18,6 +18,7 @@ package com.google.adk.kt.telemetry
 
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -77,5 +78,17 @@ class TelemetryConfigTest {
   @Test
   fun parseCaptureMessageContent_unrecognizedValue_isFalse() {
     assertFalse(parseCaptureMessageContent("yes"))
+  }
+
+  @Test
+  fun capturedJson_captureDisabled_returnsEmptyJsonWithoutEvaluatingPayload() {
+    TelemetryConfig.captureMessageContent = false
+    assertEquals(EMPTY_JSON, capturedJson { throw AssertionError("payload must not be evaluated") })
+  }
+
+  @Test
+  fun capturedJson_payloadThrows_returnsErrorPlaceholder() {
+    TelemetryConfig.captureMessageContent = true
+    assertEquals(SERIALIZATION_ERROR_JSON, capturedJson { throw RuntimeException("boom") })
   }
 }

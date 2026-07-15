@@ -45,6 +45,9 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class LlmTelemetryTest {
 
@@ -302,15 +305,14 @@ class LlmTelemetryTest {
     val payload = request.toTracePayload()
 
     // Binary inline_data parts are dropped; text parts are kept.
-    val contents = payload["contents"] as List<*>
-    val parts = (contents.single() as Content).parts
+    val parts = payload["contents"]!!.jsonArray.single().jsonObject["parts"]!!.jsonArray
     assertEquals(1, parts.size)
-    assertEquals("hello", parts.single().text)
-    assertNull(parts.single().inlineData)
+    assertEquals("hello", parts.single().jsonObject["text"]!!.jsonPrimitive.content)
+    assertNull(parts.single().jsonObject["inlineData"])
     // response_schema is excluded, other config is preserved.
-    val config = payload["config"] as GenerateContentConfig
-    assertNull(config.responseSchema)
-    assertEquals(0.5f, config.temperature)
+    val config = payload["config"]!!.jsonObject
+    assertNull(config["responseSchema"])
+    assertEquals("0.5", config["temperature"]!!.jsonPrimitive.content)
   }
 
   private suspend fun newContext(agent: LlmAgent): InvocationContext {

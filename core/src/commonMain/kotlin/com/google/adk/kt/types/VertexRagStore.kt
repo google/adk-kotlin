@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Retrieve from a Vertex RAG store for grounding.
  *
@@ -24,6 +26,7 @@ package com.google.adk.kt.types
  * @property similarityTopK Number of top k results to return from the selected corpora.
  * @property vectorDistanceThreshold Only return results with a vector distance below the threshold.
  */
+@Serializable
 data class VertexRagStore(
   val ragCorpora: List<String>? = null,
   val ragResources: List<VertexRagStoreRagResource>? = null,

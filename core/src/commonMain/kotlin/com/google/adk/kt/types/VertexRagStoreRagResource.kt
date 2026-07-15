@@ -16,12 +16,15 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * The representation of a RAG source for a [VertexRagStore].
  *
  * @property ragCorpus RagCorpora resource name.
  * @property ragFileIds `rag_file_id`s, which should belong to the corpus in [ragCorpus].
  */
+@Serializable
 data class VertexRagStoreRagResource(
   val ragCorpus: String? = null,
   val ragFileIds: List<String>? = null,

@@ -17,6 +17,7 @@
 package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.platform.getEnv
+import kotlinx.serialization.json.JsonElement
 
 /**
  * Global configuration for ADK telemetry behavior.
@@ -33,16 +34,26 @@ object TelemetryConfig {
 /** Placeholder emitted for content payloads when message-content capture is disabled. */
 internal const val EMPTY_JSON: String = "{}"
 
+/** Emitted in place of a payload when serialization throws, so a bad payload never fails a span. */
+internal const val SERIALIZATION_ERROR_JSON: String = "{\"error\": \"serialization failed\"}"
+
 /**
  * Returns the JSON serialization of [payload] when [TelemetryConfig.captureMessageContent] is
  * enabled, otherwise the [EMPTY_JSON] placeholder.
  *
- * The placeholder is always emitted (rather than omitting the attribute) because the ADK Dev UI
- * `JSON.parse`s these span attributes unconditionally. [payload] is only evaluated when capture is
- * enabled, so callers may build expensive payloads lazily.
+ * Callers build [payload] from the shared `adkJson` serializer, so a given value serializes to
+ * identical JSON on every platform. The placeholder is always emitted (rather than omitting the
+ * attribute) because the ADK Dev UI `JSON.parse`s these span attributes unconditionally. [payload]
+ * is only evaluated when capture is enabled, so callers may build expensive payloads lazily.
  */
-internal fun capturedJson(payload: () -> Any?): String =
-  if (TelemetryConfig.captureMessageContent) TracePayloadFormatter.format(payload()) else EMPTY_JSON
+internal fun capturedJson(payload: () -> JsonElement): String {
+  if (!TelemetryConfig.captureMessageContent) return EMPTY_JSON
+  return try {
+    payload().toString()
+  } catch (e: Throwable) {
+    SERIALIZATION_ERROR_JSON
+  }
+}
 
 /**
  * Name of the ADK environment variable that toggles capturing prompt/response content in spans.

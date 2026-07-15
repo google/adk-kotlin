@@ -15,6 +15,8 @@
  */
 package com.google.adk.kt.models
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
@@ -22,6 +24,10 @@ import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.LogprobsResult
 import com.google.adk.kt.types.UsageMetadata
+import kotlinx.serialization.Contextual
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 
 /**
  * LLM response class that provides the first candidate response from the model if available.
@@ -43,6 +49,7 @@ import com.google.adk.kt.types.UsageMetadata
  * @property customMetadata Optional key-value pairs labeling the response. The entire map must be
  *   JSON serializable.
  */
+@Serializable
 data class LlmResponse(
   val content: Content? = null,
   val usageMetadata: UsageMetadata? = null,
@@ -54,7 +61,7 @@ data class LlmResponse(
   val citationMetadata: CitationMetadata? = null,
   val groundingMetadata: GroundingMetadata? = null,
   val errorCode: String? = null,
-  val customMetadata: Map<String, Any?>? = null,
+  val customMetadata: Map<String, @Contextual Any?>? = null,
   val avgLogprobs: Double? = null,
   val logprobsResult: LogprobsResult? = null,
 ) {
@@ -92,3 +99,12 @@ data class LlmResponse(
     }
   }
 }
+
+/**
+ * Serializes this response for the `call_llm` span's `gcp.vertex.agent.llm_response` attribute.
+ *
+ * Uses the shared [adkJson] serializer, which omits null/empty fields (`exclude_none`) and produces
+ * byte-identical JSON on every platform.
+ */
+@OptIn(FrameworkInternalApi::class)
+internal fun LlmResponse.toTracePayload(): JsonElement = adkJson.encodeToJsonElement(this)

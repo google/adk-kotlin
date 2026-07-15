@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** A per-request safety setting controlling the block threshold for a single [HarmCategory]. */
+@Serializable
 data class SafetySetting(
   /** The harm category this setting applies to. */
   val category: HarmCategory? = null,

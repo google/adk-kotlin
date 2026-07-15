@@ -16,8 +16,11 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Configuration for manual routing, where the model is selected by the given [modelName]. Only
  * public LLM models are accepted. Not supported in the Gemini API.
  */
+@Serializable
 data class GenerationConfigRoutingConfigManualRoutingMode(val modelName: String? = null)

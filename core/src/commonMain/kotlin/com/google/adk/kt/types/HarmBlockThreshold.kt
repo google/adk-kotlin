@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** The probability threshold at or above which content is blocked for a [HarmCategory]. */
+@Serializable
 enum class HarmBlockThreshold {
   /** The threshold is unspecified. */
   HARM_BLOCK_THRESHOLD_UNSPECIFIED,

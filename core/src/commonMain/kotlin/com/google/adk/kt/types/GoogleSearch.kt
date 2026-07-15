@@ -16,5 +16,7 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** Represents a Google Search tool. */
-data class GoogleSearch(val excludeDomains: List<String> = emptyList())
+@Serializable data class GoogleSearch(val excludeDomains: List<String> = emptyList())

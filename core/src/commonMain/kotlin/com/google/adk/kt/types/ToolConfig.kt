@@ -16,8 +16,11 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** Configuration shared across all tools provided in a request. */
+@Serializable
 data class ToolConfig(
   /** Configuration for function calling. */
-  val functionCallingConfig: FunctionCallingConfig? = null,
+  val functionCallingConfig: FunctionCallingConfig? = null
 )

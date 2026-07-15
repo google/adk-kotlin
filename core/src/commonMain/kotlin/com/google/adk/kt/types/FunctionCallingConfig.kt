@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** Configuration for how the model uses the provided function declarations. */
+@Serializable
 data class FunctionCallingConfig(
   /** Function names the model is allowed to call. */
   val allowedFunctionNames: List<String>? = null,

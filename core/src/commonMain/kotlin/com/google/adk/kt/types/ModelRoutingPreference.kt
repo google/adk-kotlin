@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** The model routing preference for automated routing. */
+@Serializable
 enum class ModelRoutingPreference {
   /** The routing preference is unknown. */
   UNKNOWN,

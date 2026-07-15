@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** Configuration for generating content. */
+@Serializable
 data class GenerateContentConfig(
   val tools: List<Tool>? = null,
   val labels: Map<String, String>? = null,

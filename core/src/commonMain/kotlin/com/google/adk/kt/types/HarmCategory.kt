@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /** The category of a harm that a [SafetySetting] applies to. */
+@Serializable
 enum class HarmCategory {
   /** The harm category is unspecified. */
   HARM_CATEGORY_UNSPECIFIED,

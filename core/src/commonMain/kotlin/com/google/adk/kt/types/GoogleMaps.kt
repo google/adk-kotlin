@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Tool to retrieve knowledge from Google Maps.
  *
@@ -24,4 +26,4 @@ package com.google.adk.kt.types
  *   Google Maps widget with geospatial context related to the places that the model references in
  *   the response.
  */
-data class GoogleMaps(val enableWidget: Boolean? = null)
+@Serializable data class GoogleMaps(val enableWidget: Boolean? = null)

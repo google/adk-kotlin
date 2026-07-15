@@ -16,12 +16,15 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Defines a retrieval tool that model can call to access external knowledge.
  *
  * @property vertexAiSearch Set to use data source powered by Vertex AI Search.
  * @property vertexRagStore Set to use data source powered by a Vertex RAG store.
  */
+@Serializable
 data class Retrieval(
   val vertexAiSearch: VertexAISearch? = null,
   val vertexRagStore: VertexRagStore? = null,

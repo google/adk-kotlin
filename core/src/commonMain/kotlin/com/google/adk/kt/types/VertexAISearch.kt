@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.types
 
+import kotlinx.serialization.Serializable
+
 /**
  * Retrieve from Vertex AI Search datastore or engine for grounding. datastore and engine are
  * mutually exclusive.
@@ -31,6 +33,7 @@ package com.google.adk.kt.types
  * @property maxResults Optional. Number of search results to return per query. The default value is
  *     10. The maximum allowed value is 10.
  */
+@Serializable
 data class VertexAISearch(
   val dataStoreSpecs: List<VertexAISearchDataStoreSpec>? = null,
   val datastore: String? = null,

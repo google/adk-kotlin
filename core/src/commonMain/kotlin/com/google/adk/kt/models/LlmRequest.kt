@@ -15,6 +15,8 @@
  */
 package com.google.adk.kt.models
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -24,6 +26,10 @@ import com.google.adk.kt.types.LlmConstants
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Tool
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.encodeToJsonElement
 
 /**
  * LlmRequest represents a request to an LLM.
@@ -194,15 +200,19 @@ data class LlmRequest(
  *   are never sent to traces);
  * - the request [GenerateContentConfig.responseSchema] is excluded.
  *
- * Everything else is preserved. Null/empty omission (`exclude_none`) and JVM-vs-Android serializer
- * parity are a separate concern handled by the trace payload formatter (b/524163028).
+ * Everything else is preserved. The result is built with the shared [adkJson] serializer, which
+ * omits null/empty fields (`exclude_none`) and produces byte-identical JSON on every platform.
  */
-internal fun LlmRequest.toTracePayload(): Map<String, Any?> =
-  mapOf(
-    "model" to model?.name,
-    "config" to config.copy(responseSchema = null),
-    "contents" to
+@OptIn(FrameworkInternalApi::class)
+internal fun LlmRequest.toTracePayload(): JsonObject {
+  val fields = linkedMapOf<String, JsonElement>()
+  model?.name?.let { fields["model"] = JsonPrimitive(it) }
+  fields["config"] = adkJson.encodeToJsonElement(config.copy(responseSchema = null))
+  fields["contents"] =
+    adkJson.encodeToJsonElement(
       contents.map { content ->
         content.copy(parts = content.parts.filter { it.inlineData == null })
-      },
-  )
+      }
+    )
+  return JsonObject(fields)
+}
