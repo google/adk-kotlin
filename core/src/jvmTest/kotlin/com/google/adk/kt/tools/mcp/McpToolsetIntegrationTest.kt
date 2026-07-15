@@ -26,7 +26,10 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import kotlin.jvm.optionals.getOrNull
 import kotlin.test.BeforeTest
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
@@ -66,6 +69,7 @@ class McpToolsetIntegrationTest {
           FakeMcpServer.TOOL_WHOAMI,
           FakeMcpServer.TOOL_SLOW,
           FakeMcpServer.TOOL_FAIL,
+          FakeMcpServer.TOOL_HANG,
         )
     }
   }
@@ -86,6 +90,7 @@ class McpToolsetIntegrationTest {
           FakeMcpServer.TOOL_WHOAMI,
           FakeMcpServer.TOOL_SLOW,
           FakeMcpServer.TOOL_FAIL,
+          FakeMcpServer.TOOL_HANG,
           "list_mcp_resources",
           "load_mcp_resource",
           "list_mcp_resource_templates",
@@ -175,7 +180,81 @@ class McpToolsetIntegrationTest {
         assertThat(ProcessHandle.of(secondPid).orElseThrow().isAlive).isTrue()
       }
     } finally {
+      // close() won't kill the process McpTool respawned during recovery; kill the last PID
+      // explicitly.
+      killIfRunning(pidFile)
       Files.deleteIfExists(pidFile)
+    }
+  }
+
+  @Test
+  fun run_unresponsiveServer_timesOutThenThrowsAfterRetries(): Unit = runBlocking {
+    val pidFile = Files.createTempFile("adk-mcp-it-hang-pid", ".txt")
+    try {
+      newToolset(pidFile = pidFile, requestTimeout = HANG_TEST_REQUEST_TIMEOUT).use { toolset ->
+        val hang = toolset.getTools().single { it.name == FakeMcpServer.TOOL_HANG }
+
+        // Each attempt hits the real per-request timeout; McpTool retries (respawning a process
+        // that also hangs) and ultimately throws.
+        val start = System.nanoTime()
+        val thrown = runCatching { hang.run(testToolContext(), emptyMap()) }.exceptionOrNull()
+        val elapsedMs = (System.nanoTime() - start) / 1_000_000
+
+        assertThat(thrown).isNotNull()
+        // Failed via a real timeout, not an instant error: one timeout already exceeds the budget,
+        // so a lower bound is robust (the retry storm only makes it longer).
+        assertThat(elapsedMs).isAtLeast(HANG_TEST_REQUEST_TIMEOUT.toMillis())
+        assertThat(thrown!!.causedByTimeout()).isTrue()
+      }
+    } finally {
+      // close() won't kill the process McpTool respawned during recovery; kill the last PID
+      // explicitly.
+      killIfRunning(pidFile)
+      Files.deleteIfExists(pidFile)
+    }
+  }
+
+  // Regression guard for the session-ownership leak. It FAILS today: when the shared server dies,
+  // each tool reinitializes into its OWN session, but McpToolset.close() closes only its stale
+  // cached reference -- so the respawned processes are orphaned. A TODO in
+  // McpTool.reinitializeSession() marks where the fix belongs; drop @Ignore once it lands.
+  @Ignore
+  @Test
+  fun close_afterToolsReinitialize_leavesNoOrphanProcesses(): Unit = runBlocking {
+    val pidDir = Files.createTempDirectory("adk-mcp-it-pids")
+    val toolset = newToolset(pidDir = pidDir, requestTimeout = HANG_TEST_REQUEST_TIMEOUT)
+    try {
+      val tools = toolset.getTools()
+      val echo = tools.single { it.name == FakeMcpServer.TOOL_ECHO }
+      val add = tools.single { it.name == FakeMcpServer.TOOL_ADD }
+
+      // Both tools share the toolset's single cached session: exactly one process so far.
+      val shared = liveRecordedProcesses(pidDir)
+      assertThat(shared).hasSize(1)
+
+      // Kill the shared server so the next call on each tool must reinitialize independently.
+      shared.single().destroyForcibly()
+      withTimeout(TimeUnit.SECONDS.toMillis(KILL_TIMEOUT_SECONDS)) {
+        val unused = shared.single().onExit().await()
+      }
+
+      // Force each tool to reinitialize, then only confirm recovery (≥1 live process). We
+      // deliberately don't pin the count: today each tool respawns its own session (two), but a
+      // single-session fix would keep it at one and must still pass. The binding invariant is the
+      // post-close check.
+      val unused1 = echo.run(testToolContext(), mapOf("message" to "x"))
+      val unused2 = add.run(testToolContext(), mapOf("a" to 1, "b" to 2))
+      assertThat(liveRecordedProcesses(pidDir)).isNotEmpty()
+
+      // The invariant under test: after close(), no recorded process is still alive — the toolset
+      // must tear down every session it caused. Today it closes only its stale cached reference.
+      toolset.close()
+      assertThat(awaitRecordedProcessesSettle(pidDir, SETTLE_TIMEOUT_SECONDS)).isEmpty()
+    } finally {
+      // Belt-and-suspenders: never leave orphans behind, even when this guard is failing.
+      toolset.close()
+      liveRecordedProcesses(pidDir).forEach { it.destroyForcibly() }
+      pidDir.toFile().deleteRecursively()
     }
   }
 
@@ -203,13 +282,14 @@ class McpToolsetIntegrationTest {
     token: String = INJECTED_TOKEN,
     useMcpResources: Boolean = false,
     pidFile: Path? = null,
+    pidDir: Path? = null,
     requestTimeout: Duration = REQUEST_TIMEOUT,
     progressConsumers: List<(McpSchema.ProgressNotification) -> Unit> = emptyList(),
   ): McpToolset =
     McpToolsetConfig(
         stdioConnectionParams =
           McpConnectionParameters.Stdio(
-            serverParameters = fakeServerParameters(token, pidFile),
+            serverParameters = fakeServerParameters(token, pidFile, pidDir),
             timeoutDuration = requestTimeout,
           ),
         useMcpResources = useMcpResources,
@@ -222,6 +302,36 @@ class McpToolsetIntegrationTest {
 
   /** Reads the PID the fake server wrote to [pidFile] (see [FakeMcpServer.PID_FILE_ENV]). */
   private fun readPid(pidFile: Path): Long = Files.readString(pidFile).trim().toLong()
+
+  /** True if this throwable, or anything in its cause chain, is a [TimeoutException]. */
+  private fun Throwable.causedByTimeout(): Boolean =
+    generateSequence<Throwable>(this) { it.cause }.any { it is TimeoutException }
+
+  /** Best-effort kill of whatever process last recorded its PID in [pidFile]; never throws. */
+  private fun killIfRunning(pidFile: Path) {
+    runCatching { ProcessHandle.of(readPid(pidFile)).ifPresent { it.destroyForcibly() } }
+  }
+
+  /** Every PID the fake server recorded under [pidDir] (one marker file per spawned process). */
+  private fun recordedPids(pidDir: Path): List<Long> =
+    Files.list(pidDir).use { stream ->
+      stream.toList().mapNotNull { it.fileName?.toString()?.toLongOrNull() }
+    }
+
+  /** Of the PIDs recorded under [pidDir], the processes still alive. */
+  private fun liveRecordedProcesses(pidDir: Path): List<ProcessHandle> =
+    recordedPids(pidDir).mapNotNull { ProcessHandle.of(it).getOrNull() }.filter { it.isAlive }
+
+  /** Polls until no recorded process is alive (or [maxSeconds] elapses); returns the survivors. */
+  private fun awaitRecordedProcessesSettle(pidDir: Path, maxSeconds: Long): List<ProcessHandle> {
+    val deadlineNanos = System.nanoTime() + Duration.ofSeconds(maxSeconds).toNanos()
+    var live = liveRecordedProcesses(pidDir)
+    while (live.isNotEmpty() && System.nanoTime() < deadlineNanos) {
+      Thread.sleep(50)
+      live = liveRecordedProcesses(pidDir)
+    }
+    return live
+  }
 
   private companion object {
     /** Env var that, when truthy, skips this suite (e.g. sandboxes that forbid subprocesses). */
@@ -241,6 +351,21 @@ class McpToolsetIntegrationTest {
     private val KILL_TEST_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(5)
 
     /**
+     * Request timeout for the unresponsive-server test. Kept fairly short because the call hits this
+     * timeout on every one of McpTool's retry attempts before giving up, so the cumulative stall is
+     * a multiple of it. It can't be too short, though: this single value also bounds the `initialize`
+     * handshake (the SDK applies `requestTimeout` to every request, including init), which must
+     * complete inside it during the initial `getTools()`. Cold-starting the child JVM on a slow,
+     * contended CI runner can exceed a sub-second budget, so a too-small value fails tool loading
+     * with an `McpToolLoadingException` before the hang path is ever reached. 3s comfortably absorbs
+     * that cold start while keeping the retry storm modest.
+     */
+    private val HANG_TEST_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(3)
+
+    /** How long to wait, after close(), for the toolset's child processes to actually exit. */
+    private const val SETTLE_TIMEOUT_SECONDS: Long = 5
+
+    /**
      * A fixed, non-semantic token injected into the server's environment and reflected back by the
      * `whoami` tool and `mem://greeting` resource.
      */
@@ -251,16 +376,23 @@ class McpToolsetIntegrationTest {
      *
      * We reuse this test JVM's own `java` binary and classpath, which already contain the fake
      * server class and the MCP SDK (the SDK is a `jvmMain` dependency, visible on the test runtime
-     * classpath). When [pidFile] is non-null, the server is told to record its PID there so a test
-     * can kill the child process.
+     * classpath). When [pidFile] / [pidDir] are non-null, the server is told to record its PID
+     * there so a test can find and kill the child process(es).
      */
-    private fun fakeServerParameters(token: String, pidFile: Path? = null): ServerParameters {
+    private fun fakeServerParameters(
+      token: String,
+      pidFile: Path? = null,
+      pidDir: Path? = null,
+    ): ServerParameters {
       val builder =
         ServerParameters.builder(javaBinary())
           .args("-cp", System.getProperty("java.class.path"), FakeMcpServer.MAIN_CLASS)
           .addEnvVar(FakeMcpServer.TOKEN_ENV, token)
       if (pidFile != null) {
         builder.addEnvVar(FakeMcpServer.PID_FILE_ENV, pidFile.toString())
+      }
+      if (pidDir != null) {
+        builder.addEnvVar(FakeMcpServer.PID_DIR_ENV, pidDir.toString())
       }
       return builder.build()
     }

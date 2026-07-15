@@ -46,6 +46,14 @@ object FakeMcpServer {
    */
   const val PID_FILE_ENV = "ADK_MCP_FAKE_PID_FILE"
 
+  /**
+   * Environment variable holding a directory path. When set, each process drops a marker file named
+   * by its PID into it. Unlike [PID_FILE_ENV] (which a respawn overwrites), this accumulates, so a
+   * test can see *every* process the client ever spawned -- needed to catch the per-tool session
+   * fan-out on reinitialization.
+   */
+  const val PID_DIR_ENV = "ADK_MCP_FAKE_PID_DIR"
+
   const val SERVER_NAME = "adk-fake-mcp-server"
   const val SERVER_VERSION = "0.1.0"
 
@@ -56,6 +64,7 @@ object FakeMcpServer {
   const val TOOL_WHOAMI = "whoami"
   const val TOOL_SLOW = "slow"
   const val TOOL_FAIL = "fail"
+  const val TOOL_HANG = "hang"
 
   /** Message the [TOOL_FAIL] tool returns inside its `isError: true` result. */
   const val FAIL_MESSAGE = "intentional tool execution error from the 'fail' tool"
@@ -82,7 +91,7 @@ fun main() {
   System.err.println(
     "[fake-mcp] starting ${FakeMcpServer.SERVER_NAME} ${FakeMcpServer.SERVER_VERSION}"
   )
-  writePidFileIfRequested()
+  recordPidIfRequested()
 
   // The transport reads JSON-RPC requests from System.in and writes responses to System.out. We use
   // the same default JSON mapper the ADK client uses (see DefaultMcpTransportBuilder) so the two
@@ -125,7 +134,7 @@ fun main() {
 // Tools
 
 private fun toolSpecifications(): List<SyncToolSpecification> =
-  listOf(echoTool(), addTool(), counterTool(), whoamiTool(), slowTool(), failTool())
+  listOf(echoTool(), addTool(), counterTool(), whoamiTool(), slowTool(), failTool(), hangTool())
 
 /**
  * Builds a [SyncToolSpecification] from a tool's [name], [description], [inputSchema], and
@@ -239,6 +248,20 @@ private fun failTool(): SyncToolSpecification =
       .build()
   }
 
+/**
+ * `hang() -> (never returns)`: blocks the request thread forever so the client's call exhausts its
+ * request timeout — a live-but-unresponsive server, as opposed to a dead pipe. The parked thread is
+ * abandoned when the client kills this process.
+ */
+private fun hangTool(): SyncToolSpecification =
+  syncTool(
+    name = FakeMcpServer.TOOL_HANG,
+    description = "Never responds; blocks until the process is killed.",
+  ) { _, _ ->
+    CountDownLatch(1).await() // a latch that is never counted down: parks here indefinitely
+    textResult("unreachable")
+  }
+
 // Resources
 
 private fun resourceSpecifications(): List<SyncResourceSpecification> = listOf(greetingResource())
@@ -262,17 +285,27 @@ private fun greetingResource(): SyncResourceSpecification {
 private fun injectedToken(): String = System.getenv(FakeMcpServer.TOKEN_ENV) ?: "<no-token>"
 
 /**
- * If [FakeMcpServer.PID_FILE_ENV] points at a path, record this process's PID there so a test can
- * kill it. Written via a temp file + atomic move so a concurrent reader never sees a half-written
- * value.
+ * Records this process's PID so a test can find and kill it.
+ * - [FakeMcpServer.PID_FILE_ENV]: a single file, overwritten atomically (latest PID wins).
+ * - [FakeMcpServer.PID_DIR_ENV]: a directory holding one marker file per PID (cumulative).
+ *
+ * Either, both, or neither may be set.
  */
-private fun writePidFileIfRequested() {
-  val target = System.getenv(FakeMcpServer.PID_FILE_ENV)?.let { Path.of(it) } ?: return
+private fun recordPidIfRequested() {
   val pid = ProcessHandle.current().pid()
-  val tmp = Files.createTempFile(target.parent ?: Path.of("."), "fake-mcp-pid", ".tmp")
-  Files.writeString(tmp, pid.toString())
-  Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE)
-  System.err.println("[fake-mcp] pid=$pid written to $target")
+  System.getenv(FakeMcpServer.PID_FILE_ENV)?.let { path ->
+    val target = Path.of(path)
+    // Temp file + atomic move so a concurrent reader never sees a half-written value.
+    val tmp = Files.createTempFile(target.parent ?: Path.of("."), "fake-mcp-pid", ".tmp")
+    Files.writeString(tmp, pid.toString())
+    Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE)
+  }
+  System.getenv(FakeMcpServer.PID_DIR_ENV)?.let { path ->
+    val dir = Path.of(path)
+    Files.createDirectories(dir)
+    Files.writeString(dir.resolve(pid.toString()), "") // marker file named by PID
+  }
+  System.err.println("[fake-mcp] pid=$pid recorded")
 }
 
 /** Wraps [text] in a successful, single-text-content tool result. */
