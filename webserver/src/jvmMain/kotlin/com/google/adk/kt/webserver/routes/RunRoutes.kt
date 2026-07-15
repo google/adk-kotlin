@@ -16,9 +16,12 @@
 
 package com.google.adk.kt.webserver.routes
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.AgentLoader
@@ -41,6 +44,7 @@ fun Route.runRoutes(
   agentLoader: AgentLoader,
   sessionService: SessionService,
   artifactService: ArtifactService,
+  plugins: List<Plugin> = emptyList(),
 ) {
   route("/run") {
     post {
@@ -49,13 +53,7 @@ fun Route.runRoutes(
       if (agent == null) {
         return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
       }
-      val runner =
-        InMemoryRunner(
-          agent = agent,
-          sessionService = sessionService,
-          artifactService = artifactService,
-          appName = request.appName,
-        )
+      val runner = buildRunner(agent, request.appName, sessionService, artifactService, plugins)
 
       val runConfig =
         RunConfig(streamingMode = if (request.streaming) StreamingMode.NONE else StreamingMode.NONE)
@@ -84,13 +82,7 @@ fun Route.runRoutes(
     if (agent == null) {
       return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
     }
-    val runner =
-      InMemoryRunner(
-        agent = agent,
-        sessionService = sessionService,
-        artifactService = artifactService,
-        appName = request.appName,
-      )
+    val runner = buildRunner(agent, request.appName, sessionService, artifactService, plugins)
 
     val runConfig =
       RunConfig(streamingMode = if (request.streaming) StreamingMode.SSE else StreamingMode.NONE)
@@ -116,3 +108,30 @@ fun Route.runRoutes(
     }
   }
 }
+
+/**
+ * Builds an [InMemoryRunner]. With no [plugins] (the default web-server case) it uses the runner
+ * constructor that accepts any [appName]. When [plugins] are supplied it routes through [App],
+ * whose [App.appName] must be a valid identifier.
+ */
+private fun buildRunner(
+  agent: BaseAgent,
+  appName: String,
+  sessionService: SessionService,
+  artifactService: ArtifactService,
+  plugins: List<Plugin>,
+): InMemoryRunner =
+  if (plugins.isEmpty()) {
+    InMemoryRunner(
+      agent = agent,
+      appName = appName,
+      sessionService = sessionService,
+      artifactService = artifactService,
+    )
+  } else {
+    InMemoryRunner(
+      app = App(appName = appName, rootAgent = agent, plugins = plugins),
+      sessionService = sessionService,
+      artifactService = artifactService,
+    )
+  }

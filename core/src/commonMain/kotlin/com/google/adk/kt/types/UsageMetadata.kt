@@ -37,4 +37,8 @@ data class UsageMetadata(
   val promptTokensDetails: List<ModalityTokenCount>? = null,
   /** A per-modality breakdown of the candidates token count. */
   val candidatesTokensDetails: List<ModalityTokenCount>? = null,
+  /** A per-modality breakdown of the tool-use prompt token count. */
+  val toolUsePromptTokensDetails: List<ModalityTokenCount>? = null,
+  /** The traffic type for the request (e.g. "ON_DEMAND", "PROVISIONED_THROUGHPUT"). */
+  val trafficType: String? = null,
 )

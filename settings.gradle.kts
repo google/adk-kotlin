@@ -61,3 +61,10 @@ project(":google-adk-kotlin-litertlm").projectDir = file("litertlm")
 include(":google-adk-kotlin-examples-android")
 
 project(":google-adk-kotlin-examples-android").projectDir = file("examples/android")
+
+// copybara:strip_begin(internal)
+// Internal-only module (config API + conformance harness), stripped from the public GitHub mirror.
+include(":google-adk-kotlin-internal-conformance")
+
+project(":google-adk-kotlin-internal-conformance").projectDir =
+  file("internal/conformance") // copybara:strip_end

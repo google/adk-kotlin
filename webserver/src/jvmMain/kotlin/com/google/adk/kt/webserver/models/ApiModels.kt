@@ -17,6 +17,17 @@
 package com.google.adk.kt.webserver.models
 
 import com.google.adk.kt.types.Content
+import com.google.gson.annotations.SerializedName
+
+/**
+ * Response for the `/version` endpoint. The [languageVersion] field is serialized as
+ * `language_version`.
+ */
+data class VersionInfo(
+  val version: String,
+  val language: String,
+  @SerializedName("language_version") val languageVersion: String,
+)
 
 data class AgentRunRequest(
   val appName: String,

@@ -16,7 +16,6 @@
 
 plugins {
   kotlin("jvm")
-  id("application")
   id("java-library")
   id("maven-publish")
 }
@@ -44,6 +43,7 @@ sourceSets {
 dependencies {
   implementation(project(":google-adk-kotlin-core"))
   implementation(libs.kotlinx.datetime)
+  implementation(libs.kotlinx.coroutines.core)
 
   implementation(libs.graphviz.java)
 

@@ -41,6 +41,7 @@ import com.google.genai.kotlin.types.GenerationConfigRoutingConfigManualRoutingM
 import com.google.genai.kotlin.types.GoogleMaps as GenAiGoogleMaps
 import com.google.genai.kotlin.types.GoogleSearch as GenAiGoogleSearch
 import com.google.genai.kotlin.types.GroundingChunk as GenAiGroundingChunk
+import com.google.genai.kotlin.types.GroundingChunkMaps as GenAiGroundingChunkMaps
 import com.google.genai.kotlin.types.GroundingChunkRetrievedContext as GenAiGroundingChunkRetrievedContext
 import com.google.genai.kotlin.types.GroundingChunkWeb as GenAiGroundingChunkWeb
 import com.google.genai.kotlin.types.GroundingMetadata as GenAiGroundingMetadata
@@ -467,10 +468,11 @@ internal fun GenerateContentResponse.toGenaiSdk(): GenAiGenerateContentResponse 
 /** Converts a [GenAiGroundingMetadata] from the GenAI SDK to an ADK [GroundingMetadata]. */
 internal fun GenAiGroundingMetadata.fromGenaiSdk(): GroundingMetadata =
   GroundingMetadata(
-    imageSearchQueries = imageSearchQueries ?: emptyList(),
+    imageSearchQueries = imageSearchQueries,
     groundingChunks = groundingChunks?.map { it.fromGenaiSdk() },
     groundingSupports = groundingSupports?.map { it.fromGenaiSdk() },
     webSearchQueries = webSearchQueries,
+    retrievalQueries = retrievalQueries,
     searchEntryPoint = searchEntryPoint?.fromGenaiSdk(),
     retrievalMetadata = retrievalMetadata?.fromGenaiSdk(),
   )
@@ -482,6 +484,7 @@ internal fun GroundingMetadata.toGenaiSdk(): GenAiGroundingMetadata =
     groundingChunks = groundingChunks?.map { it.toGenaiSdk() },
     groundingSupports = groundingSupports?.map { it.toGenaiSdk() },
     webSearchQueries = webSearchQueries,
+    retrievalQueries = retrievalQueries,
     searchEntryPoint = searchEntryPoint?.toGenaiSdk(),
     retrievalMetadata = retrievalMetadata?.toGenaiSdk(),
   )
@@ -489,11 +492,28 @@ internal fun GroundingMetadata.toGenaiSdk(): GenAiGroundingMetadata =
 // --- GroundingChunk ---
 /** Converts a [GenAiGroundingChunk] from the GenAI SDK to an ADK [GroundingChunk]. */
 internal fun GenAiGroundingChunk.fromGenaiSdk(): GroundingChunk =
-  GroundingChunk(web = web?.fromGenaiSdk(), retrievedContext = retrievedContext?.fromGenaiSdk())
+  GroundingChunk(
+    web = web?.fromGenaiSdk(),
+    retrievedContext = retrievedContext?.fromGenaiSdk(),
+    maps = maps?.fromGenaiSdk(),
+  )
 
 /** Converts an ADK [GroundingChunk] to a [GenAiGroundingChunk] for the GenAI SDK. */
 internal fun GroundingChunk.toGenaiSdk(): GenAiGroundingChunk =
-  GenAiGroundingChunk(web = web?.toGenaiSdk(), retrievedContext = retrievedContext?.toGenaiSdk())
+  GenAiGroundingChunk(
+    web = web?.toGenaiSdk(),
+    retrievedContext = retrievedContext?.toGenaiSdk(),
+    maps = maps?.toGenaiSdk(),
+  )
+
+// --- GroundingChunkMaps ---
+/** Converts a [GenAiGroundingChunkMaps] from the GenAI SDK to an ADK [GroundingChunkMaps]. */
+internal fun GenAiGroundingChunkMaps.fromGenaiSdk(): GroundingChunkMaps =
+  GroundingChunkMaps(uri = uri, title = title, placeId = placeId)
+
+/** Converts an ADK [GroundingChunkMaps] to a [GenAiGroundingChunkMaps] for the GenAI SDK. */
+internal fun GroundingChunkMaps.toGenaiSdk(): GenAiGroundingChunkMaps =
+  GenAiGroundingChunkMaps(uri = uri, title = title, placeId = placeId)
 
 // --- GroundingChunkWeb ---
 /** Converts a [GenAiGroundingChunkWeb] from the GenAI SDK to an ADK [GroundingChunkWeb]. */
@@ -761,6 +781,7 @@ internal fun GenAiGenerateContentResponseUsageMetadata.fromGenaiSdk(): UsageMeta
     cachedContentTokenCount = cachedContentTokenCount,
     promptTokensDetails = promptTokensDetails?.map { it.fromGenaiSdk() },
     candidatesTokensDetails = candidatesTokensDetails?.map { it.fromGenaiSdk() },
+    toolUsePromptTokensDetails = toolUsePromptTokensDetails?.map { it.fromGenaiSdk() },
   )
 
 /**
@@ -777,6 +798,7 @@ internal fun UsageMetadata.toGenaiSdk(): GenAiGenerateContentResponseUsageMetada
     cachedContentTokenCount = cachedContentTokenCount,
     promptTokensDetails = promptTokensDetails?.map { it.toGenaiSdk() },
     candidatesTokensDetails = candidatesTokensDetails?.map { it.toGenaiSdk() },
+    toolUsePromptTokensDetails = toolUsePromptTokensDetails?.map { it.toGenaiSdk() },
   )
 
 // --- Part ---

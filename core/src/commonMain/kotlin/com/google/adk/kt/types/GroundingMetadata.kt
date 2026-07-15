@@ -21,13 +21,16 @@ import kotlinx.serialization.Serializable
 /** Metadata returned to client when grounding is enabled. */
 @Serializable
 data class GroundingMetadata(
-  val imageSearchQueries: List<String> = emptyList(),
+  /** The image search queries used to retrieve grounding sources. */
+  val imageSearchQueries: List<String>? = null,
   /** The cited source chunks that ground the response. */
   val groundingChunks: List<GroundingChunk>? = null,
   /** Maps response segments to the grounding chunks that support them. */
   val groundingSupports: List<GroundingSupport>? = null,
   /** The web search queries used to retrieve grounding sources. */
   val webSearchQueries: List<String>? = null,
+  /** The retrieval queries used to retrieve grounding sources. */
+  val retrievalQueries: List<String>? = null,
   /** The Google Search entry point for rendering search suggestions. */
   val searchEntryPoint: SearchEntryPoint? = null,
   /** Metadata about the retrieval step. */
