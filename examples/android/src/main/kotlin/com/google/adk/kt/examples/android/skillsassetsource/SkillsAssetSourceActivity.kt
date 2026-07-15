@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.examples.android.skillsassetsource
 
-import android.app.Activity
 import android.os.Bundle
 import android.view.Gravity
 import android.widget.Button
@@ -24,14 +23,14 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.google.adk.kt.examples.android.common.ScopedExampleActivity
+import com.google.adk.kt.examples.android.common.foldTextParts
 import com.google.adk.kt.examples.android.common.setExampleContentView
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
@@ -45,10 +44,7 @@ import kotlinx.coroutines.launch
  */
 // Hardcoded UI strings are intentional in this minimal example; a real app would use resources.
 @Suppress("SetTextI18n")
-class SkillsAssetSourceActivity : Activity() {
-
-  // Coroutines launch on the default dispatcher; UI updates are marshaled via runOnUiThread.
-  private val scope = CoroutineScope(SupervisorJob())
+class SkillsAssetSourceActivity : ScopedExampleActivity() {
 
   private val sessionService = InMemorySessionService()
 
@@ -103,7 +99,7 @@ class SkillsAssetSourceActivity : Activity() {
             newMessage = Content(role = Role.USER, parts = listOf(Part(text = text))),
           )
           .collect { event ->
-            val reply = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+            val reply = event.foldTextParts()
             if (event.author == WizardApprenticeAgent.NAME && reply.isNotBlank()) {
               appendToTranscript("${WizardApprenticeAgent.NAME}: $reply")
             }
@@ -127,7 +123,7 @@ class SkillsAssetSourceActivity : Activity() {
       }
     input =
       EditText(this).apply {
-        hint = "Ask the wizard's apprentice…"
+        hint = "Ask the wizard's apprentice..."
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
       }
     sendButton =

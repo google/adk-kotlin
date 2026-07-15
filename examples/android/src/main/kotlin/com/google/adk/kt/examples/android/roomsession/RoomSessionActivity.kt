@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.examples.android.roomsession
 
-import android.app.Activity
 import android.os.Bundle
 import android.view.Gravity
 import android.widget.Button
@@ -26,6 +25,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.examples.android.common.ScopedExampleActivity
+import com.google.adk.kt.examples.android.common.foldTextParts
 import com.google.adk.kt.examples.android.common.setExampleContentView
 import com.google.adk.kt.models.mlkit.GenaiPrompt
 import com.google.adk.kt.runners.InMemoryRunner
@@ -35,8 +36,6 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.utils.mlkit.GenerativeModelHelpers
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
@@ -51,10 +50,7 @@ import kotlinx.coroutines.launch
  */
 // Hardcoded UI strings are intentional in this minimal example; a real app would use resources.
 @Suppress("SetTextI18n")
-class RoomSessionActivity : Activity() {
-
-  // Coroutines launch on the default dispatcher; UI updates are marshaled via runOnUiThread.
-  private val scope = CoroutineScope(SupervisorJob())
+class RoomSessionActivity : ScopedExampleActivity() {
 
   // The Room-backed, on-device persistent session service (one SQLite database on disk).
   private val sessionService by lazy { RoomSessionService.fromContext(applicationContext) }
@@ -127,7 +123,7 @@ class RoomSessionActivity : Activity() {
             newMessage = Content(role = Role.USER, parts = listOf(Part(text = text))),
           )
           .collect { event ->
-            val reply = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+            val reply = event.foldTextParts()
             if (event.author == AGENT_NAME && reply.isNotBlank()) {
               appendToTranscript("$AGENT_NAME: $reply")
             }
@@ -151,7 +147,7 @@ class RoomSessionActivity : Activity() {
       }
     input =
       EditText(this).apply {
-        hint = "Type a message…"
+        hint = "Type a message..."
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
       }
     val sendButton =
