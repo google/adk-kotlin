@@ -419,6 +419,10 @@ internal class LlmAgentTurn(
           partial = response.partial,
           interrupted = response.interrupted,
           cacheMetadata = response.cacheMetadata,
+          modelVersion = response.modelVersion,
+          avgLogProbs = response.avgLogprobs,
+          groundingMetadata = response.groundingMetadata,
+          citationMetadata = response.citationMetadata,
         )
         .populateClientFunctionCallId()
 

@@ -18,13 +18,13 @@ package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
 
-/** A single cited source chunk that grounds part of the model's response. */
+/** A grounding chunk sourced from Google Maps. */
 @Serializable
-data class GroundingChunk(
-  /** A chunk sourced from the open web. */
-  val web: GroundingChunkWeb? = null,
-  /** A chunk sourced from a retrieval (RAG) context. */
-  val retrievedContext: GroundingChunkRetrievedContext? = null,
-  /** A chunk sourced from Google Maps grounding. */
-  val maps: GroundingChunkMaps? = null,
+data class GroundingChunkMaps(
+  /** The URI of the place on Google Maps. */
+  val uri: String? = null,
+  /** The title (name) of the place. */
+  val title: String? = null,
+  /** The Google Maps place id (e.g. `places/ChIJ...`). */
+  val placeId: String? = null,
 )

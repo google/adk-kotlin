@@ -28,6 +28,7 @@ import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
 import kotlinx.serialization.Contextual
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
@@ -72,7 +73,7 @@ data class Event(
   val errorMessage: String? = null,
   val finishReason: FinishReason? = null,
   val usageMetadata: UsageMetadata? = null,
-  val avgLogProbs: Double? = null,
+  @SerialName("avgLogprobs") val avgLogProbs: Double? = null,
   val interrupted: Boolean = false,
   val branch: String? = null,
   val groundingMetadata: GroundingMetadata? = null,

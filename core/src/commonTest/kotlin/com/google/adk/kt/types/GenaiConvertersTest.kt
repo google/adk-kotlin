@@ -367,6 +367,7 @@ class GenaiConvertersTest {
     val adkGroundingMetadata =
       GroundingMetadata(
         webSearchQueries = listOf("kotlin coroutines"),
+        retrievalQueries = listOf("kotlin release date"),
         groundingChunks =
           listOf(
             GroundingChunk(
@@ -376,7 +377,15 @@ class GenaiConvertersTest {
                   title = "Example",
                   domain = "example.com",
                 )
-            )
+            ),
+            GroundingChunk(
+              maps =
+                GroundingChunkMaps(
+                  uri = "https://maps.google.com/?cid=1",
+                  title = "Googleplex",
+                  placeId = "places/ABC",
+                )
+            ),
           ),
         groundingSupports =
           listOf(
@@ -392,7 +401,8 @@ class GenaiConvertersTest {
 
     val genaiGroundingMetadata = adkGroundingMetadata.toGenaiSdk()
     assertEquals(listOf("kotlin coroutines"), genaiGroundingMetadata.webSearchQueries)
-    assertEquals("example.com", genaiGroundingMetadata.groundingChunks?.single()?.web?.domain)
+    assertEquals("example.com", genaiGroundingMetadata.groundingChunks?.get(0)?.web?.domain)
+    assertEquals("places/ABC", genaiGroundingMetadata.groundingChunks?.get(1)?.maps?.placeId)
 
     val convertedBack = genaiGroundingMetadata.fromGenaiSdk()
     assertEquals(adkGroundingMetadata, convertedBack)
@@ -655,6 +665,8 @@ class GenaiConvertersTest {
           listOf(ModalityTokenCount(modality = MediaModality.TEXT, tokenCount = 1)),
         candidatesTokensDetails =
           listOf(ModalityTokenCount(modality = MediaModality.IMAGE, tokenCount = 2)),
+        toolUsePromptTokensDetails =
+          listOf(ModalityTokenCount(modality = MediaModality.TEXT, tokenCount = 7)),
       )
     val genaiUsageMetadata = adkUsageMetadata.toGenaiSdk()
     assertEquals(1, genaiUsageMetadata.promptTokenCount)
