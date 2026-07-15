@@ -35,16 +35,6 @@ android {
     targetSdk = exampleCompileSdk
     versionCode = 1
     versionName = "0.1.0"
-
-    // GEMINI_API_KEY is consumed by the SkillsAssetSourceActivity's manifest meta-data placeholder
-    // (see the meta-data entry in src/main/AndroidManifest.xml). Sourced from a Gradle property or
-    // environment variable; defaults to the literal placeholder so APKs built without a key
-    // fail-fast with a user-visible message rather than calling Gemini with a blank key.
-    manifestPlaceholders["GEMINI_API_KEY"] =
-      providers
-        .gradleProperty("GEMINI_API_KEY")
-        .orElse(providers.environmentVariable("GEMINI_API_KEY"))
-        .getOrElse("\${GEMINI_API_KEY}")
   }
 
   // The genai/auth transitive dependencies each ship a META-INF/INDEX.LIST and

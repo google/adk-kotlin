@@ -19,26 +19,28 @@ package com.google.adk.kt.examples.android.skillsassetsource
 import android.content.Context
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
-import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.mlkit.GenaiPrompt
 import com.google.adk.kt.skills.AssetSkillSource
 import com.google.adk.kt.tools.SkillToolset
+import com.google.adk.kt.utils.mlkit.GenerativeModelHelpers
 
 /**
  * Builds the "wizard's apprentice" [LlmAgent] used by [SkillsAssetSourceActivity].
  *
  * The agent's [SkillToolset] is backed by an [AssetSkillSource] that reads spell definitions and
- * resources from the APK's `assets/skills/...` tree. The cloud Gemini model is required because the
- * on-device ML Kit Gemini Nano model does not support tool / function calls, which the
- * [SkillToolset] relies on. The API key is supplied at runtime by the activity (intent extra or
- * process env var) and is intentionally never baked into the build.
+ * resources from the APK's `assets/skills/...` tree. The agent runs fully on-device through ML
+ * Kit's Gemini Nano ([GenaiPrompt]), so no API key or network is required. On-device tool /
+ * function-call support depends on the device's Gemini Nano capabilities; the example still shows
+ * how to wire a [SkillToolset] from packaged assets.
  */
 internal object WizardApprenticeAgent {
   const val NAME: String = "wizard_apprentice"
 
-  fun create(context: Context, apiKey: String): LlmAgent =
+  suspend fun create(context: Context): LlmAgent =
     LlmAgent(
       name = NAME,
-      model = Gemini(name = "gemini-3.1-flash-lite", apiKey = apiKey),
+      model =
+        GenaiPrompt.create(GenerativeModelHelpers.initGenerativeModel(), name = "gemini-nano"),
       instruction =
         Instruction(
           """

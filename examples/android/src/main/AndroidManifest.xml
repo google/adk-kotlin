@@ -17,26 +17,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.google.adk.kt.examples.android">
 
-    <!-- Required by the Skills (AssetSkillSource) example's cloud Gemini model. The Room-session
-         example runs fully on-device, but a single app has a single merged manifest, so the
-         permission applies app-wide. -->
-    <uses-permission android:name="android.permission.INTERNET" />
-
     <application
         android:allowBackup="true"
         android:label="ADK Android Examples"
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
-
-        <!--
-            GEMINI_API_KEY is baked into the APK at build time via the ${GEMINI_API_KEY} manifest
-            placeholder (see examples/android/build.gradle.kts) and read at runtime by
-            SkillsAssetSourceActivity. Supply it as `-PGEMINI_API_KEY=...` (Gradle) or
-            `\-\-define=GEMINI_API_KEY=...` (Bazel). Production apps should use a more secure key
-            transport.
-        -->
-        <meta-data
-            android:name="com.google.adk.GEMINI_API_KEY"
-            android:value="${GEMINI_API_KEY}" />
 
         <!-- The launcher: a menu that opens each self-contained example. -->
         <activity
