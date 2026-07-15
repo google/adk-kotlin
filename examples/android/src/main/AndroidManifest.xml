@@ -34,12 +34,23 @@
 
         <!-- Examples, launched from HomeActivity via explicit intent (no launcher entry of their
              own, so not exported). -->
+        <!--
+            configChanges: keep the running activity (and its in-memory transcript, agent session,
+            and any in-flight coroutines) alive across rotation, instead of being destroyed and
+            recreated. This is only appropriate because these screens build their UI in code with no
+            configuration-specific resources to reload. A real-world app would instead let the
+            activity recreate and hold this state in a ViewModel (which survives configuration
+            changes), plus SavedStateHandle / onSaveInstanceState to also survive process death. We
+            keep it simple here and skip the ViewModel.
+        -->
         <activity
             android:name=".roomsession.RoomSessionActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".skillsassetsource.SkillsAssetSourceActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
     </application>
