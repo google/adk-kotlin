@@ -32,6 +32,18 @@ import kotlinx.coroutines.flow.flow
 /**
  * A [Model] implementation that uses the ML Kit GenAI API to generate content.
  *
+ * The underlying ML Kit GenAI `GenerateContentRequest` is a single-prompt API, so this
+ * implementation currently has the following limitations:
+ * - Multi-turn conversations are not truly supported. The whole [LlmRequest.contents] history is
+ *   flattened into a single prompt: all text parts (across every turn) are concatenated with "\n\n"
+ *   and the role of each turn is discarded, so the model cannot distinguish user turns from model
+ *   turns.
+ * - Only text and a single image are sent. Text parts are concatenated; if multiple images are
+ *   present, only the first is used and the rest are ignored.
+ * - Tool use is not supported. Only text parts are read; `functionCall` and `functionResponse`
+ *   parts are dropped.
+ * - Only the first response candidate is used.
+ *
  * @param generativeModel The [GenerativeModel] to use for generation.
  * @param name The name of the model.
  */
