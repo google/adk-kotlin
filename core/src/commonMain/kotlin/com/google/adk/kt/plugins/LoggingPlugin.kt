@@ -122,7 +122,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
     request: LlmRequest,
   ): CallbackChoice<LlmRequest, LlmResponse> {
     log("🧠 LLM REQUEST")
-    log("   Model: ${request.model?.toString() ?: "default"}")
+    log("   Model: ${request.model?.name ?: "default"}")
     log("   Agent: ${context.agentName}")
 
     request.config.systemInstruction?.let { sysInstruction ->
@@ -130,8 +130,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
       if (textParts.isNotEmpty()) {
         var truncatedInstruction = textParts.joinToString("")
         if (truncatedInstruction.length > MAX_CONTENT_LENGTH) {
-          truncatedInstruction =
-            truncatedInstruction.substring(0, (MAX_CONTENT_LENGTH - 3).coerceAtLeast(0)) + "..."
+          truncatedInstruction = truncatedInstruction.substring(0, MAX_CONTENT_LENGTH) + "..."
         }
         log("   System Instruction: '$truncatedInstruction'")
       }
@@ -150,16 +149,22 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
     log("🧠 LLM RESPONSE")
     log("   Agent: ${context.agentName}")
 
-    if (response.errorMessage != null) {
-      log("   ❌ ERROR - Code: ${response.finishReason ?: "Unknown"}")
-      log("   Error Message: ${response.errorMessage}")
+    if (response.errorCode != null) {
+      log("   ❌ ERROR - Code: ${response.errorCode}")
+      log("   Error Message: ${response.errorMessage ?: "None"}")
     } else {
       log("   Content: ${formatContent(response.content)}")
-      log("   Partial: ${response.partial}")
+      if (response.partial) {
+        log("   Partial: ${response.partial}")
+      }
       response.finishReason?.let { log("   Finish Reason: $it") }
     }
 
-    response.usageMetadata?.let { usage -> log("   Token Usage: $usage") }
+    response.usageMetadata?.let { usage ->
+      log(
+        "   Token Usage - Input: ${usage.promptTokenCount}, Output: ${usage.candidatesTokenCount}"
+      )
+    }
 
     return response
   }
@@ -233,7 +238,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
             val trimmed = text.trim()
             val truncated =
               if (trimmed.length > MAX_CONTENT_LENGTH) {
-                trimmed.substring(0, MAX_CONTENT_LENGTH - 3) + "..."
+                trimmed.substring(0, MAX_CONTENT_LENGTH) + "..."
               } else {
                 trimmed
               }
@@ -245,7 +250,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
           else -> "other_part"
         }
       }
-      .joinToString("\n")
+      .joinToString(" | ")
   }
 
   fun formatArgs(args: Map<String, Any>?): String {
@@ -255,7 +260,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
 
     val formatted = args.toString()
     return if (formatted.length > MAX_ARGS_LENGTH) {
-      formatted.substring(0, MAX_ARGS_LENGTH - 4) + "...}"
+      formatted.substring(0, MAX_ARGS_LENGTH) + "...}"
     } else {
       formatted
     }

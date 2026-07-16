@@ -32,7 +32,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 
 class LoggingPluginTest {
 
@@ -47,72 +47,72 @@ class LoggingPluginTest {
   private val toolContext = ToolContext(invocationContext)
 
   @Test
-  fun onUserMessageCallback_returnsContinue() = runTest {
+  fun onUserMessageCallback_returnsContinue() = runBlocking {
     val content = Content()
     val result = loggingPlugin.onUserMessage(invocationContext, content)
     assertEquals(content, result)
   }
 
   @Test
-  fun beforeRunCallback_returnsContinue() = runTest {
+  fun beforeRunCallback_returnsContinue() = runBlocking {
     val result = loggingPlugin.beforeRun(invocationContext)
     assertEquals(CallbackChoice.Continue(Unit), result)
   }
 
   @Test
-  fun onEventCallback_returnsContinue() = runTest {
+  fun onEventCallback_returnsContinue() = runBlocking {
     val event = Event(author = "author")
     val result = loggingPlugin.onEvent(invocationContext, event)
     assertEquals(event, result)
   }
 
   @Test
-  fun afterRunCallback_runsWithoutError() = runTest {
+  fun afterRunCallback_runsWithoutError() = runBlocking {
     loggingPlugin.afterRun(invocationContext)
     // Runs without error
   }
 
   @Test
-  fun beforeAgentCallback_returnsContinue() = runTest {
+  fun beforeAgentCallback_returnsContinue() = runBlocking {
     val result = loggingPlugin.beforeAgent(callbackContext)
     assertEquals(CallbackChoice.Continue(EventActions()), result)
   }
 
   @Test
-  fun afterAgentCallback_returnsContinue() = runTest {
+  fun afterAgentCallback_returnsContinue() = runBlocking {
     val result = loggingPlugin.afterAgent(callbackContext)
     assertEquals(CallbackChoice.Continue(Unit), result)
   }
 
   @Test
-  fun beforeModelCallback_returnsContinue() = runTest {
+  fun beforeModelCallback_returnsContinue() = runBlocking {
     val request = LlmRequest()
     val result = loggingPlugin.beforeModel(callbackContext, request)
     assertEquals(CallbackChoice.Continue(request), result)
   }
 
   @Test
-  fun afterModelCallback_returnsContinue() = runTest {
+  fun afterModelCallback_returnsContinue() = runBlocking {
     val response = LlmResponse()
     val result = loggingPlugin.afterModel(callbackContext, response)
     assertEquals(response, result)
   }
 
   @Test
-  fun onModelErrorCallback_returnsPropagate() = runTest {
+  fun onModelErrorCallback_returnsPropagate() = runBlocking {
     val result = loggingPlugin.onModelError(callbackContext, LlmRequest(), Exception("Test Error"))
     assertEquals(CallbackChoice.Continue(Unit), result)
   }
 
   @Test
-  fun beforeToolCallback_returnsContinue() = runTest {
+  fun beforeToolCallback_returnsContinue() = runBlocking {
     val args = emptyMap<String, Any>()
     val result = loggingPlugin.beforeTool(toolContext, mockTool, args)
     assertEquals(CallbackChoice.Continue(args), result)
   }
 
   @Test
-  fun afterToolCallback_returnsContinue() = runTest {
+  fun afterToolCallback_returnsContinue() = runBlocking {
     val args = emptyMap<String, Any>()
     val toolResult = emptyMap<String, Any>()
     val result = loggingPlugin.afterTool(toolContext, mockTool, args, toolResult)
@@ -120,51 +120,57 @@ class LoggingPluginTest {
   }
 
   @Test
-  fun onToolErrorCallback_returnsContinue() = runTest {
+  fun onToolErrorCallback_returnsContinue() = runBlocking {
     val result =
       loggingPlugin.onToolError(toolContext, mockTool, emptyMap(), Exception("Test Error"))
     assertEquals(CallbackChoice.Continue(Unit), result)
   }
 
   @Test
-  fun formatArgs_nullOrEmpty_returnsEmptyBraces() = runTest {
+  fun formatArgs_nullOrEmpty_returnsEmptyBraces() = runBlocking {
     assertEquals("{}", loggingPlugin.formatArgs(null))
     assertEquals("{}", loggingPlugin.formatArgs(emptyMap()))
   }
 
   @Test
-  fun formatArgs_atLimit_returnsFullString() = runTest {
+  fun formatArgs_atLimit_returnsFullString() = runBlocking {
     val mapFormatOverhead = 4 // "{a=}"
     val atLimit = mapOf("a" to "0".repeat(MAX_ARGS_LENGTH - mapFormatOverhead))
     assertEquals(atLimit.toString(), loggingPlugin.formatArgs(atLimit))
   }
 
   @Test
-  fun formatArgs_aboveLimit_returnsTruncatedString() = runTest {
+  fun formatArgs_aboveLimit_returnsTruncatedString() = runBlocking {
     val mapFormatOverhead = 4 // "{a=}"
     val aboveLimit = mapOf("a" to "0".repeat(MAX_ARGS_LENGTH - mapFormatOverhead + 1))
-    val expected = aboveLimit.toString().substring(0, MAX_ARGS_LENGTH - 4) + "...}"
+    val expected = aboveLimit.toString().substring(0, MAX_ARGS_LENGTH) + "...}"
     assertEquals(expected, loggingPlugin.formatArgs(aboveLimit))
   }
 
   @Test
-  fun formatContent_nullOrEmpty_returnsNone() = runTest {
+  fun formatContent_nullOrEmpty_returnsNone() = runBlocking {
     assertEquals("None", loggingPlugin.formatContent(null))
     assertEquals("None", loggingPlugin.formatContent(Content()))
   }
 
   @Test
-  fun formatContent_atLimit_returnsFullString() = runTest {
+  fun formatContent_atLimit_returnsFullString() = runBlocking {
     val atLimitText = "0".repeat(MAX_CONTENT_LENGTH)
     val atLimitContent = Content(parts = listOf(Part(text = atLimitText)))
     assertEquals("text: '$atLimitText'", loggingPlugin.formatContent(atLimitContent))
   }
 
   @Test
-  fun formatContent_aboveLimit_returnsTruncatedString() = runTest {
+  fun formatContent_aboveLimit_returnsTruncatedString() = runBlocking {
     val aboveLimitText = "0".repeat(MAX_CONTENT_LENGTH + 1)
     val aboveLimitContent = Content(parts = listOf(Part(text = aboveLimitText)))
-    val expectedContent = "text: '" + aboveLimitText.substring(0, MAX_CONTENT_LENGTH - 3) + "...'"
+    val expectedContent = "text: '" + aboveLimitText.substring(0, MAX_CONTENT_LENGTH) + "...'"
     assertEquals(expectedContent, loggingPlugin.formatContent(aboveLimitContent))
+  }
+
+  @Test
+  fun formatContent_multipleParts_joinedWithSeparator() = runBlocking {
+    val content = Content(parts = listOf(Part(text = "hello"), Part(text = "world")))
+    assertEquals("text: 'hello' | text: 'world'", loggingPlugin.formatContent(content))
   }
 }
