@@ -16,7 +16,6 @@
 
 package com.google.adk.firebase.utils
 
-import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -41,6 +40,7 @@ import com.google.firebase.ai.type.FunctionCallPart
 import com.google.firebase.ai.type.FunctionResponsePart
 import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.Part as FirebasePart
+import com.google.firebase.ai.type.PublicPreviewAPI
 import com.google.firebase.ai.type.TextPart
 import com.google.firebase.ai.type.ThinkingLevel as FirebaseThinkingLevel
 import kotlin.test.assertFailsWith
@@ -317,17 +317,6 @@ class ConversionsTest {
   }
 
   @Test
-  @OptIn(FrameworkInternalApi::class)
-  fun toFirebasePart_opaqueData_returnsAdkPartWithOpaqueData() {
-    val conversions = Conversions()
-    val textPart = TextPart("thought")
-
-    val adkPart = Part(text = "hello", opaqueData = textPart)
-    val firebasePart = conversions.toFirebasePart(adkPart)
-    assertThat(firebasePart).isSameInstanceAs(textPart)
-  }
-
-  @Test
   fun toFirebaseThinkingLevel_returnsFirebaseThinkingLevel() {
     val conversions = Conversions()
 
@@ -348,7 +337,6 @@ class ConversionsTest {
   }
 
   @Test
-  @OptIn(FrameworkInternalApi::class)
   fun toAdkPart_functionCall_returnsPart() {
     val conversions = Conversions()
     val firebaseFunctionCall =
@@ -368,10 +356,58 @@ class ConversionsTest {
               name = "testFunction",
               args = mapOf("stringArg" to "argValue", "intArg" to 5),
               id = "testId",
-            ),
-          opaqueData = firebaseFunctionCall,
+            )
         )
       )
+  }
+
+  @OptIn(PublicPreviewAPI::class)
+  @Test
+  fun toAdkPart_thoughtSignature_isDecodedToBytes() {
+    val conversions = Conversions()
+    // "AQID" is the standard base64 of bytes [1, 2, 3].
+    val firebasePart =
+      TextPart.createWithThinking("thinking", isThought = true, thoughtSignature = "AQID")
+
+    val adkPart = conversions.toAdkPart(firebasePart)
+
+    assertThat(adkPart.text).isEqualTo("thinking")
+    assertThat(adkPart.thought).isTrue()
+    assertThat(adkPart.thoughtSignature).isEqualTo(byteArrayOf(1, 2, 3))
+  }
+
+  @Test
+  fun toFirebasePart_thoughtSignature_isEncodedToBase64() {
+    val conversions = Conversions()
+    val adkPart = Part(text = "thinking", thought = true, thoughtSignature = byteArrayOf(1, 2, 3))
+
+    val firebasePart = conversions.toFirebasePart(adkPart)
+
+    assertThat(firebasePart).isInstanceOf(TextPart::class.java)
+    val textPart = firebasePart as TextPart
+    assertThat(textPart.text).isEqualTo("thinking")
+    assertThat(textPart.isThought).isTrue()
+    // "AQID" is the standard base64 of bytes [1, 2, 3].
+    assertThat(textPart.thoughtSignature).isEqualTo("AQID")
+  }
+
+  @Test
+  fun functionCallThoughtSignature_roundTrips() {
+    val conversions = Conversions()
+    // A Gemini-3 style function call: not a "thought" itself, but carries a signature.
+    val adkPart =
+      Part(
+        functionCall = FunctionCall(name = "f", args = mapOf("a" to 1), id = "id-1"),
+        thoughtSignature = byteArrayOf(9, 8, 7),
+      )
+
+    val firebasePart = conversions.toFirebasePart(adkPart) as FunctionCallPart
+    // "CQgH" is the standard base64 of bytes [9, 8, 7].
+    assertThat(firebasePart.thoughtSignature).isEqualTo("CQgH")
+
+    val roundTripped = conversions.toAdkPart(firebasePart)
+    assertThat(roundTripped.thoughtSignature).isEqualTo(byteArrayOf(9, 8, 7))
+    assertThat(roundTripped.functionCall?.name).isEqualTo("f")
   }
 
   @Test

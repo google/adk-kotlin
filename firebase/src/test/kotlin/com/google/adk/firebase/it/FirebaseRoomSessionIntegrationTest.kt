@@ -44,7 +44,6 @@ import org.junit.After
 import org.junit.AfterClass
 import org.junit.Assume
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.runner.RunWith
 
 /**
@@ -52,10 +51,9 @@ import org.junit.runner.RunWith
  * Room-backed [RoomSessionService] and then read back after a database reopen.
  *
  * This is the "Firebase AI + session store at once" scenario: it proves that persisting (and
- * reloading) a session built from real Firebase responses does not crash. A Firebase `Part` keeps
- * its original SDK object in the framework-internal `Part.opaqueData`, which is `@Transient` and is
- * therefore intentionally dropped on serialization; the modeled fields (text, function calls, ...)
- * round-trip faithfully.
+ * reloading) a session built from real Firebase responses does not crash. The modeled fields (text,
+ * function calls, thought markers and thought signatures, ...) round-trip faithfully through
+ * serialization.
  *
  * Like [FirebaseIntegrationTest] this runs under Robolectric against the live `adk-java-e2e`
  * Firebase project and is skipped unless the `FIREBASE_*` environment variables are present (and
@@ -179,11 +177,6 @@ class FirebaseRoomSessionIntegrationTest {
     runCatching { context.deleteDatabase(TEST_DB_NAME) }
   }
 
-  @Ignore(
-    "Gemini 3 needs a thought_signature on functionCall parts; it lives only in @Transient " +
-      "Part.opaqueData, so any persistent SessionService drops it on serialization. Works only " +
-      "with InMemorySessionService."
-  )
   @Test
   fun functionToolTurn_persistedThroughRoomSession_reloadsWithoutCrash(): Unit = runBlocking {
     val temperatureToolName = TEMPERATURE_TOOL_NAME
@@ -229,8 +222,8 @@ class FirebaseRoomSessionIntegrationTest {
       .contains(temperatureToolName)
 
     // Reopen the on-disk database: persisting + reloading a Firebase-derived session must not
-    // crash,
-    // and the modeled function-call parts must survive (only the @Transient opaqueData is dropped).
+    // crash, and the modeled function-call parts (including the thought_signature Gemini 3 needs on
+    // functionCall parts) must survive serialization.
     sessionService.close()
     val reopened = RoomSessionService.fromContext(context, databaseName = TEST_DB_NAME)
     try {
@@ -247,10 +240,10 @@ class FirebaseRoomSessionIntegrationTest {
 
   @Test
   fun thinkingTurn_persistedThroughRoomSession_reloadsWithoutCrash(): Unit = runBlocking {
-    // includeThoughts surfaces thought parts from the model; toAdkPart caches the original Firebase
-    // part in the @Transient opaqueData. The point of this test is that persisting + reloading such
-    // a turn does not crash (the thought marker, carried only in opaqueData, is expected to be lost
-    // on reload).
+    // includeThoughts surfaces thought parts from the model; toAdkPart maps their thought marker
+    // and
+    // thought_signature onto the (serializable) ADK Part fields. The point of this test is that
+    // persisting + reloading such a turn does not crash and preserves that thinking metadata.
     val agent =
       LlmAgent(
         name = "thinkingAgent",

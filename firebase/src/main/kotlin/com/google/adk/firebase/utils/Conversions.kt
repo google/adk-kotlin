@@ -16,7 +16,6 @@
 
 package com.google.adk.firebase.utils
 
-import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
@@ -54,6 +53,7 @@ import com.google.firebase.ai.type.GoogleSearch as FirebaseGoogleSearch
 import com.google.firebase.ai.type.GroundingMetadata as FirebaseGroundingMetadata
 import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.Part as FirebasePart
+import com.google.firebase.ai.type.PublicPreviewAPI
 import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.SafetySetting
 import com.google.firebase.ai.type.Schema as FirebaseSchema
@@ -63,6 +63,7 @@ import com.google.firebase.ai.type.ThinkingLevel as FirebaseThinkingLevel
 import com.google.firebase.ai.type.Tool as FirebaseTool
 import com.google.firebase.ai.type.ToolConfig
 import com.google.firebase.ai.type.UsageMetadata as FirebaseUsageMetadata
+import java.util.Base64
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -94,6 +95,30 @@ internal class Conversions {
 
     fun serializeArgument(argument: Any?): JsonElement =
       argument as? JsonElement ?: AnySerializations.encodeAnyToJsonElement(argument)
+
+    /**
+     * Firebase carries `thoughtSignature` as a base64 [String] (the wire form of the proto `bytes`
+     * field), whereas ADK's [Part.thoughtSignature] holds the decoded bytes. These two helpers
+     * bridge the representations.
+     */
+    fun decodeThoughtSignature(signature: String?): ByteArray? = signature?.let {
+      Base64.getDecoder().decode(it)
+    }
+
+    fun encodeThoughtSignature(signature: ByteArray?): String? = signature?.let {
+      Base64.getEncoder().encodeToString(it)
+    }
+
+    /** Reads the base64 `thoughtSignature` carried on a concrete firebase [FirebasePart]. */
+    fun firebaseThoughtSignature(part: FirebasePart): String? =
+      when (part) {
+        is TextPart -> part.thoughtSignature
+        is InlineDataPart -> part.thoughtSignature
+        is FileDataPart -> part.thoughtSignature
+        is FunctionCallPart -> part.thoughtSignature
+        is FunctionResponsePart -> part.thoughtSignature
+        else -> null
+      }
   }
 
   fun <T> convertRequest(request: LlmRequest, block: RequestConverter.() -> T): T {
@@ -205,45 +230,107 @@ internal class Conversions {
   fun toAdkContent(content: FirebaseContent): Content =
     with(content) { Content(role = role, parts = parts.map { toAdkPart(it) }) }
 
-  @OptIn(FrameworkInternalApi::class)
-  fun toAdkPart(part: FirebasePart): Part =
-    when (part) {
-      is TextPart -> Part(text = part.text)
-      is InlineDataPart -> Part(inlineData = toAdkInlineData(part))
-      is FileDataPart -> Part(fileData = toAdkFileData(part))
-      is FunctionCallPart -> Part(functionCall = toAdkFunctionCall(part), opaqueData = part)
-      is FunctionResponsePart -> Part(functionResponse = toAdkFunctionResponse(part))
-      else -> throw IllegalArgumentException("Unsupported part type: $part")
-    }.let {
-      if (part.isThought) {
-        // add the FirebasePart as opaque data so we can reuse it as-is next time if the
-        // containing part is present in the request
-        it.copy(thought = true, opaqueData = part)
-      } else {
-        it
+  fun toAdkPart(part: FirebasePart): Part {
+    val base =
+      when (part) {
+        is TextPart -> Part(text = part.text)
+        is InlineDataPart -> Part(inlineData = toAdkInlineData(part))
+        is FileDataPart -> Part(fileData = toAdkFileData(part))
+        is FunctionCallPart -> Part(functionCall = toAdkFunctionCall(part))
+        is FunctionResponsePart -> Part(functionResponse = toAdkFunctionResponse(part))
+        else -> throw IllegalArgumentException("Unsupported part type: $part")
       }
-    }
+    return base.copy(
+      thought = if (part.isThought) true else null,
+      thoughtSignature = decodeThoughtSignature(firebaseThoughtSignature(part)),
+    )
+  }
 
-  @OptIn(FrameworkInternalApi::class)
   fun toFirebasePart(part: Part): FirebasePart {
     // saving the fields in vals to enable smart casts
-    val opaqueData = part.opaqueData
     val text = part.text
     val inlineData = part.inlineData
     val fileData = part.fileData
     val functionCall = part.functionCall
     val functionResponse = part.functionResponse
     return when {
-      // If the opaque data is a FirebasePart, use it directly.
-      opaqueData as? FirebasePart != null -> opaqueData
-      text != null -> toFirebaseText(text)
-      inlineData != null -> toFirebaseInlineData(inlineData)
-      fileData != null -> toFirebaseFileData(fileData)
-      functionCall != null -> toFirebaseFunctionCall(functionCall)
-      functionResponse != null -> toFirebaseFunctionResponse(functionResponse)
+      text != null -> applyThinking(toFirebaseText(text), part)
+      inlineData != null -> applyThinking(toFirebaseInlineData(inlineData), part)
+      fileData != null -> applyThinking(toFirebaseFileData(fileData), part)
+      functionCall != null -> applyThinking(toFirebaseFunctionCall(functionCall), part)
+      functionResponse != null -> applyThinking(toFirebaseFunctionResponse(functionResponse), part)
       else -> throw IllegalArgumentException("Unsupported part type: $part")
     }
   }
+
+  /** True when the ADK [Part] carries thinking metadata firebase's plain constructors can't set. */
+  private fun Part.hasThinking(): Boolean = thought == true || thoughtSignature != null
+
+  /**
+   * Returns this firebase part unchanged, unless the source ADK [part] carries thinking metadata (a
+   * thought marker or signature) — in which case it returns [block]'s result. [block] is expected
+   * to rebuild this part carrying that metadata via `createWithThinking`.
+   */
+  private inline fun <P : FirebasePart> P.unlessHasThinking(part: Part, block: (P) -> P): P =
+    if (part.hasThinking()) block(this) else this
+
+  @OptIn(PublicPreviewAPI::class)
+  private fun applyThinking(firebasePart: TextPart, part: Part): TextPart =
+    firebasePart.unlessHasThinking(part) {
+      TextPart.createWithThinking(
+        it.text,
+        part.thought ?: false,
+        encodeThoughtSignature(part.thoughtSignature),
+      )
+    }
+
+  @OptIn(PublicPreviewAPI::class)
+  private fun applyThinking(firebasePart: InlineDataPart, part: Part): InlineDataPart =
+    firebasePart.unlessHasThinking(part) {
+      InlineDataPart.createWithThinking(
+        it.inlineData,
+        it.mimeType,
+        it.displayName,
+        part.thought ?: false,
+        encodeThoughtSignature(part.thoughtSignature),
+      )
+    }
+
+  @OptIn(PublicPreviewAPI::class)
+  private fun applyThinking(firebasePart: FileDataPart, part: Part): FileDataPart =
+    firebasePart.unlessHasThinking(part) {
+      FileDataPart.createWithThinking(
+        it.uri,
+        it.mimeType,
+        part.thought ?: false,
+        encodeThoughtSignature(part.thoughtSignature),
+      )
+    }
+
+  @OptIn(PublicPreviewAPI::class)
+  private fun applyThinking(firebasePart: FunctionCallPart, part: Part): FunctionCallPart =
+    firebasePart.unlessHasThinking(part) {
+      FunctionCallPart.createWithThinking(
+        it.name,
+        it.args,
+        it.id,
+        part.thought ?: false,
+        encodeThoughtSignature(part.thoughtSignature),
+      )
+    }
+
+  @OptIn(PublicPreviewAPI::class)
+  private fun applyThinking(firebasePart: FunctionResponsePart, part: Part): FunctionResponsePart =
+    firebasePart.unlessHasThinking(part) {
+      FunctionResponsePart.createWithThinking(
+        it.name,
+        it.response,
+        it.id,
+        it.parts,
+        part.thought ?: false,
+        encodeThoughtSignature(part.thoughtSignature),
+      )
+    }
 
   fun toFirebaseText(text: String): TextPart = TextPart(text = text)
 
