@@ -44,7 +44,9 @@ import kotlinx.serialization.modules.SerializersModule
  * decodes a single-key object with this marker back into [State.REMOVED].
  */
 private const val REMOVED_MARKER = "__ADK_SENTINEL_REMOVED__"
-
+private val REMOVED_JSON = lazy {
+  JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true)))
+}
 /**
  * `kotlinx.serialization` serializer for free-form `Any` values that appear in the [Event] graph
  * (state deltas, `FunctionCall.args`, `FunctionResponse.response`, `customMetadata`, tool
@@ -81,7 +83,7 @@ internal object AnySerializer : KSerializer<Any> {
 fun anyToJsonElement(value: Any?): JsonElement =
   when (value) {
     null -> JsonNull
-    State.REMOVED -> JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true)))
+    State.REMOVED -> REMOVED_JSON.value
     is JsonElement -> value
     is String -> JsonPrimitive(value)
     is Boolean -> JsonPrimitive(value)
