@@ -54,7 +54,6 @@ a2a-sdk-client = { module = "org.a2aproject.sdk:a2a-java-sdk-client", version.re
 a2a-sdk-common = { module = "org.a2aproject.sdk:a2a-java-sdk-common", version.ref = "a2a" }
 a2a-sdk-spec = { module = "org.a2aproject.sdk:a2a-java-sdk-spec", version.ref = "a2a" }
 a2a-sdk-transport-jsonrpc = { module = "org.a2aproject.sdk:a2a-java-sdk-client-transport-jsonrpc", version.ref = "a2a" }
-a2a-sdk-transport-rest = { module = "org.a2aproject.sdk:a2a-java-sdk-client-transport-rest", version.ref = "a2a" }
 androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4", version.ref = "androidx-compose-ui" }
 androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest", version.ref = "androidx-compose-ui" }
 androidx-core = { module = "androidx.core:core", version.ref = "androidx-core" }
