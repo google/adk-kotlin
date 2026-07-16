@@ -38,14 +38,22 @@ kotlin {
     val commonJvmAndroidMain by creating {
       dependsOn(commonMain)
       dependencies {
-        implementation(libs.jackson.databind)
-        implementation(libs.jackson.datatype.jsr310)
+        implementation(libs.kotlinx.serialization)
+        implementation(libs.a2a.sdk.client)
+        implementation(libs.a2a.sdk.common)
+        implementation(libs.a2a.sdk.spec)
       }
     }
-    // jvmMain: deprecated v0.3 (`io.a2a.*`) path, JVM-only.
+    // jvmMain hosts the deprecated v0.3 path (JVM-only).
     val jvmMain by getting {
       dependsOn(commonJvmAndroidMain)
       dependencies {
+        // JVM v1.0 factory uses the SDK's proto-based JSON-RPC transport; kept off the Android
+        // path.
+        implementation(libs.a2a.sdk.transport.jsonrpc)
+        // Jackson is JVM-only (deprecated v0.3 converters); kept off the Android artifact.
+        implementation(libs.jackson.databind)
+        implementation(libs.jackson.datatype.jsr310)
         implementation(libs.jackson.module.kotlin)
         implementation(libs.a2a.legacy.sdk.client)
         implementation(libs.a2a.legacy.sdk.common)
@@ -58,6 +66,7 @@ kotlin {
         implementation(libs.google.truth)
         implementation(libs.mockito.kotlin)
         implementation(libs.kotlinx.coroutines.test)
+        implementation(libs.okhttp.mockwebserver)
         implementation(libs.a2a.legacy.sdk.client)
         implementation(libs.a2a.legacy.sdk.spec)
       }

@@ -1,7 +1,7 @@
 [versions]
 # go/keep-sorted start
 
-a2a = "0.3.2.Final"
+a2a = "1.0.0.Final"
 a2a-legacy = "0.3.3.Final"
 androidx-compose-ui = "1.11.2"
 androidx-core = "1.16.0"
@@ -50,11 +50,11 @@ snakeyaml = "2.2"
 a2a-legacy-sdk-client = { module = "io.github.a2asdk:a2a-java-sdk-client", version.ref = "a2a-legacy" }
 a2a-legacy-sdk-common = { module = "io.github.a2asdk:a2a-java-sdk-common", version.ref = "a2a-legacy" }
 a2a-legacy-sdk-spec = { module = "io.github.a2asdk:a2a-java-sdk-spec", version.ref = "a2a-legacy" }
-a2a-sdk-client = { module = "io.github.a2asdk:a2a-java-sdk-client", version.ref = "a2a" }
-a2a-sdk-common = { module = "io.github.a2asdk:a2a-java-sdk-common", version.ref = "a2a" }
-a2a-sdk-spec = { module = "io.github.a2asdk:a2a-java-sdk-spec", version.ref = "a2a" }
-a2a-sdk-transport-jsonrpc = { module = "io.github.a2asdk:a2a-java-sdk-transport-jsonrpc", version.ref = "a2a" }
-a2a-sdk-transport-rest = { module = "io.github.a2asdk:a2a-java-sdk-transport-rest", version.ref = "a2a" }
+a2a-sdk-client = { module = "org.a2aproject.sdk:a2a-java-sdk-client", version.ref = "a2a" }
+a2a-sdk-common = { module = "org.a2aproject.sdk:a2a-java-sdk-common", version.ref = "a2a" }
+a2a-sdk-spec = { module = "org.a2aproject.sdk:a2a-java-sdk-spec", version.ref = "a2a" }
+a2a-sdk-transport-jsonrpc = { module = "org.a2aproject.sdk:a2a-java-sdk-client-transport-jsonrpc", version.ref = "a2a" }
+a2a-sdk-transport-rest = { module = "org.a2aproject.sdk:a2a-java-sdk-client-transport-rest", version.ref = "a2a" }
 androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4", version.ref = "androidx-compose-ui" }
 androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest", version.ref = "androidx-compose-ui" }
 androidx-core = { module = "androidx.core:core", version.ref = "androidx-core" }
