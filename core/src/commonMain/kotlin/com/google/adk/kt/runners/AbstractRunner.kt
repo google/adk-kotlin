@@ -311,9 +311,9 @@ abstract class AbstractRunner : Runner {
           // because file-backed services (e.g. GCS) reject `fileData` writes.
           artifactService.loadArtifact(session.key, filename, version = vt)
             ?: run {
+              // The filename and session id are user-derived and must not reach the logs.
               logger.warn {
-                "Artifact $filename version $vt not found during rewind for session " +
-                  "${session.key.id}. Replacing with empty data."
+                "Artifact version $vt not found during rewind. Replacing with empty data."
               }
               Part(inlineData = Blob(mimeType = "application/octet-stream", data = ByteArray(0)))
             }

@@ -136,7 +136,11 @@ class GcsArtifactService(private val bucketName: String, private val storageClie
         if (blob?.exists() != true) return@withContext null
         Part(inlineData = Blob(data = blob.getContent(), mimeType = blob.contentType))
       } catch (e: StorageException) {
-        logger.warn(e) { "Failed to load artifact $filename (version $versionToLoad) from GCS" }
+        // Log only the exception type, not the throwable or filename: GCS messages embed the blob
+        // path (and thus userId/sessionId/filename), which must not reach the logs.
+        logger.warn {
+          "Failed to load artifact version $versionToLoad from GCS (${e::class.simpleName})"
+        }
         null
       }
     }
@@ -181,7 +185,8 @@ class GcsArtifactService(private val bucketName: String, private val storageClie
     withContext(Dispatchers.IO) {
       val versions = listVersionsSync(sessionKey, filename)
       if (versions.isEmpty()) {
-        logger.warn { "Attempted to delete artifact $filename which does not exist in GCS" }
+        // The filename is user-derived and must not reach the logs.
+        logger.warn { "Attempted to delete an artifact that does not exist in GCS" }
         return@withContext
       }
 

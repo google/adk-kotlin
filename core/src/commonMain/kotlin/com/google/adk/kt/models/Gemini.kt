@@ -135,9 +135,7 @@ class Gemini(
     val config = preparedRequest.config.toGenaiSdk()
     val contents = preparedRequest.contents.map { it.toGenaiSdk() }
 
-    logger.debug {
-      "LLM Request:\n${Json.toJsonString(buildLoggingRequestMap(preparedRequest, config))}"
-    }
+    logger.debug { "LLM Request:\n${Json.toJsonString(buildLoggingRequestMap(preparedRequest))}" }
 
     if (stream) {
       val aggregator = StreamingResponseAggregator()
@@ -163,10 +161,7 @@ class Gemini(
     }
   }
 
-  private fun buildLoggingRequestMap(
-    request: LlmRequest,
-    config: GenerateContentConfig?,
-  ): Map<String, Any?> = buildMap {
+  private fun buildLoggingRequestMap(request: LlmRequest): Map<String, Any?> = buildMap {
     put(LlmConstants.KEY_MODEL, name)
     put(
       LlmConstants.KEY_CONTENTS,
@@ -181,7 +176,8 @@ class Gemini(
                   put("inline_data", "${it.data?.size} bytes, mime_type=${it.mimeType}")
                 }
                 part.fileData?.let {
-                  put("file_data", "file_uri=${it.fileUri}, mime_type=${it.mimeType}")
+                  // The file URI can carry sensitive identifiers, so only the MIME type is logged.
+                  put("file_data", "mime_type=${it.mimeType}")
                 }
                 part.functionCall?.let { put("function_call", it.name) }
                 part.functionResponse?.let { put("function_response", it.name) }
@@ -190,7 +186,26 @@ class Gemini(
         )
       },
     )
-    put(LlmConstants.KEY_CONFIG, config)
+    put(LlmConstants.KEY_CONFIG, buildLoggingConfigMap(request.config))
+  }
+
+  /**
+   * Builds a redacted view of the request config for logging. The system instruction can carry
+   * sensitive data (e.g. injected session state), so only its presence is logged, never its
+   * content.
+   */
+  private fun buildLoggingConfigMap(
+    config: com.google.adk.kt.types.GenerateContentConfig
+  ): Map<String, Any?> = buildMap {
+    put("has_system_instruction", config.systemInstruction != null)
+    config.temperature?.let { put("temperature", it) }
+    config.topP?.let { put("top_p", it) }
+    config.topK?.let { put("top_k", it) }
+    config.maxOutputTokens?.let { put("max_output_tokens", it) }
+    config.responseMimeType?.let { put("response_mime_type", it) }
+    config.tools?.let { tools ->
+      put("tools", tools.flatMap { it.functionDeclarations ?: emptyList() }.map { it.name })
+    }
   }
 
   companion object {

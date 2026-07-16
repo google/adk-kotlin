@@ -92,7 +92,9 @@ private constructor(
   }
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> {
-    logger.trace { "generateContent: request: $request, stream: $stream" }
+    // Log only non-sensitive metadata; the request carries user prompts and system instructions
+    // which must not reach the logs.
+    logger.trace { "generateContent: ${request.contents.size} content(s), stream: $stream" }
 
     if (stream) {
       return callbackFlow {
