@@ -253,7 +253,10 @@ class ConversionsTest {
     val expectedFirebasePart =
       FunctionResponsePart(
         name = "testFunction",
-        response = buildJsonObject { put("result", JsonPrimitive(42)) },
+        response =
+          buildJsonObject {
+            val unused = put("result", JsonPrimitive(42))
+          },
         id = "testId",
       )
 
@@ -416,7 +419,10 @@ class ConversionsTest {
     val firebaseFunctionResponse =
       FunctionResponsePart(
         name = "testFunction",
-        response = buildJsonObject { put("result", JsonPrimitive(42)) },
+        response =
+          buildJsonObject {
+            val unused = put("result", JsonPrimitive(42))
+          },
         id = "testId",
       )
 

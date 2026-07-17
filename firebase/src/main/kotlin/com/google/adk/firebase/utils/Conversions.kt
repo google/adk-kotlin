@@ -89,7 +89,7 @@ internal class Conversions {
 
     fun serializeResponse(responseMap: Map<String, *>): JsonObject = buildJsonObject {
       responseMap.forEach { (k, v) ->
-        put(k, v as? JsonElement ?: AnySerializations.encodeAnyToJsonElement(v))
+        val unused = put(k, v as? JsonElement ?: AnySerializations.encodeAnyToJsonElement(v))
       }
     }
 
