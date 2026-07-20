@@ -937,6 +937,31 @@ class AbstractRunnerTest {
   // ----- Context cache config propagation -----
 
   @Test
+  fun runAsync_appWithContextCacheConfig_propagatesToInvocationContext() = runTest {
+    val cacheConfig = ContextCacheConfig(cacheIntervals = 5)
+    var capturedConfig: ContextCacheConfig? = null
+    val agent =
+      DummyAgent(name = "agent") { context ->
+        capturedConfig = context.contextCacheConfig
+        emit(
+          Event(
+            author = Role.MODEL,
+            invocationId = context.invocationId,
+            content = modelMessage("resp"),
+          )
+        )
+      }
+    val runner =
+      InMemoryRunner(
+        app = App(appName = "test_app", rootAgent = agent, contextCacheConfig = cacheConfig)
+      )
+
+    runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi")).toList()
+
+    assertEquals(cacheConfig, capturedConfig)
+  }
+
+  @Test
   fun runAsync_appWithoutContextCacheConfig_invocationContextConfigIsNull() = runTest {
     // Sentinel non-null so the assertion meaningfully verifies the runner left it unset.
     var capturedConfig: ContextCacheConfig? = ContextCacheConfig()

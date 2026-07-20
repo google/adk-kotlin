@@ -546,7 +546,7 @@ abstract class AbstractRunner : Runner {
         pluginManager = pluginManager,
         resumabilityConfig = resumabilityConfig,
         eventsCompactionConfig = app?.eventsCompactionConfig,
-        contextCacheConfig = null,
+        contextCacheConfig = app?.contextCacheConfig,
       )
       .let {
         // Run callbacks and append user message to session
@@ -603,7 +603,7 @@ abstract class AbstractRunner : Runner {
         pluginManager = pluginManager,
         resumabilityConfig = resumabilityConfig,
         eventsCompactionConfig = app?.eventsCompactionConfig,
-        contextCacheConfig = null,
+        contextCacheConfig = app?.contextCacheConfig,
       )
 
     val currentContext =
