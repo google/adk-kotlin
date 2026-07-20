@@ -150,4 +150,18 @@ class LlmResponseTest {
 
     assertEquals("experiment-a", llmResponse.customMetadata?.get("label"))
   }
+
+  @Test
+  fun cacheMetadata_defaultsToNull() {
+    assertEquals(null, LlmResponse().cacheMetadata)
+  }
+
+  @Test
+  fun cacheMetadata_canBeSet() {
+    val metadata = CacheMetadata(fingerprint = "abc", contentsCount = 2)
+
+    val llmResponse = LlmResponse(cacheMetadata = metadata)
+
+    assertEquals(metadata, llmResponse.cacheMetadata)
+  }
 }

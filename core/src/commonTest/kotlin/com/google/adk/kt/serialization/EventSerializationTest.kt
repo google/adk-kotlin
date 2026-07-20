@@ -21,6 +21,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
+import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -96,6 +97,26 @@ class EventSerializationTest {
       )
 
     assertEquals(event, roundTrip(event))
+  }
+
+  @Test
+  fun cacheMetadata_activeCache_roundTripsLosslessly() {
+    val event =
+      Event(
+        author = "agent",
+        cacheMetadata =
+          CacheMetadata(
+            fingerprint = "abc123",
+            contentsCount = 4,
+            cacheName = "projects/p/locations/l/cachedContents/456",
+            expireTime = 1_800_000L,
+            invocationsUsed = 2,
+            createdAt = 1_000L,
+          ),
+        timestamp = 1L,
+      )
+
+    assertEquals(event.cacheMetadata, roundTrip(event).cacheMetadata)
   }
 
   @Test

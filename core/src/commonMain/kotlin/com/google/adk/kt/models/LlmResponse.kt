@@ -48,6 +48,8 @@ import kotlinx.serialization.json.encodeToJsonElement
  * @property errorCode Error code if the response is an error. The code varies by model.
  * @property customMetadata Optional key-value pairs labeling the response. The entire map must be
  *   JSON serializable.
+ * @property cacheMetadata Context cache metadata for this response, populated when context caching
+ *   is enabled. `null` when caching is disabled or no cache information is available.
  */
 @Serializable
 data class LlmResponse(
@@ -64,6 +66,7 @@ data class LlmResponse(
   val customMetadata: Map<String, @Contextual Any?>? = null,
   val avgLogprobs: Double? = null,
   val logprobsResult: LogprobsResult? = null,
+  val cacheMetadata: CacheMetadata? = null,
 ) {
   companion object {
     /**

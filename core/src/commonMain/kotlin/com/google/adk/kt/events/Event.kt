@@ -17,6 +17,7 @@
 package com.google.adk.kt.events
 
 import com.google.adk.kt.ids.Uuid
+import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
@@ -53,6 +54,8 @@ import kotlinx.serialization.Serializable
  *   multiple sub-agents shouldn't see their peer agents' conversation history.
  * @property groundingMetadata The grounding metadata of the event.
  * @property modelVersion The model version used to generate the response.
+ * @property cacheMetadata Context cache metadata associated with this event's LLM response, used to
+ *   carry cache state across turns. `null` when context caching is disabled.
  * @property timestamp The timestamp of the event.
  */
 @Serializable
@@ -75,6 +78,7 @@ data class Event(
   val groundingMetadata: GroundingMetadata? = null,
   val modelVersion: String? = null,
   val citationMetadata: CitationMetadata? = null,
+  val cacheMetadata: CacheMetadata? = null,
   val customMetadata: Map<String, @Contextual Any>? = null,
   val timestamp: Long = Clock.System.now().toEpochMilliseconds(),
 ) {

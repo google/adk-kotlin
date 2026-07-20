@@ -838,4 +838,15 @@ class GenaiConvertersTest {
     assertEquals(0.5, store.vectorDistanceThreshold)
     assertEquals(adkRetrieval, genaiRetrieval.fromGenaiSdk())
   }
+
+  @Test
+  fun generateContentConfig_cachedContentRoundTrip_preservesValue() {
+    val cacheName = "projects/p/locations/l/cachedContents/456"
+    val adkConfig = GenerateContentConfig(cachedContent = cacheName)
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+
+    assertEquals(cacheName, genaiConfig.cachedContent)
+    assertEquals(cacheName, genaiConfig.fromGenaiSdk().cachedContent)
+  }
 }

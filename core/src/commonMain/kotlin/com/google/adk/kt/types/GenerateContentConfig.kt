@@ -41,4 +41,5 @@ data class GenerateContentConfig(
   val frequencyPenalty: Float? = null,
   val responseLogprobs: Boolean? = null,
   val routingConfig: GenerationConfigRoutingConfig? = null,
+  val cachedContent: String? = null,
 )

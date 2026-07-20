@@ -319,6 +319,7 @@ internal fun GenAiGenerateContentConfig.fromGenaiSdk(): GenerateContentConfig =
     mediaResolution = mediaResolution?.toKt(),
     serviceTier = serviceTier?.toKt(),
     routingConfig = routingConfig?.fromGenaiSdk(),
+    cachedContent = cachedContent,
   )
 
 /** Converts an ADK [GenerateContentConfig] to a [GenAiGenerateContentConfig] for the GenAI SDK. */
@@ -344,6 +345,7 @@ internal fun GenerateContentConfig.toGenaiSdk(): GenAiGenerateContentConfig =
     mediaResolution = mediaResolution?.toGenaiSdk(),
     serviceTier = serviceTier?.toGenaiSdk(),
     routingConfig = routingConfig?.toGenaiSdk(),
+    cachedContent = cachedContent,
   )
 
 // --- GenerationConfigRoutingConfig ---

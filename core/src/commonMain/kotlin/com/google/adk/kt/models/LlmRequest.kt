@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.models
 
+import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.tools.BaseTool
@@ -38,12 +39,21 @@ import kotlinx.serialization.json.encodeToJsonElement
  * @property contents The contents of the request.
  * @property config The configuration for generating content.
  * @property toolsDict Internal mapping of tools added during request processing.
+ * @property cacheConfig Context cache configuration for this request. When `null`, context caching
+ *   is disabled for the request.
+ * @property cacheMetadata Cache metadata carried over from previous requests, used to validate and
+ *   reuse an existing cache.
+ * @property cacheableContentsTokenCount Prompt token count from the previous request, used to gate
+ *   cache creation on a minimum size.
  */
 data class LlmRequest(
   val model: Model? = null,
   val contents: List<Content> = emptyList(),
   val config: GenerateContentConfig = GenerateContentConfig(),
   internal val toolsDict: List<BaseTool> = emptyList(),
+  val cacheConfig: ContextCacheConfig? = null,
+  val cacheMetadata: CacheMetadata? = null,
+  val cacheableContentsTokenCount: Int? = null,
 ) {
   /**
    * Appends tools to the request and merges any new function declarations.
