@@ -120,7 +120,7 @@ class GenaiPromptHostTest {
     val captor = argumentCaptor<GenerateContentRequest>()
     verifyBlocking(model) { generateContent(captor.capture()) }
     assertThat(captor.firstValue.text.textString).contains(QUESTION)
-    assertThat(captor.firstValue.promptPrefix?.textString).contains("helpful assistant")
+    assertThat(captor.firstValue.systemInstruction?.textString).contains("helpful assistant")
   }
 
   @Test
@@ -169,7 +169,7 @@ class GenaiPromptHostTest {
     val captor = argumentCaptor<GenerateContentRequest>()
     val unused = verify(model).generateContentStream(captor.capture())
     assertThat(captor.firstValue.text.textString).contains(QUESTION)
-    assertThat(captor.firstValue.promptPrefix?.textString).contains("helpful assistant")
+    assertThat(captor.firstValue.systemInstruction?.textString).contains("helpful assistant")
   }
 
   /**

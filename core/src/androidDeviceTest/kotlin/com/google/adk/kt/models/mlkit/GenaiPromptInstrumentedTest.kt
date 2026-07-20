@@ -68,7 +68,7 @@ class GenaiPromptInstrumentedTest {
         ModelConfig.builder()
           .apply {
             releaseStage = ModelReleaseStage.STABLE
-            preference = ModelPreference.FAST
+            preference = ModelPreference.FULL
           }
           .build()
     }

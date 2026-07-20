@@ -33,6 +33,7 @@ import com.google.adk.kt.utils.mlkit.GenaiPromptConversions.toLlmResponse
 import com.google.common.truth.Truth.assertThat
 import com.google.mlkit.common.sdkinternal.MlKitContext
 import com.google.mlkit.genai.prompt.Candidate.FinishReason as MlKitFinishReason
+import com.google.mlkit.genai.prompt.TextPart
 import java.io.ByteArrayOutputStream
 import java.io.File
 import org.junit.Before
@@ -79,6 +80,132 @@ class GenaiPromptConversionsTest {
     assertThat(generateContentRequest.text.textString).isEqualTo("Hello World\n\nAnother text")
     assertThat(generateContentRequest.image).isNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
+  }
+
+  @Test
+  fun toGenerateContentRequest_singleTurn_noRoleMarker() {
+    val request =
+      LlmRequest(contents = listOf(Content(role = "user", parts = listOf(Part(text = "Hello")))))
+
+    val generateContentRequest = request.toGenerateContentRequest()
+
+    val texts =
+      generateContentRequest.contents
+        .flatMap { it.parts }
+        .filterIsInstance<TextPart>()
+        .map { it.textString }
+    assertThat(texts).containsExactly("Hello")
+    // Single-turn requests get no default multi-turn system instruction.
+    assertThat(generateContentRequest.systemInstruction).isNull()
+  }
+
+  @Test
+  fun toGenerateContentRequest_multiTurn_addsRoleMarkers() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(role = "user", parts = listOf(Part(text = "Hello"))),
+            Content(role = "model", parts = listOf(Part(text = "Hi there"))),
+            Content(role = "user", parts = listOf(Part(text = "How are you?"))),
+          )
+      )
+
+    val generateContentRequest = request.toGenerateContentRequest()
+
+    val texts =
+      generateContentRequest.contents
+        .flatMap { it.parts }
+        .filterIsInstance<TextPart>()
+        .map { it.textString }
+    assertThat(texts)
+      .containsExactly("[user]: Hello", "[model]: Hi there", "[user]: How are you?")
+      .inOrder()
+  }
+
+  @Test
+  fun toGenerateContentRequest_multiTurn_groupsTextPartsUnderSingleRoleMarker() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(role = "user", parts = listOf(Part(text = "Hi"))),
+            Content(
+              role = "model",
+              parts = listOf(Part(text = "First line"), Part(text = "Second line")),
+            ),
+          )
+      )
+
+    val texts =
+      request
+        .toGenerateContentRequest()
+        .contents
+        .flatMap { it.parts }
+        .filterIsInstance<TextPart>()
+        .map { it.textString }
+    // A turn's text parts are joined with "\n\n" and carry a single leading role marker.
+    assertThat(texts).containsExactly("[user]: Hi", "[model]: First line\n\nSecond line").inOrder()
+  }
+
+  @Test
+  fun toGenerateContentRequest_multiTurn_nullRole_defaultsToUserMarker() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(parts = listOf(Part(text = "First"))),
+            Content(role = "model", parts = listOf(Part(text = "Second"))),
+          )
+      )
+
+    val texts =
+      request
+        .toGenerateContentRequest()
+        .contents
+        .flatMap { it.parts }
+        .filterIsInstance<TextPart>()
+        .map { it.textString }
+    assertThat(texts).containsExactly("[user]: First", "[model]: Second").inOrder()
+  }
+
+  @Test
+  fun toGenerateContentRequest_multiTurn_addsDefaultSystemInstruction() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(role = "user", parts = listOf(Part(text = "Hello"))),
+            Content(role = "model", parts = listOf(Part(text = "Hi there"))),
+          )
+      )
+
+    val generateContentRequest = request.toGenerateContentRequest()
+
+    assertThat(generateContentRequest.systemInstruction?.textString)
+      .contains("Do not prefix your own response with a role marker")
+  }
+
+  @Test
+  fun toGenerateContentRequest_multiTurn_combinesWithUserSystemInstruction() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(role = "user", parts = listOf(Part(text = "Hello"))),
+            Content(role = "model", parts = listOf(Part(text = "Hi there"))),
+          ),
+        config =
+          GenerateContentConfig(
+            systemInstruction = Content(parts = listOf(Part(text = "Be concise.")))
+          ),
+      )
+
+    val generateContentRequest = request.toGenerateContentRequest()
+
+    val systemInstruction = generateContentRequest.systemInstruction?.textString
+    assertThat(systemInstruction).contains("Do not prefix your own response with a role marker")
+    assertThat(systemInstruction).contains("Be concise.")
   }
 
   @Ignore("throws java.lang.VerifyError")
@@ -184,13 +311,13 @@ class GenaiPromptConversionsTest {
       )
     val generateContentRequest = request.toGenerateContentRequest()
     assertThat(generateContentRequest.image?.bitmap).isNotNull()
-    // Only the first image is used. It has a size of 1x1.
+    // All images are sent; the deprecated `image` getter still returns the first one (1x1).
     assertThat(generateContentRequest.image?.width).isEqualTo(1)
     assertThat(generateContentRequest.image?.height).isEqualTo(1)
   }
 
   @Test
-  fun toGenerateContentRequest_textAndSystemInstruction_successWithPromptPrefix() {
+  fun toGenerateContentRequest_textAndSystemInstruction_usesSystemInstructionField() {
     val request =
       LlmRequest(
         contents = listOf(Content(role = "user", parts = listOf(Part(text = "Hello World")))),
@@ -200,7 +327,7 @@ class GenaiPromptConversionsTest {
               Content(
                 parts =
                   listOf(
-                    Part(text = "Test prompt prefix"),
+                    Part(text = "Test system instruction"),
                     Part(text = "Another system instruction"),
                   )
               )
@@ -209,8 +336,8 @@ class GenaiPromptConversionsTest {
     val generateContentRequest = request.toGenerateContentRequest()
     assertThat(generateContentRequest.text.textString).isEqualTo("Hello World")
     assertThat(generateContentRequest.image).isNull()
-    assertThat(generateContentRequest.promptPrefix?.textString)
-      .isEqualTo("Test prompt prefix\n\nAnother system instruction")
+    assertThat(generateContentRequest.systemInstruction?.textString)
+      .isEqualTo("Test system instruction\n\nAnother system instruction")
   }
 
   @Ignore("throws java.lang.VerifyError")

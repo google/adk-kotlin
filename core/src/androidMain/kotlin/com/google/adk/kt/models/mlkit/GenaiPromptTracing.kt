@@ -25,6 +25,8 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.utils.mlkit.AggregatedResponse
 import com.google.mlkit.genai.prompt.GenerateContentRequest
 import com.google.mlkit.genai.prompt.GenerateContentResponse
+import com.google.mlkit.genai.prompt.ImagePart
+import com.google.mlkit.genai.prompt.TextPart
 
 /**
  * Helpers that format ML Kit GenAI and ADK request/response objects for tracing.
@@ -41,10 +43,12 @@ import com.google.mlkit.genai.prompt.GenerateContentResponse
 internal object GenaiPromptTracing {
 
   internal fun format(generateContentRequest: GenerateContentRequest): String {
-    val imageTrace =
-      generateContentRequest.image?.bitmap?.let { "${it.width}x${it.height}" } ?: "none"
-    return "generateContentRequest: text: ${redactedText(generateContentRequest.text.textString.length)}, " +
-      "promptPrefix: ${redactedText(generateContentRequest.promptPrefix?.textString?.length ?: 0)}, image: $imageTrace"
+    val parts = generateContentRequest.contents.flatMap { it.parts }
+    val textLength = parts.filterIsInstance<TextPart>().sumOf { it.textString.length }
+    val imageCount = parts.filterIsInstance<ImagePart>().size
+    val systemInstructionLength = generateContentRequest.systemInstruction?.textString?.length ?: 0
+    return "generateContentRequest: text: ${redactedText(textLength)}, " +
+      "systemInstruction: ${redactedText(systemInstructionLength)}, images: $imageCount"
   }
 
   internal fun format(generateContentResponse: GenerateContentResponse): String {
