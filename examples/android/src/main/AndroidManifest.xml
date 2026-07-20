@@ -18,6 +18,8 @@
     package="com.google.adk.kt.examples.android">
 
     <uses-permission android:name="com.google.android.apps.aicore.service.BIND_SERVICE" />
+    <!-- Required by the Firebase example: it talks to the cloud Firebase AI (Gemini) backend. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="true"
@@ -57,6 +59,29 @@
             android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".mlkitchat.MlKitChatActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+            Fallback Firebase configuration for the Firebase example, used only when this APK is
+            built WITHOUT a google-services.json (the standard path). These values are baked in at
+            build time from the FIREBASE_* manifest placeholders (see examples/android/
+            build.gradle.kts), sourced from Gradle properties or environment variables. When
+            google-services.json is present the default FirebaseApp is initialized from it and these
+            entries are ignored. See examples/android/README.md.
+        -->
+        <meta-data
+            android:name="com.google.adk.FIREBASE_API_KEY"
+            android:value="${FIREBASE_API_KEY}" />
+        <meta-data
+            android:name="com.google.adk.FIREBASE_APP_ID"
+            android:value="${FIREBASE_APP_ID}" />
+        <meta-data
+            android:name="com.google.adk.FIREBASE_PROJECT_ID"
+            android:value="${FIREBASE_PROJECT_ID}" />
+        <activity
+            android:name=".firebase.FirebaseChatActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />

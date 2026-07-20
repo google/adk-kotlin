@@ -19,7 +19,14 @@ package com.google.adk.kt.examples.android.common
 import com.google.adk.kt.events.Event
 
 /**
- * Concatenates the text of every part of this event's content, in order, into a single string
- * (empty when the event has no content or no text parts).
+ * Concatenates this event's visible response text: the text of every non-thought part of its
+ * content, in order, joined with no separator (empty when there is no such text).
+ *
+ * This mirrors how core ADK reconstructs a response's text from its parts (see
+ * `LlmAgent.maybeSaveOutputToState`): thought parts are excluded, and parts are joined directly
+ * (not space-separated), because they are fragments of one continuous message — a separator would
+ * inject spurious spaces, including mid-word across streaming chunks. Core keeps this logic
+ * private, so the examples re-expose it here as a small shared helper.
  */
-fun Event.foldTextParts(): String = content?.parts.orEmpty().mapNotNull { it.text }.joinToString("")
+fun Event.foldTextParts(): String =
+  content?.parts.orEmpty().filter { it.thought != true }.mapNotNull { it.text }.joinToString("")

@@ -22,6 +22,7 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
 import com.google.adk.kt.examples.android.common.setExampleContentView
+import com.google.adk.kt.examples.android.firebase.FirebaseChatActivity
 import com.google.adk.kt.examples.android.mlkitchat.MlKitChatActivity
 import com.google.adk.kt.examples.android.roomsession.RoomSessionActivity
 import com.google.adk.kt.examples.android.skillsassetsource.SkillsAssetSourceActivity
@@ -63,6 +64,12 @@ class HomeActivity : Activity() {
         exampleButton(
           "ML Kit chat — on-device Gemini Nano, multi-turn, streaming toggle",
           MlKitChatActivity::class.java,
+        )
+      )
+      addView(
+        exampleButton(
+          "Firebase AI — cloud Gemini (Firebase AI Logic), plain chat + tool calling",
+          FirebaseChatActivity::class.java,
         )
       )
     }

@@ -1,0 +1,6 @@
+# Firebase example config. Ignored in THIS sample so forks point at their own Firebase project
+# instead of ours -- the file just identifies a specific project. Its contents are not secret (the
+# Firebase config/API key is public by design and ships inside the APK), so your own app is free to
+# commit it if you prefer. Drop your own file here (see README.md); the google-services Gradle
+# plugin picks it up.
+google-services.json
