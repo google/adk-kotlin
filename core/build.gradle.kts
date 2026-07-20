@@ -36,8 +36,21 @@ kotlin {
       isReturnDefaultValues = true
     }
 
+    // Enable Android resource/asset processing for the target. The KMP Android library plugin gates
+    // the assets pipeline behind this flag; without it the device-test APK packages no assets and
+    // GenaiPromptInstrumentedTest can't load the `test-image.png` fixture. The androidComponents
+    // block below shares that fixture with the device-test component.
+    androidResources { enable = true }
+
     // Device-side (instrumented) tests; opt-in with the new plugin.
     withDeviceTest { instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+
+    packaging {
+      resources {
+        merges += "**/META-INF/INDEX.LIST"
+        merges += "**/META-INF/DEPENDENCIES"
+      }
+    }
   }
   jvm()
 
@@ -140,6 +153,19 @@ kotlin {
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.mockito.android)
       }
+    }
+  }
+}
+
+// Share the `test-image.png` fixture with the on-device instrumented test APK. The image is stored
+// once, in the host-test assets (src/androidHostTest/assets), and consumed by both the host test
+// (GenaiPromptConversionsTest) and the device test (GenaiPromptInstrumentedTest).
+extensions.configure<com.android.build.api.variant.KotlinMultiplatformAndroidComponentsExtension>(
+  "androidComponents"
+) {
+  onVariants { variant ->
+    variant.deviceTests.forEach { (_, deviceTest) ->
+      deviceTest.sources.assets?.addStaticSourceDirectory("src/androidHostTest/assets")
     }
   }
 }
