@@ -53,7 +53,7 @@ extra["kotlinCoreLibrariesVersion"] = kotlinCoreLibrariesVersion
 
 allprojects {
   group = "com.google.adk"
-  version = "0.6.0" // x-release-please-version
+  version = "0.6.1-SNAPSHOT" // x-release-please-version
 
   repositories {
     mavenLocal()
