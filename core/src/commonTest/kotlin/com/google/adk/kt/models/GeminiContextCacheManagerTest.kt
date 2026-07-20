@@ -244,6 +244,37 @@ class GeminiContextCacheManagerTest {
   }
 
   @Test
+  fun handleContextCaching_differentBackend_doesNotReuseCache() = runTest {
+    val request = baseRequest()
+    // A cache fingerprinted under the Gemini backend must not validate under Vertex, because the
+    // cache scope (backend/project/location) is part of the fingerprint.
+    val geminiManager =
+      GeminiContextCacheManager("gemini-2.0-flash", FakeCacheClient(), mapOf("backend" to "gemini"))
+    val activeMetadata =
+      CacheMetadata(
+        fingerprint = fingerprintFor(geminiManager, request),
+        contentsCount = 1,
+        cacheName = "cache/gemini",
+        expireTime = Clock.System.now().toEpochMilliseconds() + 100_000,
+        invocationsUsed = 1,
+      )
+
+    val vertexFake = FakeCacheClient()
+    val vertexManager =
+      GeminiContextCacheManager(
+        "gemini-2.0-flash",
+        vertexFake,
+        mapOf("backend" to "vertex", "project" to "p", "location" to "us-central1"),
+      )
+    val result = vertexManager.handleContextCaching(request.copy(cacheMetadata = activeMetadata))
+
+    assertNull(result.request.config.cachedContent)
+    assertEquals(1, vertexFake.deleteCount)
+    assertEquals("cache/gemini", vertexFake.lastDeletedName)
+    assertNull(result.cacheMetadata?.cacheName)
+  }
+
+  @Test
   fun handleContextCaching_validCache_stripsToolConfig() = runTest {
     val fake = FakeCacheClient()
     val manager = GeminiContextCacheManager("gemini-2.0-flash", fake)

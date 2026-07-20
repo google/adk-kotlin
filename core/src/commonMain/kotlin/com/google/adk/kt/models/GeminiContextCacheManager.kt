@@ -46,10 +46,14 @@ import kotlinx.serialization.json.encodeToJsonElement
  *
  * @param modelName The model resource name used when creating caches.
  * @param cacheClient The client used to create and delete Gemini caches.
+ * @param cacheScope The backend namespace that owns cache resources (e.g. backend type and, for the
+ *   enterprise backend, project and location). Folded into the fingerprint so a cache is never
+ *   reused across backends or projects.
  */
 internal class GeminiContextCacheManager(
   private val modelName: String,
   private val cacheClient: CacheClient,
+  private val cacheScope: Map<String, String> = emptyMap(),
 ) {
 
   /**
@@ -174,17 +178,19 @@ internal class GeminiContextCacheManager(
   }
 
   /**
-   * Generates a 16-character fingerprint over the cacheable state: model, system instruction,
-   * tools, tool config, and the first [cacheContentsCount] contents. Serializes them into a single
-   * canonical JSON object with every object's keys recursively sorted, so the fingerprint depends
-   * only on content, not on map insertion or property order, and has no field-boundary ambiguity.
-   * The model is included because explicit caches are model-specific.
+   * Generates a 16-character fingerprint over the cacheable state: model, cache scope, system
+   * instruction, tools, tool config, and the first [cacheContentsCount] contents. Serializes them
+   * into a single canonical JSON object with every object's keys recursively sorted, so the
+   * fingerprint depends only on content, not on map insertion or property order, and has no
+   * field-boundary ambiguity. The model and cache scope are included because explicit caches are
+   * model- and backend-specific.
    */
   @OptIn(FrameworkInternalApi::class)
   private fun generateFingerprint(request: LlmRequest, cacheContentsCount: Int): String {
     val fields =
       buildMap<String, JsonElement> {
         this["model"] = JsonPrimitive(modelName)
+        this["cache_scope"] = adkJson.encodeToJsonElement(cacheScope)
         request.config.systemInstruction?.let {
           this["system_instruction"] = adkJson.encodeToJsonElement(it)
         }

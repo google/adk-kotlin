@@ -137,7 +137,7 @@ class Gemini(
     // existing cache (dropping the cached prefix) and returns the metadata to attach to responses.
     val cacheManager =
       preparedRequest.cacheConfig?.let {
-        GeminiContextCacheManager(name, GenaiCacheClient(client.caches))
+        GeminiContextCacheManager(name, GenaiCacheClient(client.caches), cacheScopeOf(client))
       }
     val cacheResult = cacheManager?.handleContextCaching(preparedRequest)
     val finalRequest = cacheResult?.request ?: preparedRequest
@@ -229,6 +229,20 @@ class Gemini(
     }
 
     private val logger = LoggerFactory.getLogger(Gemini::class)
+  }
+}
+
+/**
+ * The backend namespace that owns explicit cache resources, folded into the cache fingerprint so a
+ * cache is never reused across backends or projects. Includes the backend type and, for the
+ * enterprise backend, the project and location. The server base URL is not included because the SDK
+ * [Client] does not expose it.
+ */
+internal fun cacheScopeOf(client: Client): Map<String, String> = buildMap {
+  this["backend"] = if (client.enterprise) "vertex" else "gemini"
+  if (client.enterprise) {
+    client.project?.let { this["project"] = it }
+    client.location?.let { this["location"] = it }
   }
 }
 
