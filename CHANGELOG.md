@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.6.0](https://github.com/google/adk-kotlin/compare/v0.5.0...v0.6.0) (2026-07-20)
+
+
+### Features
+
+* **a2a:** add an A2A v1.0 client for JVM and deprecate the v0.3 JvmA2AAgent ([54feaf9](https://github.com/google/adk-kotlin/commit/54feaf9877ecd3d6501a41c8846d69768f6c4aa6))
+* add a Firebase AI example to the Android examples app ([8e09662](https://github.com/google/adk-kotlin/commit/8e09662ec4cabde0a6ecfbe0a6577c763301d167))
+* Add CacheMetadata model for ADK Kotlin context caching ([6faa0bd](https://github.com/google/adk-kotlin/commit/6faa0bdfc84b151377fa492495aa6da31e458183))
+* add callbackContextData to InvocationContext ([723c814](https://github.com/google/adk-kotlin/commit/723c81440a49359b15908c73d2f4adb9b68ef7ae))
+* Add context-cache fields to LlmRequest/LlmResponse/Event for ADK Kotlin ([788edd9](https://github.com/google/adk-kotlin/commit/788edd9f1fb54628de7dc107ee5d75fbed6bde46))
+* Add ContextCacheConfig data class for ADK Kotlin ([458af23](https://github.com/google/adk-kotlin/commit/458af23598cfd66366f156c6cbe85f7c2953eb36))
+* Add ContextCacheRequestProcessor and register it in the LLM flow ([8ccda14](https://github.com/google/adk-kotlin/commit/8ccda14e476c3d84d0a3248af5b5547405bce51d))
+* Add GeminiContextCacheManager and wire context caching into the Gemini model ([18701fb](https://github.com/google/adk-kotlin/commit/18701fbe015fb0393f7520baf3c1285b054f5876))
+* add latestPromptTokenCount helper for token-threshold compaction ([8c28b7e](https://github.com/google/adk-kotlin/commit/8c28b7eadac19dee4afa736ac3a7d342d644bd5f))
+* add on-device ML Kit Gemini Nano multi-turn chat Android example ([e0552ce](https://github.com/google/adk-kotlin/commit/e0552cea1baa8a3bbf6543274d7b6435fba69394))
+* add token-threshold fields to EventsCompactionConfig ([7668206](https://github.com/google/adk-kotlin/commit/7668206025ba4e2212e759e83839c780e9a156b1))
+* add TokenThresholdEventCompactor tail-retention strategy ([a667bcf](https://github.com/google/adk-kotlin/commit/a667bcf91973bf890a37fc2fbfc8a4bc4a872c5b))
+* add VertexAiRagRetrieval tool for Gemini-native RAG ([f6f68d6](https://github.com/google/adk-kotlin/commit/f6f68d64264ef496fc791d432d957f7da2ab764e))
+* **core:** migrate from the Java Gen AI SDK to the Kotlin Gen AI SDK ([067dae1](https://github.com/google/adk-kotlin/commit/067dae149a99fcfaa6b380158a3aab29f82b7d8c))
+* Fold cache scope into the context-cache fingerprint ([4383556](https://github.com/google/adk-kotlin/commit/4383556a0e56dd474857c0361d502fd09cc0298d))
+* **plugins:** add DebugLoggingPlugin and align LoggingPlugin with ADK Python ([ca22048](https://github.com/google/adk-kotlin/commit/ca220480d4f8d6f2a3f5cfdf94888118c29b6cfa))
+* Propagate context cache config from App through Runner to InvocationContext ([64240db](https://github.com/google/adk-kotlin/commit/64240db5811e8c72cea392575311224cb72c526c))
+* round-trip GenerateContentConfig labels and support routingConfig ([d65becd](https://github.com/google/adk-kotlin/commit/d65becd2c7820cc3ae7abcdc0250f25a15c11a0d))
+* run token-threshold compaction before model calls ([4feb461](https://github.com/google/adk-kotlin/commit/4feb4616fa39e97a32be9f17f89c108096fc37ef))
+* **serialization:** expose the shared kotlinx Json instance and Any&lt;-&gt;JsonElement helpers ([91419ad](https://github.com/google/adk-kotlin/commit/91419ad14df02b4c76ca778d1a6d0fa8cddc9b96))
+* set the ADK version on the telemetry instrumentation scope ([b50e621](https://github.com/google/adk-kotlin/commit/b50e621d561a292a938fc4909f400339fbd50fbb))
+
+
+### Bug Fixes
+
+* align Ktor and kotlinx-coroutines with the GenAI SDK's Ktor 2.x ([c94daef](https://github.com/google/adk-kotlin/commit/c94daef829ea21f067446fbaf7e5c2f60a460d7b))
+* build and run the core module's Android instrumented tests ([fd4fc45](https://github.com/google/adk-kotlin/commit/fd4fc45cef11e73199f117de4c14496ba767d48d))
+* clear streaming Dev UI error ([97cf537](https://github.com/google/adk-kotlin/commit/97cf5372bc9858d393ccf5ed460638735e948ceb))
+* correct the Skills example button label in the Android examples app ([00a9653](https://github.com/google/adk-kotlin/commit/00a9653a3b8c159496967b275f2601fb37a75ebe))
+* Fixed the `resolveScopedArtifactDir` function where jvm (in windows) ignoring path which start with '/' as absolute path. ([3a773ed](https://github.com/google/adk-kotlin/commit/3a773edd26469aa765a1bba398745fd94257fa26))
+* generate function-call ids and re-attach thought signatures in the streaming aggregator ([007bc4c](https://github.com/google/adk-kotlin/commit/007bc4cf2a5dd299c6cc2a7737f8248c941aeb8e))
+* handle window insets in the Android examples ([ee48523](https://github.com/google/adk-kotlin/commit/ee4852353fb157f7ab5616a98770867f7d99a109))
+* keep Android example screens alive across rotation ([852fab7](https://github.com/google/adk-kotlin/commit/852fab70a6a91c0578b2498b3bed8c51e4d6b125))
+* keep retained events visible at a same-millisecond compaction boundary ([11298af](https://github.com/google/adk-kotlin/commit/11298af0df26db3436b4b6cbe08731a700abe773))
+* **logging:** stop logging sensitive data outside of the opt-in logging plugins ([39e79ca](https://github.com/google/adk-kotlin/commit/39e79cafc49ba94dc7d58481ebbbb4caa83699f4))
+* nest engine spans under the caller's active span ([a8cca93](https://github.com/google/adk-kotlin/commit/a8cca9355d7fea60219fe1b1f0ad770a7cc7b80e))
+* pin published kotlin-stdlib to 2.1 for Kotlin 2.1 consumer compatibility ([7342e3d](https://github.com/google/adk-kotlin/commit/7342e3df44c3aad9505af274865cd8e6e6af7291))
+* preserve Firebase thought signatures across session serialization ([7a63ee1](https://github.com/google/adk-kotlin/commit/7a63ee12ec2471568a4987329d0b13984777acc3))
+* reassemble streamed function-call arguments in Gemini streaming ([36add61](https://github.com/google/adk-kotlin/commit/36add619bbf085dbf0e40d9f1d8c203de2ff1186))
+* recover compacted function calls during prompt assembly ([fc31aba](https://github.com/google/adk-kotlin/commit/fc31aba1c37cb43475025651f2bd2881faa05b31))
+* seed AgentTool child session from parent session state ([64f79e6](https://github.com/google/adk-kotlin/commit/64f79e6036441a852e73244a2140876b253484e1))
+* unify JVM/Android trace payload JSON via kotlinx serialization ([4585b47](https://github.com/google/adk-kotlin/commit/4585b475d0922025a5c03baf2b636f22507b753f))
+
+
+### Documentation
+
+* **mlkit:** document existing GenaiPrompt behaviour ([536873f](https://github.com/google/adk-kotlin/commit/536873fe9c2e911cb3b7aef2ee26faca24ec87df))
+
 ## [0.5.0](https://github.com/google/adk-kotlin/compare/v0.4.0...v0.5.0) (2026-07-03)
 
 
