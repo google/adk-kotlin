@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
+@file:OptIn(com.google.adk.kt.annotations.ExperimentalContextCachingFeature::class)
+
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
@@ -60,8 +63,11 @@ class AbstractRunnerTest {
 
   class TestRunner(agent: BaseAgent, resumable: Boolean = true) :
     InMemoryRunner(
-      agent = agent,
-      resumabilityConfig = ResumabilityConfig(isResumable = resumable),
+      App(
+        appName = "InMemoryRunner",
+        rootAgent = agent,
+        resumabilityConfig = ResumabilityConfig(isResumable = resumable),
+      )
     ) {
     suspend fun callFindAgentToRun(context: InvocationContext, rootAgent: BaseAgent): BaseAgent {
       return findAgentToRun(context, rootAgent)
@@ -926,6 +932,30 @@ class AbstractRunnerTest {
           )
       )
     }
+  }
+
+  // ----- Context cache config propagation -----
+
+  @Test
+  fun runAsync_appWithoutContextCacheConfig_invocationContextConfigIsNull() = runTest {
+    // Sentinel non-null so the assertion meaningfully verifies the runner left it unset.
+    var capturedConfig: ContextCacheConfig? = ContextCacheConfig()
+    val agent =
+      DummyAgent(name = "agent") { context ->
+        capturedConfig = context.contextCacheConfig
+        emit(
+          Event(
+            author = Role.MODEL,
+            invocationId = context.invocationId,
+            content = modelMessage("resp"),
+          )
+        )
+      }
+    val runner = InMemoryRunner(app = App(appName = "test_app", rootAgent = agent))
+
+    runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi")).toList()
+
+    assertNull(capturedConfig)
   }
 
   @Test

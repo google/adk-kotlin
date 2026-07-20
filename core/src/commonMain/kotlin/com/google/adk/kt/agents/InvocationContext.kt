@@ -126,6 +126,12 @@ data class InvocationContext(
    */
   val eventsCompactionConfig: EventsCompactionConfig? = null,
 
+  /**
+   * Optional context cache configuration for this invocation, propagated from the [App]. When
+   * `null`, context caching is disabled for the invocation.
+   */
+  val contextCacheConfig: ContextCacheConfig? = null,
+
   // State
   /** The user content that started this invocation. Readonly. */
   val userContent: Content? = null,
