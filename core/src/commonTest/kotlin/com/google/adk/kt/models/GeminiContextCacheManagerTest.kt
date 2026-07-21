@@ -24,6 +24,7 @@ import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolConfig
+import com.google.genai.kotlin.types.HttpOptions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -33,8 +34,10 @@ import kotlinx.coroutines.test.runTest
 class GeminiContextCacheManagerTest {
 
   /** A [GeminiContextCacheManager.CacheClient] that records calls and returns a fixed cache. */
-  private class FakeCacheClient(private val createdName: String = "cache/new") :
-    GeminiContextCacheManager.CacheClient {
+  private class FakeCacheClient(
+    private val createdName: String = "cache/new",
+    private val createException: Exception? = null,
+  ) : GeminiContextCacheManager.CacheClient {
     var createCount = 0
     var deleteCount = 0
     var lastDeletedName: String? = null
@@ -43,6 +46,7 @@ class GeminiContextCacheManagerTest {
     override suspend fun create(request: GeminiContextCacheManager.CacheCreateRequest): String {
       createCount++
       lastCreateRequest = request
+      createException?.let { throw it }
       return createdName
     }
 
@@ -192,6 +196,61 @@ class GeminiContextCacheManagerTest {
     // The recreated cache grew from 1 to 2 contents.
     assertEquals(2, fake.lastCreateRequest?.contents?.size)
     assertEquals(2, result.cacheMetadata?.contentsCount)
+  }
+
+  @Test
+  fun handleContextCaching_createHttpOptionsConfigured_passedThroughToCreate() = runTest {
+    val fake = FakeCacheClient(createdName = "cache/recreated")
+    val manager = GeminiContextCacheManager("gemini-2.0-flash", fake)
+    val httpOptions = HttpOptions(timeout = 5_000)
+    val request =
+      baseRequest(tokenCount = 8000)
+        .copy(cacheConfig = ContextCacheConfig(createHttpOptions = httpOptions))
+    val expiredMetadata =
+      CacheMetadata(
+        fingerprint = fingerprintFor(manager, request),
+        contentsCount = 1,
+        cacheName = "cache/old",
+        expireTime = Clock.System.now().toEpochMilliseconds() - 1_000,
+        invocationsUsed = 1,
+      )
+
+    val unused =
+      manager.handleContextCaching(
+        request.copy(cacheMetadata = expiredMetadata, cacheableContentsTokenCount = 8000)
+      )
+
+    assertEquals(1, fake.createCount)
+    assertEquals(httpOptions, fake.lastCreateRequest?.httpOptions)
+  }
+
+  @Test
+  fun handleContextCaching_createFails_failsOpenReturnsFingerprintOnly() = runTest {
+    // A slow create that exceeds createCacheTimeout surfaces as an exception; the manager must fail
+    // open (proceed uncached) rather than propagate it.
+    val fake = FakeCacheClient(createException = RuntimeException("create timed out"))
+    val manager = GeminiContextCacheManager("gemini-2.0-flash", fake)
+    val request = baseRequest(tokenCount = 8000)
+    val expiredMetadata =
+      CacheMetadata(
+        fingerprint = fingerprintFor(manager, request),
+        contentsCount = 1,
+        cacheName = "cache/old",
+        expireTime = Clock.System.now().toEpochMilliseconds() - 1_000,
+        invocationsUsed = 1,
+      )
+
+    val result =
+      manager.handleContextCaching(
+        request.copy(cacheMetadata = expiredMetadata, cacheableContentsTokenCount = 8000)
+      )
+
+    assertEquals(1, fake.createCount)
+    // No active cache; fingerprint-only metadata and the request is left unchanged (uncached).
+    assertNull(result.cacheMetadata?.cacheName)
+    assertEquals(1, result.cacheMetadata?.contentsCount)
+    assertNull(result.request.config.cachedContent)
+    assertEquals(request.contents, result.request.contents)
   }
 
   @Test

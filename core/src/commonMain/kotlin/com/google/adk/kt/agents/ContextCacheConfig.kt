@@ -17,6 +17,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalContextCachingFeature
+import com.google.genai.kotlin.types.HttpOptions
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -41,6 +42,10 @@ import kotlin.time.Duration.Companion.seconds
  *   session; caching begins on the second turn once a previous token count is known. Context cache
  *   storage may have a cost, so set this higher to avoid caching small requests where the overhead
  *   may exceed the benefits. Must be non-negative. Defaults to 0.
+ * @property createHttpOptions Optional HTTP options to pass to the GenAI client. Set this to add a
+ *   timeout on `CachedContent.create()` calls (e.g. `HttpOptions(timeout=10000)` for a 10-second
+ *   timeout in milliseconds). When the cache creation call exceeds the timeout, it fails and the
+ *   request proceeds without caching. `null` uses the client's default HTTP options.
  */
 data class ContextCacheConfig
 @ExperimentalContextCachingFeature
@@ -48,6 +53,7 @@ constructor(
   val cacheIntervals: Int = 10,
   val ttl: Duration = 1800.seconds,
   val minTokens: Int = 0,
+  val createHttpOptions: HttpOptions? = null,
 ) {
   init {
     require(cacheIntervals in 1..100) {

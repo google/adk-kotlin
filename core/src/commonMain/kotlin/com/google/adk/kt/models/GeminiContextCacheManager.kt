@@ -23,6 +23,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.ToolConfig
+import com.google.genai.kotlin.types.HttpOptions
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlinx.serialization.json.JsonArray
@@ -40,8 +41,8 @@ import kotlinx.serialization.json.encodeToJsonElement
  * dropping the cached prefix from the request.
  *
  * The cache backend is delegated to a [CacheClient] interface so the manager stays decoupled from
- * the GenAI SDK and can be faked in tests: the SDK's cache types are final with internal
- * constructors and cannot be faked directly. The Gemini model wires in the SDK-backed
+ * the GenAI SDK's cache API and can be faked in tests: the SDK's cache types are final with
+ * internal constructors and cannot be faked directly. The Gemini model wires in the SDK-backed
  * `GenaiCacheClient`.
  *
  * @param modelName The model resource name used when creating caches.
@@ -284,6 +285,7 @@ internal class GeminiContextCacheManager(
           toolConfig = request.config.toolConfig,
           ttl = cacheConfig.ttl,
           displayName = displayName,
+          httpOptions = cacheConfig.createHttpOptions,
         )
       )
     val createdAt = Clock.System.now().toEpochMilliseconds()
@@ -340,6 +342,9 @@ internal class GeminiContextCacheManager(
     val toolConfig: ToolConfig?,
     val ttl: Duration,
     val displayName: String,
+    // Optional HTTP options (e.g. a timeout) for the create call; on timeout the create fails and
+    // the request proceeds uncached (fail-open). `null` uses the client default.
+    val httpOptions: HttpOptions? = null,
   )
 
   /**

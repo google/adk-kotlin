@@ -37,6 +37,7 @@ internal class GenaiCacheClient(private val caches: Caches) :
         toolConfig = request.toolConfig?.toGenaiSdk(),
         ttl = request.ttl,
         displayName = request.displayName,
+        httpOptions = request.httpOptions,
       )
     val cachedContent = caches.create(request.model, config)
     return cachedContent.name ?: throw IllegalStateException("Created cache has no resource name.")
