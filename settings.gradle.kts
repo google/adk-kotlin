@@ -42,6 +42,10 @@ include(":google-adk-kotlin-webserver")
 
 project(":google-adk-kotlin-webserver").projectDir = file("webserver")
 
+include(":google-adk-kotlin-integrations")
+
+project(":google-adk-kotlin-integrations").projectDir = file("integrations")
+
 include(":google-adk-kotlin-a2a")
 
 project(":google-adk-kotlin-a2a").projectDir = file("a2a")
