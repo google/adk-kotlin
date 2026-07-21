@@ -29,10 +29,11 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondTextWriter
+import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
+import io.ktor.utils.io.writeStringUtf8
 import java.util.UUID
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.toList
@@ -97,8 +98,9 @@ fun Route.runRoutes(
 
     val sessionId = request.sessionId ?: UUID.randomUUID().toString()
 
-    // Ktor 2.x has no SSE plugin; stream events manually as text/event-stream.
-    call.respondTextWriter(contentType = ContentType.Text.EventStream) {
+    // Ktor 2.x has no SSE plugin, so stream manually. Use async respondBytesWriter, not
+    // respondTextWriter, whose blocking bridge parks via a coroutines internal gone in 1.11.0.
+    call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
       runner
         .runAsync(
           request.userId,
@@ -110,7 +112,7 @@ fun Route.runRoutes(
         )
         .collect { event ->
           val data = Gson().toJson(event)
-          write("data: $data\n\n")
+          writeStringUtf8("data: $data\n\n")
           flush()
         }
     }
