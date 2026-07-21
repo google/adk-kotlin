@@ -16,8 +16,10 @@
 
 package com.google.adk.kt.webserver
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.runners.Runner
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.webserver.AdkWebServer.StatusAwareLogger
@@ -32,10 +34,7 @@ import com.google.adk.kt.webserver.routes.sessionRoutes
 import com.google.adk.kt.webserver.routes.staticRoutes
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
-import com.google.gson.TypeAdapter
-import com.google.gson.stream.JsonReader
-import com.google.gson.stream.JsonWriter
-import io.ktor.serialization.gson.gson
+import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
@@ -49,7 +48,6 @@ import io.ktor.server.request.uri
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import kotlinx.datetime.Instant
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
@@ -123,24 +121,6 @@ class AdkWebServer(
     logger.info("Ktor server stopped")
   }
 
-  class InstantTypeAdapter : TypeAdapter<Instant>() {
-    override fun write(out: JsonWriter, value: Instant?) {
-      if (value == null) {
-        out.nullValue()
-      } else {
-        out.value(value.toEpochMilliseconds())
-      }
-    }
-
-    override fun read(reader: JsonReader): Instant? {
-      if (reader.peek() == com.google.gson.stream.JsonToken.NULL) {
-        reader.nextNull()
-        return null
-      }
-      return Instant.fromEpochMilliseconds(reader.nextLong())
-    }
-  }
-
   public class StatusAwareLogger(private val delegate: Logger) : Logger by delegate {
     override fun info(msg: String?) {
       if (msg != null && msg.contains("Status: 5")) {
@@ -152,6 +132,7 @@ class AdkWebServer(
   }
 }
 
+@OptIn(FrameworkInternalApi::class)
 fun Application.adkModule(
   sessionService: SessionService,
   artifactService: ArtifactService,
@@ -169,12 +150,7 @@ fun Application.adkModule(
       "Status: $status, HTTP method: $httpMethod, URI: $uri"
     }
   }
-  install(ContentNegotiation) {
-    gson {
-      setPrettyPrinting()
-      registerTypeAdapter(Instant::class.java, AdkWebServer.InstantTypeAdapter())
-    }
-  }
+  install(ContentNegotiation) { json(adkJson) }
 
   val otelConfig = OpenTelemetryConfig(apiServerSpanExporter)
   val sdkTracerProvider = otelConfig.sdkTracerProvider()

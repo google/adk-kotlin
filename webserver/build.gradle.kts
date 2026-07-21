@@ -16,6 +16,7 @@
 
 plugins {
   kotlin("jvm")
+  kotlin("plugin.serialization")
   id("application")
   id("java-library")
   id("maven-publish")
@@ -44,13 +45,14 @@ sourceSets {
 dependencies {
   implementation(project(":google-adk-kotlin-core"))
   implementation(libs.kotlinx.datetime)
+  implementation(libs.kotlinx.serialization)
 
   implementation(libs.graphviz.java)
 
   implementation(libs.opentelemetry.api)
   implementation(libs.opentelemetry.sdk)
 
-  implementation(libs.ktor.serialization.gson)
+  implementation(libs.ktor.serialization.kotlinx.json)
   implementation(libs.ktor.server.call.logging)
   implementation(libs.ktor.server.content.negotiation)
   implementation(libs.ktor.server.core)

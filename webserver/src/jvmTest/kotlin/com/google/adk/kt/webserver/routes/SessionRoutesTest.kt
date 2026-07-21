@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.webserver.routes
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.ListSessionsResponse
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
@@ -27,16 +29,16 @@ import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.gson.gson
+import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
-import kotlinx.datetime.Instant
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
+@OptIn(FrameworkInternalApi::class)
 @RunWith(JUnit4::class)
 class SessionRoutesTest {
 
@@ -83,12 +85,7 @@ class SessionRoutesTest {
   fun listSessions_empty_returnsEmptyList() = testApplication {
     val fakeService = FakeSessionService()
     application {
-      install(ContentNegotiation) {
-        gson {
-          setPrettyPrinting()
-          registerTypeAdapter(Instant::class.java, InstantTypeAdapter())
-        }
-      }
+      install(ContentNegotiation) { json(adkJson) }
       routing { sessionRoutes(fakeService) }
     }
 
@@ -102,12 +99,7 @@ class SessionRoutesTest {
   fun createSession_validInput_createsSession() = testApplication {
     val fakeService = FakeSessionService()
     application {
-      install(ContentNegotiation) {
-        gson {
-          setPrettyPrinting()
-          registerTypeAdapter(Instant::class.java, InstantTypeAdapter())
-        }
-      }
+      install(ContentNegotiation) { json(adkJson) }
       routing { sessionRoutes(fakeService) }
     }
 
@@ -127,19 +119,14 @@ class SessionRoutesTest {
       Session(key = SessionKey(appName = "testApp", userId = "testUser", id = "test-session"))
     )
     application {
-      install(ContentNegotiation) {
-        gson {
-          setPrettyPrinting()
-          registerTypeAdapter(Instant::class.java, InstantTypeAdapter())
-        }
-      }
+      install(ContentNegotiation) { json(adkJson) }
       routing { sessionRoutes(fakeService) }
     }
 
     val response = client.get("/apps/testApp/users/testUser/sessions/test-session")
 
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
-    assertThat(response.bodyAsText()).contains("\"id\": \"test-session\"")
+    assertThat(response.bodyAsText()).contains("\"id\":\"test-session\"")
   }
 
   @Test
@@ -149,12 +136,7 @@ class SessionRoutesTest {
       Session(key = SessionKey(appName = "testApp", userId = "testUser", id = "test-session"))
     )
     application {
-      install(ContentNegotiation) {
-        gson {
-          setPrettyPrinting()
-          registerTypeAdapter(Instant::class.java, InstantTypeAdapter())
-        }
-      }
+      install(ContentNegotiation) { json(adkJson) }
       routing { sessionRoutes(fakeService) }
     }
 
@@ -198,24 +180,5 @@ class SessionRoutesTest {
     assertThat(result).isInstanceOf(SessionRoutesResult.Error::class.java)
     val error = result as SessionRoutesResult.Error
     assertThat(error.error).isEqualTo(SessionRoutesErrors.ERR_MISSING_SESSION_ID)
-  }
-}
-
-class InstantTypeAdapter :
-  com.google.gson.JsonSerializer<Instant>, com.google.gson.JsonDeserializer<Instant> {
-  override fun serialize(
-    src: Instant,
-    typeOfSrc: java.lang.reflect.Type,
-    context: com.google.gson.JsonSerializationContext,
-  ): com.google.gson.JsonElement {
-    return com.google.gson.JsonPrimitive(src.toEpochMilliseconds())
-  }
-
-  override fun deserialize(
-    json: com.google.gson.JsonElement,
-    typeOfT: java.lang.reflect.Type,
-    context: com.google.gson.JsonDeserializationContext,
-  ): Instant {
-    return Instant.fromEpochMilliseconds(json.asLong)
   }
 }

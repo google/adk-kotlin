@@ -18,12 +18,13 @@ package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.models.AgentRunRequest
-import com.google.gson.Gson
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -37,7 +38,9 @@ import io.ktor.utils.io.writeStringUtf8
 import java.util.UUID
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.toList
+import kotlinx.serialization.encodeToString
 
+@OptIn(FrameworkInternalApi::class)
 fun Route.runRoutes(
   agentLoader: AgentLoader,
   sessionService: SessionService,
@@ -111,7 +114,7 @@ fun Route.runRoutes(
           runConfig,
         )
         .collect { event ->
-          val data = Gson().toJson(event)
+          val data = adkJson.encodeToString(event)
           writeStringUtf8("data: $data\n\n")
           flush()
         }

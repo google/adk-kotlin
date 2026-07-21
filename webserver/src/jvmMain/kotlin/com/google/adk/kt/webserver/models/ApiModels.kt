@@ -17,25 +17,30 @@
 package com.google.adk.kt.webserver.models
 
 import com.google.adk.kt.types.Content
+import kotlinx.serialization.Contextual
+import kotlinx.serialization.Serializable
 
+@Serializable
 data class AgentRunRequest(
   val appName: String,
   val userId: String,
   val sessionId: String? = null,
   val newMessage: Content? = null,
   val streaming: Boolean = false,
-  val stateDelta: Map<String, Any>? = null,
+  val stateDelta: Map<String, @Contextual Any>? = null,
   val invocationId: String? = null,
 )
 
+@Serializable
 data class RunRequest(val agentId: String, val input: String, val sessionId: String? = null)
 
-data class RunResponse(val output: String, val sessionId: String)
+@Serializable data class RunResponse(val output: String, val sessionId: String)
 
-data class TurnModel(val role: String, val content: String)
+@Serializable data class TurnModel(val role: String, val content: String)
 
-data class SessionModel(val sessionId: String, val turnHistory: List<TurnModel>)
+@Serializable data class SessionModel(val sessionId: String, val turnHistory: List<TurnModel>)
 
+@Serializable
 data class ErrorResponse(val error: String, val message: String, val details: String? = null)
 
 /**
@@ -45,13 +50,14 @@ data class ErrorResponse(val error: String, val message: String, val details: St
  * @property content The JSON string or text content of the event.
  * @property timestamp The ISO-8601 timestamp of the event.
  */
-data class SseModel(val type: String, val content: String, val timestamp: String)
+@Serializable data class SseModel(val type: String, val content: String, val timestamp: String)
 
+@Serializable
 data class SessionDto(
   val id: String?,
   val appName: String,
   val userId: String,
-  val state: Map<String, Any>?,
+  val state: Map<String, @Contextual Any>?,
   val events: List<com.google.adk.kt.events.Event>?,
   val lastUpdateTime: Long?,
 )

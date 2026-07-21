@@ -16,13 +16,14 @@
 
 package com.google.adk.kt.webserver.routes
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
-import com.google.gson.Gson
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -32,15 +33,18 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.gson.gson
+import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
+@OptIn(FrameworkInternalApi::class)
 @RunWith(JUnit4::class)
 class ArtifactRoutesTest {
 
@@ -79,7 +83,7 @@ class ArtifactRoutesTest {
   fun listArtifacts_empty_returnsEmptyList() = testApplication {
     val dummyService = FakeArtifactService(onListArtifactKeys = { emptyList() })
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
@@ -94,7 +98,7 @@ class ArtifactRoutesTest {
     val dummyService =
       FakeArtifactService(onListArtifactKeys = { listOf("file1.txt", "file2.txt") })
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
@@ -114,7 +118,7 @@ class ArtifactRoutesTest {
         onLoadArtifact = { _, filename, _ -> if (filename == "test.txt") testPart else null }
       )
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
@@ -129,7 +133,7 @@ class ArtifactRoutesTest {
   fun loadArtifact_notFound_returnsNotFound() = testApplication {
     val dummyService = FakeArtifactService(onLoadArtifact = { _, _, _ -> null })
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
@@ -151,7 +155,7 @@ class ArtifactRoutesTest {
         }
       }
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
@@ -225,19 +229,19 @@ class ArtifactRoutesTest {
         }
       }
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
     val response =
       client.post("/apps/testApp/users/testUser/sessions/testSession/artifacts") {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-        setBody(Gson().toJson(testPart))
+        setBody(adkJson.encodeToString(testPart))
       }
 
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
     assertThat(savedFilename).isEqualTo("test.txt")
-    val responsePart = Gson().fromJson(response.bodyAsText(), Part::class.java)
+    val responsePart = adkJson.decodeFromString<Part>(response.bodyAsText())
     assertThat(responsePart.fileData?.displayName).isEqualTo("test.txt")
   }
 
@@ -257,14 +261,14 @@ class ArtifactRoutesTest {
         }
       }
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
     val response =
       client.post("/apps/testApp/users/testUser/sessions/testSession/artifacts") {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-        setBody(Gson().toJson(testPart))
+        setBody(adkJson.encodeToString(testPart))
       }
 
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
@@ -276,14 +280,14 @@ class ArtifactRoutesTest {
     val testPart = Part(text = "no filename")
     val dummyService = FakeArtifactService()
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { artifactRoutes(dummyService) }
     }
 
     val response =
       client.post("/apps/testApp/users/testUser/sessions/testSession/artifacts") {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-        setBody(Gson().toJson(testPart))
+        setBody(adkJson.encodeToString(testPart))
       }
 
     assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)

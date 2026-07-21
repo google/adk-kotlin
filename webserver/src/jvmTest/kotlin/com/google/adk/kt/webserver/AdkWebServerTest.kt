@@ -179,8 +179,8 @@ class AdkWebServerTest {
     val response = client.get("/api/test-serialize")
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
     val body = response.bodyAsText()
-    assertThat(body).contains("\"output\": \"Ok output\"")
-    assertThat(body).contains("\"sessionId\": \"test-session\"")
+    assertThat(body).contains("\"output\":\"Ok output\"")
+    assertThat(body).contains("\"sessionId\":\"test-session\"")
   }
 
   @Test
@@ -196,8 +196,10 @@ class AdkWebServerTest {
       }
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
     val body = response.bodyAsText()
-    println("RESPONSE BODY: $body")
-    assertThat(body).isNotEmpty()
+    // adkJson has encodeDefaults=false, so default-false partial/interrupted are omitted.
+    assertThat(body).contains("\"turnComplete\":true")
+    assertThat(body).doesNotContain("\"partial\"")
+    assertThat(body).doesNotContain("\"interrupted\"")
   }
 
   @Test
@@ -213,5 +215,11 @@ class AdkWebServerTest {
       }
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
     assertThat(response.headers["Content-Type"]).contains("text/event-stream")
+    // The SSE stream serializes events with adkJson too, so the shape matches /run.
+    val body = response.bodyAsText()
+    assertThat(body).contains("data: ")
+    assertThat(body).contains("\"turnComplete\":true")
+    assertThat(body).doesNotContain("\"partial\"")
+    assertThat(body).doesNotContain("\"interrupted\"")
   }
 }

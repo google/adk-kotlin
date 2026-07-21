@@ -17,12 +17,14 @@
 package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.gson.gson
+import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
@@ -31,6 +33,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
+@OptIn(FrameworkInternalApi::class)
 @RunWith(JUnit4::class)
 class AppRoutesTest {
 
@@ -44,7 +47,7 @@ class AppRoutesTest {
   fun listApps_returnsAppList() = testApplication {
     val fakeLoader = FakeAgentLoader(agentList = listOf("app1", "app2"))
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { appRoutes(fakeLoader) }
     }
 
@@ -60,7 +63,7 @@ class AppRoutesTest {
   fun listApps_empty_returnsEmptyList() = testApplication {
     val fakeLoader = FakeAgentLoader(agentList = emptyList())
     application {
-      install(ContentNegotiation) { gson { setPrettyPrinting() } }
+      install(ContentNegotiation) { json(adkJson) }
       routing { appRoutes(fakeLoader) }
     }
 
