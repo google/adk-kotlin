@@ -17,5 +17,11 @@
 package com.google.adk.kt.collections
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 actual fun <K : Any, V : Any> concurrentMutableMapOf(): MutableMap<K, V> = ConcurrentHashMap()
+
+// CopyOnWriteArrayList gives snapshot iterators, so a reader traversing the list never sees a
+// ConcurrentModificationException from a concurrent add. Writes copy the backing array, which is
+// fine for the append-mostly, read-often session event history.
+actual fun <T> concurrentMutableListOf(): MutableList<T> = CopyOnWriteArrayList()

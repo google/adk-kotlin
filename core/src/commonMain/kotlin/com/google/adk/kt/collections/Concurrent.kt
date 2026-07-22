@@ -18,3 +18,10 @@ package com.google.adk.kt.collections
 
 /** Creates a concurrent mutable map. */
 expect fun <K : Any, V : Any> concurrentMutableMapOf(): MutableMap<K, V>
+
+/**
+ * Creates a concurrent mutable list whose iteration is safe under concurrent modification: a reader
+ * iterating the list while another thread mutates it observes a stable snapshot and never throws
+ * `ConcurrentModificationException`.
+ */
+expect fun <T> concurrentMutableListOf(): MutableList<T>

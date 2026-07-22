@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.collections.concurrentMutableListOf
 import com.google.adk.kt.events.Event
 import kotlin.time.Instant
 
@@ -26,12 +27,14 @@ import kotlin.time.Instant
  *   [SessionKey.id]).
  * @property state The state of the session.
  * @property events The events of the session, e.g. user input, model response, function
- *   call/response, etc.
+ *   call/response, etc. Defaults to a concurrent list so that appending an event (e.g. from one
+ *   parallel branch) while another reads the history does not throw
+ *   `ConcurrentModificationException`.
  * @property lastUpdateTime The last update time of the session. Defaults to [Instant.EPOCH].
  */
 data class Session(
   val key: SessionKey,
   val state: State = State(),
-  val events: MutableList<Event> = mutableListOf(),
+  val events: MutableList<Event> = concurrentMutableListOf(),
   var lastUpdateTime: Instant = Instant.fromEpochMilliseconds(0),
 )

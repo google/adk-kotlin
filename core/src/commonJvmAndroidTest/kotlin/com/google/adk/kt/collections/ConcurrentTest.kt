@@ -18,6 +18,7 @@ package com.google.adk.kt.collections
 
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ConcurrentTest {
@@ -33,5 +34,35 @@ class ConcurrentTest {
     map["test"] = 1
     assertTrue(map.containsKey("test"))
     assertTrue(map["test"] == 1)
+  }
+
+  @Test
+  fun concurrentMutableListOf_storesAndIteratesValues() {
+    val list = concurrentMutableListOf<Int>()
+    list.add(1)
+    list.add(2)
+    list.add(3)
+    assertEquals(listOf(1, 2, 3), list.toList())
+  }
+
+  @Test
+  fun concurrentMutableListOf_addDuringIteration_doesNotThrow() {
+    val list = concurrentMutableListOf<Int>()
+    list.addAll(listOf(1, 2, 3))
+
+    // A fail-fast list (ArrayList, or a bare synchronizedList) throws
+    // ConcurrentModificationException when advanced after a structural change. A concurrent list
+    // gives a snapshot iterator, so the traversal completes and sees the original three elements.
+    val iterator = list.iterator()
+    iterator.next()
+    list.add(4)
+
+    var count = 1
+    while (iterator.hasNext()) {
+      iterator.next()
+      count++
+    }
+    assertEquals(3, count)
+    assertEquals(4, list.size)
   }
 }

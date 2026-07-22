@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.collections.concurrentMutableListOf
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
 import kotlin.time.Clock
@@ -64,23 +65,10 @@ class InMemorySessionService : SessionService {
     mutex.withLock {
       val storedSession = sessions[key] ?: return null
 
-      val sessionCopy = copySession(storedSession)
-
-      if (config != null) {
-        val events = sessionCopy.events
-
-        if (config.numRecentEvents != null) {
-          if (config.numRecentEvents < events.size) {
-            // Keep the last 'numRecentEvents' events.
-            events.subList(0, events.size - config.numRecentEvents).clear()
-          }
-        } else {
-          // Only apply timestamp filter if numRecentEvents was not applied
-          config.afterTimestamp?.let { threshold ->
-            events.removeAll { event -> Instant.fromEpochMilliseconds(event.timestamp) < threshold }
-          }
-        }
-      }
+      // Filter with non-mutating operations and build the copy from the result: the copy's event
+      // list is concurrent (CopyOnWriteArrayList), which does not support in-place removeAll /
+      // subList clearing.
+      val sessionCopy = copySession(storedSession, filterEvents(storedSession.events, config))
 
       mergeWithGlobalState(key.appName, key.userId, sessionCopy)
     }
@@ -159,14 +147,26 @@ class InMemorySessionService : SessionService {
     return event
   }
 
-  private fun copySession(original: Session): Session {
+  private fun copySession(original: Session, events: List<Event> = original.events): Session {
     return Session(
       key = original.key,
       state = State(initialState = original.state),
-      events = original.events.toMutableList(),
+      // Keep the copy's event list concurrent too (toMutableList() would return a plain ArrayList),
+      // so a caller iterating it while the runner appends does not hit a CME.
+      events = concurrentMutableListOf<Event>().apply { addAll(events) },
       lastUpdateTime = original.lastUpdateTime,
     )
   }
+
+  /** Applies a [GetSessionConfig]'s recency / timestamp filter, returning a new list. */
+  private fun filterEvents(events: List<Event>, config: GetSessionConfig?): List<Event> =
+    when {
+      config == null -> events
+      config.numRecentEvents != null -> events.takeLast(config.numRecentEvents)
+      config.afterTimestamp != null ->
+        events.filterNot { Instant.fromEpochMilliseconds(it.timestamp) < config.afterTimestamp }
+      else -> events
+    }
 
   private fun mergeWithGlobalState(appName: String, userId: String, session: Session): Session {
     appState[appName]?.forEach { (key, value) -> session.state["${State.APP_PREFIX}$key"] = value }
