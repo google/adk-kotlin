@@ -15,10 +15,8 @@
  */
 package com.google.adk.kt.types
 
-import com.google.adk.kt.annotations.FrameworkInternalApi
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
 
 /**
  * A part of a multi-modal prompt or response.
@@ -31,11 +29,9 @@ import kotlinx.serialization.Transient
  * - functionResponse: The response from a function call.
  */
 // note - this class resembles kotlin's data class, but needs to be a regular class to allow for
-// framework internal fields and deep comparison of the thought signature.
+// deep comparison of the thought signature.
 @Serializable
-class Part
-@FrameworkInternalApi
-constructor(
+class Part(
   /** Plain text. */
   val text: String? = null,
   /** Binary data (e.g., image, audio). */
@@ -54,41 +50,8 @@ constructor(
   val videoMetadata: VideoMetadata? = null,
   /** Arbitrary key-value metadata associated with this part. The map must be JSON serializable. */
   val partMetadata: Map<String, @Contextual Any?>? = null,
-  /**
-   * Other opaque data associated with the part to be interpreted by the agent. Reserved for ADK
-   * internal use. Users should not set this field.
-   *
-   * Marked `@Transient` because it can hold arbitrary, non-serializable objects; it is
-   * intentionally excluded from the persisted form and is reset to `null` on deserialization.
-   */
-  @Transient @FrameworkInternalApi val opaqueData: Any? = null,
 ) {
 
-  @OptIn(FrameworkInternalApi::class)
-  constructor(
-    text: String? = null,
-    inlineData: Blob? = null,
-    fileData: FileData? = null,
-    functionCall: FunctionCall? = null,
-    functionResponse: FunctionResponse? = null,
-    thought: Boolean? = null,
-    thoughtSignature: ByteArray? = null,
-    videoMetadata: VideoMetadata? = null,
-    partMetadata: Map<String, Any?>? = null,
-  ) : this(
-    text,
-    inlineData,
-    fileData,
-    functionCall,
-    functionResponse,
-    thought,
-    thoughtSignature,
-    videoMetadata,
-    partMetadata,
-    opaqueData = null,
-  )
-
-  @OptIn(FrameworkInternalApi::class)
   override fun equals(other: Any?): Boolean {
     if (this === other) return true
     if (other !is Part) return false
@@ -101,11 +64,9 @@ constructor(
       thought == other.thought &&
       thoughtSignature.contentEquals(other.thoughtSignature) &&
       videoMetadata == other.videoMetadata &&
-      partMetadata == other.partMetadata &&
-      opaqueData == other.opaqueData
+      partMetadata == other.partMetadata
   }
 
-  @OptIn(FrameworkInternalApi::class)
   override fun hashCode(): Int {
     var result = text?.hashCode() ?: 0
     result = 31 * result + (inlineData?.hashCode() ?: 0)
@@ -117,37 +78,9 @@ constructor(
     result = 31 * result + (thoughtSignature?.contentHashCode() ?: 0)
     result = 31 * result + (videoMetadata?.hashCode() ?: 0)
     result = 31 * result + (partMetadata?.hashCode() ?: 0)
-    result = 31 * result + (opaqueData?.hashCode() ?: 0)
     return result
   }
 
-  @FrameworkInternalApi
-  fun copy(
-    text: String? = this.text,
-    inlineData: Blob? = this.inlineData,
-    fileData: FileData? = this.fileData,
-    functionCall: FunctionCall? = this.functionCall,
-    functionResponse: FunctionResponse? = this.functionResponse,
-    thought: Boolean? = this.thought,
-    thoughtSignature: ByteArray? = this.thoughtSignature,
-    videoMetadata: VideoMetadata? = this.videoMetadata,
-    partMetadata: Map<String, Any?>? = this.partMetadata,
-    opaqueData: Any?,
-  ): Part =
-    Part(
-      text,
-      inlineData,
-      fileData,
-      functionCall,
-      functionResponse,
-      thought,
-      thoughtSignature,
-      videoMetadata,
-      partMetadata,
-      opaqueData,
-    )
-
-  @OptIn(FrameworkInternalApi::class)
   fun copy(
     text: String? = this.text,
     inlineData: Blob? = this.inlineData,
@@ -169,15 +102,9 @@ constructor(
       thoughtSignature,
       videoMetadata,
       partMetadata,
-      opaqueData,
     )
 
   override fun toString(): String {
     return "Part(text=$text, inlineData=$inlineData, fileData=$fileData, functionCall=$functionCall, functionResponse=$functionResponse, thought=$thought, thoughtSignature=${thoughtSignature?.contentToString()})"
-  }
-
-  @FrameworkInternalApi
-  fun toStringInternal(): String {
-    return "Part(text=$text, inlineData=$inlineData, fileData=$fileData, functionCall=$functionCall, functionResponse=$functionResponse, thought=$thought, thoughtSignature=${thoughtSignature?.contentToString()}, opaqueData=$opaqueData)"
   }
 }

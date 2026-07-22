@@ -132,16 +132,6 @@ class EventSerializationTest {
   }
 
   @Test
-  fun part_opaqueData_isDroppedOnRoundTrip() {
-    val content = Content(parts = listOf(Part(text = "t", opaqueData = "secret")))
-
-    val decodedPart = roundTrip(content).parts[0]
-
-    assertEquals("t", decodedPart.text)
-    assertNull(decodedPart.opaqueData)
-  }
-
-  @Test
   fun freeFormValues_integers_decodeAsLong() {
     val serializer = MapSerializer(String.serializer(), AnySerializer)
 

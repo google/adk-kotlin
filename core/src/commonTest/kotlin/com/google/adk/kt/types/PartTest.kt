@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.types
 
-import com.google.adk.kt.annotations.FrameworkInternalApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -55,61 +54,10 @@ class PartTest {
   }
 
   @Test
-  @OptIn(FrameworkInternalApi::class)
-  fun equals_equalOpaqueData_returnsTrue() {
-    val part1 = Part(opaqueData = 1)
-    val part2 = Part(opaqueData = 1)
-
-    assertEquals(part1, part2)
-  }
-
-  @Test
-  @OptIn(FrameworkInternalApi::class)
-  fun equals_differentOpaqueData_returnsFalse() {
-    val part1 = Part(opaqueData = 1)
-    val part2 = Part(opaqueData = 2)
-
-    assertNotEquals(part1, part2)
-  }
-
-  @Test
-  @OptIn(FrameworkInternalApi::class)
-  fun equals_oneOpaqueDataNull_returnsFalse() {
-    val part1 = Part(opaqueData = 1)
-    val part2 = Part(opaqueData = null)
-
-    assertNotEquals(part1, part2)
-  }
-
-  @Test
   fun hashCode_sameData_returnsSameHashCode() {
     val part1 = Part(thought = true, thoughtSignature = byteArrayOf(1, 2, 3))
     val part2 = Part(thought = true, thoughtSignature = byteArrayOf(1, 2, 3))
 
     assertEquals(part1.hashCode(), part2.hashCode())
-  }
-
-  @Test
-  @OptIn(FrameworkInternalApi::class)
-  fun hashCode_equalOpaqueData_returnsSameHashCode() {
-    val part1 = Part(opaqueData = "opaque_data_1")
-    val part2 = Part(opaqueData = "opaque_data_1")
-
-    assertEquals(part1.hashCode(), part2.hashCode())
-  }
-
-  @Test
-  @OptIn(FrameworkInternalApi::class)
-  fun copy_copiesOpaqueData() {
-    val part =
-      Part(
-        text = "text",
-        thought = true,
-        thoughtSignature = byteArrayOf(1, 2, 3),
-        opaqueData = "opaque_data",
-      )
-    val copiedPart = part.copy()
-
-    assertEquals(part, copiedPart)
   }
 }
