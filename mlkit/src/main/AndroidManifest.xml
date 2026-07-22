@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- No package attribute needed here if 'namespace' is defined in build.gradle.kts -->
+
+    <application>
+        <!-- Keep this completely empty unless your library explicitly provides components -->
+    </application>
+
+</manifest>

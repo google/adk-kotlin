@@ -32,13 +32,13 @@ import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.examples.android.common.ScopedExampleActivity
 import com.google.adk.kt.examples.android.common.foldTextParts
 import com.google.adk.kt.examples.android.common.setExampleContentView
-import com.google.adk.kt.models.mlkit.GenaiPrompt
+import com.google.adk.kt.mlkit.GenaiPrompt
+import com.google.adk.kt.mlkit.GenerativeModelHelpers
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
-import com.google.adk.kt.utils.mlkit.GenerativeModelHelpers
 import kotlinx.coroutines.launch
 
 /**

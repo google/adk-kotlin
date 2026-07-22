@@ -113,6 +113,7 @@ run {
 dependencies {
   implementation(project(":google-adk-kotlin-core"))
   implementation(project(":google-adk-kotlin-firebase"))
+  implementation(project(":google-adk-kotlin-mlkit"))
   implementation(platform(libs.google.firebase.platform))
   implementation(libs.google.firebase.ai)
   implementation(libs.google.mlkit.genai.prompt)

@@ -1,0 +1,121 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+plugins {
+  // Kotlin is compiled by AGP's built-in Kotlin support (no kotlin-android plugin).
+  id("com.android.library")
+  id("maven-publish")
+}
+
+// AGP's built-in Kotlin doesn't apply the kotlin.jvm/multiplatform plugins that
+// the root project pins coreLibrariesVersion on, so set it here too. Keeps the
+// published AAR on the 2.1 stdlib and consumable by Kotlin 2.1 projects.
+kotlin { coreLibrariesVersion = rootProject.extra["kotlinCoreLibrariesVersion"] as String }
+
+dependencies {
+  implementation(project(":google-adk-kotlin-core"))
+  implementation(libs.google.mlkit.genai.prompt)
+  // GenaiPromptConversions uses androidx.core.net.toUri to turn file URIs into ImageParts.
+  implementation(libs.androidx.core)
+
+  testImplementation(libs.kotlin.test.junit)
+  testImplementation(libs.androidx.test.core)
+  testImplementation(libs.androidx.test.ext.junit)
+  testImplementation(libs.androidx.test.runner)
+  testImplementation(libs.mockito.kotlin)
+  testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation(libs.google.truth)
+  testImplementation(libs.robolectric)
+
+  // Instrumented tests drive the real on-device Gemini Nano model on a physical device.
+  androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+  androidTestImplementation(libs.androidx.compose.ui.test.manifest)
+  // Pull espresso-core explicitly so the whole androidx.test stack resolves to the newer version
+  // that compose ui-test-junit4 alone does not force; older espresso crashes on newer Android with
+  // NoSuchMethodException android.hardware.input.InputManager.getInstance during
+  // createComposeRule().
+  androidTestImplementation(libs.androidx.test.espresso.core)
+  androidTestImplementation(libs.androidx.test.ext.junit)
+  androidTestImplementation(libs.androidx.test.rules)
+  androidTestImplementation(libs.androidx.test.runner)
+  androidTestImplementation(libs.google.truth)
+  androidTestImplementation(libs.kotlinx.coroutines.test)
+}
+
+android {
+  namespace = "com.google.adk.mlkit"
+
+  testOptions {
+    unitTests {
+      isReturnDefaultValues = true
+      isIncludeAndroidResources = true
+      all { it.systemProperty("robolectric.logging", "stderr") }
+    }
+  }
+
+  // Publishes the Android `release` variant as a single AAR with sources and
+  // javadoc jars. AGP's `withJavadocJar()` runs Gradle's `javadoc` task,
+  // which doesn't understand `.kt` sources, so the resulting jar is
+  // effectively empty - but it still satisfies Maven Central's per-module
+  // requirement. Replacing with Dokka HTML would require building the jar
+  // manually and attaching it to the AGP-created publication after
+  // evaluation; left as a follow-up.
+  publishing {
+    singleVariant("release") {
+      withSourcesJar()
+      withJavadocJar()
+    }
+  }
+
+  // The ML Kit GenAI / Gemini Nano stack pulls in androidx.core:core:1.16.0,
+  // which requires compileSdk >= 35. Pin to 36 (matching the other Android
+  // modules) even though the repo-wide default stays lower for the pure-JVM
+  // publications.
+  compileSdk { version = release(36) { minorApiLevel = 1 } }
+
+  defaultConfig {
+    minSdk = 26
+
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+  }
+
+  buildTypes {
+    release {
+      isMinifyEnabled = false
+      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+    }
+  }
+}
+
+// AGP registers a software component named `release` (created by the
+// `android { publishing { singleVariant("release") { ... } } }` block above),
+// but it does NOT auto-create a `MavenPublication` for it — that's our
+// responsibility. We have to do this inside `afterEvaluate` because the
+// component itself is only registered once the Android extension finishes
+// configuring. POM metadata and GPG signing are configured in the root
+// build.gradle.kts; the root script also intentionally skips attaching the
+// Dokka javadoc jar to this publication because AGP's `withJavadocJar()`
+// above already attaches one.
+afterEvaluate {
+  publishing {
+    publications {
+      create<MavenPublication>("release") {
+        from(components["release"])
+        artifactId = "google-adk-kotlin-mlkit-android"
+      }
+    }
+  }
+}

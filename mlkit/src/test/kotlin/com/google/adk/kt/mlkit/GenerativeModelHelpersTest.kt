@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.utils.mlkit
+package com.google.adk.kt.mlkit
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.mlkit.genai.common.DownloadStatus

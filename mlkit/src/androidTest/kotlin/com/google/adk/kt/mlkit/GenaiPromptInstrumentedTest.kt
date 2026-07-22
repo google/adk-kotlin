@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.models.mlkit
+package com.google.adk.kt.mlkit
 
 import android.util.Log
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -30,7 +30,6 @@ import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
-import com.google.adk.kt.utils.mlkit.GenerativeModelHelpers
 import com.google.common.truth.Truth.assertThat
 import com.google.mlkit.genai.prompt.ModelConfig
 import com.google.mlkit.genai.prompt.ModelPreference

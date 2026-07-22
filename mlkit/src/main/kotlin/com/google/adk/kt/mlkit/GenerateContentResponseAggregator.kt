@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.google.adk.kt.utils.mlkit
+package com.google.adk.kt.mlkit
 
 import com.google.mlkit.genai.prompt.Candidate
 import com.google.mlkit.genai.prompt.GenerateContentResponse

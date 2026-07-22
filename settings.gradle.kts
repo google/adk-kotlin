@@ -50,6 +50,10 @@ include(":google-adk-kotlin-firebase")
 
 project(":google-adk-kotlin-firebase").projectDir = file("firebase")
 
+include(":google-adk-kotlin-mlkit")
+
+project(":google-adk-kotlin-mlkit").projectDir = file("mlkit")
+
 include(":google-adk-kotlin-examples")
 
 project(":google-adk-kotlin-examples").projectDir = file("examples")

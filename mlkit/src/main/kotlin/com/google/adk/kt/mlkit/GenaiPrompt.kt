@@ -14,17 +14,15 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.models.mlkit
+package com.google.adk.kt.mlkit
 
 import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.mlkit.GenaiPromptConversions.toGenerateContentRequest
+import com.google.adk.kt.mlkit.GenaiPromptConversions.toLlmResponse
+import com.google.adk.kt.mlkit.GenaiPromptTracing.format
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
-import com.google.adk.kt.models.mlkit.GenaiPromptTracing.format
-import com.google.adk.kt.utils.mlkit.GenaiPromptConversions.toGenerateContentRequest
-import com.google.adk.kt.utils.mlkit.GenaiPromptConversions.toLlmResponse
-import com.google.adk.kt.utils.mlkit.GenerateContentResponseAggregator
-import com.google.adk.kt.utils.mlkit.toAggregatedResponse
 import com.google.mlkit.genai.prompt.GenerativeModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow

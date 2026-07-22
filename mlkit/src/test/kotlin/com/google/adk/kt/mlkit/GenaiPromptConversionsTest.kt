@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.google.adk.kt.utils.mlkit
+package com.google.adk.kt.mlkit
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -21,6 +21,8 @@ import android.net.Uri
 import androidx.core.net.toUri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.adk.kt.mlkit.GenaiPromptConversions.toGenerateContentRequest
+import com.google.adk.kt.mlkit.GenaiPromptConversions.toLlmResponse
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -28,8 +30,6 @@ import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.utils.mlkit.GenaiPromptConversions.toGenerateContentRequest
-import com.google.adk.kt.utils.mlkit.GenaiPromptConversions.toLlmResponse
 import com.google.common.truth.Truth.assertThat
 import com.google.mlkit.common.sdkinternal.MlKitContext
 import com.google.mlkit.genai.prompt.Candidate.FinishReason as MlKitFinishReason

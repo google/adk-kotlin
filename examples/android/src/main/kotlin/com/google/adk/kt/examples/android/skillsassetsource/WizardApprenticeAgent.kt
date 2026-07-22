@@ -19,10 +19,10 @@ package com.google.adk.kt.examples.android.skillsassetsource
 import android.content.Context
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
-import com.google.adk.kt.models.mlkit.GenaiPrompt
+import com.google.adk.kt.mlkit.GenaiPrompt
+import com.google.adk.kt.mlkit.GenerativeModelHelpers
 import com.google.adk.kt.skills.AssetSkillSource
 import com.google.adk.kt.tools.SkillToolset
-import com.google.adk.kt.utils.mlkit.GenerativeModelHelpers
 
 /**
  * Builds the "wizard's apprentice" [LlmAgent] used by [SkillsAssetSourceActivity].

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.models.mlkit
+package com.google.adk.kt.mlkit
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.adk.kt.agents.Instruction

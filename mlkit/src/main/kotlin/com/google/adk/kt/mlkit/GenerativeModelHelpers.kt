@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.utils.mlkit
+package com.google.adk.kt.mlkit
 
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.mlkit.genai.common.DownloadStatus

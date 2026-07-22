@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.models.mlkit
+package com.google.adk.kt.mlkit
 
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
@@ -22,7 +22,6 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.utils.mlkit.AggregatedResponse
 import com.google.mlkit.genai.prompt.GenerateContentRequest
 import com.google.mlkit.genai.prompt.GenerateContentResponse
 import com.google.mlkit.genai.prompt.ImagePart
