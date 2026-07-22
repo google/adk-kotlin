@@ -124,6 +124,9 @@ kotlin {
         ) // Android compatible version or use separate for Android if needed.
         implementation(libs.androidx.room.runtime)
         implementation(libs.androidx.room.ktx)
+        implementation(libs.androidx.appsearch)
+        implementation(libs.androidx.appsearch.localStorage)
+        implementation(libs.kotlinx.coroutines.guava)
       }
     }
     val androidHostTest by getting {

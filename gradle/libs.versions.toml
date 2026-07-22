@@ -3,6 +3,7 @@
 
 a2a = "1.0.0.Final"
 a2a-legacy = "0.3.3.Final"
+androidx-appsearch = "1.1.0"
 androidx-compose-ui = "1.11.2"
 androidx-core = "1.16.0"
 androidx-room = "2.8.4"
@@ -55,6 +56,8 @@ a2a-sdk-client = { module = "org.a2aproject.sdk:a2a-java-sdk-client", version.re
 a2a-sdk-common = { module = "org.a2aproject.sdk:a2a-java-sdk-common", version.ref = "a2a" }
 a2a-sdk-spec = { module = "org.a2aproject.sdk:a2a-java-sdk-spec", version.ref = "a2a" }
 a2a-sdk-transport-jsonrpc = { module = "org.a2aproject.sdk:a2a-java-sdk-client-transport-jsonrpc", version.ref = "a2a" }
+androidx-appsearch = { module = "androidx.appsearch:appsearch", version.ref = "androidx-appsearch" }
+androidx-appsearch-localStorage = { module = "androidx.appsearch:appsearch-local-storage", version.ref = "androidx-appsearch" }
 androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4", version.ref = "androidx-compose-ui" }
 androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest", version.ref = "androidx-compose-ui" }
 androidx-core = { module = "androidx.core:core", version.ref = "androidx-core" }
@@ -88,6 +91,7 @@ junit = { module = "junit:junit", version.ref = "junit" }
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 kotlinx-atomicfu = { module = "org.jetbrains.kotlinx:atomicfu", version.ref = "kotlinx-atomicfu" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-guava = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-guava", version.ref = "kotlinx-coroutines" }
 kotlinx-coroutines-reactor = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-reactor", version.ref = "kotlinx-coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
