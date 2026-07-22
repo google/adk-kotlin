@@ -17,7 +17,9 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Part
 
@@ -130,6 +132,57 @@ class CallbackContext(
           "Cannot add session to memory: memory service is not available."
         )
     memoryService.addSessionToMemory(invocationContext.session)
+  }
+
+  /**
+   * Adds an explicit list of [events] to the memory service, scoped to the current session's
+   * app/user/session ids.
+   *
+   * Unlike [addSessionToMemory], this persists only the given events (e.g. the latest turn) as an
+   * incremental update rather than re-ingesting the full session.
+   *
+   * @param events The events to add to memory.
+   * @param customMetadata Optional, portable metadata forwarded to the memory service.
+   * @throws IllegalStateException if no memory service is configured on the invocation.
+   */
+  suspend fun addEventsToMemory(events: List<Event>, customMetadata: Map<String, Any?>? = null) {
+    val memoryService =
+      invocationContext.memoryService
+        ?: throw IllegalStateException(
+          "Cannot add events to memory: memory service is not available."
+        )
+    val session = invocationContext.session
+    memoryService.addEventsToMemory(
+      appName = session.key.appName,
+      userId = session.key.userId,
+      events = events,
+      sessionId = session.key.id,
+      customMetadata = customMetadata,
+    )
+  }
+
+  /**
+   * Adds explicit [memories] directly to the memory service, scoped to the current session's
+   * app/user ids.
+   *
+   * This is for memory services that support direct memory writes, in addition to the event-based
+   * generation done by [addSessionToMemory] / [addEventsToMemory].
+   *
+   * @param memories Explicit memory items to add.
+   * @param customMetadata Optional, portable metadata forwarded to the memory service.
+   * @throws IllegalStateException if no memory service is configured on the invocation.
+   */
+  suspend fun addMemory(memories: List<MemoryEntry>, customMetadata: Map<String, Any?>? = null) {
+    val memoryService =
+      invocationContext.memoryService
+        ?: throw IllegalStateException("Cannot add memory: memory service is not available.")
+    val session = invocationContext.session
+    memoryService.addMemory(
+      appName = session.key.appName,
+      userId = session.key.userId,
+      memories = memories,
+      customMetadata = customMetadata,
+    )
   }
 }
 

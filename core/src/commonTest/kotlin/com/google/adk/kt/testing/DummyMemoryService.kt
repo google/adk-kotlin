@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.testing
 
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.memory.SearchMemoryResponse
 import com.google.adk.kt.sessions.Session
@@ -37,11 +39,36 @@ class DummyMemoryService : MemoryService {
    */
   val addedSessions = mutableListOf<Session>()
 
+  /** Records each [addEventsToMemory] call so tests can assert the forwarded scope and events. */
+  val addedEvents = mutableListOf<AddEventsCall>()
+
+  /** Records each [addMemory] call so tests can assert the forwarded scope and memories. */
+  val addedMemories = mutableListOf<AddMemoryCall>()
+
   /** A mutable response to be returned by [searchMemory]. Defaults to an empty response. */
   var searchMemoryResponse: SearchMemoryResponse = SearchMemoryResponse(emptyList())
 
   override suspend fun addSessionToMemory(session: Session) {
     addedSessions.add(session)
+  }
+
+  override suspend fun addEventsToMemory(
+    appName: String,
+    userId: String,
+    events: List<Event>,
+    sessionId: String?,
+    customMetadata: Map<String, Any?>?,
+  ) {
+    addedEvents.add(AddEventsCall(appName, userId, events, sessionId, customMetadata))
+  }
+
+  override suspend fun addMemory(
+    appName: String,
+    userId: String,
+    memories: List<MemoryEntry>,
+    customMetadata: Map<String, Any?>?,
+  ) {
+    addedMemories.add(AddMemoryCall(appName, userId, memories, customMetadata))
   }
 
   override suspend fun searchMemory(
@@ -51,4 +78,21 @@ class DummyMemoryService : MemoryService {
   ): SearchMemoryResponse {
     return searchMemoryResponse
   }
+
+  /** A captured [addEventsToMemory] invocation. */
+  data class AddEventsCall(
+    val appName: String,
+    val userId: String,
+    val events: List<Event>,
+    val sessionId: String?,
+    val customMetadata: Map<String, Any?>?,
+  )
+
+  /** A captured [addMemory] invocation. */
+  data class AddMemoryCall(
+    val appName: String,
+    val userId: String,
+    val memories: List<MemoryEntry>,
+    val customMetadata: Map<String, Any?>?,
+  )
 }

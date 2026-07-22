@@ -18,7 +18,9 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.collections.concurrentMutableMapOf
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
@@ -141,6 +143,70 @@ class CallbackContextTest {
     assertEquals(1, memoryService.addedSessions.size)
     assertEquals(session, memoryService.addedSessions[0])
   }
+
+  @Test
+  fun addEventsToMemory_throwsWhenServiceNotAvailable() = runBlocking {
+    val context = testInvocationContext(session = testSession())
+    val callbackContext = context.toCallbackContext()
+
+    val exception =
+      assertThrows(IllegalStateException::class.java) {
+        runBlocking { callbackContext.addEventsToMemory(listOf(Event(author = "user"))) }
+      }
+    assertTrue(exception.message!!.contains("memory service is not available"))
+  }
+
+  @Test
+  fun addEventsToMemory_callsMemoryServiceWithSessionScope() = runBlocking {
+    val session = testSession()
+    val memoryService = DummyMemoryService()
+    val context = testInvocationContext(session = session, memoryService = memoryService)
+    val callbackContext = context.toCallbackContext()
+    val events = listOf(Event(author = "user"), Event(author = "model"))
+
+    callbackContext.addEventsToMemory(events, customMetadata = mapOf("ttl" to "1d"))
+
+    assertEquals(1, memoryService.addedEvents.size)
+    val call = memoryService.addedEvents[0]
+    assertEquals(session.key.appName, call.appName)
+    assertEquals(session.key.userId, call.userId)
+    assertEquals(session.key.id, call.sessionId)
+    assertEquals(events, call.events)
+    assertEquals(mapOf("ttl" to "1d"), call.customMetadata)
+  }
+
+  @Test
+  fun addMemory_throwsWhenServiceNotAvailable() = runBlocking {
+    val context = testInvocationContext(session = testSession())
+    val callbackContext = context.toCallbackContext()
+
+    val exception =
+      assertThrows(IllegalStateException::class.java) {
+        runBlocking { callbackContext.addMemory(listOf(testMemoryEntry("a fact"))) }
+      }
+    assertTrue(exception.message!!.contains("memory service is not available"))
+  }
+
+  @Test
+  fun addMemory_callsMemoryServiceWithSessionScope() = runBlocking {
+    val session = testSession()
+    val memoryService = DummyMemoryService()
+    val context = testInvocationContext(session = session, memoryService = memoryService)
+    val callbackContext = context.toCallbackContext()
+    val memories = listOf(testMemoryEntry("first"), testMemoryEntry("second"))
+
+    callbackContext.addMemory(memories, customMetadata = mapOf("enable_consolidation" to true))
+
+    assertEquals(1, memoryService.addedMemories.size)
+    val call = memoryService.addedMemories[0]
+    assertEquals(session.key.appName, call.appName)
+    assertEquals(session.key.userId, call.userId)
+    assertEquals(memories, call.memories)
+    assertEquals(mapOf("enable_consolidation" to true), call.customMetadata)
+  }
+
+  private fun testMemoryEntry(text: String): MemoryEntry =
+    MemoryEntry(content = Content(role = "user", parts = listOf(Part(text = text))))
 
   @Test
   fun endInvocation_setsIsEndOfInvocationOnContext() = runBlocking {
