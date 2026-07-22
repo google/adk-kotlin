@@ -61,8 +61,8 @@ fun Route.runRoutes(
           appName = request.appName,
         )
 
-      val runConfig =
-        RunConfig(streamingMode = if (request.streaming) StreamingMode.NONE else StreamingMode.NONE)
+      // The /run endpoint always returns the full event list; SSE is handled by /run_sse.
+      val runConfig = RunConfig(streamingMode = StreamingMode.NONE)
 
       val sessionId = request.sessionId ?: UUID.randomUUID().toString()
 

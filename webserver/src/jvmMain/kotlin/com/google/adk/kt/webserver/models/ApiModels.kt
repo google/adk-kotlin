@@ -31,26 +31,7 @@ data class AgentRunRequest(
   val invocationId: String? = null,
 )
 
-@Serializable
-data class RunRequest(val agentId: String, val input: String, val sessionId: String? = null)
-
 @Serializable data class RunResponse(val output: String, val sessionId: String)
-
-@Serializable data class TurnModel(val role: String, val content: String)
-
-@Serializable data class SessionModel(val sessionId: String, val turnHistory: List<TurnModel>)
-
-@Serializable
-data class ErrorResponse(val error: String, val message: String, val details: String? = null)
-
-/**
- * Model representing an SSE (Server-Sent Event) message.
- *
- * @property type The type of event (e.g. "message", "error", "done").
- * @property content The JSON string or text content of the event.
- * @property timestamp The ISO-8601 timestamp of the event.
- */
-@Serializable data class SseModel(val type: String, val content: String, val timestamp: String)
 
 @Serializable
 data class SessionDto(
