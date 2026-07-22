@@ -43,7 +43,7 @@ jobs:
         with:
           # Keep these in sync with the values in build.gradle.kts
           # (androidCompileSdk / androidMinSdk).
-          packages: "platforms;android-34 build-tools;34.0.0"
+          packages: "platforms;android-36 build-tools;36.0.0"
 
       - name: Cache Gradle packages
         uses: actions/cache@v5
