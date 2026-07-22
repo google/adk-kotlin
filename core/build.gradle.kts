@@ -91,6 +91,8 @@ kotlin {
         implementation(libs.google.gson)
         implementation(libs.google.cloud.storage)
         implementation(libs.mcp)
+        implementation(libs.ktor.client.core)
+        implementation(libs.ktor.client.java)
         implementation(libs.kotlinx.coroutines.reactor)
         implementation(libs.slf4j.api)
         implementation(libs.google.flogger.extensions)
