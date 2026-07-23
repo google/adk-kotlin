@@ -44,8 +44,10 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 
 /**
  * LLM-based Agent.
@@ -261,7 +263,7 @@ class LlmAgent(
     // backstop, from the session's last two events afterwards. Mirrors Python ADK
     // `agents/llm_agent.py:522-541`.
     var shouldPause = false
-    executeTurns(context).collect { event ->
+    executeTurns(context).flowOn(Dispatchers.Default).collect { event ->
       maybeSaveOutputToState(event)
       emit(event)
       if (context.shouldPauseInvocation(event)) {
