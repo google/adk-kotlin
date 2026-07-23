@@ -313,4 +313,90 @@ class InMemorySessionServiceTest {
     assertTrue(session.state.containsKey("key"))
     assertEquals("value", session.state["key"])
   }
+
+  @Test
+  fun getSession_numRecentEventsOnly_returnsMostRecentEvents() = runTest {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+    listOf(100L, 200L, 300L, 400L, 500L).forEach { sessionService.appendEventAt(session, it) }
+
+    val retrieved = sessionService.getSession(session.key, GetSessionConfig(numRecentEvents = 2))
+
+    assertNotNull(retrieved)
+    assertEquals(listOf(400L, 500L), retrieved.events.map { it.timestamp })
+  }
+
+  @Test
+  fun getSession_numRecentEventsZero_returnsNoEvents() = runTest {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+    listOf(100L, 200L, 300L).forEach { sessionService.appendEventAt(session, it) }
+
+    val retrieved = sessionService.getSession(session.key, GetSessionConfig(numRecentEvents = 0))
+
+    assertNotNull(retrieved)
+    assertTrue(retrieved.events.isEmpty())
+  }
+
+  @Test
+  fun getSession_afterTimestampOnly_returnsEventsAtOrAfterTimestamp() = runTest {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+    listOf(100L, 200L, 300L, 400L, 500L).forEach { sessionService.appendEventAt(session, it) }
+
+    val retrieved =
+      sessionService.getSession(
+        session.key,
+        GetSessionConfig(afterTimestamp = Instant.fromEpochMilliseconds(300L)),
+      )
+
+    assertNotNull(retrieved)
+    assertEquals(listOf(300L, 400L, 500L), retrieved.events.map { it.timestamp })
+  }
+
+  @Test
+  fun getSession_numRecentEventsAndAfterTimestamp_appliesBothFilters() = runTest {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+    listOf(100L, 200L, 300L, 400L, 500L).forEach { sessionService.appendEventAt(session, it) }
+
+    // Last-4 (200..500) then >=300 drops 200; the pre-fix code kept 200.
+    val retrieved =
+      sessionService.getSession(
+        session.key,
+        GetSessionConfig(numRecentEvents = 4, afterTimestamp = Instant.fromEpochMilliseconds(300L)),
+      )
+
+    assertNotNull(retrieved)
+    assertEquals(listOf(300L, 400L, 500L), retrieved.events.map { it.timestamp })
+  }
+
+  @Test
+  fun getSession_numRecentEventsTighterThanAfterTimestamp_appliesBothFilters() = runTest {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+    listOf(100L, 200L, 300L, 400L, 500L).forEach { sessionService.appendEventAt(session, it) }
+
+    // afterTimestamp keeps all; confirms numRecentEvents still applies alongside it.
+    val retrieved =
+      sessionService.getSession(
+        session.key,
+        GetSessionConfig(numRecentEvents = 2, afterTimestamp = Instant.fromEpochMilliseconds(100L)),
+      )
+
+    assertNotNull(retrieved)
+    assertEquals(listOf(400L, 500L), retrieved.events.map { it.timestamp })
+  }
+
+  private suspend fun InMemorySessionService.appendEventAt(session: Session, timestampMs: Long) {
+    val unused =
+      appendEvent(
+        session,
+        Event(
+          author = "agent",
+          actions = EventActions(stateDelta = mutableMapOf<String, Any>()),
+          timestamp = timestampMs,
+        ),
+      )
+  }
 }

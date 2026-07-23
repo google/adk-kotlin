@@ -158,15 +158,19 @@ class InMemorySessionService : SessionService {
     )
   }
 
-  /** Applies a [GetSessionConfig]'s recency / timestamp filter, returning a new list. */
-  private fun filterEvents(events: List<Event>, config: GetSessionConfig?): List<Event> =
-    when {
-      config == null -> events
-      config.numRecentEvents != null -> events.takeLast(config.numRecentEvents)
-      config.afterTimestamp != null ->
-        events.filterNot { Instant.fromEpochMilliseconds(it.timestamp) < config.afterTimestamp }
-      else -> events
+  /**
+   * Keeps the last [GetSessionConfig.numRecentEvents], then those at/after
+   * [GetSessionConfig.afterTimestamp]. Both compose, mirroring Python's `InMemorySessionService`.
+   */
+  private fun filterEvents(events: List<Event>, config: GetSessionConfig?): List<Event> {
+    if (config == null) return events
+    var filtered = events
+    config.numRecentEvents?.let { filtered = filtered.takeLast(it) }
+    config.afterTimestamp?.let { threshold ->
+      filtered = filtered.filterNot { Instant.fromEpochMilliseconds(it.timestamp) < threshold }
     }
+    return filtered
+  }
 
   private fun mergeWithGlobalState(appName: String, userId: String, session: Session): Session {
     appState[appName]?.forEach { (key, value) -> session.state["${State.APP_PREFIX}$key"] = value }
