@@ -132,9 +132,9 @@ internal constructor(
   }
 
   /**
-   * Trims the events to [GetSessionConfig.numRecentEvents] after sorting by timestamp. The
-   * [GetSessionConfig.afterTimestamp] filter is applied server-side (see [afterTimestampFilter]) so
-   * it is not re-applied here, matching the Java implementation.
+   * Keeps the last [GetSessionConfig.numRecentEvents] after sorting by timestamp.
+   * [GetSessionConfig.afterTimestamp] is filtered server-side (see [afterTimestampFilter]), so both
+   * filters compose. Mirrors the Go port.
    */
   private fun filterEvents(events: List<Event>, config: GetSessionConfig?): List<Event> {
     val sorted = events.sortedBy { it.timestamp }
@@ -161,15 +161,11 @@ internal constructor(
     }
 
     /**
-     * Builds the inclusive server-side `timestamp>=` filter for [GetSessionConfig.afterTimestamp].
-     * The filter is only applied when [GetSessionConfig.numRecentEvents] is not set, matching the
-     * precedence in [filterEvents].
+     * Inclusive server-side `timestamp>=` filter for [GetSessionConfig.afterTimestamp], or null.
      */
     private fun afterTimestampFilter(config: GetSessionConfig?): String? {
-      if (config?.numRecentEvents == null && config?.afterTimestamp != null) {
-        return "timestamp>=\"${config.afterTimestamp}\""
-      }
-      return null
+      val afterTimestamp = config?.afterTimestamp ?: return null
+      return "timestamp>=\"$afterTimestamp\""
     }
   }
 }

@@ -39,7 +39,6 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
-import org.mockito.kotlin.isNull
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verifyBlocking
 
@@ -236,27 +235,32 @@ class VertexAiSessionServiceTest {
   }
 
   @Test
-  fun getSession_numRecentEventsTakesPrecedence_noServerFilter() = runTest {
+  fun getSession_numRecentEventsAndAfterTimestamp_appliesBothFilters() = runTest {
+    val threshold = Instant.parse("2024-12-12T12:00:10Z")
     val client =
       mock<VertexAiSessionsClient> {
         onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn
           Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1"))
+        // Server returns events >= threshold; client trims to 2 most recent.
         onBlocking { listEvents(eq(ENGINE), eq("s1"), anyOrNull()) } doReturn
-          Result.success(ListEventsResponseDto())
+          Result.success(
+            ListEventsResponseDto(
+              sessionEvents =
+                listOf(eventDto("e2", 2000), eventDto("e3", 3000), eventDto("e4", 4000))
+            )
+          )
       }
 
-    val unused =
+    val session =
       service(client)
         .getSession(
           SessionKey("123", "user", "s1"),
-          GetSessionConfig(
-            numRecentEvents = 2,
-            afterTimestamp = Instant.parse("2024-12-12T12:00:10Z"),
-          ),
+          GetSessionConfig(numRecentEvents = 2, afterTimestamp = threshold),
         )
 
-    // When numRecentEvents is set, the afterTimestamp filter is not sent to the server.
-    verifyBlocking(client) { listEvents(eq(ENGINE), eq("s1"), isNull()) }
+    // afterTimestamp is sent to the server even with numRecentEvents set; both apply.
+    verifyBlocking(client) { listEvents(eq(ENGINE), eq("s1"), eq("timestamp>=\"$threshold\"")) }
+    assertThat(session!!.events.map { it.id }).containsExactly("e3", "e4").inOrder()
   }
 
   @Test
