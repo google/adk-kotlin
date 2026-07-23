@@ -16,7 +16,7 @@
 
 @file:JvmName("FakeMcpServerMain")
 
-package com.google.adk.kt.tools.mcp
+package com.google.adk.kt.tools.mcp.it
 
 import io.modelcontextprotocol.json.McpJsonDefaults
 import io.modelcontextprotocol.server.McpServer
@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Constants shared between the fake MCP server ([main]) and the tests that launch it. */
 object FakeMcpServer {
   /** Fully-qualified name of the JVM class that holds [main] (pinned via file-level `@JvmName`). */
-  const val MAIN_CLASS = "com.google.adk.kt.tools.mcp.FakeMcpServerMain"
+  const val MAIN_CLASS = "com.google.adk.kt.tools.mcp.it.FakeMcpServerMain"
 
   /** Environment variable the test sets to a random token; the server reflects it back. */
   const val TOKEN_ENV = "ADK_MCP_FAKE_TOKEN"

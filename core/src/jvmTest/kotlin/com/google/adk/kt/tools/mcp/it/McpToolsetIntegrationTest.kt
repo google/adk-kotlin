@@ -14,48 +14,36 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.tools.mcp
+package com.google.adk.kt.tools.mcp.it
 
 import com.google.adk.kt.testing.testToolContext
-import com.google.adk.kt.tools.mcp.McpToolset.McpToolsetConfig
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
-import io.modelcontextprotocol.client.transport.ServerParameters
 import io.modelcontextprotocol.spec.McpSchema
 import java.nio.file.Files
-import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
-import kotlin.jvm.optionals.getOrNull
 import kotlin.test.BeforeTest
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.junit.Assume
 
 /**
- * End-to-end integration test for [McpToolset] over the **stdio** transport.
+ * End-to-end integration test for `McpToolset` over the **stdio** transport.
  *
  * Launches the real [FakeMcpServer] as a child JVM process and talks to it over actual stdin/stdout
  * pipes, complementing the mock-based `McpToolsetTest` by covering the seams a mocked session can't
  * reach: the subprocess + stdio transport, JSON-RPC (de)serialization, tool-call round-trips, and
  * persistent server state.
+ *
+ * Shared subprocess/PID/toolset helpers live in [McpIntegrationTestSupport].
  */
 class McpToolsetIntegrationTest {
 
-  /**
-   * Skips the whole suite when [DISABLE_IT_ENV] is set to a truthy value. The tests otherwise run
-   * by default, since the fake server has no external dependencies.
-   */
-  @BeforeTest
-  fun skipIfDisabled() {
-    val disabled =
-      setOf("true", "t", "yes", "y", "1").contains(System.getenv(DISABLE_IT_ENV)?.lowercase())
-    Assume.assumeFalse("MCP integration tests disabled via $DISABLE_IT_ENV", disabled)
-  }
+  /** Skips the whole suite when [DISABLE_IT_ENV] is set to a truthy value. */
+  @BeforeTest fun skipIfDisabled() = assumeMcpItEnabled()
 
   @Test
   fun getTools_listsToolsAdvertisedByTheServer(): Unit = runBlocking {
@@ -273,73 +261,7 @@ class McpToolsetIntegrationTest {
     }
   }
 
-  /** Builds an [McpToolset] wired to a freshly-spawned [FakeMcpServer] subprocess. */
-  // TODO(b/529753915): `progressConsumers` is plumbed but intentionally unexercised. ADK's
-  // McpTool.run never sets a progressToken on outgoing tool calls, so a spec-conformant server
-  // emits no progress and the consumer never fires. Add a conformant progress test once that gap is
-  // closed.
-  private fun newToolset(
-    token: String = INJECTED_TOKEN,
-    useMcpResources: Boolean = false,
-    pidFile: Path? = null,
-    pidDir: Path? = null,
-    requestTimeout: Duration = REQUEST_TIMEOUT,
-    progressConsumers: List<(McpSchema.ProgressNotification) -> Unit> = emptyList(),
-  ): McpToolset =
-    McpToolsetConfig(
-        stdioConnectionParams =
-          McpConnectionParameters.Stdio(
-            serverParameters = fakeServerParameters(token, pidFile, pidDir),
-            timeoutDuration = requestTimeout,
-          ),
-        useMcpResources = useMcpResources,
-      )
-      .toToolset(progressConsumers = progressConsumers)
-
-  /** Extracts the text of a single-[McpSchema.TextContent] result returned by [McpTool.run]. */
-  private fun textOf(toolResult: Any): String =
-    ((toolResult as McpSchema.CallToolResult).content().single() as McpSchema.TextContent).text()
-
-  /** Reads the PID the fake server wrote to [pidFile] (see [FakeMcpServer.PID_FILE_ENV]). */
-  private fun readPid(pidFile: Path): Long = Files.readString(pidFile).trim().toLong()
-
-  /** True if this throwable, or anything in its cause chain, is a [TimeoutException]. */
-  private fun Throwable.causedByTimeout(): Boolean =
-    generateSequence<Throwable>(this) { it.cause }.any { it is TimeoutException }
-
-  /** Best-effort kill of whatever process last recorded its PID in [pidFile]; never throws. */
-  private fun killIfRunning(pidFile: Path) {
-    runCatching { ProcessHandle.of(readPid(pidFile)).ifPresent { it.destroyForcibly() } }
-  }
-
-  /** Every PID the fake server recorded under [pidDir] (one marker file per spawned process). */
-  private fun recordedPids(pidDir: Path): List<Long> =
-    Files.list(pidDir).use { stream ->
-      stream.toList().mapNotNull { it.fileName?.toString()?.toLongOrNull() }
-    }
-
-  /** Of the PIDs recorded under [pidDir], the processes still alive. */
-  private fun liveRecordedProcesses(pidDir: Path): List<ProcessHandle> =
-    recordedPids(pidDir).mapNotNull { ProcessHandle.of(it).getOrNull() }.filter { it.isAlive }
-
-  /** Polls until no recorded process is alive (or [maxSeconds] elapses); returns the survivors. */
-  private fun awaitRecordedProcessesSettle(pidDir: Path, maxSeconds: Long): List<ProcessHandle> {
-    val deadlineNanos = System.nanoTime() + Duration.ofSeconds(maxSeconds).toNanos()
-    var live = liveRecordedProcesses(pidDir)
-    while (live.isNotEmpty() && System.nanoTime() < deadlineNanos) {
-      Thread.sleep(50)
-      live = liveRecordedProcesses(pidDir)
-    }
-    return live
-  }
-
   private companion object {
-    /** Env var that, when truthy, skips this suite (e.g. sandboxes that forbid subprocesses). */
-    private const val DISABLE_IT_ENV = "ADK_MCP_DISABLE_IT"
-
-    /** Request timeout for stdio calls; generous to absorb cold child-JVM startup on CI. */
-    private val REQUEST_TIMEOUT: Duration = Duration.ofSeconds(30)
-
     /** How long to wait for a SIGKILL'd child process to actually exit before failing. */
     private const val KILL_TIMEOUT_SECONDS: Long = 10
 
@@ -364,40 +286,5 @@ class McpToolsetIntegrationTest {
 
     /** How long to wait, after close(), for the toolset's child processes to actually exit. */
     private const val SETTLE_TIMEOUT_SECONDS: Long = 5
-
-    /**
-     * A fixed, non-semantic token injected into the server's environment and reflected back by the
-     * `whoami` tool and `mem://greeting` resource.
-     */
-    private const val INJECTED_TOKEN = "injected-token-probe"
-
-    /**
-     * Builds the [ServerParameters] that launch [FakeMcpServer] as a child JVM.
-     *
-     * We reuse this test JVM's own `java` binary and classpath, which already contain the fake
-     * server class and the MCP SDK (the SDK is a `jvmMain` dependency, visible on the test runtime
-     * classpath). When [pidFile] / [pidDir] are non-null, the server is told to record its PID
-     * there so a test can find and kill the child process(es).
-     */
-    private fun fakeServerParameters(
-      token: String,
-      pidFile: Path? = null,
-      pidDir: Path? = null,
-    ): ServerParameters {
-      val builder =
-        ServerParameters.builder(javaBinary())
-          .args("-cp", System.getProperty("java.class.path"), FakeMcpServer.MAIN_CLASS)
-          .addEnvVar(FakeMcpServer.TOKEN_ENV, token)
-      if (pidFile != null) {
-        builder.addEnvVar(FakeMcpServer.PID_FILE_ENV, pidFile.toString())
-      }
-      if (pidDir != null) {
-        builder.addEnvVar(FakeMcpServer.PID_DIR_ENV, pidDir.toString())
-      }
-      return builder.build()
-    }
-
-    private fun javaBinary(): String =
-      Path.of(System.getProperty("java.home")!!, "bin", "java").toString()
   }
 }
