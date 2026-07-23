@@ -93,27 +93,12 @@ fun main() {
   )
   recordPidIfRequested()
 
-  // The transport reads JSON-RPC requests from System.in and writes responses to System.out. We use
-  // the same default JSON mapper the ADK client uses (see DefaultMcpTransportBuilder) so the two
-  // ends encode identically.
+  // The stdio transport reads JSON-RPC requests from System.in and writes responses to System.out.
+  // We use the same default JSON mapper the ADK client uses (see DefaultMcpTransportBuilder) so the
+  // two ends encode identically. The server definition itself (tools, resources, capabilities) is
+  // transport-agnostic and lives in buildFakeMcpServer, which the HTTP integration suite reuses.
   val transportProvider = StdioServerTransportProvider(McpJsonDefaults.getMapper())
-
-  val server: McpSyncServer =
-    McpServer.sync(transportProvider)
-      .serverInfo(FakeMcpServer.SERVER_NAME, FakeMcpServer.SERVER_VERSION)
-      .capabilities(
-        McpSchema.ServerCapabilities.builder()
-          .tools(false) // tools capability present; listChanged = false
-          .resources(
-            false,
-            false,
-          ) // resources capability present; subscribe = false, listChanged = false
-          .logging() // accept the client's logging consumer
-          .build()
-      )
-      .tools(toolSpecifications())
-      .resources(resourceSpecifications())
-      .build()
+  val server: McpSyncServer = buildFakeMcpServer(McpServer.sync(transportProvider), tokenFromEnv())
 
   // There is no in-band "shutdown" message over stdio: the ADK client's StdioClientTransport
   // terminates this child process (SIGTERM) when it closes. The transport also serves requests on
@@ -131,10 +116,47 @@ fun main() {
   shutdownLatch.await()
 }
 
+/**
+ * Builds the fake MCP server's transport-agnostic definition -- server info, capabilities, tools,
+ * and resources -- on top of [spec] and returns the built [McpSyncServer].
+ *
+ * The caller supplies [spec] from the transport-specific `McpServer.sync(...)` overload: a
+ * [StdioServerTransportProvider] for [main], or an HTTP servlet transport provider for the HTTP
+ * integration suite. Everything configured here is identical across transports, so the two suites
+ * exercise the same tools and resources.
+ *
+ * @param token the per-run token the `whoami` tool and `mem://greeting` resource reflect back. For
+ *   stdio it comes from the environment ([tokenFromEnv]); in-process transports pass it directly.
+ */
+fun buildFakeMcpServer(spec: McpServer.SyncSpecification<*>, token: String): McpSyncServer =
+  spec
+    .serverInfo(FakeMcpServer.SERVER_NAME, FakeMcpServer.SERVER_VERSION)
+    .capabilities(
+      McpSchema.ServerCapabilities.builder()
+        .tools(false) // tools capability present; listChanged = false
+        .resources(
+          false,
+          false,
+        ) // resources capability present; subscribe = false, listChanged = false
+        .logging() // accept the client's logging consumer
+        .build()
+    )
+    .tools(toolSpecifications(token))
+    .resources(resourceSpecifications(token))
+    .build()
+
 // Tools
 
-private fun toolSpecifications(): List<SyncToolSpecification> =
-  listOf(echoTool(), addTool(), counterTool(), whoamiTool(), slowTool(), failTool(), hangTool())
+private fun toolSpecifications(token: String): List<SyncToolSpecification> =
+  listOf(
+    echoTool(),
+    addTool(),
+    counterTool(),
+    whoamiTool(token),
+    slowTool(),
+    failTool(),
+    hangTool(),
+  )
 
 /**
  * Builds a [SyncToolSpecification] from a tool's [name], [description], [inputSchema], and
@@ -191,13 +213,13 @@ private fun counterTool(): SyncToolSpecification =
     textResult(callCounter.incrementAndGet().toString())
   }
 
-/** `whoami() -> token`: returns the per-run token the test injected through the environment. */
-private fun whoamiTool(): SyncToolSpecification =
+/** `whoami() -> token`: returns the per-run [token] the test injected when it built the server. */
+private fun whoamiTool(token: String): SyncToolSpecification =
   syncTool(
     name = FakeMcpServer.TOOL_WHOAMI,
     description = "Returns the per-run token injected through the environment.",
   ) { _, _ ->
-    textResult(injectedToken())
+    textResult(token)
   }
 
 /**
@@ -264,10 +286,11 @@ private fun hangTool(): SyncToolSpecification =
 
 // Resources
 
-private fun resourceSpecifications(): List<SyncResourceSpecification> = listOf(greetingResource())
+private fun resourceSpecifications(token: String): List<SyncResourceSpecification> =
+  listOf(greetingResource(token))
 
-/** `mem://greeting`: a short text resource that embeds the injected token. */
-private fun greetingResource(): SyncResourceSpecification {
+/** `mem://greeting`: a short text resource that embeds the injected [token]. */
+private fun greetingResource(token: String): SyncResourceSpecification {
   val resource =
     McpSchema.Resource.builder()
       .uri(FakeMcpServer.RESOURCE_GREETING_URI)
@@ -276,13 +299,18 @@ private fun greetingResource(): SyncResourceSpecification {
       .mimeType("text/plain")
       .build()
   return SyncResourceSpecification(resource) { _, request ->
-    textResource(request.uri(), "hello from ${FakeMcpServer.SERVER_NAME}, token=${injectedToken()}")
+    textResource(request.uri(), "hello from ${FakeMcpServer.SERVER_NAME}, token=$token")
   }
 }
 
 // Small helpers
 
-private fun injectedToken(): String = System.getenv(FakeMcpServer.TOKEN_ENV) ?: "<no-token>"
+/**
+ * The per-run token the parent test injects through [FakeMcpServer.TOKEN_ENV] when it launches this
+ * process over stdio; falls back to a sentinel when unset. Used only by [main] -- the transport-
+ * agnostic [buildFakeMcpServer] takes the token as a parameter instead.
+ */
+private fun tokenFromEnv(): String = System.getenv(FakeMcpServer.TOKEN_ENV) ?: "<no-token>"
 
 /**
  * Records this process's PID so a test can find and kill it.

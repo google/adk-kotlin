@@ -28,23 +28,21 @@ import kotlin.test.assertNotNull
 import kotlinx.coroutines.reactor.mono
 import kotlinx.coroutines.test.runTest
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doReturnConsecutively
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.times
-import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyBlocking
 import org.mockito.kotlin.whenever
 
 class McpToolTest {
   private val mockMcpSession = mock<McpAsyncClient>()
+  // The tool fetches its session from the manager on each run; hand it the shared mock session.
+  private val mockSessionManager =
+    mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
   private val mcpSchemaTool = McpSchema.Tool.builder().name("testTool").build()
-  private val mcpTool =
-    McpTool(
-      "testTool",
-      "description",
-      mcpSchemaTool,
-      mockMcpSession,
-      McpSessionManager(McpConnectionParameters.Sse(url = "http://localhost:1234")),
-    )
+  private val mcpTool = McpTool("testTool", "description", mcpSchemaTool, mockSessionManager)
   private val toolContext = testToolContext()
 
   @Test
@@ -52,14 +50,7 @@ class McpToolTest {
     val annotations = McpSchema.ToolAnnotations("title", null, null, null, null, null)
     val mcpSchemaToolWithAnnotations =
       McpSchema.Tool.builder().name("testTool").annotations(annotations).build()
-    val tool =
-      McpTool(
-        "testTool",
-        "description",
-        mcpSchemaToolWithAnnotations,
-        mockMcpSession,
-        McpSessionManager(McpConnectionParameters.Sse(url = "http://localhost:1234")),
-      )
+    val tool = McpTool("testTool", "description", mcpSchemaToolWithAnnotations, mockSessionManager)
     assertEquals(annotations, tool.annotations)
   }
 
@@ -67,20 +58,8 @@ class McpToolTest {
   fun meta_returnsMeta() {
     val meta = mapOf("key" to "value")
     val mcpSchemaToolWithMeta = McpSchema.Tool.builder().name("testTool").meta(meta).build()
-    val tool =
-      McpTool(
-        "testTool",
-        "description",
-        mcpSchemaToolWithMeta,
-        mockMcpSession,
-        McpSessionManager(McpConnectionParameters.Sse(url = "http://localhost:1234")),
-      )
+    val tool = McpTool("testTool", "description", mcpSchemaToolWithMeta, mockSessionManager)
     assertEquals(meta, tool.meta)
-  }
-
-  @Test
-  fun getMcpSession_returnsSession() {
-    assertEquals(mockMcpSession, mcpTool.mcpSessionClient)
   }
 
   @Test
@@ -148,14 +127,7 @@ class McpToolTest {
         .name("malformedTool")
         .inputSchema(McpSchema.JsonSchema("invalid-type", null, null, false, null, null))
         .build()
-    val tool =
-      McpTool(
-        "malformedTool",
-        "description",
-        malformedMcpSchemaTool,
-        mockMcpSession,
-        McpSessionManager(McpConnectionParameters.Sse(url = "http://localhost:1234")),
-      )
+    val tool = McpTool("malformedTool", "description", malformedMcpSchemaTool, mockSessionManager)
     assertFailsWith<McpToolException.McpToolDeclarationException> { tool.declaration() }
   }
 
@@ -164,32 +136,30 @@ class McpToolTest {
     val responseContent = McpSchema.TextContent("test result")
     val invokeResponse = McpSchema.CallToolResult.builder().content(listOf(responseContent)).build()
 
-    val mockInitializeResult =
-      McpSchema.InitializeResult(
-        "1.0",
-        McpSchema.ServerCapabilities(null, null, null, null, null, null),
-        McpSchema.Implementation("test-server", "1.0", null),
-        "instructions",
-        null,
-      )
-
-    val mockNewMcpSession = mock<McpAsyncClient>()
-    whenever(mockNewMcpSession.initialize()) doReturn mono { mockInitializeResult }
-    whenever(mockNewMcpSession.callTool(any()))
+    // The initial (pooled) session always fails; each failure re-fetches from the manager (passing
+    // the failed session as `stale`), which yields a recovering session that fails twice more
+    // before finally succeeding.
+    val mockRecoveringSession = mock<McpAsyncClient>()
+    whenever(mockRecoveringSession.callTool(any()))
       .thenThrow(RuntimeException("new session fail 1"))
       .thenThrow(RuntimeException("new session fail 2"))
       .thenReturn(mono { invokeResponse })
-
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()).thenReturn(mockNewMcpSession)
-
-    val mcpToolWithRetry =
-      McpTool("testTool", "description", mcpSchemaTool, mockMcpSession, mockSessionManager)
     whenever(mockMcpSession.callTool(any())).thenThrow(RuntimeException("old session fail"))
+
+    // First fetch (stale=null) returns the failing session; subsequent stale-driven fetches return
+    // the recovering one.
+    val mockSessionManager =
+      mock<SessionManager> {
+        onBlocking { getSession(any(), anyOrNull()) } doReturnConsecutively
+          listOf(mockMcpSession, mockRecoveringSession)
+      }
+
+    val mcpToolWithRetry = McpTool("testTool", "description", mcpSchemaTool, mockSessionManager)
 
     val result = mcpToolWithRetry.run(toolContext, emptyMap())
     assertSingleTextResult(result, "test result")
-    verify(mockSessionManager, times(3)).createAsyncSession()
+    // Four call attempts (initial + 3 retries) ⇒ four session fetches through the manager.
+    verifyBlocking(mockSessionManager, times(4)) { getSession(any(), anyOrNull()) }
   }
 
   /**
