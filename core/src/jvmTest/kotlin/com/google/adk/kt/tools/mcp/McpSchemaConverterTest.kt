@@ -33,4 +33,27 @@ class McpSchemaConverterTest {
     assertFailsWith<IllegalArgumentException> { McpSchemaConverter.parseTypeString("unknown") }
     assertEquals(Type.TYPE_UNSPECIFIED, McpSchemaConverter.parseTypeString(null))
   }
+
+  @Test
+  fun parsePropertyMap_stringType_usesThatType() {
+    val schema = McpSchemaConverter.parsePropertyMap(mapOf("type" to "boolean"))
+
+    assertEquals(Type.BOOLEAN, schema.type)
+  }
+
+  @Test
+  fun parsePropertyMap_singleElementTypeList_usesThatType() {
+    val schema = McpSchemaConverter.parsePropertyMap(mapOf("type" to listOf("integer")))
+
+    assertEquals(Type.INTEGER, schema.type)
+  }
+
+  @Test
+  fun parsePropertyMap_unionType_narrowsToFirstType() {
+    // A JSON-schema union type (e.g. ["string", "null"]) is unsupported by ADK schemas, so it is
+    // narrowed to its first entry and a warning is logged.
+    val schema = McpSchemaConverter.parsePropertyMap(mapOf("type" to listOf("string", "null")))
+
+    assertEquals(Type.STRING, schema.type)
+  }
 }

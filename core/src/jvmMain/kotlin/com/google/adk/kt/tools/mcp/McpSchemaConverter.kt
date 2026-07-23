@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools.mcp
 
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
@@ -24,6 +25,8 @@ import io.modelcontextprotocol.spec.McpSchema.JsonSchema
 
 /** Converts between MCP schema types and ADK types. */
 internal object McpSchemaConverter {
+
+  private val logger = LoggerFactory.getLogger(McpSchemaConverter::class)
 
   /** Converts an [McpSchema.Tool] to an [FunctionDeclaration]. */
   fun McpSchema.Tool.toAdkFunctionDeclaration(): FunctionDeclaration {
@@ -96,6 +99,12 @@ internal object McpSchemaConverter {
         is List<*> -> {
           val typeList = typeValue.filterIsInstance<String>()
           if (typeList.isNotEmpty()) {
+            if (typeList.size > 1) {
+              logger.warn {
+                "MCP tool schema declares a union type $typeList; ADK schemas support a single " +
+                  "type, so only \"${typeList.first()}\" is used and the remaining types are ignored."
+              }
+            }
             typeList.first()
           } else {
             null
