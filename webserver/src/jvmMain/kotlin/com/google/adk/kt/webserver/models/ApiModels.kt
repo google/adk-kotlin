@@ -18,7 +18,16 @@ package com.google.adk.kt.webserver.models
 
 import com.google.adk.kt.types.Content
 import kotlinx.serialization.Contextual
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+
+/** Response for the `/version` endpoint. */
+@Serializable
+data class VersionInfo(
+  val version: String,
+  val language: String,
+  @SerialName("language_version") val languageVersion: String,
+)
 
 @Serializable
 data class AgentRunRequest(

@@ -531,7 +531,7 @@ data class InvocationContext(
                 functionResponse =
                   FunctionResponse(
                     name = tool.name,
-                    response = toFinalResponseMap(toolResult),
+                    response = toResponseMapPreservingNulls(toolResult),
                     id = toolContext.functionCallId,
                   )
               )
@@ -641,6 +641,24 @@ data class InvocationContext(
    */
   @OptIn(FrameworkInternalApi::class)
   private fun toTraceJson(payload: Any?): JsonElement = anyToJsonElement(payload)
+
+  /**
+   * Like [toFinalResponseMap] but preserves null values in the response dict (e.g. `{result:
+   * null}`); only entries with non-String keys are dropped. The genai `FunctionResponse` allows
+   * null values, so the function-response *event* keeps them. (The after-tool callback path still
+   * receives the null-dropped [toFinalResponseMap] to preserve its non-null `Map<String, Any>`
+   * contract.)
+   *
+   * TODO(b/536808100): unify with [toFinalResponseMap] so the callback path preserves nulls too.
+   */
+  private fun toResponseMapPreservingNulls(payload: Any?): Map<String, Any?> =
+    if (payload !is Map<*, *>) {
+      mapOf(BaseTool.RESULT_KEY to payload)
+    } else {
+      payload.entries
+        .mapNotNull { entry -> (entry.key as? String)?.let { key -> key to entry.value } }
+        .toMap()
+    }
 
   private fun safeCastToMapStringAny(value: Any?): Map<String, Any> {
     if (value !is Map<*, *>) return emptyMap()

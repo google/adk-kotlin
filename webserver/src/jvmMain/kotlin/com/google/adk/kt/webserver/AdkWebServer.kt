@@ -18,12 +18,14 @@ package com.google.adk.kt.webserver
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.webserver.AdkWebServer.StatusAwareLogger
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.adk.kt.webserver.routes.appRoutes
 import com.google.adk.kt.webserver.routes.artifactRoutes
 import com.google.adk.kt.webserver.routes.debugRoutes
@@ -45,6 +47,7 @@ import io.ktor.server.plugins.callloging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.uri
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
@@ -66,6 +69,7 @@ class AdkWebServer(
   private val agentLoader: AgentLoader,
   private val apiServerSpanExporter: ApiServerSpanExporter,
   private val captureMessageContent: Boolean = false,
+  private val plugins: List<Plugin> = emptyList(),
 ) {
   @Deprecated(
     message = "Use constructor without runner",
@@ -94,6 +98,9 @@ class AdkWebServer(
 
   companion object {
     private val logger = LoggerFactory.getLogger(AdkWebServer::class.java)
+
+    /** The ADK Kotlin version reported by the `/version` endpoint. */
+    fun adkVersion(): String = com.google.adk.kt.VERSION
   }
 
   private var server: ApplicationEngine? = null
@@ -109,6 +116,7 @@ class AdkWebServer(
             agentLoader,
             apiServerSpanExporter,
             captureMessageContent,
+            plugins,
           )
         }
         .start(wait = wait)
@@ -139,6 +147,7 @@ fun Application.adkModule(
   agentLoader: AgentLoader,
   apiServerSpanExporter: ApiServerSpanExporter,
   captureMessageContent: Boolean = false,
+  plugins: List<Plugin> = emptyList(),
 ) {
   install(CallLogging) {
     level = Level.INFO
@@ -175,12 +184,21 @@ fun Application.adkModule(
 
   routing {
     get("/api/health") { call.respondText("OK") }
+    get("/version") {
+      call.respond(
+        VersionInfo(
+          version = AdkWebServer.adkVersion(),
+          language = "kotlin",
+          languageVersion = System.getProperty("java.version", "unknown"),
+        )
+      )
+    }
     appRoutes(agentLoader)
     artifactRoutes(artifactService)
     debugRoutes(apiServerSpanExporter)
     evalRoutes()
     graphRoutes(agentLoader, sessionService)
-    runRoutes(agentLoader, sessionService, artifactService)
+    runRoutes(agentLoader, sessionService, artifactService, plugins)
     sessionRoutes(sessionService)
     staticRoutes(this@adkModule)
   }
