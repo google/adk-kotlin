@@ -22,19 +22,17 @@ plugins {
   alias(libs.plugins.ksp)
 }
 
-// Standard Firebase developer setup for the Firebase example: the `com.google.gms.google-services`
-// plugin reads a `google-services.json` from this module's root and generates the default
-// FirebaseApp configuration so `FirebaseApp.getInstance()` works with zero code. The plugin is
-// applied only when a developer has dropped their own file in. When it is absent the app still
-// builds and the Firebase example falls back to the FIREBASE_* environment variables (see
-// FirebaseChatActivity). Read README.md for setup.
+// Standard Firebase developer setup for the Firebase-backed examples (Skills, Firebase AI):
+// the `com.google.gms.google-services` plugin reads a `google-services.json` from this module's
+// root and generates the default FirebaseApp so `FirebaseApp.getInstance()` works with zero code.
+// It is applied only when a developer drops their own file in; when absent the app still builds
+// and those examples fall back to the FIREBASE_* env vars (see FirebaseAppResolver). See README.
 if (file("google-services.json").exists()) {
   apply(plugin = "com.google.gms.google-services")
 }
 
-// The build-time fallback config keys for the Firebase example, read as Gradle properties or
-// environment variables. Shared by the manifest-placeholder loop and the "no configuration"
-// diagnostic below.
+// Build-time fallback config keys for the Firebase-backed examples, read as Gradle properties or
+// env vars. Shared by the manifest-placeholder loop and the "no configuration" diagnostic below.
 val firebaseConfigKeys = listOf("FIREBASE_API_KEY", "FIREBASE_APP_ID", "FIREBASE_PROJECT_ID")
 
 android {
@@ -52,10 +50,10 @@ android {
     versionCode = 1
     versionName = "0.1.0"
 
-    // Fallback Firebase-config path for the Firebase example (see FirebaseChatActivity): when no
-    // google-services.json is present, the Firebase config can instead be baked into the APK at
-    // build time as manifest metadata, sourced from Gradle properties (-PFIREBASE_API_KEY=...) or
-    // the matching environment variables.
+    // Fallback Firebase-config path for the Firebase-backed examples (see FirebaseAppResolver).
+    // When no google-services.json is present, the Firebase config can instead be baked into the
+    // APK at build time as manifest metadata, sourced from Gradle properties
+    // (-PFIREBASE_API_KEY=...) or the matching environment variables.
     for (name in firebaseConfigKeys) {
       manifestPlaceholders[name] =
         providers
@@ -76,9 +74,9 @@ android {
   }
 }
 
-// Build-time diagnostic for the Firebase example: if neither a google-services.json nor a complete
-// set of FIREBASE_* values is present, the produced APK has no usable Firebase config, so the
-// Firebase example shows a "no configuration" message at runtime.
+// Build-time diagnostic for the Firebase-backed examples: if neither a google-services.json nor a
+// complete set of FIREBASE_* values is present, the produced APK has no usable Firebase config, so
+// those examples show a "no configuration" message at runtime.
 run {
   val hasGoogleServicesJson = file("google-services.json").exists()
   val missingKeys = firebaseConfigKeys.filter { name ->
@@ -93,9 +91,10 @@ run {
     val log = logger
     val message =
       "examples/android: building without a usable Firebase configuration. The app will build " +
-        "and launch, but its Firebase example will show a \"No Firebase configuration found\" " +
-        "message instead of calling Firebase. Add a google-services.json to examples/android/, " +
-        "or pass -PFIREBASE_API_KEY=... -PFIREBASE_APP_ID=... -PFIREBASE_PROJECT_ID=... " +
+        "and launch, but its Firebase-backed examples (Skills, Firebase AI) will show a \"No " +
+        "Firebase configuration found\" message instead of calling Firebase. Add a " +
+        "google-services.json to examples/android/, or pass -PFIREBASE_API_KEY=... " +
+        "-PFIREBASE_APP_ID=... -PFIREBASE_PROJECT_ID=... " +
         "(missing: ${missingKeys.joinToString()}). See examples/android/README.md."
     // Fire only when this app's build/install tasks are actually scheduled (not on every Gradle
     // configuration).

@@ -8,7 +8,9 @@ Each menu entry opens one self-contained example `Activity`:
 -   **Room session** — an on-device agent whose conversation is persisted across
     restarts by the Room-backed session service.
 -   **Skills (AssetSkillSource)** — an agent whose `SkillToolset` reads skill
-    definitions from the APK's `assets/skills/...` tree.
+    definitions from the APK's `assets/skills/...` tree, backed by the cloud
+    Firebase AI (Gemini) model so its function calling reliably drives the
+    toolset.
 -   **ML Kit chat** — a multi-turn chat with an on-device Gemini Nano agent,
     with a streaming toggle.
 -   **Firebase AI** — a chat backed by the cloud Firebase AI (Gemini) model from
@@ -16,11 +18,11 @@ Each menu entry opens one self-contained example `Activity`:
     both plain chat and tool calling (via
     [`WeatherTools.kt`](src/main/kotlin/com/google/adk/kt/examples/android/firebase/WeatherTools.kt)).
 
-The first three run fully on-device through ML Kit's Gemini Nano, so they need
-no API key or network (the first run may download Gemini Nano). The **Firebase
-AI** example calls the cloud Firebase backend, so it needs a Firebase
-configuration and network access — see
-[Configure Firebase](#configure-firebase-only-for-the-firebase-ai-example)
+**Room session** and **ML Kit chat** run fully on-device through ML Kit's Gemini
+Nano, so they need no API key or network (the first run may download Gemini
+Nano). The **Skills (AssetSkillSource)** and **Firebase AI** examples call the
+cloud Firebase backend, so they need a Firebase configuration and network access
+— see [Configure Firebase](#configure-firebase-for-the-firebase-backed-examples)
 below.
 
 ## Build & run
@@ -33,10 +35,11 @@ With a device or emulator connected:
 
 Then launch **"ADK Android Examples"** from the launcher and pick an example.
 
-## Configure Firebase (only for the Firebase AI example)
+## Configure Firebase (for the Firebase-backed examples)
 
-The Firebase AI example needs to know which Firebase project to talk to; the
-other examples don't need any of this. Two ways, in order of preference:
+The **Skills (AssetSkillSource)** and **Firebase AI** examples need to know
+which Firebase project to talk to; the on-device examples (Room session, ML Kit
+chat) don't need any of this. Two ways, in order of preference:
 
 ### 1. `google-services.json` (standard Firebase setup — recommended)
 
@@ -77,12 +80,15 @@ or export the matching `FIREBASE_API_KEY` / `FIREBASE_APP_ID` /
 build time, not from the device's environment.)
 
 If neither method provides a configuration, the Gradle build prints a warning,
-and the Firebase AI example starts but shows a message explaining what to add
-instead of calling Firebase with a blank config. The other examples are
-unaffected.
+and the Firebase-backed examples (Skills, Firebase AI) start but show a message
+explaining what to add instead of calling Firebase with a blank config. The
+on-device examples are unaffected.
 
 To change the model, edit `MODEL_NAME` in
-[`FirebaseChatAgent.kt`](src/main/kotlin/com/google/adk/kt/examples/android/firebase/FirebaseChatAgent.kt).
+[`FirebaseChatAgent.kt`](src/main/kotlin/com/google/adk/kt/examples/android/firebase/FirebaseChatAgent.kt)
+(Firebase AI example) or
+[`WizardApprenticeAgent.kt`](src/main/kotlin/com/google/adk/kt/examples/android/skillsassetsource/WizardApprenticeAgent.kt)
+(Skills example).
 
 > Note: the `FIREBASE_*` values (like those in `google-services.json`) are
 > project *identifiers*, not secrets — they're public by design and always end

@@ -17,30 +17,40 @@
 package com.google.adk.kt.examples.android.skillsassetsource
 
 import android.content.Context
+import com.google.adk.firebase.models.Firebase
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
-import com.google.adk.kt.mlkit.GenaiPrompt
-import com.google.adk.kt.mlkit.GenerativeModelHelpers
 import com.google.adk.kt.skills.AssetSkillSource
 import com.google.adk.kt.tools.SkillToolset
+import com.google.firebase.FirebaseApp
+import com.google.firebase.ai.FirebaseAI
 
 /**
  * Builds the "wizard's apprentice" [LlmAgent] used by [SkillsAssetSourceActivity].
  *
  * The agent's [SkillToolset] is backed by an [AssetSkillSource] that reads spell definitions and
- * resources from the APK's `assets/skills/...` tree. The agent runs fully on-device through ML
- * Kit's Gemini Nano ([GenaiPrompt]), so no API key or network is required. On-device tool /
- * function-call support depends on the device's Gemini Nano capabilities; the example still shows
- * how to wire a [SkillToolset] from packaged assets.
+ * resources from the APK's `assets/skills/...` tree. The model is the cloud Firebase AI (Gemini)
+ * backend from the `:google-adk-kotlin-firebase` module; its reliable function calling drives the
+ * toolset's `list_skills` / `load_skill` / `load_skill_resource` tools. This needs a Firebase
+ * configuration and network access (see the app README.md).
  */
 internal object WizardApprenticeAgent {
   const val NAME: String = "wizard_apprentice"
 
-  suspend fun create(context: Context): LlmAgent =
+  /**
+   * The Firebase AI model to use. Any model available to your Firebase project works; override it
+   * if this one is not enabled for you.
+   */
+  private const val MODEL_NAME: String = "gemini-3.5-flash"
+
+  /**
+   * Builds the agent against the given (already initialized) [firebaseApp], reading skills from
+   * [context]'s APK assets.
+   */
+  fun create(context: Context, firebaseApp: FirebaseApp): LlmAgent =
     LlmAgent(
       name = NAME,
-      model =
-        GenaiPrompt.create(GenerativeModelHelpers.initGenerativeModel(), name = "gemini-nano"),
+      model = Firebase.create(MODEL_NAME, FirebaseAI.getInstance(firebaseApp)),
       instruction =
         Instruction(
           """

@@ -26,6 +26,7 @@ import android.widget.TextView
 import com.google.adk.kt.examples.android.common.ScopedExampleActivity
 import com.google.adk.kt.examples.android.common.foldTextParts
 import com.google.adk.kt.examples.android.common.setExampleContentView
+import com.google.adk.kt.examples.android.firebase.FirebaseAppResolver
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.Content
@@ -39,8 +40,10 @@ import kotlinx.coroutines.launch
  * [com.google.adk.kt.skills.AssetSkillSource] reading skills from `assets/skills/...` packaged into
  * the APK.
  *
- * The agent runs fully on-device through ML Kit's Gemini Nano, so no API key or network is
- * required.
+ * The agent is backed by the cloud Firebase AI (Gemini) model (see [WizardApprenticeAgent]), whose
+ * reliable function calling drives the toolset. It therefore needs a Firebase configuration and
+ * network access; the Firebase-setup plumbing lives in [FirebaseAppResolver]. See the app README.md
+ * for setup.
  */
 // Hardcoded UI strings are intentional in this minimal example; a real app would use resources.
 @Suppress("SetTextI18n")
@@ -49,7 +52,7 @@ class SkillsAssetSourceActivity : ScopedExampleActivity() {
   private val sessionService = InMemorySessionService()
 
   /**
-   * Built asynchronously in [onCreate] because initializing the on-device model is a suspend call.
+   * Built in [onCreate] once a FirebaseApp is resolved; null means the agent could not be created.
    */
   private var runner: InMemoryRunner? = null
 
@@ -61,33 +64,36 @@ class SkillsAssetSourceActivity : ScopedExampleActivity() {
     super.onCreate(savedInstanceState)
     setExampleContentView("Skills (AssetSkillSource)", buildContent())
 
-    sendButton.isEnabled = false
-    scope.launch {
-      runner =
-        try {
-          val agent = WizardApprenticeAgent.create(applicationContext)
-          InMemoryRunner(agent = agent, appName = APP_NAME, sessionService = sessionService)
-        } catch (e: Throwable) {
-          appendToTranscript(
-            "On-device model unavailable on this device: ${e.message ?: e::class.simpleName}"
-          )
-          null
-        }
-      if (runner != null) {
-        runOnUiThread { sendButton.isEnabled = true }
-        appendToTranscript(
-          "Ready. Try: \"Cast a fireball at the goblin\" or \"Summon a familiar\"."
-        )
-      }
+    val firebaseApp = FirebaseAppResolver.resolve(applicationContext)
+    if (firebaseApp == null) {
+      appendToTranscript(
+        "No Firebase configuration found. Add a google-services.json to the examples/android/ " +
+          "module (standard setup), or rebuild supplying -PFIREBASE_API_KEY=... " +
+          "-PFIREBASE_APP_ID=... -PFIREBASE_PROJECT_ID=... (or the matching environment " +
+          "variables). See the app README.md."
+      )
+      sendButton.isEnabled = false
+      return
     }
+
+    runner =
+      try {
+        InMemoryRunner(
+          agent = WizardApprenticeAgent.create(applicationContext, firebaseApp),
+          appName = APP_NAME,
+          sessionService = sessionService,
+        )
+      } catch (e: Throwable) {
+        appendToTranscript("Failed to build agent: ${e.message ?: e::class.simpleName}")
+        sendButton.isEnabled = false
+        return
+      }
+
+    appendToTranscript("Ready. Try: \"Cast a fireball at the goblin\" or \"Summon a familiar\".")
   }
 
   private fun sendToAgent(text: String) {
-    val activeRunner = runner
-    if (activeRunner == null) {
-      appendToTranscript("Model is not ready yet.")
-      return
-    }
+    val activeRunner = runner ?: return
 
     appendToTranscript("you: $text")
     scope.launch {

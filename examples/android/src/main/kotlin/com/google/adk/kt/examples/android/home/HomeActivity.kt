@@ -56,7 +56,7 @@ class HomeActivity : Activity() {
       )
       addView(
         exampleButton(
-          "Skills (AssetSkillSource) — on-device Gemini Nano, skills from APK assets",
+          "Skills (AssetSkillSource) — cloud Gemini (Firebase AI), skills from APK assets",
           SkillsAssetSourceActivity::class.java,
         )
       )
