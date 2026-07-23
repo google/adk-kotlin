@@ -89,7 +89,9 @@ kotlin {
       dependsOn(commonJvmAndroidMain)
       dependencies {
         implementation(libs.google.gson)
+        implementation(libs.google.cloud.bigquery)
         implementation(libs.google.cloud.storage)
+        implementation(libs.arrow.vector)
         implementation(libs.mcp)
         implementation(libs.ktor.client.core)
         implementation(libs.ktor.client.java)
