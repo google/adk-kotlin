@@ -38,6 +38,12 @@ import com.google.firebase.FirebaseOptions
  */
 internal object FirebaseAppResolver {
 
+  /** Shown by the Firebase-backed examples when [resolve] returns null. */
+  const val NO_CONFIG_MESSAGE =
+    "No Firebase configuration found. Add a google-services.json to the examples/android/ module " +
+      "(standard setup), or rebuild supplying -PFIREBASE_API_KEY=... -PFIREBASE_APP_ID=... " +
+      "-PFIREBASE_PROJECT_ID=... (or the matching environment variables). See the app README.md."
+
   /** Prefix of the manifest metadata keys holding the build-time fallback config. */
   private const val META_DATA_PREFIX = "com.google.adk."
 

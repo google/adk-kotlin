@@ -16,19 +16,20 @@
 
 package com.google.adk.kt.examples.android.common
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
 /**
- * Base [Activity] for the examples that run an agent off the main thread.
+ * Base [ComponentActivity] for the examples that run an agent off the main thread.
  *
- * Provides a single [scope] whose lifetime is tied to the Activity: it is cancelled in [onDestroy],
- * so coroutines launched from it stop when the user leaves (back-press, `finish()`, or process
- * death) instead of running on — and posting UI updates to — a destroyed Activity.
+ * [ComponentActivity] (rather than a plain `Activity`) so screens can use Jetpack Compose
+ * (`setContent`). Provides a single [scope] whose lifetime is tied to the Activity: it is cancelled
+ * in [onDestroy], so coroutines launched from it stop when the user leaves (back-press, `finish()`,
+ * or process death) instead of running on — and posting UI updates to — a destroyed Activity.
  */
-abstract class ScopedExampleActivity : Activity() {
+abstract class ScopedExampleActivity : ComponentActivity() {
 
   /**
    * Coroutine scope for agent work. Coroutines launch on the default dispatcher; UI updates are

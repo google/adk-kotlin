@@ -26,6 +26,8 @@ plugins {
   kotlin("plugin.serialization") version "2.3.21" apply false
   alias(libs.plugins.gradle.test.retry) apply false
   alias(libs.plugins.google.services) apply false
+  // Compose compiler plugin, pinned to AGP's built-in Kotlin version (see examples/android).
+  alias(libs.plugins.compose.compiler) apply false
 }
 
 val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()

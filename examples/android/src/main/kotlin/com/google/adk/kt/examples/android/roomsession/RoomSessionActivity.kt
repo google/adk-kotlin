@@ -17,17 +17,20 @@
 package com.google.adk.kt.examples.android.roomsession
 
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.examples.android.common.ScopedExampleActivity
 import com.google.adk.kt.examples.android.common.foldTextParts
-import com.google.adk.kt.examples.android.common.setExampleContentView
+import com.google.adk.kt.examples.android.common.ui.AdkExamplesTheme
+import com.google.adk.kt.examples.android.common.ui.ChatAuthor
+import com.google.adk.kt.examples.android.common.ui.ChatMessage
+import com.google.adk.kt.examples.android.common.ui.ChatScreen
 import com.google.adk.kt.mlkit.GenaiPrompt
 import com.google.adk.kt.mlkit.GenerativeModelHelpers
 import com.google.adk.kt.runners.InMemoryRunner
@@ -48,8 +51,6 @@ import kotlinx.coroutines.launch
  * network is required. Because the session lives on disk, relaunching the app reloads the prior
  * conversation via [RoomSessionService.getSession].
  */
-// Hardcoded UI strings are intentional in this minimal example; a real app would use resources.
-@Suppress("SetTextI18n")
 class RoomSessionActivity : ScopedExampleActivity() {
 
   // The Room-backed, on-device persistent session service (one SQLite database on disk).
@@ -59,29 +60,39 @@ class RoomSessionActivity : ScopedExampleActivity() {
   // Built lazily because initializing the on-device model is a suspend call.
   private var runner: InMemoryRunner? = null
 
-  private lateinit var transcript: TextView
-  private lateinit var input: EditText
+  private val messages = mutableStateListOf<ChatMessage>()
+  private var inputEnabled by mutableStateOf(false)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    setExampleContentView("Room session", buildContent())
+    enableEdgeToEdge()
+    setContent {
+      AdkExamplesTheme {
+        ChatScreen(
+          title = "Room session",
+          messages = messages,
+          inputEnabled = inputEnabled,
+          onSend = ::sendToAgent,
+          onBack = ::finish,
+        )
+      }
+    }
 
     scope.launch {
       // Reload any conversation persisted by a previous run to demonstrate durability.
       val existing = sessionService.getSession(sessionKey)
       if (existing != null && existing.events.isNotEmpty()) {
-        appendToTranscript(
-          "Reloaded ${existing.events.size} persisted event(s) from a previous run:"
-        )
+        addSystem("Reloaded ${existing.events.size} persisted event(s) from a previous run.")
         for (event in existing.events) {
+          val isUser = event.author != AGENT_NAME
           event.content
             ?.parts
             ?.mapNotNull { it.text }
-            ?.forEach { appendToTranscript("${event.author}: $it") }
+            ?.forEach { text -> add(if (isUser) ChatAuthor.USER else ChatAuthor.AGENT, text) }
         }
       } else {
         val unused = sessionService.createSession(sessionKey)
-        appendToTranscript("New on-device session created. Messages persist across app restarts.")
+        addSystem("New on-device session created. Messages persist across app restarts.")
       }
       initRunner()
     }
@@ -102,18 +113,15 @@ class RoomSessionActivity : ScopedExampleActivity() {
           )
         InMemoryRunner(agent = agent, appName = APP_NAME, sessionService = sessionService)
       } catch (e: Exception) {
-        appendToTranscript("On-device model unavailable on this device: ${e.message}")
+        addSystem("On-device model unavailable on this device: ${e.message}")
         null
       }
+    if (runner != null) runOnUiThread { inputEnabled = true }
   }
 
   private fun sendToAgent(text: String) {
-    val activeRunner = runner
-    if (activeRunner == null) {
-      appendToTranscript("Model is not ready yet.")
-      return
-    }
-    appendToTranscript("you: $text")
+    val activeRunner = runner ?: return
+    add(ChatAuthor.USER, text)
     scope.launch {
       try {
         activeRunner
@@ -125,54 +133,22 @@ class RoomSessionActivity : ScopedExampleActivity() {
           .collect { event ->
             val reply = event.foldTextParts()
             if (event.author == AGENT_NAME && reply.isNotBlank()) {
-              appendToTranscript("$AGENT_NAME: $reply")
+              add(ChatAuthor.AGENT, reply)
             }
           }
       } catch (e: Exception) {
-        appendToTranscript("Error: ${e.message}")
+        addSystem("Error: ${e.message ?: e::class.simpleName}")
       }
     }
   }
 
-  private fun appendToTranscript(line: String) {
-    runOnUiThread { transcript.append("$line\n\n") }
+  private fun add(author: ChatAuthor, text: String) {
+    val label = if (author == ChatAuthor.AGENT) AGENT_NAME else ""
+    runOnUiThread { messages.add(ChatMessage(author, text, label)) }
   }
 
-  private fun buildContent(): LinearLayout {
-    transcript = TextView(this).apply { setPadding(24, 24, 24, 24) }
-    val scroll =
-      ScrollView(this).apply {
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-        addView(transcript)
-      }
-    input =
-      EditText(this).apply {
-        hint = "Type a message..."
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-      }
-    val sendButton =
-      Button(this).apply {
-        text = "Send"
-        setOnClickListener {
-          val text = input.text.toString()
-          if (text.isNotBlank()) {
-            input.text.clear()
-            sendToAgent(text)
-          }
-        }
-      }
-    val inputRow =
-      LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(input)
-        addView(sendButton)
-      }
-    return LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      addView(scroll)
-      addView(inputRow)
-    }
+  private fun addSystem(text: String) {
+    runOnUiThread { messages.add(ChatMessage(ChatAuthor.SYSTEM, text)) }
   }
 
   private companion object {

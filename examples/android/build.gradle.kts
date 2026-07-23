@@ -20,6 +20,9 @@ plugins {
   // Generates the `@Tool` FunctionTools used by the Firebase example
   // (WeatherTools.generatedTools()).
   alias(libs.plugins.ksp)
+  // Jetpack Compose compiler. Pinned (via the version catalog) to the Kotlin version AGP's built-in
+  // Kotlin support uses, which the compiler plugin must match exactly.
+  alias(libs.plugins.compose.compiler)
 }
 
 // Standard Firebase developer setup for the Firebase-backed examples (Skills, Firebase AI):
@@ -62,6 +65,8 @@ android {
           .getOrElse("\${$name}")
     }
   }
+
+  buildFeatures { compose = true }
 
   // The genai/auth and Firebase transitive dependencies each ship a META-INF/INDEX.LIST and
   // META-INF/DEPENDENCIES, which collide when packaging the APK. Merge them, as the root build does
@@ -118,6 +123,17 @@ dependencies {
   implementation(libs.google.mlkit.genai.prompt)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.androidx.core)
+
+  // Jetpack Compose UI (Material 3). The BOM aligns all Compose artifact versions.
+  implementation(platform(libs.androidx.compose.bom))
+  implementation(libs.androidx.activity.compose)
+  implementation(libs.androidx.compose.foundation)
+  implementation(libs.androidx.compose.material.icons.core)
+  implementation(libs.androidx.compose.material3)
+  implementation(libs.androidx.compose.ui)
+  implementation(libs.androidx.compose.ui.graphics)
+  implementation(libs.androidx.compose.ui.tooling.preview)
+  debugImplementation(libs.androidx.compose.ui.tooling)
 
   // Generates the `@Tool` FunctionTools used by the Firebase example
   // (WeatherTools.generatedTools()).

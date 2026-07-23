@@ -17,15 +17,18 @@
 package com.google.adk.kt.examples.android.firebase
 
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.google.adk.kt.examples.android.common.ScopedExampleActivity
 import com.google.adk.kt.examples.android.common.foldTextParts
-import com.google.adk.kt.examples.android.common.setExampleContentView
+import com.google.adk.kt.examples.android.common.ui.AdkExamplesTheme
+import com.google.adk.kt.examples.android.common.ui.ChatAuthor
+import com.google.adk.kt.examples.android.common.ui.ChatMessage
+import com.google.adk.kt.examples.android.common.ui.ChatScreen
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.Content
@@ -45,34 +48,32 @@ import kotlinx.coroutines.launch
  * Unlike the on-device examples, this one talks to the cloud Firebase AI (Gemini) backend, so it
  * needs a Firebase configuration and network access; see the app README.md for setup.
  */
-// Hardcoded UI strings are intentional in this minimal example; a real app would use resources.
-@Suppress("SetTextI18n")
 class FirebaseChatActivity : ScopedExampleActivity() {
 
   private val sessionService = InMemorySessionService()
-
-  /**
-   * Built in [onCreate] once a FirebaseApp is resolved; null means the agent could not be created.
-   */
   private var runner: InMemoryRunner? = null
 
-  private lateinit var transcript: TextView
-  private lateinit var input: EditText
-  private lateinit var sendButton: Button
+  private val messages = mutableStateListOf<ChatMessage>()
+  private var inputEnabled by mutableStateOf(false)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    setExampleContentView("Firebase AI chat", buildContent())
+    enableEdgeToEdge()
+    setContent {
+      AdkExamplesTheme {
+        ChatScreen(
+          title = "Firebase AI chat",
+          messages = messages,
+          inputEnabled = inputEnabled,
+          onSend = ::sendToAgent,
+          onBack = ::finish,
+        )
+      }
+    }
 
     val firebaseApp = FirebaseAppResolver.resolve(applicationContext)
     if (firebaseApp == null) {
-      appendToTranscript(
-        "No Firebase configuration found. Add a google-services.json to the examples/android/ " +
-          "module (standard setup), or rebuild supplying -PFIREBASE_API_KEY=... " +
-          "-PFIREBASE_APP_ID=... -PFIREBASE_PROJECT_ID=... (or the matching environment " +
-          "variables). See the app README.md."
-      )
-      sendButton.isEnabled = false
+      messages.add(ChatMessage(ChatAuthor.SYSTEM, FirebaseAppResolver.NO_CONFIG_MESSAGE))
       return
     }
 
@@ -84,20 +85,28 @@ class FirebaseChatActivity : ScopedExampleActivity() {
           sessionService = sessionService,
         )
       } catch (e: Throwable) {
-        appendToTranscript("Failed to build agent: ${e.message ?: e::class.simpleName}")
-        sendButton.isEnabled = false
+        messages.add(
+          ChatMessage(
+            ChatAuthor.SYSTEM,
+            "Failed to build agent: ${e.message ?: e::class.simpleName}",
+          )
+        )
         return
       }
 
-    appendToTranscript(
-      "Ready. Try: \"Tell me about the planet Earth\" or " +
-        "\"What is the current temperature in Mountain View?\""
+    messages.add(
+      ChatMessage(
+        ChatAuthor.SYSTEM,
+        "Ready. Try: \"Tell me about the planet Earth\" or " +
+          "\"What is the current temperature in Mountain View?\"",
+      )
     )
+    inputEnabled = true
   }
 
   private fun sendToAgent(text: String) {
     val activeRunner = runner ?: return
-    appendToTranscript("you: $text")
+    messages.add(ChatMessage(ChatAuthor.USER, text))
     scope.launch {
       try {
         activeRunner
@@ -109,53 +118,16 @@ class FirebaseChatActivity : ScopedExampleActivity() {
           .collect { event ->
             val reply = event.foldTextParts()
             if (event.author == FirebaseChatAgent.NAME && reply.isNotBlank()) {
-              appendToTranscript("${FirebaseChatAgent.NAME}: $reply")
+              runOnUiThread {
+                messages.add(ChatMessage(ChatAuthor.AGENT, reply, FirebaseChatAgent.NAME))
+              }
             }
           }
       } catch (e: Exception) {
-        appendToTranscript("Error: ${e.message ?: e::class.simpleName}")
-      }
-    }
-  }
-
-  private fun appendToTranscript(line: String) {
-    runOnUiThread { transcript.append("$line\n\n") }
-  }
-
-  private fun buildContent(): LinearLayout {
-    transcript = TextView(this).apply { setPadding(24, 24, 24, 24) }
-    val scroll =
-      ScrollView(this).apply {
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-        addView(transcript)
-      }
-    input =
-      EditText(this).apply {
-        hint = "Type a message…"
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-      }
-    sendButton =
-      Button(this).apply {
-        text = "Send"
-        setOnClickListener {
-          val text = input.text.toString()
-          if (text.isNotBlank()) {
-            input.text.clear()
-            sendToAgent(text)
-          }
+        runOnUiThread {
+          messages.add(ChatMessage(ChatAuthor.SYSTEM, "Error: ${e.message ?: e::class.simpleName}"))
         }
       }
-    val inputRow =
-      LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(input)
-        addView(sendButton)
-      }
-    return LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      addView(scroll)
-      addView(inputRow)
     }
   }
 
