@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.tools.mcp
 
-import com.google.adk.kt.logging.Logger
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -29,26 +28,24 @@ import io.modelcontextprotocol.spec.McpSchema
 import io.modelcontextprotocol.spec.McpSchema.Tool as McpSchemaTool
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /**
- * Initializes an MCP tool.
+ * Turns an MCP Tool into an ADK [BaseTool].
  *
- * This wraps an MCP Tool interface and an active MCP Session. It invokes the MCP Tool through
- * executing the tool from remote MCP Session.
+ * The tool holds no session of its own: it fetches the shared session from [mcpSessionManager] on
+ * each call and, on failure, asks the manager to reinitialize it. Because the manager owns the
+ * session pool, a reinit is seen by every tool sharing the session and the toolset can close them
+ * all via [SessionManager.closeAll].
  */
 class McpTool
 internal constructor(
   name: String,
   description: String,
   private val mcpSchemaTool: McpSchemaTool,
-  @Volatile private var mcpSession: McpAsyncClient,
   private val mcpSessionManager: SessionManager,
+  private val headers: Map<String, String> = emptyMap(),
 ) : BaseTool(name, description) {
-  private val reinitializeMutex = Mutex()
 
   override fun declaration(): FunctionDeclaration? {
     try {
@@ -63,7 +60,7 @@ internal constructor(
 
   override suspend fun run(context: ToolContext, args: Map<String, Any>): Any {
     val request = McpSchema.CallToolRequest(name, args)
-    val callResult = retrySessionCall { mcpSession.callTool(request).awaitSingleOrNull() }
+    val callResult = retrySessionCall { callTool(request).awaitSingleOrNull() }
 
     return callResult?.toJsonNativeMap()
       ?: mapOf("error" to "MCP framework error: CallToolResult was null")
@@ -72,21 +69,24 @@ internal constructor(
   private suspend fun <T> retrySessionCall(
     times: Int = 4,
     delayMs: Long = 100,
-    block: suspend () -> T,
+    block: suspend McpAsyncClient.() -> T,
   ): T {
+    var session: McpAsyncClient? = null
     for (i in 1 until times) {
+      // First pass: stale=null (plain fetch). Later passes: name the failed session so the manager
+      // replaces it in place, shared by every tool on that session.
+      session = mcpSessionManager.getSession(headers, stale = session)
       try {
-        return block()
+        return session.block()
       } catch (e: Exception) {
         if (e is CancellationException) {
           throw e
         }
         delay(delayMs)
         logger.warn(e) { "Retrying callTool due to: ${e.message}" }
-        reinitializeSession()
       }
     }
-    return block()
+    return mcpSessionManager.getSession(headers, stale = session).block()
   }
 
   val annotations: McpSchema.ToolAnnotations?
@@ -95,50 +95,8 @@ internal constructor(
   val meta: Map<String, Any>?
     get() = mcpSchemaTool.meta()
 
-  val mcpSessionClient: McpAsyncClient
-    get() = mcpSession
-
-  private suspend fun reinitializeSession() {
-    val currentSession = this.mcpSession
-    reinitializeMutex.withLock {
-      // Check if the session has already been reinitialized by another coroutine
-      // while we were waiting for the lock.
-      if (this.mcpSession !== currentSession) {
-        logger.debug { "Session already reinitialized by another thread." }
-        return
-      }
-
-      val client = this.mcpSessionManager.createAsyncSession()
-      try {
-        val initResult = client.initialize().awaitSingle()
-        logger.debug { "Initialize McpAsyncClient Result: $initResult" }
-
-        // Close the old session BEFORE replacing it
-        currentSession.closeQuietly(logger, "Failed to close old McpAsyncClient session: {}")
-
-        this.mcpSession = client
-      } catch (e: Exception) {
-        logger.error(e) { "Initialize McpAsyncClient Failed: ${e.message}" }
-        // Close the new client if initialization failed
-        client.closeQuietly(
-          logger,
-          "Failed to close new McpAsyncClient after initialization failure: {}",
-        )
-        throw e
-      }
-    }
-  }
-
   companion object {
     private val logger = LoggerFactory.getLogger(McpTool::class)
-
-    private fun McpAsyncClient.closeQuietly(logger: Logger, message: String) {
-      try {
-        close()
-      } catch (e: Exception) {
-        logger.warn(e) { message.replace("{}", e.message ?: "null") }
-      }
-    }
   }
 }
 

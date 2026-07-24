@@ -27,36 +27,26 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.reactor.mono
 import kotlinx.coroutines.test.runTest
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doReturnConsecutively
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyBlocking
 import org.mockito.kotlin.whenever
 
 class McpToolsetTest {
 
-  private val mockInitializeResult =
-    McpSchema.InitializeResult(
-      "1.0",
-      McpSchema.ServerCapabilities(null, null, null, null, null, null),
-      McpSchema.Implementation("test-server", "1.0", null),
-      "instructions",
-      null,
-    )
+  private val noResourcesCapabilities =
+    McpSchema.ServerCapabilities(null, null, null, null, null, null)
 
-  private val mockInitializeResult_withResources =
-    McpSchema.InitializeResult(
-      "1.0",
-      McpSchema.ServerCapabilities.builder().resources(false, false).build(),
-      McpSchema.Implementation("test-server", "1.0", null),
-      "instructions",
-      null,
-    )
+  private val withResourcesCapabilities =
+    McpSchema.ServerCapabilities.builder().resources(false, false).build()
 
   @Test
   fun getTools_retrievesAndFiltersTools() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
 
     val toolsList =
       listOf(
@@ -67,8 +57,8 @@ class McpToolsetTest {
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     // Create Toolset with a filter that only allows "tool1" and "tool3"
     val filter: (com.google.adk.kt.tools.BaseTool) -> Boolean = { tool ->
@@ -82,24 +72,21 @@ class McpToolsetTest {
     assertEquals("tool1", tools[0].name)
     assertEquals("tool3", tools[1].name)
 
-    // Verify session was initialized
-    verify(mockSessionManager, times(1)).createAsyncSession()
-    verify(mockMcpSession, times(1)).initialize()
+    // The toolset fetches the pooled session from the manager and lists tools on it.
+    verifyBlocking(mockSessionManager, times(1)) { getSession(any(), anyOrNull()) }
     verify(mockMcpSession, times(1)).listTools()
   }
 
   @Test
   fun loadTools_withUseMcpResourcesTrueAndServerSupport_includesResourceTools() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult_withResources }
-    whenever(mockMcpSession.serverCapabilities) doReturn
-      mockInitializeResult_withResources.capabilities()
+    whenever(mockMcpSession.serverCapabilities) doReturn withResourcesCapabilities
 
     val toolsResponse = McpSchema.ListToolsResult(emptyList(), null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession(any())) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager, useMcpResources = true)
 
@@ -114,14 +101,13 @@ class McpToolsetTest {
   @Test
   fun loadTools_withUseMcpResourcesTrueAndNoServerSupport_omitsResourceTools() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
-    whenever(mockMcpSession.serverCapabilities) doReturn mockInitializeResult.capabilities()
+    whenever(mockMcpSession.serverCapabilities) doReturn noResourcesCapabilities
 
     val toolsResponse = McpSchema.ListToolsResult(emptyList(), null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession(any())) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager, useMcpResources = true)
 
@@ -133,15 +119,13 @@ class McpToolsetTest {
   @Test
   fun loadTools_withUseMcpResourcesFalse_omitsResourceTools() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult_withResources }
-    whenever(mockMcpSession.serverCapabilities) doReturn
-      mockInitializeResult_withResources.capabilities()
+    whenever(mockMcpSession.serverCapabilities) doReturn withResourcesCapabilities
 
     val toolsResponse = McpSchema.ListToolsResult(emptyList(), null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession(any())) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager, useMcpResources = false)
 
@@ -152,95 +136,90 @@ class McpToolsetTest {
 
   @Test
   fun getTools_retriesOnFailureAndSucceeds() = runTest {
-    val mockMcpSession1 = mock<McpAsyncClient>()
-    whenever(mockMcpSession1.initialize()).thenThrow(RuntimeException("init failed"))
+    // The first pooled session fails to list tools; the toolset asks the manager for a fresh
+    // session (passing the failed one as `stale`) and the replacement succeeds.
+    val failingSession = mock<McpAsyncClient>()
+    whenever(failingSession.listTools()).thenThrow(RuntimeException("list failed"))
 
-    val mockMcpSession2 = mock<McpAsyncClient>()
-    whenever(mockMcpSession2.initialize()) doReturn mono { mockInitializeResult }
-
+    val recoveringSession = mock<McpAsyncClient>()
     val toolsList =
       listOf(McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build())
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
-    whenever(mockMcpSession2.listTools()) doReturn mono { toolsResponse }
+    whenever(recoveringSession.listTools()) doReturn mono { toolsResponse }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession())
-      .thenReturn(mockMcpSession1)
-      .thenReturn(mockMcpSession2)
+    val mockSessionManager =
+      mock<SessionManager> {
+        onBlocking { getSession(any(), anyOrNull()) } doReturnConsecutively
+          listOf(failingSession, recoveringSession)
+      }
 
     val mcpToolset = McpToolset(mockSessionManager)
     val tools = mcpToolset.getTools()
 
     assertEquals(1, tools.size)
     assertEquals("tool1", tools[0].name)
-    verify(mockSessionManager, times(2)).createAsyncSession()
+    // Two attempts: the initial fetch plus one recovery fetch.
+    verifyBlocking(mockSessionManager, times(2)) { getSession(any(), anyOrNull()) }
   }
 
   @Test
   fun getTools_throwsMcpToolLoadingException_whenRetriesExhausted() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()).thenThrow(RuntimeException("init failed always"))
+    whenever(mockMcpSession.listTools()).thenThrow(RuntimeException("list failed always"))
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager)
 
     assertFailsWith<McpToolLoadingException> { mcpToolset.getTools() }
-    verify(mockSessionManager, times(3)).createAsyncSession()
+    // Three attempts: the initial fetch plus two recovery fetches.
+    verifyBlocking(mockSessionManager, times(3)) { getSession(any(), anyOrNull()) }
   }
 
   @Test
   fun getTools_throwsMcpToolLoadingException_onIllegalArgumentException() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()).thenThrow(IllegalArgumentException("illegal argument"))
+    whenever(mockMcpSession.listTools()).thenThrow(IllegalArgumentException("illegal argument"))
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager)
 
     assertFailsWith<McpToolLoadingException> { mcpToolset.getTools() }
-    verify(mockSessionManager, times(1)).createAsyncSession()
+    // IllegalArgumentException is not retried.
+    verifyBlocking(mockSessionManager, times(1)) { getSession(any(), anyOrNull()) }
   }
 
   @Test
   fun getTools_rethrowsCancellationException() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()).thenThrow(CancellationException("cancelled"))
+    whenever(mockMcpSession.listTools()).thenThrow(CancellationException("cancelled"))
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager)
 
     assertFailsWith<CancellationException> { mcpToolset.getTools() }
-    verify(mockSessionManager, times(1)).createAsyncSession()
+    verifyBlocking(mockSessionManager, times(1)) { getSession(any(), anyOrNull()) }
   }
 
   @Test
-  fun close_closesSession() = runTest {
-    val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
-    val toolsResponse = McpSchema.ListToolsResult(emptyList(), null)
-    whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
-
+  fun close_closesAllSessionsViaManager() = runTest {
     val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
 
     val mcpToolset = McpToolset(mockSessionManager)
-
-    // First call getTools to initialize the session
-    val unused = mcpToolset.getTools()
-
     mcpToolset.close()
-    verify(mockMcpSession, times(1)).close()
+
+    // The toolset delegates teardown to the manager, which owns every session it created.
+    verify(mockSessionManager, times(1)).closeAll()
   }
 
   @Test
   fun mcpToolsetConfig_toToolset_appliesFilterCorrectly() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
     val toolsList =
       listOf(
         McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build(),
@@ -248,8 +227,8 @@ class McpToolsetTest {
       )
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val config =
       McpToolset.McpToolsetConfig(
@@ -301,7 +280,6 @@ class McpToolsetTest {
   @Test
   fun listResources_returnsResourceNames() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
 
     val resourceList =
       listOf(
@@ -311,8 +289,8 @@ class McpToolsetTest {
     val listResourcesResult = McpSchema.ListResourcesResult(resourceList, null)
     whenever(mockMcpSession.listResources()) doReturn mono { listResourcesResult }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager)
     val resources = mcpToolset.listResources()
@@ -324,19 +302,14 @@ class McpToolsetTest {
   @Test
   fun readResource_returnsResourceContents() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
-
-    val resourceList = listOf(McpSchema.Resource.builder().name("resource1").uri("uri1").build())
-    val listResourcesResult = McpSchema.ListResourcesResult(resourceList, null)
-    whenever(mockMcpSession.listResources()) doReturn mono { listResourcesResult }
 
     val textContents = McpSchema.TextResourceContents("file contents", "text/plain", "uri1")
     val readResourceResult = McpSchema.ReadResourceResult(listOf(textContents))
     whenever(mockMcpSession.readResource(McpSchema.ReadResourceRequest("uri1"))) doReturn
       mono { readResourceResult }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager)
     val contents = mcpToolset.readResource("uri1")
@@ -348,18 +321,13 @@ class McpToolsetTest {
   @Test
   fun readResource_throwsIllegalArgumentException_whenResourceNotFound() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
-
-    val resourceList = listOf(McpSchema.Resource.builder().name("resource1").uri("uri1").build())
-    val listResourcesResult = McpSchema.ListResourcesResult(resourceList, null)
-    whenever(mockMcpSession.listResources()) doReturn mono { listResourcesResult }
 
     whenever(
       mockMcpSession.readResource(McpSchema.ReadResourceRequest("nonexistent_resource"))
     ) doReturn mono { throw IllegalArgumentException("Resource not found") }
 
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val mcpToolset = McpToolset(mockSessionManager)
 
@@ -369,7 +337,6 @@ class McpToolsetTest {
   @Test
   fun mcpToolsetConfig_toToolset_withEmptyFilter_returnsNoTools() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
     val toolsList =
       listOf(
         McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build(),
@@ -377,8 +344,8 @@ class McpToolsetTest {
       )
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
-    val mockSessionManager = mock<SessionManager>()
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
 
     val config =
       McpToolset.McpToolsetConfig(

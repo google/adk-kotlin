@@ -22,12 +22,162 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
+import kotlinx.coroutines.runBlocking
 import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 class McpSessionManagerTest {
+
+  private val sseParams = McpConnectionParameters.Sse(url = "http://localhost:1234")
+
+  @Test
+  fun getSession_reusesPooledSessionForSameKey(): Unit = runBlocking {
+    val client = mock<McpAsyncClient>()
+    var opens = 0
+    val manager =
+      McpSessionManager(
+        sseParams,
+        sessionOpener = {
+          opens++
+          client
+        },
+      )
+
+    val first = manager.getSession()
+    val second = manager.getSession()
+
+    assertSame(first, second)
+    assertEquals(1, opens)
+  }
+
+  @Test
+  fun getSession_withStale_evictsClosesAndRecreates(): Unit = runBlocking {
+    val stale = mock<McpAsyncClient>()
+    val fresh = mock<McpAsyncClient>()
+    val queue = ArrayDeque(listOf(stale, fresh))
+    var opens = 0
+    val manager =
+      McpSessionManager(
+        sseParams,
+        sessionOpener = {
+          opens++
+          queue.removeFirst()
+        },
+      )
+
+    val first = manager.getSession()
+    val second = manager.getSession(stale = first)
+
+    assertSame(stale, first)
+    assertSame(fresh, second)
+    assertNotSame(first, second)
+    verify(stale, times(1)).close() // the evicted session is closed
+    assertEquals(2, opens)
+  }
+
+  @Test
+  fun getSession_withStaleThatIsNoLongerPooled_returnsCurrentWithoutRecreating(): Unit =
+    runBlocking {
+      // Models the cross-tool dedup: a second caller passes an already-replaced session as `stale`;
+      // since it no longer matches the pooled entry, nothing is evicted or recreated.
+      val pooled = mock<McpAsyncClient>()
+      val alreadyReplaced = mock<McpAsyncClient>()
+      var opens = 0
+      val manager =
+        McpSessionManager(
+          sseParams,
+          sessionOpener = {
+            opens++
+            pooled
+          },
+        )
+
+      val first = manager.getSession()
+      val second = manager.getSession(stale = alreadyReplaced)
+
+      assertSame(pooled, first)
+      assertSame(pooled, second)
+      verify(alreadyReplaced, never()).close() // never close a client that wasn't the pooled one
+      assertEquals(1, opens) // no recreate
+    }
+
+  @Test
+  fun closeAll_closesEveryPooledSessionAndClearsPool(): Unit = runBlocking {
+    val first = mock<McpAsyncClient>()
+    val second = mock<McpAsyncClient>()
+    val queue = ArrayDeque(listOf(first, second))
+    var opens = 0
+    val manager =
+      McpSessionManager(
+        sseParams,
+        sessionOpener = {
+          opens++
+          queue.removeFirst()
+        },
+      )
+
+    val s1 = manager.getSession()
+    manager.closeAll()
+    verify(first, times(1)).close()
+
+    // Pool is cleared, so the next fetch builds a fresh client.
+    val s2 = manager.getSession()
+    assertNotSame(s1, s2)
+    assertSame(second, s2)
+    assertEquals(2, opens)
+  }
+
+  @Test
+  fun getSession_stdioIgnoresHeadersAndSharesOneSession(): Unit = runBlocking {
+    val client = mock<McpAsyncClient>()
+    val stdioParams =
+      McpConnectionParameters.Stdio(
+        io.modelcontextprotocol.client.transport.ServerParameters.builder("cmd").build()
+      )
+    var opens = 0
+    val manager =
+      McpSessionManager(
+        stdioParams,
+        sessionOpener = {
+          opens++
+          client
+        },
+      )
+
+    val a = manager.getSession(mapOf("h" to "1"))
+    val b = manager.getSession(mapOf("h" to "2")) // different headers, but stdio key is constant
+
+    assertSame(a, b)
+    assertEquals(1, opens)
+  }
+
+  @Test
+  fun getSession_httpDistinctHeadersCreateDistinctSessions(): Unit = runBlocking {
+    val c1 = mock<McpAsyncClient>()
+    val c2 = mock<McpAsyncClient>()
+    val queue = ArrayDeque(listOf(c1, c2))
+    var opens = 0
+    val manager =
+      McpSessionManager(
+        sseParams,
+        sessionOpener = {
+          opens++
+          queue.removeFirst()
+        },
+      )
+
+    val a = manager.getSession(mapOf("Authorization" to "A"))
+    val b = manager.getSession(mapOf("Authorization" to "B"))
+
+    assertNotSame(a, b)
+    assertEquals(2, opens)
+  }
 
   @Test
   fun createAsyncSession_withSseServerParameters_setsCorrectTimeouts() {
@@ -135,8 +285,7 @@ class McpSessionManagerTest {
 
     val unused = sessionManager.createAsyncSession(mapOf("NEW_HEADER" to "NEW_VALUE"))
 
-    val expectedParams =
-      params.copy(headers = params.headers + mapOf("NEW_HEADER" to "NEW_VALUE"))
+    val expectedParams = params.copy(headers = params.headers + mapOf("NEW_HEADER" to "NEW_VALUE"))
     verify(transportBuilder).build(expectedParams)
   }
 
@@ -157,8 +306,7 @@ class McpSessionManagerTest {
 
     val unused = sessionManager.createAsyncSession(mapOf("NEW_HEADER" to "NEW_VALUE"))
 
-    val expectedParams =
-      params.copy(headers = params.headers + mapOf("NEW_HEADER" to "NEW_VALUE"))
+    val expectedParams = params.copy(headers = params.headers + mapOf("NEW_HEADER" to "NEW_VALUE"))
     verify(transportBuilder).build(expectedParams)
   }
 }

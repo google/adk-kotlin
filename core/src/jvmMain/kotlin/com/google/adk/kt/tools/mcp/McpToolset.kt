@@ -17,7 +17,6 @@
 package com.google.adk.kt.tools.mcp
 
 import com.google.adk.kt.agents.ReadonlyContext
-import com.google.adk.kt.logging.Logger
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.Toolset
@@ -62,9 +61,7 @@ internal constructor(
   private val maxMcpResourceLength: Int = DEFAULT_MAX_RESOURCE_LENGTH,
 ) : Toolset {
 
-  private val sessionMutex = Mutex()
   private val toolsMutex = Mutex()
-  @Volatile private var mcpSession: McpAsyncClient? = null
   private var cachedTools: List<BaseTool>? = null
 
   override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
@@ -86,9 +83,14 @@ internal constructor(
     times: Int = DEFAULT_RETRY_TIMES,
     delayMs: Long = DEFAULT_RETRY_DELAY_MS,
   ): List<BaseTool> {
+    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
+    var session: McpAsyncClient? = null
     for (attempt in 1..times) {
+      // First attempt fetches the pooled session (stale=null); later attempts pass the failed
+      // session so the manager replaces it in place and the whole toolset recovers together.
+      session = mcpSessionManager.getSession(headers, stale = session)
       try {
-        return loadTools(readonlyContext)
+        return loadTools(session, headers)
       } catch (e: Exception) {
         handleLoadError(e, attempt)
         if (attempt == times) {
@@ -100,43 +102,10 @@ internal constructor(
     error("Exhausted retries without returning or throwing")
   }
 
-  /**
-   * Returns a session. If [headerProvider] is null, a single session is cached and reused. If
-   * [headerProvider] is non-null, a new session is created for each call to ensure headers from the
-   * [ReadonlyContext] are used.
-   */
-  private suspend fun getSession(headers: Map<String, String>): McpAsyncClient =
-    if (headerProvider == null) {
-      getOrInitCachedSession(headers)
-    } else {
-      createAndInitializeSession(headers)
-    }
-
-  /** Gets or initializes the cached session. Only used when [headerProvider] is null. */
-  private suspend fun getOrInitCachedSession(headers: Map<String, String>): McpAsyncClient =
-    mcpSession
-      ?: sessionMutex.withLock {
-        mcpSession
-          ?: mcpSessionManager.createAsyncSession(headers).also { newSession ->
-            logger.info { "MCP session is null, initializing." }
-            val initResult = newSession.initialize().awaitSingle()
-            logger.debug { "Initialize Cached Client Result: $initResult" }
-            mcpSession = newSession
-          }
-      }
-
-  /** Creates and initializes a new session. Used when [headerProvider] is non-null. */
-  private suspend fun createAndInitializeSession(headers: Map<String, String>): McpAsyncClient {
-    val newSession = mcpSessionManager.createAsyncSession(headers)
-    val initResult = newSession.initialize().awaitSingle()
-    logger.debug { "Initialize New Client Result: $initResult" }
-    return newSession
-  }
-
-  private suspend fun loadTools(readonlyContext: ReadonlyContext?): List<BaseTool> {
-    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    val session = getSession(headers)
-
+  private suspend fun loadTools(
+    session: McpAsyncClient,
+    headers: Map<String, String>,
+  ): List<BaseTool> {
     val toolsResponse = session.listTools().awaitSingle()
     val tools: MutableList<BaseTool> =
       toolsResponse
@@ -146,8 +115,8 @@ internal constructor(
             name = it.name(),
             description = it.description() ?: "",
             mcpSchemaTool = it,
-            mcpSession = session,
             mcpSessionManager = mcpSessionManager,
+            headers = headers,
           )
         }
         .toMutableList()
@@ -165,32 +134,20 @@ internal constructor(
   /** Returns a list of resource names available on the MCP server. */
   suspend fun listResources(readonlyContext: ReadonlyContext? = null): List<String> {
     val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    val session = getSession(headers)
-    val sessionToClose = if (headerProvider != null) session else null
-
-    try {
-      val result = session.listResources().awaitSingle()
-      return result.resources().map { it.name() }
-    } finally {
-      sessionToClose?.closeQuietly(logger, "Failed to close ephemeral McpAsyncClient session")
-    }
+    val session = mcpSessionManager.getSession(headers)
+    val result = session.listResources().awaitSingle()
+    return result.resources().map { it.name() }
   }
 
   /** Fetches and returns a list of contents of the resource with the given URI. */
   suspend fun readResource(uri: String, readonlyContext: ReadonlyContext? = null): Any {
     val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    val session = getSession(headers)
-    val sessionToClose = if (headerProvider != null) session else null
-
-    try {
-      val readResult = session.readResource(McpSchema.ReadResourceRequest(uri)).awaitSingle()
-      return readResult.contents()
-    } finally {
-      sessionToClose?.closeQuietly(logger, "Failed to close ephemeral McpAsyncClient session")
-    }
+    val session = mcpSessionManager.getSession(headers)
+    val readResult = session.readResource(McpSchema.ReadResourceRequest(uri)).awaitSingle()
+    return readResult.contents()
   }
 
-  private suspend fun handleLoadError(e: Exception, attempt: Int) {
+  private fun handleLoadError(e: Exception, attempt: Int) {
     when (e) {
       is CancellationException -> throw e
       is IllegalArgumentException -> {
@@ -200,22 +157,10 @@ internal constructor(
     }
 
     logger.error(e) { "Unexpected error during tool loading, retry attempt $attempt" }
-    // Only reset the cached session if headerProvider is null.
-    if (headerProvider == null) {
-      mcpSession?.closeQuietly(logger, "Failed to close McpAsyncClient session")
-      mcpSession = null
-      logger.info { "Reinitializing MCP session before next retry for unexpected error." }
-    } else {
-      logger.info { "Not reinitializing MCP session; headerProvider is in use." }
-    }
   }
 
   override fun close() {
-    // Only close the cached session if headerProvider is null.
-    if (headerProvider == null) {
-      mcpSession?.closeQuietly(logger, "Failed to close MCP session")
-      mcpSession = null
-    }
+    mcpSessionManager.closeAll()
     cachedTools = null
   }
 
@@ -226,14 +171,6 @@ internal constructor(
     private const val LOAD_TOOLS_FAILURE_MESSAGE = "Failed to load tools."
 
     private val logger = LoggerFactory.getLogger(McpToolset::class)
-
-    private fun McpAsyncClient.closeQuietly(logger: Logger, message: String) {
-      try {
-        close()
-      } catch (e: Exception) {
-        logger.warn(e) { message }
-      }
-    }
   }
 
   /**
