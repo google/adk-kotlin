@@ -29,6 +29,7 @@ import kotlinx.serialization.json.JsonElement
 @Serializable
 internal data class SessionDto(
   val name: String? = null,
+  val userId: String? = null,
   val updateTime: String? = null,
   val sessionState: JsonElement? = null,
 )

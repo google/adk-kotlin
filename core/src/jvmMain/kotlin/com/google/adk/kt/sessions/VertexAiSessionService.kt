@@ -93,6 +93,8 @@ internal constructor(
     val sessionId = requireNotNull(key.id) { "SessionKey.id is required for getSession." }
     validateSessionId(sessionId)
     val sessionDto = client.getSession(engine, sessionId).getOrThrow() ?: return null
+    // Deny cross-user reads as not-found so a session's existence isn't revealed.
+    if (sessionDto.userId != key.userId) return null
     val session = sessionDto.toAdk(key.appName, key.userId, sessionId)
 
     val eventsResponse =
@@ -104,14 +106,21 @@ internal constructor(
 
   override suspend fun listSessions(appName: String, userId: String): ListSessionsResponse {
     val response = client.listSessions(engine, userId).getOrThrow() ?: return ListSessionsResponse()
+    // Report the backend-provided owner, not the caller's user id.
     val sessions =
-      response.sessions?.map { it.toAdk(appName, userId, fallbackId = null) } ?: emptyList()
+      response.sessions?.map { it.toAdk(appName, it.userId ?: userId, fallbackId = null) }
+        ?: emptyList()
     return ListSessionsResponse(sessions)
   }
 
   override suspend fun deleteSession(key: SessionKey) {
     val sessionId = requireNotNull(key.id) { "SessionKey.id is required for deleteSession." }
     validateSessionId(sessionId)
+    // Backend delete ignores the user id, so enforce ownership first; a missing session is a no-op.
+    val sessionDto = client.getSession(engine, sessionId).getOrThrow() ?: return
+    if (sessionDto.userId != key.userId) {
+      throw SecurityException("Session $sessionId does not belong to user ${key.userId}.")
+    }
     client.deleteSession(engine, sessionId).getOrThrow()
   }
 

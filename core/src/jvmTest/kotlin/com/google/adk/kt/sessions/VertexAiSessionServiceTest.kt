@@ -40,6 +40,7 @@ import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.verifyBlocking
 
 /**
@@ -197,6 +198,7 @@ class VertexAiSessionServiceTest {
           Result.success(
             SessionDto(
               name = "reasoningEngines/123/sessions/s1",
+              userId = "user",
               updateTime = "2024-12-12T12:00:30Z",
             )
           )
@@ -221,7 +223,7 @@ class VertexAiSessionServiceTest {
     val client =
       mock<VertexAiSessionsClient> {
         onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn
-          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1"))
+          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1", userId = "user"))
         onBlocking { listEvents(eq(ENGINE), eq("s1"), anyOrNull()) } doReturn
           Result.success(ListEventsResponseDto())
       }
@@ -240,7 +242,7 @@ class VertexAiSessionServiceTest {
     val client =
       mock<VertexAiSessionsClient> {
         onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn
-          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1"))
+          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1", userId = "user"))
         // Server returns events >= threshold; client trims to 2 most recent.
         onBlocking { listEvents(eq(ENGINE), eq("s1"), anyOrNull()) } doReturn
           Result.success(
@@ -271,6 +273,36 @@ class VertexAiSessionServiceTest {
   }
 
   @Test
+  fun getSession_matchingUser_returnsSession() = runTest {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn
+          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1", userId = "user"))
+        onBlocking { listEvents(eq(ENGINE), eq("s1"), anyOrNull()) } doReturn
+          Result.success(ListEventsResponseDto())
+      }
+
+    val session = service(client).getSession(SessionKey("123", "user", "s1"))
+
+    assertThat(session).isNotNull()
+    assertThat(session!!.key.userId).isEqualTo("user")
+  }
+
+  @Test
+  fun getSession_wrongUser_returnsNull() = runTest {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn
+          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1", userId = "owner"))
+      }
+
+    val session = service(client).getSession(SessionKey("123", "attacker", "s1"))
+
+    assertThat(session).isNull()
+    verifyBlocking(client, never()) { listEvents(any(), any(), anyOrNull()) }
+  }
+
+  @Test
   fun listSessions_mapsClientResponse() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
@@ -289,6 +321,24 @@ class VertexAiSessionServiceTest {
     val response = service(client).listSessions("123", "user")
 
     assertThat(response.sessions.map { it.key.id }).containsExactly("1", "2").inOrder()
+  }
+
+  @Test
+  fun listSessions_usesBackendUserId() = runTest {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { listSessions(eq(ENGINE), eq("user1")) } doReturn
+          Result.success(
+            ListSessionsResponseDto(
+              sessions =
+                listOf(SessionDto(name = "reasoningEngines/123/sessions/3", userId = "user2"))
+            )
+          )
+      }
+
+    val response = service(client).listSessions("123", "user1")
+
+    assertThat(response.sessions.single().key.userId).isEqualTo("user2")
   }
 
   @Test
@@ -322,15 +372,44 @@ class VertexAiSessionServiceTest {
   }
 
   @Test
-  fun deleteSession_delegatesToClient() = runTest {
+  fun deleteSession_ownerMatches_delegatesToClient() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
+        onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn
+          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1", userId = "user"))
         onBlocking { deleteSession(any(), any()) } doReturn Result.success(Unit)
       }
 
     service(client).deleteSession(SessionKey("123", "user", "s1"))
 
     verifyBlocking(client) { deleteSession(eq(ENGINE), eq("s1")) }
+  }
+
+  @Test
+  fun deleteSession_wrongUser_deniedAndNotDeleted() = runTest {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn
+          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s1", userId = "owner"))
+        onBlocking { deleteSession(any(), any()) } doReturn Result.success(Unit)
+      }
+
+    assertFailsWith<SecurityException> {
+      service(client).deleteSession(SessionKey("123", "attacker", "s1"))
+    }
+    verifyBlocking(client, never()) { deleteSession(any(), any()) }
+  }
+
+  @Test
+  fun deleteSession_missingSession_isNoOp() = runTest {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { getSession(eq(ENGINE), eq("s1")) } doReturn Result.success<SessionDto?>(null)
+      }
+
+    service(client).deleteSession(SessionKey("123", "user", "s1"))
+
+    verifyBlocking(client, never()) { deleteSession(any(), any()) }
   }
 
   @Test
