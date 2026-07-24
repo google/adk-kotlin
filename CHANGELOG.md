@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.7.0](https://github.com/google/adk-kotlin/compare/v0.6.0...v0.7.0) (2026-07-24)
+
+
+### Features
+
+* add a context-caching demo agent example ([89d1ee1](https://github.com/google/adk-kotlin/commit/89d1ee1692f2f5224a80f053e10573ef702db733))
+* add a Vertex AI RAG-backed `MemoryService` ([d0cc79d](https://github.com/google/adk-kotlin/commit/d0cc79df9ad510bf88b7c52c2cd2b7661296fdf3))
+* add a Vertex AI-backed `SessionService` ([c746941](https://github.com/google/adk-kotlin/commit/c746941f0bf8f6a7d3ae41f84f988a0adbda9c9e))
+* add conformance harness, grounding metadata, and web server plugins ([1d6b45c](https://github.com/google/adk-kotlin/commit/1d6b45cb63356d0cc86fca581177be323883501d))
+* add createHttpOptions to ContextCacheConfig ([52f54d5](https://github.com/google/adk-kotlin/commit/52f54d5f6a2843ccd0fc17bafc29e486ae0a912d))
+* add memory-write helpers to `CallbackContext` ([9be9908](https://github.com/google/adk-kotlin/commit/9be99087cda43179b8422c71dc5c67badac1e518))
+* drop the internal opaqueData field in Part ([e40cfe1](https://github.com/google/adk-kotlin/commit/e40cfe1173c40af340254e1ddd6566b44d489eb5))
+* make McpToolset headerProvider a suspend function ([1021557](https://github.com/google/adk-kotlin/commit/10215577296cbd887bf9eb311f51bfe353f33ad0))
+* **memory:** add on-device AppSearchMemoryService for Android ([03b63cb](https://github.com/google/adk-kotlin/commit/03b63cbbb299be2984f84c36efee140a7d4eaa62))
+
+
+### Bug Fixes
+
+* make Session.events thread-safe against concurrent modification ([6c2a295](https://github.com/google/adk-kotlin/commit/6c2a29568621b2674b3f4463194d932be6e5c8c8))
+* marshal MCP tool-call results into JSON-native maps ([4fc6a25](https://github.com/google/adk-kotlin/commit/4fc6a25c4f6d2c6ee6868fc25b45fdbda3bd73d4))
+* migrate web server serialization from Gson to kotlinx-serialization ([e0b9255](https://github.com/google/adk-kotlin/commit/e0b925540dff5403edafb38a2564fed74937e35d))
+* **sessions:** apply afterTimestamp and numRecentEvents together in VertexAiSessionService ([000b120](https://github.com/google/adk-kotlin/commit/000b1209051bfb7f01047eb411b7c8a2d4419cd6))
+* **sessions:** apply numRecentEvents and afterTimestamp together in InMemorySessionService ([e2f7b49](https://github.com/google/adk-kotlin/commit/e2f7b49562cc5c07f3b314b9cb2793570cac3f6d))
+* **sessions:** enforce Vertex AI session ownership and report backend user id ([9675990](https://github.com/google/adk-kotlin/commit/96759909075e912b69ae35d1a8d2cd0b3595df34))
+* **webserver:** stream SSE via the async channel to avoid truncating large responses ([4337546](https://github.com/google/adk-kotlin/commit/4337546b820084511bb3c8e08fd0a3e04b1f5f3b))
+
 ## [0.6.0](https://github.com/google/adk-kotlin/compare/v0.5.0...v0.6.0) (2026-07-20)
 
 
