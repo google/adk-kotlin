@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyModel
@@ -27,10 +28,17 @@ import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Tool
+import com.google.adk.kt.types.Type
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -38,6 +46,97 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class LlmAgentTurnTest {
+
+  @Test
+  fun runAsync_toolsetHookAddsTool_preservesHookTool() = runTest {
+    val capturedRequests = mutableListOf<LlmRequest>()
+    val hookTool = RunTrackingDeclaredTool("runtime_tool")
+    val toolset =
+      object : Toolset {
+        override suspend fun processLlmRequest(
+          toolContext: ToolContext,
+          llmRequest: LlmRequest,
+        ): LlmRequest = llmRequest.appendTools(listOf(hookTool))
+
+        override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
+          emptyList()
+      }
+    val model =
+      DummyModel("hook-tool-model") { request ->
+        capturedRequests += request
+        flow {
+          val hasFunctionResponse =
+            request.contents.lastOrNull()?.parts?.any { it.functionResponse != null } == true
+          if (hasFunctionResponse) {
+            emit(LlmResponse(content = modelMessage("done")))
+          } else {
+            emit(modelFunctionCallResponse("runtime_tool", id = "runtime-tool-call"))
+          }
+        }
+      }
+    val agent = LlmAgent(name = "test-agent", model = model, toolsets = listOf(toolset))
+    val runner = InMemoryRunner(agent)
+
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("run tool"))
+      .toList()
+
+    assertEquals(2, capturedRequests.size)
+    capturedRequests.forEach { request ->
+      val declarationNames =
+        request.config.tools.orEmpty().flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
+      assertEquals(listOf("runtime_tool"), declarationNames)
+      assertEquals(1, request.toolsDict.count { it.name == "runtime_tool" })
+    }
+    assertEquals(1, hookTool.runCalls)
+  }
+
+  @Test
+  fun runAsync_directToolNotInToolsDictCollidesWithToolset_keepsDirectTool() = runTest {
+    val capturedRequests = mutableListOf<LlmRequest>()
+    val directTool = ConfigOnlyRunTrackingDeclaredTool("shared_tool")
+    val additionalTool = RunTrackingDeclaredTool("shared_tool")
+    val toolset =
+      object : Toolset {
+        override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
+          listOf(additionalTool)
+      }
+    val model =
+      DummyModel("direct-tool-collision-model") { request ->
+        capturedRequests += request
+        flow {
+          val hasFunctionResponse =
+            request.contents.lastOrNull()?.parts?.any { it.functionResponse != null } == true
+          if (hasFunctionResponse) {
+            emit(LlmResponse(content = modelMessage("done")))
+          } else {
+            emit(modelFunctionCallResponse("shared_tool", id = "shared-tool-call"))
+          }
+        }
+      }
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = model,
+        tools = listOf(directTool),
+        toolsets = listOf(toolset),
+      )
+    val runner = InMemoryRunner(agent)
+
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("run tool"))
+      .toList()
+
+    assertEquals(2, capturedRequests.size)
+    capturedRequests.forEach { request ->
+      val declarationNames =
+        request.config.tools.orEmpty().flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
+      assertEquals(listOf("shared_tool"), declarationNames)
+      assertEquals(0, request.toolsDict.count { it.name == "shared_tool" })
+    }
+    assertEquals(1, directTool.runCalls)
+    assertEquals(0, additionalTool.runCalls)
+  }
 
   /**
    * Root `MissionControl` transfers to sub-agent `HeartOfGold`, which calls a tool and then
@@ -120,5 +219,33 @@ class LlmAgentTurnTest {
       ),
       simplifyEvents(flowEvents),
     )
+  }
+}
+
+private open class RunTrackingDeclaredTool(name: String) :
+  BaseTool(name = name, description = "Run-tracking tool $name") {
+  var runCalls = 0
+
+  override fun declaration() =
+    FunctionDeclaration(
+      name = name,
+      description = description,
+      parameters = Schema(type = Type.OBJECT, properties = emptyMap()),
+    )
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any>): Any {
+    runCalls++
+    return emptyMap<String, Any>()
+  }
+}
+
+private class ConfigOnlyRunTrackingDeclaredTool(name: String) : RunTrackingDeclaredTool(name) {
+  override suspend fun processLlmRequest(
+    toolContext: ToolContext,
+    llmRequest: LlmRequest,
+  ): LlmRequest {
+    val existingTools = llmRequest.config.tools?.toMutableList() ?: mutableListOf()
+    existingTools += Tool(functionDeclarations = listOf(declaration()))
+    return llmRequest.copy(config = llmRequest.config.copy(tools = existingTools))
   }
 }

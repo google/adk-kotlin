@@ -204,6 +204,35 @@ class NewFileSystemSourceTest {
   }
 
   @Test
+  fun loadFrontmatter_adkAdditionalToolsMetadata_returnsFrontmatterWithMetadata() = runTest {
+    writeRawSkillMd(
+      dirName = "test-skill",
+      content =
+        """
+        ---
+        name: test-skill
+        description: Description
+        metadata:
+          adk_additional_tools:
+            - extra_tool_a
+            - extra_tool_b
+          owner: adk
+        ---
+        Instructions.
+        """
+          .trimIndent(),
+    )
+
+    val result = source.loadFrontmatter("test-skill")
+
+    assertThat(result.isSuccess).isTrue()
+    val frontmatter = result.getOrThrow()
+    assertThat(frontmatter.metadata["adk_additional_tools"])
+      .isEqualTo(listOf("extra_tool_a", "extra_tool_b"))
+    assertThat(frontmatter.metadata["owner"]).isEqualTo("adk")
+  }
+
+  @Test
   fun loadFrontmatter_nonexistentSkill_returnsFailure() = runTest {
     val result = source.loadFrontmatter("nonexistent")
 
