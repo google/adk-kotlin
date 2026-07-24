@@ -57,7 +57,7 @@ class McpToolset
 internal constructor(
   private val mcpSessionManager: SessionManager,
   private val toolFilter: ((BaseTool) -> Boolean)? = null,
-  private val headerProvider: ((ReadonlyContext) -> Map<String, String>)? = null,
+  private val headerProvider: (suspend (ReadonlyContext) -> Map<String, String>)? = null,
   private val useMcpResources: Boolean = false,
   private val maxMcpResourceLength: Int = DEFAULT_MAX_RESOURCE_LENGTH,
 ) : Toolset {
@@ -268,8 +268,10 @@ internal constructor(
     /**
      * Creates an [McpToolset] from this configuration.
      *
-     * @param headerProvider Optional callback that, given a [ReadonlyContext], returns a map of
-     *   HTTP headers to attach to each MCP session. When non-`null`, sessions are not cached across
+     * @param headerProvider Optional suspending callback that, given a [ReadonlyContext], returns a
+     *   map of HTTP headers to attach to each MCP session. Because it is a `suspend` function,
+     *   headers or tokens can be minted asynchronously at request time (e.g. fetching an OAuth
+     *   bearer token) without blocking a thread. When non-`null`, sessions are not cached across
      *   invocations so that headers can vary per-context (e.g. per-user authentication). When
      *   `null`, a single session is opened lazily and reused.
      * @param progressConsumers Callbacks invoked for every
@@ -279,7 +281,7 @@ internal constructor(
      *   [sseConnectionParams], and [streamableHttpConnectionParams] is set.
      */
     fun toToolset(
-      headerProvider: ((ReadonlyContext) -> Map<String, String>)? = null,
+      headerProvider: (suspend (ReadonlyContext) -> Map<String, String>)? = null,
       progressConsumers: List<(McpSchema.ProgressNotification) -> Unit> = emptyList(),
     ): McpToolset {
       val params =
@@ -307,7 +309,7 @@ internal constructor(
     /** Creates a McpToolset instance from the configuration with a specific SessionManager. */
     internal fun toToolset(
       sessionManager: SessionManager,
-      headerProvider: ((ReadonlyContext) -> Map<String, String>)? = null,
+      headerProvider: (suspend (ReadonlyContext) -> Map<String, String>)? = null,
     ): McpToolset {
       val filter: ((BaseTool) -> Boolean)? = toolFilter?.let { filterList ->
         { tool: BaseTool -> tool.name in filterList }
