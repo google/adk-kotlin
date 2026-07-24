@@ -130,9 +130,9 @@ class McpToolsetIntegrationTest {
   fun run_failingTool_returnsToolExecutionErrorVerbatim(): Unit = runBlocking {
     newToolset().use { toolset ->
       val fail = toolset.getTools().single { it.name == FakeMcpServer.TOOL_FAIL }
-      val result = fail.run(testToolContext(), emptyMap()) as McpSchema.CallToolResult
+      val result = fail.run(testToolContext(), emptyMap())
       // In-band tool error: returned verbatim (isError=true), not thrown, so no retry path.
-      assertThat(result.isError()).isTrue()
+      assertThat(isErrorOf(result)).isTrue()
       assertThat(textOf(result)).isEqualTo(FakeMcpServer.FAIL_MESSAGE)
     }
   }
@@ -273,14 +273,14 @@ class McpToolsetIntegrationTest {
     private val KILL_TEST_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(5)
 
     /**
-     * Request timeout for the unresponsive-server test. Kept fairly short because the call hits this
-     * timeout on every one of McpTool's retry attempts before giving up, so the cumulative stall is
-     * a multiple of it. It can't be too short, though: this single value also bounds the `initialize`
-     * handshake (the SDK applies `requestTimeout` to every request, including init), which must
-     * complete inside it during the initial `getTools()`. Cold-starting the child JVM on a slow,
-     * contended CI runner can exceed a sub-second budget, so a too-small value fails tool loading
-     * with an `McpToolLoadingException` before the hang path is ever reached. 3s comfortably absorbs
-     * that cold start while keeping the retry storm modest.
+     * Request timeout for the unresponsive-server test. Kept fairly short because the call hits
+     * this timeout on every one of McpTool's retry attempts before giving up, so the cumulative
+     * stall is a multiple of it. It can't be too short, though: this single value also bounds the
+     * `initialize` handshake (the SDK applies `requestTimeout` to every request, including init),
+     * which must complete inside it during the initial `getTools()`. Cold-starting the child JVM on
+     * a slow, contended CI runner can exceed a sub-second budget, so a too-small value fails tool
+     * loading with an `McpToolLoadingException` before the hang path is ever reached. 3s
+     * comfortably absorbs that cold start while keeping the retry storm modest.
      */
     private val HANG_TEST_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(3)
 

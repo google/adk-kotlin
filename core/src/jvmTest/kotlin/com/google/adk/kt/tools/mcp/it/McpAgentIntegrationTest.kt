@@ -25,12 +25,9 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
-import com.google.adk.kt.tools.BaseTool
 import com.google.common.truth.Truth.assertThat
-import io.modelcontextprotocol.spec.McpSchema
 import java.nio.file.Files
 import kotlin.test.BeforeTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.fail
 import kotlinx.coroutines.flow.toList
@@ -55,7 +52,7 @@ class McpAgentIntegrationTest {
   @BeforeTest fun skipIfDisabled() = assumeMcpItEnabled()
 
   @Test
-  fun runAsync_modelCallsAddTool_marshalsRawCallToolResultIntoFunctionResponse(): Unit =
+  fun runAsync_modelCallsAddTool_marshalsResultIntoJsonNativeFunctionResponse(): Unit =
     runBlocking {
       val pidFile = Files.createTempFile("adk-mcp-agent-it-pid", ".txt")
       try {
@@ -102,16 +99,11 @@ class McpAgentIntegrationTest {
           assertThat(response.name).isEqualTo(FakeMcpServer.TOOL_ADD)
           assertThat(response.id).isEqualTo(CALL_ID)
 
-          // THE MARSHALLING FINDING: McpTool.run returns the raw SDK CallToolResult, and ADK's
-          // generic wrapping (InvocationContext.toFinalResponseMap) puts any non-Map result under a
-          // single "result" key (BaseTool.RESULT_KEY). So the model receives the foreign
-          // CallToolResult object itself, the answer "5" buried inside rather than JSON-native. We
-          // pin this exact (buggy) shape.
-          assertThat(response.response.keys).containsExactly(BaseTool.RESULT_KEY)
-          val raw = response.response[BaseTool.RESULT_KEY]
-          assertThat(raw).isInstanceOf(McpSchema.CallToolResult::class.java)
-          val callResult = raw as McpSchema.CallToolResult
-          assertThat((callResult.content().single() as McpSchema.TextContent).text()).isEqualTo("5")
+          // The tool's output "5" is retrievable as the single text content of the converted
+          // result.
+          // That the whole payload is JSON-native (serializable by a persistent backend) is proven
+          // end-to-end by McpResultSerializationIntegrationTest, so it is not re-asserted here.
+          assertThat(textOf(response.response)).isEqualTo("5")
 
           // The agent loop ran to completion: after seeing the tool response it emitted its final
           // text.
@@ -129,65 +121,6 @@ class McpAgentIntegrationTest {
         Files.deleteIfExists(pidFile)
       }
     }
-
-  // Regression guard. It FAILS today: McpTool.run returns the raw CallToolResult, so the
-  // FunctionResponse the model receives is {"result": <SDK object>} rather than a clean,
-  // JSON-native payload carrying the tool's output. Python ADK converts the result
-  // (CallToolResult.model_dump(exclude_none=True, mode="json")); the Kotlin port omitted that step.
-  // Drop @Ignore once McpTool.run returns a converted map. The companion characterization test
-  // above pins the current (buggy) shape and must be updated at the same time.
-  @Ignore
-  @Test
-  fun runAsync_modelCallsAddTool_returnsCleanJsonNativeResponse(): Unit = runBlocking {
-    val pidFile = Files.createTempFile("adk-mcp-agent-it-clean-pid", ".txt")
-    try {
-      newToolset(pidFile = pidFile).use { toolset ->
-        val agent =
-          LlmAgent(
-            name = AGENT_NAME,
-            model =
-              DummyModel.createSequential(
-                "mock-model",
-                listOf(
-                  modelFunctionCallResponse(
-                    FakeMcpServer.TOOL_ADD,
-                    mapOf("a" to 2, "b" to 3),
-                    id = CALL_ID,
-                  ),
-                  LlmResponse(content = modelMessage(FINAL_TEXT)),
-                ),
-              ),
-            toolsets = listOf(toolset),
-          )
-        val events =
-          InMemoryRunner(agent = agent)
-            .runAsync(
-              userId = "user1",
-              sessionId = "session1",
-              newMessage = userMessage("add 2 and 3"),
-            )
-            .toList()
-
-        val response =
-          events.firstOrNull { it.functionResponses().isNotEmpty() }?.functionResponses()?.single()
-            ?: fail("expected a function-response event, got: $events")
-
-        // The binding invariant any reasonable fix must satisfy. Mirroring the close-leak guard, we
-        // deliberately do NOT pin the exact keys/structure a fix chooses:
-        //  1. the response holds no foreign SDK object -- it is JSON-native throughout, so it is
-        //     intelligible to the model and serializable by any session backend; and
-        //  2. the tool's actual output ("5") is present as plain data, not buried inside an opaque
-        //     object.
-        // A fix mirroring Python ADK would also surface isError at the top level, but we leave the
-        // exact shape to the implementer.
-        assertThat(isJsonNative(response.response)).isTrue()
-        assertThat(flattenScalars(response.response)).contains("5")
-      }
-    } finally {
-      killIfRunning(pidFile)
-      Files.deleteIfExists(pidFile)
-    }
-  }
 
   // Live variant of the happy-path test, driven by a REAL Gemini model instead of DummyModel (gated
   // by assumeGeminiItEnabled). The real model actually receives the prior turn's FunctionResponse,
@@ -266,32 +199,6 @@ class McpAgentIntegrationTest {
 
   /** The Gemini model id to drive the live tests; overridable via [GEMINI_MODEL_ENV]. */
   private fun geminiModel(): String = envOrNull(GEMINI_MODEL_ENV) ?: DEFAULT_GEMINI_MODEL
-
-  /**
-   * True iff [value] and everything it transitively contains are plain JSON-native types (null,
-   * String, Number, Boolean, or a Map/Collection of the same) -- i.e. it holds no foreign SDK
-   * object such as [McpSchema.CallToolResult]. JSON-nativeness is what makes a tool response
-   * intelligible to the model and serializable by a persistent session backend.
-   */
-  private fun isJsonNative(value: Any?): Boolean =
-    when (value) {
-      null,
-      is String,
-      is Number,
-      is Boolean -> true
-      is Map<*, *> -> value.keys.all { it is String } && value.values.all { isJsonNative(it) }
-      is Collection<*> -> value.all { isJsonNative(it) }
-      else -> false
-    }
-
-  /** Concatenates every scalar leaf reachable from [value], for a content-presence check. */
-  private fun flattenScalars(value: Any?): String =
-    when (value) {
-      null -> ""
-      is Map<*, *> -> value.values.joinToString(" ") { flattenScalars(it) }
-      is Collection<*> -> value.joinToString(" ") { flattenScalars(it) }
-      else -> value.toString()
-    }
 
   private companion object {
     /** Env var that must be present (a real API key) for the live Gemini tests to run. */

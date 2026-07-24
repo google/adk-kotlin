@@ -24,6 +24,7 @@ import com.google.adk.kt.tools.mcp.McpSchemaConverter.toAdkFunctionDeclaration
 import com.google.adk.kt.tools.mcp.McpToolException.McpToolDeclarationException
 import com.google.adk.kt.types.FunctionDeclaration
 import io.modelcontextprotocol.client.McpAsyncClient
+import io.modelcontextprotocol.json.McpJsonDefaults
 import io.modelcontextprotocol.spec.McpSchema
 import io.modelcontextprotocol.spec.McpSchema.Tool as McpSchemaTool
 import kotlinx.coroutines.CancellationException
@@ -64,7 +65,8 @@ internal constructor(
     val request = McpSchema.CallToolRequest(name, args)
     val callResult = retrySessionCall { mcpSession.callTool(request).awaitSingleOrNull() }
 
-    return callResult ?: mapOf("error" to "MCP framework error: CallToolResult was null")
+    return callResult?.toJsonNativeMap()
+      ?: mapOf("error" to "MCP framework error: CallToolResult was null")
   }
 
   private suspend fun <T> retrySessionCall(
@@ -138,4 +140,25 @@ internal constructor(
       }
     }
   }
+}
+
+/**
+ * The MCP SDK's own wire JSON mapper, reused to render SDK results in their canonical JSON shape.
+ */
+private val jsonMapper = McpJsonDefaults.getMapper()
+
+/**
+ * Converts the foreign MCP SDK [McpSchema.CallToolResult] into a JSON-native map (only [Map],
+ * [List], String, number, Boolean, or null). ADK wraps any non-[Map] tool result as `{"result":
+ * <value>}`; left as the raw SDK object that payload is opaque to the model and, because it is not
+ * JSON-native, throws when a serializing [com.google.adk.kt.sessions.SessionService] persists the
+ * event.
+ *
+ * Mirrors Python ADK's `CallToolResult.model_dump(exclude_none=True, mode="json")`: it goes through
+ * the SDK's own mapper, so polymorphic `content` entries keep their `type` discriminator and absent
+ * fields are dropped, matching the result's canonical on-the-wire JSON.
+ */
+private fun McpSchema.CallToolResult.toJsonNativeMap(): Map<String, Any?> {
+  @Suppress("UNCHECKED_CAST")
+  return jsonMapper.convertValue(this, Map::class.java) as Map<String, Any?>
 }

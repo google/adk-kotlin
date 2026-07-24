@@ -124,9 +124,20 @@ fun newToolset(
     )
     .toToolset(progressConsumers = progressConsumers)
 
-/** Extracts the text of a single-[McpSchema.TextContent] result returned by `McpTool.run`. */
+/**
+ * The JSON-native map `McpTool.run` now produces from a `CallToolResult` (see
+ * `McpTool.toJsonNativeMap`); the SDK mapper renders it as `{"content": [{"type": ..., ...}],
+ * ...}`.
+ */
+@Suppress("UNCHECKED_CAST")
+fun resultMap(toolResult: Any): Map<String, Any?> = toolResult as Map<String, Any?>
+
+/** Extracts the text of a single text-content result returned by `McpTool.run`. */
 fun textOf(toolResult: Any): String =
-  ((toolResult as McpSchema.CallToolResult).content().single() as McpSchema.TextContent).text()
+  ((resultMap(toolResult)["content"] as List<*>).single() as Map<*, *>)["text"] as String
+
+/** Whether the result returned by `McpTool.run` carries `isError: true`. */
+fun isErrorOf(toolResult: Any): Boolean = resultMap(toolResult)["isError"] == true
 
 /** Reads the PID the fake server wrote to [pidFile] (see [FakeMcpServer.PID_FILE_ENV]). */
 fun readPid(pidFile: Path): Long = Files.readString(pidFile).trim().toLong()

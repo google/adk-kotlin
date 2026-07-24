@@ -91,14 +91,14 @@ class McpToolTest {
   }
 
   @Test
-  fun run_returnsCallToolResultDirectly() = runTest {
+  fun run_convertsCallToolResultToJsonNativeMap() = runTest {
     val responseContent = McpSchema.TextContent("test result")
     val invokeResponse = McpSchema.CallToolResult.builder().content(listOf(responseContent)).build()
     whenever(mockMcpSession.callTool(any())) doReturn mono { invokeResponse }
 
     val result = mcpTool.run(toolContext, emptyMap())
 
-    assertEquals(invokeResponse, result)
+    assertSingleTextResult(result, "test result")
   }
 
   @Test
@@ -188,7 +188,20 @@ class McpToolTest {
     whenever(mockMcpSession.callTool(any())).thenThrow(RuntimeException("old session fail"))
 
     val result = mcpToolWithRetry.run(toolContext, emptyMap())
-    assertEquals(invokeResponse, result)
+    assertSingleTextResult(result, "test result")
     verify(mockSessionManager, times(3)).createAsyncSession()
+  }
+
+  /**
+   * Asserts [result] is the JSON-native map McpTool.run produces for a [McpSchema.CallToolResult]
+   * carrying a single non-error [McpSchema.TextContent] (the SDK mapper renders it as `{"content":
+   * [{"type": "text", "text": ...}], "isError": false}`).
+   */
+  private fun assertSingleTextResult(result: Any?, expectedText: String) {
+    val map = result as Map<*, *>
+    assertEquals(false, map["isError"])
+    val first = (map["content"] as List<*>).single() as Map<*, *>
+    assertEquals("text", first["type"])
+    assertEquals(expectedText, first["text"])
   }
 }
