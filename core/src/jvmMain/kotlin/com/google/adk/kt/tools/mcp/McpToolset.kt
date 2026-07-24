@@ -17,7 +17,6 @@
 package com.google.adk.kt.tools.mcp
 
 import com.google.adk.kt.agents.ReadonlyContext
-import com.google.adk.kt.logging.Logger
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.Toolset
@@ -62,9 +61,7 @@ internal constructor(
   private val maxMcpResourceLength: Int = DEFAULT_MAX_RESOURCE_LENGTH,
 ) : Toolset {
 
-  private val sessionMutex = Mutex()
   private val toolsMutex = Mutex()
-  @Volatile private var mcpSession: McpAsyncClient? = null
   private var cachedTools: List<BaseTool>? = null
 
   override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
@@ -86,9 +83,16 @@ internal constructor(
     times: Int = DEFAULT_RETRY_TIMES,
     delayMs: Long = DEFAULT_RETRY_DELAY_MS,
   ): List<BaseTool> {
+    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
+    var session: McpAsyncClient? = null
     for (attempt in 1..times) {
       try {
-        return loadTools(readonlyContext)
+        // First attempt fetches the pooled session (stale=null); later attempts pass the failed
+        // session so the manager replaces it in place and the whole toolset recovers together.
+        // getSession is inside the try because opening a session initializes it over the network,
+        // which can fail (I/O, timeout) -- those failures must retry like loadTools failures do.
+        session = mcpSessionManager.getSession(headers, stale = session)
+        return loadTools(session, headers)
       } catch (e: Exception) {
         handleLoadError(e, attempt)
         if (attempt == times) {
@@ -100,43 +104,10 @@ internal constructor(
     error("Exhausted retries without returning or throwing")
   }
 
-  /**
-   * Returns a session. If [headerProvider] is null, a single session is cached and reused. If
-   * [headerProvider] is non-null, a new session is created for each call to ensure headers from the
-   * [ReadonlyContext] are used.
-   */
-  private suspend fun getSession(headers: Map<String, String>): McpAsyncClient =
-    if (headerProvider == null) {
-      getOrInitCachedSession(headers)
-    } else {
-      createAndInitializeSession(headers)
-    }
-
-  /** Gets or initializes the cached session. Only used when [headerProvider] is null. */
-  private suspend fun getOrInitCachedSession(headers: Map<String, String>): McpAsyncClient =
-    mcpSession
-      ?: sessionMutex.withLock {
-        mcpSession
-          ?: mcpSessionManager.createAsyncSession(headers).also { newSession ->
-            logger.info { "MCP session is null, initializing." }
-            val initResult = newSession.initialize().awaitSingle()
-            logger.debug { "Initialize Cached Client Result: $initResult" }
-            mcpSession = newSession
-          }
-      }
-
-  /** Creates and initializes a new session. Used when [headerProvider] is non-null. */
-  private suspend fun createAndInitializeSession(headers: Map<String, String>): McpAsyncClient {
-    val newSession = mcpSessionManager.createAsyncSession(headers)
-    val initResult = newSession.initialize().awaitSingle()
-    logger.debug { "Initialize New Client Result: $initResult" }
-    return newSession
-  }
-
-  private suspend fun loadTools(readonlyContext: ReadonlyContext?): List<BaseTool> {
-    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    val session = getSession(headers)
-
+  private suspend fun loadTools(
+    session: McpAsyncClient,
+    headers: Map<String, String>,
+  ): List<BaseTool> {
     val toolsResponse = session.listTools().awaitSingle()
     val tools: MutableList<BaseTool> =
       toolsResponse
@@ -146,8 +117,8 @@ internal constructor(
             name = it.name(),
             description = it.description() ?: "",
             mcpSchemaTool = it,
-            mcpSession = session,
             mcpSessionManager = mcpSessionManager,
+            headers = headers,
           )
         }
         .toMutableList()
@@ -155,42 +126,85 @@ internal constructor(
     val capabilities = session.serverCapabilities
 
     if (useMcpResources && capabilities?.resources() != null) {
-      tools.add(ListMcpResourcesTool(session))
+      tools.add(ListMcpResourcesTool(this))
       tools.add(LoadMcpResourceTool(this, maxMcpResourceLength))
-      tools.add(ListMcpResourceTemplatesTool(session))
     }
     return tools
   }
 
-  /** Returns a list of resource names available on the MCP server. */
-  suspend fun listResources(readonlyContext: ReadonlyContext? = null): List<String> {
+  /**
+   * Lists a page of resources advertised by the MCP server.
+   *
+   * @param cursor An opaque pagination cursor from a previous [McpResourceListing.nextCursor], or
+   *   `null` to fetch the first page.
+   */
+  suspend fun listResources(
+    cursor: String? = null,
+    readonlyContext: ReadonlyContext? = null,
+  ): McpResourceListing {
     val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    val session = getSession(headers)
-    val sessionToClose = if (headerProvider != null) session else null
-
-    try {
-      val result = session.listResources().awaitSingle()
-      return result.resources().map { it.name() }
-    } finally {
-      sessionToClose?.closeQuietly(logger, "Failed to close ephemeral McpAsyncClient session")
-    }
+    val session = mcpSessionManager.getSession(headers)
+    // Always use the cursor-based overload (McpSchema.FIRST_PAGE == null) so a single page is
+    // fetched and the server's nextCursor is surfaced to the caller. The no-arg overload would
+    // auto-follow every cursor and collapse the whole catalog into one response, defeating
+    // page-by-page browsing (and blowing up context on servers with large resource catalogs).
+    val result = session.listResources(cursor).awaitSingle()
+    return McpResourceListing(
+      resources = result.resources().map { it.toResourceInfo() },
+      nextCursor = result.nextCursor(),
+    )
   }
 
-  /** Fetches and returns a list of contents of the resource with the given URI. */
-  suspend fun readResource(uri: String, readonlyContext: ReadonlyContext? = null): Any {
+  /**
+   * Fetches every resource advertised by the MCP server, following pagination cursors until the
+   * server reports no further pages.
+   *
+   * Used by `load_mcp_resource` to resolve a resource by name, which requires scanning the whole
+   * listing to detect name collisions reliably.
+   */
+  internal suspend fun listAllResources(
+    readonlyContext: ReadonlyContext? = null
+  ): List<McpResourceInfo> {
     val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    val session = getSession(headers)
-    val sessionToClose = if (headerProvider != null) session else null
-
-    try {
-      val readResult = session.readResource(McpSchema.ReadResourceRequest(uri)).awaitSingle()
-      return readResult.contents()
-    } finally {
-      sessionToClose?.closeQuietly(logger, "Failed to close ephemeral McpAsyncClient session")
-    }
+    val session = mcpSessionManager.getSession(headers)
+    // The no-arg overload auto-follows every nextCursor and collapses the whole catalog into a
+    // single response -- exactly what a full scan wants, and the opposite of [listResources],
+    // which deliberately surfaces one page at a time.
+    return session.listResources().awaitSingle().resources().map { it.toResourceInfo() }
   }
 
-  private suspend fun handleLoadError(e: Exception, attempt: Int) {
+  /**
+   * Lists a page of resource templates advertised by the MCP server.
+   *
+   * @param cursor An opaque pagination cursor from a previous
+   *   [McpResourceTemplateListing.nextCursor], or `null` to fetch the first page.
+   */
+  suspend fun listResourceTemplates(
+    cursor: String? = null,
+    readonlyContext: ReadonlyContext? = null,
+  ): McpResourceTemplateListing {
+    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
+    val session = mcpSessionManager.getSession(headers)
+    // Single-page cursor overload, mirroring [listResources]; see the rationale there.
+    val result = session.listResourceTemplates(cursor).awaitSingle()
+    return McpResourceTemplateListing(
+      resourceTemplates = result.resourceTemplates().map { it.toResourceTemplateInfo() },
+      nextCursor = result.nextCursor(),
+    )
+  }
+
+  /** Fetches and returns the contents of the resource with the given [uri]. */
+  suspend fun readResource(
+    uri: String,
+    readonlyContext: ReadonlyContext? = null,
+  ): List<McpResourceContent> {
+    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
+    val session = mcpSessionManager.getSession(headers)
+    val readResult = session.readResource(McpSchema.ReadResourceRequest(uri)).awaitSingle()
+    return readResult.contents().map { it.toResourceContent() }
+  }
+
+  private fun handleLoadError(e: Exception, attempt: Int) {
     when (e) {
       is CancellationException -> throw e
       is IllegalArgumentException -> {
@@ -200,22 +214,10 @@ internal constructor(
     }
 
     logger.error(e) { "Unexpected error during tool loading, retry attempt $attempt" }
-    // Only reset the cached session if headerProvider is null.
-    if (headerProvider == null) {
-      mcpSession?.closeQuietly(logger, "Failed to close McpAsyncClient session")
-      mcpSession = null
-      logger.info { "Reinitializing MCP session before next retry for unexpected error." }
-    } else {
-      logger.info { "Not reinitializing MCP session; headerProvider is in use." }
-    }
   }
 
   override fun close() {
-    // Only close the cached session if headerProvider is null.
-    if (headerProvider == null) {
-      mcpSession?.closeQuietly(logger, "Failed to close MCP session")
-      mcpSession = null
-    }
+    mcpSessionManager.closeAll()
     cachedTools = null
   }
 
@@ -226,14 +228,6 @@ internal constructor(
     private const val LOAD_TOOLS_FAILURE_MESSAGE = "Failed to load tools."
 
     private val logger = LoggerFactory.getLogger(McpToolset::class)
-
-    private fun McpAsyncClient.closeQuietly(logger: Logger, message: String) {
-      try {
-        close()
-      } catch (e: Exception) {
-        logger.warn(e) { message }
-      }
-    }
   }
 
   /**
@@ -252,8 +246,8 @@ internal constructor(
    *   in the list will be exposed to the agent. When `null`, all tools advertised by the server are
    *   exposed.
    * @property useMcpResources When `true`, resource-related tools (`list_mcp_resources`,
-   *   `list_mcp_resource_templates`, `load_mcp_resource`) are added to the toolset, granting the
-   *   agent access to MCP resources exposed by the server. Defaults to `false`.
+   *   `load_mcp_resource`) are added to the toolset, granting the agent access to MCP resources
+   *   exposed by the server. Defaults to `false`.
    * @property maxMcpResourceLength Maximum length, in characters, of a single resource payload
    *   returned by `load_mcp_resource`. Longer payloads are truncated.
    */
@@ -325,3 +319,23 @@ internal constructor(
     }
   }
 }
+
+private fun McpSchema.Resource.toResourceInfo(): McpResourceInfo =
+  McpResourceInfo(name = name(), uri = uri(), description = description(), mimeType = mimeType())
+
+private fun McpSchema.ResourceTemplate.toResourceTemplateInfo(): McpResourceTemplateInfo =
+  McpResourceTemplateInfo(
+    name = name(),
+    uriTemplate = uriTemplate(),
+    description = description(),
+    mimeType = mimeType(),
+  )
+
+private fun McpSchema.ResourceContents.toResourceContent(): McpResourceContent =
+  when (this) {
+    is McpSchema.TextResourceContents ->
+      McpResourceContent.Text(uri = uri(), mimeType = mimeType(), text = text() ?: "")
+    is McpSchema.BlobResourceContents ->
+      McpResourceContent.Blob(uri = uri(), mimeType = mimeType(), blobBase64 = blob())
+    else -> error("Unknown McpSchema.ResourceContents subtype: $this")
+  }

@@ -23,22 +23,107 @@ import io.modelcontextprotocol.spec.McpSchema
 import io.modelcontextprotocol.spec.McpSchema.ClientCapabilities
 import java.time.Duration
 import kotlin.jvm.JvmStatic
+import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.mono
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
- * Manages MCP client sessions.
+ * Owns and manages MCP client sessions.
  *
- * This class provides methods for creating and initializing MCP client sessions, handling different
- * connection parameters and transport builders.
+ * Sessions are pooled by a key derived from the connection parameters and the per-call headers: a
+ * stdio connection ignores headers and always maps to a single shared session, while SSE and
+ * Streamable HTTP connections get one session per distinct header set. The pool is the single owner
+ * of every session, so [closeAll] can tear them all down and [getSession] replaces a dead one in
+ * place (via its `stale` parameter) for everyone sharing it.
  */
 internal class McpSessionManager(
   private val connectionParams: McpConnectionParameters,
   private val transportBuilder: McpTransportBuilder = DefaultMcpTransportBuilder(),
   private val progressConsumers: List<(McpSchema.ProgressNotification) -> Unit> = emptyList(),
+  // Test seam: builds and initializes a ready-to-use session for the given headers. Defaults to the
+  // real transport-backed client; unit tests inject a fake to exercise pooling without a server.
+  private val sessionOpener: ((Map<String, String>) -> McpAsyncClient)? = null,
 ) : SessionManager {
 
-  /** Creates an asynchronous session. */
-  override fun createAsyncSession(headers: Map<String, String>): McpAsyncClient {
+  /**
+   * Guards [sessions] across the suspending create+initialize critical section.
+   *
+   * A single instance-wide lock is held for the whole of [openSession], including the network
+   * `initialize()` round-trip, so a session is created at most once per key even under concurrent
+   * callers. This mirrors adk-python's `MCPSessionManager`, which serializes on a single
+   * `asyncio.Lock`.
+   *
+   * Tradeoff: because the lock spans initialization, a slow [openSession] blocks every other
+   * [getSession] -- even for distinct header keys -- and a concurrent [closeAll] (which acquires
+   * this lock via `runBlocking`) blocks its calling thread until the in-flight init completes. This
+   * is acceptable for the expected workloads (stdio and static-header setups have a single session;
+   * per-header sessions are low-concurrency). If highly concurrent per-user sessions become a
+   * bottleneck, pool `Deferred<McpAsyncClient>` and `await` it outside the lock so distinct keys
+   * initialize in parallel and the lock hold-time stays tiny.
+   */
+  private val mutex = Mutex()
+  private val sessions = mutableMapOf<String, McpAsyncClient>()
+
+  override suspend fun getSession(
+    headers: Map<String, String>,
+    stale: McpAsyncClient?,
+  ): McpAsyncClient {
+    val key = sessionKey(headers)
+    // Evict-then-get-or-create, all under one lock. If a known-dead `stale` is named and still
+    // pooled, drop it so we recreate below; whichever caller wins that race closes it, while other
+    // sharers holding the same dead client find the replacement already in place (created once).
+    val (session, evicted) =
+      mutex.withLock {
+        val evicted = if (stale != null && sessions[key] === stale) sessions.remove(key) else null
+        val session = sessions[key] ?: openSession(headers).also { sessions[key] = it }
+        session to evicted
+      }
+    evicted?.closeQuietly() // Closed outside the lock; the stale client is already dead.
+    return session
+  }
+
+  /**
+   * Builds and initializes a fresh session, or delegates to the injected [sessionOpener] in tests.
+   */
+  private suspend fun openSession(headers: Map<String, String>): McpAsyncClient =
+    sessionOpener?.invoke(headers)
+      ?: createAsyncSession(headers).also { client ->
+        try {
+          val initResult = client.initialize().awaitSingle()
+          logger.debug { "Initialized pooled McpAsyncClient: $initResult" }
+        } catch (e: Exception) {
+          // The client is built (a stdio transport already spawned a child process) but never
+          // reached the pool, so nothing else will close it. Close it here to avoid leaking it
+          // (and, for stdio, the child process) when initialization fails.
+          client.closeQuietly()
+          throw e
+        }
+      }
+
+  // Not suspend: it's driven by the non-suspend AutoCloseable.close(). runBlocking bridges the
+  // coroutine Mutex that getSession holds across a suspending initialize(). closeAll's own critical
+  // section is brief: snapshot + clear so an in-flight getSession can't re-pool afterwards, then the
+  // client.close() calls run outside it (fire-and-forget).
+  //
+  // Warning: acquiring the lock can still block this thread if a getSession is mid-initialize (it
+  // holds the lock across the network round-trip); the wait is bounded by the init timeout, not a
+  // deadlock. See the [mutex] doc for the coarse-lock tradeoff and how to avoid it if needed.
+  override fun closeAll() {
+    val toClose = runBlocking {
+      mutex.withLock { sessions.values.toList().also { sessions.clear() } }
+    }
+    toClose.forEach { it.closeQuietly() }
+  }
+
+  /**
+   * Builds (but does not initialize) a client for [headers], merging them into the base params.
+   *
+   * Not part of [SessionManager]: callers must go through [getSession] so sessions stay pooled and
+   * owned. Exposed within the module only so unit tests can assert transport/timeout configuration.
+   */
+  fun createAsyncSession(headers: Map<String, String> = emptyMap()): McpAsyncClient {
     val params =
       if (headers.isNotEmpty()) {
         when (connectionParams) {
@@ -54,7 +139,20 @@ internal class McpSessionManager(
     return initializeAsyncSession(params, transportBuilder, progressConsumers)
   }
 
+  /**
+   * Pool key for [headers]. Stdio ignores headers (a single shared session); SSE/Streamable HTTP
+   * get one session per distinct header set.
+   */
+  private fun sessionKey(headers: Map<String, String>): String =
+    when (connectionParams) {
+      is McpConnectionParameters.Stdio -> STDIO_SESSION_KEY
+      else -> if (headers.isEmpty()) NO_HEADERS_SESSION_KEY else headers.toSortedMap().toString()
+    }
+
   companion object {
+    private const val STDIO_SESSION_KEY = "stdio_session"
+    private const val NO_HEADERS_SESSION_KEY = "session_no_headers"
+
     /**
      * Initializes an asynchronous MCP client session.
      *
@@ -110,5 +208,14 @@ internal class McpSessionManager(
     }
 
     private val logger = LoggerFactory.getLogger(McpSessionManager::class)
+
+    /** Closes this client, swallowing and logging any error (close is best-effort). */
+    private fun McpAsyncClient.closeQuietly() {
+      try {
+        close()
+      } catch (e: Exception) {
+        logger.warn(e) { "Failed to close McpAsyncClient session: ${e.message}" }
+      }
+    }
   }
 }

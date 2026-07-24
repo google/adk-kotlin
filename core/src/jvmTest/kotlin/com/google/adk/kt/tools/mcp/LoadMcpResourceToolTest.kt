@@ -25,28 +25,34 @@ import kotlin.test.assertFailsWith
 import kotlinx.coroutines.reactor.mono
 import kotlinx.coroutines.test.runTest
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 class LoadMcpResourceToolTest {
 
-  private val mockInitializeResult =
-    McpSchema.InitializeResult(
-      "1.0",
-      McpSchema.ServerCapabilities(null, null, null, null, null, null),
-      McpSchema.Implementation("test-server", "1.0", null),
-      "instructions",
-      null,
-    )
-
-  private suspend fun createMcpToolset(mockMcpSession: McpAsyncClient): McpToolset {
-    whenever(mockMcpSession.initialize()) doReturn mono { mockInitializeResult }
-    val mockSessionManager = mock<SessionManager>()
-    // Mock for loadTools which might be called if we don't ensure it is initialized
-    // But getOrInitSession handles it.
-    whenever(mockSessionManager.createAsyncSession()) doReturn mockMcpSession
+  private fun createMcpToolset(mockMcpSession: McpAsyncClient): McpToolset {
+    // The toolset fetches the pooled session from the manager; hand it the mock session.
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
     return McpToolset(mockSessionManager)
+  }
+
+  private fun resource(name: String, uri: String, mimeType: String? = null): McpSchema.Resource {
+    val builder = McpSchema.Resource.builder().name(name).uri(uri)
+    mimeType?.let { builder.mimeType(it) }
+    return builder.build()
+  }
+
+  /** Stubs the full resource listing returned by the server. */
+  private fun stubResources(session: McpAsyncClient, vararg resources: McpSchema.Resource) {
+    // listAllResources delegates to the no-arg listResources(), which aggregates every page.
+    whenever(session.listResources()) doReturn
+      mono { McpSchema.ListResourcesResult(resources.toList(), null) }
   }
 
   @Test
@@ -55,19 +61,44 @@ class LoadMcpResourceToolTest {
     val mcpToolset = createMcpToolset(mockMcpSession)
     val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
 
+    stubResources(mockMcpSession, resource("res1", "uri1"))
     val contents =
       listOf(
         McpSchema.TextResourceContents("uri1", "text/plain", "Part 1 "),
         McpSchema.TextResourceContents("uri1", "text/plain", "Part 2"),
       )
-    val readResourceResult = McpSchema.ReadResourceResult(contents)
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { readResourceResult }
+      mono { McpSchema.ReadResourceResult(contents) }
 
     val context = testToolContext()
-    val result = tool.run(context, mapOf("uri" to "uri1"))
+    val result = tool.run(context, mapOf("name" to "res1"))
 
     assertThat(result).isEqualTo("Part 1 \n\nPart 2")
+  }
+
+  @Test
+  fun run_resolvesNameToUri_acrossFullListing() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val mcpToolset = createMcpToolset(mockMcpSession)
+    val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
+
+    // The target is not the first resource: the tool must scan the whole listing to resolve it.
+    stubResources(mockMcpSession, resource("other", "uriOther"), resource("target", "uriTarget"))
+    whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
+      mono {
+        McpSchema.ReadResourceResult(
+          listOf(McpSchema.TextResourceContents("uriTarget", "text/plain", "hello"))
+        )
+      }
+
+    val context = testToolContext()
+    val result = tool.run(context, mapOf("name" to "target"))
+
+    assertThat(result).isEqualTo("hello")
+    // The resolved URI (not the name) is what gets read from the server.
+    val captor = argumentCaptor<McpSchema.ReadResourceRequest>()
+    verify(mockMcpSession).readResource(captor.capture())
+    assertThat(captor.firstValue.uri()).isEqualTo("uriTarget")
   }
 
   @Test
@@ -76,13 +107,13 @@ class LoadMcpResourceToolTest {
     val mcpToolset = createMcpToolset(mockMcpSession)
     val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 5)
 
+    stubResources(mockMcpSession, resource("res1", "uri1"))
     val contents = listOf(McpSchema.TextResourceContents("uri1", "text/plain", "HelloWorld"))
-    val readResourceResult = McpSchema.ReadResourceResult(contents)
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { readResourceResult }
+      mono { McpSchema.ReadResourceResult(contents) }
 
     val context = testToolContext()
-    val result = tool.run(context, mapOf("uri" to "uri1"))
+    val result = tool.run(context, mapOf("name" to "res1"))
 
     val resultStr = result as String
     assertThat(resultStr).startsWith("Hello")
@@ -95,16 +126,16 @@ class LoadMcpResourceToolTest {
     val mcpToolset = createMcpToolset(mockMcpSession)
     val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
 
+    stubResources(mockMcpSession, resource("res1", "uri1"))
     val contents =
       listOf(
         McpSchema.BlobResourceContents("uri1", "application/octet-stream", "binary_data_base64")
       )
-    val readResourceResult = McpSchema.ReadResourceResult(contents)
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { readResourceResult }
+      mono { McpSchema.ReadResourceResult(contents) }
 
     val context = testToolContext()
-    val result = tool.run(context, mapOf("uri" to "uri1"))
+    val result = tool.run(context, mapOf("name" to "res1"))
 
     val resultStr = result as String
     assertThat(resultStr)
@@ -112,23 +143,58 @@ class LoadMcpResourceToolTest {
   }
 
   @Test
-  fun run_withNoContents_returnsWarningMessage() = runTest {
+  fun run_withNoContents_returnsEmptyString() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val mcpToolset = createMcpToolset(mockMcpSession)
     val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
 
-    val readResourceResult = McpSchema.ReadResourceResult(emptyList())
+    stubResources(mockMcpSession, resource("res1", "uri1"))
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { readResourceResult }
+      mono { McpSchema.ReadResourceResult(emptyList()) }
 
     val context = testToolContext()
-    val result = tool.run(context, mapOf("uri" to "uri1"))
+    val result = tool.run(context, mapOf("name" to "res1"))
 
     assertThat(result).isEqualTo("")
   }
 
   @Test
-  fun run_missingUri_throwsMcpToolExecutionException() = runTest {
+  fun run_unknownName_returnsNotFoundMessage() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val mcpToolset = createMcpToolset(mockMcpSession)
+    val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
+
+    stubResources(mockMcpSession, resource("res1", "uri1"))
+
+    val context = testToolContext()
+    val result = tool.run(context, mapOf("name" to "missing")) as String
+
+    assertThat(result).contains("No resource named")
+    assertThat(result).contains("missing")
+    assertThat(result).contains("list_mcp_resources")
+    verify(mockMcpSession, never()).readResource(any<McpSchema.ReadResourceRequest>())
+  }
+
+  @Test
+  fun run_ambiguousName_returnsErrorListingCandidates() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val mcpToolset = createMcpToolset(mockMcpSession)
+    val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
+
+    stubResources(mockMcpSession, resource("dup", "uriA"), resource("dup", "uriB"))
+
+    val context = testToolContext()
+    val result = tool.run(context, mapOf("name" to "dup")) as String
+
+    assertThat(result).contains("ambiguous")
+    assertThat(result).contains("uriA")
+    assertThat(result).contains("uriB")
+    // An ambiguous name must never be read: it cannot be resolved to a single URI.
+    verify(mockMcpSession, never()).readResource(any<McpSchema.ReadResourceRequest>())
+  }
+
+  @Test
+  fun run_missingName_throwsMcpToolExecutionException() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val mcpToolset = createMcpToolset(mockMcpSession)
     val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
@@ -145,6 +211,7 @@ class LoadMcpResourceToolTest {
     val mcpToolset = createMcpToolset(mockMcpSession)
     val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 1000)
 
+    stubResources(mockMcpSession, resource("res1", "uri1"))
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
       mono { throw RuntimeException("Server error") }
 
@@ -152,7 +219,7 @@ class LoadMcpResourceToolTest {
 
     val ex =
       assertFailsWith<McpToolException.McpToolExecutionException> {
-        tool.run(context, mapOf("uri" to "uri1"))
+        tool.run(context, mapOf("name" to "res1"))
       }
     assertThat(ex.message).contains("Server error")
   }
@@ -167,9 +234,10 @@ class LoadMcpResourceToolTest {
 
     assertThat(declaration).isNotNull()
     assertThat(declaration.name).isEqualTo("load_mcp_resource")
-    assertThat(declaration.description).isEqualTo("Load a resource from the MCP server by URI.")
+    assertThat(declaration.description).isEqualTo("Load a resource from the MCP server by name.")
 
     val properties = declaration.parameters?.properties
-    assertThat(properties?.containsKey("uri")).isTrue()
+    assertThat(properties?.containsKey("name")).isTrue()
+    assertThat(declaration.parameters?.required).containsExactly("name")
   }
 }
