@@ -23,7 +23,6 @@ import com.google.adk.kt.tools.mcp.McpToolException.McpToolExecutionException
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
-import io.modelcontextprotocol.spec.McpSchema
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -34,42 +33,63 @@ import kotlinx.coroutines.CancellationException
 internal class LoadMcpResourceTool(
   private val mcpToolset: McpToolset,
   private val maxMcpResourceLength: Int,
-) : BaseTool("load_mcp_resource", "Load a resource from the MCP server by URI.") {
+) : BaseTool("load_mcp_resource", "Load a resource from the MCP server by name.") {
   override suspend fun run(context: ToolContext, args: Map<String, Any>): Any {
     try {
-      val uri = args[URI] as? String ?: throw IllegalArgumentException("Resource URI is required.")
-      val contents =
-        mcpToolset.readResource(uri, context.invocationContext.toReadonlyContext()) as? List<*>
-          ?: throw IllegalArgumentException(
-            "MCP server returned an unexpected response structure for URI: $uri"
-          )
+      val name =
+        args[NAME] as? String ?: throw IllegalArgumentException("Resource name is required.")
+      val readonlyContext = context.invocationContext.toReadonlyContext()
 
+      // Resolve the name against the full listing so collisions are detected reliably.
+      val matches = mcpToolset.listAllResources(readonlyContext).filter { it.name == name }
+      when (matches.size) {
+        0 -> return resourceNotFoundMessage(name)
+        1 -> {} // Unique match: fall through and read it below.
+        else -> return ambiguousNameMessage(name, matches)
+      }
+
+      val contents = mcpToolset.readResource(matches.single().uri, readonlyContext)
       if (contents.isEmpty()) {
         return ""
       }
-      return contents
-        .map { content ->
-          when (content) {
-            is McpSchema.TextResourceContents -> {
-              val text = content.text() ?: ""
-              if (text.length > maxMcpResourceLength) {
-                text.take(maxMcpResourceLength) + "... [Content truncated due to size limit]"
-              } else {
-                text
-              }
-            }
-            is McpSchema.BlobResourceContents -> {
-              "[Warning: Binary data found at this URI, cannot display raw content]"
-            }
-            else -> content.toString()
-          }
-        }
-        .joinToString("\n\n")
+      return contents.joinToString("\n\n") { content -> render(content) }
     } catch (e: CancellationException) {
       throw e // Re-throw cancellation exceptions as they are not indicative of a tool failure.
     } catch (e: Exception) {
       throw McpToolExecutionException("Failed to load MCP resource: ${e.message}", cause = e)
     }
+  }
+
+  private fun render(content: McpResourceContent): String =
+    when (content) {
+      is McpResourceContent.Text -> {
+        val text = content.text
+        if (text.length > maxMcpResourceLength) {
+          text.take(maxMcpResourceLength) + "... [Content truncated due to size limit]"
+        } else {
+          text
+        }
+      }
+      is McpResourceContent.Blob ->
+        "[Warning: Binary data found at this URI, cannot display raw content]"
+    }
+
+  private fun resourceNotFoundMessage(name: String): String =
+    "No resource named \"$name\" is available on the MCP server. " +
+      "Call list_mcp_resources to see the available resource names."
+
+  private fun ambiguousNameMessage(name: String, matches: List<McpResourceInfo>): String {
+    val candidates =
+      matches.joinToString("\n") { resource ->
+        buildString {
+          append("- ")
+          append(resource.uri)
+          resource.description?.let { append(" — ").append(it) }
+          resource.mimeType?.let { append(" [").append(it).append("]") }
+        }
+      }
+    return "The name \"$name\" is ambiguous: ${matches.size} resources share it, so it cannot be " +
+      "loaded by name. Candidate URIs:\n$candidates"
   }
 
   override fun declaration(): FunctionDeclaration {
@@ -81,14 +101,19 @@ internal class LoadMcpResourceTool(
           type = Type.OBJECT,
           properties =
             mapOf(
-              URI to Schema(type = Type.STRING, description = "The URI of the resource to load.")
+              NAME to
+                Schema(
+                  type = Type.STRING,
+                  description =
+                    "The name of the resource to load, as returned by list_mcp_resources.",
+                )
             ),
-          required = listOf(URI),
+          required = listOf(NAME),
         ),
     )
   }
 
   companion object {
-    private const val URI = "uri"
+    private const val NAME = "name"
   }
 }

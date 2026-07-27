@@ -17,14 +17,12 @@
 package com.google.adk.kt.tools.mcp.it
 
 import com.google.adk.kt.testing.testToolContext
-import com.google.adk.kt.types.Type
+import com.google.adk.kt.tools.mcp.McpToolset
 import com.google.common.truth.Truth.assertThat
-import io.modelcontextprotocol.spec.McpSchema
 import java.nio.file.Files
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 import kotlin.test.BeforeTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
@@ -33,109 +31,80 @@ import kotlinx.coroutines.withTimeout
 /**
  * End-to-end integration test for `McpToolset` over the **stdio** transport.
  *
- * Launches the real [FakeMcpServer] as a child JVM process and talks to it over actual stdin/stdout
- * pipes, complementing the mock-based `McpToolsetTest` by covering the seams a mocked session can't
- * reach: the subprocess + stdio transport, JSON-RPC (de)serialization, tool-call round-trips, and
- * persistent server state.
+ * The transport-agnostic behavior lives in [McpToolsetContract]; this suite supplies a stdio
+ * [McpToolsetHarness] (the real [FakeMcpServer] launched as a child JVM, talking over actual
+ * stdin/stdout pipes) and delegates one `@Test` to each contract check. On top of that it adds the
+ * tests that only make sense for a real subprocess: recovery after the server process is killed,
+ * behavior against an unresponsive server, and orphan-free teardown -- none of which the in-process
+ * HTTP suite can exercise.
  *
  * Shared subprocess/PID/toolset helpers live in [McpIntegrationTestSupport].
  */
 class McpToolsetIntegrationTest {
 
+  private val contract =
+    McpToolsetContract(
+      object : McpToolsetHarness {
+        override suspend fun withToolset(
+          useMcpResources: Boolean,
+          block: suspend (McpToolset) -> Unit,
+        ) {
+          newToolset(useMcpResources = useMcpResources).use { block(it) }
+        }
+      }
+    )
+
   /** Skips the whole suite when [DISABLE_IT_ENV] is set to a truthy value. */
   @BeforeTest fun skipIfDisabled() = assumeMcpItEnabled()
 
+  // --- Shared transport contract (see McpToolsetContract) ---
+
   @Test
   fun getTools_listsToolsAdvertisedByTheServer(): Unit = runBlocking {
-    newToolset().use { toolset ->
-      val toolNames = toolset.getTools().map { it.name }
-      assertThat(toolNames)
-        .containsExactly(
-          FakeMcpServer.TOOL_ECHO,
-          FakeMcpServer.TOOL_ADD,
-          FakeMcpServer.TOOL_COUNTER,
-          FakeMcpServer.TOOL_WHOAMI,
-          FakeMcpServer.TOOL_SLOW,
-          FakeMcpServer.TOOL_FAIL,
-          FakeMcpServer.TOOL_HANG,
-        )
-    }
+    contract.getTools_listsToolsAdvertisedByTheServer()
   }
 
   @Test
   fun getTools_withUseMcpResources_appendsResourceTools(): Unit = runBlocking {
-    newToolset(useMcpResources = true).use { toolset ->
-      val toolNames = toolset.getTools().map { it.name }
-      // The three resource tools are appended only because the live server advertises the
-      // resources capability during the handshake (gated in McpToolset.loadTools); the five server
-      // tools remain, so we assert the full, exact set. (The default-config test above proves they
-      // are absent when useMcpResources is false.)
-      assertThat(toolNames)
-        .containsExactly(
-          FakeMcpServer.TOOL_ECHO,
-          FakeMcpServer.TOOL_ADD,
-          FakeMcpServer.TOOL_COUNTER,
-          FakeMcpServer.TOOL_WHOAMI,
-          FakeMcpServer.TOOL_SLOW,
-          FakeMcpServer.TOOL_FAIL,
-          FakeMcpServer.TOOL_HANG,
-          "list_mcp_resources",
-          "load_mcp_resource",
-          "list_mcp_resource_templates",
-        )
-    }
+    contract.getTools_withUseMcpResources_appendsResourceTools()
   }
 
   @Test
   fun readResource_returnsServerContentEmbeddingTheInjectedToken(): Unit = runBlocking {
-    newToolset().use { toolset ->
-      val contents = toolset.readResource(FakeMcpServer.RESOURCE_GREETING_URI) as List<*>
-      val text = (contents.single() as McpSchema.TextResourceContents).text()
-      // Proves the env-injection channel and a real resources/read round-trip.
-      assertThat(text).contains(INJECTED_TOKEN)
-    }
+    contract.readResource_returnsServerContentEmbeddingTheInjectedToken()
+  }
+
+  @Test
+  fun listResources_returnsEntryCarryingNameAndUri(): Unit = runBlocking {
+    contract.listResources_returnsEntryCarryingNameAndUri()
   }
 
   @Test
   fun run_echoTool_returnsTheArgumentVerbatim(): Unit = runBlocking {
-    val message = "round-trip payload"
-    newToolset().use { toolset ->
-      val echo = toolset.getTools().single { it.name == FakeMcpServer.TOOL_ECHO }
-      val result = echo.run(testToolContext(), mapOf("message" to message))
-      assertThat(textOf(result)).isEqualTo(message)
-    }
+    contract.run_echoTool_returnsTheArgumentVerbatim()
   }
 
   @Test
   fun run_addTool_returnsServerComputedSum(): Unit = runBlocking {
-    newToolset().use { toolset ->
-      val add = toolset.getTools().single { it.name == FakeMcpServer.TOOL_ADD }
-      val result = add.run(testToolContext(), mapOf("a" to 2, "b" to 3))
-      // Numeric marshalling, which the string echo test doesn't cover.
-      assertThat(textOf(result)).isEqualTo("5")
-    }
+    contract.run_addTool_returnsServerComputedSum()
   }
 
   @Test
   fun run_counterTool_incrementsServerStateAcrossCalls(): Unit = runBlocking {
-    newToolset().use { toolset ->
-      val counter = toolset.getTools().single { it.name == FakeMcpServer.TOOL_COUNTER }
-      // Same cached session across calls, so the count persists (1 then 2).
-      assertThat(textOf(counter.run(testToolContext(), emptyMap()))).isEqualTo("1")
-      assertThat(textOf(counter.run(testToolContext(), emptyMap()))).isEqualTo("2")
-    }
+    contract.run_counterTool_incrementsServerStateAcrossCalls()
   }
 
   @Test
   fun run_failingTool_returnsToolExecutionErrorVerbatim(): Unit = runBlocking {
-    newToolset().use { toolset ->
-      val fail = toolset.getTools().single { it.name == FakeMcpServer.TOOL_FAIL }
-      val result = fail.run(testToolContext(), emptyMap())
-      // In-band tool error: returned verbatim (isError=true), not thrown, so no retry path.
-      assertThat(isErrorOf(result)).isTrue()
-      assertThat(textOf(result)).isEqualTo(FakeMcpServer.FAIL_MESSAGE)
-    }
+    contract.run_failingTool_returnsToolExecutionErrorVerbatim()
   }
+
+  @Test
+  fun declaration_addTool_convertsServerSchemaToTypedParameters(): Unit = runBlocking {
+    contract.declaration_addTool_convertsServerSchemaToTypedParameters()
+  }
+
+  // --- stdio-only: process lifecycle ---
 
   @Test
   fun run_afterServerProcessKilled_respawnsFreshProcessAndRecovers(): Unit = runBlocking {
@@ -152,7 +121,8 @@ class McpToolsetIntegrationTest {
         val firstHandle = ProcessHandle.of(firstPid).orElseThrow()
 
         // Unexpected death: external SIGKILL, none of the graceful stdio shutdown. Recovery means
-        // respawn + re-initialize (McpTool.reinitializeSession); the spec has no stdio reconnect.
+        // the next call reinitializes the pooled session (SessionManager.reinitializeSession),
+        // respawning the child; the spec has no stdio reconnect.
         firstHandle.destroyForcibly()
         withTimeout(TimeUnit.SECONDS.toMillis(KILL_TIMEOUT_SECONDS)) {
           val unused = firstHandle.onExit().await()
@@ -168,8 +138,8 @@ class McpToolsetIntegrationTest {
         assertThat(ProcessHandle.of(secondPid).orElseThrow().isAlive).isTrue()
       }
     } finally {
-      // close() won't kill the process McpTool respawned during recovery; kill the last PID
-      // explicitly.
+      // Belt-and-suspenders: the toolset's close() (via use{}) already tears down the respawned
+      // pooled session, but kill the last PID explicitly in case the assertions above failed early.
       killIfRunning(pidFile)
       Files.deleteIfExists(pidFile)
     }
@@ -182,8 +152,8 @@ class McpToolsetIntegrationTest {
       newToolset(pidFile = pidFile, requestTimeout = HANG_TEST_REQUEST_TIMEOUT).use { toolset ->
         val hang = toolset.getTools().single { it.name == FakeMcpServer.TOOL_HANG }
 
-        // Each attempt hits the real per-request timeout; McpTool retries (respawning a process
-        // that also hangs) and ultimately throws.
+        // Each attempt hits the real per-request timeout; the tool retries (reinitializing the
+        // pooled session, respawning a process that also hangs) and ultimately throws.
         val start = System.nanoTime()
         val thrown = runCatching { hang.run(testToolContext(), emptyMap()) }.exceptionOrNull()
         val elapsedMs = (System.nanoTime() - start) / 1_000_000
@@ -195,18 +165,17 @@ class McpToolsetIntegrationTest {
         assertThat(thrown!!.causedByTimeout()).isTrue()
       }
     } finally {
-      // close() won't kill the process McpTool respawned during recovery; kill the last PID
-      // explicitly.
+      // Belt-and-suspenders: the toolset's close() (via use{}) already tears down the respawned
+      // pooled session, but kill the last PID explicitly in case the assertions above failed early.
       killIfRunning(pidFile)
       Files.deleteIfExists(pidFile)
     }
   }
 
-  // Regression guard for the session-ownership leak. It FAILS today: when the shared server dies,
-  // each tool reinitializes into its OWN session, but McpToolset.close() closes only its stale
-  // cached reference -- so the respawned processes are orphaned. A TODO in
-  // McpTool.reinitializeSession() marks where the fix belongs; drop @Ignore once it lands.
-  @Ignore
+  // Regression guard for the session-ownership leak. Tools no longer own sessions: they share one
+  // pooled session owned by the SessionManager, reinit replaces that pooled entry in place, and
+  // McpToolset.close() -> SessionManager.closeAll() tears down every session it created. So after a
+  // shared-server death, recovery, and close(), no recorded process is left alive.
   @Test
   fun close_afterToolsReinitialize_leavesNoOrphanProcesses(): Unit = runBlocking {
     val pidDir = Files.createTempDirectory("adk-mcp-it-pids")
@@ -216,48 +185,32 @@ class McpToolsetIntegrationTest {
       val echo = tools.single { it.name == FakeMcpServer.TOOL_ECHO }
       val add = tools.single { it.name == FakeMcpServer.TOOL_ADD }
 
-      // Both tools share the toolset's single cached session: exactly one process so far.
+      // Both tools share the single pooled session: exactly one process so far.
       val shared = liveRecordedProcesses(pidDir)
       assertThat(shared).hasSize(1)
 
-      // Kill the shared server so the next call on each tool must reinitialize independently.
+      // Kill the shared server so the next call must reinitialize the pooled session.
       shared.single().destroyForcibly()
       withTimeout(TimeUnit.SECONDS.toMillis(KILL_TIMEOUT_SECONDS)) {
         val unused = shared.single().onExit().await()
       }
 
-      // Force each tool to reinitialize, then only confirm recovery (≥1 live process). We
-      // deliberately don't pin the count: today each tool respawns its own session (two), but a
-      // single-session fix would keep it at one and must still pass. The binding invariant is the
-      // post-close check.
+      // Drive recovery on both tools, then only confirm recovery (≥1 live process). We don't pin
+      // the count: the shared-pool fix keeps it at one (the second call reuses the reinitialized
+      // pooled session), but the binding invariant is the post-close check below.
       val unused1 = echo.run(testToolContext(), mapOf("message" to "x"))
       val unused2 = add.run(testToolContext(), mapOf("a" to 1, "b" to 2))
       assertThat(liveRecordedProcesses(pidDir)).isNotEmpty()
 
       // The invariant under test: after close(), no recorded process is still alive — the toolset
-      // must tear down every session it caused. Today it closes only its stale cached reference.
+      // tears down every session it caused, including the one respawned during recovery.
       toolset.close()
       assertThat(awaitRecordedProcessesSettle(pidDir, SETTLE_TIMEOUT_SECONDS)).isEmpty()
     } finally {
-      // Belt-and-suspenders: never leave orphans behind, even when this guard is failing.
+      // Belt-and-suspenders: never leave orphans behind, even if the guard regresses.
       toolset.close()
       liveRecordedProcesses(pidDir).forEach { it.destroyForcibly() }
       pidDir.toFile().deleteRecursively()
-    }
-  }
-
-  @Test
-  fun declaration_addTool_convertsServerSchemaToTypedParameters(): Unit = runBlocking {
-    newToolset().use { toolset ->
-      val add = toolset.getTools().single { it.name == FakeMcpServer.TOOL_ADD }
-      // declaration() runs McpSchemaConverter over the JSON schema the server returned on the wire
-      // (via tools/list), so this checks our conversion against a real schema, not a hand-built
-      // one.
-      val params = requireNotNull(add.declaration()?.parameters)
-      assertThat(params.type).isEqualTo(Type.OBJECT)
-      assertThat(params.required).containsExactly("a", "b")
-      assertThat(params.properties?.get("a")?.type).isEqualTo(Type.INTEGER)
-      assertThat(params.properties?.get("b")?.type).isEqualTo(Type.INTEGER)
     }
   }
 

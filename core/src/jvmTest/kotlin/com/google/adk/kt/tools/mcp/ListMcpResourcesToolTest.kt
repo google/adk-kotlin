@@ -23,16 +23,26 @@ import io.modelcontextprotocol.spec.McpSchema
 import kotlin.test.Test
 import kotlinx.coroutines.reactor.mono
 import kotlinx.coroutines.test.runTest
+import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.isNull
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 
 class ListMcpResourcesToolTest {
 
+  private fun createMcpToolset(mockMcpSession: McpAsyncClient): McpToolset {
+    // The toolset fetches the pooled session from the manager; hand it the mock session.
+    val mockSessionManager =
+      mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
+    return McpToolset(mockSessionManager)
+  }
+
   @Test
   fun run_withNoCursor_returnsResources() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    val tool = ListMcpResourcesTool(mockMcpSession)
+    val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
 
     val resourceList =
       listOf(
@@ -40,7 +50,7 @@ class ListMcpResourcesToolTest {
         McpSchema.Resource.builder().name("res2").uri("uri2").build(),
       )
     val listResourcesResult = McpSchema.ListResourcesResult(resourceList, "cursor123")
-    whenever(mockMcpSession.listResources()) doReturn mono { listResourcesResult }
+    whenever(mockMcpSession.listResources(isNull())) doReturn mono { listResourcesResult }
 
     val context = testToolContext()
 
@@ -67,7 +77,7 @@ class ListMcpResourcesToolTest {
   @Test
   fun run_withCursor_queriesWithCursor() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    val tool = ListMcpResourcesTool(mockMcpSession)
+    val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
 
     val resourceList = emptyList<McpSchema.Resource>()
     val listResourcesResult = McpSchema.ListResourcesResult(resourceList, null)
@@ -87,7 +97,7 @@ class ListMcpResourcesToolTest {
   @Test
   fun run_withCursor_returnsNextCursor() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    val tool = ListMcpResourcesTool(mockMcpSession)
+    val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
 
     val resourceList = emptyList<McpSchema.Resource>()
     val listResourcesResult = McpSchema.ListResourcesResult(resourceList, "next-cursor")
@@ -106,11 +116,47 @@ class ListMcpResourcesToolTest {
   }
 
   @Test
+  fun run_browsesPageByPage_followingNextCursor() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
+
+    // First page (null cursor) returns page 1 and a live cursor to the next page.
+    whenever(mockMcpSession.listResources(isNull())) doReturn
+      mono {
+        McpSchema.ListResourcesResult(
+          listOf(McpSchema.Resource.builder().name("res1").uri("uri1").build()),
+          "page-2",
+        )
+      }
+    // Passing that cursor back returns page 2, with no further pages.
+    whenever(mockMcpSession.listResources("page-2")) doReturn
+      mono {
+        McpSchema.ListResourcesResult(
+          listOf(McpSchema.Resource.builder().name("res2").uri("uri2").build()),
+          null,
+        )
+      }
+
+    val context = testToolContext()
+
+    val page1 = tool.run(context, emptyMap()) as Map<*, *>
+    assertThat((page1["resources"] as List<*>).map { (it as Map<*, *>)["name"] })
+      .containsExactly("res1")
+    val cursor = page1["nextCursor"] as String
+    assertThat(cursor).isEqualTo("page-2")
+
+    val page2 = tool.run(context, mapOf("cursor" to cursor)) as Map<*, *>
+    assertThat((page2["resources"] as List<*>).map { (it as Map<*, *>)["name"] })
+      .containsExactly("res2")
+    assertThat(page2).doesNotContainKey("nextCursor")
+  }
+
+  @Test
   fun run_throwsMcpToolExecutionExceptionOnFailure() = runTest {
     val mockMcpSession = mock<McpAsyncClient>()
-    val tool = ListMcpResourcesTool(mockMcpSession)
+    val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
 
-    whenever(mockMcpSession.listResources()) doReturn
+    whenever(mockMcpSession.listResources(isNull())) doReturn
       mono { throw RuntimeException("Server error") }
 
     val context = testToolContext()
@@ -125,13 +171,15 @@ class ListMcpResourcesToolTest {
   @Test
   fun declaration_returnsCorrectSchema() {
     val mockMcpSession = mock<McpAsyncClient>()
-    val tool = ListMcpResourcesTool(mockMcpSession)
+    val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
 
     val declaration = tool.declaration()
 
     assertThat(declaration).isNotNull()
     assertThat(declaration.name).isEqualTo("list_mcp_resources")
-    assertThat(declaration.description).isEqualTo("List resources available on the MCP server.")
+    assertThat(declaration.description).startsWith("List resources available on the MCP server.")
+    // The description must tell the model how to page through results.
+    assertThat(declaration.description).contains("nextCursor")
 
     val properties = declaration.parameters?.properties
     assertThat(properties?.containsKey("cursor")).isTrue()
