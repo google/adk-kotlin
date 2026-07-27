@@ -84,8 +84,10 @@ class AppTest {
   }
 
   @Test
-  fun construct_nameStartingWithUnderscore_throwsIllegalArgumentException() {
-    assertFailsWith<IllegalArgumentException> { App(appName = "_app", rootAgent = DummyAgent()) }
+  fun construct_nameStartingWithUnderscore_isAccepted() {
+    val app = App(appName = "_app", rootAgent = DummyAgent())
+
+    assertEquals("_app", app.appName)
   }
 
   @Test

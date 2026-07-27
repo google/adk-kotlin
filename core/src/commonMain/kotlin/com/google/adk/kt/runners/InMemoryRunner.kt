@@ -23,6 +23,7 @@ import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.memory.InMemoryMemoryService
 import com.google.adk.kt.memory.MemoryService
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
@@ -43,6 +44,22 @@ open class InMemoryRunner : AbstractRunner {
     artifactService: ArtifactService? = InMemoryArtifactService(),
     memoryService: MemoryService? = InMemoryMemoryService(),
   ) : super(appName, agent, sessionService, artifactService, memoryService, PluginManager())
+
+  /**
+   * Creates an [InMemoryRunner] from a root [agent] and [plugins], accepting any [appName].
+   *
+   * Prefer the [App] constructor, which also carries resumability and compaction settings. Use this
+   * one when [appName] does not satisfy [App]'s naming rule, such as a dev server serving agents
+   * under arbitrary names.
+   */
+  constructor(
+    agent: BaseAgent,
+    appName: String = "InMemoryRunner",
+    sessionService: SessionService = InMemorySessionService(),
+    artifactService: ArtifactService? = InMemoryArtifactService(),
+    memoryService: MemoryService? = InMemoryMemoryService(),
+    plugins: List<Plugin>,
+  ) : super(appName, agent, sessionService, artifactService, memoryService, PluginManager(plugins))
 
   /**
    * Creates an [InMemoryRunner] from an [App], deriving its [App.appName], [App.rootAgent],
@@ -67,10 +84,10 @@ open class InMemoryRunner : AbstractRunner {
    * @deprecated Configure plugins on the [App] instead.
    */
   @Deprecated(
-    "Configure plugins via App.plugins instead, e.g. " +
-      "InMemoryRunner(App(appName, agent, plugins = listOf(...))). Passing a PluginManager " +
-      "directly to the runner is deprecated.",
-    ReplaceWith("InMemoryRunner(App(appName, agent, plugins = pluginManager.plugins))"),
+    "Pass the plugins directly instead, e.g. " +
+      "InMemoryRunner(agent, appName, plugins = listOf(...)), or configure them on an App. " +
+      "Passing a PluginManager directly to the runner is deprecated.",
+    ReplaceWith("InMemoryRunner(agent, appName, plugins = pluginManager.plugins)"),
     DeprecationLevel.WARNING,
   )
   constructor(

@@ -82,6 +82,20 @@ class InMemoryRunnerTest {
   }
 
   @Test
+  fun constructedWithPlugins_appliesPluginsAndKeepsArbitraryAppName() {
+    val plugin =
+      object : Plugin {
+        override val name = "server-plugin"
+      }
+
+    // "my agent" is a valid agent name but not a valid App name.
+    val runner = InMemoryRunner(agent = dummyAgent, appName = "my agent", plugins = listOf(plugin))
+
+    assertThat(runner.appName).isEqualTo("my agent")
+    assertThat(runner.pluginManager.getPlugin("server-plugin")).isSameInstanceAs(plugin)
+  }
+
+  @Test
   fun constructedFromApp_appliesPluginsFromApp() {
     val plugin =
       object : Plugin {

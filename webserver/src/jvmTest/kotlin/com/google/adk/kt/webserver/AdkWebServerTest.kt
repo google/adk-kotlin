@@ -23,6 +23,7 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryService
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.sessions.GetSessionConfig
@@ -200,6 +201,40 @@ class AdkWebServerTest {
     assertThat(body).contains("\"turnComplete\":true")
     assertThat(body).doesNotContain("\"partial\"")
     assertThat(body).doesNotContain("\"interrupted\"")
+  }
+
+  @Test
+  fun runRoute_withPluginsAndAppNameAppWouldReject_returnsResponse() = testApplication {
+    val plugin =
+      object : Plugin {
+        override val name = "server-plugin"
+      }
+    // "my agent" is a valid agent name but not a valid App name.
+    val loader =
+      object : AgentLoader {
+        override fun listAgents() = listOf("my agent")
+
+        override fun loadAgent(agentName: String): BaseAgent = FakeAgent()
+      }
+    application {
+      adkModule(
+        sessionService,
+        artifactService,
+        loader,
+        ApiServerSpanExporter(),
+        plugins = listOf(plugin),
+      )
+    }
+
+    val response =
+      client.post("/run") {
+        contentType(ContentType.Application.Json)
+        setBody(
+          "{\"appName\":\"my agent\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"streaming\":false,\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hello agent\"}]}}"
+        )
+      }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
   }
 
   @Test

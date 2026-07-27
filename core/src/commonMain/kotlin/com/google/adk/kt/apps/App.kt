@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
+import com.google.adk.kt.types.Role
 
 /**
  * Represents an LLM-backed agentic application.
@@ -31,9 +32,10 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
  * application-wide configuration, such as [plugins] and [resumabilityConfig], that the runner
  * applies to every session it runs.
  *
- * [appName] must start with a letter and may contain only letters, digits, underscores, and
- * hyphens, and must not be the reserved value `"user"`, which is reserved for end-user input.
- * Construction throws [IllegalArgumentException] if [appName] does not meet these requirements.
+ * [appName] must start with a letter or an underscore and may contain only letters, digits,
+ * underscores, and hyphens, and must not be the reserved value `"user"`, which is reserved for
+ * end-user input. Construction throws [IllegalArgumentException] if [appName] does not meet these
+ * requirements.
  *
  * @property appName The application name.
  * @property rootAgent The root agent of the application's agent tree.
@@ -56,16 +58,13 @@ data class App(
 ) {
   init {
     require(VALID_APP_NAME_REGEX.matches(appName)) {
-      "Invalid app name '$appName': must start with a letter and can only consist of letters, " +
-        "digits, underscores, and hyphens."
+      "Invalid app name '$appName': must start with a letter or an underscore and can only " +
+        "consist of letters, digits, underscores, and hyphens."
     }
-    require(appName != RESERVED_NAME) {
-      "App name cannot be '$RESERVED_NAME'; reserved for end-user input."
-    }
+    require(appName != Role.USER) { "App name cannot be 'user'; reserved for end-user input." }
   }
 
   private companion object {
-    val VALID_APP_NAME_REGEX = Regex("[a-zA-Z][a-zA-Z0-9_-]*")
-    const val RESERVED_NAME = "user"
+    val VALID_APP_NAME_REGEX = Regex("[a-zA-Z_][a-zA-Z0-9_-]*")
   }
 }
