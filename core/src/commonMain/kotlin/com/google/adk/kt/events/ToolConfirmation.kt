@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.events
 
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 
@@ -28,7 +29,34 @@ data class ToolConfirmation(
   /** The hint for the confirmation. */
   val hint: String? = null,
 ) {
+  /**
+   * Fluent builder for [ToolConfirmation], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var confirmed: Boolean? = null
+    private var payload: Any? = null
+    private var hint: String? = null
+
+    fun confirmed(confirmed: Boolean): Builder = apply { this.confirmed = confirmed }
+
+    fun payload(payload: Any?): Builder = apply { this.payload = payload }
+
+    fun hint(hint: String?): Builder = apply { this.hint = hint }
+
+    fun build(): ToolConfirmation =
+      ToolConfirmation(
+        confirmed =
+          checkNotNull(confirmed) { "ToolConfirmation.Builder requires confirmed to be set." },
+        payload = payload,
+        hint = hint,
+      )
+  }
+
   companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     /** Key for the 'confirmed' field in the serialized map. */
     const val CONFIRMED_KEY = "confirmed"
 

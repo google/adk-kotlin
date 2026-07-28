@@ -17,6 +17,7 @@
 package com.google.adk.kt.memory
 
 import com.google.adk.kt.types.Content
+import kotlin.jvm.JvmStatic
 
 /**
  * Represents one memory entry in the Vertex AI Memory Bank.
@@ -34,4 +35,42 @@ data class MemoryEntry(
   val author: String? = null,
   val timestamp: String? = null,
   val customMetadata: Map<String, Any> = emptyMap(),
-)
+) {
+  /**
+   * Fluent builder for [MemoryEntry], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var content: Content? = null
+    private var id: String? = null
+    private var author: String? = null
+    private var timestamp: String? = null
+    private var customMetadata: Map<String, Any> = emptyMap()
+
+    fun content(content: Content): Builder = apply { this.content = content }
+
+    fun id(id: String?): Builder = apply { this.id = id }
+
+    fun author(author: String?): Builder = apply { this.author = author }
+
+    fun timestamp(timestamp: String?): Builder = apply { this.timestamp = timestamp }
+
+    fun customMetadata(customMetadata: Map<String, Any>): Builder = apply {
+      this.customMetadata = customMetadata
+    }
+
+    fun build(): MemoryEntry =
+      MemoryEntry(
+        content = checkNotNull(content) { "MemoryEntry.Builder requires content to be set." },
+        id = id,
+        author = author,
+        timestamp = timestamp,
+        customMetadata = customMetadata,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}

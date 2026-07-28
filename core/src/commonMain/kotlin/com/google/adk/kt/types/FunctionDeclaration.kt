@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Serializable
 
 /** Represents a function declaration for tool calling. */
@@ -29,4 +30,35 @@ data class FunctionDeclaration(
   val parameters: Schema? = null,
   /** The shape of the value this function returns, when the tool declares one. */
   val response: Schema? = null,
-)
+) {
+  /**
+   * Fluent builder for [FunctionDeclaration], provided primarily for Java callers. Any property
+   * left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var description: String? = null
+    private var parameters: Schema? = null
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun description(description: String): Builder = apply { this.description = description }
+
+    fun parameters(parameters: Schema?): Builder = apply { this.parameters = parameters }
+
+    fun build(): FunctionDeclaration =
+      FunctionDeclaration(
+        name = checkNotNull(name) { "FunctionDeclaration.Builder requires name to be set." },
+        description =
+          checkNotNull(description) {
+            "FunctionDeclaration.Builder requires description to be set."
+          },
+        parameters = parameters,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}
