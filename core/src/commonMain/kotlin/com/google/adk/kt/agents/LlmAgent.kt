@@ -44,6 +44,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
+import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -372,7 +373,155 @@ class LlmAgent(
     event.actions.stateDelta[outputKey] = output
   }
 
-  private companion object {
+  /**
+   * Fluent builder for [LlmAgent], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var model: Model? = null
+    private var description: String = ""
+    private var subAgents: List<BaseAgent> = emptyList()
+    private var beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList()
+    private var afterAgentCallbacks: List<AfterAgentCallback> = emptyList()
+    private var disallowTransferToParent: Boolean = false
+    private var disallowTransferToPeers: Boolean = false
+    private var tools: List<BaseTool> = emptyList()
+    private var toolsets: List<Toolset> = emptyList()
+    private var generateContentConfig: GenerateContentConfig? = null
+    private var instruction: Instruction? = null
+    private var staticInstruction: Content? = null
+    private var beforeModelCallbacks: List<BeforeModelCallback> = emptyList()
+    private var afterModelCallbacks: List<AfterModelCallback> = emptyList()
+    private var beforeToolCallbacks: List<BeforeToolCallback> = emptyList()
+    private var afterToolCallbacks: List<AfterToolCallback> = emptyList()
+    private var inputSchema: Schema? = null
+    private var outputSchema: Schema? = null
+    private var outputKey: String? = null
+    private var onModelErrorCallbacks: List<OnModelErrorCallback> = emptyList()
+    private var onToolErrorCallbacks: List<OnToolErrorCallback> = emptyList()
+    private var includeContents: IncludeContents = IncludeContents.DEFAULT
+    private var maxSteps: Int? = null
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun model(model: Model): Builder = apply { this.model = model }
+
+    fun description(description: String): Builder = apply { this.description = description }
+
+    fun subAgents(subAgents: List<BaseAgent>): Builder = apply { this.subAgents = subAgents }
+
+    fun subAgents(vararg subAgents: BaseAgent): Builder = apply {
+      this.subAgents = subAgents.toList()
+    }
+
+    fun beforeAgentCallbacks(callbacks: List<BeforeAgentCallback>): Builder = apply {
+      this.beforeAgentCallbacks = callbacks
+    }
+
+    fun afterAgentCallbacks(callbacks: List<AfterAgentCallback>): Builder = apply {
+      this.afterAgentCallbacks = callbacks
+    }
+
+    fun disallowTransferToParent(value: Boolean): Builder = apply {
+      this.disallowTransferToParent = value
+    }
+
+    fun disallowTransferToPeers(value: Boolean): Builder = apply {
+      this.disallowTransferToPeers = value
+    }
+
+    fun tools(tools: List<BaseTool>): Builder = apply { this.tools = tools }
+
+    fun tools(vararg tools: BaseTool): Builder = apply { this.tools = tools.toList() }
+
+    fun toolsets(toolsets: List<Toolset>): Builder = apply { this.toolsets = toolsets }
+
+    fun toolsets(vararg toolsets: Toolset): Builder = apply { this.toolsets = toolsets.toList() }
+
+    fun generateContentConfig(config: GenerateContentConfig?): Builder = apply {
+      this.generateContentConfig = config
+    }
+
+    fun instruction(instruction: Instruction?): Builder = apply { this.instruction = instruction }
+
+    fun instruction(instruction: String): Builder = apply {
+      this.instruction = Instruction(instruction)
+    }
+
+    fun staticInstruction(staticInstruction: Content?): Builder = apply {
+      this.staticInstruction = staticInstruction
+    }
+
+    fun beforeModelCallbacks(callbacks: List<BeforeModelCallback>): Builder = apply {
+      this.beforeModelCallbacks = callbacks
+    }
+
+    fun afterModelCallbacks(callbacks: List<AfterModelCallback>): Builder = apply {
+      this.afterModelCallbacks = callbacks
+    }
+
+    fun beforeToolCallbacks(callbacks: List<BeforeToolCallback>): Builder = apply {
+      this.beforeToolCallbacks = callbacks
+    }
+
+    fun afterToolCallbacks(callbacks: List<AfterToolCallback>): Builder = apply {
+      this.afterToolCallbacks = callbacks
+    }
+
+    fun inputSchema(inputSchema: Schema?): Builder = apply { this.inputSchema = inputSchema }
+
+    fun outputSchema(outputSchema: Schema?): Builder = apply { this.outputSchema = outputSchema }
+
+    fun outputKey(outputKey: String?): Builder = apply { this.outputKey = outputKey }
+
+    fun onModelErrorCallbacks(callbacks: List<OnModelErrorCallback>): Builder = apply {
+      this.onModelErrorCallbacks = callbacks
+    }
+
+    fun onToolErrorCallbacks(callbacks: List<OnToolErrorCallback>): Builder = apply {
+      this.onToolErrorCallbacks = callbacks
+    }
+
+    fun includeContents(includeContents: IncludeContents): Builder = apply {
+      this.includeContents = includeContents
+    }
+
+    fun maxSteps(maxSteps: Int?): Builder = apply { this.maxSteps = maxSteps }
+
+    fun build(): LlmAgent =
+      LlmAgent(
+        name = checkNotNull(name) { "LlmAgent.Builder requires name to be set." },
+        model = checkNotNull(model) { "LlmAgent.Builder requires model to be set." },
+        description = description,
+        subAgents = subAgents,
+        beforeAgentCallbacks = beforeAgentCallbacks,
+        afterAgentCallbacks = afterAgentCallbacks,
+        disallowTransferToParent = disallowTransferToParent,
+        disallowTransferToPeers = disallowTransferToPeers,
+        tools = tools,
+        toolsets = toolsets,
+        generateContentConfig = generateContentConfig,
+        instruction = instruction,
+        staticInstruction = staticInstruction,
+        beforeModelCallbacks = beforeModelCallbacks,
+        afterModelCallbacks = afterModelCallbacks,
+        beforeToolCallbacks = beforeToolCallbacks,
+        afterToolCallbacks = afterToolCallbacks,
+        inputSchema = inputSchema,
+        outputSchema = outputSchema,
+        outputKey = outputKey,
+        onModelErrorCallbacks = onModelErrorCallbacks,
+        onToolErrorCallbacks = onToolErrorCallbacks,
+        includeContents = includeContents,
+        maxSteps = maxSteps,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     private val logger = LoggerFactory.getLogger(LlmAgent::class)
   }
 }

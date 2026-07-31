@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
+import kotlin.jvm.JvmStatic
 
 /**
  * Represents an LLM-backed agentic application.
@@ -64,8 +65,54 @@ data class App(
     }
   }
 
-  private companion object {
-    val VALID_APP_NAME_REGEX = Regex("[a-zA-Z][a-zA-Z0-9_-]*")
-    const val RESERVED_NAME = "user"
+  /**
+   * Fluent builder for [App], provided primarily for Java callers. Any property left unset falls
+   * back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var appName: String? = null
+    private var rootAgent: BaseAgent? = null
+    private var plugins: List<Plugin> = emptyList()
+    private var resumabilityConfig: ResumabilityConfig? = null
+    private var eventsCompactionConfig: EventsCompactionConfig? = null
+    private var contextCacheConfig: ContextCacheConfig? = null
+
+    fun appName(appName: String): Builder = apply { this.appName = appName }
+
+    fun rootAgent(rootAgent: BaseAgent): Builder = apply { this.rootAgent = rootAgent }
+
+    fun plugins(plugins: List<Plugin>): Builder = apply { this.plugins = plugins }
+
+    fun plugins(vararg plugins: Plugin): Builder = apply { this.plugins = plugins.toList() }
+
+    fun resumabilityConfig(resumabilityConfig: ResumabilityConfig?): Builder = apply {
+      this.resumabilityConfig = resumabilityConfig
+    }
+
+    fun eventsCompactionConfig(eventsCompactionConfig: EventsCompactionConfig?): Builder = apply {
+      this.eventsCompactionConfig = eventsCompactionConfig
+    }
+
+    fun contextCacheConfig(contextCacheConfig: ContextCacheConfig?): Builder = apply {
+      this.contextCacheConfig = contextCacheConfig
+    }
+
+    fun build(): App =
+      App(
+        appName = checkNotNull(appName) { "App.Builder requires appName to be set." },
+        rootAgent = checkNotNull(rootAgent) { "App.Builder requires rootAgent to be set." },
+        plugins = plugins,
+        resumabilityConfig = resumabilityConfig,
+        eventsCompactionConfig = eventsCompactionConfig,
+        contextCacheConfig = contextCacheConfig,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
+    private val VALID_APP_NAME_REGEX = Regex("[a-zA-Z][a-zA-Z0-9_-]*")
+    private const val RESERVED_NAME = "user"
   }
 }

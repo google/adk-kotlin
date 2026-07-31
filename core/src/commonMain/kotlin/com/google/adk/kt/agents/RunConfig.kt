@@ -17,6 +17,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.logging.LoggerFactory
+import kotlin.jvm.JvmStatic
 
 /**
  * Streaming modes for agent execution.
@@ -69,7 +70,37 @@ data class RunConfig(
     }
   }
 
-  private companion object {
+  /**
+   * Fluent builder for [RunConfig], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var streamingMode: StreamingMode = StreamingMode.NONE
+    private var maxLlmCalls: Int = 500
+    private var customMetadata: Map<String, Any>? = null
+
+    fun streamingMode(streamingMode: StreamingMode): Builder = apply {
+      this.streamingMode = streamingMode
+    }
+
+    fun maxLlmCalls(maxLlmCalls: Int): Builder = apply { this.maxLlmCalls = maxLlmCalls }
+
+    fun customMetadata(customMetadata: Map<String, Any>?): Builder = apply {
+      this.customMetadata = customMetadata
+    }
+
+    fun build(): RunConfig =
+      RunConfig(
+        streamingMode = streamingMode,
+        maxLlmCalls = maxLlmCalls,
+        customMetadata = customMetadata,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     private val logger = LoggerFactory.getLogger(RunConfig::class)
   }
 }

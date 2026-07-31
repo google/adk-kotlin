@@ -18,6 +18,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalContextCachingFeature
 import com.google.adk.kt.types.HttpOptions
+import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -66,4 +67,41 @@ constructor(
   /** Returns the TTL in the string format used for cache creation, e.g. `"1800s"`. */
   val ttlString: String
     get() = "${ttl.inWholeSeconds}s"
+
+  /**
+   * Fluent builder for [ContextCacheConfig], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @ExperimentalContextCachingFeature
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var cacheIntervals: Int = 10
+    private var ttl: Duration = 1800.seconds
+    private var minTokens: Int = 0
+    private var createHttpOptions: HttpOptions? = null
+
+    fun cacheIntervals(cacheIntervals: Int): Builder = apply {
+      this.cacheIntervals = cacheIntervals
+    }
+
+    fun ttl(ttl: Duration): Builder = apply { this.ttl = ttl }
+
+    fun minTokens(minTokens: Int): Builder = apply { this.minTokens = minTokens }
+
+    fun createHttpOptions(createHttpOptions: HttpOptions?): Builder = apply {
+      this.createHttpOptions = createHttpOptions
+    }
+
+    fun build(): ContextCacheConfig =
+      ContextCacheConfig(
+        cacheIntervals = cacheIntervals,
+        ttl = ttl,
+        minTokens = minTokens,
+        createHttpOptions = createHttpOptions,
+      )
+  }
+
+  companion object {
+    @ExperimentalContextCachingFeature @JvmStatic fun builder(): Builder = Builder()
+  }
 }
