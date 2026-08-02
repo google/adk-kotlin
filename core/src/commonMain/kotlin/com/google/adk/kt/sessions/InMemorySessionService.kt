@@ -23,6 +23,8 @@ import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.collections.emptyList
+import kotlin.time.ExperimentalTime
 
 /**
  * An in-memory implementation of [SessionService] assuming [Session] objects are mutable regarding
@@ -38,6 +40,7 @@ import kotlinx.coroutines.sync.withLock
 class InMemorySessionService : SessionService {
   private val mutex = Mutex()
   private val sessions: MutableMap<SessionKey, Session> = mutableMapOf()
+  private val sessionIndex: MutableMap<UserKey, MutableSet<SessionKey>> = mutableMapOf()
   private val userState: MutableMap<UserKey, MutableMap<String, Any>> = mutableMapOf()
   private val appState: MutableMap<String, MutableMap<String, Any>> = mutableMapOf()
 
@@ -53,8 +56,9 @@ class InMemorySessionService : SessionService {
           events = mutableListOf(),
           lastUpdateTime = Clock.System.now(),
         )
-
-      sessions[SessionKey(key.appName, key.userId, resolvedSessionId)] = newSession
+      val sessionKey = SessionKey(key.appName, key.userId, resolvedSessionId)
+      sessions[sessionKey] = newSession
+      sessionIndex.getOrPut(UserKey(key.appName, key.userId), defaultValue = { mutableSetOf() }).add(sessionKey)
 
       // Create a mutable copy and merge global state into it before returning.
       mergeWithGlobalState(key.appName, key.userId, copySession(newSession))
@@ -73,25 +77,33 @@ class InMemorySessionService : SessionService {
       mergeWithGlobalState(key.appName, key.userId, sessionCopy)
     }
 
-  override suspend fun listSessions(appName: String, userId: String): ListSessionsResponse =
-    mutex.withLock {
-      val sessionCopies =
-        sessions.entries
-          .asSequence()
-          .filter { it.key.appName == appName && it.key.userId == userId }
-          .map { (_, session) ->
-            // Create copies with empty events and state for the response
-            val copy = copySession(session)
-            copy.events.clear()
+  override suspend fun listSessions(appName: String, userId: String): ListSessionsResponse {
+    val indexKey = UserKey(appName,userId)
+    return mutex.withLock {
+      val sessionCopies = sessionIndex[indexKey]
+        .orEmpty()
+        .mapNotNull { sessionKey ->
+          val originalSession = sessions[sessionKey]
+          if (originalSession == null) {
+            null
+          } else {
+            val copy = copySessionWithoutEvent(originalSession)
             mergeWithGlobalState(appName, userId, copy)
           }
-          .toList()
-
+        }
       ListSessionsResponse(sessions = sessionCopies)
     }
+  }
 
   override suspend fun deleteSession(key: SessionKey) {
-    mutex.withLock { sessions.remove(key) }
+    mutex.withLock {
+      sessions.remove(key)
+      val indexKey = UserKey(key.appName, key.userId)
+      sessionIndex[indexKey]?.let { sessionSet ->
+        sessionSet.remove(key)
+        if (sessionSet.isEmpty()) sessionIndex.remove(indexKey)
+      }
+    }
   }
 
   override suspend fun listEvents(key: SessionKey): ListEventsResponse = mutex.withLock {
@@ -155,6 +167,15 @@ class InMemorySessionService : SessionService {
       // so a caller iterating it while the runner appends does not hit a CME.
       events = concurrentMutableListOf<Event>().apply { addAll(events) },
       lastUpdateTime = original.lastUpdateTime,
+    )
+  }
+
+  private fun copySessionWithoutEvent(original: Session): Session {
+    return Session(
+      key = original.key,
+      state = State(initialState = original.state),
+      events = mutableListOf(),
+      lastUpdateTime = original.lastUpdateTime
     )
   }
 
