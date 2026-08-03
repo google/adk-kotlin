@@ -1054,6 +1054,44 @@ class AbstractRunnerTest {
     assertEquals("v", session.state["k"])
   }
 
+  /**
+   * A plugin may re-scope the branch of the context it is given, as in Python and Java ADK, and the
+   * events the agent then emits carry it.
+   */
+  @Test
+  fun runAsync_pluginSetsBranch_agentEventsCarryIt() = runTest {
+    val plugin =
+      object : Plugin {
+        override val name = "branch-setter"
+
+        override suspend fun onUserMessage(
+          invocationContext: InvocationContext,
+          userMessage: Content,
+        ): Content {
+          invocationContext.branch = "custom-branch"
+          return userMessage
+        }
+      }
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = DummyModel(name = "model") { flowOf(LlmResponse(content = modelMessage("OK"))) },
+      )
+    val runner =
+      InMemoryRunner(app = App(appName = "branch_app", rootAgent = agent, plugins = listOf(plugin)))
+
+    val events =
+      runner
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+        .toList()
+
+    assertEquals(
+      listOf("custom-branch"),
+      events.filter { it.author == "agent" }.map { it.branch }.distinct(),
+      "the agent's events should carry the branch the plugin set",
+    )
+  }
+
   @Test
   fun runAsync_tokenThresholdConfigured_compactsWhenPromptExceedsThreshold() = runTest {
     val summarizer = RecordingSummarizer(returning = compactionEvent(startTs = 0L, endTs = 0L))

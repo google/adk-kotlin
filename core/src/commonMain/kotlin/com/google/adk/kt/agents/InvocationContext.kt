@@ -104,8 +104,12 @@ data class InvocationContext(
    * is the parent of agent_3.
    *
    * Branch is used when multiple sub-agents shouldn't see their peer agents' conversation history.
+   *
+   * Mutable, as in Python and Java ADK: an agent or plugin may re-scope the branch of the context
+   * it was given. Entering a child agent still takes a copy, so a write stays confined to the
+   * current agent's context.
    */
-  val branch: String? = null,
+  var branch: String? = null,
   /** The id of this invocation context. Readonly. */
   val invocationId: String = "e-" + Uuid.random(),
 
