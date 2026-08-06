@@ -28,6 +28,9 @@ val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
 
 kotlin {
   jvmToolchain(maxOf(21, jdkVersion))
+  // `LiteRtLmModelTest` reads `currentTime`. Scoped to this module.
+  compilerOptions { optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi") }
+
   // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
   android {
     namespace = "com.google.adk.litertlm"
@@ -37,27 +40,29 @@ kotlin {
   jvm()
 
   sourceSets {
-    val commonMain by getting {
-      dependencies {
-        implementation(project(":google-adk-kotlin-core"))
-        implementation(libs.kotlinx.coroutines.core)
+    val commonMain =
+      getByName("commonMain") {
+        dependencies {
+          implementation(project(":google-adk-kotlin-core"))
+          implementation(libs.kotlinx.coroutines.core)
+        }
       }
-    }
-    val commonTest by getting { dependencies { implementation(kotlin("test")) } }
-    val commonJvmAndroidMain by creating { dependsOn(commonMain) }
-    val commonJvmAndroidTest by creating {
-      dependsOn(commonTest)
-      dependencies {
-        implementation(libs.mockito.kotlin)
-        implementation(libs.kotlinx.coroutines.test)
+    val commonTest = getByName("commonTest") { dependencies { implementation(kotlin("test")) } }
+    val commonJvmAndroidMain = create("commonJvmAndroidMain") { dependsOn(commonMain) }
+    val commonJvmAndroidTest =
+      create("commonJvmAndroidTest") {
+        dependsOn(commonTest)
+        dependencies {
+          implementation(libs.mockito.kotlin)
+          implementation(libs.kotlinx.coroutines.test)
+        }
       }
-    }
-    val jvmMain by getting {
+    getByName("jvmMain") {
       dependsOn(commonJvmAndroidMain)
       dependencies { implementation(libs.google.ai.edge.litertlm.jvm) }
     }
-    val jvmTest by getting { dependsOn(commonJvmAndroidTest) }
-    val androidMain by getting {
+    getByName("jvmTest") { dependsOn(commonJvmAndroidTest) }
+    getByName("androidMain") {
       dependsOn(commonJvmAndroidMain)
       dependencies { implementation(libs.google.ai.edge.litertlm.android) }
     }

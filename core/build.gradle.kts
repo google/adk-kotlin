@@ -24,6 +24,14 @@ plugins {
 }
 
 kotlin {
+  compilerOptions {
+    // `explicitNulls` in adkJson and `@EncodeDefault` on FunctionCall / FunctionResponse are
+    // experimental at the version we pin; the timing tests read `currentTime`. Scoped to this
+    // module so the other ten keep reporting experimental-API usage.
+    optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
+    optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi")
+  }
+
   // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
   android {
     namespace = "com.google.adk"
@@ -55,37 +63,40 @@ kotlin {
   jvm()
 
   sourceSets {
-    val commonMain by getting {
-      dependencies {
-        implementation(libs.kotlinx.atomicfu)
-        implementation(libs.kotlinx.coroutines.core)
-        implementation(libs.kotlinx.datetime)
-        implementation(libs.kotlinx.serialization)
-        api(libs.google.genai.kotlin)
+    val commonMain =
+      getByName("commonMain") {
+        dependencies {
+          implementation(libs.kotlinx.atomicfu)
+          implementation(libs.kotlinx.coroutines.core)
+          implementation(libs.kotlinx.datetime)
+          implementation(libs.kotlinx.serialization)
+          api(libs.google.genai.kotlin)
+        }
       }
-    }
-    val commonTest by getting {
-      dependencies {
-        implementation(project(":google-adk-kotlin-testing"))
-        implementation(kotlin("test"))
-        implementation(libs.mockito.kotlin)
-        implementation(libs.kotlinx.coroutines.test)
-        implementation(libs.google.truth)
-        implementation(libs.org.json)
+    val commonTest =
+      getByName("commonTest") {
+        dependencies {
+          implementation(project(":google-adk-kotlin-testing"))
+          implementation(kotlin("test"))
+          implementation(libs.mockito.kotlin)
+          implementation(libs.kotlinx.coroutines.test)
+          implementation(libs.google.truth)
+          implementation(libs.org.json)
+        }
       }
-    }
-    val commonJvmAndroidMain by creating {
-      dependsOn(commonMain)
-      dependencies {
-        implementation(libs.kxml2)
-        implementation(libs.snakeyaml)
-        // Shared OpenTelemetry-backed tracer implementation (telemetry/otel) compiles into both the
-        // JVM and Android targets. opentelemetry-context is pulled in transitively by the API.
-        implementation(libs.opentelemetry.api)
+    val commonJvmAndroidMain =
+      create("commonJvmAndroidMain") {
+        dependsOn(commonMain)
+        dependencies {
+          implementation(libs.kxml2)
+          implementation(libs.snakeyaml)
+          // telemetry/otel compiles into both JVM and Android; opentelemetry-context
+          // comes in transitively via the API.
+          implementation(libs.opentelemetry.api)
+        }
       }
-    }
-    val commonJvmAndroidTest by creating { dependsOn(commonTest) }
-    val jvmMain by getting {
+    val commonJvmAndroidTest = create("commonJvmAndroidTest") { dependsOn(commonTest) }
+    getByName("jvmMain") {
       dependsOn(commonJvmAndroidMain)
       dependencies {
         implementation(libs.google.gson)
@@ -98,7 +109,7 @@ kotlin {
         implementation(libs.google.flogger.extensions)
       }
     }
-    val jvmTest by getting {
+    getByName("jvmTest") {
       dependsOn(commonJvmAndroidTest)
       // Leaf (jvm/android) test source dir for KSP-generated `@Tool` `FunctionTool`s; KMP forbids
       // `common*` test sets from referencing per-platform KSP output.
@@ -116,7 +127,7 @@ kotlin {
         implementation(libs.junit)
       }
     }
-    val androidMain by getting {
+    getByName("androidMain") {
       dependsOn(commonJvmAndroidMain)
       dependencies {
         implementation(
@@ -129,7 +140,7 @@ kotlin {
         implementation(libs.kotlinx.coroutines.guava)
       }
     }
-    val androidHostTest by getting {
+    getByName("androidHostTest") {
       dependsOn(commonJvmAndroidTest)
       // See the `jvmTest` note: dedicated platform-test source dir for KSP-generated tools.
       kotlin.srcDir("src/jvmAndroidKspTest/kotlin")
@@ -145,7 +156,7 @@ kotlin {
       }
     }
 
-    val androidDeviceTest by getting {
+    getByName("androidDeviceTest") {
       dependencies {
         implementation(libs.androidx.compose.ui.test.junit4)
         implementation(libs.androidx.compose.ui.test.manifest)

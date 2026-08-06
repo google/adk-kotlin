@@ -23,29 +23,35 @@ kotlin {
   jvm()
 
   sourceSets {
-    val commonMain by getting {
-      dependencies {
-        implementation(project(":google-adk-kotlin-core"))
-        implementation(libs.kotlinx.coroutines.core)
+    val commonMain =
+      getByName("commonMain") {
+        dependencies {
+          implementation(project(":google-adk-kotlin-core"))
+          implementation(libs.kotlinx.coroutines.core)
+        }
       }
-    }
-    val commonTest by getting {
+    getByName("commonTest") {
       dependencies {
         implementation(project(":google-adk-kotlin-testing"))
         implementation(kotlin("test"))
       }
     }
-    val commonJvmAndroidMain by creating {
-      dependsOn(commonMain)
-      dependencies {
-        implementation(libs.kotlinx.serialization)
-        implementation(libs.a2a.sdk.client)
-        implementation(libs.a2a.sdk.common)
-        implementation(libs.a2a.sdk.spec)
+    val commonJvmAndroidMain =
+      create("commonJvmAndroidMain") {
+        dependsOn(commonMain)
+        dependencies {
+          implementation(libs.kotlinx.serialization)
+          implementation(libs.a2a.sdk.client)
+          implementation(libs.a2a.sdk.common)
+          implementation(libs.a2a.sdk.spec)
+          // The A2A SDK's POM does not declare the JSpecify annotations it uses, so Kotlin
+          // cannot read its annotated types (KT-80247; an error from language version 2.4).
+          // Compile-only.
+          compileOnly(libs.jspecify)
+        }
       }
-    }
     // jvmMain hosts the deprecated v0.3 path (JVM-only).
-    val jvmMain by getting {
+    getByName("jvmMain") {
       dependsOn(commonJvmAndroidMain)
       dependencies {
         // JVM v1.0 factory uses the SDK's proto-based JSON-RPC transport; kept off the Android
@@ -60,7 +66,7 @@ kotlin {
         implementation(libs.a2a.legacy.sdk.spec)
       }
     }
-    val jvmTest by getting {
+    getByName("jvmTest") {
       dependencies {
         implementation(libs.junit)
         implementation(libs.google.truth)

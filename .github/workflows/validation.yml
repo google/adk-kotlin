@@ -34,12 +34,10 @@ jobs:
             21
             ${{ matrix.java-version }}
 
-      # The project contains `com.android.library` subprojects (see root
-      # build.gradle.kts), so the Android SDK must be available on the runner
-      # for Gradle to resolve `compileSdk` / `minSdk`. `ubuntu-latest` does not
-      # ship the SDK in a location AGP can find, so we install it explicitly.
+      # The `com.android.library` subprojects need an SDK to resolve
+      # compileSdk / minSdk. Installed explicitly to pin the components.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           # Keep these in sync with the values in build.gradle.kts
           # (androidCompileSdk / androidMinSdk).

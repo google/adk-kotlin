@@ -95,11 +95,12 @@ class FunctionToolGenerator(
 
     val customDescription =
       toolAnnotation?.arguments?.find { it.name?.asString() == "description" }?.value as? String
-    val baseDesc = if (!customDescription.isNullOrBlank()) {
-      customDescription
-    } else {
-      extractFunctionDescription(function.docString).ifBlank { "Function ${functionName}" }
-    }
+    val baseDesc =
+      if (!customDescription.isNullOrBlank()) {
+        customDescription
+      } else {
+        extractFunctionDescription(function.docString).ifBlank { "Function ${functionName}" }
+      }
     val functionDesc =
       if (isLongRunning) {
         if (baseDesc.isNotBlank()) {
@@ -342,10 +343,13 @@ class FunctionToolGenerator(
     }
     visited.add(qualifiedName)
 
+    // Star-projected so the cast is checkable; `Map<String, Any>` makes every consumer's build
+    // warn. Values are read back through `get`, which yields `Any?` either way.
+    val castFormat = "val raw_${paramName} = $origin as? Map<*, *>"
     if (isListItemContext) {
-      executeFun.addStatement("val raw_${paramName} = $origin as? Map<String, Any>")
+      executeFun.addStatement(castFormat) // `origin` is a bare expression here, no format arg.
     } else {
-      executeFun.addStatement("val raw_${paramName} = $origin as? Map<String, Any>", keyName)
+      executeFun.addStatement(castFormat, keyName)
     }
     if (isRequired) {
       executeFun.beginControlFlow("if (raw_${paramName} == null)")

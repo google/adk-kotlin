@@ -29,6 +29,7 @@ google-truth = "1.4.5"
 gradle-test-retry = "1.6.5"
 graphviz = "0.18.1"
 jackson = "2.16.1"
+jspecify = "1.0.0"
 junit = "4.13.2"
 kotlin = "2.3.21"
 kotlinx-atomicfu = "0.27.0"
@@ -99,6 +100,7 @@ graphviz-java = { module = "guru.nidi:graphviz-java", version.ref = "graphviz" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 jackson-datatype-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310", version.ref = "jackson" }
 jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
 junit = { module = "junit:junit", version.ref = "junit" }
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 kotlinx-atomicfu = { module = "org.jetbrains.kotlinx:atomicfu", version.ref = "kotlinx-atomicfu" }
