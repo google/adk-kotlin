@@ -553,13 +553,31 @@ class StreamingResponseAggregatorTest {
     assertEquals("Generation failed.", finalResp.errorMessage)
   }
 
-  // Nothing to report: no content and no error means no final response.
+  // A content-free stream with no finish reason and no error still concludes with a non-partial,
+  // empty final frame, so the turn always terminates rather than leaving the caller waiting on a
+  // stream that never ends. Usage metadata rides along.
   @Test
-  fun contentFreeStreamWithoutError_producesNoFinalResponse() = runBlocking {
+  fun contentFreeStreamWithoutError_stillProducesEmptyFinalFrame() = runBlocking {
     val aggregator = StreamingResponseAggregator()
 
     val unused =
       aggregator.processResponse(LlmResponse(usageMetadata = UsageMetadata(totalTokenCount = 3)))
+    val finalResp = aggregator.aggregate()
+
+    assertNotNull(finalResp)
+    assertEquals(false, finalResp.partial)
+    assertEquals(null, finalResp.content)
+    assertEquals(null, finalResp.finishReason)
+    assertEquals(null, finalResp.errorCode)
+    assertEquals(null, finalResp.errorMessage)
+    assertEquals(3, finalResp.usageMetadata?.totalTokenCount)
+  }
+
+  // With no responses processed at all there is nothing to conclude, so aggregate() returns null
+  // (mirroring the Python aggregator's close()).
+  @Test
+  fun noResponsesProcessed_producesNoFinalResponse() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
 
     assertEquals(null, aggregator.aggregate())
   }
@@ -578,6 +596,31 @@ class StreamingResponseAggregatorTest {
     assertEquals(false, finalResp.partial)
     assertEquals(FinishReason.OTHER, finalResp.finishReason)
     assertEquals("OTHER", finalResp.errorCode)
+    assertEquals(null, finalResp.errorMessage)
+  }
+
+  // A candidate with empty parts and a STOP finish reason must still produce a final (non-partial)
+  // frame so the turn concludes, and must not be classified as an error.
+  @Test
+  fun emptyPartsWithStop_producesEmptyFinalFrame() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val partial =
+      aggregator.processResponse(
+        LlmResponse(content = Content(parts = emptyList()), finishReason = FinishReason.STOP)
+      )
+    val finalResp = aggregator.aggregate()
+
+    // The empty STOP chunk passes through as a partial without being flagged as an error.
+    assertEquals(null, partial.errorCode)
+    assertEquals(null, partial.errorMessage)
+
+    // The turn concludes with a non-partial, error-free final frame carrying STOP and no content.
+    assertNotNull(finalResp)
+    assertEquals(false, finalResp.partial)
+    assertEquals(null, finalResp.content)
+    assertEquals(FinishReason.STOP, finalResp.finishReason)
+    assertEquals(null, finalResp.errorCode)
     assertEquals(null, finalResp.errorMessage)
   }
 

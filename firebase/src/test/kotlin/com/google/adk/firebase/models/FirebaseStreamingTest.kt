@@ -77,16 +77,28 @@ class FirebaseStreamingTest {
   }
 
   /**
-   * A chunk with neither content nor error aggregates to nothing, so only the partial is emitted.
+   * A chunk with neither content nor error still aggregates to a non-partial empty terminal frame,
+   * so the turn always concludes: the partial is followed by an empty, error-free terminal response
+   * rather than ending in silence.
    */
   @Test
-  fun contentlessChunk_emitsPartialButNoTerminal() {
+  fun contentlessChunk_emitsPartialThenEmptyTerminal() {
     val empty = GenerateContentResponse(emptyList(), null, null)
 
     val responses = runBlocking { streamToLlmResponses(flowOf(empty)).toList() }
 
-    assertThat(responses).hasSize(1)
+    assertThat(responses).hasSize(2)
+
+    // First: the contentless chunk, surfaced as a partial.
     assertThat(responses[0].partial).isTrue()
     assertThat(responses[0].errorCode).isNull()
+
+    // Then: the aggregated terminal frame that concludes the turn — empty and error-free.
+    val terminal = responses[1]
+    assertThat(terminal.partial).isFalse()
+    assertThat(terminal.content).isNull()
+    assertThat(terminal.finishReason).isNull()
+    assertThat(terminal.errorCode).isNull()
+    assertThat(terminal.errorMessage).isNull()
   }
 }
