@@ -28,6 +28,7 @@ val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
 
 kotlin {
   jvmToolchain(maxOf(21, jdkVersion))
+
   // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
   android {
     namespace = "com.google.adk.litertlm"
@@ -64,6 +65,11 @@ kotlin {
       dependencies { implementation(libs.google.ai.edge.litertlm.android) }
     }
   }
+}
+
+// Only `LiteRtLmModelTest` reads `currentTime`, so keep this off production code.
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>("compileTestKotlinJvm") {
+  compilerOptions.optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi")
 }
 
 // Coordinates the Kotlin Multiplatform plugin uses for the publications it
