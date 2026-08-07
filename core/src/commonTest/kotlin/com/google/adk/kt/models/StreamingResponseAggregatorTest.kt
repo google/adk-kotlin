@@ -413,6 +413,150 @@ class StreamingResponseAggregatorTest {
     assertTrue(signature.contentEquals(part.thoughtSignature))
   }
 
+  // Consecutive text chunks merge into a part built from scratch, so a signature the chunks carried
+  // is lost unless it is copied across; the model expects it back verbatim.
+  @Test
+  fun mergedTextSignature_isPreserved() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val signature = byteArrayOf(1, 2, 3)
+
+    val unused1 = aggregator.processResponse(createResp("At minute 5 ", signature = signature))
+    val unused2 = aggregator.processResponse(createResp("the presenter speaks."))
+    val finalResp = aggregator.aggregate()
+
+    val parts = finalResp?.content?.parts
+    assertEquals(1, parts?.size)
+    assertEquals("At minute 5 the presenter speaks.", parts?.get(0)?.text)
+    assertTrue(signature.contentEquals(parts?.get(0)?.thoughtSignature))
+  }
+
+  // The signature can land on any chunk of the run, not just the first.
+  @Test
+  fun signatureOnLaterTextChunk_isPreserved() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val signature = byteArrayOf(4, 5, 6)
+
+    val unused1 = aggregator.processResponse(createResp("At minute 5 "))
+    val unused2 = aggregator.processResponse(createResp("the presenter ", signature = signature))
+    val unused3 = aggregator.processResponse(createResp("speaks."))
+    val finalResp = aggregator.aggregate()
+
+    val parts = finalResp?.content?.parts
+    assertEquals(1, parts?.size)
+    assertEquals("At minute 5 the presenter speaks.", parts?.get(0)?.text)
+    assertTrue(signature.contentEquals(parts?.get(0)?.thoughtSignature))
+  }
+
+  // A merged part carries one signature. This class keeps the last of the run rather than the
+  // first, because the part it flushes can still be rewritten by the final chunk's signature.
+  @Test
+  fun multipleSignaturesInOneRun_keepsTheLast() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val secondSignature = byteArrayOf(9, 9, 9)
+
+    val unused1 = aggregator.processResponse(createResp("At minute 5 ", signature = byteArrayOf(1)))
+    val unused2 =
+      aggregator.processResponse(createResp("the presenter ", signature = secondSignature))
+    val unused3 = aggregator.processResponse(createFcResp(FunctionCall(name = "done", id = "fc1")))
+    val finalResp = aggregator.aggregate()
+
+    val parts = finalResp?.content?.parts
+    assertEquals(2, parts?.size)
+    assertTrue(secondSignature.contentEquals(parts?.get(0)?.thoughtSignature))
+  }
+
+  // A thought run and an answer run flush separately and must not swap signatures: the answer's
+  // arrives on the chunk that triggers the flush of the thought.
+  @Test
+  fun thoughtAndAnswerRuns_keepTheirOwnSignatures() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val thoughtSignature = byteArrayOf(1, 1, 1)
+    val answerSignature = byteArrayOf(2, 2, 2)
+
+    val unused1 =
+      aggregator.processResponse(
+        createResp("Let me check.", thought = true, signature = thoughtSignature)
+      )
+    val unused2 =
+      aggregator.processResponse(createResp("It is a dog.", signature = answerSignature))
+    val finalResp = aggregator.aggregate()
+
+    val parts = finalResp?.content?.parts
+    assertEquals(2, parts?.size)
+    assertEquals(true, parts?.get(0)?.thought)
+    assertTrue(thoughtSignature.contentEquals(parts?.get(0)?.thoughtSignature))
+    assertTrue(answerSignature.contentEquals(parts?.get(1)?.thoughtSignature))
+  }
+
+  // Server-side media tools return signatures on parts holding nothing else; such a part survives
+  // on its own rather than being folded into the surrounding text.
+  @Test
+  fun contentFreeSignaturePart_isKept() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val signature = byteArrayOf(7, 7, 7)
+
+    val unused1 = aggregator.processResponse(createResp("At minute 5 the presenter speaks."))
+    val unused2 =
+      aggregator.processResponse(
+        LlmResponse(content = Content(parts = listOf(Part(thoughtSignature = signature))))
+      )
+    val finalResp = aggregator.aggregate()
+
+    val parts = finalResp?.content?.parts
+    assertEquals(2, parts?.size)
+    assertEquals("At minute 5 the presenter speaks.", parts?.get(0)?.text)
+    assertEquals(null, parts?.get(0)?.thoughtSignature)
+    assertEquals(null, parts?.get(1)?.text)
+    assertTrue(signature.contentEquals(parts?.get(1)?.thoughtSignature))
+  }
+
+  // A text chunk arriving mid-stream of a function call must not take the call's signature with it:
+  // the two runs flush together and each keeps its own.
+  @Test
+  fun textInterleavedWithStreamedCall_keepsBothSignatures() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+    val fcSignature = byteArrayOf(1, 1, 1)
+    val textSignature = byteArrayOf(2, 2, 2)
+
+    val unused1 =
+      aggregator.processResponse(
+        LlmResponse(
+          content =
+            Content(
+              parts =
+                listOf(
+                  Part(
+                    functionCall =
+                      FunctionCall(
+                        name = "search",
+                        partialArgs =
+                          listOf(
+                            PartialArg(jsonPath = "$.q", value = PartialArgValue.StringValue("hel"))
+                          ),
+                        willContinue = true,
+                      ),
+                    thoughtSignature = fcSignature,
+                  )
+                )
+            )
+        )
+      )
+    val unused2 =
+      aggregator.processResponse(createResp("Working on it.", signature = textSignature))
+    val unused3 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.q", "lo", willContinue = false))
+      )
+    val finalResp = aggregator.aggregate()
+
+    val parts = finalResp?.content?.parts
+    assertEquals(2, parts?.size)
+    assertEquals("Working on it.", parts?.get(0)?.text)
+    assertTrue(textSignature.contentEquals(parts?.get(0)?.thoughtSignature))
+    assertEquals("search", parts?.get(1)?.functionCall?.name)
+    assertTrue(fcSignature.contentEquals(parts?.get(1)?.thoughtSignature))
+  }
+
   @Test
   fun finalResponse_carriesFinishReasonAndUsageMetadata() = runBlocking {
     val aggregator = StreamingResponseAggregator()
@@ -581,8 +725,15 @@ class StreamingResponseAggregatorTest {
     assertEquals(null, finalResp.errorMessage)
   }
 
-  private fun createResp(text: String, thought: Boolean? = null): LlmResponse {
-    return LlmResponse(content = Content(parts = listOf(Part(text = text, thought = thought))))
+  private fun createResp(
+    text: String,
+    thought: Boolean? = null,
+    signature: ByteArray? = null,
+  ): LlmResponse {
+    return LlmResponse(
+      content =
+        Content(parts = listOf(Part(text = text, thought = thought, thoughtSignature = signature)))
+    )
   }
 
   private fun createFcResp(fc: FunctionCall): LlmResponse {
