@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.8.0](https://github.com/google/adk-kotlin/compare/v0.7.0...v0.8.0) (2026-08-07)
+
+
+### Features
+
+* add MCP tool demo example ([c04d6d9](https://github.com/google/adk-kotlin/commit/c04d6d93e629b72c30860824b9c3cbaed8169994))
+* add streaming response support in the Firebase model backend ([805a131](https://github.com/google/adk-kotlin/commit/805a131c92bdb95608bf1489af5b97705260c54b))
+* capture the place-answer text on Maps grounding chunks ([a47dda0](https://github.com/google/adk-kotlin/commit/a47dda0e3f9ca40a7ddef172b8b55ad8e33900af))
+* carry the JSON Schema constraint fields on Schema ([d0547f9](https://github.com/google/adk-kotlin/commit/d0547f99c33bca84e415636f5a38d2cb5fae3ac3))
+* **mcp:** keep MCP tool schema constraints and surface tool output schemas ([cbc9d0a](https://github.com/google/adk-kotlin/commit/cbc9d0a9b2491393ffd98b10e37528abb57b1c0c))
+* **processor:** declare the response shape of @Tool functions ([6f1009a](https://github.com/google/adk-kotlin/commit/6f1009a25ceec9003d8d650ad11fb644dd7c2632))
+
+
+### Bug Fixes
+
+* **a2a:** put JSpecify on the compile classpath ([72731ca](https://github.com/google/adk-kotlin/commit/72731ca703377af34458b1356d7b313a65fead11))
+* align ML Kit streaming responses with the other model backends ([c597ded](https://github.com/google/adk-kotlin/commit/c597ded26e2beff008c8274c5a4cccc90f67effc))
+* carry model-callback actions onto the emitted event ([35f04af](https://github.com/google/adk-kotlin/commit/35f04af718db680b80944a5c201b9f922f4322b4))
+* **core:** only resume tool confirmations for calls this agent emitted ([00cbc52](https://github.com/google/adk-kotlin/commit/00cbc525ef73f9f7333febd224315162477c9c56))
+* **mcp:** stop failing on null-typed MCP tool schemas and keep enum values ([06e7926](https://github.com/google/adk-kotlin/commit/06e7926b0f19fb4c595906775401fa6e1b63487d))
+* **mcp:** stop toolFilter dropping the tools useMcpResources adds ([07e7fb7](https://github.com/google/adk-kotlin/commit/07e7fb7de83c72afb08aacebdb4d2d29af43f27c))
+* **processor:** stop generating an unchecked cast for data class parameters ([80b2dd8](https://github.com/google/adk-kotlin/commit/80b2dd837c905feaf5f0a7397d5d1e203f5e284b))
+* propagate the model response error code and custom metadata to events ([be9ecec](https://github.com/google/adk-kotlin/commit/be9ecec0b86dc416ccaaafe00a349fa9ff09f067))
+* stop the ML Kit model echoing role markers and earlier turns ([f02a07c](https://github.com/google/adk-kotlin/commit/f02a07cc8cb2308b8fb5e3268a6b28917ee63a60))
+
 ## [0.7.0](https://github.com/google/adk-kotlin/compare/v0.6.0...v0.7.0) (2026-08-03)
 
 
