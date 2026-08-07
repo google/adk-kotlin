@@ -15,10 +15,18 @@
  */
 package com.google.adk.kt.processors
 
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.userEvent
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.ToolCall
+import com.google.adk.kt.types.ToolResponse
+import com.google.adk.kt.types.ToolType
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 
 class HistoryRewriterProcessorTest {
 
@@ -83,4 +91,120 @@ class HistoryRewriterProcessorTest {
 
     assertEquals(listOf("S1", "S2"), texts)
   }
+
+  // On models that return a signature for every part, it arrives on parts holding nothing else.
+  // Dropping those as "empty" loses the reasoning the model expects back on the next turn.
+  @Test
+  fun rewrite_contentFreeThoughtSignatureEvent_isKept() {
+    val signature = byteArrayOf(7, 7, 7)
+    val events =
+      listOf(userEvent("Summarize the video."), modelPartEvent(Part(thoughtSignature = signature)))
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(2, contents.size)
+    assertNotNull(contents[1].parts[0].thoughtSignature)
+  }
+
+  // A thought part carrying a signature is kept for the same reason, though a bare thought is not.
+  @Test
+  fun rewrite_thoughtWithSignatureEvent_isKept() {
+    val events =
+      listOf(
+        userEvent("Summarize the video."),
+        modelPartEvent(
+          Part(thought = true, text = "Checking 0:05.", thoughtSignature = byteArrayOf(1, 2, 3))
+        ),
+      )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(2, contents.size)
+    assertNotNull(contents[1].parts[0].thoughtSignature)
+  }
+
+  // The model runs server-side tools itself and requires the caller to echo the parts back on the
+  // next request. Dropping them as "empty" makes the model redo the work, or fail because a call
+  // has no matching response.
+  @Test
+  fun rewrite_serverSideToolCallAndResponseEvents_areKept() {
+    val events =
+      listOf(
+        userEvent("Summarize the linked page."),
+        modelPartEvent(
+          Part(
+            toolCall =
+              ToolCall(
+                id = "tc1",
+                toolType = ToolType.URL_CONTEXT,
+                args = mapOf("url" to "https://example.com"),
+              )
+          )
+        ),
+        modelPartEvent(
+          Part(
+            toolResponse =
+              ToolResponse(
+                id = "tc1",
+                toolType = ToolType.URL_CONTEXT,
+                response = mapOf("content" to "page text"),
+              )
+          )
+        ),
+      )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(3, contents.size)
+    assertEquals("tc1", contents[1].parts[0].toolCall?.id)
+    val toolResponse = contents[2].parts[0].toolResponse
+    assertNotNull(toolResponse)
+    assertEquals("tc1", toolResponse.id)
+    assertEquals(mapOf("content" to "page text"), toolResponse.response)
+  }
+
+  // The echo-back contract holds regardless of how the model labels the part, so a thought marking
+  // must not drop it.
+  @Test
+  fun rewrite_serverSideToolCallMarkedAsThought_isKept() {
+    val events =
+      listOf(
+        userEvent("Summarize the linked page."),
+        modelPartEvent(
+          Part(thought = true, toolCall = ToolCall(id = "tc1", toolType = ToolType.URL_CONTEXT))
+        ),
+      )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(2, contents.size)
+    assertEquals("tc1", contents[1].parts[0].toolCall?.id)
+  }
+
+  // A server-side call belongs to the model instance that made it, so the other-agent path keeps
+  // dropping it rather than claiming the call on this agent's behalf.
+  @Test
+  fun rewrite_serverSideToolCallFromOtherAgent_isDropped() {
+    val events =
+      listOf(
+        userEvent("Summarize the linked page."),
+        modelPartEvent(
+          Part(toolCall = ToolCall(id = "tc1", toolType = ToolType.URL_CONTEXT)),
+          author = "other_agent",
+        ),
+      )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(1, contents.size)
+    assertEquals("Summarize the linked page.", contents[0].parts[0].text)
+  }
+
+  private fun modelPartEvent(part: Part, author: String = "agent"): Event =
+    Event(author = author, content = Content(role = Role.MODEL, parts = listOf(part)))
 }

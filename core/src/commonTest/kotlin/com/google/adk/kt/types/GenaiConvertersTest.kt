@@ -712,6 +712,56 @@ class GenaiConvertersTest {
     assertEquals(adkPart, convertedBack)
   }
 
+  // A server-side tool call has to survive the round trip: the model requires the caller to echo
+  // the part back, so a field dropped here is a call the model never sees again.
+  @Test
+  fun part_serverSideToolCall_convertsCorrectly() {
+    val adkPart =
+      Part(
+        toolCall =
+          ToolCall(
+            id = "tc1",
+            toolType = ToolType.URL_CONTEXT,
+            args = mapOf("url" to "https://example.com"),
+          )
+      )
+
+    val genaiPart = adkPart.toGenaiSdk()
+    assertEquals("tc1", genaiPart.toolCall?.id)
+    assertEquals("URL_CONTEXT", genaiPart.toolCall?.toolType?.value)
+    assertEquals(JsonPrimitive("https://example.com"), genaiPart.toolCall?.args?.get("url"))
+
+    assertEquals(adkPart, genaiPart.fromGenaiSdk())
+  }
+
+  @Test
+  fun part_serverSideToolResponse_convertsCorrectly() {
+    val adkPart =
+      Part(
+        toolResponse =
+          ToolResponse(
+            id = "tc1",
+            toolType = ToolType.URL_CONTEXT,
+            response = mapOf("content" to "page text"),
+          )
+      )
+
+    val genaiPart = adkPart.toGenaiSdk()
+    assertEquals("tc1", genaiPart.toolResponse?.id)
+    assertEquals("URL_CONTEXT", genaiPart.toolResponse?.toolType?.value)
+    assertEquals(JsonPrimitive("page text"), genaiPart.toolResponse?.response?.get("content"))
+
+    assertEquals(adkPart, genaiPart.fromGenaiSdk())
+  }
+
+  // A tool type this build does not know about round-trips as itself rather than failing to parse.
+  @Test
+  fun part_unknownToolType_roundTrips() {
+    val adkPart = Part(toolCall = ToolCall(id = "tc1", toolType = ToolType("SOMETHING_NEW")))
+
+    assertEquals(adkPart, adkPart.toGenaiSdk().fromGenaiSdk())
+  }
+
   @Test
   fun part_videoMetadataAndPartMetadata_convertsCorrectly() {
     val adkPart =

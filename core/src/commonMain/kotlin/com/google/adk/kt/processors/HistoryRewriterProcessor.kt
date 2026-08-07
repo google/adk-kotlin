@@ -380,8 +380,9 @@ internal class HistoryRewriterProcessor {
    *
    * This can happen to the events that only changed session state. When both content and
    * transcriptions are empty, the event will be considered as empty. The content is considered
-   * empty if none of its parts contain text, inline data, function call, or function response.
-   * Parts with only thoughts are also considered empty.
+   * empty if none of its parts contain text, inline data, function call, function response,
+   * server-side tool call, or server-side tool response. Parts with only thoughts are also
+   * considered empty.
    */
   private fun containsEmptyContent(event: Event): Boolean {
     // Compaction events carry their summary in actions.compaction rather than content; keep them so
@@ -400,15 +401,29 @@ internal class HistoryRewriterProcessor {
    * Returns whether a part is invisible for LLM context.
    *
    * A part is invisible if:
-   * - It has no meaningful content (text, inline_data, function_call, or function_response), OR
-   * - It is marked as a thought AND does not contain function_call or function_response.
+   * - It has no meaningful content (text, inline_data, function_call, function_response, tool_call
+   *   or tool_response) and no thought_signature, OR
+   * - It is marked as a thought AND contains none of those.
    *
    * Function calls and responses are never invisible, even if marked as thought, because they
-   * represent actions that need to be executed or results that need to be processed.
+   * represent actions that need to be executed or results that need to be processed. Parts carrying
+   * a thought signature, and server-side tool calls and responses, are never invisible either,
+   * because the caller is required to echo them back on the next request.
    */
   private fun isPartInvisible(part: Part): Boolean {
     // Function calls and responses are never invisible, even if marked as thought
     if (part.functionCall != null || part.functionResponse != null) {
+      return false
+    }
+
+    // A thought signature is opaque state to hand back verbatim, and it routinely arrives on a part
+    // with nothing else in it, so it has to be checked before the emptiness test below.
+    if (part.thoughtSignature?.isNotEmpty() == true) {
+      return false
+    }
+
+    // Server-side tool calls/responses must be echoed back to the model.
+    if (part.toolCall != null || part.toolResponse != null) {
       return false
     }
 

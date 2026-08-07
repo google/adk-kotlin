@@ -32,6 +32,9 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.PartialArg
 import com.google.adk.kt.types.PartialArgValue
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.ToolCall
+import com.google.adk.kt.types.ToolResponse
+import com.google.adk.kt.types.ToolType
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -94,6 +97,41 @@ class EventSerializationTest {
         usageMetadata = UsageMetadata(promptTokenCount = 10, totalTokenCount = 20),
         customMetadata = mapOf("meta" to "data"),
         timestamp = 1234L,
+      )
+
+    assertEquals(event, roundTrip(event))
+  }
+
+  // A session is persisted through this serializer, so a server-side tool call has to survive it or
+  // the reloaded history is missing the call the model expects back.
+  @Test
+  fun event_serverSideToolParts_roundTripLosslessly() {
+    val event =
+      Event(
+        author = "agent",
+        content =
+          Content(
+            role = Role.MODEL,
+            parts =
+              listOf(
+                Part(
+                  toolCall =
+                    ToolCall(
+                      id = "tc1",
+                      toolType = ToolType.URL_CONTEXT,
+                      args = mapOf("url" to "https://example.com"),
+                    )
+                ),
+                Part(
+                  toolResponse =
+                    ToolResponse(
+                      id = "tc1",
+                      toolType = ToolType("SOMETHING_NEW"),
+                      response = mapOf("content" to "page text"),
+                    )
+                ),
+              ),
+          ),
       )
 
     assertEquals(event, roundTrip(event))

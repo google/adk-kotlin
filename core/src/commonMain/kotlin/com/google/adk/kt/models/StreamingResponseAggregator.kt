@@ -53,6 +53,10 @@ class StreamingResponseAggregator {
   private val currentTextBuffer = StringBuilder()
   private var currentTextIsThought: Boolean? = null
 
+  // Kept apart from the function call's slot below so an interleaved chunk cannot flush one part
+  // carrying the other's signature.
+  private var currentTextThoughtSignature: ByteArray? = null
+
   private var currentFcName: String? = null
   private val currentFcArgs = mutableMapOf<String, Any?>()
   private var currentFcId: String? = null
@@ -157,22 +161,24 @@ class StreamingResponseAggregator {
         Part(
           text = currentTextBuffer.toString(),
           thought = currentTextIsThought,
-          thoughtSignature = currentThoughtSignature,
+          thoughtSignature = currentTextThoughtSignature,
         )
       )
       currentTextBuffer.clear()
       currentTextIsThought = null
-      currentThoughtSignature = null
+      currentTextThoughtSignature = null
     }
   }
 
   private fun processTextPart(part: Part) {
-    // Flush on text-type change, then capture any signature so it rides on the flushed text.
+    // Flush before capturing this chunk's signature below, or the signature of the run starting
+    // here lands on the run being flushed.
     if (currentTextBuffer.isNotEmpty() && part.thought != currentTextIsThought) {
       flushTextBufferToSequence()
     }
 
-    part.thoughtSignature?.let { currentThoughtSignature = it }
+    // The signature rides on the merged part that flushTextBufferToSequence builds.
+    part.thoughtSignature?.let { currentTextThoughtSignature = it }
     currentTextIsThought = part.thought
     currentTextBuffer.append(part.text)
   }

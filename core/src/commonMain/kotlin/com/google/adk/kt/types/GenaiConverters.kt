@@ -62,7 +62,10 @@ import com.google.genai.kotlin.types.SearchEntryPoint as GenAiSearchEntryPoint
 import com.google.genai.kotlin.types.Segment as GenAiSegment
 import com.google.genai.kotlin.types.ThinkingConfig as GenAiThinkingConfig
 import com.google.genai.kotlin.types.Tool as GenAiTool
+import com.google.genai.kotlin.types.ToolCall as GenAiToolCall
 import com.google.genai.kotlin.types.ToolConfig as GenAiToolConfig
+import com.google.genai.kotlin.types.ToolResponse as GenAiToolResponse
+import com.google.genai.kotlin.types.ToolType as GenAiToolType
 import com.google.genai.kotlin.types.UrlContext as GenAiUrlContext
 import com.google.genai.kotlin.types.VertexAISearch as GenAiVertexAISearch
 import com.google.genai.kotlin.types.VertexAISearchDataStoreSpec as GenAiVertexAISearchDataStoreSpec
@@ -845,6 +848,8 @@ internal fun GenAiPart.fromGenaiSdk(): Part =
     thought = thought,
     thoughtSignature = thoughtSignature,
     videoMetadata = videoMetadata?.fromGenaiSdk(),
+    toolCall = toolCall?.fromGenaiSdk(),
+    toolResponse = toolResponse?.fromGenaiSdk(),
     partMetadata = partMetadata?.mapValues { it.value.toAny() },
   )
 
@@ -859,7 +864,43 @@ internal fun Part.toGenaiSdk(): GenAiPart =
     thought = thought,
     thoughtSignature = thoughtSignature,
     videoMetadata = videoMetadata?.toGenaiSdk(),
+    toolCall = toolCall?.toGenaiSdk(),
+    toolResponse = toolResponse?.toGenaiSdk(),
     partMetadata = partMetadata?.mapValues { it.value.toJsonElement() },
+  )
+
+// --- ToolCall ---
+/** Converts a [GenAiToolCall] from the GenAI SDK to an ADK [ToolCall]. */
+internal fun GenAiToolCall.fromGenaiSdk(): ToolCall =
+  ToolCall(
+    id = id,
+    toolType = toolType?.let { ToolType(it.value) },
+    args = args?.mapValues { it.value.toAny() },
+  )
+
+/** Converts an ADK [ToolCall] to a [GenAiToolCall] for the GenAI SDK. */
+internal fun ToolCall.toGenaiSdk(): GenAiToolCall =
+  GenAiToolCall(
+    id = id,
+    toolType = toolType?.let { GenAiToolType(it.value) },
+    args = args?.mapValues { it.value.toJsonElement() },
+  )
+
+// --- ToolResponse ---
+/** Converts a [GenAiToolResponse] from the GenAI SDK to an ADK [ToolResponse]. */
+internal fun GenAiToolResponse.fromGenaiSdk(): ToolResponse =
+  ToolResponse(
+    id = id,
+    toolType = toolType?.let { ToolType(it.value) },
+    response = response?.mapValues { it.value.toAny() },
+  )
+
+/** Converts an ADK [ToolResponse] to a [GenAiToolResponse] for the GenAI SDK. */
+internal fun ToolResponse.toGenaiSdk(): GenAiToolResponse =
+  GenAiToolResponse(
+    id = id,
+    toolType = toolType?.let { GenAiToolType(it.value) },
+    response = response?.mapValues { it.value.toJsonElement() },
   )
 
 // --- VideoMetadata ---

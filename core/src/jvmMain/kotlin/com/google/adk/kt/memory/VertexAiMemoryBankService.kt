@@ -436,7 +436,12 @@ class VertexAiMemoryBankService internal constructor(private val client: VertexA
         videoMetadata = part.videoMetadata,
       )
 
-    /** Mirrors the Python `_should_filter_out_event`: drop events with no usable content parts. */
+    /**
+     * Mirrors the Python `_should_filter_out_event`: drop events with no usable content parts.
+     *
+     * Server-side tool calls are deliberately not counted as usable, unlike in Python:
+     * [sanitizePartForWire] strips them, so counting them would send a part with nothing in it.
+     */
     private fun shouldFilterOutEvent(content: Content?): Boolean {
       val parts = content?.parts
       if (parts.isNullOrEmpty()) return true

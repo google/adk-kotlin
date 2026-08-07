@@ -27,6 +27,8 @@ import kotlinx.serialization.Serializable
  * - fileData: Data from a file.
  * - functionCall: A call to a function.
  * - functionResponse: The response from a function call.
+ * - toolCall: A tool call the model ran on its own server side.
+ * - toolResponse: The output of a server-side tool call.
  */
 // note - this class resembles kotlin's data class, but needs to be a regular class to allow for
 // deep comparison of the thought signature.
@@ -48,6 +50,10 @@ class Part(
   val thoughtSignature: ByteArray? = null,
   /** Metadata for a video part (segment offsets and frame rate). */
   val videoMetadata: VideoMetadata? = null,
+  /** A tool call the model ran on its own server side, to be echoed back on the next request. */
+  val toolCall: ToolCall? = null,
+  /** The output of a server-side tool call, to be echoed back alongside its [ToolCall]. */
+  val toolResponse: ToolResponse? = null,
   /** Arbitrary key-value metadata associated with this part. The map must be JSON serializable. */
   val partMetadata: Map<String, @Contextual Any?>? = null,
 ) {
@@ -64,6 +70,8 @@ class Part(
       thought == other.thought &&
       thoughtSignature.contentEquals(other.thoughtSignature) &&
       videoMetadata == other.videoMetadata &&
+      toolCall == other.toolCall &&
+      toolResponse == other.toolResponse &&
       partMetadata == other.partMetadata
   }
 
@@ -77,6 +85,8 @@ class Part(
     result = 31 * result + (thought?.hashCode() ?: 0)
     result = 31 * result + (thoughtSignature?.contentHashCode() ?: 0)
     result = 31 * result + (videoMetadata?.hashCode() ?: 0)
+    result = 31 * result + (toolCall?.hashCode() ?: 0)
+    result = 31 * result + (toolResponse?.hashCode() ?: 0)
     result = 31 * result + (partMetadata?.hashCode() ?: 0)
     return result
   }
@@ -90,6 +100,8 @@ class Part(
     thought: Boolean? = this.thought,
     thoughtSignature: ByteArray? = this.thoughtSignature,
     videoMetadata: VideoMetadata? = this.videoMetadata,
+    toolCall: ToolCall? = this.toolCall,
+    toolResponse: ToolResponse? = this.toolResponse,
     partMetadata: Map<String, Any?>? = this.partMetadata,
   ): Part =
     Part(
@@ -101,10 +113,12 @@ class Part(
       thought,
       thoughtSignature,
       videoMetadata,
+      toolCall,
+      toolResponse,
       partMetadata,
     )
 
   override fun toString(): String {
-    return "Part(text=$text, inlineData=$inlineData, fileData=$fileData, functionCall=$functionCall, functionResponse=$functionResponse, thought=$thought, thoughtSignature=${thoughtSignature?.contentToString()})"
+    return "Part(text=$text, inlineData=$inlineData, fileData=$fileData, functionCall=$functionCall, functionResponse=$functionResponse, thought=$thought, thoughtSignature=${thoughtSignature?.contentToString()}, videoMetadata=$videoMetadata, toolCall=$toolCall, toolResponse=$toolResponse, partMetadata=$partMetadata)"
   }
 }

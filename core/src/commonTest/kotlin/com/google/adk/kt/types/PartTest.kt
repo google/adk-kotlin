@@ -60,4 +60,31 @@ class PartTest {
 
     assertEquals(part1.hashCode(), part2.hashCode())
   }
+
+  // Part is hand-written rather than a data class, so a new field has to be added to equals,
+  // hashCode and copy by hand or it silently drops out of all three.
+  @Test
+  fun equals_differentToolCall_returnsFalse() {
+    val part1 = Part(toolCall = ToolCall(id = "tc1"))
+    val part2 = Part(toolCall = ToolCall(id = "tc2"))
+
+    assertNotEquals(part1, part2)
+    assertNotEquals(part1.hashCode(), part2.hashCode())
+  }
+
+  @Test
+  fun equals_differentToolResponse_returnsFalse() {
+    val part1 = Part(toolResponse = ToolResponse(id = "tc1"))
+    val part2 = Part(toolResponse = ToolResponse(id = "tc2"))
+
+    assertNotEquals(part1, part2)
+    assertNotEquals(part1.hashCode(), part2.hashCode())
+  }
+
+  @Test
+  fun copy_preservesServerSideToolParts() {
+    val part = Part(toolCall = ToolCall(id = "tc1"), toolResponse = ToolResponse(id = "tc1"))
+
+    assertEquals(part, part.copy(text = null))
+  }
 }
