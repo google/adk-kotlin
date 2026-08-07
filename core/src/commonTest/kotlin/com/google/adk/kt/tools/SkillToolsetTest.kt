@@ -14,17 +14,40 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalSkillTools::class)
+
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.ReadonlyContext
+import com.google.adk.kt.agents.toReadonlyContext
+import com.google.adk.kt.annotations.ExperimentalSkillTools
+import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.skills.Frontmatter
 import com.google.adk.kt.skills.SkillSource
 import com.google.adk.kt.skills.SkillSourceException
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.testToolContext
+import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.Schema as GenaiSchema
+import com.google.adk.kt.types.Type
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
 
 /** Unit tests for [SkillToolset]. */
@@ -34,8 +57,22 @@ class SkillToolsetTest {
     listOf(
       Frontmatter(name = "skill1", description = "Description 1"),
       Frontmatter(name = "skill2", description = "Description 2"),
+      Frontmatter(
+        name = "skill3",
+        description = "Description 3",
+        metadata =
+          mapOf(
+            SkillToolset.ADK_ADDITIONAL_TOOLS_METADATA_KEY to
+              listOf("extra_tool_a", "extra_tool_b"),
+          ),
+      ),
     )
-  private val mockInstructions = mapOf("skill1" to "Instructions 1", "skill2" to "Instructions 2")
+  private val mockInstructions =
+    mapOf(
+      "skill1" to "Instructions 1",
+      "skill2" to "Instructions 2",
+      "skill3" to "Instructions 3",
+    )
 
   private val mockSource =
     object : SkillSource {
@@ -106,7 +143,7 @@ class SkillToolsetTest {
     val result = tool.run(testToolContext(), emptyMap()) as Map<*, *>
     val skillsList = result["skills"] as? List<Map<String, Any?>>
     assertNotNull(skillsList)
-    assertEquals(2, skillsList.size)
+    assertEquals(3, skillsList.size)
     assertEquals("skill1", skillsList[0]["name"])
     assertEquals("Description 1", skillsList[0]["description"])
     assertEquals("skill2", skillsList[1]["name"])
@@ -127,6 +164,23 @@ class SkillToolsetTest {
     val frontmatter = result[SkillToolset.KEY_FRONTMATTER] as Map<*, *>
     assertEquals("skill1", frontmatter["name"])
     assertEquals("Description 1", frontmatter["description"])
+  }
+
+  @Test
+  fun loadSkillTool_run_returnsAdkAdditionalToolsInFrontmatterMetadata() = runTest {
+    val tools = skillToolset.getTools(null)
+    val loadSkillTool = tools.first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    val result =
+      loadSkillTool.run(testToolContext(), mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"))
+        as Map<*, *>
+
+    val frontmatter = result[SkillToolset.KEY_FRONTMATTER] as Map<*, *>
+    val metadata = frontmatter["metadata"] as Map<*, *>
+    assertEquals(
+      listOf("extra_tool_a", "extra_tool_b"),
+      metadata[SkillToolset.ADK_ADDITIONAL_TOOLS_METADATA_KEY],
+    )
   }
 
   @Test
@@ -433,4 +487,617 @@ class SkillToolsetTest {
 
     kotlin.test.assertNull(instruction)
   }
+
+  @Test
+  fun getTools_returnsOnlyCoreTools_whenAdditionalToolsAndNoActivation() = runTest {
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools =
+          listOf(makeAdditionalTool("extra_tool_a"), makeAdditionalTool("extra_tool_b")),
+      )
+    val tools = toolset.getTools(null)
+    assertEquals(3, tools.size)
+    assertTrue(tools.none { it.name == "extra_tool_a" || it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun getTools_exposesAdditionalTools_afterActivation() = runTest {
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools =
+          listOf(makeAdditionalTool("extra_tool_a"), makeAdditionalTool("extra_tool_b")),
+      )
+    val session = testSession()
+    session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")] =
+      mapOf("skill3" to listOf("extra_tool_a", "extra_tool_b"))
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+    val tools = toolset.getTools(readonlyCtx)
+    assertEquals(5, tools.size)
+    assertTrue(tools.any { it.name == "extra_tool_a" })
+    assertTrue(tools.any { it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun getTools_usesStoredToolNames_withoutReloadingFrontmatter() = runTest {
+    var loadFrontmatterCalls = 0
+    val source =
+      object : SkillSource by mockSource {
+        override suspend fun loadFrontmatter(skillName: String): Result<Frontmatter> {
+          loadFrontmatterCalls++
+          return mockSource.loadFrontmatter(skillName)
+        }
+      }
+    val toolset =
+      SkillToolset(source = source, additionalTools = listOf(makeAdditionalTool("extra_tool_a")))
+    val session = testSession()
+    session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")] =
+      mapOf("skill3" to listOf("extra_tool_a"))
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+
+    val tools = toolset.getTools(readonlyCtx)
+
+    assertEquals(4, tools.size)
+    assertTrue(tools.any { it.name == "extra_tool_a" })
+    assertEquals(0, loadFrontmatterCalls)
+  }
+
+  @Test
+  fun getTools_skipsToolNameNotInProvidedTools() = runTest {
+    // skill3 declares both extra_tool_a and extra_tool_b, but only extra_tool_a is provided.
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools = listOf(makeAdditionalTool("extra_tool_a")),
+      )
+    val session = testSession()
+    session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")] =
+      mapOf("skill3" to listOf("extra_tool_a", "extra_tool_b"))
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+    val tools = toolset.getTools(readonlyCtx)
+    assertEquals(4, tools.size)
+    assertTrue(tools.any { it.name == "extra_tool_a" })
+    assertTrue(tools.none { it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun getTools_resolvesAdditionalToolsFromProvidedToolsets_afterActivation() = runTest {
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools = emptyList(),
+        additionalToolsets =
+          listOf(
+            makeAdditionalToolset(
+              makeAdditionalTool("extra_tool_a"),
+              makeAdditionalTool("extra_tool_b"),
+            )
+          ),
+      )
+    val session = testSession()
+    session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")] =
+      mapOf("skill3" to listOf("extra_tool_a", "extra_tool_b"))
+    val readonlyCtx = testInvocationContext(session = session).toReadonlyContext()
+
+    val tools = toolset.getTools(readonlyCtx)
+
+    assertEquals(5, tools.size)
+    assertTrue(tools.any { it.name == "extra_tool_a" })
+    assertTrue(tools.any { it.name == "extra_tool_b" })
+  }
+
+  @Test
+  fun loadSkillTool_run_writesSkillAndAdditionalToolStateDelta() = runTest {
+    val actions = EventActions()
+    val ctx = testToolContext(actions = actions)
+    val toolset = SkillToolset(source = mockSource)
+    val loadSkillTool =
+      toolset.getTools(null).first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    loadSkillTool.run(ctx, mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"))
+
+    assertEquals(
+      listOf("skill3"),
+      actions.stateDelta[SkillToolset.activatedSkillStateKey("test-agent")],
+    )
+    assertEquals(
+      mapOf("skill3" to listOf("extra_tool_a", "extra_tool_b")),
+      actions.stateDelta[SkillToolset.activatedSkillToolsStateKey("test-agent")],
+    )
+  }
+
+  @Test
+  fun loadSkillTool_run_preservesPreviouslyActivatedSkills() = runTest {
+    // Session state already has skill1 activated; loading skill3 must preserve both the prior
+    // activation and its associated tool names.
+    val session = testSession()
+    session.state[SkillToolset.activatedSkillStateKey("test-agent")] = listOf("skill1")
+    session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")] =
+      mapOf("skill1" to listOf("previous_tool"))
+    val actions = EventActions()
+    val ctx =
+      testToolContext(
+        invocationContext = testInvocationContext(session = session),
+        actions = actions,
+      )
+    val toolset = SkillToolset(source = mockSource)
+    val loadSkillTool =
+      toolset.getTools(null).first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    loadSkillTool.run(ctx, mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"))
+
+    assertEquals(
+      listOf("skill1", "skill3"),
+      actions.stateDelta[SkillToolset.activatedSkillStateKey("test-agent")],
+    )
+    assertEquals(
+      mapOf(
+        "skill1" to listOf("previous_tool"),
+        "skill3" to listOf("extra_tool_a", "extra_tool_b"),
+      ),
+      actions.stateDelta[SkillToolset.activatedSkillToolsStateKey("test-agent")],
+    )
+  }
+
+  @Test
+  fun loadSkillTool_run_preservesBlankAdditionalToolNames() = runTest {
+    val source =
+      object : SkillSource by mockSource {
+        override suspend fun loadFrontmatter(skillName: String): Result<Frontmatter> =
+          Result.success(
+            Frontmatter(
+              name = skillName,
+              description = "Description",
+              metadata =
+                mapOf(
+                  SkillToolset.ADK_ADDITIONAL_TOOLS_METADATA_KEY to
+                    listOf("", "   ", "extra_tool_a")
+                ),
+            )
+          )
+      }
+    val actions = EventActions()
+    val toolset = SkillToolset(source)
+    val loadSkillTool = toolset.getTools().first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    loadSkillTool.run(
+      testToolContext(actions = actions),
+      mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"),
+    )
+
+    assertEquals(
+      mapOf("skill3" to listOf("", "   ", "extra_tool_a")),
+      actions.stateDelta[SkillToolset.activatedSkillToolsStateKey("test-agent")],
+    )
+  }
+
+  @Test
+  fun loadSkillTool_run_replacesAdditionalToolsWhenSkillIsReloaded() = runTest {
+    var declaredToolNames = listOf("old_tool")
+    val source =
+      object : SkillSource by mockSource {
+        override suspend fun loadFrontmatter(skillName: String): Result<Frontmatter> =
+          Result.success(
+            Frontmatter(
+              name = skillName,
+              description = "Description",
+              metadata =
+                mapOf(SkillToolset.ADK_ADDITIONAL_TOOLS_METADATA_KEY to declaredToolNames),
+            )
+          )
+      }
+    val actions = EventActions()
+    val context = testToolContext(actions = actions)
+    val toolset = SkillToolset(source)
+    val loadSkillTool = toolset.getTools().first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
+
+    loadSkillTool.run(context, mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"))
+    declaredToolNames = listOf("new_tool")
+    loadSkillTool.run(context, mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"))
+
+    assertEquals(
+      mapOf("skill3" to listOf("new_tool")),
+      actions.stateDelta[SkillToolset.activatedSkillToolsStateKey("test-agent")],
+    )
+  }
+
+  @Test
+  fun getTools_duplicateActivatedToolName_returnsToolOnce() = runTest {
+    val toolset =
+      SkillToolset(mockSource, additionalTools = listOf(makeAdditionalTool("extra_tool_a")))
+    val session = testSession()
+    session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")] =
+      mapOf("skill3" to listOf("extra_tool_a", "extra_tool_a"))
+
+    val tools = toolset.getTools(testInvocationContext(session = session).toReadonlyContext())
+
+    assertEquals(1, tools.count { it.name == "extra_tool_a" })
+  }
+
+  @Test
+  fun getTools_additionalToolCollidesWithCoreTool_skipsAdditionalTool() = runTest {
+    val toolset =
+      SkillToolset(
+        mockSource,
+        additionalTools = listOf(makeAdditionalTool(SkillToolset.TOOL_NAME_LOAD_SKILL)),
+      )
+    val session = testSession()
+    session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")] =
+      mapOf("skill3" to listOf(SkillToolset.TOOL_NAME_LOAD_SKILL))
+
+    val tools = toolset.getTools(testInvocationContext(session = session).toReadonlyContext())
+
+    assertEquals(1, tools.count { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL })
+  }
+
+  @Test
+  fun close_closesOwnedResourcesOnce_withoutClosingToolsOwnedByProvidedToolsets() {
+    val shadowedTool = CloseTrackingTool("duplicate")
+    val selectedTool = CloseTrackingTool("duplicate")
+    val repeatedTool = CloseTrackingTool("repeated")
+    val toolsetOwnedTool = CloseTrackingTool("toolset_owned")
+    val providedToolset = CloseTrackingToolset(listOf(toolsetOwnedTool))
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools =
+          listOf(shadowedTool, selectedTool, repeatedTool, repeatedTool),
+        additionalToolsets = listOf(providedToolset, providedToolset),
+      )
+
+    toolset.close()
+
+    assertEquals(1, shadowedTool.closeCalls)
+    assertEquals(1, selectedTool.closeCalls)
+    assertEquals(1, repeatedTool.closeCalls)
+    assertEquals(1, providedToolset.closeCalls)
+    assertEquals(0, toolsetOwnedTool.closeCalls)
+  }
+
+  @Test
+  fun constructor_snapshotsOwnedInputLists() {
+    val originalTool = CloseTrackingTool("original_tool")
+    val laterTool = CloseTrackingTool("later_tool")
+    val originalToolset = CloseTrackingToolset(emptyList())
+    val laterToolset = CloseTrackingToolset(emptyList())
+    val additionalTools = mutableListOf<BaseTool>(originalTool)
+    val additionalToolsets = mutableListOf<Toolset>(originalToolset)
+    val toolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools = additionalTools,
+        additionalToolsets = additionalToolsets,
+      )
+
+    additionalTools.apply {
+      clear()
+      add(laterTool)
+    }
+    additionalToolsets.apply {
+      clear()
+      add(laterToolset)
+    }
+    toolset.close()
+
+    assertEquals(1, originalTool.closeCalls)
+    assertEquals(0, laterTool.closeCalls)
+    assertEquals(1, originalToolset.closeCalls)
+    assertEquals(0, laterToolset.closeCalls)
+  }
+
+  @Test
+  fun runAsync_loadSkill_exposesStoredAdditionalToolsOnNextModelStep() = runTest {
+    val capturedRequests = mutableListOf<LlmRequest>()
+    val responses =
+      listOf(
+        modelFunctionCallResponse(
+          SkillToolset.TOOL_NAME_LOAD_SKILL,
+          args = mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"),
+          id = "load-skill-call",
+        ),
+        LlmResponse(content = modelMessage("done")),
+      )
+    var responseIndex = 0
+    val model =
+      object : Model {
+        override val name = "skill-activation-model"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {
+            capturedRequests += request
+            emit(responses[responseIndex++])
+          }
+      }
+    val skillToolset =
+      SkillToolset(
+        source = mockSource,
+        additionalTools =
+          listOf(makeAdditionalTool("extra_tool_a"), makeAdditionalTool("extra_tool_b")),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model, toolsets = listOf(skillToolset))
+    val runner = InMemoryRunner(agent)
+
+    runner
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("use skill3"))
+      .collect {}
+
+    val session =
+      runner.sessionService.getSession(SessionKey(runner.appName, "user", "session"))
+    assertNotNull(session)
+    assertEquals(
+      mapOf("skill3" to listOf("extra_tool_a", "extra_tool_b")),
+      session.state[SkillToolset.activatedSkillToolsStateKey("test-agent")],
+    )
+    assertEquals(2, capturedRequests.size)
+    assertTrue(capturedRequests[0].toolsDict.none { it.name.startsWith("extra_tool_") })
+    assertTrue(
+      capturedRequests[0].functionDeclarationNames().none { it.startsWith("extra_tool_") }
+    )
+    assertEquals(
+      setOf("extra_tool_a", "extra_tool_b"),
+      capturedRequests[1].toolsDict
+        .filter { it.name.startsWith("extra_tool_") }
+        .mapTo(mutableSetOf()) { it.name },
+    )
+    assertEquals(
+      setOf("extra_tool_a", "extra_tool_b"),
+      capturedRequests[1]
+        .functionDeclarationNames()
+        .filterTo(mutableSetOf()) { it.startsWith("extra_tool_") },
+    )
+  }
+
+  @Test
+  fun runAsync_additionalToolCollidesWithDirectTool_keepsDirectTool() = runTest {
+    val capturedRequests = mutableListOf<LlmRequest>()
+    val responses =
+      listOf(
+        modelFunctionCallResponse(
+          SkillToolset.TOOL_NAME_LOAD_SKILL,
+          args = mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"),
+          id = "load-skill-call",
+        ),
+        modelFunctionCallResponse("extra_tool_a", id = "extra-tool-call"),
+        LlmResponse(content = modelMessage("done")),
+      )
+    var responseIndex = 0
+    val model =
+      object : Model {
+        override val name = "tool-collision-model"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {
+            capturedRequests += request
+            emit(responses[responseIndex++])
+          }
+      }
+    val directTool = RunTrackingTool("extra_tool_a")
+    val skillTool = RunTrackingTool("extra_tool_a")
+    val skillToolset = SkillToolset(mockSource, additionalTools = listOf(skillTool))
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = model,
+        tools = listOf(directTool),
+        toolsets = listOf(skillToolset),
+      )
+
+    InMemoryRunner(agent)
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("use skill3"))
+      .collect {}
+
+    assertTrue(capturedRequests.size >= 2)
+    assertEquals(1, capturedRequests[1].functionDeclarationNames().count { it == "extra_tool_a" })
+    assertEquals(1, directTool.runCalls)
+    assertEquals(0, skillTool.runCalls)
+  }
+
+  @Test
+  fun runAsync_additionalToolCollidesWithEarlierToolset_keepsEarlierTool() = runTest {
+    val capturedRequests = mutableListOf<LlmRequest>()
+    val responses =
+      listOf(
+        modelFunctionCallResponse(
+          SkillToolset.TOOL_NAME_LOAD_SKILL,
+          args = mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"),
+          id = "load-skill-call",
+        ),
+        modelFunctionCallResponse("extra_tool_a", id = "extra-tool-call"),
+        LlmResponse(content = modelMessage("done")),
+      )
+    var responseIndex = 0
+    val model =
+      object : Model {
+        override val name = "toolset-collision-model"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {
+            capturedRequests += request
+            emit(responses[responseIndex++])
+          }
+      }
+    val earlierTool = RunTrackingTool("extra_tool_a")
+    val skillTool = RunTrackingTool("extra_tool_a")
+    val skillToolset = SkillToolset(mockSource, additionalTools = listOf(skillTool))
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = model,
+        toolsets = listOf(makeAdditionalToolset(earlierTool), skillToolset),
+      )
+
+    InMemoryRunner(agent)
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("use skill3"))
+      .collect {}
+
+    assertTrue(capturedRequests.size >= 2)
+    assertEquals(1, capturedRequests[1].functionDeclarationNames().count { it == "extra_tool_a" })
+    assertEquals(1, earlierTool.runCalls)
+    assertEquals(0, skillTool.runCalls)
+  }
+
+  @Test
+  fun runAsync_additionalToolCollidesWithLaterToolset_keepsAgentTool() = runTest {
+    val capturedRequests = mutableListOf<LlmRequest>()
+    val responses =
+      listOf(
+        modelFunctionCallResponse(
+          SkillToolset.TOOL_NAME_LOAD_SKILL,
+          args = mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"),
+          id = "load-skill-call",
+        ),
+        modelFunctionCallResponse("extra_tool_a", id = "extra-tool-call"),
+        LlmResponse(content = modelMessage("done")),
+      )
+    var responseIndex = 0
+    val model =
+      object : Model {
+        override val name = "later-toolset-collision-model"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {
+            capturedRequests += request
+            emit(responses[responseIndex++])
+          }
+      }
+    val agentTool = RunTrackingTool("extra_tool_a")
+    val skillTool = RunTrackingTool("extra_tool_a")
+    val skillToolset = SkillToolset(mockSource, additionalTools = listOf(skillTool))
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = model,
+        toolsets = listOf(skillToolset, makeAdditionalToolset(agentTool)),
+      )
+
+    InMemoryRunner(agent)
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("use skill3"))
+      .collect {}
+
+    assertTrue(capturedRequests.size >= 2)
+    assertEquals(1, capturedRequests[1].functionDeclarationNames().count { it == "extra_tool_a" })
+    assertEquals(1, capturedRequests[1].toolsDict.count { it.name == "extra_tool_a" })
+    assertEquals(1, agentTool.runCalls)
+    assertEquals(0, skillTool.runCalls)
+  }
+
+  @Test
+  fun runAsync_additionalToolCollidesWithEarlierToolsetHook_keepsHookTool() = runTest {
+    val capturedRequests = mutableListOf<LlmRequest>()
+    val responses =
+      listOf(
+        modelFunctionCallResponse(
+          SkillToolset.TOOL_NAME_LOAD_SKILL,
+          args = mapOf(SkillToolset.PARAM_SKILL_NAME to "skill3"),
+          id = "load-skill-call",
+        ),
+        modelFunctionCallResponse("extra_tool_a", id = "extra-tool-call"),
+        LlmResponse(content = modelMessage("done")),
+      )
+    var responseIndex = 0
+    val model =
+      object : Model {
+        override val name = "toolset-hook-collision-model"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {
+            capturedRequests += request
+            emit(responses[responseIndex++])
+          }
+      }
+    val hookTool = RunTrackingTool("extra_tool_a")
+    val hookToolset =
+      object : Toolset {
+        override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
+          emptyList()
+
+        override suspend fun processLlmRequest(
+          toolContext: ToolContext,
+          llmRequest: LlmRequest,
+        ): LlmRequest = llmRequest.appendTools(listOf(hookTool))
+      }
+    val skillTool = RunTrackingTool("extra_tool_a")
+    val skillToolset = SkillToolset(mockSource, additionalTools = listOf(skillTool))
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = model,
+        toolsets = listOf(hookToolset, skillToolset),
+      )
+
+    InMemoryRunner(agent)
+      .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("use skill3"))
+      .collect {}
+
+    assertTrue(capturedRequests.size >= 2)
+    assertEquals(1, capturedRequests[1].functionDeclarationNames().count { it == "extra_tool_a" })
+    assertEquals(1, capturedRequests[1].toolsDict.count { it.name == "extra_tool_a" })
+    assertEquals(1, hookTool.runCalls)
+    assertEquals(0, skillTool.runCalls)
+  }
 }
+
+/** Minimal [BaseTool] implementation for SkillToolset activation tests. */
+private fun makeAdditionalTool(name: String): BaseTool =
+  object :
+    BaseTool(name = name, description = "Additional tool $name for tests.") {
+    override fun declaration() =
+      FunctionDeclaration(
+        name = name,
+        description = description,
+        parameters = GenaiSchema(type = Type.OBJECT, properties = emptyMap()),
+      )
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any>): Any =
+      emptyMap<String, Any>()
+  }
+
+private fun makeAdditionalToolset(vararg tools: BaseTool): Toolset =
+  object : Toolset {
+    override suspend fun getTools(readonlyContext: ReadonlyContext?) = tools.toList()
+  }
+
+private class CloseTrackingTool(name: String) :
+  BaseTool(name = name, description = "Close-tracking tool $name") {
+  var closeCalls = 0
+
+  override fun declaration(): FunctionDeclaration? = null
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any>): Any =
+    emptyMap<String, Any>()
+
+  override fun close() {
+    closeCalls++
+  }
+}
+
+private class CloseTrackingToolset(private val tools: List<BaseTool>) : Toolset {
+  var closeCalls = 0
+
+  override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> = tools
+
+  override fun close() {
+    closeCalls++
+  }
+}
+
+private class RunTrackingTool(name: String) :
+  BaseTool(name = name, description = "Run-tracking tool $name") {
+  var runCalls = 0
+
+  override fun declaration() =
+    FunctionDeclaration(
+      name = name,
+      description = description,
+      parameters = GenaiSchema(type = Type.OBJECT, properties = emptyMap()),
+    )
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any>): Any {
+    runCalls++
+    return mapOf("source" to "direct")
+  }
+}
+
+private fun LlmRequest.functionDeclarationNames(): List<String> =
+  config.tools.orEmpty().flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
