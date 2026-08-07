@@ -32,6 +32,7 @@ sourceSets { main { java.srcDirs("src/main/kotlin") } }
 dependencies {
   implementation(project(":google-adk-kotlin-a2a"))
   implementation(project(":google-adk-kotlin-core"))
+  implementation(project(":google-adk-kotlin-integrations"))
   implementation(libs.a2a.sdk.client)
   implementation(libs.a2a.sdk.spec)
   implementation(libs.a2a.sdk.transport.jsonrpc)
@@ -53,5 +54,16 @@ tasks.register<JavaExec>("runDocsReleaseAnalyzer") {
   group = "application"
   description = "Runs the ADK Docs Release Analyzer agent."
   mainClass.set("com.google.adk.kt.examples.github.adkreleasedocs.AdkDocsReleaseAnalyzerAgentKt")
+  classpath = sourceSets["main"].runtimeClasspath
+}
+
+// Convenience task to run the BigQuery Analytics Demo sample, e.g.:
+//   export BIGQUERY_PROJECT_ID=my-gcp-project
+//   export BIGQUERY_DATASET_ID=my_dataset
+//   ./gradlew :google-adk-kotlin-examples:runBigQueryAnalyticsDemo
+tasks.register<JavaExec>("runBigQueryAnalyticsDemo") {
+  group = "application"
+  description = "Runs the BigQuery Analytics Demo agent."
+  mainClass.set("com.google.adk.kt.examples.plugins.BigQueryAnalyticsDemoAgentKt")
   classpath = sourceSets["main"].runtimeClasspath
 }
