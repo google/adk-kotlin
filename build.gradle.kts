@@ -115,10 +115,30 @@ subprojects {
     }
   }
 
+  // Robolectric calls System::load and the protobufs shaded into androidx.datastore and
+  // androidx.appsearch call sun.misc.Unsafe; JDK 24 restricts both (JEP 472, JEP 498). Keyed off
+  // the JVM that runs the tests, not the jdkVersion property, because the Android modules apply
+  // no Kotlin toolchain. The Unsafe flag is a startup error before JDK 23, and neither flag is
+  // needed below 24.
+  tasks.withType<Test>().configureEach {
+    val launcher = javaLauncher
+    jvmArgumentProviders.add(
+      CommandLineArgumentProvider {
+        if (launcher.get().metadata.languageVersion.asInt() >= 24) {
+          listOf("--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow")
+        } else {
+          emptyList()
+        }
+      }
+    )
+  }
+
   tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
     compilerOptions {
       optIn.add("kotlin.time.ExperimentalTime")
       freeCompilerArgs.add("-Xskip-metadata-version-check")
+      // `expect`/`actual` classes are Beta (KT-61573); GoogleCredentials relies on them.
+      freeCompilerArgs.add("-Xexpect-actual-classes")
       // Compile with the current Kotlin toolchain but emit metadata/bytecode
       // for kotlinCompatVersion so downstream consumers aren't forced to upgrade.
       languageVersion.set(kotlinCompatVersion)

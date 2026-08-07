@@ -36,8 +36,9 @@ import java.util.Date
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
+import okhttp3.Headers
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -70,7 +71,7 @@ class VertexAiMemoryBankClientTest {
 
   @After
   fun tearDown() {
-    server.shutdown()
+    server.close()
   }
 
   @Test
@@ -97,12 +98,12 @@ class VertexAiMemoryBankClientTest {
 
     val request = server.takeRequest()
     assertThat(request.method).isEqualTo("POST")
-    assertThat(request.path)
+    assertThat(request.target)
       .isEqualTo(
         "/v1beta1/projects/test-project/locations/test-location/reasoningEngines/456/memories:generate"
       )
-    assertThat(request.getHeader("Authorization")).isEqualTo("Bearer fake-token")
-    val body = request.body.readUtf8()
+    assertThat(request.headers.values("Authorization").firstOrNull()).isEqualTo("Bearer fake-token")
+    val body = request.body?.utf8()
     assertThat(body).contains("\"app_name\":\"app\"")
     assertThat(body).contains("\"directContentsSource\"")
   }
@@ -135,11 +136,11 @@ class VertexAiMemoryBankClientTest {
 
     val request = server.takeRequest()
     assertThat(request.method).isEqualTo("POST")
-    assertThat(request.path)
+    assertThat(request.target)
       .isEqualTo(
         "/v1beta1/projects/test-project/locations/test-location/reasoningEngines/456/memories:ingestEvents"
       )
-    val body = request.body.readUtf8()
+    val body = request.body?.utf8()
     assertThat(body).contains("\"app_name\":\"app\"")
     assertThat(body).contains("\"streamId\":\"stream-1\"")
     assertThat(body).contains("\"eventId\":\"e1\"")
@@ -158,11 +159,11 @@ class VertexAiMemoryBankClientTest {
 
     val request = server.takeRequest()
     assertThat(request.method).isEqualTo("POST")
-    assertThat(request.path)
+    assertThat(request.target)
       .isEqualTo(
         "/v1beta1/projects/test-project/locations/test-location/reasoningEngines/456/memories"
       )
-    val body = request.body.readUtf8()
+    val body = request.body?.utf8()
     assertThat(body).contains("\"fact\":\"Likes hiking.\"")
     assertThat(body).contains("\"app_name\":\"app\"")
   }
@@ -192,16 +193,16 @@ class VertexAiMemoryBankClientTest {
     assertThat(response.getOrThrow()!!.retrievedMemories.single().memory!!.fact)
       .isEqualTo("Likes hiking.")
     val request = server.takeRequest()
-    assertThat(request.path)
+    assertThat(request.target)
       .isEqualTo(
         "/v1beta1/projects/test-project/locations/test-location/reasoningEngines/456/memories:retrieve"
       )
-    assertThat(request.body.readUtf8()).contains("\"searchQuery\":\"hobbies\"")
+    assertThat(request.body?.utf8()).contains("\"searchQuery\":\"hobbies\"")
   }
 
   @Test
   fun retrieveMemories_notFound_returnsSuccessNull() {
-    server.enqueue(MockResponse().setResponseCode(404))
+    server.enqueue(MockResponse(code = 404))
 
     val result = runBlocking {
       client.retrieveMemories(RetrieveMemoriesRequestDto(scope = mapOf("app_name" to "app")))
@@ -213,7 +214,7 @@ class VertexAiMemoryBankClientTest {
   @Test
   fun retrieveMemories_clientError_returnsFailure() {
     // A non-404 client error must surface as a failure, not be swallowed as an empty result.
-    server.enqueue(MockResponse().setResponseCode(403).setBody("denied"))
+    server.enqueue(MockResponse(code = 403, body = "denied"))
 
     val result = runBlocking {
       client.retrieveMemories(RetrieveMemoriesRequestDto(scope = mapOf("app_name" to "app")))
@@ -224,7 +225,7 @@ class VertexAiMemoryBankClientTest {
 
   @Test
   fun retrieveMemories_serverError_returnsFailure() {
-    server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
+    server.enqueue(MockResponse(code = 500, body = "boom"))
 
     val result = runBlocking {
       client.retrieveMemories(RetrieveMemoriesRequestDto(scope = mapOf("app_name" to "app")))
@@ -235,7 +236,7 @@ class VertexAiMemoryBankClientTest {
 
   @Test
   fun generateMemories_serverError_returnsFailure() {
-    server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
+    server.enqueue(MockResponse(code = 500, body = "boom"))
 
     val result = runBlocking {
       client.generateMemories(GenerateMemoriesRequestDto(scope = mapOf("app_name" to "app")))
@@ -246,7 +247,7 @@ class VertexAiMemoryBankClientTest {
 
   private companion object {
     fun jsonResponse(body: String): MockResponse =
-      MockResponse().setHeader("Content-Type", "application/json").setBody(body)
+      MockResponse(headers = Headers.headersOf("Content-Type", "application/json"), body = body)
 
     fun fakeCredentials(): GoogleCredentials =
       GoogleCredentials.newBuilder()

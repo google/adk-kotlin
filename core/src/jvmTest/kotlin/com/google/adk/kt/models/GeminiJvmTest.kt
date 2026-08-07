@@ -31,9 +31,10 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
-import okhttp3.mockwebserver.RecordedRequest
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
+import mockwebserver3.RecordedRequest
+import okhttp3.Headers
 
 /**
  * JVM-only sibling of [GeminiTest] for behaviour that can't be exercised from `commonTest`:
@@ -53,7 +54,7 @@ class GeminiJvmTest {
 
   @AfterTest
   fun stopMockServer() {
-    mockServer.shutdown()
+    mockServer.close()
   }
 
   @Test
@@ -77,9 +78,10 @@ class GeminiJvmTest {
   @Test
   fun generateContent_nonStreaming_attachesAdkTrackingHeaders() {
     mockServer.enqueue(
-      MockResponse()
-        .setHeader("Content-Type", "application/json")
-        .setBody(GENERATE_CONTENT_RESPONSE)
+      MockResponse(
+        headers = Headers.headersOf("Content-Type", "application/json"),
+        body = GENERATE_CONTENT_RESPONSE,
+      )
     )
 
     runBlocking { collectGenerateContent(stream = false) }
@@ -92,9 +94,10 @@ class GeminiJvmTest {
     // The streaming endpoint returns server-sent events ("data: <json>" terminated by a blank
     // line).
     mockServer.enqueue(
-      MockResponse()
-        .setHeader("Content-Type", "text/event-stream")
-        .setBody("data: $GENERATE_CONTENT_RESPONSE\n\n")
+      MockResponse(
+        headers = Headers.headersOf("Content-Type", "text/event-stream"),
+        body = "data: $GENERATE_CONTENT_RESPONSE\n\n",
+      )
     )
 
     runBlocking { collectGenerateContent(stream = true) }
@@ -124,8 +127,8 @@ class GeminiJvmTest {
     checkNotNull(request) { "Expected the genai SDK to send a request to the mock server." }
     // The genai SDK may append its own label, so assert our value is present rather than equal.
     val expected = "google-adk/$VERSION gl-kotlin/${KotlinVersion.CURRENT}"
-    assertThat(request.getHeader("x-goog-api-client")).contains(expected)
-    assertThat(request.getHeader("user-agent")).contains(expected)
+    assertThat(request.headers.values("x-goog-api-client").firstOrNull()).contains(expected)
+    assertThat(request.headers.values("user-agent").firstOrNull()).contains(expected)
   }
 
   companion object {
