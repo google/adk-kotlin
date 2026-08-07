@@ -18,6 +18,7 @@ package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
@@ -69,7 +70,13 @@ class ResumeInvocationTest {
         subAgents = listOf(subAgent),
       )
     val runner =
-      InMemoryRunner(agent = rootAgent, resumabilityConfig = ResumabilityConfig(isResumable = true))
+      InMemoryRunner(
+        App(
+          appName = "InMemoryRunner",
+          rootAgent = rootAgent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
 
     // Invocation 1: starts at root and transfers to sub_agent.
     val inv1 =
@@ -140,7 +147,13 @@ class ResumeInvocationTest {
           ),
       )
     val runner =
-      InMemoryRunner(agent = rootAgent, resumabilityConfig = ResumabilityConfig(isResumable = true))
+      InMemoryRunner(
+        App(
+          appName = "InMemoryRunner",
+          rootAgent = rootAgent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
 
     // Invocation 1: pauses on the long-running call.
     val inv1 =

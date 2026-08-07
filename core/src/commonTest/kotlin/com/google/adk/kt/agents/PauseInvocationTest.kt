@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
@@ -320,7 +321,13 @@ class PauseInvocationTest {
       )
 
     fun resumableRunner(rootAgent: BaseAgent): InMemoryRunner =
-      InMemoryRunner(agent = rootAgent, resumabilityConfig = ResumabilityConfig(isResumable = true))
+      InMemoryRunner(
+        App(
+          appName = "InMemoryRunner",
+          rootAgent = rootAgent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
 
     suspend fun InMemoryRunner.runTurn(text: String): List<Event> =
       runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage(text)).toList()

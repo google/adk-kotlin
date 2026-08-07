@@ -28,6 +28,9 @@ val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
 
 kotlin {
   jvmToolchain(maxOf(21, jdkVersion))
+  // `LiteRtLmModelTest` reads `currentTime`. Scoped to this module.
+  compilerOptions { optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi") }
+
   // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
   android {
     namespace = "com.google.adk.litertlm"

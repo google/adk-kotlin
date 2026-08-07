@@ -24,6 +24,14 @@ plugins {
 }
 
 kotlin {
+  compilerOptions {
+    // `explicitNulls` in adkJson and `@EncodeDefault` on FunctionCall / FunctionResponse are
+    // experimental at the version we pin; the timing tests read `currentTime`. Scoped to this
+    // module so the other ten keep reporting experimental-API usage.
+    optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
+    optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi")
+  }
+
   // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
   android {
     namespace = "com.google.adk"

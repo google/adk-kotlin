@@ -146,6 +146,9 @@ class RunnerTest {
     )
   }
 
+  // Uses the deprecated `pluginManager` constructor on purpose: `plugins` builds its own manager,
+  // so it cannot prove a supplied instance reaches the invocation context.
+  @Suppress("DEPRECATION")
   @Test
   fun runAsync_withCustomPluginManager_passesToContext() = runTest {
     var capturedPluginManager: PluginManager? = null
@@ -181,7 +184,7 @@ class RunnerTest {
         }
       }
 
-    val runner = InMemoryRunner(agent = spyAgent, pluginManager = PluginManager(listOf(plugin)))
+    val runner = InMemoryRunner(agent = spyAgent, plugins = listOf(plugin))
 
     val originalMessage = userMessage("Original message")
     runner.runAsync(userId = "user1", sessionId = "session1", newMessage = originalMessage).toList()
@@ -208,7 +211,7 @@ class RunnerTest {
         }
       }
 
-    val runner = InMemoryRunner(agent = spyAgent, pluginManager = PluginManager(listOf(plugin)))
+    val runner = InMemoryRunner(agent = spyAgent, plugins = listOf(plugin))
     val events =
       runner
         .runAsync(userId = "user1", sessionId = "session1", newMessage = Content(Role.USER))
@@ -247,7 +250,7 @@ class RunnerTest {
         }
       }
 
-    val runner = InMemoryRunner(agent = spyAgent, pluginManager = PluginManager(listOf(plugin)))
+    val runner = InMemoryRunner(agent = spyAgent, plugins = listOf(plugin))
     val events =
       runner
         .runAsync(userId = "user1", sessionId = "session1", newMessage = Content(Role.USER))
@@ -282,7 +285,7 @@ class RunnerTest {
         }
       }
 
-    val runner = InMemoryRunner(agent = spyAgent, pluginManager = PluginManager(listOf(plugin)))
+    val runner = InMemoryRunner(agent = spyAgent, plugins = listOf(plugin))
     runner
       .runAsync(userId = "user1", sessionId = "session1", newMessage = Content(Role.USER))
       .toList()

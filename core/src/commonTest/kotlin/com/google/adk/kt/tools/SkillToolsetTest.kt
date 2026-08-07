@@ -23,6 +23,7 @@ import com.google.adk.kt.testing.testToolContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
@@ -104,12 +105,12 @@ class SkillToolsetTest {
   fun listSkillsTool_run_returnsSkillFrontmatter() = runTest {
     val tool = skillToolset.getTools(null).first { it.name == SkillToolset.TOOL_NAME_LIST_SKILLS }
     val result = tool.run(testToolContext(), emptyMap()) as Map<*, *>
-    val skillsList = result["skills"] as? List<Map<String, Any?>>
-    assertNotNull(skillsList)
+    val skillsList = assertIs<List<*>>(result["skills"])
     assertEquals(2, skillsList.size)
-    assertEquals("skill1", skillsList[0]["name"])
-    assertEquals("Description 1", skillsList[0]["description"])
-    assertEquals("skill2", skillsList[1]["name"])
+    val first = assertIs<Map<*, *>>(skillsList[0])
+    assertEquals("skill1", first["name"])
+    assertEquals("Description 1", first["description"])
+    assertEquals("skill2", assertIs<Map<*, *>>(skillsList[1])["name"])
   }
 
   @Test

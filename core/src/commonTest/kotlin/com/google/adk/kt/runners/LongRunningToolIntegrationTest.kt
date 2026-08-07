@@ -211,7 +211,13 @@ class LongRunningToolIntegrationTest {
             ),
         )
       val runner =
-        InMemoryRunner(agent = agent, resumabilityConfig = ResumabilityConfig(isResumable = true))
+        InMemoryRunner(
+          App(
+            appName = "InMemoryRunner",
+            rootAgent = agent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+        )
 
       val events =
         runner
@@ -277,7 +283,13 @@ class LongRunningToolIntegrationTest {
           ),
       )
     val runner =
-      InMemoryRunner(agent = agent, resumabilityConfig = ResumabilityConfig(isResumable = true))
+      InMemoryRunner(
+        App(
+          appName = "InMemoryRunner",
+          rootAgent = agent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
 
     val events =
       runner

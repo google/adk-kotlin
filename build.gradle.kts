@@ -115,6 +115,24 @@ subprojects {
     }
   }
 
+  // Conscrypt (via Robolectric) calls System::load and androidx.datastore's protobuf calls
+  // sun.misc.Unsafe; JDK 24 restricts both (JEP 472, JEP 498). Keyed off the JVM that runs the
+  // tests, not the jdkVersion property, because the Android modules apply no Kotlin toolchain.
+  // The Unsafe flag is a startup error before JDK 23, and neither flag is needed below 24.
+  // TODO: drop the Unsafe flag once datastore stops calling it; JEP 498 will reject `allow`.
+  tasks.withType<Test>().configureEach {
+    val launcher = javaLauncher
+    jvmArgumentProviders.add(
+      CommandLineArgumentProvider {
+        if (launcher.get().metadata.languageVersion.asInt() >= 24) {
+          listOf("--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow")
+        } else {
+          emptyList()
+        }
+      }
+    )
+  }
+
   tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
     compilerOptions {
       optIn.add("kotlin.time.ExperimentalTime")
