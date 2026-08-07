@@ -106,10 +106,10 @@ class StreamingResponseAggregator {
    * list, and then constructs a single [LlmResponse] containing all aggregated parts and metadata,
    * with `partial` set to `false`.
    *
-   * A turn with no content still yields a response if the model reported a failure (a non-`STOP`
-   * finish reason or an error message), rather than ending the stream in silence.
+   * Whenever at least one response was processed this returns a non-partial final frame so the turn
+   * always concludes rather than ending in silence.
    *
-   * @return The final aggregated [LlmResponse], or null if there is nothing to report.
+   * @return The final aggregated [LlmResponse], or null if no responses were processed.
    */
   suspend fun aggregate(): LlmResponse? = mutex.withLock {
     val last = lastResponse ?: return@withLock null
@@ -133,10 +133,6 @@ class StreamingResponseAggregator {
       } else {
         Content(role = Role.MODEL, parts = partsSequence.toList())
       }
-
-    if (finalContent == null && finalErrorCode == null && finalErrorMessage == null) {
-      return@withLock null
-    }
 
     LlmResponse(
       content = finalContent,
