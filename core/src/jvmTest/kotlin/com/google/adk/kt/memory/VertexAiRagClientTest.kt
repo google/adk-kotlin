@@ -29,8 +29,9 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Date
 import kotlinx.coroutines.runBlocking
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
+import okhttp3.Headers
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -64,7 +65,7 @@ class VertexAiRagClientTest {
 
   @After
   fun tearDown() {
-    server.shutdown()
+    server.close()
   }
 
   @Test
@@ -105,11 +106,11 @@ class VertexAiRagClientTest {
 
     val request = server.takeRequest()
     assertThat(request.method).isEqualTo("POST")
-    assertThat(request.path)
+    assertThat(request.target)
       .isEqualTo("/v1beta1/projects/test-project/locations/test-location:retrieveContexts")
-    assertThat(request.getHeader("Authorization")).isEqualTo("Bearer fake-token")
-    assertThat(request.getHeader("Content-Type")).contains("application/json")
-    val body = request.body.readUtf8()
+    assertThat(request.headers.values("Authorization").firstOrNull()).isEqualTo("Bearer fake-token")
+    assertThat(request.headers.values("Content-Type").firstOrNull()).contains("application/json")
+    val body = request.body?.utf8()
     assertThat(body)
       .contains(
         "\"ragCorpus\":\"projects/test-project/locations/test-location/ragCorpora/corpus-1\""
@@ -121,14 +122,14 @@ class VertexAiRagClientTest {
 
   @Test
   fun retrieveContexts_notFound_returnsSuccessNull() = runBlocking {
-    server.enqueue(MockResponse().setResponseCode(404))
+    server.enqueue(MockResponse(code = 404))
 
     assertThat(client.retrieveContexts(minimalRequest()).getOrThrow()).isNull()
   }
 
   @Test
   fun retrieveContexts_serverError_returnsFailure() {
-    server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
+    server.enqueue(MockResponse(code = 500, body = "boom"))
 
     val result = runBlocking { client.retrieveContexts(minimalRequest()) }
 
@@ -138,7 +139,7 @@ class VertexAiRagClientTest {
   @Test
   fun retrieveContexts_clientError_returnsFailure() {
     // A non-404 client error must surface as a failure, not be swallowed as an empty result.
-    server.enqueue(MockResponse().setResponseCode(403).setBody("denied"))
+    server.enqueue(MockResponse(code = 403, body = "denied"))
 
     val result = runBlocking { client.retrieveContexts(minimalRequest()) }
 
@@ -160,14 +161,15 @@ class VertexAiRagClientTest {
 
     val request = server.takeRequest()
     assertThat(request.method).isEqualTo("POST")
-    assertThat(request.path)
+    assertThat(request.target)
       .isEqualTo(
         "/upload/v1beta1/projects/test-project/locations/test-location/ragCorpora/corpus-1/ragFiles:upload"
       )
-    assertThat(request.getHeader("Authorization")).isEqualTo("Bearer fake-token")
-    assertThat(request.getHeader("X-Goog-Upload-Protocol")).isEqualTo("multipart")
-    assertThat(request.getHeader("Content-Type")).contains("multipart/form-data")
-    val body = request.body.readUtf8()
+    assertThat(request.headers.values("Authorization").firstOrNull()).isEqualTo("Bearer fake-token")
+    assertThat(request.headers.values("X-Goog-Upload-Protocol").firstOrNull())
+      .isEqualTo("multipart")
+    assertThat(request.headers.values("Content-Type").firstOrNull()).contains("multipart/form-data")
+    val body = request.body?.utf8()
     // Both multipart parts are present, and they carry the metadata and file payloads.
     assertThat(body).contains("name=metadata")
     assertThat(body).contains("name=file")
@@ -177,7 +179,7 @@ class VertexAiRagClientTest {
 
   @Test
   fun uploadRagFile_serverError_returnsFailure() {
-    server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
+    server.enqueue(MockResponse(code = 500, body = "boom"))
 
     val result = runBlocking {
       client.uploadRagFile("projects/p/locations/l/ragCorpora/c", "dn", "body")
@@ -194,7 +196,7 @@ class VertexAiRagClientTest {
       )
 
     fun jsonResponse(body: String): MockResponse =
-      MockResponse().setHeader("Content-Type", "application/json").setBody(body)
+      MockResponse(headers = Headers.headersOf("Content-Type", "application/json"), body = body)
 
     fun fakeCredentials(): GoogleCredentials =
       GoogleCredentials.newBuilder()

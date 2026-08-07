@@ -19,8 +19,8 @@ package com.google.adk.kt.a2a.jvm
 import com.google.adk.kt.a2a.agent.BaseRemoteA2AAgent.AgentCardResolutionError
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
 import org.a2aproject.sdk.jsonrpc.common.json.JsonUtil
 import org.a2aproject.sdk.spec.AgentCapabilities
 import org.a2aproject.sdk.spec.AgentCard
@@ -49,7 +49,7 @@ class A2AAgentTest {
 
   @After
   fun tearDown() {
-    server.shutdown()
+    server.close()
   }
 
   private fun agentCard(url: String): AgentCard =
@@ -68,7 +68,7 @@ class A2AAgentTest {
   @Test
   fun a2aAgent_autoFetchesCard_andPopulatesDescription() = runTest {
     val baseUrl = server.url("/").toString()
-    server.enqueue(MockResponse().setBody(JsonUtil.toJson(agentCard(baseUrl))))
+    server.enqueue(MockResponse(body = JsonUtil.toJson(agentCard(baseUrl))))
 
     val agent = A2AAgent(name = "remote-agent", agentCardUrl = baseUrl)
 
@@ -91,7 +91,7 @@ class A2AAgentTest {
 
   @Test
   fun a2aAgent_httpError_throwsResolutionError() = runTest {
-    server.enqueue(MockResponse().setResponseCode(404))
+    server.enqueue(MockResponse(code = 404))
 
     val error =
       runCatching { A2AAgent(name = "remote-agent", agentCardUrl = server.url("/").toString()) }
@@ -103,7 +103,7 @@ class A2AAgentTest {
 
   @Test
   fun a2aAgent_malformedCard_throwsResolutionError() = runTest {
-    server.enqueue(MockResponse().setBody("{ not json"))
+    server.enqueue(MockResponse(body = "{ not json"))
 
     val error =
       runCatching { A2AAgent(name = "remote-agent", agentCardUrl = server.url("/").toString()) }
@@ -116,7 +116,7 @@ class A2AAgentTest {
   @Test
   fun a2aAgent_fetchError_throwsResolutionError() = runTest {
     val url = server.url("/").toString()
-    server.shutdown()
+    server.close()
 
     val error =
       runCatching { A2AAgent(name = "remote-agent", agentCardUrl = url) }.exceptionOrNull()
@@ -127,7 +127,7 @@ class A2AAgentTest {
 
   @Test
   fun a2aAgent_fullWellKnownUrl_notDoubleAppended() = runTest {
-    server.enqueue(MockResponse().setBody(JsonUtil.toJson(agentCard(server.url("/").toString()))))
+    server.enqueue(MockResponse(body = JsonUtil.toJson(agentCard(server.url("/").toString()))))
 
     val unusedAgent =
       A2AAgent(
@@ -149,7 +149,7 @@ class A2AAgentTest {
         .replace(",,", ",")
         .replace("{,", "{")
         .replace(",}", "}")
-    server.enqueue(MockResponse().setBody(cardMissingCapabilities))
+    server.enqueue(MockResponse(body = cardMissingCapabilities))
 
     val error =
       runCatching { A2AAgent(name = "remote-agent", agentCardUrl = server.url("/").toString()) }
@@ -163,7 +163,7 @@ class A2AAgentTest {
     // An empty body parses to a null card. We assert only the exception type, not the message: an
     // empty body either yields a null card (the "Empty…" guard) or a parse exception, and which one
     // depends on the Gson version, so both must map to AgentCardResolutionError.
-    server.enqueue(MockResponse().setBody(""))
+    server.enqueue(MockResponse(body = ""))
 
     val error =
       runCatching { A2AAgent(name = "remote-agent", agentCardUrl = server.url("/").toString()) }
@@ -172,5 +172,5 @@ class A2AAgentTest {
     assertThat(error).isInstanceOf(AgentCardResolutionError::class.java)
   }
 
-  private fun recordedPath(): String? = server.takeRequest().path
+  private fun recordedPath(): String? = server.takeRequest().target
 }

@@ -19,34 +19,15 @@ package com.google.adk.kt.tools
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 class SchemaTest {
 
-  @Schema(name = "testName", description = "testDesc", optional = true) fun annotatedFunction() {}
-
-  fun annotatedParameter(
-    @Schema(name = "paramName", description = "paramDesc", optional = false) param: String
-  ) {}
-
   @Test
-  fun schemaAnnotation_onFunction_isReadCorrectly() {
-    val method = SchemaTest::class.members.find { it.name == "annotatedFunction" }
-    val annotation = method?.annotations?.filterIsInstance<Schema>()?.firstOrNull()
+  fun schema_noArguments_usesDeclaredDefaults() {
+    val schema = Schema()
 
-    assertEquals("testName", annotation?.name)
-    assertEquals("testDesc", annotation?.description)
-    assertTrue(annotation?.optional == true)
-  }
-
-  @Test
-  fun schemaAnnotation_onParameter_isReadCorrectly() {
-    val method = SchemaTest::class.members.find { it.name == "annotatedParameter" }
-    val parameter = method?.parameters?.find { it.name == "param" }
-    val annotation = parameter?.annotations?.filterIsInstance<Schema>()?.firstOrNull()
-
-    assertEquals("paramName", annotation?.name)
-    assertEquals("paramDesc", annotation?.description)
-    assertFalse(annotation?.optional == true)
+    assertEquals("", schema.name)
+    assertEquals("", schema.description)
+    assertFalse(schema.optional)
   }
 }

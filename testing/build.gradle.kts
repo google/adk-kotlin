@@ -31,7 +31,7 @@ kotlin {
   jvm()
 
   sourceSets {
-    val commonMain by getting {
+    getByName("commonMain") {
       dependencies {
         implementation(project(":google-adk-kotlin-core"))
         implementation(libs.kotlinx.coroutines.core)

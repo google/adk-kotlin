@@ -30,8 +30,9 @@ import java.util.Date
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
+import okhttp3.Headers
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -63,7 +64,7 @@ class VertexAiSessionsClientTest {
 
   @After
   fun tearDown() {
-    server.shutdown()
+    server.close()
   }
 
   @Test
@@ -89,18 +90,20 @@ class VertexAiSessionsClientTest {
 
     val createRequest = server.takeRequest()
     assertThat(createRequest.method).isEqualTo("POST")
-    assertThat(createRequest.path)
+    assertThat(createRequest.target)
       .isEqualTo(
         "/v1beta1/projects/test-project/locations/test-location/reasoningEngines/123/sessions"
       )
-    assertThat(createRequest.getHeader("Authorization")).isEqualTo("Bearer fake-token")
-    assertThat(createRequest.getHeader("Content-Type")).contains("application/json")
-    val body = createRequest.body.readUtf8()
+    assertThat(createRequest.headers.values("Authorization").firstOrNull())
+      .isEqualTo("Bearer fake-token")
+    assertThat(createRequest.headers.values("Content-Type").firstOrNull())
+      .contains("application/json")
+    val body = createRequest.body?.utf8()
     assertThat(body).contains("\"userId\":\"user\"")
     assertThat(body).contains("\"k\":\"v\"")
 
-    assertThat(server.takeRequest().path).endsWith("/operations/op-1")
-    assertThat(server.takeRequest().path).endsWith("/reasoningEngines/123/sessions/sess-1")
+    assertThat(server.takeRequest().target).endsWith("/operations/op-1")
+    assertThat(server.takeRequest().target).endsWith("/reasoningEngines/123/sessions/sess-1")
   }
 
   @Test
@@ -114,20 +117,20 @@ class VertexAiSessionsClientTest {
     }
 
     // Nested Map/List must round-trip as JSON, not be flattened via toString().
-    val body = server.takeRequest().body.readUtf8()
+    val body = server.takeRequest().body?.utf8()
     assertThat(body).contains("\"nested\":{\"a\":[1,2]}")
   }
 
   @Test
   fun getSession_notFound_returnsNullSuccess() = runBlocking {
-    server.enqueue(MockResponse().setResponseCode(404))
+    server.enqueue(MockResponse(code = 404))
 
     assertThat(client.getSession(ENGINE, "missing").getOrThrow()).isNull()
   }
 
   @Test
   fun getSession_serverError_returnsFailure() {
-    server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
+    server.enqueue(MockResponse(code = 500, body = "boom"))
 
     val result = runBlocking { client.getSession(ENGINE, "s1") }
 
@@ -138,7 +141,7 @@ class VertexAiSessionsClientTest {
   @Test
   fun getSession_clientError_returnsFailure() {
     // A non-404 4xx is a real error and must not be masked as a "not found" (null) result.
-    server.enqueue(MockResponse().setResponseCode(403).setBody("denied"))
+    server.enqueue(MockResponse(code = 403, body = "denied"))
 
     val result = runBlocking { client.getSession(ENGINE, "s1") }
 
@@ -167,7 +170,7 @@ class VertexAiSessionsClientTest {
       .inOrder()
     // The user id is sent as a quoted filter literal and the whole filter is URL-escaped, so it
     // arrives as `filter=user_id="user"` percent-encoded (= -> %3D, " -> %22).
-    assertThat(server.takeRequest().path).contains("filter=user_id%3D%22user%22")
+    assertThat(server.takeRequest().target).contains("filter=user_id%3D%22user%22")
   }
 
   @Test
@@ -176,7 +179,7 @@ class VertexAiSessionsClientTest {
 
     val unused = runBlocking { client.listSessions(ENGINE, "\" OR user_id=~\"x").getOrThrow() }
 
-    val path = server.takeRequest().path!!
+    val path = server.takeRequest().target
     // The value stays inside a quoted literal and every special char is percent-encoded, so the
     // injected operator/quotes can't alter the filter.
     assertThat(path).contains("filter=user_id%3D%22")
@@ -192,7 +195,7 @@ class VertexAiSessionsClientTest {
       client.listEvents(ENGINE, "s1", "timestamp>=\"2024-12-12T12:00:10Z\"").getOrThrow()
     }
 
-    val path = server.takeRequest().path!!
+    val path = server.takeRequest().target
     // The filter operator and quotes are URL-escaped (>= -> %3E%3D, " -> %22), not sent raw.
     assertThat(path).contains("filter=timestamp%3E%3D%22")
     assertThat(path).doesNotContain("timestamp>=")
@@ -200,18 +203,18 @@ class VertexAiSessionsClientTest {
 
   @Test
   fun deleteSession_sendsDeleteToSessionPath() {
-    server.enqueue(MockResponse().setResponseCode(200))
+    server.enqueue(MockResponse(code = 200))
 
     runBlocking { client.deleteSession(ENGINE, "s1").getOrThrow() }
 
     val request = server.takeRequest()
     assertThat(request.method).isEqualTo("DELETE")
-    assertThat(request.path).endsWith("/reasoningEngines/123/sessions/s1")
+    assertThat(request.target).endsWith("/reasoningEngines/123/sessions/s1")
   }
 
   @Test
   fun appendEvent_success_returnsSuccess() {
-    server.enqueue(MockResponse().setResponseCode(200))
+    server.enqueue(MockResponse(code = 200))
 
     val result = runBlocking {
       client.appendEvent(
@@ -224,14 +227,14 @@ class VertexAiSessionsClientTest {
     assertThat(result.isSuccess).isTrue()
     val request = server.takeRequest()
     assertThat(request.method).isEqualTo("POST")
-    assertThat(request.path).endsWith("/reasoningEngines/123/sessions/s1:appendEvent")
+    assertThat(request.target).endsWith("/reasoningEngines/123/sessions/s1:appendEvent")
   }
 
   @Test
   fun appendEvent_customMetadata_isSerializedUnderEventMetadata() {
     // custom_metadata is field 7 of EventMetadata in session.proto, so the proto-JSON parser
     // expects it nested under eventMetadata; emitting it at the top level would be rejected.
-    server.enqueue(MockResponse().setResponseCode(200))
+    server.enqueue(MockResponse(code = 200))
 
     val result = runBlocking {
       client.appendEvent(
@@ -247,7 +250,7 @@ class VertexAiSessionsClientTest {
     }
 
     assertThat(result.isSuccess).isTrue()
-    val body = server.takeRequest().body.readUtf8()
+    val body = server.takeRequest().body?.utf8()
     assertThat(body).contains("\"eventMetadata\":{\"customMetadata\":{\"k\":\"v\"}}")
   }
 
@@ -255,7 +258,7 @@ class VertexAiSessionsClientTest {
   fun appendEvent_serverError_returnsFailure() {
     // The client propagates the error rather than swallowing it; whether to ignore a failed append
     // is the caller's choice, not the transport's.
-    server.enqueue(MockResponse().setResponseCode(400).setBody("bad request"))
+    server.enqueue(MockResponse(code = 400, body = "bad request"))
 
     val result = runBlocking {
       client.appendEvent(
@@ -267,7 +270,8 @@ class VertexAiSessionsClientTest {
 
     assertThat(result.isFailure).isTrue()
     assertThat(result.exceptionOrNull()).isInstanceOf(IOException::class.java)
-    assertThat(server.takeRequest().path).endsWith("/reasoningEngines/123/sessions/s1:appendEvent")
+    assertThat(server.takeRequest().target)
+      .endsWith("/reasoningEngines/123/sessions/s1:appendEvent")
   }
 
   private companion object {
@@ -275,7 +279,7 @@ class VertexAiSessionsClientTest {
       ReasoningEngineRef(project = "test-project", location = "test-location", id = "123")
 
     fun jsonResponse(body: String): MockResponse =
-      MockResponse().setHeader("Content-Type", "application/json").setBody(body)
+      MockResponse(headers = Headers.headersOf("Content-Type", "application/json"), body = body)
 
     fun fakeCredentials(): GoogleCredentials =
       GoogleCredentials.newBuilder()

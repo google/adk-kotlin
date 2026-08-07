@@ -29,7 +29,6 @@ import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
@@ -270,25 +269,6 @@ class InMemoryRunnerTest {
 
     val runner = InMemoryRunner(app = app)
 
-    assertThat(runner.resumabilityConfig.isResumable).isTrue()
-  }
-
-  @Test
-  fun constructedWithPluginManagerAndResumabilityConfig_appliesBoth() {
-    val plugin =
-      object : Plugin {
-        override val name = "direct-plugin"
-      }
-
-    @Suppress("DEPRECATION")
-    val runner =
-      InMemoryRunner(
-        agent = dummyAgent,
-        pluginManager = PluginManager(listOf(plugin)),
-        resumabilityConfig = ResumabilityConfig(isResumable = true),
-      )
-
-    assertThat(runner.pluginManager.getPlugin("direct-plugin")).isSameInstanceAs(plugin)
     assertThat(runner.resumabilityConfig.isResumable).isTrue()
   }
 
@@ -679,7 +659,13 @@ class InMemoryRunnerTest {
     }
 
     val runner =
-      InMemoryRunner(agent = testAgent, resumabilityConfig = ResumabilityConfig(isResumable = true))
+      InMemoryRunner(
+        App(
+          appName = "InMemoryRunner",
+          rootAgent = testAgent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
     val session =
       runner.sessionService.createSession(SessionKey(runner.appName, "user1", "session1"), State())
 
@@ -724,7 +710,13 @@ class InMemoryRunnerTest {
   fun runAsync_withResumability_andNewMessage_handlesNewUserContent() = runTest {
     val testAgent = DummyAgent(name = "test-agent")
     val runner =
-      InMemoryRunner(agent = testAgent, resumabilityConfig = ResumabilityConfig(isResumable = true))
+      InMemoryRunner(
+        App(
+          appName = "InMemoryRunner",
+          rootAgent = testAgent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
     val session =
       runner.sessionService.createSession(SessionKey(runner.appName, "user1", "session1"), State())
 
