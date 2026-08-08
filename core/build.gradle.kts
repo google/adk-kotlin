@@ -24,6 +24,13 @@ plugins {
 }
 
 kotlin {
+  compilerOptions {
+    // `explicitNulls` in adkJson and `@EncodeDefault` on FunctionCall / FunctionResponse are
+    // experimental at the version we pin. Scoped to this module so other modules keep
+    // reporting experimental-API usage.
+    optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
+  }
+
   // AGP 9 KMP Android library target (replaces com.android.library + androidTarget).
   android {
     namespace = "com.google.adk"
@@ -161,6 +168,13 @@ kotlin {
         implementation(libs.mockito.android)
       }
     }
+  }
+}
+
+// Only `ParallelFunctionCallTimingTest` reads `currentTime`, so keep this off production code.
+listOf("compileTestKotlinJvm", "compileAndroidHostTest").forEach { taskName ->
+  tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>(taskName) {
+    compilerOptions.optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi")
   }
 }
 
