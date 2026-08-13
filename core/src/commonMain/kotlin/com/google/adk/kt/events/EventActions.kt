@@ -19,6 +19,7 @@ package com.google.adk.kt.events
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.sessions.State
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 
@@ -104,4 +105,73 @@ data class EventActions(
       agentState = other.agentState ?: this.agentState,
       compaction = other.compaction ?: this.compaction,
     )
+
+  /**
+   * Fluent builder for [EventActions], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var skipSummarization: Boolean = false
+    private var stateDelta: MutableMap<String, @Contextual Any> = concurrentMutableMapOf()
+    private var artifactDelta: MutableMap<String, Int> = concurrentMutableMapOf()
+    private var transferToAgent: String? = null
+    private var escalate: Boolean = false
+    private var endOfAgent: Boolean = false
+    private var requestedToolConfirmations: MutableMap<String, ToolConfirmation> =
+      concurrentMutableMapOf()
+    private var rewindBeforeInvocationId: String? = null
+    private var agentState: TypedData? = null
+    private var compaction: EventCompaction? = null
+
+    fun skipSummarization(skipSummarization: Boolean): Builder = apply {
+      this.skipSummarization = skipSummarization
+    }
+
+    fun stateDelta(stateDelta: MutableMap<String, @Contextual Any>): Builder = apply {
+      this.stateDelta = stateDelta
+    }
+
+    fun artifactDelta(artifactDelta: MutableMap<String, Int>): Builder = apply {
+      this.artifactDelta = artifactDelta
+    }
+
+    fun transferToAgent(transferToAgent: String?): Builder = apply {
+      this.transferToAgent = transferToAgent
+    }
+
+    fun escalate(escalate: Boolean): Builder = apply { this.escalate = escalate }
+
+    fun endOfAgent(endOfAgent: Boolean): Builder = apply { this.endOfAgent = endOfAgent }
+
+    fun requestedToolConfirmations(
+      requestedToolConfirmations: MutableMap<String, ToolConfirmation>
+    ): Builder = apply { this.requestedToolConfirmations = requestedToolConfirmations }
+
+    fun rewindBeforeInvocationId(rewindBeforeInvocationId: String?): Builder = apply {
+      this.rewindBeforeInvocationId = rewindBeforeInvocationId
+    }
+
+    fun agentState(agentState: TypedData?): Builder = apply { this.agentState = agentState }
+
+    fun compaction(compaction: EventCompaction?): Builder = apply { this.compaction = compaction }
+
+    fun build(): EventActions =
+      EventActions(
+        skipSummarization = skipSummarization,
+        stateDelta = stateDelta,
+        artifactDelta = artifactDelta,
+        transferToAgent = transferToAgent,
+        escalate = escalate,
+        endOfAgent = endOfAgent,
+        requestedToolConfirmations = requestedToolConfirmations,
+        rewindBeforeInvocationId = rewindBeforeInvocationId,
+        agentState = agentState,
+        compaction = compaction,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
 }

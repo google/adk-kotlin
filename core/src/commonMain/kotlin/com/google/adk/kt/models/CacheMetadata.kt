@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.models
 
+import kotlin.jvm.JvmStatic
 import kotlin.math.round
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
@@ -92,8 +93,50 @@ data class CacheMetadata(
       "expires in ${roundedMinutes}min"
   }
 
-  private companion object {
+  /**
+   * Fluent builder for [CacheMetadata], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var fingerprint: String? = null
+    private var contentsCount: Int? = null
+    private var cacheName: String? = null
+    private var expireTime: Long? = null
+    private var invocationsUsed: Int? = null
+    private var createdAt: Long? = null
+
+    fun fingerprint(fingerprint: String): Builder = apply { this.fingerprint = fingerprint }
+
+    fun contentsCount(contentsCount: Int): Builder = apply { this.contentsCount = contentsCount }
+
+    fun cacheName(cacheName: String?): Builder = apply { this.cacheName = cacheName }
+
+    fun expireTime(expireTime: Long?): Builder = apply { this.expireTime = expireTime }
+
+    fun invocationsUsed(invocationsUsed: Int?): Builder = apply {
+      this.invocationsUsed = invocationsUsed
+    }
+
+    fun createdAt(createdAt: Long?): Builder = apply { this.createdAt = createdAt }
+
+    fun build(): CacheMetadata =
+      CacheMetadata(
+        fingerprint =
+          checkNotNull(fingerprint) { "CacheMetadata.Builder requires fingerprint to be set." },
+        contentsCount =
+          checkNotNull(contentsCount) { "CacheMetadata.Builder requires contentsCount to be set." },
+        cacheName = cacheName,
+        expireTime = expireTime,
+        invocationsUsed = invocationsUsed,
+        createdAt = createdAt,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     // Buffer applied when checking expiry so a cache nearing expiry is treated as expired.
-    val EXPIRY_BUFFER = 2.minutes
+    private val EXPIRY_BUFFER = 2.minutes
   }
 }

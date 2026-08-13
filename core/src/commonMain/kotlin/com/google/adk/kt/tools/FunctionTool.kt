@@ -72,6 +72,24 @@ abstract class FunctionTool(
     requiresConfirmation = { requiresConfirmation },
   )
 
+  // Telescoping secondary constructors for Java subclasses; Kotlin default parameter values are not
+  // visible to Java, so each prefix is exposed as an explicit constructor. The confirmation gate
+  // stays disabled; use the Boolean or predicate constructors above to enable it.
+  constructor(name: String, description: String) : this(name, description, false)
+
+  constructor(
+    name: String,
+    description: String,
+    isLongRunning: Boolean,
+  ) : this(name, description, isLongRunning, emptyMap())
+
+  constructor(
+    name: String,
+    description: String,
+    isLongRunning: Boolean,
+    customMetadata: Map<String, Any>,
+  ) : this(name, description, isLongRunning, customMetadata, { false })
+
   /**
    * Executes the function with the provided [args], optionally utilizing the [context].
    *

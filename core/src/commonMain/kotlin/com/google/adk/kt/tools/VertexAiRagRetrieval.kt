@@ -22,6 +22,7 @@ import com.google.adk.kt.types.Retrieval
 import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.VertexRagStore
 import com.google.adk.kt.types.VertexRagStoreRagResource
+import kotlin.jvm.JvmStatic
 
 /**
  * A built-in tool that uses Vertex AI RAG (Retrieval-Augmented Generation) to retrieve data.
@@ -65,5 +66,54 @@ class VertexAiRagRetrieval(
     val existingTools = llmRequest.config.tools?.toMutableList() ?: mutableListOf()
     existingTools.add(retrievalTool)
     return llmRequest.copy(config = llmRequest.config.copy(tools = existingTools))
+  }
+
+  /**
+   * Fluent builder for [VertexAiRagRetrieval], provided primarily for Java callers. Any property
+   * left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var description: String? = null
+    private var ragCorpora: List<String>? = null
+    private var ragResources: List<VertexRagStoreRagResource>? = null
+    private var similarityTopK: Int? = null
+    private var vectorDistanceThreshold: Double? = null
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun description(description: String): Builder = apply { this.description = description }
+
+    fun ragCorpora(ragCorpora: List<String>?): Builder = apply { this.ragCorpora = ragCorpora }
+
+    fun ragResources(ragResources: List<VertexRagStoreRagResource>?): Builder = apply {
+      this.ragResources = ragResources
+    }
+
+    fun similarityTopK(similarityTopK: Int?): Builder = apply {
+      this.similarityTopK = similarityTopK
+    }
+
+    fun vectorDistanceThreshold(vectorDistanceThreshold: Double?): Builder = apply {
+      this.vectorDistanceThreshold = vectorDistanceThreshold
+    }
+
+    fun build(): VertexAiRagRetrieval =
+      VertexAiRagRetrieval(
+        name = checkNotNull(name) { "VertexAiRagRetrieval.Builder requires name to be set." },
+        description =
+          checkNotNull(description) {
+            "VertexAiRagRetrieval.Builder requires description to be set."
+          },
+        ragCorpora = ragCorpora,
+        ragResources = ragResources,
+        similarityTopK = similarityTopK,
+        vectorDistanceThreshold = vectorDistanceThreshold,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
   }
 }

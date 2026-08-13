@@ -22,6 +22,7 @@ import com.google.adk.kt.types.Retrieval
 import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.VertexAISearch
 import com.google.adk.kt.types.VertexAISearchDataStoreSpec
+import kotlin.jvm.JvmStatic
 
 /**
  * A built-in tool using Vertex AI Search.
@@ -85,5 +86,51 @@ class VertexAiSearchTool(
     val existingTools = llmRequest.config.tools?.toMutableList() ?: mutableListOf()
     existingTools.add(retrievalTool)
     return llmRequest.copy(config = llmRequest.config.copy(tools = existingTools))
+  }
+
+  /**
+   * Fluent builder for [VertexAiSearchTool], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var dataStoreId: String? = null
+    private var dataStoreSpecs: List<VertexAISearchDataStoreSpec>? = null
+    private var searchEngineId: String? = null
+    private var filter: String? = null
+    private var maxResults: Int? = null
+    private var bypassMultiToolsLimit: Boolean = false
+
+    fun dataStoreId(dataStoreId: String?): Builder = apply { this.dataStoreId = dataStoreId }
+
+    fun dataStoreSpecs(dataStoreSpecs: List<VertexAISearchDataStoreSpec>?): Builder = apply {
+      this.dataStoreSpecs = dataStoreSpecs
+    }
+
+    fun searchEngineId(searchEngineId: String?): Builder = apply {
+      this.searchEngineId = searchEngineId
+    }
+
+    fun filter(filter: String?): Builder = apply { this.filter = filter }
+
+    fun maxResults(maxResults: Int?): Builder = apply { this.maxResults = maxResults }
+
+    fun bypassMultiToolsLimit(bypassMultiToolsLimit: Boolean): Builder = apply {
+      this.bypassMultiToolsLimit = bypassMultiToolsLimit
+    }
+
+    fun build(): VertexAiSearchTool =
+      VertexAiSearchTool(
+        dataStoreId = dataStoreId,
+        dataStoreSpecs = dataStoreSpecs,
+        searchEngineId = searchEngineId,
+        filter = filter,
+        maxResults = maxResults,
+        bypassMultiToolsLimit = bypassMultiToolsLimit,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
   }
 }

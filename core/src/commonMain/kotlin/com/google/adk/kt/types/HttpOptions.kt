@@ -15,7 +15,9 @@
  */
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * ADK-owned HTTP transport options for calls a [com.google.adk.kt.models.Model] makes to its
@@ -35,4 +37,37 @@ data class HttpOptions(
   val apiVersion: String? = null,
   val headers: Map<String, String>? = null,
   val timeout: Duration? = null,
-)
+) {
+  /** Returns [timeout] in whole milliseconds, or `null`. Java cannot read [timeout] (mangled). */
+  fun timeoutMillis(): Long? = timeout?.inWholeMilliseconds
+
+  /**
+   * Fluent builder for [HttpOptions], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var baseUrl: String? = null
+    private var apiVersion: String? = null
+    private var headers: Map<String, String>? = null
+    private var timeout: Duration? = null
+
+    fun baseUrl(baseUrl: String?): Builder = apply { this.baseUrl = baseUrl }
+
+    fun apiVersion(apiVersion: String?): Builder = apply { this.apiVersion = apiVersion }
+
+    fun headers(headers: Map<String, String>?): Builder = apply { this.headers = headers }
+
+    /** Sets [timeout] in milliseconds; the [Duration] constructor param is mangled for Java. */
+    fun timeoutMillis(timeoutMillis: Long): Builder = apply {
+      this.timeout = timeoutMillis.milliseconds
+    }
+
+    fun build(): HttpOptions =
+      HttpOptions(baseUrl = baseUrl, apiVersion = apiVersion, headers = headers, timeout = timeout)
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}

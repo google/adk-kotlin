@@ -23,6 +23,7 @@ import com.google.adk.kt.sessions.dto.toDto
 import com.google.auth.oauth2.GoogleCredentials
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import kotlin.jvm.JvmStatic
 
 /**
  * A [SessionService] backed by the managed Vertex AI Session Service.
@@ -155,7 +156,50 @@ internal constructor(
     }
   }
 
+  /**
+   * Fluent builder for [VertexAiSessionService], provided primarily for Java callers. Any property
+   * left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var project: String? = null
+    private var location: String? = null
+    private var reasoningEngineId: String? = null
+    private var credentials: GoogleCredentials? = null
+    private var httpClient: HttpClient? = null
+
+    fun project(project: String): Builder = apply { this.project = project }
+
+    fun location(location: String): Builder = apply { this.location = location }
+
+    fun reasoningEngineId(reasoningEngineId: String): Builder = apply {
+      this.reasoningEngineId = reasoningEngineId
+    }
+
+    fun credentials(credentials: GoogleCredentials): Builder = apply {
+      this.credentials = credentials
+    }
+
+    fun httpClient(httpClient: HttpClient): Builder = apply { this.httpClient = httpClient }
+
+    fun build(): VertexAiSessionService =
+      VertexAiSessionService(
+        project =
+          checkNotNull(project) { "VertexAiSessionService.Builder requires project to be set." },
+        location =
+          checkNotNull(location) { "VertexAiSessionService.Builder requires location to be set." },
+        reasoningEngineId =
+          checkNotNull(reasoningEngineId) {
+            "VertexAiSessionService.Builder requires reasoningEngineId to be set."
+          },
+        credentials = credentials ?: GoogleApiClient.defaultCredentials(),
+        httpClient = httpClient ?: HttpClient(Java),
+      )
+  }
+
   companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     /**
      * Allowed session id characters. Matches the Java/Python ADK allowlist and keeps the id within
      * a single URL path segment (no `/`, `?`, `#`, or `..`).
