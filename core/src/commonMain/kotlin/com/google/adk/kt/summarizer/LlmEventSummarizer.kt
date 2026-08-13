@@ -46,6 +46,12 @@ import kotlinx.coroutines.flow.firstOrNull
 class LlmEventSummarizer(val model: Model, val promptTemplate: String = DEFAULT_PROMPT_TEMPLATE) :
   EventSummarizer {
 
+  /**
+   * Creates a summarizer using the default prompt template. Java callers need this because
+   * [promptTemplate]'s default is not visible to them and its value is private.
+   */
+  constructor(model: Model) : this(model, DEFAULT_PROMPT_TEMPLATE)
+
   private companion object {
     val logger = LoggerFactory.getLogger(LlmEventSummarizer::class)
     const val CONVERSATION_HISTORY_PLACEHOLDER = "{conversation_history}"

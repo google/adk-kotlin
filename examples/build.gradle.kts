@@ -27,7 +27,7 @@ val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
 
 kotlin { jvmToolchain(maxOf(21, jdkVersion)) }
 
-sourceSets { main { java.srcDirs("src/main/kotlin") } }
+sourceSets { main { java.srcDirs("src/main/kotlin", "src/main/java") } }
 
 dependencies {
   implementation(project(":google-adk-kotlin-a2a"))
@@ -45,6 +45,17 @@ dependencies {
   implementation(libs.opentelemetry.sdk)
 
   ksp(project(":google-adk-kotlin-processor"))
+}
+
+// Runs a Java example agent in a REPL, e.g.:
+//   ./gradlew :google-adk-kotlin-examples:runJavaExample \
+//       --args="com.google.adk.kt.examples.hello.HelloAgentJava"
+tasks.register<JavaExec>("runJavaExample") {
+  group = "application"
+  description = "Runs a Java example agent (pass its class name via --args)."
+  mainClass.set("com.google.adk.kt.examples.JavaExampleRunner")
+  classpath = sourceSets["main"].runtimeClasspath
+  standardInput = System.`in`
 }
 
 // Convenience task to run the ADK Docs Release Analyzer sample, e.g.:

@@ -66,6 +66,50 @@ abstract class BaseAgent(
   val disallowTransferToParent: Boolean = false,
   val disallowTransferToPeers: Boolean = false,
 ) {
+  // Telescoping secondary constructors for Java subclasses; Kotlin default parameter values are not
+  // visible to Java, so each prefix is exposed as an explicit constructor.
+  constructor(name: String) : this(name, "")
+
+  constructor(name: String, description: String) : this(name, description, emptyList())
+
+  constructor(
+    name: String,
+    description: String,
+    subAgents: List<BaseAgent>,
+  ) : this(name, description, subAgents, emptyList())
+
+  constructor(
+    name: String,
+    description: String,
+    subAgents: List<BaseAgent>,
+    beforeAgentCallbacks: List<BeforeAgentCallback>,
+  ) : this(name, description, subAgents, beforeAgentCallbacks, emptyList())
+
+  constructor(
+    name: String,
+    description: String,
+    subAgents: List<BaseAgent>,
+    beforeAgentCallbacks: List<BeforeAgentCallback>,
+    afterAgentCallbacks: List<AfterAgentCallback>,
+  ) : this(name, description, subAgents, beforeAgentCallbacks, afterAgentCallbacks, false)
+
+  constructor(
+    name: String,
+    description: String,
+    subAgents: List<BaseAgent>,
+    beforeAgentCallbacks: List<BeforeAgentCallback>,
+    afterAgentCallbacks: List<AfterAgentCallback>,
+    disallowTransferToParent: Boolean,
+  ) : this(
+    name,
+    description,
+    subAgents,
+    beforeAgentCallbacks,
+    afterAgentCallbacks,
+    disallowTransferToParent,
+    false,
+  )
+
   /** Parent agent, set when this agent is added to another agent's subAgents list. */
   internal var parentAgent: BaseAgent? = null
 

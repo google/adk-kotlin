@@ -15,6 +15,8 @@
  */
 package com.google.adk.kt.models
 
+import kotlin.jvm.JvmStatic
+
 /** Config for authenticating to Vertex AI when constructing a [Gemini] model. */
 data class VertexCredentials(
   /** Google Cloud project. */
@@ -23,4 +25,30 @@ data class VertexCredentials(
   val location: String? = null,
   /** Credentials; defaults to `GoogleCredentials.getApplicationDefault()` when null. */
   val credentials: GoogleCredentials? = null,
-)
+) {
+  /**
+   * Fluent builder for [VertexCredentials], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var project: String? = null
+    private var location: String? = null
+    private var credentials: GoogleCredentials? = null
+
+    fun project(project: String?): Builder = apply { this.project = project }
+
+    fun location(location: String?): Builder = apply { this.location = location }
+
+    fun credentials(credentials: GoogleCredentials?): Builder = apply {
+      this.credentials = credentials
+    }
+
+    fun build(): VertexCredentials =
+      VertexCredentials(project = project, location = location, credentials = credentials)
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}

@@ -41,6 +41,16 @@ abstract class BaseTool(
   val isLongRunning: Boolean = false,
   val customMetadata: Map<String, Any> = emptyMap(),
 ) : AutoCloseable {
+  // Telescoping secondary constructors for Java subclasses; Kotlin default parameter values are not
+  // visible to Java, so each prefix is exposed as an explicit constructor.
+  constructor(name: String, description: String) : this(name, description, false)
+
+  constructor(
+    name: String,
+    description: String,
+    isLongRunning: Boolean,
+  ) : this(name, description, isLongRunning, emptyMap())
+
   /** Returns the underlying function declaration. */
   abstract fun declaration(): FunctionDeclaration?
 

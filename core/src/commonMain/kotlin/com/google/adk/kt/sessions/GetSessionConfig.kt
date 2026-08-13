@@ -16,7 +16,33 @@
 
 package com.google.adk.kt.sessions
 
+import kotlin.jvm.JvmStatic
 import kotlin.time.Instant
 
 /** Configuration for getting a session. */
-data class GetSessionConfig(val numRecentEvents: Int? = null, val afterTimestamp: Instant? = null)
+data class GetSessionConfig(val numRecentEvents: Int? = null, val afterTimestamp: Instant? = null) {
+  /**
+   * Fluent builder for [GetSessionConfig], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var numRecentEvents: Int? = null
+    private var afterTimestamp: Instant? = null
+
+    fun numRecentEvents(numRecentEvents: Int?): Builder = apply {
+      this.numRecentEvents = numRecentEvents
+    }
+
+    fun afterTimestamp(afterTimestamp: Instant?): Builder = apply {
+      this.afterTimestamp = afterTimestamp
+    }
+
+    fun build(): GetSessionConfig =
+      GetSessionConfig(numRecentEvents = numRecentEvents, afterTimestamp = afterTimestamp)
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}

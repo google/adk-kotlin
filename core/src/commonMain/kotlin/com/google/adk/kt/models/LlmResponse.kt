@@ -24,6 +24,7 @@ import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.LogprobsResult
 import com.google.adk.kt.types.UsageMetadata
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
@@ -68,7 +69,91 @@ data class LlmResponse(
   val logprobsResult: LogprobsResult? = null,
   val cacheMetadata: CacheMetadata? = null,
 ) {
+  /**
+   * Fluent builder for [LlmResponse], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var content: Content? = null
+    private var usageMetadata: UsageMetadata? = null
+    private var finishReason: FinishReason? = null
+    private var errorMessage: String? = null
+    private var partial: Boolean = false
+    private var interrupted: Boolean = false
+    private var modelVersion: String? = null
+    private var citationMetadata: CitationMetadata? = null
+    private var groundingMetadata: GroundingMetadata? = null
+    private var errorCode: String? = null
+    private var customMetadata: Map<String, @Contextual Any?>? = null
+    private var avgLogprobs: Double? = null
+    private var logprobsResult: LogprobsResult? = null
+    private var cacheMetadata: CacheMetadata? = null
+
+    fun content(content: Content?): Builder = apply { this.content = content }
+
+    fun usageMetadata(usageMetadata: UsageMetadata?): Builder = apply {
+      this.usageMetadata = usageMetadata
+    }
+
+    fun finishReason(finishReason: FinishReason?): Builder = apply {
+      this.finishReason = finishReason
+    }
+
+    fun errorMessage(errorMessage: String?): Builder = apply { this.errorMessage = errorMessage }
+
+    fun partial(partial: Boolean): Builder = apply { this.partial = partial }
+
+    fun interrupted(interrupted: Boolean): Builder = apply { this.interrupted = interrupted }
+
+    fun modelVersion(modelVersion: String?): Builder = apply { this.modelVersion = modelVersion }
+
+    fun citationMetadata(citationMetadata: CitationMetadata?): Builder = apply {
+      this.citationMetadata = citationMetadata
+    }
+
+    fun groundingMetadata(groundingMetadata: GroundingMetadata?): Builder = apply {
+      this.groundingMetadata = groundingMetadata
+    }
+
+    fun errorCode(errorCode: String?): Builder = apply { this.errorCode = errorCode }
+
+    fun customMetadata(customMetadata: Map<String, @Contextual Any?>?): Builder = apply {
+      this.customMetadata = customMetadata
+    }
+
+    fun avgLogprobs(avgLogprobs: Double?): Builder = apply { this.avgLogprobs = avgLogprobs }
+
+    fun logprobsResult(logprobsResult: LogprobsResult?): Builder = apply {
+      this.logprobsResult = logprobsResult
+    }
+
+    fun cacheMetadata(cacheMetadata: CacheMetadata?): Builder = apply {
+      this.cacheMetadata = cacheMetadata
+    }
+
+    fun build(): LlmResponse =
+      LlmResponse(
+        content = content,
+        usageMetadata = usageMetadata,
+        finishReason = finishReason,
+        errorMessage = errorMessage,
+        partial = partial,
+        interrupted = interrupted,
+        modelVersion = modelVersion,
+        citationMetadata = citationMetadata,
+        groundingMetadata = groundingMetadata,
+        errorCode = errorCode,
+        customMetadata = customMetadata,
+        avgLogprobs = avgLogprobs,
+        logprobsResult = logprobsResult,
+        cacheMetadata = cacheMetadata,
+      )
+  }
+
   companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     /**
      * Creates an [LlmResponse] from a [GenerateContentResponse].
      *

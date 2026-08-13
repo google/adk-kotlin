@@ -17,6 +17,7 @@
 package com.google.adk.kt.plugins.agentanalytics
 
 import com.google.auth.Credentials
+import kotlin.jvm.JvmStatic
 
 /** Configuration for the BigQueryAgentAnalyticsPlugin. */
 data class BigQueryLoggerConfig(
@@ -26,4 +27,45 @@ data class BigQueryLoggerConfig(
   val location: String = "US",
   val tableName: String = "agent_events",
   val credentials: Credentials? = null,
-)
+) {
+
+  /**
+   * Fluent builder for [BigQueryLoggerConfig], provided primarily for Java callers. Any property
+   * left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var projectId: String? = null
+    private var datasetId: String? = null
+    private var enabled: Boolean = true
+    private var location: String = "US"
+    private var tableName: String = "agent_events"
+    private var credentials: Credentials? = null
+
+    fun projectId(projectId: String): Builder = apply { this.projectId = projectId }
+
+    fun datasetId(datasetId: String): Builder = apply { this.datasetId = datasetId }
+
+    fun enabled(enabled: Boolean): Builder = apply { this.enabled = enabled }
+
+    fun location(location: String): Builder = apply { this.location = location }
+
+    fun tableName(tableName: String): Builder = apply { this.tableName = tableName }
+
+    fun credentials(credentials: Credentials?): Builder = apply { this.credentials = credentials }
+
+    fun build(): BigQueryLoggerConfig =
+      BigQueryLoggerConfig(
+        projectId = checkNotNull(projectId) { "BigQueryLoggerConfig.Builder requires projectId." },
+        datasetId = checkNotNull(datasetId) { "BigQueryLoggerConfig.Builder requires datasetId." },
+        enabled = enabled,
+        location = location,
+        tableName = tableName,
+        credentials = credentials,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}

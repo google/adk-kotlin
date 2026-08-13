@@ -30,6 +30,7 @@ import com.google.adk.kt.types.Content
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.jvm.JvmStatic
 import kotlin.time.Clock
 import org.yaml.snakeyaml.DumperOptions
 import org.yaml.snakeyaml.LoaderOptions
@@ -502,7 +503,41 @@ class DebugLoggingPlugin(
     val entries: MutableList<DebugEntry> = mutableListOf(),
   )
 
-  private companion object {
+  /**
+   * Fluent builder for [DebugLoggingPlugin], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var outputPath: String = "adk_debug.yaml"
+    private var includeSessionState: Boolean = true
+    private var includeSystemInstruction: Boolean = true
+    private var name: String = "debug_logging_plugin"
+
+    fun outputPath(outputPath: String): Builder = apply { this.outputPath = outputPath }
+
+    fun includeSessionState(includeSessionState: Boolean): Builder = apply {
+      this.includeSessionState = includeSessionState
+    }
+
+    fun includeSystemInstruction(includeSystemInstruction: Boolean): Builder = apply {
+      this.includeSystemInstruction = includeSystemInstruction
+    }
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun build(): DebugLoggingPlugin =
+      DebugLoggingPlugin(
+        outputPath = outputPath,
+        includeSessionState = includeSessionState,
+        includeSystemInstruction = includeSystemInstruction,
+        name = name,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     private val logger = LoggerFactory.getLogger(DebugLoggingPlugin::class)
   }
 }

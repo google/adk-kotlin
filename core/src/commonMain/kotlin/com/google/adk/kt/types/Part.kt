@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 
@@ -120,5 +121,67 @@ class Part(
 
   override fun toString(): String {
     return "Part(text=$text, inlineData=$inlineData, fileData=$fileData, functionCall=$functionCall, functionResponse=$functionResponse, thought=$thought, thoughtSignature=${thoughtSignature?.contentToString()}, toolCall=$toolCall, toolResponse=$toolResponse)"
+  }
+
+  /**
+   * Fluent builder for [Part], provided primarily for Java callers. Any property left unset falls
+   * back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var text: String? = null
+    private var inlineData: Blob? = null
+    private var fileData: FileData? = null
+    private var functionCall: FunctionCall? = null
+    private var functionResponse: FunctionResponse? = null
+    private var thought: Boolean? = null
+    private var thoughtSignature: ByteArray? = null
+    private var videoMetadata: VideoMetadata? = null
+    private var partMetadata: Map<String, @Contextual Any?>? = null
+
+    fun text(text: String?): Builder = apply { this.text = text }
+
+    fun inlineData(inlineData: Blob?): Builder = apply { this.inlineData = inlineData }
+
+    fun fileData(fileData: FileData?): Builder = apply { this.fileData = fileData }
+
+    fun functionCall(functionCall: FunctionCall?): Builder = apply {
+      this.functionCall = functionCall
+    }
+
+    fun functionResponse(functionResponse: FunctionResponse?): Builder = apply {
+      this.functionResponse = functionResponse
+    }
+
+    fun thought(thought: Boolean?): Builder = apply { this.thought = thought }
+
+    fun thoughtSignature(thoughtSignature: ByteArray?): Builder = apply {
+      this.thoughtSignature = thoughtSignature
+    }
+
+    fun videoMetadata(videoMetadata: VideoMetadata?): Builder = apply {
+      this.videoMetadata = videoMetadata
+    }
+
+    fun partMetadata(partMetadata: Map<String, @Contextual Any?>?): Builder = apply {
+      this.partMetadata = partMetadata
+    }
+
+    fun build(): Part =
+      Part(
+        text = text,
+        inlineData = inlineData,
+        fileData = fileData,
+        functionCall = functionCall,
+        functionResponse = functionResponse,
+        thought = thought,
+        thoughtSignature = thoughtSignature,
+        videoMetadata = videoMetadata,
+        partMetadata = partMetadata,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
   }
 }

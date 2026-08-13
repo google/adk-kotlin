@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 
@@ -76,4 +77,56 @@ data class Schema(
   val maxLength: Long? = null,
   val minItems: Long? = null,
   val maxItems: Long? = null,
-)
+) {
+  /**
+   * Fluent builder for [Schema], provided primarily for Java callers. Any property left unset falls
+   * back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var type: Type? = null
+    private var properties: Map<String, Schema>? = null
+    private var items: Schema? = null
+    private var required: List<String>? = null
+    private var description: String? = null
+    private var enum: List<String>? = null
+
+    fun type(type: Type?): Builder = apply { this.type = type }
+
+    fun properties(properties: Map<String, Schema>?): Builder = apply {
+      this.properties = properties
+    }
+
+    fun items(items: Schema?): Builder = apply { this.items = items }
+
+    fun required(required: List<String>?): Builder = apply { this.required = required }
+
+    fun required(vararg required: String): Builder = apply { this.required = required.toList() }
+
+    fun description(description: String?): Builder = apply { this.description = description }
+
+    fun enum(enum: List<String>?): Builder = apply { this.enum = enum }
+
+    fun enum(vararg enum: String): Builder = apply { this.enum = enum.toList() }
+
+    /** Sets [enum]. Java callers need this because `enum` is a reserved word in Java. */
+    fun enumValues(enumValues: List<String>?): Builder = apply { this.enum = enumValues }
+
+    /** Sets [enum]. Java callers need this because `enum` is a reserved word in Java. */
+    fun enumValues(vararg enumValues: String): Builder = apply { this.enum = enumValues.toList() }
+
+    fun build(): Schema =
+      Schema(
+        type = type,
+        properties = properties,
+        items = items,
+        required = required,
+        description = description,
+        enum = enum,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}

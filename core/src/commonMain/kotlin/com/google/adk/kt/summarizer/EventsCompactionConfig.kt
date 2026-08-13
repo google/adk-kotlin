@@ -15,6 +15,8 @@
  */
 package com.google.adk.kt.summarizer
 
+import kotlin.jvm.JvmStatic
+
 /**
  * Configuration for event compaction.
  *
@@ -73,4 +75,46 @@ data class EventsCompactionConfig(
 
   /** Returns true when token-threshold compaction is fully configured. */
   fun hasTokenThresholdConfig(): Boolean = tokenThreshold != null && eventRetentionSize != null
+
+  /**
+   * Fluent builder for [EventsCompactionConfig], provided primarily for Java callers. Any property
+   * left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var compactionInterval: Int? = null
+    private var overlapSize: Int? = null
+    private var summarizer: EventSummarizer? = null
+    private var tokenThreshold: Int? = null
+    private var eventRetentionSize: Int? = null
+
+    fun compactionInterval(compactionInterval: Int?): Builder = apply {
+      this.compactionInterval = compactionInterval
+    }
+
+    fun overlapSize(overlapSize: Int?): Builder = apply { this.overlapSize = overlapSize }
+
+    fun summarizer(summarizer: EventSummarizer?): Builder = apply { this.summarizer = summarizer }
+
+    fun tokenThreshold(tokenThreshold: Int?): Builder = apply {
+      this.tokenThreshold = tokenThreshold
+    }
+
+    fun eventRetentionSize(eventRetentionSize: Int?): Builder = apply {
+      this.eventRetentionSize = eventRetentionSize
+    }
+
+    fun build(): EventsCompactionConfig =
+      EventsCompactionConfig(
+        compactionInterval = compactionInterval,
+        overlapSize = overlapSize,
+        summarizer = summarizer,
+        tokenThreshold = tokenThreshold,
+        eventRetentionSize = eventRetentionSize,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
 }

@@ -42,6 +42,7 @@ import com.google.auth.oauth2.GoogleCredentials
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import java.time.Instant
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 
@@ -260,7 +261,50 @@ class VertexAiMemoryBankService internal constructor(private val client: VertexA
       .getOrThrow()
   }
 
+  /**
+   * Fluent builder for [VertexAiMemoryBankService], provided primarily for Java callers. Any
+   * property left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var project: String? = null
+    private var location: String? = null
+    private var agentEngineId: String? = null
+    private var credentials: GoogleCredentials? = null
+    private var httpClient: HttpClient? = null
+
+    fun project(project: String): Builder = apply { this.project = project }
+
+    fun location(location: String): Builder = apply { this.location = location }
+
+    fun agentEngineId(agentEngineId: String): Builder = apply { this.agentEngineId = agentEngineId }
+
+    fun credentials(credentials: GoogleCredentials): Builder = apply {
+      this.credentials = credentials
+    }
+
+    fun httpClient(httpClient: HttpClient): Builder = apply { this.httpClient = httpClient }
+
+    fun build(): VertexAiMemoryBankService =
+      VertexAiMemoryBankService(
+        project =
+          checkNotNull(project) { "VertexAiMemoryBankService.Builder requires project to be set." },
+        location =
+          checkNotNull(location) {
+            "VertexAiMemoryBankService.Builder requires location to be set."
+          },
+        agentEngineId =
+          checkNotNull(agentEngineId) {
+            "VertexAiMemoryBankService.Builder requires agentEngineId to be set."
+          },
+        credentials = credentials ?: GoogleApiClient.defaultCredentials(),
+        httpClient = httpClient ?: HttpClient(Java),
+      )
+  }
+
   companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     private val logger = LoggerFactory.getLogger(VertexAiMemoryBankService::class)
 
     private const val MEMORY_AUTHOR = "user"

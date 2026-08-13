@@ -48,7 +48,9 @@ import kotlinx.coroutines.withContext
  * table on first use. Row inserts currently execute synchronously on the invocation path, blocking
  * until the BigQuery write completes.
  */
-class BigQueryAgentAnalyticsPlugin(
+class BigQueryAgentAnalyticsPlugin
+@JvmOverloads
+constructor(
   private val config: BigQueryLoggerConfig,
   private val bigQuery: BigQuery = createBigQuery(config),
   @Suppress("GlobalCoroutineDispatchers") private val ioContext: CoroutineContext = Dispatchers.IO,
