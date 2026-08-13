@@ -26,6 +26,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.UsageMetadata
+import kotlin.jvm.JvmStatic
 import kotlin.time.Clock
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.SerialName
@@ -150,6 +151,120 @@ data class Event(
     }
 
     return this.copy(content = Content(role = content.role, parts = newParts))
+  }
+
+  /**
+   * Fluent builder for [Event], provided primarily for Java callers. Any property left unset falls
+   * back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var id: String = Uuid.random()
+    private var invocationId: String? = null
+    private var author: String? = null
+    private var content: Content? = null
+    private var actions: EventActions = EventActions()
+    private var longRunningToolIds: Set<String> = emptySet()
+    private var partial: Boolean = false
+    private var turnComplete: Boolean = false
+    private var errorCode: String? = null
+    private var errorMessage: String? = null
+    private var finishReason: FinishReason? = null
+    private var usageMetadata: UsageMetadata? = null
+    private var avgLogProbs: Double? = null
+    private var interrupted: Boolean = false
+    private var branch: String? = null
+    private var groundingMetadata: GroundingMetadata? = null
+    private var modelVersion: String? = null
+    private var citationMetadata: CitationMetadata? = null
+    private var cacheMetadata: CacheMetadata? = null
+    private var customMetadata: Map<String, @Contextual Any>? = null
+    private var timestamp: Long = Clock.System.now().toEpochMilliseconds()
+
+    fun id(id: String): Builder = apply { this.id = id }
+
+    fun invocationId(invocationId: String?): Builder = apply { this.invocationId = invocationId }
+
+    fun author(author: String): Builder = apply { this.author = author }
+
+    fun content(content: Content?): Builder = apply { this.content = content }
+
+    fun actions(actions: EventActions): Builder = apply { this.actions = actions }
+
+    fun longRunningToolIds(longRunningToolIds: Set<String>): Builder = apply {
+      this.longRunningToolIds = longRunningToolIds
+    }
+
+    fun partial(partial: Boolean): Builder = apply { this.partial = partial }
+
+    fun turnComplete(turnComplete: Boolean): Builder = apply { this.turnComplete = turnComplete }
+
+    fun errorCode(errorCode: String?): Builder = apply { this.errorCode = errorCode }
+
+    fun errorMessage(errorMessage: String?): Builder = apply { this.errorMessage = errorMessage }
+
+    fun finishReason(finishReason: FinishReason?): Builder = apply {
+      this.finishReason = finishReason
+    }
+
+    fun usageMetadata(usageMetadata: UsageMetadata?): Builder = apply {
+      this.usageMetadata = usageMetadata
+    }
+
+    fun avgLogProbs(avgLogProbs: Double?): Builder = apply { this.avgLogProbs = avgLogProbs }
+
+    fun interrupted(interrupted: Boolean): Builder = apply { this.interrupted = interrupted }
+
+    fun branch(branch: String?): Builder = apply { this.branch = branch }
+
+    fun groundingMetadata(groundingMetadata: GroundingMetadata?): Builder = apply {
+      this.groundingMetadata = groundingMetadata
+    }
+
+    fun modelVersion(modelVersion: String?): Builder = apply { this.modelVersion = modelVersion }
+
+    fun citationMetadata(citationMetadata: CitationMetadata?): Builder = apply {
+      this.citationMetadata = citationMetadata
+    }
+
+    fun cacheMetadata(cacheMetadata: CacheMetadata?): Builder = apply {
+      this.cacheMetadata = cacheMetadata
+    }
+
+    fun customMetadata(customMetadata: Map<String, @Contextual Any>?): Builder = apply {
+      this.customMetadata = customMetadata
+    }
+
+    fun timestamp(timestamp: Long): Builder = apply { this.timestamp = timestamp }
+
+    fun build(): Event =
+      Event(
+        id = id,
+        invocationId = invocationId,
+        author = checkNotNull(author) { "Event.Builder requires author to be set." },
+        content = content,
+        actions = actions,
+        longRunningToolIds = longRunningToolIds,
+        partial = partial,
+        turnComplete = turnComplete,
+        errorCode = errorCode,
+        errorMessage = errorMessage,
+        finishReason = finishReason,
+        usageMetadata = usageMetadata,
+        avgLogProbs = avgLogProbs,
+        interrupted = interrupted,
+        branch = branch,
+        groundingMetadata = groundingMetadata,
+        modelVersion = modelVersion,
+        citationMetadata = citationMetadata,
+        cacheMetadata = cacheMetadata,
+        customMetadata = customMetadata,
+        timestamp = timestamp,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
   }
 }
 

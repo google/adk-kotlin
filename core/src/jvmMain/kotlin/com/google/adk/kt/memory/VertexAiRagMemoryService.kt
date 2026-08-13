@@ -33,6 +33,7 @@ import com.google.auth.oauth2.GoogleCredentials
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import java.util.Base64
+import kotlin.jvm.JvmStatic
 import kotlin.math.roundToLong
 import kotlin.time.Instant
 import kotlinx.serialization.SerializationException
@@ -201,7 +202,55 @@ internal constructor(
     return events
   }
 
+  /**
+   * Fluent builder for [VertexAiRagMemoryService], provided primarily for Java callers. Any
+   * property left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var project: String? = null
+    private var location: String? = null
+    private var ragCorpus: String? = null
+    private var similarityTopK: Int? = null
+    private var vectorDistanceThreshold: Double = DEFAULT_VECTOR_DISTANCE_THRESHOLD
+    private var credentials: GoogleCredentials? = null
+    private var httpClient: HttpClient? = null
+
+    fun project(project: String): Builder = apply { this.project = project }
+
+    fun location(location: String): Builder = apply { this.location = location }
+
+    fun ragCorpus(ragCorpus: String): Builder = apply { this.ragCorpus = ragCorpus }
+
+    fun similarityTopK(similarityTopK: Int?): Builder = apply {
+      this.similarityTopK = similarityTopK
+    }
+
+    fun vectorDistanceThreshold(vectorDistanceThreshold: Double): Builder = apply {
+      this.vectorDistanceThreshold = vectorDistanceThreshold
+    }
+
+    fun credentials(credentials: GoogleCredentials): Builder = apply {
+      this.credentials = credentials
+    }
+
+    fun httpClient(httpClient: HttpClient): Builder = apply { this.httpClient = httpClient }
+
+    fun build(): VertexAiRagMemoryService =
+      VertexAiRagMemoryService(
+        project = checkNotNull(project) { "VertexAiRagMemoryService requires project." },
+        location = checkNotNull(location) { "VertexAiRagMemoryService requires location." },
+        ragCorpus = checkNotNull(ragCorpus) { "VertexAiRagMemoryService requires ragCorpus." },
+        similarityTopK = similarityTopK,
+        vectorDistanceThreshold = vectorDistanceThreshold,
+        credentials = credentials ?: GoogleApiClient.defaultCredentials(),
+        httpClient = httpClient ?: HttpClient(Java),
+      )
+  }
+
   companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+
     private val logger = LoggerFactory.getLogger(VertexAiRagMemoryService::class)
 
     /** Default matches the Python ADK `VertexAiRagMemoryService`. */

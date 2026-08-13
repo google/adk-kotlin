@@ -21,6 +21,7 @@ import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
+import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.merge
@@ -95,5 +96,57 @@ class ParallelAgent(
       context.setAgentState(name, endOfAgent = true)
       emitEndOfAgent(context)
     }
+  }
+
+  /**
+   * Fluent builder for [ParallelAgent], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var description: String = ""
+    private var subAgents: List<BaseAgent> = emptyList()
+    private var beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList()
+    private var afterAgentCallbacks: List<AfterAgentCallback> = emptyList()
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun description(description: String): Builder = apply { this.description = description }
+
+    fun subAgents(subAgents: List<BaseAgent>): Builder = apply { this.subAgents = subAgents }
+
+    fun subAgents(vararg subAgents: BaseAgent): Builder = apply {
+      this.subAgents = subAgents.toList()
+    }
+
+    fun beforeAgentCallbacks(callbacks: List<BeforeAgentCallback>): Builder = apply {
+      this.beforeAgentCallbacks = callbacks
+    }
+
+    fun beforeAgentCallbacks(vararg callbacks: BeforeAgentCallback): Builder = apply {
+      this.beforeAgentCallbacks = callbacks.toList()
+    }
+
+    fun afterAgentCallbacks(callbacks: List<AfterAgentCallback>): Builder = apply {
+      this.afterAgentCallbacks = callbacks
+    }
+
+    fun afterAgentCallbacks(vararg callbacks: AfterAgentCallback): Builder = apply {
+      this.afterAgentCallbacks = callbacks.toList()
+    }
+
+    fun build(): ParallelAgent =
+      ParallelAgent(
+        name = checkNotNull(name) { "ParallelAgent.Builder requires name to be set." },
+        description = description,
+        subAgents = subAgents,
+        beforeAgentCallbacks = beforeAgentCallbacks,
+        afterAgentCallbacks = afterAgentCallbacks,
+      )
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
   }
 }

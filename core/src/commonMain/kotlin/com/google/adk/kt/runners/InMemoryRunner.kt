@@ -26,6 +26,7 @@ import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
+import kotlin.jvm.JvmStatic
 
 /**
  * An in-memory implementation of a [Runner] that manages the lifecycle of a [BaseAgent] execution.
@@ -67,4 +68,70 @@ open class InMemoryRunner : AbstractRunner {
     memoryService: MemoryService? = InMemoryMemoryService(),
     skipClosingPlugins: Boolean = false,
   ) : super(app, sessionService, artifactService, memoryService, skipClosingPlugins)
+
+  /**
+   * Fluent builder for [InMemoryRunner], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var agent: BaseAgent? = null
+    private var app: App? = null
+    private var appName: String = "InMemoryRunner"
+    private var sessionService: SessionService = InMemorySessionService()
+    private var artifactService: ArtifactService? = InMemoryArtifactService()
+    private var memoryService: MemoryService? = InMemoryMemoryService()
+    private var skipClosingPlugins: Boolean = false
+
+    fun agent(agent: BaseAgent): Builder = apply { this.agent = agent }
+
+    fun app(app: App): Builder = apply { this.app = app }
+
+    fun appName(appName: String): Builder = apply { this.appName = appName }
+
+    fun sessionService(sessionService: SessionService): Builder = apply {
+      this.sessionService = sessionService
+    }
+
+    fun artifactService(artifactService: ArtifactService?): Builder = apply {
+      this.artifactService = artifactService
+    }
+
+    fun memoryService(memoryService: MemoryService?): Builder = apply {
+      this.memoryService = memoryService
+    }
+
+    fun skipClosingPlugins(skipClosingPlugins: Boolean): Builder = apply {
+      this.skipClosingPlugins = skipClosingPlugins
+    }
+
+    fun build(): InMemoryRunner {
+      val agent = agent
+      val app = app
+      check((agent == null) != (app == null)) {
+        "InMemoryRunner.Builder requires exactly one of agent or app to be set."
+      }
+      return if (app != null) {
+        InMemoryRunner(
+          app = app,
+          sessionService = sessionService,
+          artifactService = artifactService,
+          memoryService = memoryService,
+          skipClosingPlugins = skipClosingPlugins,
+        )
+      } else {
+        InMemoryRunner(
+          agent = agent!!,
+          appName = appName,
+          sessionService = sessionService,
+          artifactService = artifactService,
+          memoryService = memoryService,
+        )
+      }
+    }
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
 }

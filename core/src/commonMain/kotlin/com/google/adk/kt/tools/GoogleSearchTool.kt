@@ -20,6 +20,7 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.Tool
+import kotlin.jvm.JvmStatic
 
 /**
  * A built-in tool that is automatically invoked by Gemini 2 and 3 models to retrieve search results
@@ -52,5 +53,24 @@ class GoogleSearchTool(val bypassMultiToolsLimit: Boolean = false) :
 
     existingTools.add(Tool(googleSearch = GoogleSearch()))
     return llmRequest.copy(config = config.copy(tools = existingTools))
+  }
+
+  /**
+   * Fluent builder for [GoogleSearchTool], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var bypassMultiToolsLimit: Boolean = false
+
+    fun bypassMultiToolsLimit(bypassMultiToolsLimit: Boolean): Builder = apply {
+      this.bypassMultiToolsLimit = bypassMultiToolsLimit
+    }
+
+    fun build(): GoogleSearchTool = GoogleSearchTool(bypassMultiToolsLimit = bypassMultiToolsLimit)
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
   }
 }

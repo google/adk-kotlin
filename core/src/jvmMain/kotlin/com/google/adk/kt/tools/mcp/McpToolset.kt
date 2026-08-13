@@ -26,6 +26,8 @@ import com.google.adk.kt.tools.mcp.McpToolException.McpToolLoadingException
 import io.modelcontextprotocol.client.McpAsyncClient
 import io.modelcontextprotocol.spec.McpError
 import io.modelcontextprotocol.spec.McpSchema
+import kotlin.jvm.JvmOverloads
+import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.reactor.awaitSingle
@@ -399,6 +401,7 @@ internal constructor(
      * @throws IllegalArgumentException if zero or more than one of [stdioConnectionParams],
      *   [sseConnectionParams], and [streamableHttpConnectionParams] is set.
      */
+    @JvmOverloads
     fun toToolset(
       headerProvider: (suspend (ReadonlyContext) -> Map<String, String>)? = null,
       progressConsumers: List<(McpSchema.ProgressNotification) -> Unit> = emptyList(),
@@ -427,6 +430,57 @@ internal constructor(
       headerProvider: (suspend (ReadonlyContext) -> Map<String, String>)? = null,
     ): McpToolset =
       McpToolset(sessionManager, toolFilter, headerProvider, useMcpResources, maxMcpResourceLength)
+
+    /**
+     * Fluent builder for [McpToolsetConfig], provided primarily for Java callers. Any property left
+     * unset falls back to the same default as the constructor.
+     */
+    @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+    class Builder {
+      private var stdioConnectionParams: McpConnectionParameters.Stdio? = null
+      private var sseConnectionParams: McpConnectionParameters.Sse? = null
+      private var streamableHttpConnectionParams: McpConnectionParameters.StreamableHttp? = null
+      private var toolFilter: ToolFilter? = null
+      private var useMcpResources: Boolean = false
+      private var maxMcpResourceLength: Int = DEFAULT_MAX_RESOURCE_LENGTH
+
+      fun stdioConnectionParams(params: McpConnectionParameters.Stdio?): Builder = apply {
+        this.stdioConnectionParams = params
+      }
+
+      fun sseConnectionParams(params: McpConnectionParameters.Sse?): Builder = apply {
+        this.sseConnectionParams = params
+      }
+
+      fun streamableHttpConnectionParams(params: McpConnectionParameters.StreamableHttp?): Builder =
+        apply {
+          this.streamableHttpConnectionParams = params
+        }
+
+      fun toolFilter(toolFilter: ToolFilter?): Builder = apply { this.toolFilter = toolFilter }
+
+      fun useMcpResources(useMcpResources: Boolean): Builder = apply {
+        this.useMcpResources = useMcpResources
+      }
+
+      fun maxMcpResourceLength(maxMcpResourceLength: Int): Builder = apply {
+        this.maxMcpResourceLength = maxMcpResourceLength
+      }
+
+      fun build(): McpToolsetConfig =
+        McpToolsetConfig(
+          stdioConnectionParams = stdioConnectionParams,
+          sseConnectionParams = sseConnectionParams,
+          streamableHttpConnectionParams = streamableHttpConnectionParams,
+          toolFilter = toolFilter,
+          useMcpResources = useMcpResources,
+          maxMcpResourceLength = maxMcpResourceLength,
+        )
+    }
+
+    companion object {
+      @JvmStatic fun builder(): Builder = Builder()
+    }
   }
 }
 

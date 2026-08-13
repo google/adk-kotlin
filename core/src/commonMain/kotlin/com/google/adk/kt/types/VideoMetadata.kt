@@ -16,7 +16,9 @@
 
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.serialization.Serializable
 
 /** Metadata describing how to interpret a video [Part]. */
@@ -28,4 +30,40 @@ data class VideoMetadata(
   val endOffset: Duration? = null,
   /** The frame rate (frames per second) to sample the video at. */
   val fps: Double? = null,
-)
+) {
+  /** Returns [startOffset] in whole milliseconds, or `null` (its getter is mangled for Java). */
+  fun startOffsetMillis(): Long? = startOffset?.inWholeMilliseconds
+
+  /** Returns [endOffset] in whole milliseconds, or `null` (its getter is mangled for Java). */
+  fun endOffsetMillis(): Long? = endOffset?.inWholeMilliseconds
+
+  /**
+   * Fluent builder for [VideoMetadata], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var startOffset: Duration? = null
+    private var endOffset: Duration? = null
+    private var fps: Double? = null
+
+    /** Sets [startOffset] in milliseconds; the [Duration] constructor param is mangled for Java. */
+    fun startOffsetMillis(startOffsetMillis: Long): Builder = apply {
+      this.startOffset = startOffsetMillis.milliseconds
+    }
+
+    /** Sets [endOffset] in milliseconds; the [Duration] constructor param is mangled for Java. */
+    fun endOffsetMillis(endOffsetMillis: Long): Builder = apply {
+      this.endOffset = endOffsetMillis.milliseconds
+    }
+
+    fun fps(fps: Double?): Builder = apply { this.fps = fps }
+
+    fun build(): VideoMetadata =
+      VideoMetadata(startOffset = startOffset, endOffset = endOffset, fps = fps)
+  }
+
+  companion object {
+    @JvmStatic fun builder(): Builder = Builder()
+  }
+}
