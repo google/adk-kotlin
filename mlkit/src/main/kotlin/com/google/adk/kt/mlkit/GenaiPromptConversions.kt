@@ -23,6 +23,8 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.ThinkingConfig
+import com.google.adk.kt.types.ThinkingLevel
 import com.google.mlkit.genai.prompt.Candidate
 import com.google.mlkit.genai.prompt.Content as MlKitContent
 import com.google.mlkit.genai.prompt.GenerateContentRequest
@@ -75,6 +77,7 @@ internal object GenaiPromptConversions {
    *
    * The public ML Kit Prompt API has no per-turn role, so multi-turn requests prefix each turn's
    * text with a `[role]:` marker and prepend [multiTurnSystemInstruction] explaining the markers.
+   * Thinking is enabled unless the request has no [ThinkingConfig] or sets `thinkingBudget = 0`.
    */
   internal fun LlmRequest.toGenerateContentRequest(): GenerateContentRequest {
     val isMultiTurn = contents.size > 1
@@ -99,6 +102,7 @@ internal object GenaiPromptConversions {
       config.candidateCount?.let { candidateCount = it }
       config.maxOutputTokens?.let { maxOutputTokens = it }
       systemText?.let { systemInstruction = SystemInstruction(it) }
+      enableThinking = config.thinkingConfig.enablesThinking()
     }
 
     return builder.build()
@@ -107,7 +111,8 @@ internal object GenaiPromptConversions {
   /**
    * Maps an ADK [Content] (turn) to an ML Kit [MlKitContent], preserving the original order of
    * parts: consecutive text parts are joined with "\n\n", and image parts keep their position
-   * relative to the text. Returns `null` if the turn has no text or image.
+   * relative to the text. Thought parts are dropped. Returns `null` if the turn has no text or
+   * image left.
    *
    * When [includeRoleMarkers] is true, a `[role]:` marker is attached to the start of the turn (as
    * a prefix on the first text, or as a leading text part if the turn starts with an image).
@@ -136,6 +141,9 @@ internal object GenaiPromptConversions {
     }
 
     for (part in parts) {
+      // A thought is the model's private reasoning. Replaying it would spend the device's small
+      // context on it and tell the model it had said its own reasoning out loud.
+      if (part.thought == true) continue
       val text = part.text
       if (!text.isNullOrEmpty()) {
         if (textGroup.isNotEmpty()) textGroup.append(instructionSeparator)
@@ -159,31 +167,91 @@ internal object GenaiPromptConversions {
   }
 
   /**
+   * Whether ML Kit's thinking mode should be enabled for this [ThinkingConfig].
+   *
+   * ML Kit offers a single on/off switch, so thinking is on whenever a config is present, except
+   * for `thinkingBudget = 0`, which is the genai encoding of DISABLED. An explicit positive token
+   * budget and [ThinkingLevel] have no ML Kit equivalent and are ignored with a debug log.
+   */
+  private fun ThinkingConfig?.enablesThinking(): Boolean {
+    if (this == null) return false
+    val budget = thinkingBudget
+    if (budget == 0) return false
+
+    val unsupported =
+      listOfNotNull(
+        budget?.takeIf { it > 0 }?.let { "thinkingBudget=$it" },
+        thinkingLevel
+          ?.takeIf { it != ThinkingLevel.THINKING_LEVEL_UNSPECIFIED }
+          ?.let { "thinkingLevel=$it" },
+      )
+    if (unsupported.isNotEmpty()) {
+      // Debug, not warn: this fires on every request of an agent whose config is shared with a
+      // cloud model, and the ignored fields are a config-level fact rather than a per-call problem.
+      logger.debug {
+        "ML Kit supports thinking as on or off only; ignoring ${unsupported.joinToString()}."
+      }
+    }
+    return true
+  }
+
+  /**
+   * Whether the caller asked for the model's thoughts to be returned, mirroring genai's
+   * [ThinkingConfig.includeThoughts].
+   */
+  internal fun LlmRequest.includeThoughts(): Boolean =
+    config.thinkingConfig?.includeThoughts == true
+
+  /**
    * Converts a [GenerateContentResponse] to an [LlmResponse].
    *
-   * Only the first candidate is used.
+   * Only the first candidate and the first thought are used, and the two are not necessarily
+   * related: ML Kit sorts and dedupes candidates by score but leaves thoughts in their original
+   * order, so above `candidateCount = 1` their pairing is not guaranteed.
+   *
+   * The thought is surfaced only when [includeThoughts] is set, so a request behaves the way the
+   * same [ThinkingConfig] would on a cloud model.
    */
-  internal fun GenerateContentResponse.toLlmResponse(): LlmResponse {
+  internal fun GenerateContentResponse.toLlmResponse(includeThoughts: Boolean): LlmResponse {
     if (candidates.size > 1) {
       logger.warn {
         "Multiple candidates present in GenerateContentResponse. Only the first one will be used in the LlmResponse."
       }
     }
+    val thoughtText = selectThoughtText(thoughtProcess.map { it.text }, includeThoughts)
 
     val candidate = candidates.firstOrNull()
     return buildLlmResponse(
       text = candidate?.text,
+      thoughtText = thoughtText,
       mlKitFinishReason = candidate?.finishReason,
       hasThoughtProcess = thoughtProcess.isNotEmpty(),
     )
   }
 
   /**
+   * The thought to surface, or `null` when there is none or the caller did not ask for one.
+   *
+   * Takes plain strings rather than a [GenerateContentResponse] so this gate stays unit-testable:
+   * the published ML Kit artifact hides the factories that would build one, so a test running
+   * against that artifact cannot fabricate a thought-bearing response.
+   */
+  internal fun selectThoughtText(thoughtTexts: List<String>, includeThoughts: Boolean): String? {
+    if (!includeThoughts) return null
+    if (thoughtTexts.size > 1) {
+      logger.warn {
+        "Multiple thoughts present in GenerateContentResponse. Only the first one will be used in the LlmResponse."
+      }
+    }
+    return thoughtTexts.firstOrNull()?.takeIf { it.isNotEmpty() }
+  }
+
+  /**
    * Builds an [LlmResponse] from an ML Kit candidate's fields.
    *
-   * Missing [text] is an error, unless [hasThoughtProcess] is true: ML Kit streams thoughts as
-   * candidate-less chunks, and reporting those as errors would propagate into the aggregated final
-   * response.
+   * Having neither [text] nor [thoughtText] is an error, unless [hasThoughtProcess] is true: ML Kit
+   * streams thoughts as candidate-less chunks, and reporting those as errors would propagate into
+   * the aggregated final response.
    *
    * Takes plain values rather than a [GenerateContentResponse] so these rules stay unit-testable.
    */
@@ -191,6 +259,7 @@ internal object GenaiPromptConversions {
     text: String?,
     mlKitFinishReason: Int?,
     hasThoughtProcess: Boolean,
+    thoughtText: String? = null,
   ): LlmResponse {
     val finishReason = mlKitFinishReason?.let {
       when (it) {
@@ -200,16 +269,22 @@ internal object GenaiPromptConversions {
       }
     }
 
+    // Within one response the thought leads, so a reader meets the reasoning before its answer.
+    val parts = buildList {
+      thoughtText?.let { add(Part(text = it, thought = true)) }
+      text?.let { add(Part(text = it)) }
+    }
+
     val errorMessage =
       when {
-        text == null && !hasThoughtProcess -> "No candidates returned."
+        parts.isEmpty() && !hasThoughtProcess -> "No candidates returned."
         finishReason != null && finishReason != FinishReason.STOP ->
           "Generation finished with reason: $finishReason"
         else -> null
       }
 
     return LlmResponse(
-      content = text?.let { Content(role = Role.MODEL, parts = listOf(Part(text = it))) },
+      content = parts.ifEmpty { null }?.let { Content(role = Role.MODEL, parts = it) },
       finishReason = finishReason,
       errorMessage = errorMessage,
     )

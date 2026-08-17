@@ -47,13 +47,15 @@ internal object GenaiPromptTracing {
     val imageCount = parts.filterIsInstance<ImagePart>().size
     val systemInstructionLength = generateContentRequest.systemInstruction?.textString?.length ?: 0
     return "generateContentRequest: text: ${redactedText(textLength)}, " +
-      "systemInstruction: ${redactedText(systemInstructionLength)}, images: $imageCount"
+      "systemInstruction: ${redactedText(systemInstructionLength)}, images: $imageCount, " +
+      "enableThinking: ${generateContentRequest.enableThinking}"
   }
 
   internal fun format(generateContentResponse: GenerateContentResponse): String {
     val candidate = generateContentResponse.candidates.firstOrNull()
+    val thoughtLength = generateContentResponse.thoughtProcess.firstOrNull()?.text?.length ?: 0
     return "generateContentResponse text: ${redactedText(candidate?.text?.length ?: 0)}, " +
-      "finishReason: ${candidate?.finishReason}"
+      "thought: ${redactedText(thoughtLength)}, finishReason: ${candidate?.finishReason}"
   }
 
   internal fun format(llmResponse: LlmResponse): String = llmResponse.redacted().toString()
@@ -76,8 +78,8 @@ internal object GenaiPromptTracing {
 
   /**
    * Returns a copy of this [Part] with any sensitive content - text, function call arguments and
-   * function responses - redacted. Non-sensitive fields (inline data, file data, thoughts) are left
-   * untouched.
+   * function responses - redacted. Non-sensitive fields (inline data, file data, the thought flag)
+   * are left untouched.
    */
   private fun Part.redacted(): Part =
     copy(
