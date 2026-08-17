@@ -29,6 +29,7 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.examples.android.common.ScopedExampleActivity
 import com.google.adk.kt.examples.android.common.foldTextParts
+import com.google.adk.kt.examples.android.common.foldThoughtParts
 import com.google.adk.kt.examples.android.common.ui.AdkExamplesTheme
 import com.google.adk.kt.examples.android.common.ui.ChatAuthor
 import com.google.adk.kt.examples.android.common.ui.ChatMessage
@@ -38,8 +39,14 @@ import com.google.adk.kt.mlkit.GenerativeModelHelpers
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.ThinkingConfig
+import com.google.mlkit.genai.prompt.GenerativeModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 
 /**
@@ -51,6 +58,10 @@ import kotlinx.coroutines.launch
  * - **Streaming vs non-streaming:** the "Stream" toggle chooses the [RunConfig.streamingMode].
  *   [StreamingMode.SSE] grows the reply bubble in place from partial chunks, then replaces it with
  *   the aggregated final text; [StreamingMode.NONE] appends just the one aggregated turn.
+ * - **Thinking:** the "Show the model's thinking" toggle rebuilds the agent with a
+ *   [ThinkingConfig], so the model reasons before answering and returns that reasoning as parts
+ *   marked as thoughts, shown here in their own bubble. Switching it off drops the config again, so
+ *   the model stops reasoning too. It needs a Gemini Nano that supports thinking mode.
  *
  * The model runs fully on-device, so no API key or network is required (the first run may download
  * Gemini Nano). Contrast with the Skills example, which needs cloud Gemini because it uses tools.
@@ -61,12 +72,20 @@ class MlKitChatActivity : ScopedExampleActivity() {
   // to demonstrate multi-turn context. (The Room-session example shows how to persist it to disk.)
   private val sessionService = InMemorySessionService()
 
-  // Built lazily because initializing the on-device model is a suspend call.
+  // Built once and reused: creating the ML Kit client is expensive, and thinking is a per-request
+  // field, so changing it does not need a new client.
+  private var generativeModel: GenerativeModel? = null
   private var runner: InMemoryRunner? = null
 
   private val messages = mutableStateListOf<ChatMessage>()
-  private var inputEnabled by mutableStateOf(false)
+  private var modelReady by mutableStateOf(false)
+  private var busy by mutableStateOf(false)
   private var streaming by mutableStateOf(true)
+  private var thinking by mutableStateOf(false)
+
+  /** Input and the thinking switch are live only once the model is ready and no turn is running. */
+  private val idle: Boolean
+    get() = modelReady && !busy
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -76,38 +95,85 @@ class MlKitChatActivity : ScopedExampleActivity() {
         ChatScreen(
           title = "ML Kit chat (Gemini Nano)",
           messages = messages,
-          inputEnabled = inputEnabled,
+          inputEnabled = idle,
           onSend = ::sendToAgent,
           onBack = ::finish,
           streaming = streaming,
           onStreamingChange = { streaming = it },
+          thinking = thinking,
+          onThinkingChange = ::rebuildRunner,
+          thinkingEnabled = idle,
         )
       }
     }
 
-    scope.launch {
-      addSystem("Preparing the on-device model (the first run may download Gemini Nano)…")
-      initRunner()
-    }
+    addSystem("Preparing the on-device model (the first run may download Gemini Nano)…")
+    rebuildRunner(thinking)
   }
 
-  private suspend fun initRunner() {
-    try {
-      val agent =
-        LlmAgent(
-          name = AGENT_NAME,
-          model =
-            GenaiPrompt.create(GenerativeModelHelpers.initGenerativeModel(), name = "gemini-nano"),
-          instruction = Instruction("You are a helpful assistant. Keep replies concise."),
-        )
-      runner = InMemoryRunner(agent = agent, appName = APP_NAME, sessionService = sessionService)
-      addSystem(
-        "Model ready. This is a multi-turn chat — try a question and then a follow-up. Toggle " +
-          "\"Stream\" to compare streaming and non-streaming replies."
-      )
-      runOnUiThread { inputEnabled = true }
-    } catch (e: Exception) {
-      addSystem("On-device model unavailable on this device: ${e.message}")
+  override fun onDestroy() {
+    // Release only once the scope has finished: cancelling it does not wait, so a turn may still
+    // be inside ML Kit on another thread.
+    val closing = runner
+    val closingModel = generativeModel
+    scope.coroutineContext.job.invokeOnCompletion {
+      closing?.close()
+      closingModel?.close()
+    }
+    scope.cancel()
+    super.onDestroy()
+  }
+
+  /**
+   * Replaces the runner with one whose agent asks for [includeThoughts]. Thinking is fixed on the
+   * agent's request config when the agent is built, so changing it needs a new agent. The session
+   * is kept, so the conversation survives the switch.
+   */
+  private fun rebuildRunner(includeThoughts: Boolean) {
+    busy = true
+    scope.launch {
+      try {
+        val model =
+          generativeModel
+            ?: GenerativeModelHelpers.initGenerativeModel().also { generativeModel = it }
+        val agent =
+          LlmAgent(
+            name = AGENT_NAME,
+            model = GenaiPrompt.create(model, name = "gemini-nano"),
+            instruction = Instruction("You are a helpful assistant. Keep replies concise."),
+            generateContentConfig =
+              GenerateContentConfig(
+                // A null config leaves thinking off; asking for thoughts turns it on.
+                thinkingConfig =
+                  if (includeThoughts) ThinkingConfig(includeThoughts = true) else null
+              ),
+          )
+        val previous = runner
+        runner = InMemoryRunner(agent = agent, appName = APP_NAME, sessionService = sessionService)
+        previous?.close()
+        if (previous == null) {
+          addSystem(
+            "Model ready. This is a multi-turn chat — try a question and then a follow-up. " +
+              "Toggle \"Stream\" to compare streaming and non-streaming replies, and \"Show " +
+              "the model's thinking\" to make it reason first."
+          )
+        }
+        // Only now does the switch move: on a failed rebuild it stays on the agent still in use.
+        runOnUiThread {
+          thinking = includeThoughts
+          modelReady = true
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        // Once the model exists the device is fine, so only the agent rebuild can have failed.
+        val what =
+          if (generativeModel == null) "On-device model unavailable on this device"
+          else "Could not switch thinking mode"
+        addSystem("$what: ${e.message}")
+      } finally {
+        runOnUiThread { busy = false }
+      }
     }
   }
 
@@ -116,7 +182,8 @@ class MlKitChatActivity : ScopedExampleActivity() {
     val useStreaming = streaming
     add(ChatAuthor.USER, text)
     // Lock the input for the duration of the turn so turns can't interleave in the shared session.
-    runOnUiThread { inputEnabled = false }
+    // The same flag gates the thinking switch, so a rebuild cannot land mid-turn either.
+    runOnUiThread { busy = true }
 
     scope.launch {
       try {
@@ -130,23 +197,37 @@ class MlKitChatActivity : ScopedExampleActivity() {
           )
 
         if (useStreaming) {
-          // SSE mode: grow one reply bubble from partial deltas, then replace it with the
-          // authoritative aggregated text from the final (non-partial) event.
-          val partial = StringBuilder()
-          var index = -1
+          // SSE mode: grow the thought and reply bubbles from partial deltas, then replace them
+          // with the authoritative aggregated text from the final (non-partial) event.
+          val partialThought = StringBuilder()
+          val partialReply = StringBuilder()
+          var thoughtIndex = -1
+          var replyIndex = -1
           events.collect { event ->
             if (event.author != AGENT_NAME) return@collect
-            val chunk = event.foldTextParts()
+            val thoughtChunk = event.foldThoughtParts()
+            val replyChunk = event.foldTextParts()
             val isPartial = event.partial
             runOnUiThread {
               if (isPartial) {
-                if (chunk.isNotEmpty()) {
-                  partial.append(chunk)
-                  index = upsertAgentBubble(index, partial.toString())
+                if (thoughtChunk.isNotEmpty()) {
+                  partialThought.append(thoughtChunk)
+                  thoughtIndex =
+                    upsertBubble(thoughtIndex, ChatAuthor.THOUGHT, partialThought.toString())
+                }
+                if (replyChunk.isNotEmpty()) {
+                  partialReply.append(replyChunk)
+                  replyIndex = upsertBubble(replyIndex, ChatAuthor.AGENT, partialReply.toString())
                 }
               } else {
-                val finalText = chunk.ifBlank { partial.toString() }.trim()
-                if (finalText.isNotEmpty()) index = upsertAgentBubble(index, finalText)
+                val finalThought = thoughtChunk.ifBlank { partialThought.toString() }.trim()
+                if (finalThought.isNotEmpty()) {
+                  thoughtIndex = upsertBubble(thoughtIndex, ChatAuthor.THOUGHT, finalThought)
+                }
+                val finalText = replyChunk.ifBlank { partialReply.toString() }.trim()
+                if (finalText.isNotEmpty()) {
+                  replyIndex = upsertBubble(replyIndex, ChatAuthor.AGENT, finalText)
+                }
               }
             }
           }
@@ -154,26 +235,30 @@ class MlKitChatActivity : ScopedExampleActivity() {
           // Non-streaming mode: a single aggregated turn, no partial chunks.
           events.collect { event ->
             if (event.author == AGENT_NAME && !event.partial) {
+              val thought = event.foldThoughtParts().trim()
+              if (thought.isNotEmpty()) add(ChatAuthor.THOUGHT, thought)
               val reply = event.foldTextParts().trim()
               if (reply.isNotEmpty()) add(ChatAuthor.AGENT, reply)
             }
           }
         }
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
         addSystem("Error: ${e.message ?: e::class.simpleName}")
       } finally {
-        runOnUiThread { inputEnabled = true }
+        runOnUiThread { busy = false }
       }
     }
   }
 
   /**
-   * Adds the streaming reply bubble on first use, or updates it in place afterwards. Returns the
-   * bubble's index. Must run on the UI thread.
+   * Adds a streaming bubble on first use, or updates it in place afterwards. Returns the bubble's
+   * index. Must run on the UI thread.
    */
-  private fun upsertAgentBubble(index: Int, text: String): Int {
+  private fun upsertBubble(index: Int, author: ChatAuthor, text: String): Int {
     if (index < 0) {
-      messages.add(ChatMessage(ChatAuthor.AGENT, text, AGENT_NAME))
+      messages.add(ChatMessage(author, text, labelFor(author)))
       return messages.lastIndex
     }
     messages[index] = messages[index].copy(text = text)
@@ -181,9 +266,15 @@ class MlKitChatActivity : ScopedExampleActivity() {
   }
 
   private fun add(author: ChatAuthor, text: String) {
-    val label = if (author == ChatAuthor.AGENT) AGENT_NAME else ""
-    runOnUiThread { messages.add(ChatMessage(author, text, label)) }
+    runOnUiThread { messages.add(ChatMessage(author, text, labelFor(author))) }
   }
+
+  private fun labelFor(author: ChatAuthor): String =
+    when (author) {
+      ChatAuthor.AGENT -> AGENT_NAME
+      ChatAuthor.THOUGHT -> "thinking"
+      else -> ""
+    }
 
   private fun addSystem(text: String) {
     runOnUiThread { messages.add(ChatMessage(ChatAuthor.SYSTEM, text)) }

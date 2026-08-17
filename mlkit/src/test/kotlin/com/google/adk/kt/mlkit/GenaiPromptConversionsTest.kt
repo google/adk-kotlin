@@ -22,6 +22,8 @@ import androidx.core.net.toUri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.adk.kt.mlkit.GenaiPromptConversions.buildLlmResponse
+import com.google.adk.kt.mlkit.GenaiPromptConversions.includeThoughts
+import com.google.adk.kt.mlkit.GenaiPromptConversions.selectThoughtText
 import com.google.adk.kt.mlkit.GenaiPromptConversions.toGenerateContentRequest
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Blob
@@ -30,6 +32,8 @@ import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.ThinkingConfig
+import com.google.adk.kt.types.ThinkingLevel
 import com.google.common.truth.Truth.assertThat
 import com.google.mlkit.common.sdkinternal.MlKitContext
 import com.google.mlkit.genai.prompt.Candidate.FinishReason as MlKitFinishReason
@@ -291,6 +295,207 @@ class GenaiPromptConversionsTest {
     assertThat(generateContentRequest.maxOutputTokens).isEqualTo(100)
   }
 
+  /** Builds a minimal request carrying [thinkingConfig] and converts it. */
+  private fun thinkingRequest(thinkingConfig: ThinkingConfig?) =
+    LlmRequest(
+        contents = listOf(Content(role = "user", parts = listOf(Part(text = "Hello World")))),
+        config = GenerateContentConfig(thinkingConfig = thinkingConfig),
+      )
+      .toGenerateContentRequest()
+
+  /** Without a thinking config the request explicitly disables thinking. */
+  @Test
+  fun toGenerateContentRequest_noThinkingConfig_disablesThinking() {
+    assertThat(thinkingRequest(null).enableThinking).isFalse()
+  }
+
+  /** Asking for a thinking config at all is enough to turn thinking on. */
+  @Test
+  fun toGenerateContentRequest_emptyThinkingConfig_enablesThinking() {
+    assertThat(thinkingRequest(ThinkingConfig()).enableThinking).isTrue()
+  }
+
+  @Test
+  fun toGenerateContentRequest_includeThoughts_enablesThinking() {
+    assertThat(thinkingRequest(ThinkingConfig(includeThoughts = true)).enableThinking).isTrue()
+  }
+
+  /** A zero budget is genai's encoding of DISABLED. */
+  @Test
+  fun toGenerateContentRequest_zeroThinkingBudget_disablesThinking() {
+    assertThat(thinkingRequest(ThinkingConfig(thinkingBudget = 0)).enableThinking).isFalse()
+  }
+
+  /** A zero budget wins over a request for thoughts: there is nothing to think about. */
+  @Test
+  fun toGenerateContentRequest_zeroThinkingBudgetWithIncludeThoughts_disablesThinking() {
+    val config = ThinkingConfig(thinkingBudget = 0, includeThoughts = true)
+
+    assertThat(thinkingRequest(config).enableThinking).isFalse()
+  }
+
+  /** -1 is genai's AUTOMATIC, which ML Kit expresses as simply on. */
+  @Test
+  fun toGenerateContentRequest_automaticThinkingBudget_enablesThinking() {
+    assertThat(thinkingRequest(ThinkingConfig(thinkingBudget = -1)).enableThinking).isTrue()
+  }
+
+  /** ML Kit has no token budget, so a positive one still just turns thinking on. */
+  @Test
+  fun toGenerateContentRequest_positiveThinkingBudget_enablesThinking() {
+    assertThat(thinkingRequest(ThinkingConfig(thinkingBudget = 2048)).enableThinking).isTrue()
+  }
+
+  /** ML Kit has no thinking level, so any level still just turns thinking on. */
+  @Test
+  fun toGenerateContentRequest_thinkingLevel_enablesThinking() {
+    val config = ThinkingConfig(thinkingLevel = ThinkingLevel.HIGH)
+
+    assertThat(thinkingRequest(config).enableThinking).isTrue()
+  }
+
+  /**
+   * The gate itself, not just the flag that feeds it: with the thoughts declined nothing is
+   * surfaced however many the model returned. This is the mirror's only coverage of that branch,
+   * since Gradle cannot build a thought-bearing ML Kit response.
+   */
+  @Test
+  fun selectThoughtText_thoughtsDeclined_returnsNull() {
+    assertThat(selectThoughtText(listOf("counting things"), includeThoughts = false)).isNull()
+  }
+
+  @Test
+  fun selectThoughtText_thoughtsRequested_returnsTheThought() {
+    assertThat(selectThoughtText(listOf("counting things"), includeThoughts = true))
+      .isEqualTo("counting things")
+  }
+
+  /** ML Kit does not pair thoughts with candidates, so only the first is used. */
+  @Test
+  fun selectThoughtText_severalThoughts_returnsTheFirst() {
+    val thoughts = listOf("first thought", "second thought")
+
+    assertThat(selectThoughtText(thoughts, includeThoughts = true)).isEqualTo("first thought")
+  }
+
+  /** An empty thought is nothing to show. */
+  @Test
+  fun selectThoughtText_emptyThought_returnsNull() {
+    assertThat(selectThoughtText(listOf(""), includeThoughts = true)).isNull()
+  }
+
+  @Test
+  fun selectThoughtText_noThoughts_returnsNull() {
+    assertThat(selectThoughtText(emptyList(), includeThoughts = true)).isNull()
+  }
+
+  /**
+   * Whether the caller wants the thoughts back is read straight off the config. The response side
+   * of the gate is covered end to end in internal/mlkit, which can fabricate ML Kit responses.
+   */
+  @Test
+  fun includeThoughts_requestedOnThinkingConfig_isTrue() {
+    val request =
+      LlmRequest(
+        config = GenerateContentConfig(thinkingConfig = ThinkingConfig(includeThoughts = true))
+      )
+
+    assertThat(request.includeThoughts()).isTrue()
+  }
+
+  @Test
+  fun includeThoughts_declinedOnThinkingConfig_isFalse() {
+    val request =
+      LlmRequest(
+        config = GenerateContentConfig(thinkingConfig = ThinkingConfig(includeThoughts = false))
+      )
+
+    assertThat(request.includeThoughts()).isFalse()
+  }
+
+  /** Thinking may still be on via the budget; that alone does not ask for the thoughts. */
+  @Test
+  fun includeThoughts_thinkingConfigWithoutTheFlag_isFalse() {
+    val request =
+      LlmRequest(
+        config = GenerateContentConfig(thinkingConfig = ThinkingConfig(thinkingBudget = -1))
+      )
+
+    assertThat(request.includeThoughts()).isFalse()
+  }
+
+  @Test
+  fun includeThoughts_noThinkingConfig_isFalse() {
+    assertThat(LlmRequest().includeThoughts()).isFalse()
+  }
+
+  /** An unspecified level is not a level, so it is neither honored nor reported as unsupported. */
+  @Test
+  fun toGenerateContentRequest_unspecifiedThinkingLevel_enablesThinking() {
+    val config = ThinkingConfig(thinkingLevel = ThinkingLevel.THINKING_LEVEL_UNSPECIFIED)
+
+    assertThat(thinkingRequest(config).enableThinking).isTrue()
+  }
+
+  /**
+   * A thought from an earlier turn is the model's private reasoning, so it never goes back to the
+   * model - it would otherwise be replayed inside the `[model]:` turn.
+   */
+  @Test
+  fun toGenerateContentRequest_historyWithThought_dropsTheThought() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(role = "user", parts = listOf(Part(text = "How much?"))),
+            Content(
+              role = "model",
+              parts =
+                listOf(
+                  Part(text = "the shop charges 5 for 3", thought = true),
+                  Part(text = "20 dollars"),
+                ),
+            ),
+            Content(role = "user", parts = listOf(Part(text = "And for six?"))),
+          )
+      )
+
+    val texts =
+      request
+        .toGenerateContentRequest()
+        .contents
+        .flatMap { it.parts }
+        .filterIsInstance<TextPart>()
+        .map { it.textString }
+
+    assertThat(texts)
+      .containsExactly("[user]: How much?", "[model]: 20 dollars", "[user]: And for six?")
+      .inOrder()
+  }
+
+  /** A turn that is nothing but a thought contributes no content at all. */
+  @Test
+  fun toGenerateContentRequest_historyWithThoughtOnlyTurn_dropsTheTurn() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            Content(role = "user", parts = listOf(Part(text = "How much?"))),
+            Content(role = "model", parts = listOf(Part(text = "reasoning", thought = true))),
+          )
+      )
+
+    val texts =
+      request
+        .toGenerateContentRequest()
+        .contents
+        .flatMap { it.parts }
+        .filterIsInstance<TextPart>()
+        .map { it.textString }
+
+    assertThat(texts).containsExactly("[user]: How much?")
+  }
+
   @Ignore("throws java.lang.VerifyError")
   fun toGenerateContentRequest_nonImageMimeType_isIgnored() {
     val request =
@@ -399,7 +604,10 @@ class GenaiPromptConversionsTest {
     assertThat(response.errorMessage).isEqualTo("No candidates returned.")
   }
 
-  /** ML Kit's thought chunks carry no candidate, so they are not errors. */
+  /**
+   * ML Kit's thought chunks carry no candidate. With the thought suppressed - the caller did not
+   * set `includeThoughts` - the chunk is empty, but it is still not an error.
+   */
   @Test
   fun buildLlmResponse_noCandidateButThoughtProcess_hasNoErrorMessage() {
     val response = buildLlmResponse(text = null, mlKitFinishReason = null, hasThoughtProcess = true)

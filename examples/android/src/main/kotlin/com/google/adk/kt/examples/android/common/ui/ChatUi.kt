@@ -55,6 +55,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 
@@ -62,6 +63,8 @@ import androidx.compose.ui.unit.dp
 enum class ChatAuthor {
   USER,
   AGENT,
+  /** The model's reasoning, rendered as an italic bubble above the answer it produced. */
+  THOUGHT,
   /** A status/hint line (e.g. "Ready…", errors) rendered centered, not as a bubble. */
   SYSTEM,
 }
@@ -71,9 +74,9 @@ data class ChatMessage(val author: ChatAuthor, val text: String, val label: Stri
 
 /**
  * Shared Material 3 chat screen used by every example: an app bar with a back button, a scrolling
- * list of message bubbles, and an input bar. When [onStreamingChange] is supplied, a "Stream"
- * toggle is shown above the input. The optional [footer] allows adding custom content between the
- * transcript and the input bar.
+ * list of message bubbles, and an input bar. Supplying [onStreamingChange] or [onThinkingChange]
+ * adds the matching toggle above the input (both used by the ML Kit example). The optional [footer]
+ * allows adding custom content between the transcript and the input bar.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,6 +89,9 @@ fun ChatScreen(
   hint: String = "Type a message…",
   streaming: Boolean = false,
   onStreamingChange: ((Boolean) -> Unit)? = null,
+  thinking: Boolean = false,
+  onThinkingChange: ((Boolean) -> Unit)? = null,
+  thinkingEnabled: Boolean = true,
   footer: @Composable (() -> Unit)? = null,
 ) {
   Scaffold(
@@ -104,7 +110,11 @@ fun ChatScreen(
       MessageList(messages, Modifier.weight(1f))
       footer?.invoke()
       if (onStreamingChange != null) {
-        StreamToggle(streaming, onStreamingChange)
+        LabeledToggle("Stream responses", streaming, onStreamingChange)
+      }
+      if (onThinkingChange != null) {
+        // Disabled mid-turn: changing it rebuilds the agent, which must not land inside a turn.
+        LabeledToggle("Show the model's thinking", thinking, onThinkingChange, thinkingEnabled)
       }
       ChatInputBar(inputEnabled, hint, onSend)
     }
@@ -141,10 +151,19 @@ private fun MessageRow(message: ChatMessage) {
   }
 
   val isUser = message.author == ChatAuthor.USER
+  val isThought = message.author == ChatAuthor.THOUGHT
   val bubbleColor =
-    if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    when {
+      isUser -> MaterialTheme.colorScheme.primary
+      isThought -> MaterialTheme.colorScheme.secondaryContainer
+      else -> MaterialTheme.colorScheme.surfaceVariant
+    }
   val contentColor =
-    if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    when {
+      isUser -> MaterialTheme.colorScheme.onPrimary
+      isThought -> MaterialTheme.colorScheme.onSecondaryContainer
+      else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
   val shape =
     if (isUser) RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
     else RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
@@ -162,24 +181,33 @@ private fun MessageRow(message: ChatMessage) {
           )
           Spacer(Modifier.padding(top = 2.dp))
         }
-        Text(message.text, style = MaterialTheme.typography.bodyLarge)
+        Text(
+          message.text,
+          style =
+            if (isThought) {
+              MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic)
+            } else {
+              MaterialTheme.typography.bodyLarge
+            },
+        )
       }
     }
   }
 }
 
 @Composable
-private fun StreamToggle(streaming: Boolean, onStreamingChange: (Boolean) -> Unit) {
+private fun LabeledToggle(
+  label: String,
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit,
+  enabled: Boolean = true,
+) {
   Row(
     Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Text(
-      "Stream responses",
-      style = MaterialTheme.typography.bodyMedium,
-      modifier = Modifier.weight(1f),
-    )
-    Switch(checked = streaming, onCheckedChange = onStreamingChange)
+    Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+    Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
   }
 }
 
