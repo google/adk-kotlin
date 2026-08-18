@@ -22,6 +22,8 @@ import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.a2a.converters.extractPreprocessedEvents
 import com.google.adk.kt.a2a.converters.findUserFunctionCall
 import com.google.adk.kt.a2a.converters.taskId
+import com.google.adk.kt.a2a.converters.trustedCallNamesById
+import com.google.adk.kt.a2a.converters.withoutCredentialResponses
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.callbacks.AfterAgentCallback
@@ -72,13 +74,25 @@ abstract class BaseRemoteA2AAgent(
     return createA2aCallbackFlow(context, outboundEvent)
   }
 
-  /** Returns the prepared event to be sent to the remote agent. */
+  /**
+   * Returns the prepared event to be sent to the remote agent.
+   *
+   * The event may have no parts, when dropping credentials emptied it and no history remains;
+   * callers must not send it in that state.
+   */
   protected fun prepareOutboundEvent(context: InvocationContext): Event {
     val callEvent = context.session.events.findUserFunctionCall()
 
-    if (callEvent != null) {
-      val responseEvent = context.session.events.last()
-      val updatedMetadata = (responseEvent.customMetadata ?: emptyMap()).toMutableMap()
+    // Classified by the name the CALL was made under, so a mislabelled response is still caught.
+    val responseEvent =
+      context.session.events
+        .lastOrNull()
+        ?.withoutCredentialResponses(callEvent?.trustedCallNamesById() ?: emptyMap())
+
+    // A resume the drop left empty falls through to the history rebuild: an empty Message is
+    // rejected by the SDK.
+    if (callEvent != null && responseEvent?.content?.parts?.isNotEmpty() == true) {
+      val updatedMetadata = responseEvent.customMetadata.orEmpty().toMutableMap()
       updatedMetadata[ADK_METADATA_TASK_ID] = callEvent.taskId
       updatedMetadata[ADK_METADATA_CONTEXT_ID] = callEvent.contextId
 

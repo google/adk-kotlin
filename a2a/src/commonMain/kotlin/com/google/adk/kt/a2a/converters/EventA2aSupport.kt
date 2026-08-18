@@ -20,6 +20,8 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -95,10 +97,12 @@ internal fun InvocationContext.extractPreprocessedEvents(): List<Event> {
   val contextIdValue = if (lastResponseIndex != -1) events[lastResponseIndex].contextId else ""
 
   return events.drop(lastResponseIndex + 1).map { event ->
-    if (event.author != Role.USER && event.author != agent.name) {
-      presentAsUserMessage(event, contextIdValue, invocationId)
+    // Before presentAsUserMessage, which would stringify a response beyond the classifier's reach.
+    val sanitized = event.withoutCredentialResponses()
+    if (sanitized.author != Role.USER && sanitized.author != agent.name) {
+      presentAsUserMessage(sanitized, contextIdValue, invocationId)
     } else {
-      event
+      sanitized
     }
   }
 }
@@ -195,3 +199,67 @@ private fun Event.isUserFunctionCall(functionResponseId: String): Boolean {
 private fun Event.metadataValue(key: String): String {
   return customMetadata?.get(key)?.toString() ?: ""
 }
+
+/**
+ * Function-call names whose responses carry credential material.
+ *
+ * A response to one of these is consumed locally by ADK; it is never part of what the remote agent
+ * asked for.
+ */
+private val CREDENTIAL_FUNCTION_CALL_NAMES = setOf(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME)
+
+/**
+ * Response keys that identify an auth-config payload, in both the snake_case the A2A wire uses and
+ * the camelCase Kotlin callers tend to write.
+ */
+private val CREDENTIAL_PAYLOAD_KEYS =
+  setOf(
+    "auth_scheme",
+    "authScheme",
+    "exchanged_auth_credential",
+    "exchangedAuthCredential",
+    "raw_auth_credential",
+    "rawAuthCredential",
+  )
+
+/**
+ * Maps each of this call event's pending call ids to the names it was called under.
+ *
+ * Classification uses the name the *call* was made under, so it does not depend on what the
+ * response calls itself.
+ */
+internal fun Event.trustedCallNamesById(): Map<String?, Set<String>> =
+  functionCalls().groupBy({ it.id }, { it.name }).mapValues { (_, names) -> names.toSet() }
+
+/**
+ * Returns this event without any function-response part that carries credential material.
+ *
+ * A response counts as credential-bearing when the call it answers is a known credential request
+ * (resolved through [trustedCallNames]), when it names one itself, or when its payload is shaped
+ * like an auth config, looking through a single-key `result` envelope.
+ */
+internal fun Event.withoutCredentialResponses(
+  trustedCallNames: Map<String?, Set<String>> = emptyMap()
+): Event {
+  val content = content ?: return this
+  val kept =
+    content.parts.filterNot { part ->
+      val response = part.functionResponse
+      response != null && response.isCredential(trustedCallNames[response.id])
+    }
+  if (kept.size == content.parts.size) return this
+  return copy(content = content.copy(parts = kept))
+}
+
+private fun FunctionResponse.isCredential(trustedNames: Set<String>?): Boolean =
+  trustedNames?.any { it in CREDENTIAL_FUNCTION_CALL_NAMES } == true ||
+    name in CREDENTIAL_FUNCTION_CALL_NAMES ||
+    response.unwrapResult().isAuthConfigShaped()
+
+/** Looks through the `{"result": {...}}` envelope ADK wraps a tool result in. */
+private fun Map<String, Any?>.unwrapResult(): Map<*, *> =
+  (entries.singleOrNull()?.takeIf { it.key == RESULT_KEY }?.value as? Map<*, *>) ?: this
+
+private fun Map<*, *>.isAuthConfigShaped(): Boolean = keys.any { it in CREDENTIAL_PAYLOAD_KEYS }
+
+private const val RESULT_KEY = "result"
