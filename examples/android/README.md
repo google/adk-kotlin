@@ -12,7 +12,7 @@ Each menu entry opens one self-contained example `Activity`:
     Firebase AI (Gemini) model so its function calling reliably drives the
     toolset.
 -   **ML Kit chat** — a multi-turn chat with an on-device Gemini Nano agent,
-    with a streaming toggle.
+    with streaming and thinking toggles.
 -   **LiteRT-LM chat** — a multi-turn chat with an on-device agent run by
     LiteRT-LM from the [`:google-adk-kotlin-litertlm`](../../litertlm) module,
     with a streaming toggle and tool calling (via

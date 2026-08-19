@@ -27,6 +27,8 @@ import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
+import com.google.mlkit.genai.prompt.GenerateContentRequest
+import com.google.mlkit.genai.prompt.TextPart
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Test
@@ -161,5 +163,20 @@ class GenaiPromptTracingTest {
     assertThat(trace).contains("[REDACTED - length 13 chars]")
     // Non-sensitive metadata is preserved.
     assertThat(trace).contains("finishReason=STOP")
+  }
+
+  /** Whether thinking was requested is metadata, not content, so it is traced verbatim. */
+  @Test
+  fun formatGenerateContentRequest_reportsThinkingMode() {
+    val request =
+      GenerateContentRequest.Builder(TextPart("secret hello"))
+        .apply { enableThinking = true }
+        .build()
+
+    val trace = GenaiPromptTracing.format(request)
+
+    assertThat(trace).doesNotContain("secret hello")
+    assertThat(trace).contains("[REDACTED - length 12 chars]")
+    assertThat(trace).contains("enableThinking: true")
   }
 }

@@ -30,3 +30,13 @@ import com.google.adk.kt.events.Event
  */
 fun Event.foldTextParts(): String =
   content?.parts.orEmpty().filter { it.thought != true }.mapNotNull { it.text }.joinToString("")
+
+/**
+ * Concatenates this event's thought text: the text of every part marked as a thought, in order,
+ * blank-line separated (empty when the event carries none).
+ *
+ * Separated because a streamed turn can carry several distinct thoughts, and running them together
+ * reads as one garbled thought. A model only returns thoughts when the request asked for them.
+ */
+internal fun Event.foldThoughtParts(): String =
+  content?.parts.orEmpty().filter { it.thought == true }.mapNotNull { it.text }.joinToString("\n\n")
