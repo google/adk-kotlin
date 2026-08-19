@@ -18,6 +18,7 @@ package com.google.adk.kt.mlkit
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.mlkit.GenaiPromptConversions.includeThoughts
 import com.google.adk.kt.mlkit.GenaiPromptConversions.toGenerateContentRequest
 import com.google.adk.kt.mlkit.GenaiPromptConversions.toLlmResponse
 import com.google.adk.kt.mlkit.GenaiPromptTracing.format
@@ -40,7 +41,13 @@ import kotlinx.coroutines.flow.flow
  *   `[role]:` marker (e.g. `[user]:`/`[model]:`), and a default system instruction requires the
  *   model not to echo a marker back and not to continue the conversation past its own reply.
  * - Tool use is unsupported: `functionCall`/`functionResponse` parts are dropped.
- * - Only the first response candidate is used.
+ * - Only the first response candidate, and its first thought, are used.
+ *
+ * Thinking mode is off when the request has no `thinkingConfig` or sets `thinkingBudget = 0`, and
+ * on for any other config - ML Kit has no token budget or thinking level, so those fields are
+ * ignored. The model's thoughts come back as parts with `thought = true`, but only when
+ * `includeThoughts` is set. Thinking needs a device whose AI Core and base model both support it;
+ * where they do not, the request still succeeds and no thoughts come back.
  *
  * @param generativeModel The [GenerativeModel] to use for generation.
  * @param name The name of the model.
@@ -65,8 +72,11 @@ private constructor(val generativeModel: GenerativeModel, override val name: Str
     return request.toGenerateContentRequest()
   }
 
-  private fun convertResponse(response: GenerateContentResponse): LlmResponse {
-    return response.toLlmResponse()
+  private fun convertResponse(
+    response: GenerateContentResponse,
+    includeThoughts: Boolean,
+  ): LlmResponse {
+    return response.toLlmResponse(includeThoughts)
   }
 
   private fun traceRequest(request: GenerateContentRequest): String {
@@ -82,7 +92,9 @@ private constructor(val generativeModel: GenerativeModel, override val name: Str
     logger.trace { traceRequest(genRequest) }
     val genResponse = generativeModel.generateContent(genRequest)
     logger.trace { traceResponse(genResponse) }
-    return convertResponse(genResponse).also { logger.trace { format(it) } }
+    return convertResponse(genResponse, request.includeThoughts()).also {
+      logger.trace { format(it) }
+    }
   }
 
   /** Emits every chunk as a partial [LlmResponse], then the aggregated final one. */
@@ -90,10 +102,19 @@ private constructor(val generativeModel: GenerativeModel, override val name: Str
   private fun generateContentStreaming(request: LlmRequest): Flow<LlmResponse> = flow {
     val aggregator = StreamingResponseAggregator()
     val genRequest = convertRequest(request)
+    val includeThoughts = request.includeThoughts()
     logger.trace { traceRequest(genRequest) }
     generativeModel.generateContentStream(genRequest).collect { chunk ->
       logger.trace { "partial response: ${traceResponse(chunk)}" }
-      emit(aggregator.processResponse(convertResponse(chunk)))
+      // A stream delivers thoughts incrementally in candidate-less chunks and then repeats the
+      // whole thought on the terminal chunk, the one carrying the finish reason. Taking that copy
+      // too would surface the reasoning twice.
+      val chunkCarriesNewThought = chunk.candidates.firstOrNull()?.finishReason == null
+      emit(
+        aggregator.processResponse(
+          convertResponse(chunk, includeThoughts && chunkCarriesNewThought)
+        )
+      )
     }
 
     aggregator.aggregate()?.let { response ->
