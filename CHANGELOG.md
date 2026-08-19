@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.9.0](https://github.com/google/adk-kotlin/compare/v0.8.0...v0.9.0) (2026-08-19)
+
+
+### Features
+
+* accept Java List/Map params in @Tool and add a Java function-tool example ([bc89fb2](https://github.com/google/adk-kotlin/commit/bc89fb27180ab25220a2f694865e7633f75df120))
+* add streaming response mode to the Firebase AI Android example ([d259617](https://github.com/google/adk-kotlin/commit/d259617150948845616a6b0ff9c3715d0ac51573))
+
+
+### Bug Fixes
+
+* AdkWebServer.stop() when started with wait = true ([e554455](https://github.com/google/adk-kotlin/commit/e554455d00176a0bea16f064095debe85db7e28e))
+* align aggregation of LiteRT-LM streaming responses with the other model backends ([2e34319](https://github.com/google/adk-kotlin/commit/2e34319791a19240d0e461921cb510fcd8d63930))
+
+
+### Documentation
+
+* document Android on-device and cloud agents in the README ([548968c](https://github.com/google/adk-kotlin/commit/548968cb48b5dbc1081ce79d85ea785802176de2))
+
 ## [0.8.0](https://github.com/google/adk-kotlin/compare/v0.7.0...v0.8.0) (2026-08-15)
 
 
