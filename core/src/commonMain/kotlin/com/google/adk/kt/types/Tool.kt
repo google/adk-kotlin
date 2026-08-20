@@ -31,4 +31,45 @@ data class Tool(
   val retrieval: Retrieval? = null,
   /** A URL context tool. */
   val urlContext: UrlContext? = null,
-)
+  /** The model's built-in code-execution tool. */
+  val codeExecution: ToolCodeExecution? = null,
+) {
+  /**
+   * The 1.2.0 constructor, which had no [codeExecution]. Kept so that code compiled against 1.2.0,
+   * and Java code written against it, still links and compiles.
+   */
+  constructor(
+    functionDeclarations: List<FunctionDeclaration>? = null,
+    googleSearch: GoogleSearch? = null,
+    googleMaps: GoogleMaps? = null,
+    retrieval: Retrieval? = null,
+    urlContext: UrlContext? = null,
+  ) : this(
+    functionDeclarations = functionDeclarations,
+    googleSearch = googleSearch,
+    googleMaps = googleMaps,
+    retrieval = retrieval,
+    urlContext = urlContext,
+    codeExecution = null,
+  )
+
+  /**
+   * The 1.2.0 `copy`, which had no [codeExecution] and keeps this tool's. Kept so that code
+   * compiled against 1.2.0, and Java code written against it, still links and compiles.
+   */
+  fun copy(
+    functionDeclarations: List<FunctionDeclaration>? = this.functionDeclarations,
+    googleSearch: GoogleSearch? = this.googleSearch,
+    googleMaps: GoogleMaps? = this.googleMaps,
+    retrieval: Retrieval? = this.retrieval,
+    urlContext: UrlContext? = this.urlContext,
+  ): Tool =
+    copy(
+      functionDeclarations = functionDeclarations,
+      googleSearch = googleSearch,
+      googleMaps = googleMaps,
+      retrieval = retrieval,
+      urlContext = urlContext,
+      codeExecution = codeExecution,
+    )
+}
