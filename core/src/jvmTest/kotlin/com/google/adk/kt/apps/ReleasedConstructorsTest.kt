@@ -32,6 +32,11 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.GoogleMaps
+import com.google.adk.kt.types.GoogleSearch
+import com.google.adk.kt.types.Retrieval
+import com.google.adk.kt.types.Tool
+import com.google.adk.kt.types.UrlContext
 import java.io.ByteArrayOutputStream
 import java.net.URLClassLoader
 import javax.tools.ToolProvider
@@ -40,14 +45,16 @@ import kotlin.io.path.writeText
 import kotlin.jvm.internal.DefaultConstructorMarker
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * Code built against 1.1.0 must keep working here. Kotlin binaries link to the exact constructor
- * descriptors below, including the synthetic one that fills in default arguments. Java source
- * recompiled against this version must bind to the same constructors, which only javac can check.
+ * Code built against a released version (1.1.0 or later) must keep working here. Kotlin binaries
+ * link to the exact constructor descriptors below, including the synthetic one that fills in
+ * default arguments. Java source recompiled against this version must bind to the same
+ * constructors, which only javac can check.
  */
 class ReleasedConstructorsTest {
 
@@ -203,6 +210,54 @@ class ReleasedConstructorsTest {
     assertNull(context.node)
   }
 
+  @Test
+  fun tool_releasedConstructorWithDefaults_stillLinksAndLeavesCodeExecutionUnset() {
+    // Arrange: 1.2.0 `Tool(urlContext = UrlContext())`, compiled with the other arguments
+    // defaulted.
+    val urlContext = UrlContext()
+    val constructor =
+      Tool::class
+        .java
+        .getConstructor(
+          *RELEASED_TOOL_PARAMETERS,
+          Int::class.java,
+          DefaultConstructorMarker::class.java,
+        )
+
+    // Act
+    val tool = constructor.newInstance(null, null, null, null, urlContext, 0b01111, null)
+
+    // Assert
+    assertSame(urlContext, tool.urlContext)
+    assertNull(tool.codeExecution)
+  }
+
+  @Test
+  fun tool_javaSourceWrittenAgainstTheReleasedApi_compiles() {
+    // Arrange
+    val caller =
+      compileJava(
+        "ReleasedToolCaller",
+        """
+        import com.google.adk.kt.types.Tool;
+        import com.google.adk.kt.types.UrlContext;
+
+        public final class ReleasedToolCaller {
+          public static Tool create() {
+            return new Tool(null, null, null, null, new UrlContext());
+          }
+        }
+        """,
+      )
+
+    // Act
+    val tool = caller.getMethod("create").invoke(null) as Tool
+
+    // Assert
+    assertNotNull(tool.urlContext)
+    assertNull(tool.codeExecution)
+  }
+
   /** Compiles [source] with javac against the test classpath and loads [className]. */
   private fun compileJava(className: String, source: String): Class<*> {
     val compiler = checkNotNull(ToolProvider.getSystemJavaCompiler()) { "javac is unavailable." }
@@ -258,6 +313,15 @@ class ReleasedConstructorsTest {
         Boolean::class.java,
         PluginManager::class.java,
         InvocationCostManager::class.java,
+      )
+
+    val RELEASED_TOOL_PARAMETERS: Array<Class<*>> =
+      arrayOf(
+        List::class.java,
+        GoogleSearch::class.java,
+        GoogleMaps::class.java,
+        Retrieval::class.java,
+        UrlContext::class.java,
       )
   }
 }
