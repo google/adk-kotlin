@@ -20,6 +20,7 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.auth.Credentials
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import org.mockito.kotlin.mock
 
 class BigQueryLoggerConfigTest {
@@ -35,9 +36,56 @@ class BigQueryLoggerConfigTest {
         location = "EU",
         tableName = "test-table",
         credentials = mock<Credentials>(),
+        eventAllowlist = setOf("LLM_REQUEST"),
+        eventDenylist = setOf("STATE_DELTA"),
+        maxContentLength = 1024,
+        clusteringFields = listOf("agent"),
+        logMultiModalContent = false,
+        logSessionMetadata = false,
+        customTags = mapOf("env" to "test"),
+        autoSchemaUpgrade = false,
+        createViews = true,
+        viewPrefix = "custom",
+        contentFormatter = { content, _ -> content },
       )
 
     assertEquals(config.copy(), config.toBuilder().build())
     assertEquals(config.copy(enabled = true), config.toBuilder().enabled(true).build())
+  }
+
+  @Test
+  fun maxContentLength_acceptsUnlimitedOrPositive() {
+    for (valid in listOf(-1, 1, 500 * 1024)) {
+      assertEquals(valid, BigQueryLoggerConfig("p", "d", maxContentLength = valid).maxContentLength)
+    }
+  }
+
+  @Test
+  fun maxContentLength_rejectsZeroAndOtherNegatives() {
+    for (invalid in listOf(0, -2)) {
+      assertFailsWith<IllegalArgumentException> {
+        BigQueryLoggerConfig("p", "d", maxContentLength = invalid)
+      }
+    }
+  }
+
+  @Test
+  fun javaConstructor_keepsTheSixArgumentOverload() {
+    val constructor =
+      BigQueryLoggerConfig::class
+        .java
+        .getConstructor(
+          String::class.java,
+          String::class.java,
+          Boolean::class.javaPrimitiveType,
+          String::class.java,
+          String::class.java,
+          Credentials::class.java,
+        )
+
+    assertEquals(
+      BigQueryLoggerConfig("p", "d", enabled = false, location = "EU", tableName = "t"),
+      constructor.newInstance("p", "d", false, "EU", "t", null),
+    )
   }
 }

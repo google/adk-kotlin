@@ -39,6 +39,8 @@ kotlin {
       dependencies {
         api(libs.google.cloud.bigquery)
         api(libs.google.auth.oauth2.http)
+        implementation(libs.jackson.databind)
+        implementation(libs.opentelemetry.api)
       }
     }
     getByName("jvmTest") {

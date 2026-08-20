@@ -24,8 +24,19 @@ import com.google.cloud.bigquery.StandardSQLTypeName
 /** Utility for defining the BigQuery events table schema. */
 object BigQuerySchema {
 
-  const val SCHEMA_VERSION = "1"
+  const val SCHEMA_VERSION = "2"
   const val SCHEMA_VERSION_LABEL_KEY = "adk_schema_version"
+
+  /** Key under `attributes` that holds the ADK envelope. */
+  internal const val ADK_ATTRIBUTE_KEY = "adk"
+
+  /**
+   * ADK envelope version stamped onto every row as `attributes.adk.schema_version`.
+   *
+   * Independent of [SCHEMA_VERSION]: this names the producer's ADK attribute contract (so
+   * downstream consumers can filter on it), not the BigQuery row shape.
+   */
+  internal const val ADK_ENVELOPE_SCHEMA_VERSION = "1"
 
   /** Returns names of fields to cluster by default. */
   fun getDefaultClusteringFields(): List<String> = listOf("event_type", "agent", "user_id")
@@ -40,6 +51,10 @@ object BigQuerySchema {
       Field.newBuilder("timestamp", StandardSQLTypeName.TIMESTAMP)
         .setMode(Field.Mode.REQUIRED)
         .setDescription("The UTC timestamp when the event occurred.")
+        .build(),
+      Field.newBuilder("event_id", StandardSQLTypeName.STRING)
+        .setMode(Field.Mode.NULLABLE)
+        .setDescription("A unique identifier assigned to each row before it is written.")
         .build(),
       Field.newBuilder("event_type", StandardSQLTypeName.STRING)
         .setMode(Field.Mode.NULLABLE)
