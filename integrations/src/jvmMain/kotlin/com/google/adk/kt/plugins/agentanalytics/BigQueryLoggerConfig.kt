@@ -28,6 +28,18 @@ data class BigQueryLoggerConfig(
   val location: String = "US",
   val tableName: String = "agent_events",
   val credentials: Credentials? = null,
+  val eventAllowlist: Set<String> = emptySet(),
+  val eventDenylist: Set<String> = emptySet(),
+  val maxContentLength: Int = 500 * 1024,
+  val clusteringFields: List<String> = listOf("event_type", "agent", "user_id"),
+  val logMultiModalContent: Boolean = true,
+  val logSessionMetadata: Boolean = true,
+  val customTags: Map<String, Any?> = emptyMap(),
+  val autoSchemaUpgrade: Boolean = true,
+  val createViews: Boolean = false,
+  val viewPrefix: String = "v",
+  val connectionId: String? = null,
+  val contentFormatter: ((Any, String) -> Any?)? = null,
 ) {
 
   /**
@@ -44,6 +56,18 @@ data class BigQueryLoggerConfig(
       .location(location)
       .tableName(tableName)
       .credentials(credentials)
+      .eventAllowlist(eventAllowlist)
+      .eventDenylist(eventDenylist)
+      .maxContentLength(maxContentLength)
+      .clusteringFields(clusteringFields)
+      .logMultiModalContent(logMultiModalContent)
+      .logSessionMetadata(logSessionMetadata)
+      .customTags(customTags)
+      .autoSchemaUpgrade(autoSchemaUpgrade)
+      .createViews(createViews)
+      .viewPrefix(viewPrefix)
+      .connectionId(connectionId)
+      .contentFormatter(contentFormatter)
 
   /**
    * Fluent builder for [BigQueryLoggerConfig], provided primarily for Java callers. Any property
@@ -57,6 +81,18 @@ data class BigQueryLoggerConfig(
     private var location: String = "US"
     private var tableName: String = "agent_events"
     private var credentials: Credentials? = null
+    private var eventAllowlist: Set<String> = emptySet()
+    private var eventDenylist: Set<String> = emptySet()
+    private var maxContentLength: Int = 500 * 1024
+    private var clusteringFields: List<String> = listOf("event_type", "agent", "user_id")
+    private var logMultiModalContent: Boolean = true
+    private var logSessionMetadata: Boolean = true
+    private var customTags: Map<String, Any?> = emptyMap()
+    private var autoSchemaUpgrade: Boolean = true
+    private var createViews: Boolean = false
+    private var viewPrefix: String = "v"
+    private var connectionId: String? = null
+    private var contentFormatter: ((Any, String) -> Any?)? = null
 
     fun projectId(projectId: String): Builder = apply { this.projectId = projectId }
 
@@ -70,6 +106,46 @@ data class BigQueryLoggerConfig(
 
     fun credentials(credentials: Credentials?): Builder = apply { this.credentials = credentials }
 
+    fun eventAllowlist(eventAllowlist: Set<String>): Builder = apply {
+      this.eventAllowlist = eventAllowlist
+    }
+
+    fun eventDenylist(eventDenylist: Set<String>): Builder = apply {
+      this.eventDenylist = eventDenylist
+    }
+
+    fun maxContentLength(maxContentLength: Int): Builder = apply {
+      this.maxContentLength = maxContentLength
+    }
+
+    fun clusteringFields(clusteringFields: List<String>): Builder = apply {
+      this.clusteringFields = clusteringFields
+    }
+
+    fun logMultiModalContent(logMultiModalContent: Boolean): Builder = apply {
+      this.logMultiModalContent = logMultiModalContent
+    }
+
+    fun logSessionMetadata(logSessionMetadata: Boolean): Builder = apply {
+      this.logSessionMetadata = logSessionMetadata
+    }
+
+    fun customTags(customTags: Map<String, Any?>): Builder = apply { this.customTags = customTags }
+
+    fun autoSchemaUpgrade(autoSchemaUpgrade: Boolean): Builder = apply {
+      this.autoSchemaUpgrade = autoSchemaUpgrade
+    }
+
+    fun createViews(createViews: Boolean): Builder = apply { this.createViews = createViews }
+
+    fun viewPrefix(viewPrefix: String): Builder = apply { this.viewPrefix = viewPrefix }
+
+    fun connectionId(connectionId: String?): Builder = apply { this.connectionId = connectionId }
+
+    fun contentFormatter(contentFormatter: ((Any, String) -> Any?)?): Builder = apply {
+      this.contentFormatter = contentFormatter
+    }
+
     fun build(): BigQueryLoggerConfig =
       BigQueryLoggerConfig(
         projectId = checkNotNull(projectId) { "BigQueryLoggerConfig.Builder requires projectId." },
@@ -78,6 +154,18 @@ data class BigQueryLoggerConfig(
         location = location,
         tableName = tableName,
         credentials = credentials,
+        eventAllowlist = eventAllowlist,
+        eventDenylist = eventDenylist,
+        maxContentLength = maxContentLength,
+        clusteringFields = clusteringFields,
+        logMultiModalContent = logMultiModalContent,
+        logSessionMetadata = logSessionMetadata,
+        customTags = customTags,
+        autoSchemaUpgrade = autoSchemaUpgrade,
+        createViews = createViews,
+        viewPrefix = viewPrefix,
+        connectionId = connectionId,
+        contentFormatter = contentFormatter,
       )
   }
 
