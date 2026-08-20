@@ -432,6 +432,46 @@ class FunctionToolProcessorTest {
     assertThat(declaration.name).isEqualTo("custom_name")
     assertThat(declaration.description).isEqualTo("Custom description")
   }
+
+  @Test
+  fun nullableDataClassParameter_omitted_passesNull() = runTest {
+    val tool = NullableDataClassToolTool()
+    val context = createDummyContext()
+
+    val result = tool.execute(context, emptyMap())
+
+    assertThat(result).isEqualTo(mapOf("result" to "null-user"))
+  }
+
+  @Test
+  fun nullableDataClassParameter_explicitNull_passesNull() = runTest {
+    val tool = NullableDataClassToolTool()
+    val context = createDummyContext()
+
+    val result = tool.execute(context, mapOf("user" to null))
+
+    assertThat(result).isEqualTo(mapOf("result" to "null-user"))
+  }
+
+  @Test
+  fun nullableDataClassParameter_validObject_constructsIt() = runTest {
+    val tool = NullableDataClassToolTool()
+    val context = createDummyContext()
+
+    val result = tool.execute(context, mapOf("user" to mapOf("name" to "Bob", "age" to 25)))
+
+    assertThat(result).isEqualTo(mapOf("result" to "Hello Bob"))
+  }
+
+  @Test
+  fun nullableDataClassParameter_partialObject_stillValidatesChildren() = runTest {
+    val tool = NullableDataClassToolTool()
+    val context = createDummyContext()
+
+    val result = tool.execute(context, mapOf("user" to mapOf("name" to "Bob")))
+
+    assertThat(result).isEqualTo(mapOf("error" to "Missing required parameter user.age"))
+  }
 }
 
 // -- Test Fixtures --
@@ -478,6 +518,11 @@ data class User(val name: String, val age: Int)
 @Tool
 fun dataClassTool(user: User): String {
   return "Hello ${user.name}"
+}
+
+@Tool
+fun nullableDataClassTool(user: User?): String {
+  return if (user == null) "null-user" else "Hello ${user.name}"
 }
 
 data class Item(val id: String, val count: Int)

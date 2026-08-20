@@ -358,6 +358,13 @@ class FunctionToolGenerator(
       executeFun.beginControlFlow("if (raw_${paramName} == null)")
       executeFun.addFailure("Missing required parameter ${pathName}")
       executeFun.endControlFlow()
+    } else {
+      // Nullable data class: the object may be absent. Declare a nullable result and only build
+      // (and validate) it when the raw object is actually present, so an omitted or explicitly
+      // null argument yields null instead of a spurious "missing child" error for its required
+      // fields.
+      executeFun.addStatement("var ${targetVar}: %T? = null", typeDeclaration.toClassName())
+      executeFun.beginControlFlow("if (raw_${paramName} != null)")
     }
 
     val constructorParams = typeDeclaration.primaryConstructor?.parameters ?: emptyList()
@@ -480,11 +487,18 @@ class FunctionToolGenerator(
       constructorArgs.add("${cpName} = ${tempVarName}")
     }
 
-    val safeCall = if (isRequired) "" else "?"
-    executeFun.addStatement(
-      "val ${targetVar} = raw_${paramName}${safeCall}.let { %T(${constructorArgs.joinToString(", ")}) }",
-      typeDeclaration.toClassName(),
-    )
+    if (isRequired) {
+      executeFun.addStatement(
+        "val ${targetVar} = raw_${paramName}.let { %T(${constructorArgs.joinToString(", ")}) }",
+        typeDeclaration.toClassName(),
+      )
+    } else {
+      executeFun.addStatement(
+        "${targetVar} = %T(${constructorArgs.joinToString(", ")})",
+        typeDeclaration.toClassName(),
+      )
+      executeFun.endControlFlow()
+    }
     visited.remove(qualifiedName)
     return true
   }
