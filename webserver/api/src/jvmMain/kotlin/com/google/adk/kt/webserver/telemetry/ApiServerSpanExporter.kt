@@ -21,7 +21,6 @@ import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SpanExporter
 import java.util.Collections
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * A custom SpanExporter that stores relevant span data. It handles two types of trace data storage:

@@ -37,9 +37,10 @@ publishing {
   }
 }
 
+// Two source roots: `api/` the runtime contract, `dev/` the local-development half.
 sourceSets {
-  main { java.srcDirs("src/jvmMain/kotlin") }
-  test { java.srcDirs("src/jvmTest/kotlin") }
+  main { java.srcDirs("api/src/jvmMain/kotlin", "dev/src/jvmMain/kotlin") }
+  test { java.srcDirs("api/src/jvmTest/kotlin", "dev/src/jvmTest/kotlin") }
 }
 
 dependencies {
