@@ -312,6 +312,7 @@ internal object McpSchemaConverter {
     val isNumber = type == Type.INTEGER || type == Type.NUMBER
     val isString = type == Type.STRING
     val isArray = type == Type.ARRAY
+    val isObject = type == Type.OBJECT
     return Schema(
       // "No type" is spelled by leaving the field unset, never by naming `TYPE_UNSPECIFIED`. The
       // genai `Type` is a string wrapper, so that name would go out as a literal `"type"` saying
@@ -342,6 +343,8 @@ internal object McpSchemaConverter {
       maxLength = if (isString) map.longOrNull("maxLength") else null,
       minItems = if (isArray) map.longOrNull("minItems") else null,
       maxItems = if (isArray) map.longOrNull("maxItems") else null,
+      minProperties = if (isObject) map.longOrNull("minProperties") else null,
+      maxProperties = if (isObject) map.longOrNull("maxProperties") else null,
     )
   }
 
@@ -412,7 +415,7 @@ internal object McpSchemaConverter {
    * The JSON Schema keywords that describe a value of each type.
    *
    * Mirrors Python's `related_field_names_by_type`, so a union splits into the same branches ADK
-   * Python produces. ADK's [Schema] has no `maxProperties`/`minProperties`, so those are absent.
+   * Python produces.
    */
   private val RELATED_KEYWORDS: Map<String, List<String>> =
     mapOf(
@@ -420,7 +423,16 @@ internal object McpSchemaConverter {
       "integer" to listOf("description", "enum", "format", "maximum", "minimum", "title"),
       "string" to
         listOf("description", "enum", "format", "maxLength", "minLength", "pattern", "title"),
-      "object" to listOf("anyOf", "description", "properties", "required", "title"),
+      "object" to
+        listOf(
+          "anyOf",
+          "description",
+          "maxProperties",
+          "minProperties",
+          "properties",
+          "required",
+          "title",
+        ),
       "array" to listOf("description", "items", "maxItems", "minItems", "title"),
       "boolean" to listOf("description", "title"),
     )

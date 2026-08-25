@@ -651,6 +651,8 @@ internal fun GenAiSchema.toKtSchema(): Schema =
     maxLength = maxLength,
     minItems = minItems,
     maxItems = maxItems,
+    minProperties = minProperties,
+    maxProperties = maxProperties,
   )
 
 /** Converts an ADK [Schema] to a [GenAiSchema] for the GenAI SDK. */
@@ -674,6 +676,8 @@ internal fun Schema.toGenAiSchema(): GenAiSchema =
     maxLength = maxLength,
     minItems = minItems,
     maxItems = maxItems,
+    minProperties = minProperties,
+    maxProperties = maxProperties,
   )
 
 // --- UrlContext ---

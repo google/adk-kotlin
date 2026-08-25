@@ -57,6 +57,9 @@ import kotlinx.serialization.Serializable
  * @property maxLength The longest allowed string. Applicable only if `type` is [Type.STRING].
  * @property minItems The fewest allowed items. Applicable only if `type` is [Type.ARRAY].
  * @property maxItems The most allowed items. Applicable only if `type` is [Type.ARRAY].
+ * @property minProperties The fewest allowed properties. Applicable only if `type` is
+ *   [Type.OBJECT].
+ * @property maxProperties The most allowed properties. Applicable only if `type` is [Type.OBJECT].
  */
 @Serializable
 data class Schema(
@@ -78,6 +81,8 @@ data class Schema(
   val maxLength: Long? = null,
   val minItems: Long? = null,
   val maxItems: Long? = null,
+  val minProperties: Long? = null,
+  val maxProperties: Long? = null,
 ) {
   /**
    * Fluent builder for [Schema], provided primarily for Java callers. Any property left unset falls
@@ -103,6 +108,8 @@ data class Schema(
     private var maxLength: Long? = null
     private var minItems: Long? = null
     private var maxItems: Long? = null
+    private var minProperties: Long? = null
+    private var maxProperties: Long? = null
 
     fun type(type: Type?): Builder = apply { this.type = type }
 
@@ -155,6 +162,10 @@ data class Schema(
 
     fun maxItems(maxItems: Long?): Builder = apply { this.maxItems = maxItems }
 
+    fun minProperties(minProperties: Long?): Builder = apply { this.minProperties = minProperties }
+
+    fun maxProperties(maxProperties: Long?): Builder = apply { this.maxProperties = maxProperties }
+
     fun build(): Schema =
       Schema(
         type = type,
@@ -175,6 +186,8 @@ data class Schema(
         maxLength = maxLength,
         minItems = minItems,
         maxItems = maxItems,
+        minProperties = minProperties,
+        maxProperties = maxProperties,
       )
   }
 

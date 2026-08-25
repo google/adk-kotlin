@@ -173,6 +173,8 @@ private fun schemaToJsonObject(schema: Schema): JsonObject = jsonObject { fields
   schema.maxLength?.let { fields["maxLength"] = JsonPrimitive(it) }
   schema.minItems?.let { fields["minItems"] = JsonPrimitive(it) }
   schema.maxItems?.let { fields["maxItems"] = JsonPrimitive(it) }
+  schema.minProperties?.let { fields["minProperties"] = JsonPrimitive(it) }
+  schema.maxProperties?.let { fields["maxProperties"] = JsonPrimitive(it) }
   schema.enum?.let { values -> fields["enum"] = JsonArray(values.map { JsonPrimitive(it) }) }
   schema.default?.let { fields["default"] = defaultAsJson(it) }
   schema.anyOf?.let { members ->
@@ -220,6 +222,8 @@ private fun Schema.constraintsXml(serializer: KXmlSerializer) {
   tag("maxLength", maxLength)
   tag("minItems", minItems)
   tag("maxItems", maxItems)
+  tag("minProperties", minProperties)
+  tag("maxProperties", maxProperties)
   enum?.let { values -> for (value in values) tag("enum", value) }
   anyOf?.let { members ->
     for (member in members) {

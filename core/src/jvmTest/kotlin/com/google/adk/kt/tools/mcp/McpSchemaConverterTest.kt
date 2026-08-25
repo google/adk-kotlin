@@ -599,6 +599,17 @@ class McpSchemaConverterTest {
   }
 
   @Test
+  fun parsePropertyMap_objectConstraints_preservesPropertyCountBounds() {
+    val property =
+      mapOf<String, Any>("type" to "object", "minProperties" to 1, "maxProperties" to 5)
+
+    val converted = McpSchemaConverter.parsePropertyMap(property)
+
+    assertEquals(1L, converted.minProperties)
+    assertEquals(5L, converted.maxProperties)
+  }
+
+  @Test
   fun parsePropertyMap_nonNumericConstraintValue_leavesTheConstraintUnset() {
     val property = mapOf<String, Any>("type" to "integer", "minimum" to "not-a-number")
 

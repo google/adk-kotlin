@@ -1248,6 +1248,8 @@ class LiteRtLmModelTest {
         maxLength = 8,
         minItems = 1,
         maxItems = 3,
+        minProperties = 4,
+        maxProperties = 7,
         anyOf = listOf(Schema(type = Type.STRING)),
       )
 
@@ -1265,6 +1267,8 @@ class LiteRtLmModelTest {
     assertEquals(8L, map["maxLength"])
     assertEquals(1L, map["minItems"])
     assertEquals(3L, map["maxItems"])
+    assertEquals(4L, map["minProperties"])
+    assertEquals(7L, map["maxProperties"])
     assertEquals(listOf(mapOf("type" to "string")), map["anyOf"])
   }
 

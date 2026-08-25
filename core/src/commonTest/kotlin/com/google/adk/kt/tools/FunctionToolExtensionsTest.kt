@@ -290,6 +290,31 @@ class FunctionToolExtensionsTest {
   }
 
   @Test
+  fun toPromptDescription_objectPropertyBounds_areEmitted() {
+    val tools =
+      listOf(
+        DummyFunctionTool(
+          name = "annotate",
+          description = "Records a note",
+          schema =
+            Schema(
+              type = Type.OBJECT,
+              properties =
+                mapOf("meta" to Schema(type = Type.OBJECT, minProperties = 1, maxProperties = 4)),
+            ),
+        )
+      )
+
+    val json = tools.toPromptDescription(PromptFormat.JSON)
+    assertTrue(json.contains("\"minProperties\":1"), json)
+    assertTrue(json.contains("\"maxProperties\":4"), json)
+
+    val xml = tools.toPromptDescription(PromptFormat.XML)
+    assertTrue(xml.contains("<minProperties>1</minProperties>"), xml)
+    assertTrue(xml.contains("<maxProperties>4</maxProperties>"), xml)
+  }
+
+  @Test
   fun toPromptDescription_xmlFormat_unspecifiedTypeIsDescribedAsAString() {
     // With no type and no alternatives to speak for it, the property still needs to tell the model
     // something, so it keeps the same `string` fallback an absent type gets.

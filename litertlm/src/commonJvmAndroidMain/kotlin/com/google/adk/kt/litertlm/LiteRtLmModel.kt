@@ -507,6 +507,8 @@ internal fun Schema.toMap(): Map<String, Any> {
   maxLength?.let { map["maxLength"] = it }
   minItems?.let { map["minItems"] = it }
   maxItems?.let { map["maxItems"] = it }
+  minProperties?.let { map["minProperties"] = it }
+  maxProperties?.let { map["maxProperties"] = it }
 
   return map
 }

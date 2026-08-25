@@ -100,6 +100,8 @@ class SchemaTest {
         maxLength = 8,
         minItems = 1,
         maxItems = 5,
+        minProperties = 3,
+        maxProperties = 9,
       )
 
     val roundTripped = ktSchema.toGenAiSchema().toKtSchema()
@@ -122,6 +124,8 @@ class SchemaTest {
         maxLength = 8,
         minItems = 1,
         maxItems = 5,
+        minProperties = 3,
+        maxProperties = 9,
         anyOf = listOf(Schema(type = Type.INTEGER)),
       )
 
@@ -137,6 +141,8 @@ class SchemaTest {
     assertEquals(8L, genAiSchema.maxLength)
     assertEquals(1L, genAiSchema.minItems)
     assertEquals(5L, genAiSchema.maxItems)
+    assertEquals(3L, genAiSchema.minProperties)
+    assertEquals(9L, genAiSchema.maxProperties)
     assertEquals(GenAiType.INTEGER, genAiSchema.anyOf?.single()?.type)
   }
 

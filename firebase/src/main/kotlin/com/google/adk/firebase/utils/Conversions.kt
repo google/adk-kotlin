@@ -702,6 +702,9 @@ internal class Conversions {
           required?.let { add("required") }
         }
         default?.let { add("default") }
+        // Firebase's object schema has no property-count bounds, so these never survive.
+        minProperties?.let { add("minProperties") }
+        maxProperties?.let { add("maxProperties") }
         pattern?.let { add("pattern") }
         minLength?.let { add("minLength") }
         maxLength?.let { add("maxLength") }

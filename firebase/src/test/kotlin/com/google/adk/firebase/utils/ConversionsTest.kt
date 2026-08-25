@@ -774,6 +774,19 @@ class ConversionsTest {
   }
 
   @Test
+  fun unsupportedConstraints_objectPropertyBounds_areReported() {
+    // Firebase's object schema has no property-count bounds, so they are always dropped.
+    val conversions = Conversions()
+
+    val dropped =
+      conversions.unsupportedConstraints(
+        Schema(type = Type.OBJECT, minProperties = 1, maxProperties = 5)
+      )
+
+    assertThat(dropped).containsAtLeast("minProperties", "maxProperties")
+  }
+
+  @Test
   fun unsupportedConstraints_boundsOnTheirOwnType_areNotReported() {
     val conversions = Conversions()
 
