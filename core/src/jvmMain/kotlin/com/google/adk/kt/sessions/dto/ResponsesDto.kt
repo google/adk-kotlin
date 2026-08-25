@@ -38,4 +38,7 @@ internal data class ListEventsResponseDto(
 internal data class CreateSessionRequestDto(
   val userId: String,
   val sessionState: JsonElement? = null,
+  // `ttl`/`expire_time` are a proto oneof; at most one is set, in its JSON string form.
+  val ttl: String? = null,
+  val expireTime: String? = null,
 )

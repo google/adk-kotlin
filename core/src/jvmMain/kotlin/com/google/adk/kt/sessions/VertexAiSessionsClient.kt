@@ -38,6 +38,8 @@ import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeoutException
+import kotlin.time.Duration
+import kotlin.time.Instant
 import kotlinx.coroutines.delay
 import kotlinx.serialization.DeserializationStrategy
 
@@ -101,17 +103,28 @@ internal open class VertexAiSessionsClient(
    * @param engine The reasoning engine that owns the session.
    * @param userId The ID of the user owning the session.
    * @param state Optional initial state map to inject into the session.
+   * @param ttl Optional lifetime of the session, measured from creation.
+   * @param expireTime Optional absolute expiry of the session. The wire field is a oneof, so the
+   *   caller must not set both this and [ttl].
    * @return The created [SessionDto], or a [Result.failure] describing why creation failed.
    */
   open suspend fun createSession(
     engine: ReasoningEngineRef,
     userId: String,
     state: Map<String, Any>?,
+    ttl: Duration? = null,
+    expireTime: Instant? = null,
   ): Result<SessionDto> {
     val requestBody =
       adkJson.encodeToString(
         CreateSessionRequestDto.serializer(),
-        CreateSessionRequestDto(userId = userId, sessionState = state?.let { anyToJsonElement(it) }),
+        CreateSessionRequestDto(
+          userId = userId,
+          sessionState = state?.let { anyToJsonElement(it) },
+          // proto3 JSON writes a Duration as seconds with an "s" suffix.
+          ttl = ttl?.let { "${it.inWholeSeconds}s" },
+          expireTime = expireTime?.toString(),
+        ),
       )
     val createResponse =
       postAndDecode(

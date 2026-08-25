@@ -24,7 +24,13 @@ import com.google.adk.kt.sessions.dto.toDto
 import com.google.auth.oauth2.GoogleCredentials
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import java.time.Duration as JavaDuration
+import java.time.Instant as JavaInstant
 import kotlin.jvm.JvmStatic
+import kotlin.time.Duration
+import kotlin.time.Instant
+import kotlin.time.toKotlinDuration
+import kotlin.time.toKotlinInstant
 
 /**
  * A [SessionService] backed by the managed Vertex AI Session Service.
@@ -86,10 +92,65 @@ internal constructor(
     reasoningEngineId,
   )
 
-  override suspend fun createSession(key: SessionKey, state: Map<String, Any>?): Session {
-    val sessionDto = client.createSession(engine, key.userId, state).getOrThrow()
+  override suspend fun createSession(key: SessionKey, state: Map<String, Any>?): Session =
+    createSession(key, state, ttl = null, expireTime = null)
+
+  /**
+   * Creates a session that expires, addressing the reasoning engine fixed at construction.
+   *
+   * At most one of [ttl] and [expireTime] may be set, because the backend models them as a single
+   * choice; setting both is rejected. The backend also requires the expiry to be at least 24 hours
+   * out, and applies its own default when neither is given.
+   *
+   * @param key The composite identifier of the session; [SessionKey.appName] is only a label.
+   * @param state An optional map representing the initial state of the session.
+   * @param ttl How long the session lives, measured from creation. Sub-second precision is dropped.
+   * @param expireTime The absolute instant at which the session expires.
+   * @return The newly created [Session].
+   */
+  suspend fun createSession(
+    key: SessionKey,
+    state: Map<String, Any>? = null,
+    ttl: Duration? = null,
+    expireTime: Instant? = null,
+  ): Session {
+    require(ttl == null || expireTime == null) {
+      "Cannot specify both ttl and expireTime simultaneously."
+    }
+    // The wire format is whole seconds, so a sub-second ttl would silently travel as "0s".
+    require(ttl == null || ttl.inWholeSeconds > 0) {
+      "ttl must be at least one second, but was $ttl."
+    }
+    val sessionDto = client.createSession(engine, key.userId, state, ttl, expireTime).getOrThrow()
     return sessionDto.toAdk(key.appName, key.userId, key.id)
   }
+
+  /**
+   * Creates a session that lives for [ttl], provided primarily for Java callers.
+   *
+   * Java cannot call [createSession] with a [Duration], whose JVM name is mangled because
+   * [Duration] is a value class. A [ttl] under one second, or the backend minimum of 24 hours, is
+   * rejected.
+   */
+  @AdkJavaInteropApi
+  suspend fun createSessionWithTtl(
+    key: SessionKey,
+    state: Map<String, Any>?,
+    ttl: JavaDuration,
+  ): Session = createSession(key, state, ttl = ttl.toKotlinDuration())
+
+  /**
+   * Creates a session expiring at [expireTime], provided primarily for Java callers.
+   *
+   * It reaches the expiry arm that [createSessionWithTtl] cannot, and the backend requires the
+   * instant to be at least 24 hours out.
+   */
+  @AdkJavaInteropApi
+  suspend fun createSessionWithExpireTime(
+    key: SessionKey,
+    state: Map<String, Any>?,
+    expireTime: JavaInstant,
+  ): Session = createSession(key, state, expireTime = expireTime.toKotlinInstant())
 
   override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {
     val sessionId = requireNotNull(key.id) { "SessionKey.id is required for getSession." }

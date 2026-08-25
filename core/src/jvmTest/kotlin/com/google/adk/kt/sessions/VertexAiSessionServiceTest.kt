@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.dto.ListEventsResponseDto
@@ -27,8 +28,15 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
+import java.time.Duration as JavaDuration
+import java.time.Instant as JavaInstant
 import kotlin.test.assertFailsWith
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -62,19 +70,24 @@ class VertexAiSessionServiceTest {
       reasoningEngineId = ENGINE_ID,
     )
 
+  /** A client that accepts any create call, for asserting which expiration was forwarded. */
+  private fun expiringSessionClient() =
+    mock<VertexAiSessionsClient> {
+      onBlocking { createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull()) } doReturn
+        Result.success(SessionDto(name = "reasoningEngines/123/sessions/s"))
+    }
+
   @Test
   fun addressesConfiguredEngineRegardlessOfAppName() = runTest {
-    val client =
-      mock<VertexAiSessionsClient> {
-        onBlocking { createSession(any(), any(), anyOrNull()) } doReturn
-          Result.success(SessionDto(name = "reasoningEngines/123/sessions/s"))
-      }
+    val client = expiringSessionClient()
 
     // The app name is only a label; the service always addresses the engine set at construction.
     val unused =
       service(client).createSession(SessionKey("any-label", "user", id = null), state = null)
 
-    verifyBlocking(client) { createSession(eq(ENGINE), eq("user"), anyOrNull()) }
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull())
+    }
   }
 
   @Test
@@ -137,7 +150,9 @@ class VertexAiSessionServiceTest {
   fun createSession_mapsClientResponse() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
-        onBlocking { createSession(eq(ENGINE), eq("user"), anyOrNull()) } doReturn
+        onBlocking {
+          createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull())
+        } doReturn
           Result.success(
             SessionDto(
               name = "reasoningEngines/123/sessions/session-1",
@@ -160,12 +175,158 @@ class VertexAiSessionServiceTest {
   fun createSession_clientFails_propagates() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
-        onBlocking { createSession(any(), any(), anyOrNull()) } doReturn
+        onBlocking { createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull()) } doReturn
           Result.failure(IOException("boom"))
       }
 
     assertFailsWith<IOException> {
       service(client).createSession(SessionKey("123", "user", id = null), state = null)
+    }
+  }
+
+  @Test
+  fun createSession_ttl_forwardsTtlOnly() {
+    val client = expiringSessionClient()
+
+    runBlocking {
+      val unused =
+        service(client).createSession(SessionKey("123", "user", id = null), ttl = 24.hours)
+    }
+
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(24.hours), eq(null))
+    }
+  }
+
+  @Test
+  fun createSession_expireTime_forwardsExpireTimeOnly() {
+    val client = expiringSessionClient()
+    val expiry = Instant.parse("2026-10-01T00:00:00Z")
+
+    runBlocking {
+      val unused =
+        service(client).createSession(SessionKey("123", "user", id = null), expireTime = expiry)
+    }
+
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(expiry))
+    }
+  }
+
+  @Test
+  fun createSession_noExpiration_forwardsNeither() {
+    val client = expiringSessionClient()
+
+    // The SessionService overload must not invent an expiration of its own.
+    runBlocking {
+      val unused = service(client).createSession(SessionKey("123", "user", id = null))
+    }
+
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(null))
+    }
+  }
+
+  @Test
+  fun createSession_ttlAndExpireTime_throwsWithoutCallingBackend() {
+    val client = expiringSessionClient()
+
+    assertFailsWith<IllegalArgumentException> {
+      runBlocking {
+        service(client)
+          .createSession(
+            SessionKey("123", "user", id = null),
+            ttl = 24.hours,
+            expireTime = Instant.parse("2026-10-01T00:00:00Z"),
+          )
+      }
+    }
+    verifyBlocking(client, never()) {
+      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull())
+    }
+  }
+
+  @Test
+  @OptIn(AdkJavaInteropApi::class)
+  fun createSessionWithTtl_forwardsEquivalentKotlinDuration() {
+    val client = expiringSessionClient()
+
+    runBlocking {
+      val unused =
+        service(client)
+          .createSessionWithTtl(
+            SessionKey("123", "user", id = null),
+            null,
+            JavaDuration.ofHours(24),
+          )
+    }
+
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(24.hours), eq(null))
+    }
+  }
+
+  @Test
+  @OptIn(AdkJavaInteropApi::class)
+  fun createSessionWithExpireTime_forwardsEquivalentKotlinInstant() {
+    val client = expiringSessionClient()
+
+    runBlocking {
+      val unused =
+        service(client)
+          .createSessionWithExpireTime(
+            SessionKey("123", "user", id = null),
+            null,
+            JavaInstant.parse("2026-10-01T00:00:00Z"),
+          )
+    }
+
+    verifyBlocking(client) {
+      createSession(
+        eq(ENGINE),
+        eq("user"),
+        anyOrNull(),
+        eq(null),
+        eq(Instant.parse("2026-10-01T00:00:00Z")),
+      )
+    }
+  }
+
+  @Test
+  @OptIn(AdkJavaInteropApi::class)
+  fun createSessionWithTtl_belowOneSecond_throwsWithoutCallingBackend() {
+    val client = expiringSessionClient()
+
+    // The Java bridge shares the Kotlin overload's validation rather than bypassing it.
+    assertFailsWith<IllegalArgumentException> {
+      runBlocking {
+        service(client)
+          .createSessionWithTtl(
+            SessionKey("123", "user", id = null),
+            null,
+            JavaDuration.ofMillis(500),
+          )
+      }
+    }
+    verifyBlocking(client, never()) {
+      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull())
+    }
+  }
+
+  @Test
+  fun createSession_ttlBelowOneSecond_throwsWithoutCallingBackend() {
+    val client = expiringSessionClient()
+
+    // 500ms is positive but truncates to "0s" on the wire, so it must be rejected too.
+    for (bad in listOf(Duration.ZERO, (-1).seconds, 500.milliseconds)) {
+      assertFailsWith<IllegalArgumentException> {
+        runBlocking {
+          service(client).createSession(SessionKey("123", "user", id = null), ttl = bad)
+        }
+      }
+    }
+    verifyBlocking(client, never()) {
+      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull())
     }
   }
 

@@ -24,9 +24,12 @@ import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
-import java.time.Instant
-import java.time.temporal.ChronoUnit
 import java.util.Date
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Instant
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -108,9 +111,7 @@ class VertexAiSessionsClientTest {
 
   @Test
   fun createSession_nestedState_serializedAsJsonNotToString() {
-    server.enqueue(jsonResponse("""{"name":"reasoningEngines/123/sessions/s/operations/op"}"""))
-    server.enqueue(jsonResponse("""{"name":"operations/op","done":true}"""))
-    server.enqueue(jsonResponse("""{"name":"reasoningEngines/123/sessions/s"}"""))
+    enqueueCreateSessionExchange()
 
     val unused = runBlocking {
       client.createSession(ENGINE, "user", mapOf("nested" to mapOf("a" to listOf(1L, 2L))))
@@ -119,6 +120,54 @@ class VertexAiSessionsClientTest {
     // Nested Map/List must round-trip as JSON, not be flattened via toString().
     val body = server.takeRequest().body?.utf8()
     assertThat(body).contains("\"nested\":{\"a\":[1,2]}")
+  }
+
+  @Test
+  fun createSession_ttl_sendsProtoDurationAndNoExpireTime() {
+    enqueueCreateSessionExchange()
+
+    val unused = runBlocking { client.createSession(ENGINE, "user", null, ttl = 24.hours) }
+
+    val body = server.takeRequest().body?.utf8()
+    assertThat(body).contains("\"ttl\":\"86400s\"")
+    // `ttl` and `expireTime` are a wire oneof, so the unset arm must not be sent at all.
+    assertThat(body).doesNotContain("expireTime")
+  }
+
+  @Test
+  fun createSession_subSecondTtl_truncatesToWholeSeconds() {
+    enqueueCreateSessionExchange()
+
+    val unused = runBlocking {
+      client.createSession(ENGINE, "user", null, ttl = 24.hours + 900.milliseconds)
+    }
+
+    assertThat(server.takeRequest().body?.utf8()).contains("\"ttl\":\"86400s\"")
+  }
+
+  @Test
+  fun createSession_expireTime_sendsRfc3339AndNoTtl() {
+    enqueueCreateSessionExchange()
+
+    val unused = runBlocking {
+      client.createSession(ENGINE, "user", null, expireTime = EXPIRE_TIME)
+    }
+
+    val body = server.takeRequest().body?.utf8()
+    assertThat(body).contains("\"expireTime\":\"2026-10-01T00:00:00Z\"")
+    assertThat(body).doesNotContain("ttl")
+  }
+
+  @Test
+  fun createSession_noExpiration_sendsNeitherField() {
+    enqueueCreateSessionExchange()
+
+    val unused = runBlocking { client.createSession(ENGINE, "user", null) }
+
+    // An unset arm is omitted entirely rather than sent as an explicit JSON null.
+    val body = server.takeRequest().body?.utf8()
+    assertThat(body).doesNotContain("ttl")
+    assertThat(body).doesNotContain("expireTime")
   }
 
   @Test
@@ -274,9 +323,18 @@ class VertexAiSessionsClientTest {
       .endsWith("/reasoningEngines/123/sessions/s1:appendEvent")
   }
 
+  /** Enqueues the create response, the completed operation poll, and the materialized session. */
+  private fun enqueueCreateSessionExchange() {
+    server.enqueue(jsonResponse("""{"name":"reasoningEngines/123/sessions/s/operations/op"}"""))
+    server.enqueue(jsonResponse("""{"name":"operations/op","done":true}"""))
+    server.enqueue(jsonResponse("""{"name":"reasoningEngines/123/sessions/s"}"""))
+  }
+
   private companion object {
     val ENGINE =
       ReasoningEngineRef(project = "test-project", location = "test-location", id = "123")
+
+    val EXPIRE_TIME = Instant.parse("2026-10-01T00:00:00Z")
 
     fun jsonResponse(body: String): MockResponse =
       MockResponse(headers = Headers.headersOf("Content-Type", "application/json"), body = body)
@@ -284,7 +342,7 @@ class VertexAiSessionsClientTest {
     fun fakeCredentials(): GoogleCredentials =
       GoogleCredentials.newBuilder()
         .setAccessToken(
-          AccessToken("fake-token", Date(Instant.now().plus(1, ChronoUnit.DAYS).toEpochMilli()))
+          AccessToken("fake-token", Date((Clock.System.now() + 1.days).toEpochMilliseconds()))
         )
         .build()
   }
