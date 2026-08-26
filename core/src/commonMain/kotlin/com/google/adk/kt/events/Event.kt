@@ -27,6 +27,8 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.workflow.NodeInfo
+import com.google.adk.kt.workflow.NodeInfoNullIfEmptySerializer
 import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlin.time.Clock
@@ -61,6 +63,9 @@ import kotlinx.serialization.Serializable
  * @property modelVersion The model version used to generate the response.
  * @property cacheMetadata Context cache metadata associated with this event's LLM response, used to
  *   carry cache state across turns. `null` when context caching is disabled.
+ * @property output For a workflow node, the value handed to successors, distinct from [content].
+ * @property nodeInfo Identifies the workflow-node activation that emitted this event; `null`
+ *   outside a workflow.
  * @property timestamp The timestamp of the event.
  */
 @Serializable
@@ -86,6 +91,8 @@ data class Event(
   val citationMetadata: CitationMetadata? = null,
   val cacheMetadata: CacheMetadata? = null,
   val customMetadata: Map<String, @Contextual Any?>? = null,
+  val output: @Contextual Any? = null,
+  @Serializable(with = NodeInfoNullIfEmptySerializer::class) val nodeInfo: NodeInfo? = null,
   // Always emit: an omitted default is regenerated at decode time, changing timestamp on reload.
   @EncodeDefault(EncodeDefault.Mode.ALWAYS)
   val timestamp: Long = Clock.System.now().toEpochMilliseconds(),
@@ -193,6 +200,8 @@ data class Event(
     private var citationMetadata: CitationMetadata? = null
     private var cacheMetadata: CacheMetadata? = null
     private var customMetadata: Map<String, @Contextual Any>? = null
+    private var output: @Contextual Any? = null
+    private var nodeInfo: NodeInfo? = null
     private var timestamp: Long = Clock.System.now().toEpochMilliseconds()
 
     fun id(id: String): Builder = apply { this.id = id }
@@ -249,6 +258,10 @@ data class Event(
       this.customMetadata = customMetadata
     }
 
+    fun output(output: Any?): Builder = apply { this.output = output }
+
+    fun nodeInfo(nodeInfo: NodeInfo?): Builder = apply { this.nodeInfo = nodeInfo }
+
     fun timestamp(timestamp: Long): Builder = apply { this.timestamp = timestamp }
 
     fun build(): Event =
@@ -273,6 +286,8 @@ data class Event(
         citationMetadata = citationMetadata,
         cacheMetadata = cacheMetadata,
         customMetadata = customMetadata,
+        output = output,
+        nodeInfo = nodeInfo,
         timestamp = timestamp,
       )
   }
