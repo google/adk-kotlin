@@ -21,6 +21,8 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.URL
 import java.util.Collections
@@ -28,6 +30,7 @@ import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import org.junit.Assert.assertThrows
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -35,7 +38,7 @@ import org.junit.runners.JUnit4
 /**
  * Server classes against a real socket, which `testApplication` based tests cannot reach.
  *
- * Covers start and stop, and which surface each class mounts.
+ * Covers start and stop, which surface each class mounts, and which interface each binds.
  */
 @RunWith(JUnit4::class)
 class AdkServerLifecycleTest {
@@ -167,17 +170,9 @@ class AdkServerLifecycleTest {
   }
 
   @Test
-  @Suppress("DEPRECATION") // AdkWebServer is deprecated by this change.
   fun deprecatedAdkWebServer_stillStartsAndStops() {
     val port = freePort()
-    val server =
-      AdkWebServer(
-        port = port,
-        sessionService = FakeSessionService(),
-        artifactService = FakeArtifactService(),
-        agentLoader = FakeAgentLoader(),
-        apiServerSpanExporter = ApiServerSpanExporter(),
-      )
+    val server = newDeprecatedServer(port)
 
     try {
       server.start()
@@ -192,7 +187,53 @@ class AdkServerLifecycleTest {
     assertThat(portIsFree(port)).isTrue()
   }
 
+  @Test
+  fun apiServer_bindsLoopbackByDefault() {
+    val offLoopback = assumeOffLoopbackAddress()
+    val port = freePort()
+    val server = newServer(port)
+
+    try {
+      server.start()
+      awaitHealthy(port)
+
+      // Reachable on loopback, and refused elsewhere: dropping `host` would serve both.
+      assertThat(healthStatusOrNull(port)).isEqualTo(HttpURLConnection.HTTP_OK)
+      assertThat(healthStatusOrNull(port, offLoopback)).isNull()
+    } finally {
+      server.stop()
+    }
+  }
+
+  @Test
+  fun deprecatedAdkWebServer_stillBindsEveryInterface() {
+    val offLoopback = assumeOffLoopbackAddress()
+    val port = freePort()
+    val server = newDeprecatedServer(port)
+
+    try {
+      server.start()
+      awaitHealthy(port)
+
+      // Reachable on loopback, and off it too, which a container deployment needs.
+      assertThat(healthStatusOrNull(port)).isEqualTo(HttpURLConnection.HTTP_OK)
+      assertThat(healthStatusOrNull(port, offLoopback)).isEqualTo(HttpURLConnection.HTTP_OK)
+    } finally {
+      server.stop()
+    }
+  }
+
   private fun newServer(port: Int) = AdkApiServer(testConfig(port))
+
+  @Suppress("DEPRECATION") // AdkWebServer is deprecated by this change.
+  private fun newDeprecatedServer(port: Int) =
+    AdkWebServer(
+      port = port,
+      sessionService = FakeSessionService(),
+      artifactService = FakeArtifactService(),
+      agentLoader = FakeAgentLoader(),
+      apiServerSpanExporter = ApiServerSpanExporter(),
+    )
 
   private fun testConfig(port: Int) =
     AdkServerConfig(
@@ -231,9 +272,9 @@ class AdkServerLifecycleTest {
     throw AssertionError("Server did not serve /health within $STARTUP_TIMEOUT_MILLIS ms")
   }
 
-  private fun healthStatusOrNull(port: Int): Int? =
+  private fun healthStatusOrNull(port: Int, host: String = "127.0.0.1"): Int? =
     try {
-      val connection = URL("http://127.0.0.1:$port/health").openConnection() as HttpURLConnection
+      val connection = URL("http://$host:$port/health").openConnection() as HttpURLConnection
       connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
       connection.readTimeout = CONNECT_TIMEOUT_MILLIS
       try {
@@ -246,6 +287,23 @@ class AdkServerLifecycleTest {
     }
 
   private fun freePort(): Int = ServerSocket(0).use { it.localPort }
+
+  /** A non-loopback address of this host; skips the test when it has none. */
+  private fun assumeOffLoopbackAddress(): String {
+    val address = offLoopbackAddressOrNull()
+    assumeTrue("No off-loopback address on this host", address != null)
+    return address!!
+  }
+
+  /** A non-loopback address of this host, or null when it has none to distinguish binds with. */
+  private fun offLoopbackAddressOrNull(): String? =
+    NetworkInterface.getNetworkInterfaces()
+      .asSequence()
+      .filter { it.isUp && !it.isLoopback }
+      .flatMap { it.inetAddresses.asSequence() }
+      .filterIsInstance<Inet4Address>()
+      .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+      ?.hostAddress
 
   private companion object {
     const val STARTUP_TIMEOUT_MILLIS = 20_000L

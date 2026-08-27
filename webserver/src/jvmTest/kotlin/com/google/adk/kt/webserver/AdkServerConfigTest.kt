@@ -96,6 +96,12 @@ class AdkServerConfigTest {
   }
 
   @Test
+  fun inMemory_defaultsTheHostToLoopback() {
+    // Runs everywhere: the socket probes in AdkServerLifecycleTest skip on a loopback-only host.
+    assertThat(AdkServerConfig.inMemory(agent).host).isEqualTo("127.0.0.1")
+  }
+
+  @Test
   fun inMemory_leavesTheDevUiToTheServerVariant() {
     assertThat(AdkServerConfig.inMemory(agent).webUiEnabled).isNull()
   }

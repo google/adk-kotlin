@@ -33,7 +33,9 @@ import io.ktor.server.application.Application
  *   it defaults to false; enable it only for local development.
  */
 @Deprecated(
-  "Use AdkDevServer for local development, or AdkApiServer to serve the runtime contract headlessly."
+  "Use AdkDevServer for local development, or AdkApiServer to serve the runtime contract " +
+    "headlessly. Both bind loopback, so a container deployment has to set " +
+    "AdkServerConfig.host to 0.0.0.0, which this class does for you."
 )
 class AdkWebServer(
   port: Int = AdkServerConfig.DEFAULT_PORT,
@@ -51,6 +53,8 @@ class AdkWebServer(
         sessionService = sessionService,
         artifactService = artifactService,
         port = port,
+        // Pinned to preserve this class's behaviour; AdkServerConfig now defaults to loopback.
+        host = "0.0.0.0",
         apiServerSpanExporter = apiServerSpanExporter,
         captureMessageContent = captureMessageContent,
         plugins = plugins,

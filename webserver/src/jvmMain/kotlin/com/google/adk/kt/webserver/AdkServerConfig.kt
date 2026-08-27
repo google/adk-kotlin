@@ -33,6 +33,9 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  * @property captureMessageContent When true the server records prompt and response content into
  *   telemetry spans so the Dev UI trace view can display it. This may capture PII, so it defaults
  *   to false; enable it only for local development.
+ * @property host Interface [AdkApiServer] and [AdkDevServer] bind to; IPv4 loopback by default,
+ *   since these endpoints are unauthenticated; nothing listens on ::1. Installing a module into
+ *   your own engine binds whatever that engine was given, not this.
  * @property webUiEnabled Whether to mount the Development UI; null leaves the choice to the server
  *   variant, off for [AdkApiServer] and on for [AdkDevServer]. The `adk.web.ui.enabled` property
  *   overrides it either way, so that a deployment which cannot change code can still turn the UI
@@ -43,6 +46,7 @@ data class AdkServerConfig(
   val sessionService: SessionService,
   val artifactService: ArtifactService,
   val port: Int = DEFAULT_PORT,
+  val host: String = DEFAULT_HOST,
   val apiServerSpanExporter: ApiServerSpanExporter = ApiServerSpanExporter(),
   val captureMessageContent: Boolean = false,
   val plugins: List<Plugin> = emptyList(),
@@ -51,6 +55,9 @@ data class AdkServerConfig(
   companion object {
     /** Port both server variants listen on unless told otherwise. */
     const val DEFAULT_PORT: Int = 8080
+
+    /** Loopback, so an unauthenticated server is not reachable off the machine by default. */
+    const val DEFAULT_HOST: String = "127.0.0.1"
 
     /**
      * Config for serving a single [agent], with session and artifact state held in memory.
