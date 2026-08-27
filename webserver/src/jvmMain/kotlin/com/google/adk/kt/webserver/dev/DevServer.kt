@@ -16,47 +16,43 @@
 
 package com.google.adk.kt.webserver.dev
 
-import com.google.adk.kt.artifacts.ArtifactService
-import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.webserver.AdkApiServer
+import com.google.adk.kt.webserver.AdkServerConfig
 import com.google.adk.kt.webserver.adkApiModule
 import com.google.adk.kt.webserver.dev.routes.debugRoutes
 import com.google.adk.kt.webserver.dev.routes.evalRoutes
 import com.google.adk.kt.webserver.dev.routes.graphRoutes
-import com.google.adk.kt.webserver.loaders.AgentLoader
-import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import io.ktor.server.application.Application
 import io.ktor.server.routing.routing
+
+/**
+ * The local development server: [AdkApiServer] plus the endpoints the Dev UI drives, and the UI.
+ *
+ * These endpoints read agent state and run debugging code, so this variant belongs on a development
+ * machine; deploy [AdkApiServer] instead.
+ */
+class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
+  override fun configure(application: Application) {
+    // Replaces rather than extends the base: the dev module defaults the UI the other way.
+    application.adkDevModule(config)
+  }
+}
 
 /**
  * Installs [adkApiModule] plus the development-only endpoints the Dev UI drives: request traces,
  * evaluation and agent graphs.
  *
- * These read agent state and run debugging code, so they belong on a development machine rather
- * than in a deployment, which should install [adkApiModule] alone. Install one module or the other,
- * never both.
+ * Installs [adkApiModule] itself, so do not install both. Unlike [adkApiModule] this mounts the
+ * Development UI, unless [AdkServerConfig.webUiEnabled] or the `adk.web.ui.enabled` property turns
+ * it off.
  */
-fun Application.adkDevModule(
-  sessionService: SessionService,
-  artifactService: ArtifactService,
-  agentLoader: AgentLoader,
-  apiServerSpanExporter: ApiServerSpanExporter,
-  captureMessageContent: Boolean = false,
-  plugins: List<Plugin> = emptyList(),
-) {
-  adkApiModule(
-    sessionService,
-    artifactService,
-    agentLoader,
-    apiServerSpanExporter,
-    captureMessageContent,
-    plugins,
-  )
+fun Application.adkDevModule(config: AdkServerConfig) {
+  adkApiModule(config.copy(webUiEnabled = config.webUiEnabled ?: true))
 
   // A second `routing` block merges into the one adkApiModule installed.
   routing {
-    debugRoutes(apiServerSpanExporter)
+    debugRoutes(config.apiServerSpanExporter)
     evalRoutes()
-    graphRoutes(agentLoader, sessionService)
+    graphRoutes(config.agentLoader, config.sessionService)
   }
 }

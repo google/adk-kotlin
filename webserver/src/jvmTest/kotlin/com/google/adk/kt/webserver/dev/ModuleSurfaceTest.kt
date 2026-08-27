@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.webserver.dev
 
+import com.google.adk.kt.webserver.AdkServerConfig
 import com.google.adk.kt.webserver.FakeAgentLoader
 import com.google.adk.kt.webserver.FakeArtifactService
 import com.google.adk.kt.webserver.FakeSessionService
@@ -42,44 +43,86 @@ import org.junit.runners.JUnit4
  */
 @RunWith(JUnit4::class)
 class ModuleSurfaceTest {
-  private val sessionService = FakeSessionService()
-  private val artifactService = FakeArtifactService()
-  private val agentLoader = FakeAgentLoader()
 
   @Test
   fun apiModule_installsTheContractSurface() {
-    assertThat(
-        routesOf {
-          adkApiModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter())
-        }
-      )
-      .containsExactlyElementsIn(CONTRACT_ROUTES)
+    assertThat(routesOf { adkApiModule(testConfig()) }).containsExactlyElementsIn(CONTRACT_ROUTES)
   }
 
   @Test
-  fun devModule_addsOnlyTheDevelopmentSurface() {
+  fun apiModule_mountsTheDevUiWhenTheConfigAsks() {
+    assertThat(routesOf { adkApiModule(testConfig().copy(webUiEnabled = true)) })
+      .containsExactlyElementsIn(CONTRACT_ROUTES + WEB_UI_ROUTES)
+  }
+
+  @Test
+  fun devModule_addsTheDevelopmentSurfaceAndTheDevUi() {
+    assertThat(routesOf { adkDevModule(testConfig()) })
+      .containsExactlyElementsIn(CONTRACT_ROUTES + WEB_UI_ROUTES + DEVELOPMENT_ONLY_ROUTES)
+  }
+
+  @Test
+  fun devModule_leavesTheDevUiUnmountedWhenTheConfigSaysSo() {
+    assertThat(routesOf { adkDevModule(testConfig().copy(webUiEnabled = false)) })
+      .containsExactlyElementsIn(CONTRACT_ROUTES + DEVELOPMENT_ONLY_ROUTES)
+  }
+
+  @Test
+  fun webUiProperty_overridesBothVariants() {
+    assertThat(routesOf(webUiProperty = "true") { adkApiModule(testConfig()) })
+      .containsExactlyElementsIn(CONTRACT_ROUTES + WEB_UI_ROUTES)
+    assertThat(routesOf(webUiProperty = "false") { adkDevModule(testConfig()) })
+      .containsExactlyElementsIn(CONTRACT_ROUTES + DEVELOPMENT_ONLY_ROUTES)
+  }
+
+  @Test
+  fun webUiProperty_overridesAnExplicitConfigValue() {
     assertThat(
-        routesOf {
-          adkDevModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter())
-        }
+        routesOf(webUiProperty = "true") { adkApiModule(testConfig().copy(webUiEnabled = false)) }
+      )
+      .containsExactlyElementsIn(CONTRACT_ROUTES + WEB_UI_ROUTES)
+    assertThat(
+        routesOf(webUiProperty = "false") { adkDevModule(testConfig().copy(webUiEnabled = true)) }
       )
       .containsExactlyElementsIn(CONTRACT_ROUTES + DEVELOPMENT_ONLY_ROUTES)
   }
 
   @Test
+  @Suppress("DEPRECATION")
   fun adkModule_stillInstallsTheFullSurface() {
+    val config = testConfig()
     assertThat(
         routesOf {
-          adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter())
+          adkModule(
+            config.sessionService,
+            config.artifactService,
+            config.agentLoader,
+            config.apiServerSpanExporter,
+          )
         }
       )
-      .containsExactlyElementsIn(CONTRACT_ROUTES + DEVELOPMENT_ONLY_ROUTES)
+      .containsExactlyElementsIn(CONTRACT_ROUTES + WEB_UI_ROUTES + DEVELOPMENT_ONLY_ROUTES)
   }
 
-  /** The routes [install] mounts, with `adk.web.ui.enabled` cleared so the default applies. */
-  private fun routesOf(install: Application.() -> Unit): Set<String> {
+  private fun testConfig() =
+    AdkServerConfig(
+      agentLoader = FakeAgentLoader(),
+      sessionService = FakeSessionService(),
+      artifactService = FakeArtifactService(),
+      apiServerSpanExporter = ApiServerSpanExporter(),
+    )
+
+  /** The routes [install] mounts, with `adk.web.ui.enabled` set to [webUiProperty] or cleared. */
+  private fun routesOf(
+    webUiProperty: String? = null,
+    install: Application.() -> Unit,
+  ): Set<String> {
     val previous: String? = System.getProperty(WEB_UI_ENABLED_PROPERTY)
-    System.clearProperty(WEB_UI_ENABLED_PROPERTY)
+    if (webUiProperty == null) {
+      System.clearProperty(WEB_UI_ENABLED_PROPERTY)
+    } else {
+      System.setProperty(WEB_UI_ENABLED_PROPERTY, webUiProperty)
+    }
     val routes = mutableSetOf<String>()
     try {
       testApplication {
@@ -91,7 +134,11 @@ class ModuleSurfaceTest {
         client.get("/health")
       }
     } finally {
-      if (previous != null) System.setProperty(WEB_UI_ENABLED_PROPERTY, previous)
+      if (previous == null) {
+        System.clearProperty(WEB_UI_ENABLED_PROPERTY)
+      } else {
+        System.setProperty(WEB_UI_ENABLED_PROPERTY, previous)
+      }
     }
     return routes
   }
@@ -100,7 +147,7 @@ class ModuleSurfaceTest {
     if (children.isEmpty()) listOf(toString()) else children.flatMap { it.leafRoutes() }
 
   private companion object {
-    /** The agent runtime contract, plus the Development UI, which Python gates behind a flag. */
+    /** The agent runtime contract, which a headless deployment serves. */
     val CONTRACT_ROUTES =
       setOf(
         "/health/(method:GET)",
@@ -117,10 +164,10 @@ class ModuleSurfaceTest {
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/(method:POST)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/(method:GET)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/(method:DELETE)",
-        "/(method:GET)",
-        "/dev-ui/(method:GET)",
-        "/dev-ui/{...}/(method:GET)",
       )
+
+    /** The Development UI mount, which Python also serves from the API server. */
+    val WEB_UI_ROUTES = setOf("/(method:GET)", "/dev-ui/(method:GET)", "/dev-ui/{...}/(method:GET)")
 
     /** Mirrors which side Python puts each endpoint on; the URL prefixes differ. */
     val DEVELOPMENT_ONLY_ROUTES =

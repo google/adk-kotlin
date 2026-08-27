@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.webserver
 
+import com.google.adk.kt.webserver.dev.AdkDevServer
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
@@ -31,9 +32,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
-/** Start and stop against a real socket, which `testApplication` based tests cannot reach. */
+/**
+ * Server classes against a real socket, which `testApplication` based tests cannot reach.
+ *
+ * Covers start and stop, and which surface each class mounts.
+ */
 @RunWith(JUnit4::class)
-class AdkWebServerLifecycleTest {
+class AdkServerLifecycleTest {
 
   @Test
   fun stop_shutsDownAServerStartedWithWait() {
@@ -111,14 +116,103 @@ class AdkWebServerLifecycleTest {
     }
   }
 
-  private fun newServer(port: Int) =
-    AdkWebServer(
-      port = port,
+  @Test
+  fun devServer_addsTheDevelopmentSurface() {
+    val port = freePort()
+    val server = AdkDevServer(testConfig(port))
+
+    try {
+      server.start()
+      awaitHealthy(port)
+
+      // An unmounted route is Ktor's 404; a mounted stub answers with some other status.
+      assertThat(statusOf(port, DEV_ONLY_PATH)).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+      assertThat(statusOf(port, "/dev-ui/")).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+    } finally {
+      server.stop()
+    }
+  }
+
+  @Test
+  fun apiServer_servesTheDevUiWhenTheConfigAsks() {
+    val port = freePort()
+    val server = AdkApiServer(testConfig(port).copy(webUiEnabled = true))
+
+    try {
+      server.start()
+      awaitHealthy(port)
+
+      assertThat(statusOf(port, "/dev-ui/")).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+      // Still the API server: the development-only routes stay off.
+      assertThat(statusOf(port, DEV_ONLY_PATH)).isEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+    } finally {
+      server.stop()
+    }
+  }
+
+  @Test
+  fun apiServer_omitsTheDevelopmentSurface() {
+    val port = freePort()
+    val server = newServer(port)
+
+    try {
+      server.start()
+      awaitHealthy(port)
+
+      assertThat(statusOf(port, DEV_ONLY_PATH)).isEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+      assertThat(statusOf(port, "/dev-ui/")).isEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+    } finally {
+      server.stop()
+    }
+  }
+
+  @Test
+  @Suppress("DEPRECATION") // AdkWebServer is deprecated by this change.
+  fun deprecatedAdkWebServer_stillStartsAndStops() {
+    val port = freePort()
+    val server =
+      AdkWebServer(
+        port = port,
+        sessionService = FakeSessionService(),
+        artifactService = FakeArtifactService(),
+        agentLoader = FakeAgentLoader(),
+        apiServerSpanExporter = ApiServerSpanExporter(),
+      )
+
+    try {
+      server.start()
+      awaitHealthy(port)
+
+      // The shim must keep the full development surface its callers already had.
+      assertThat(statusOf(port, DEV_ONLY_PATH)).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+      assertThat(statusOf(port, "/dev-ui/")).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+    } finally {
+      server.stop()
+    }
+    assertThat(portIsFree(port)).isTrue()
+  }
+
+  private fun newServer(port: Int) = AdkApiServer(testConfig(port))
+
+  private fun testConfig(port: Int) =
+    AdkServerConfig(
+      agentLoader = FakeAgentLoader(),
       sessionService = FakeSessionService(),
       artifactService = FakeArtifactService(),
-      agentLoader = FakeAgentLoader(),
-      apiServerSpanExporter = ApiServerSpanExporter(),
+      port = port,
     )
+
+  /** HTTP status for [path]: 404 means the route is not mounted. */
+  private fun statusOf(port: Int, path: String): Int {
+    val connection = URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection
+    connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
+    connection.readTimeout = CONNECT_TIMEOUT_MILLIS
+    return try {
+      connection.responseCode
+    } finally {
+      connection.disconnect()
+    }
+  }
 
   private fun portIsFree(port: Int): Boolean =
     try {
@@ -159,6 +253,7 @@ class AdkWebServerLifecycleTest {
     const val POLL_INTERVAL_MILLIS = 50L
     const val CONNECT_TIMEOUT_MILLIS = 1_000
     const val RACING_THREADS = 8
+    const val DEV_ONLY_PATH = "/apps/mock-agent/eval_sets"
     const val NANOS_PER_MILLI = 1_000_000L
   }
 }

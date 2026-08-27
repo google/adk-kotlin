@@ -18,14 +18,9 @@ package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
-import com.google.adk.kt.agents.ResumabilityConfig
-import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
-import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.plugins.PluginManager
-import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.ListEventsResponse
 import com.google.adk.kt.sessions.ListSessionsResponse
@@ -122,56 +117,15 @@ class StampingPlugin : Plugin {
     )
 }
 
-class FakeRunner : Runner {
-  override val appName = "mock-agent"
-  override val agent = FakeAgent()
-  override val sessionService = FakeSessionService()
-  override val artifactService = FakeArtifactService()
-  override val memoryService: MemoryService? = null
-  override val pluginManager = PluginManager()
-  override val resumabilityConfig = ResumabilityConfig()
-
-  override fun runAsync(
-    userId: String,
-    sessionId: String,
-    invocationId: String?,
-    newMessage: Content?,
-    stateDelta: Map<String, Any>?,
-    runConfig: RunConfig?,
-  ): Flow<Event> = flow {
-    emit(
-      Event(
-        invocationId = invocationId ?: "test-invocation",
-        author = "mock-agent",
-        content =
-          Content(
-            role = "model",
-            parts = listOf(Part(text = "This is a mocked response from Agent mock-agent")),
-          ),
-        turnComplete = true,
-      )
-    )
-  }
-
-  override fun run(
-    userId: String,
-    sessionId: String,
-    newMessage: Content,
-    runConfig: RunConfig?,
-  ): Iterator<Event> = emptyList<Event>().iterator()
-
-  override fun close() {}
-}
-
 @RunWith(JUnit4::class)
-class AdkWebServerTest {
+class ApiServerTest {
   private val sessionService = FakeSessionService()
   private val artifactService = FakeArtifactService()
   private val agentLoader = FakeAgentLoader()
 
   @Test
   fun healthCheck_returnsOk() = testApplication {
-    application { adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter()) }
+    application { adkApiModule(testConfig()) }
 
     val response = client.get("/health")
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
@@ -181,7 +135,7 @@ class AdkWebServerTest {
   @Test
   fun testSerialize_returnsJsonResponse() = testApplication {
     application {
-      adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter())
+      adkApiModule(testConfig())
       routing {
         get("/api/test-serialize") {
           call.respond(RunResponse(output = "Ok output", sessionId = "test-session"))
@@ -198,7 +152,7 @@ class AdkWebServerTest {
 
   @Test
   fun runRoute_returnsResponse() = testApplication {
-    application { adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter()) }
+    application { adkApiModule(testConfig()) }
 
     val response =
       client.post("/run") {
@@ -217,15 +171,7 @@ class AdkWebServerTest {
 
   @Test
   fun runRoute_withPlugins_appliesThemToTheRunner() = testApplication {
-    application {
-      adkModule(
-        sessionService,
-        artifactService,
-        agentLoader,
-        ApiServerSpanExporter(),
-        plugins = listOf(StampingPlugin()),
-      )
-    }
+    application { adkApiModule(testConfig(plugins = listOf(StampingPlugin()))) }
 
     val response =
       client.post("/run") {
@@ -241,7 +187,7 @@ class AdkWebServerTest {
 
   @Test
   fun runSseRoute_returnsStream() = testApplication {
-    application { adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter()) }
+    application { adkApiModule(testConfig()) }
 
     val response =
       client.post("/run_sse") {
@@ -259,4 +205,13 @@ class AdkWebServerTest {
     assertThat(body).doesNotContain("\"partial\"")
     assertThat(body).doesNotContain("\"interrupted\"")
   }
+
+  private fun testConfig(plugins: List<Plugin> = emptyList()) =
+    AdkServerConfig(
+      agentLoader = agentLoader,
+      sessionService = sessionService,
+      artifactService = artifactService,
+      apiServerSpanExporter = ApiServerSpanExporter(),
+      plugins = plugins,
+    )
 }

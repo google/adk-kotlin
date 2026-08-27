@@ -18,7 +18,6 @@ package com.google.adk.kt.webserver
 
 import com.google.adk.kt.webserver.routes.WEB_UI_ENABLED_PROPERTY
 import com.google.adk.kt.webserver.routes.isWebUiEnabled
-import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.http.HttpStatusCode
@@ -173,7 +172,17 @@ class WebUiToggleTest {
     }
 
   private fun ApplicationTestBuilder.installAdk() {
-    application { adkModule(sessionService, artifactService, agentLoader, ApiServerSpanExporter()) }
+    // webUiEnabled = true, so each test varies only the property and the application config.
+    application {
+      adkApiModule(
+        AdkServerConfig(
+          agentLoader = agentLoader,
+          sessionService = sessionService,
+          artifactService = artifactService,
+          webUiEnabled = true,
+        )
+      )
+    }
   }
 
   /** Status of `/` without following the redirect, so the redirect itself is what is asserted. */
