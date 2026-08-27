@@ -425,19 +425,31 @@ abstract class AbstractRunner : Runner {
     stateDelta: Map<String, Any>?,
     runConfig: RunConfig?,
   ): InvocationContext {
+    // Resolve the invocation id from a function response up front, for both modes, so the
+    // graph-workflow engine's root - which runs through this method - continues the invocation that
+    // issued the call. Python 2.x does this on the workflow-node path
+    // (`runners.py:_run_node_async`),
+    // not in `run_async` (which resolves only when resumable); Kotlin has no separate node entry,
+    // so
+    // it resolves here. A plain non-resumable agent is unaffected: its response is already routed
+    // by
+    // history, and a non-resumable run never restores state.
+    val resolvedInvocationId = resolveInvocationId(session, newMessage, invocationId)
     val isResumable = resumabilityConfig.isResumable
     if (!isResumable) {
       if (newMessage == null) {
         throw IllegalArgumentException("No new message provided and session is not resumable")
       }
-      return setupContextForNewInvocation(session, invocationId, newMessage, runConfig, stateDelta)
+      return setupContextForNewInvocation(
+        session,
+        resolvedInvocationId,
+        newMessage,
+        runConfig,
+        stateDelta,
+      )
     }
-    // Resumable mode: pick the existing invocation to resume if we can. If `newMessage` is a
-    // `FunctionResponse`, look up the originating function-call event in session history and
-    // resume its invocation. Otherwise fall back to the caller-supplied `invocationId`. If
-    // neither resolves, treat this as a brand-new invocation. Mirrors Python ADK
-    // `runners.py:_resolve_invocation_id`.
-    val resolvedInvocationId = resolveInvocationId(session, newMessage, invocationId)
+    // Resumable mode: if the id resolved to an existing invocation, resume it; otherwise treat this
+    // as a brand-new invocation.
     if (resolvedInvocationId == null) {
       if (newMessage == null) {
         throw IllegalArgumentException(

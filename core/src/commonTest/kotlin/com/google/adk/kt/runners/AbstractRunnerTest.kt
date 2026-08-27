@@ -31,6 +31,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
+import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
@@ -72,6 +73,19 @@ class AbstractRunnerTest {
     suspend fun callFindAgentToRun(context: InvocationContext, rootAgent: BaseAgent): BaseAgent {
       return findAgentToRun(context, rootAgent)
     }
+
+    suspend fun callCreateInvocationContext(
+      session: Session,
+      invocationId: String?,
+      newMessage: Content?,
+    ): InvocationContext =
+      createInvocationContext(
+        session = session,
+        invocationId = invocationId,
+        newMessage = newMessage,
+        stateDelta = null,
+        runConfig = null,
+      )
   }
 
   @Test
@@ -469,6 +483,59 @@ class AbstractRunnerTest {
 
     assertFailsWith<IllegalArgumentException> { runner.callFindAgentToRun(context, rootAgent) }
       .also { assertEquals("Agent 'sub1' is not allowed to transfer to peer 'sub2'.", it.message) }
+  }
+
+  @Test
+  fun createInvocationContext_nonResumable_functionResponse_bindsToOriginatingInvocation() =
+    runTest {
+      // A non-resumable runner resolves a function response to the invocation that issued the
+      // call, matching the resumable path and Python ADK, instead of starting a fresh invocation.
+      val rootAgent = DummyAgent("root")
+      val runner = TestRunner(rootAgent, resumable = false)
+
+      val callId = "call-1"
+      val key = SessionKey("InMemoryRunner", "user", "session")
+      val session = runner.sessionService.createSession(key)
+      val unused =
+        runner.sessionService.appendEvent(
+          session,
+          Event(
+            author = "root",
+            content =
+              Content(
+                Role.MODEL,
+                listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
+              ),
+            invocationId = "originating-inv",
+          ),
+        )
+
+      val context =
+        runner.callCreateInvocationContext(
+          session = runner.sessionService.getSession(key)!!,
+          invocationId = null,
+          newMessage = userFunctionResponse(name = "tool", id = callId),
+        )
+
+      assertEquals("originating-inv", context.invocationId)
+    }
+
+  @Test
+  fun createInvocationContext_nonResumable_plainMessage_startsFreshInvocation() = runTest {
+    // A plain message carries no function response, so the caller-supplied id is used as-is and a
+    // fresh invocation starts.
+    val runner = TestRunner(DummyAgent("root"), resumable = false)
+    val key = SessionKey("InMemoryRunner", "user", "session")
+    val session = runner.sessionService.createSession(key)
+
+    val context =
+      runner.callCreateInvocationContext(
+        session = session,
+        invocationId = "caller-supplied",
+        newMessage = userMessage("hi"),
+      )
+
+    assertEquals("caller-supplied", context.invocationId)
   }
 
   @Test
