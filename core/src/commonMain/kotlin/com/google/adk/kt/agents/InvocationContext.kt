@@ -263,23 +263,21 @@ data class InvocationContext(
   }
 
   /**
-   * Returns the events from the current session.
+   * Returns the current session's events from the in-memory [Session.events], which
+   * [SessionService.appendEvent] keeps in sync. Reads memory rather than re-fetching from the
+   * session service each step, matching Python, Java, and Go ADK.
    *
    * @param currentInvocation Whether to filter the events by the current invocation.
    * @param currentBranch Whether to filter the events by the current branch.
    * @return A list of events from the current session.
    */
+  // suspend kept for the ReadonlyContext.getEvents contract; the read never suspends.
+  @Suppress("RedundantSuspendModifier")
   suspend fun getEvents(
     currentInvocation: Boolean = false,
     currentBranch: Boolean = false,
   ): List<Event> {
-    val sessionService = this.sessionService
-    var results: List<Event> =
-      if (sessionService != null) {
-        sessionService.listEvents(session.key).events
-      } else {
-        session.events
-      }
+    var results: List<Event> = session.events.toList()
     if (currentInvocation) {
       results = results.filter { it.invocationId == this.invocationId }
     }

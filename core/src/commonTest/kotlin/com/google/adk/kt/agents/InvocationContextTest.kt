@@ -24,6 +24,12 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
+import com.google.adk.kt.sessions.GetSessionConfig
+import com.google.adk.kt.sessions.ListEventsResponse
+import com.google.adk.kt.sessions.ListSessionsResponse
+import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
@@ -38,6 +44,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -252,6 +259,37 @@ class InvocationContextTest {
       )
 
     assertNull(match)
+  }
+
+  @Test
+  fun getEvents_readsInMemorySession_withoutQueryingSessionService() = runBlocking {
+    // listEvents throws: getEvents must read session.events, never re-fetch.
+    val service =
+      object : SessionService {
+        override suspend fun createSession(key: SessionKey, state: Map<String, Any>?): Session =
+          error("not used")
+
+        override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? =
+          error("not used")
+
+        override suspend fun listSessions(appName: String, userId: String): ListSessionsResponse =
+          error("not used")
+
+        override suspend fun deleteSession(key: SessionKey): Unit = error("not used")
+
+        override suspend fun listEvents(key: SessionKey): ListEventsResponse =
+          error("getEvents must not re-fetch from the session service")
+      }
+    val session = testSession()
+    val previous = Event(invocationId = "inv-0", author = "agent-A", content = modelMessage("old"))
+    val current = Event(invocationId = "inv-1", author = "agent-A", content = modelMessage("hi"))
+    session.events.add(previous)
+    session.events.add(current)
+    val context =
+      testInvocationContext(session = session, sessionService = service, invocationId = "inv-1")
+
+    assertEquals(listOf(previous.id, current.id), context.getEvents().map { it.id })
+    assertEquals(listOf(current.id), context.getEvents(currentInvocation = true).map { it.id })
   }
 
   @Test
