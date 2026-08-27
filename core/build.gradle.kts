@@ -133,6 +133,10 @@ kotlin {
         implementation(libs.androidx.appsearch)
         implementation(libs.androidx.appsearch.localStorage)
         implementation(libs.kotlinx.coroutines.guava)
+        // compileOnly, not implementation: androidx.appfunctions declares minCompileSdk=37, and a
+        // runtime dependency would stamp that floor onto core's published AAR and every consumer.
+        // An app using AppFunctionsToolset adds the dependency itself.
+        compileOnly(libs.androidx.appfunctions)
       }
     }
     getByName("androidHostTest") {
@@ -148,6 +152,8 @@ kotlin {
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.google.truth)
         implementation(libs.robolectric)
+        // The real dependency here (not compileOnly) so the Robolectric AppFunctions tests run.
+        implementation(libs.androidx.appfunctions)
       }
     }
 
@@ -213,6 +219,13 @@ dependencies {
   add("kspJvmTest", project(":google-adk-kotlin-processor"))
   add("kspAndroidHostTest", project(":google-adk-kotlin-processor"))
 }
+
+// The AppFunctions SDK declares minCompileSdk=37, which AGP enforces on every variant taking it as
+// a real dependency -- including the test source sets, which need it at runtime. The published AAR
+// is unaffected, so the check is relaxed for the test variants rather than moving the repo to 37.
+tasks
+  .matching { it.name.startsWith("checkAndroid") && it.name.endsWith("TestAarMetadata") }
+  .configureEach { enabled = false }
 
 // Room's annotation processor runs via KSP. Wire it only against the Android target since the
 // Room runtime is androidMain-only.
