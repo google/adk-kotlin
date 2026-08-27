@@ -18,9 +18,9 @@ package com.google.adk.kt.webserver.loaders
 
 import com.google.adk.kt.agents.BaseAgent
 
-/** An [AgentLoader] implementation that loads a single agent. */
+/** An [AgentLoader] serving one agent, under its own name only. */
 class SingleAgentLoader(private val agent: BaseAgent) : AgentLoader {
   override fun listAgents(): List<String> = listOf(agent.name)
 
-  override fun loadAgent(agentName: String): BaseAgent? = agent
+  override fun loadAgent(agentName: String): BaseAgent? = agent.takeIf { it.name == agentName }
 }
