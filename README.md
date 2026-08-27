@@ -78,7 +78,7 @@ Module         | Artifact                             | What it is for
 -------------- | ------------------------------------ | --------------
 `core`         | `google-adk-kotlin-core`             | Agents, models, tools, sessions, memory, artifacts and runners. The only dependency most projects need.
 `processor`    | `google-adk-kotlin-processor`        | KSP processor that generates tools from `@Tool`-annotated functions. Add it with `ksp(...)`.
-`webserver`    | `google-adk-kotlin-webserver`        | Embedded server that hosts the Development UI and its API for local testing.
+`webserver`    | `google-adk-kotlin-webserver`        | HTTP serving for your agents, headless or with the Development UI.
 `integrations` | `google-adk-kotlin-integrations`     | Plugins and integrations with external services (e.g. BigQuery agent analytics).
 `a2a`          | `google-adk-kotlin-a2a`              | Agent2Agent (A2A) support for talking to remote agents.
 `litertlm`     | `google-adk-kotlin-litertlm`         | On-device models through LiteRT-LM. Requires JDK 21+; see [litertlm/README.md](litertlm/README.md).
@@ -156,16 +156,84 @@ Kit chat**, and **Firebase AI**. See the
 [Android examples README](examples/android/README.md) for how to build and run
 the app, obtain the on-device models, and configure Firebase.
 
+### Serving agents over HTTP
+
+Add `com.google.adk:google-adk-kotlin-webserver` alongside the core artifact.
+`AdkApiServer` then serves the agent runtime contract — app discovery, sessions,
+artifacts, the run endpoints, health and version — without the development
+surface, so it can be deployed headlessly:
+
+```kotlin
+import com.google.adk.kt.webserver.AdkApiServer
+import com.google.adk.kt.webserver.AdkServerConfig
+
+fun main() = AdkApiServer(AdkServerConfig.inMemory(rootAgent)).start(wait = true)
+```
+
+That listens on port 8080. `inMemory` keeps session and artifact state in the
+process, so it suits a local run; build `AdkServerConfig` directly to serve
+several agents or to persist state.
+
+Run it however you run any other main class. With the Gradle `application`
+plugin that is `mainClass = "com.example.MainKt"` — a top-level `main` in
+`Main.kt` compiles to `MainKt`, not `Main` — and then `./gradlew run`.
+
+The server binds loopback, because these endpoints are unauthenticated. Put your
+own authentication in front of it before widening that:
+
+```kotlin
+import com.google.adk.kt.webserver.AdkApiServer
+import com.google.adk.kt.webserver.AdkServerConfig
+
+fun main() =
+  AdkApiServer(AdkServerConfig.inMemory(rootAgent).copy(host = "0.0.0.0")).start(wait = true)
+```
+
 ### Development UI
 
 Same as the beloved Python Development UI.
 A built-in development UI to help you test, evaluate, debug, and showcase your agent(s).
+
+`AdkDevServer` takes the same config and adds the UI at
+`http://localhost:8080/dev-ui`, together with the trace and agent-graph
+endpoints it drives:
+
+```kotlin
+import com.google.adk.kt.webserver.AdkServerConfig
+import com.google.adk.kt.webserver.dev.AdkDevServer
+
+fun main() = AdkDevServer(AdkServerConfig.inMemory(rootAgent)).start(wait = true)
+```
+
+To leave the UI unmounted, set the `webUiEnabled` field on `AdkServerConfig`:
+
+```kotlin
+import com.google.adk.kt.webserver.AdkServerConfig
+import com.google.adk.kt.webserver.dev.AdkDevServer
+
+fun main() =
+  AdkDevServer(AdkServerConfig.inMemory(rootAgent).copy(webUiEnabled = false)).start(wait = true)
+```
+
+Three things decide whether the UI is mounted. Highest wins:
+
+1.  the `adk.web.ui.enabled` **system property**, when it is set to `true` or
+    `false` in any casing — any other value is ignored with a warning
+2.  the `webUiEnabled` **field on `AdkServerConfig`**, when it is not null
+3.  the **server class**: `AdkApiServer` leaves the UI unmounted, `AdkDevServer`
+    mounts it
+
+So the system property is not an alternative to the field, it outranks it: a
+stray `-Dadk.web.ui.enabled=true` in the launch environment re-mounts the UI even
+though the config says `webUiEnabled = false`. It ranks highest so that a
+deployment which cannot change code can still turn the UI off.
+
 <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
 
 ## 📂 Examples
 
-The snippet above is the short version. Every runnable example lives under the
-`examples` directory of this repository.
+The agent snippet above is the short version. Every runnable example lives under
+the `examples` directory of this repository.
 
 *   [`examples/`](examples) — JVM examples.
 
