@@ -71,34 +71,51 @@ abstract class BaseNode(
     get() = false
 
   /**
-   * Runs the node and emits its events. It drives [runNode] and normalizes each raw emission into
-   * an [Event], so every node behaves the same way at its edges: `null` and `Unit` are skipped, an
-   * [Event] passes through with its `output` validated (a message-as-output event's content is
-   * not), and any other value becomes the output.
+   * Runs the node and normalizes each raw emission of [runNode] into an [Event]: `null` and `Unit`
+   * are skipped, a [RequestInput] becomes an `adk_request_input` interrupt event, an [Event] keeps
+   * its content and has its `output` validated, and any other value becomes the output.
    */
-  fun run(context: Context, nodeInput: Any?): Flow<Event> = flow {
-    val emissions = runNode(context, validateInput(nodeInput))
+  fun run(context: Context, nodeInput: Any?): Flow<Event> =
+    run(context, nodeInput, validateInput = true)
+
+  /**
+   * Runs the node and normalizes its emissions into [Event]s, optionally skipping input validation.
+   */
+  internal fun run(context: Context, nodeInput: Any?, validateInput: Boolean): Flow<Event> = flow {
+    val input = if (validateInput) validateInput(nodeInput) else nodeInput
+    val emissions = runNode(context, input)
     emissions.collect { item ->
       when (item) {
         null,
         Unit -> {}
+        is RequestInput -> emit(item.toEvent())
         is Event ->
           if (item.output == null) {
             emit(item)
           } else {
             emit(item.copy(output = validateOutput(item.output)))
           }
-        // The author is left empty here and stamped later by the node runner, which is what knows
-        // the node's place in the graph.
-        else -> emit(Event(author = "", output = validateOutput(item)))
+        // The author stays empty here and is stamped later by the node runner, which knows the
+        // node's place in the graph.
+        else -> emit(Event(output = validateOutput(item)))
       }
     }
   }
 
-  /** Checks [nodeInput] against [inputSchema], if there is one, and returns the input to run on. */
-  protected open fun validateInput(nodeInput: Any?): Any? {
-    val node: Node = this // Resolves to the Node extension rather than this member.
-    return node.validateInput(nodeInput)
+  /**
+   * Checks [nodeInput] against [inputSchema], if there is one, and returns the input to run on. A
+   * fan-in node receives its predecessors' outputs keyed by name, so the schema applies to each
+   * output rather than to the joined map.
+   */
+  internal open fun validateInput(nodeInput: Any?): Any? {
+    val schema = inputSchema ?: return nodeInput
+    if (requiresAllPredecessors && nodeInput is Map<*, *>) {
+      return nodeInput.entries.associate { (predecessor, output) ->
+        val side = "output of '$predecessor' into node '$name'"
+        predecessor.toString() to SchemaUtils.validateValue(output, schema, side).getOrThrow()
+      }
+    }
+    return SchemaUtils.validateValue(nodeInput, schema, "input of node '$name'").getOrThrow()
   }
 
   /** Checks [output] against [outputSchema], if there is one, and returns it. */

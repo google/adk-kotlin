@@ -43,8 +43,16 @@ internal class Scheduler(
   private val triggerQueue = TriggerQueue()
   private val interruptIds = mutableSetOf<String>()
 
-  // TODO: on resume, reconstructing progress from session history (ResumeScan) and fast-forwarding
-  // already-completed nodes is added in a later change; this engine runs every node fresh.
+  /** Reconstructed states of this workflow's nodes from earlier turns, keyed by `name@runId`. */
+  private val recovered: Map<String, RecoveredNode> =
+    ResumeScan.scan(
+      context.requireNodeState().history,
+      context.nodePath,
+      context.invocationContext.invocationId,
+    )
+
+  /** Nodes replayed from history in the current activation. */
+  private val replayed = mutableSetOf<String>()
 
   private val isResumable: Boolean
     get() = context.invocationContext.isResumable
@@ -151,8 +159,7 @@ internal class Scheduler(
         if (workflow.maxConcurrency != null && running.size >= workflow.maxConcurrency) break
 
         val trigger = triggerQueue.poll(nodeName) ?: continue
-        // Only a node that genuinely runs marks a new step; one fast-forwarded from history must
-        // not re-announce itself.
+        // A run, or a replay that completes a transfer, marks a new step; a plain replay does not.
         if (start(nodeName, trigger)) emitCheckpoint()
       }
     }
@@ -164,12 +171,30 @@ internal class Scheduler(
       val runId = context.requireNodeState().nextChildRunId(nodeName)
       nodeStates[nodeName] = NodeState(status = NodeStatus.RUNNING, runId = runId)
 
+      val node = graph.node(nodeName)
+      val useAsOutput = nodeName in graph.terminalNodeNames
+
+      val recoveredNode = recovered[BranchPath.segment(nodeName, runId)]
+      val interception = ResumeScan.intercept(node, recoveredNode)
+      if (recoveredNode != null && !interception.shouldRun) {
+        val completesTransfer =
+          interception.transferToAgent != null &&
+            recoveredNode.interruptIds.isNotEmpty() &&
+            recoveredNode.unresolved.isEmpty()
+        if (!completesTransfer) replayed.add(nodeName)
+        val replayContext =
+          ResumeScan.replayContext(context, node, runId, useAsOutput, interception)
+        running[nodeName] = scope.async { replayContext }
+        return completesTransfer
+      }
+
       running[nodeName] = scope.async {
         NodeRunner(
-            node = graph.node(nodeName),
+            node = node,
             parent = context,
             runId = runId,
-            useAsOutput = nodeName in graph.terminalNodeNames,
+            useAsOutput = useAsOutput,
+            resumeInputs = interception.resumeInputs,
             useSubBranch = trigger.useSubBranch,
             overrideBranch = trigger.branch,
           )
@@ -179,15 +204,13 @@ internal class Scheduler(
     }
   }
 
-  // TODO: replayContext (builds the context a fast-forwarded node would have produced, without
-  // running it) is added with resume/rehydration in a later change.
-
   private suspend fun handleCompletion(batch: List<Pair<String, Context>>) {
     for ((name, ctx) in batch) handleCompletion(name, ctx)
   }
 
   private suspend fun handleCompletion(nodeName: String, childContext: Context) {
     val state = nodeStates.getValue(nodeName)
+    val wasReplayed = replayed.remove(nodeName)
 
     if (childContext.interruptIds.isNotEmpty()) {
       state.status = NodeStatus.WAITING
@@ -208,24 +231,38 @@ internal class Scheduler(
     nodeBranches[nodeName] = childContext.invocationContext.branch
     if (childContext.hasProducedOutput) nodeOutputs[nodeName] = childContext.output
 
-    emitCheckpoint()
+    if (wasReplayed) reemitReplayedOutput(childContext) else emitCheckpoint()
 
     enqueueSuccessorNodeTriggers(nodeName, childContext)
   }
 
-  // TODO: emitCheckpoint/emitEndOfAgent run only when isResumable, so no test asserts the
-  // agentState payload or endOfAgent marker; a resumable SchedulerTest comes with resume support.
   /** Records where every node stands, so a later turn can see how far this one got. */
   private suspend fun emitCheckpoint() {
     if (!isResumable) return
     val snapshot = nodeStates.mapValues { (_, state) -> state.toCheckpoint() as TypedData }
     emit(
-      EventActions(agentState = TypedData.MapValue(mapOf("nodes" to TypedData.MapValue(snapshot))))
+      EventActions(
+        agentState = TypedData.MapValue(mapOf(NodeState.NODES_KEY to TypedData.MapValue(snapshot)))
+      )
     )
   }
 
-  // TODO: reemitReplayedOutput (re-surfaces a fast-forwarded node's recovered output on resume) is
-  // added with resume/rehydration in a later change.
+  /** Re-emits a replayed node's output on resumable runs without setting `outputFor`. */
+  private suspend fun reemitReplayedOutput(childContext: Context) {
+    if (!isResumable || !childContext.hasProducedOutput) return
+    context
+      .requireNodeState()
+      .eventSink
+      .send(
+        Event(
+          author = workflow.name,
+          invocationId = context.invocationContext.invocationId,
+          branch = context.invocationContext.branch,
+          output = childContext.output,
+          nodeInfo = NodeInfo(path = childContext.nodePath),
+        )
+      )
+  }
 
   /** Marks a clean finish, so a resumable session can tell the workflow ran to completion. */
   private suspend fun emitEndOfAgent() {
@@ -244,8 +281,7 @@ internal class Scheduler(
           invocationId = context.invocationContext.invocationId,
           branch = context.invocationContext.branch,
           actions = actions,
-        ),
-        nodeFailure = null,
+        )
       )
   }
 

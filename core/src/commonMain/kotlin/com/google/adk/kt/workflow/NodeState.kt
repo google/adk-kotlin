@@ -36,17 +36,21 @@ internal class NodeState(
 
   /**
    * Returns the snapshot a resumable session records for this node. The shape is shared across ADK
-   * implementations, so the keys and the numeric status are contractual. A node's answers to its
-   * interrupts are deliberately left out: for an auth-guarded node they hold the credential the
-   * user sent, and a resume re-derives them from the session's own events.
+   * implementations, so the keys and the numeric status are contractual.
    */
   fun toCheckpoint(): TypedData.MapValue =
     TypedData.MapValue(
       mapOf(
-        "status" to TypedData.IntValue(status.code),
-        "interrupts" to TypedData.ListValue(interrupts.map { TypedData.StringValue(it) }),
+        STATUS_KEY to TypedData.IntValue(status.code),
+        INTERRUPTS_KEY to TypedData.ListValue(interrupts.map { TypedData.StringValue(it) }),
       )
     )
+
+  companion object {
+    const val NODES_KEY: String = "nodes"
+    const val STATUS_KEY: String = "status"
+    const val INTERRUPTS_KEY: String = "interrupts"
+  }
 }
 
 /**

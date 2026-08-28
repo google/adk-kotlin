@@ -81,13 +81,25 @@ private constructor(
 
   private val childRunIds = ChildRunIds()
 
+  // Child nodes receive recovered answers from their parent's scan; only root runs scan here.
+  private val resolvedResumeInputs: Map<String, Any?> =
+    if (parent == null) {
+      ResumeScan.answersFor(
+        invocationContext.session.events,
+        BranchPath.segment(node.name, runId),
+        invocationContext.invocationId,
+      )
+    } else {
+      resumeInputs
+    }
+
   /** Runs the node, retrying per its policy, and returns the context of the final attempt. */
-  suspend fun run(nodeInput: Any?): Context {
+  suspend fun run(nodeInput: Any?, validateInput: Boolean = true): Context {
     val policy = node.config.retryConfig
     var attempt = 1
     while (true) {
       val activation = Activation(newContext(attempt))
-      val context = activation.run(nodeInput)
+      val context = activation.run(nodeInput, validateInput)
       val failure = context.requireNodeState().failure
       if (
         activation.canRetry &&
@@ -103,19 +115,18 @@ private constructor(
     }
   }
 
-  private fun newContext(attempt: Int): Context {
-    return Context(
+  private fun newContext(attempt: Int): Context =
+    Context(
       invocationContext = childInvocationContext(),
       node = node,
       eventSink = eventSink,
       parent = parent,
       runId = runId,
       attemptCount = attempt,
-      resumeInputs = resumeInputs,
+      resumeInputs = resolvedResumeInputs,
       useAsOutput = useAsOutput,
       childRunIds = if (node is Workflow) ChildRunIds() else childRunIds,
     )
-  }
 
   /**
    * The invocation context the node runs against. A fanned-out node runs on a sub-branch derived
@@ -147,9 +158,9 @@ private constructor(
     var canRetry = true
       private set
 
-    suspend fun run(nodeInput: Any?): Context {
+    suspend fun run(nodeInput: Any?, validateInput: Boolean): Context {
       try {
-        runAttempt(nodeInput)
+        runAttempt(nodeInput, validateInput)
         flushPending()
       } catch (e: NodeInterruptedException) {
         // A dynamically dispatched child interrupted. Its ids are already on the context, and the
@@ -174,14 +185,16 @@ private constructor(
      * attempt and surfaces as a [NodeTimeoutException], which is an ordinary failure the retry
      * policy can act on.
      */
-    private suspend fun runAttempt(nodeInput: Any?) {
+    private suspend fun runAttempt(nodeInput: Any?, validateInput: Boolean) {
       val timeout = node.config.timeout
       if (timeout == null) {
-        asBaseNode(node).run(context, nodeInput).collect(::dispatch)
+        asBaseNode(node).run(context, nodeInput, validateInput).collect(::dispatch)
         return
       }
       try {
-        withTimeout(timeout) { asBaseNode(node).run(context, nodeInput).collect(::dispatch) }
+        withTimeout(timeout) {
+          asBaseNode(node).run(context, nodeInput, validateInput).collect(::dispatch)
+        }
       } catch (e: TimeoutCancellationException) {
         // Only relabel our own timeout: if an outer scope already cancelled us the coroutine is no
         // longer active, so rethrow the cancellation rather than blaming this node.
@@ -222,7 +235,7 @@ private constructor(
       // When content carries message-as-output, clear output to prevent duplicate text on the wire.
       val stamped = stamp(if (event.isMessageAsOutput) event.copy(output = null) else event)
       val outgoing = if (stamped.partial) stamped else withPendingDeltas(stamped)
-      nodeState.eventSink.send(outgoing, nodeFailure = null)
+      nodeState.eventSink.send(outgoing)
 
       if (outgoing.output != null) {
         nodeState.markOutputEmitted()
@@ -246,12 +259,11 @@ private constructor(
       val event =
         stamp(
           Event(
-            author = "",
             output = if (hasPendingOutput) context.output else null,
             actions = EventActions(route = if (hasPendingRoute) context.routes else null),
           )
         )
-      nodeState.eventSink.send(withPendingDeltas(event), nodeFailure = null)
+      nodeState.eventSink.send(withPendingDeltas(event))
 
       if (hasPendingOutput) nodeState.markOutputEmitted()
       if (hasPendingRoute) nodeState.routesEmitted = true
@@ -264,13 +276,7 @@ private constructor(
       // error event so state changes made before the failure are not lost.
       val errorEvent =
         withPendingDeltas(
-          stamp(
-            Event(
-              author = "",
-              errorCode = RetryConfig.errorTypeName(e),
-              errorMessage = e.message ?: "",
-            )
-          )
+          stamp(Event(errorCode = RetryConfig.errorTypeName(e), errorMessage = e.message ?: ""))
         )
       nodeState.eventSink.send(errorEvent, nodeFailure = e)
       nodeState.failure = NodeExecutionFailure(e, context.nodePath)
@@ -387,7 +393,7 @@ private val Event.isMessageAsOutput: Boolean
 /**
  * Adapts any [Node] to a [BaseNode] so the engine's execution and normalization loop can run it.
  */
-private fun asBaseNode(node: Node): BaseNode =
+internal fun asBaseNode(node: Node): BaseNode =
   node as? BaseNode
     ?: object :
       BaseNode(
