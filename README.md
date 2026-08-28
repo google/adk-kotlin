@@ -228,6 +228,12 @@ stray `-Dadk.web.ui.enabled=true` in the launch environment re-mounts the UI eve
 though the config says `webUiEnabled = false`. It ranks highest so that a
 deployment which cannot change code can still turn the UI off.
 
+To try a few of this repository's own agents rather than your own:
+
+```
+GOOGLE_API_KEY=... ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
+```
+
 <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
 
 ## 📂 Examples

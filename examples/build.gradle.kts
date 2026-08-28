@@ -37,6 +37,7 @@ dependencies {
   implementation(libs.a2a.sdk.spec)
   implementation(libs.a2a.sdk.transport.jsonrpc)
   implementation(project(":google-adk-kotlin-litertlm"))
+  implementation(project(":google-adk-kotlin-webserver"))
   implementation(libs.clikt)
   implementation(libs.github.api)
   implementation(libs.google.ai.edge.litertlm.jvm)
@@ -65,5 +66,16 @@ tasks.register<JavaExec>("runBigQueryAnalyticsDemo") {
   group = "application"
   description = "Runs the BigQuery Analytics Demo agent."
   mainClass.set("com.google.adk.kt.examples.plugins.BigQueryAnalyticsDemoAgentKt")
+  classpath = sourceSets["main"].runtimeClasspath
+}
+
+// Convenience task to serve a sample of the example agents over HTTP, e.g.:
+//   GOOGLE_API_KEY=... ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
+// then browse http://localhost:8080/dev-ui and pick an agent.
+tasks.register<JavaExec>("runServer") {
+  group = "application"
+  description =
+    "Serves five example agents over HTTP, unauthenticated, with the Development UI under --dev."
+  mainClass.set("com.google.adk.kt.examples.server.ExampleServerKt")
   classpath = sourceSets["main"].runtimeClasspath
 }
