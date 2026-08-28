@@ -32,11 +32,20 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.workflow.BranchPath
+import com.google.adk.kt.workflow.DynamicNodeFailedException
 import com.google.adk.kt.workflow.EventSink
 import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.NodeExecutionFailure
-import com.google.adk.kt.workflow.OutputRecord
+import com.google.adk.kt.workflow.NodeInterruptedException
+import com.google.adk.kt.workflow.NodeRunner
+import com.google.adk.kt.workflow.OutputState
 import com.google.adk.kt.workflow.Route
+import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.validateNodeName
+import com.google.adk.kt.workflow.validateRunId
+import com.google.errorprone.annotations.CanIgnoreReturnValue
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
  * Execution context passed to agent callbacks, model callbacks, tools, and workflow nodes during an
@@ -81,6 +90,8 @@ open class Context(
    * @param eventSink Where this activation's events are sent; one workflow run shares a single
    *   sink.
    * @param actions Deltas this node accumulates, flushed onto the next event it emits.
+   * @param useAsOutput Whether this node's output also serves as its parent's output.
+   * @param childRunIds Per-name run-ID counters for this node's children.
    */
   @ExperimentalWorkflowApi
   internal constructor(
@@ -92,20 +103,32 @@ open class Context(
     attemptCount: Int = 1,
     resumeInputs: Map<String, Any?> = emptyMap(),
     actions: EventActions = EventActions(),
+    useAsOutput: Boolean = false,
     nodePath: String? = null,
+    childRunIds: ChildRunIds = ChildRunIds(),
   ) : this(invocationContext, actions) {
     this.parent = parent
     this.runId = runId
     this.attemptCount = attemptCount
     this.resumeInputs = resumeInputs
-    val resolvedNodePath = nodePath ?: buildNodePath(parent?.nodeState?.nodePath, node.name, runId)
-    val resolvedEventAuthor = parent?.nodeState?.eventAuthor ?: ""
+    val parentState = parent?.nodeState
+    val resolvedNodePath = nodePath ?: buildNodePath(parentState?.nodePath, node.name, runId)
+    val resolvedEventAuthor = parentState?.eventAuthor ?: ""
+    val outputForAncestors =
+      if (useAsOutput && parentState != null) {
+        parentState.outputFor
+      } else {
+        emptyList()
+      }
     this.nodeState =
       NodeExecutionState(
         node = node,
         eventSink = eventSink,
         nodePath = resolvedNodePath,
         eventAuthor = resolvedEventAuthor,
+        outputParent = if (useAsOutput) parentState else null,
+        outputForAncestors = outputForAncestors,
+        childRunIds = childRunIds,
       )
   }
 
@@ -439,9 +462,11 @@ open class Context(
     }
 
   /**
-   * The node's result. Settable once per activation, whether by emitting it or by assigning it.
+   * The node's output value. Can be set at most once per activation. Assigning `null` before any
+   * output is a no-op.
    *
-   * @throws IllegalStateException if set a second time.
+   * @throws IllegalStateException if an output was already produced, or if this node delegated its
+   *   output via `useAsOutput`.
    */
   @ExperimentalWorkflowApi
   var output: Any?
@@ -450,7 +475,7 @@ open class Context(
       requireNodeState().produceOutput(value)
     }
 
-  /** Whether an output has been set, which distinguishes "no output" from "the output was null". */
+  /** Whether an output has been produced, by this node or by a `useAsOutput` delegate. */
   @ExperimentalWorkflowApi
   val hasProducedOutput: Boolean
     get() = requireNodeState().hasProducedOutput
@@ -463,18 +488,158 @@ open class Context(
       requireNodeState().selectRoutes(value)
     }
 
-  /**
-   * The ids of the input requests this activation raised and is now waiting on, which the graph
-   * pauses on until an answer arrives keyed by that id.
-   */
+  /** Interrupt IDs this node activation is waiting on. */
   @ExperimentalWorkflowApi
   val interruptIds: Set<String>
-    get() = requireNodeState().interruptIds.toSet()
+    get() = requireNodeState().interruptIds
 
   /**
-   * This activation's node execution state. Present only on a node activation; null on a callback,
-   * model-callback, or tool context, which is why the public node-only members below throw.
+   * Executes [node] as a child of this node activation and returns its output.
+   *
+   * Child events are recorded under `<thisNodePath>/<node.name>@<runId>`. If [node] pauses for
+   * input or fails, this call throws an internal exception that the workflow runtime catches to
+   * mark this node as waiting or failed. The interrupt is delivered as a [Throwable] that is not an
+   * [Exception], so `catch (e: Exception)` does not swallow it; do not wrap this call in
+   * `runCatching` or `catch (t: Throwable)`.
+   *
+   * @param node Child node to execute.
+   * @param nodeInput Input passed to [node], or `null` if none.
+   * @param runId Explicit run ID for [node]. Must contain at least one non-digit character and must
+   *   not contain `'/'`, `'@'`, or `'.'`. When `null` or empty, an incrementing numeric ID is
+   *   generated per child node name.
+   * @param useAsOutput When `true`, delegates this node's output to [node]: this node must not
+   *   produce an output of its own afterwards, even if [node] finishes without one. The claim is
+   *   released only if [node] fails before emitting an output, so a caller that catches the failure
+   *   may fall back to its own output. Once [node] has emitted, its output is this node's output
+   *   and successors receive it.
+   * @param useSubBranch When `true`, runs [node] on a sub-branch `<branch>.<node.name>@<runId>`.
+   * @param overrideBranch Branch for [node] to run on instead of this node's branch.
+   * @param raiseOnWait When `true` and [node] is a [Workflow] or sets [Node.waitForOutput] but
+   *   finishes without an output, aborts this node's run like an interrupt, without recording one:
+   *   this node completes with any output it already produced, or else waits only if it sets
+   *   [Node.waitForOutput].
+   * @throws IllegalStateException if called outside a node activation, if this node does not set
+   *   `rerunOnResume = true`, or if this node already produced or delegated its output and
+   *   [useAsOutput] is `true`.
+   * @throws IllegalArgumentException if [node]'s name or [runId] is invalid.
    */
+  @CanIgnoreReturnValue
+  @ExperimentalWorkflowApi
+  suspend fun runNode(
+    node: Node,
+    nodeInput: Any? = null,
+    runId: String? = null,
+    useAsOutput: Boolean = false,
+    useSubBranch: Boolean = false,
+    overrideBranch: String? = null,
+    raiseOnWait: Boolean = false,
+  ): Any? {
+    val ns = requireNodeState()
+    check(ns.node.rerunOnResume) {
+      "Node '${ns.node.name}' must set rerunOnResume = true to call runNode: a dynamically" +
+        " dispatched child may be interrupted, and the workflow re-runs the caller on resume to" +
+        " collect the child's output."
+    }
+    require(runId.isNullOrEmpty() || runId.any { !it.isDigit() }) {
+      "runId \"$runId\" for node '${node.name}' must contain a non-digit character so it cannot" +
+        " collide with auto-generated IDs."
+    }
+    return runNodeUnchecked(
+      node,
+      nodeInput,
+      runId,
+      useAsOutput = useAsOutput,
+      useSubBranch = useSubBranch,
+      overrideBranch = overrideBranch,
+      raiseOnWait = raiseOnWait,
+    )
+  }
+
+  /**
+   * Runs [node] without the caller-policy checks of [runNode]: the caller need not set
+   * [Node.rerunOnResume], and [runId] may be all digits. [node]'s name and [runId] are still
+   * validated for path safety.
+   */
+  @CanIgnoreReturnValue
+  @ExperimentalWorkflowApi
+  internal suspend fun runNodeUnchecked(
+    node: Node,
+    nodeInput: Any? = null,
+    runId: String? = null,
+    useAsOutput: Boolean = false,
+    useSubBranch: Boolean = false,
+    overrideBranch: String? = null,
+    raiseOnWait: Boolean = false,
+  ): Any? {
+    val ns = requireNodeState()
+    val delegatesOutput = useAsOutput && ns.node !is Workflow
+    if (delegatesOutput) ns.claimOutputDelegation()
+
+    val childContext =
+      try {
+        runNodeForContext(
+          node,
+          nodeInput,
+          runId,
+          useAsOutput = useAsOutput,
+          useSubBranch = useSubBranch,
+          overrideBranch = overrideBranch,
+        )
+      } catch (e: Exception) {
+        if (delegatesOutput) ns.releaseOutputDelegation()
+        throw e
+      }
+    val childState = childContext.requireNodeState()
+    childState.failure?.let {
+      if (delegatesOutput) ns.releaseOutputDelegation()
+      throw DynamicNodeFailedException(it.cause, it.nodePath)
+    }
+    if (childState.interruptIds.isNotEmpty()) {
+      ns.addInterruptIds(childState.interruptIds)
+      throw NodeInterruptedException()
+    }
+    val executedNode = childState.node
+    if (
+      raiseOnWait &&
+        !childState.hasProducedOutput &&
+        childContext.actions.transferToAgent == null &&
+        (executedNode is Workflow || executedNode.waitForOutput)
+    ) {
+      throw NodeInterruptedException()
+    }
+    return childState.output
+  }
+
+  /** Runs [node] as a child activation and returns its [Context]. */
+  @ExperimentalWorkflowApi
+  internal suspend fun runNodeForContext(
+    node: Node,
+    nodeInput: Any? = null,
+    runId: String? = null,
+    useAsOutput: Boolean = false,
+    useSubBranch: Boolean = false,
+    overrideBranch: String? = null,
+  ): Context {
+    validateNodeName(node.name)
+    val ns = requireNodeState()
+    val id =
+      if (runId.isNullOrEmpty()) {
+        ns.nextChildRunId(node.name)
+      } else {
+        validateRunId(runId, node.name)
+        runId
+      }
+    return NodeRunner(
+        node = node,
+        parent = this,
+        runId = id,
+        useAsOutput = useAsOutput,
+        useSubBranch = useSubBranch,
+        overrideBranch = overrideBranch,
+      )
+      .run(nodeInput)
+  }
+
   private var nodeState: NodeExecutionState? = null
 
   internal fun requireNodeState(): NodeExecutionState =
@@ -486,68 +651,174 @@ open class Context(
   }
 }
 
-/**
- * The engine state of one node activation: the data a running node accumulates and the behavior
- * over it. A [Context] holds one only while it is a node activation, which is what makes Context's
- * node-only members throw on a callback or tool context.
- */
+/** Mutable execution state for a single node activation. */
+@OptIn(ExperimentalAtomicApi::class)
 internal class NodeExecutionState(
   val node: Node,
   val eventSink: EventSink,
   val nodePath: String,
   var eventAuthor: String,
+  /** Parent state that delegated its output to this activation when `useAsOutput` is `true`. */
+  private val outputParent: NodeExecutionState? = null,
+  /** Ancestor node paths this activation's output also satisfies, nearest ancestor first. */
+  val outputForAncestors: List<String> = emptyList(),
+  private val childRunIds: ChildRunIds = ChildRunIds(),
 ) {
-  val interruptIds = mutableSetOf<String>()
-  // Holds temporary state for the current activation only.
+  /** Node paths this activation's output satisfies: [nodePath] followed by [outputForAncestors]. */
+  val outputFor: List<String> = listOf(nodePath) + outputForAncestors
+
+  private val interruptIdsRef = AtomicReference<Set<String>>(emptySet())
+  private val outputStateRef = AtomicReference<OutputState>(OutputState.None)
+
+  /** Interrupt IDs this activation is waiting on. */
+  val interruptIds: Set<String>
+    get() = interruptIdsRef.load()
+
   val transientState = mutableMapOf<String, Any>()
   var selectedRoutes: List<Route>? = null
   var routesEmitted: Boolean = false
   var failure: NodeExecutionFailure? = null
 
-  private var outputRecord: OutputRecord = OutputRecord.None
-
-  /** The node's result, or null if none was produced or the produced value was null. */
+  /** The node's output value, or `null` if none was produced. */
   val output: Any?
     get() =
-      when (val r = outputRecord) {
-        is OutputRecord.None -> null
-        is OutputRecord.Produced -> r.value
-        is OutputRecord.Emitted -> r.value
+      when (val s = outputStateRef.load()) {
+        OutputState.None,
+        OutputState.Delegated -> null
+        is OutputState.Produced -> s.value
+        is OutputState.Emitted -> s.value
+        is OutputState.DelegateEmitted -> s.value
       }
 
-  /** Whether an output has been set, which distinguishes "no output" from "the output was null". */
+  /** Whether an output has been produced, by this activation or by a `useAsOutput` delegate. */
   val hasProducedOutput: Boolean
-    get() = outputRecord !is OutputRecord.None
+    get() = outputStateRef.load().let { it !is OutputState.None && it !is OutputState.Delegated }
 
-  /** Whether an event carrying the output has already been sent. */
+  /**
+   * Whether the output was marked emitted; a workflow's validated output is marked but never sent.
+   */
   val hasEmittedOutput: Boolean
-    get() = outputRecord is OutputRecord.Emitted
+    get() =
+      outputStateRef.load().let { it is OutputState.Emitted || it is OutputState.DelegateEmitted }
 
-  /** Records this activation's single output; a second call is a programming error. */
+  /**
+   * Records this activation's output value. Assigning `null` before any output is a no-op; any
+   * assignment after an output was produced or delegated throws [IllegalStateException].
+   */
   fun produceOutput(value: Any?) {
-    check(outputRecord is OutputRecord.None) {
-      "Node '${node.name}' produced a second output; a node produces at most one output."
+    while (true) {
+      when (val current = outputStateRef.load()) {
+        OutputState.None -> {
+          if (value == null) return
+          if (outputStateRef.compareAndSet(current, OutputState.Produced(value))) return
+        }
+        OutputState.Delegated,
+        is OutputState.DelegateEmitted -> error(delegatedOutputMessage())
+        is OutputState.Produced,
+        is OutputState.Emitted -> error(secondOutputMessage())
+      }
     }
-    outputRecord = OutputRecord.Produced(value)
   }
 
-  /** Marks the produced output as emitted on the wire; only a produced output may be marked. */
+  /** Marks the produced output as emitted and records it on every delegating ancestor. */
   fun markOutputEmitted() {
-    when (val r = outputRecord) {
-      is OutputRecord.Produced -> outputRecord = OutputRecord.Emitted(r.value)
-      is OutputRecord.Emitted -> error("Node '${node.name}' output was already emitted.")
-      is OutputRecord.None -> error("Node '${node.name}' has no produced output to emit.")
+    while (true) {
+      when (val current = outputStateRef.load()) {
+        is OutputState.Produced -> {
+          if (!outputStateRef.compareAndSet(current, OutputState.Emitted(current.value))) continue
+          var ancestor = outputParent
+          while (ancestor != null) {
+            ancestor.recordDelegatedOutput(current.value)
+            ancestor = ancestor.outputParent
+          }
+          return
+        }
+        is OutputState.Emitted,
+        is OutputState.DelegateEmitted -> error("Node '${node.name}' output was already emitted.")
+        OutputState.None,
+        OutputState.Delegated -> error("Node '${node.name}' has no produced output to emit.")
+      }
     }
   }
 
-  /** Selects the outgoing routes; a fresh selection has not been dispatched on an event yet. */
+  /**
+   * Records [value] as the output a `useAsOutput` descendant marked emitted for this activation. A
+   * no-op unless this activation delegated its output; a later value (a workflow's validated
+   * output, marked emitted but never sent) replaces its terminal node's raw one.
+   */
+  private fun recordDelegatedOutput(value: Any) {
+    while (true) {
+      val current = outputStateRef.load()
+      if (current !is OutputState.Delegated && current !is OutputState.DelegateEmitted) return
+      if (outputStateRef.compareAndSet(current, OutputState.DelegateEmitted(value))) return
+    }
+  }
+
+  /** Selects the outgoing routes for this activation. */
   fun selectRoutes(routes: List<Route>?) {
     selectedRoutes = routes
     routesEmitted = false
   }
 
-  /** Records the interrupts this activation is waiting on; [interruptIds] reads them back. */
+  /** Adds [ids] to the set of interrupts this activation is waiting on. */
   fun addInterruptIds(ids: Collection<String>) {
-    interruptIds.addAll(ids)
+    if (ids.isEmpty()) return
+    while (true) {
+      val current = interruptIdsRef.load()
+      if (interruptIdsRef.compareAndSet(current, current + ids)) return
+    }
+  }
+
+  /** Returns the next run ID for a dynamically dispatched child named [name]. */
+  fun nextChildRunId(name: String): String = childRunIds.next(name)
+
+  /**
+   * Claims this activation's output for a `useAsOutput` child, or throws if it is already taken.
+   */
+  fun claimOutputDelegation() {
+    while (true) {
+      when (val current = outputStateRef.load()) {
+        OutputState.None -> if (outputStateRef.compareAndSet(current, OutputState.Delegated)) return
+        OutputState.Delegated,
+        is OutputState.DelegateEmitted ->
+          error("Node '${node.name}' already delegated its output to a useAsOutput child.")
+        is OutputState.Produced,
+        is OutputState.Emitted ->
+          error(
+            "Node '${node.name}' already produced an output and cannot delegate it to a" +
+              " useAsOutput child."
+          )
+      }
+    }
+  }
+
+  /**
+   * Releases the claim after a delegate failed before emitting; a no-op once the delegate's output
+   * is recorded.
+   */
+  fun releaseOutputDelegation() {
+    outputStateRef.compareAndSet(OutputState.Delegated, OutputState.None)
+  }
+
+  private fun secondOutputMessage() =
+    "Node '${node.name}' produced a second output; a node produces at most one output."
+
+  private fun delegatedOutputMessage() =
+    "Node '${node.name}' delegated its output to a useAsOutput child and must not produce one of" +
+      " its own."
+}
+
+/** Per-child-name run-ID counters for a node activation. */
+@OptIn(ExperimentalAtomicApi::class)
+internal class ChildRunIds {
+  private val counters = AtomicReference<Map<String, Int>>(emptyMap())
+
+  /** Returns the next 1-based run ID for a child named [name]. */
+  fun next(name: String): String {
+    while (true) {
+      val current = counters.load()
+      val next = (current[name] ?: 0) + 1
+      if (counters.compareAndSet(current, current + (name to next))) return next.toString()
+    }
   }
 }

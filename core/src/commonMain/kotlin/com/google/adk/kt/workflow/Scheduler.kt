@@ -161,26 +161,17 @@ internal class Scheduler(
     // this single thread of execution.
     @Suppress("UnsafeCoroutineCrossing")
     private fun start(nodeName: String, trigger: Trigger): Boolean {
-      // A fresh activation gets a fresh state so nothing carries over, but keeps the run counter so
-      // its path stays unique.
-      nodeStates[nodeName] =
-        (nodeStates[nodeName]?.forNewRun() ?: NodeState()).apply {
-          status = NodeStatus.RUNNING
-          runId = nextRunId()
-        }
-      val runId = nodeStates.getValue(nodeName).runId!!
+      val runId = context.requireNodeState().nextChildRunId(nodeName)
+      nodeStates[nodeName] = NodeState(status = NodeStatus.RUNNING, runId = runId)
 
       // TODO: on resume, intercepting a node recovered from history (replaying a completed node or
       // resuming a waiting one) is added in a later change; this engine always runs the node.
-      // TODO: pass a terminal / use-as-output flag so a terminal node's output event stamps the
-      // enclosing workflow's path onto outputFor (Python _workflow.py:668, _node_runner.py:463).
-      // Latent today, since finalize propagates the output via context.output, but the persisted
-      // event stream diverges; added with resume/rehydration.
       running[nodeName] = scope.async {
         NodeRunner(
             node = graph.node(nodeName),
             parent = context,
             runId = runId,
+            useAsOutput = nodeName in graph.terminalNodeNames,
             useSubBranch = trigger.useSubBranch,
             overrideBranch = trigger.branch,
           )
@@ -319,7 +310,7 @@ internal class Scheduler(
     }
     val terminalOutputs = graph.terminalNodeNames.filter { it in nodeOutputs }
     if (terminalOutputs.size > 1) {
-      throw WorkflowConfigurationError(
+      throw WorkflowConfigurationException(
         "Workflow ${workflow.name}: multiple terminal nodes produced output" +
           " (${terminalOutputs.size}). A workflow must have at most one terminal output."
       )
@@ -330,7 +321,8 @@ internal class Scheduler(
       val side = "output of workflow '${workflow.name}'"
       context.output =
         if (schema == null) output else SchemaUtils.validateValue(output, schema, side).getOrThrow()
-      context.requireNodeState().markOutputEmitted()
+      // Validation can read a Content as JSON null, which is no output.
+      if (context.hasProducedOutput) context.requireNodeState().markOutputEmitted()
     }
     emitEndOfAgent()
   }

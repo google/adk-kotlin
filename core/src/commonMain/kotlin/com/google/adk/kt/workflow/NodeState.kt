@@ -30,24 +30,9 @@ internal class NodeState(
   var status: NodeStatus = NodeStatus.INACTIVE,
   /** Ids of the interrupts this node is currently waiting on; empty unless [status] is waiting. */
   var interrupts: List<String> = emptyList(),
-  /**
-   * Counts the activations this node has had, so each gets a distinct path segment. Kept apart from
-   * [runId] because [runId] may be a caller-supplied string, and mixing the two could collide: a
-   * node that runs as `foo@1` (generated), then is dispatched with the explicit id `"bar"`, then
-   * runs again must not reuse `foo@1`, so the counter keeps advancing (2, 3, ...) independently.
-   * Nothing supplies an explicit [runId] today; the split is a placeholder for the resume and
-   * dynamic-dispatch paths added in a later change.
-   */
-  var runCounter: Int = 0,
   /** The current activation's id, forming the `name@runId` path segment; null before the first. */
   var runId: String? = null,
 ) {
-
-  /** Assigns and returns the next activation id for this node. */
-  fun nextRunId(): String {
-    runCounter += 1
-    return runCounter.toString()
-  }
 
   /**
    * Returns the snapshot a resumable session records for this node. The shape is shared across ADK
@@ -62,9 +47,6 @@ internal class NodeState(
         "interrupts" to TypedData.ListValue(interrupts.map { TypedData.StringValue(it) }),
       )
     )
-
-  /** Returns a fresh state for a new activation, carrying the run counter forward. */
-  fun forNewRun(): NodeState = NodeState(runCounter = runCounter)
 }
 
 /**
