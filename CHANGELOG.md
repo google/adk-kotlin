@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.9.0](https://github.com/google/adk-kotlin/compare/v0.8.0...v0.9.0) (2026-08-28)
+
+
+### Features
+
+* accept Java List/Map params in @Tool and add a Java function-tool example ([bc89fb2](https://github.com/google/adk-kotlin/commit/bc89fb27180ab25220a2f694865e7633f75df120))
+* add AdkApiServer and AdkDevServer ([0f2a76e](https://github.com/google/adk-kotlin/commit/0f2a76ef619c5f3a872d705c00c749dbf41193d3))
+* add Java-friendly builders for LlmRequest and Session ([dc1c3b6](https://github.com/google/adk-kotlin/commit/dc1c3b63e83b6c36dc8d787826fff6c463ff27c5))
+* add minProperties and maxProperties to Schema ([3a824fc](https://github.com/google/adk-kotlin/commit/3a824fc365efc287c72858cc8cba06520d5e82e5))
+* add streaming response mode to the Firebase AI Android example ([d259617](https://github.com/google/adk-kotlin/commit/d259617150948845616a6b0ff9c3715d0ac51573))
+* allow disabling the ADK Development UI with adk.web.ui.enabled ([ba02d25](https://github.com/google/adk-kotlin/commit/ba02d2587707644d5fcbdcd62048f0f11676488a))
+* **mlkit:** support thinking mode on the on-device Gemini Nano model ([f8d502c](https://github.com/google/adk-kotlin/commit/f8d502c7344ee63eb362a180062890323afb8561))
+* serve example agents over HTTP with runServer ([0a892e3](https://github.com/google/adk-kotlin/commit/0a892e3faa85cc685e5d6d45057021a4614583a4))
+* **sessions:** support session expiry in VertexAiSessionService ([776351a](https://github.com/google/adk-kotlin/commit/776351ae74690347ed78640dcc2630393a7dc114))
+* show Gemini Nano's thinking in the Android ML Kit chat example ([9e5dea7](https://github.com/google/adk-kotlin/commit/9e5dea7cab39d4cb5ac8f9b8155462d6b853d825))
+
+
+### Bug Fixes
+
+* AdkWebServer.stop() when started with wait = true ([e554455](https://github.com/google/adk-kotlin/commit/e554455d00176a0bea16f064095debe85db7e28e))
+* align aggregation of LiteRT-LM streaming responses with the other model backends ([2e34319](https://github.com/google/adk-kotlin/commit/2e34319791a19240d0e461921cb510fcd8d63930))
+* bind AdkApiServer and AdkDevServer to loopback by default ([b4e83ad](https://github.com/google/adk-kotlin/commit/b4e83add3d896547784b6045226755cdbd33175a))
+* omit empty content from an LlmResponse built from a content-less candidate ([e856bce](https://github.com/google/adk-kotlin/commit/e856bcede6be53c933037b7ac7ad637785eff19c))
+* restore the deprecated graph route types at their previous package ([91b653d](https://github.com/google/adk-kotlin/commit/91b653da4b5e4ee6b8cc48dd90bd0fc673ac425f))
+
+
+### Performance Improvements
+
+* read session events from memory instead of re-fetching them each step ([a560b38](https://github.com/google/adk-kotlin/commit/a560b38a64b4a263484cec63a13fc42a337249ff))
+
+
+### Documentation
+
+* document Android on-device and cloud agents in the README ([548968c](https://github.com/google/adk-kotlin/commit/548968cb48b5dbc1081ce79d85ea785802176de2))
+* document serving agents over HTTP ([224365b](https://github.com/google/adk-kotlin/commit/224365b5617841a1f21f2e0fd4bf0c6aa2457db6))
+
 ## [0.8.0](https://github.com/google/adk-kotlin/compare/v0.7.0...v0.8.0) (2026-08-15)
 
 
