@@ -38,6 +38,10 @@ import kotlinx.coroutines.withContext
  *   `{appName}/{userId}/user/{filename}/{version}`
  * - For regular session-scoped files: `{appName}/{userId}/{sessionId}/{filename}/{version}`
  *
+ * A session whose id is literally `user` therefore shares the user-scope prefix, and
+ * [listArtifactKeys] reports its session-scoped filenames to that user's other sessions, which
+ * cannot load them.
+ *
  * @property bucketName The name of the GCS bucket to store artifacts in.
  * @property storageClient The configured Google Cloud Storage client.
  */

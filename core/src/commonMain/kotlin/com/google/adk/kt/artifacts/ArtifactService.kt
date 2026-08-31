@@ -21,16 +21,18 @@ import com.google.adk.kt.types.Part
 /**
  * Base interface for artifact services.
  *
- * An artifact is uniquely identified by the session it belongs to (via [SessionKey]) plus its
- * `filename` within that session.
+ * A `filename` beginning with `user:` addresses an artifact shared by every session of the same
+ * user; any other filename addresses one belonging to the session named by the [SessionKey].
+ * Whether a service partitions by [SessionKey.appName], what a null [SessionKey.id] means, and
+ * whether it honours the given key at all are implementation-defined; see the implementation.
  */
 interface ArtifactService {
 
   /**
    * Saves an artifact.
    *
-   * @param sessionKey identifies the session that owns the artifact.
-   * @param filename the artifact filename within the session.
+   * @param sessionKey identifies the user and session the operation is scoped to.
+   * @param filename the artifact filename; a `user:` prefix addresses the user scope instead.
    * @param artifact the artifact
    * @return the revision ID (version) of the saved artifact.
    */
@@ -39,8 +41,8 @@ interface ArtifactService {
   /**
    * Saves an artifact and returns it with fileData if available.
    *
-   * @param sessionKey identifies the session that owns the artifact.
-   * @param filename the artifact filename within the session.
+   * @param sessionKey identifies the user and session the operation is scoped to.
+   * @param filename the artifact filename; a `user:` prefix addresses the user scope instead.
    * @param artifact the artifact to save
    * @return the saved artifact with fileData if available.
    */
@@ -49,34 +51,34 @@ interface ArtifactService {
   /**
    * Gets an artifact.
    *
-   * @param sessionKey identifies the session that owns the artifact.
-   * @param filename the artifact filename within the session.
+   * @param sessionKey identifies the user and session the operation is scoped to.
+   * @param filename the artifact filename; a `user:` prefix addresses the user scope instead.
    * @param version Optional version number. If null, loads the latest version.
    * @return the artifact or null if not found
    */
   suspend fun loadArtifact(sessionKey: SessionKey, filename: String, version: Int? = null): Part?
 
   /**
-   * Lists the filenames of all artifacts within a session.
+   * Lists the filenames visible to a session: its own artifacts plus the user's `user:` ones.
    *
-   * @param sessionKey identifies the session whose artifacts are listed.
-   * @return the list of artifact filenames in the session.
+   * @param sessionKey identifies the user and session whose artifacts are listed.
+   * @return the artifact filenames, with `user:` prefixes retained.
    */
   suspend fun listArtifactKeys(sessionKey: SessionKey): List<String>
 
   /**
    * Deletes an artifact.
    *
-   * @param sessionKey identifies the session that owns the artifact.
-   * @param filename the artifact filename within the session.
+   * @param sessionKey identifies the user and session the operation is scoped to.
+   * @param filename the artifact filename; a `user:` prefix addresses the user scope instead.
    */
   suspend fun deleteArtifact(sessionKey: SessionKey, filename: String)
 
   /**
    * Lists all the versions (as revision IDs) of an artifact.
    *
-   * @param sessionKey identifies the session that owns the artifact.
-   * @param filename the artifact filename within the session.
+   * @param sessionKey identifies the user and session the operation is scoped to.
+   * @param filename the artifact filename; a `user:` prefix addresses the user scope instead.
    * @return A list of integer version numbers
    */
   suspend fun listVersions(sessionKey: SessionKey, filename: String): List<Int>
