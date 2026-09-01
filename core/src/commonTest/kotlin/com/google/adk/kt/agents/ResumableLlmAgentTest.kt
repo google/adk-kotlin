@@ -99,6 +99,44 @@ class ResumableLlmAgentTest {
   }
 
   @Test
+  fun resumeFromTransfer_toPeerAgent_runsTransferredPeer() = runTest {
+    val rootAgent =
+      llmAgent(
+        "root_agent",
+        "response from root",
+        subAgents =
+          listOf(
+            llmAgent("agent_a", "response from agent_a"),
+            llmAgent("agent_b", "response from agent_b"),
+          ),
+      )
+    // agent_a transferred to its peer agent_b (not a descendant), then the invocation paused.
+    val agentA = checkNotNull(rootAgent.findAgent("agent_a"))
+    val ctx =
+      resumableContext(
+        agentA,
+        listOf(
+          Event(
+            author = "agent_a",
+            invocationId = INVOCATION_ID,
+            content = Content(Role.MODEL, listOf(TRANSFER_TO_AGENT_RESPONSE_PART)),
+            actions = EventActions(transferToAgent = "agent_b"),
+          )
+        ),
+      )
+    ctx.agentStates["agent_a"] = baseAgentState()
+
+    assertEquals(
+      listOf(
+        "agent_b" to "response from agent_b",
+        "agent_b" to END_OF_AGENT,
+        "agent_a" to END_OF_AGENT,
+      ),
+      resumeAndSimplify(agentA, ctx),
+    )
+  }
+
+  @Test
   fun resumeFromModelResponse_noTransfer_continuesRootAgent() = runTest {
     val rootAgent = llmAgent("root_agent", "second response from root")
     val ctx =

@@ -207,7 +207,7 @@ class LlmAgent(
     if (event.author == fromAgent) {
       val transferTo = event.actions.transferToAgent
       if (transferTo != null && transferTo != fromAgent) {
-        return findAgent(transferTo)
+        return rootAgent.findAgent(transferTo)
       }
     }
     return null
