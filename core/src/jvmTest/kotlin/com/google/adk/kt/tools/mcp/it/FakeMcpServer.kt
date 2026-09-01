@@ -233,9 +233,7 @@ private fun annotateTool(): SyncToolSpecification =
                 "default" to 5,
                 "anyOf" to listOf(mapOf("type" to "integer"), mapOf("type" to "null")),
               ),
-            // A union arm naming a type this converter does not know must cost only that arm.
-            "extra" to
-              mapOf("anyOf" to listOf(mapOf("type" to "string"), mapOf("type" to "temperature"))),
+            "extra" to mapOf("anyOf" to listOf(mapOf("type" to "string"))),
             // How Pydantic writes a nested model: the shape lives under `$defs` and the property
             // only points at it, so the reference has to survive the wire to be resolvable.
             "record" to mapOf("\$ref" to "#/\$defs/Record"),

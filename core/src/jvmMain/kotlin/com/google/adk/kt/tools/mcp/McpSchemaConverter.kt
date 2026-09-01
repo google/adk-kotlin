@@ -21,16 +21,12 @@ import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import io.modelcontextprotocol.spec.McpSchema
-import io.modelcontextprotocol.spec.McpSchema.JsonSchema
 
 /**
  * Converts between MCP schema types and ADK types.
  *
- * A tool's `inputSchema` reaches us as [JsonSchema], whose `properties` are raw JSON maps, so every
- * keyword a server declares on a *property* survives transport and is available here. The record
- * itself, however, keeps only `type`, `properties`, `required`, `additionalProperties`, `$defs` and
- * `definitions`, so keywords written at the *top level* of an `inputSchema` (a `description`, for
- * instance) are dropped by the SDK before ADK sees them and cannot be recovered.
+ * A tool's `inputSchema` reaches us as a JSON map, whose `properties` are raw JSON maps, so every
+ * keyword a server declares survives transport and is available here.
  */
 internal object McpSchemaConverter {
 
@@ -204,25 +200,8 @@ internal object McpSchemaConverter {
       else -> null
     }
 
-  /** Converts a [JsonSchema] to an ADK [Schema]. */
-  fun JsonSchema.toAdkSchema(): Schema {
-    // The record keeps both spellings of the definitions block as components, so a `$ref` in any
-    // property below can be resolved against them.
-    val definitions = buildMap {
-      definitions()?.let { putAll(it) }
-      defs()?.let { putAll(it) }
-    }
-    val properties = properties().toAdkSchemaMap(depth = 1, scope = RefScope(definitions))
-    val type = parseTypeString(type())
-    return Schema(
-      type = type,
-      properties = properties,
-      // The record carries no `items` component, so an array here can only take the default.
-      items = defaultItems(type),
-      required = required().requiredIn(properties),
-      description = null,
-    )
-  }
+  /** Converts a JSON Schema property map to an ADK [Schema]. */
+  fun Map<String, Any>.toAdkSchema(): Schema = parsePropertyMap(this, 0, declaredDefinitions())
 
   /** Parses a property map into an ADK [Schema]. */
   fun parsePropertyMap(
