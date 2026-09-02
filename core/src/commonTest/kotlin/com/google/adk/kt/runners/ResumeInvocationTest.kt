@@ -33,7 +33,6 @@ import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -43,7 +42,7 @@ import kotlinx.coroutines.test.runTest
 
 /**
  * Edge cases of resuming invocations through the runner by `invocationId`, ported from Python ADK
- * 1.x `v1/tests/unittests/runners/test_resume_invocation.py`.
+ * `tests/unittests/runners/test_resume_invocation.py`.
  */
 class ResumeInvocationTest {
 
@@ -138,13 +137,7 @@ class ResumeInvocationTest {
             ),
           ),
         tools =
-          listOf(
-            DummyTool(
-              name = "test_tool",
-              isLongRunning = true,
-              onRun = { _, _ -> mapOf("result" to "test tool result") },
-            )
-          ),
+          listOf(DummyTool(name = "test_tool", isLongRunning = true, onRun = { _, _ -> Unit })),
       )
     val runner =
       InMemoryRunner(
@@ -155,18 +148,11 @@ class ResumeInvocationTest {
         )
       )
 
-    // Invocation 1: pauses on the long-running call.
+    // Invocation 1: pauses on the long-running call (Unit return, so no function-response event).
     val inv1 =
       runner.runAsync(USER_ID, SESSION_ID, newMessage = userMessage("test user query")).toList()
     assertEquals(
-      listOf(
-        "root_agent" to Part(functionCall = FunctionCall(name = "test_tool")),
-        "root_agent" to
-          Part(
-            functionResponse =
-              FunctionResponse(name = "test_tool", response = mapOf("result" to "test tool result"))
-          ),
-      ),
+      listOf("root_agent" to Part(functionCall = FunctionCall(name = "test_tool"))),
       simplifyResumableEvents(inv1),
     )
 
@@ -182,14 +168,7 @@ class ResumeInvocationTest {
     val inv3 =
       runner.runAsync(USER_ID, SESSION_ID, newMessage = userMessage("test user query 3")).toList()
     assertEquals(
-      listOf(
-        "root_agent" to Part(functionCall = FunctionCall(name = "test_tool")),
-        "root_agent" to
-          Part(
-            functionResponse =
-              FunctionResponse(name = "test_tool", response = mapOf("result" to "test tool result"))
-          ),
-      ),
+      listOf("root_agent" to Part(functionCall = FunctionCall(name = "test_tool"))),
       simplifyResumableEvents(inv3),
     )
 

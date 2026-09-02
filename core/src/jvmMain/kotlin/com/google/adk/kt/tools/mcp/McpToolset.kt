@@ -465,8 +465,9 @@ private fun McpSchema.Annotations.toAnnotations(): McpAnnotations =
     lastModified = lastModified(),
   )
 
-// McpSchema.ResourceContents is a non-sealed interface in the MCP Java SDK, so an explicit else
-// branch is required for exhaustiveness to handle any unsupported or future subtypes.
+// No else branch below: McpSchema.ResourceContents is a sealed interface permitting exactly the
+// two subtypes handled here, so the compiler proves the `when` exhaustive. An SDK upgrade that
+// adds a third subtype turns that proof into a compile error here, which is the signal we want.
 private fun McpSchema.ResourceContents.toResourceContent(): McpResourceContent =
   when (this) {
     is McpSchema.TextResourceContents ->
@@ -483,5 +484,4 @@ private fun McpSchema.ResourceContents.toResourceContent(): McpResourceContent =
         blobBase64 = blob().orEmpty(),
         meta = meta(),
       )
-    else -> error("Unsupported ResourceContents type: ${this::class}")
   }

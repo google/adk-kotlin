@@ -33,16 +33,19 @@ private const val APP_NAME = "nav_app"
  * Runnable end-to-end demo of a long-running, client-side tool in a **resumable** app
  * ([ResumabilityConfig] with `isResumable = true`).
  *
- * Same scenario as [LongRunningToolDemoAgent], but resumability changes the pause/resume behavior:
- * 1. The model calls [ChangeDestinationTool]; the tool dispatches the action and returns a
- *    placeholder.
- * 2. The invocation pauses immediately -- the model is **not** re-invoked on the placeholder (one
- *    model call in turn 1, versus two in the non-resumable demo) and the `endOfAgent` marker is
- *    suppressed so the invocation stays live.
+ * 1. The model calls [ChangeDestinationTool], which dispatches the action and returns `Unit` ("no
+ *    response yet"), so no function-response event is emitted.
+ * 2. The invocation pauses on the long-running function call -- the model is **not** re-invoked
+ *    (one model call in turn 1) and the `endOfAgent` marker is suppressed so the invocation stays
+ *    live.
  * 3. The device's real result resumes the paused invocation: a `FunctionResponse` carrying the call
  *    id is injected (its invocation id is passed too). Because the framework recomputes
  *    pause/resume purely from the stored session events, this resume can happen in a different
  *    process/server as long as the session is persisted.
+ *
+ * A long-running tool that instead returns a value answers the call and lets the model continue in
+ * the same turn, in a resumable app too; see [LongRunningToolDemoAgent] for the non-resumable value
+ * case.
  */
 fun main() = runBlocking {
   val model = ScriptedNavModel()
@@ -52,7 +55,7 @@ fun main() = runBlocking {
       model = model,
       instruction =
         Instruction("Help the driver navigate. Use $CHANGE_DESTINATION_TOOL to reroute them."),
-      tools = listOf(ChangeDestinationTool()),
+      tools = listOf(ChangeDestinationTool(respondImmediately = false)),
     )
   val runner =
     InMemoryRunner(
@@ -77,7 +80,7 @@ fun main() = runBlocking {
   printEvents("turn 1 (agent pauses; invocation stays live)", turn1)
   println(
     "   model invocations during turn 1: ${model.invocations} " +
-      "(resumable pauses immediately; the model is not re-invoked on the placeholder)"
+      "(the tool returned no response, so the model is not re-invoked and the invocation pauses)"
   )
 
   val pausedCall = turn1.pausedLongRunningCall()

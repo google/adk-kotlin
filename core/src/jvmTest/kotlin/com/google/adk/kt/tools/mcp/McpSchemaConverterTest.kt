@@ -497,7 +497,16 @@ class McpSchemaConverterTest {
 
   @Test
   fun toAdkSchema_arrayTypedInputSchema_defaultsItemsToString() {
-    val inputSchema = mapOf("type" to "array")
+    // The JsonSchema record has no `items` component, so an array can only take the default.
+    val inputSchema =
+      McpSchema.JsonSchema(
+        /* type= */ "array",
+        /* properties= */ null,
+        /* required= */ null,
+        /* additionalProperties= */ null,
+        /* defs= */ null,
+        /* definitions= */ null,
+      )
 
     assertEquals(Type.STRING, inputSchema.toAdkSchema().items?.type)
   }
@@ -530,12 +539,12 @@ class McpSchemaConverterTest {
   }
 
   @Test
-  fun toAdkFunctionDeclaration_toolWithoutInputSchema_setsDefaultObjectParameters() {
+  fun toAdkFunctionDeclaration_toolWithoutInputSchema_leavesParametersUnset() {
     val tool = McpSchema.Tool.builder().name("bare").build()
 
     val declaration = tool.toAdkFunctionDeclaration()
 
-    assertEquals(Type.OBJECT, declaration.parameters?.type)
+    assertNull(declaration.parameters)
   }
 
   @Test
@@ -1012,13 +1021,16 @@ class McpSchemaConverterTest {
 
   @Test
   fun toAdkSchema_defsAndDefinitionsClash_prefersDefs() {
-    // `$defs` is the current spelling, so it wins a name collision -- as it does in Python.
+    // `$defs` is the current spelling, so it wins a name collision -- as it does in Python. The
+    // record carries both blocks, so the converter decides the precedence rather than the caller.
     val inputSchema =
-      mapOf(
-        "type" to "object",
-        "properties" to mapOf("where" to mapOf("\$ref" to "#/\$defs/Foo")),
-        "\$defs" to mapOf("Foo" to mapOf("type" to "string")),
-        "definitions" to mapOf("Foo" to mapOf("type" to "integer")),
+      McpSchema.JsonSchema(
+        /* type= */ "object",
+        /* properties= */ mapOf("where" to mapOf("\$ref" to "#/\$defs/Foo")),
+        /* required= */ null,
+        /* additionalProperties= */ null,
+        /* defs= */ mapOf("Foo" to mapOf("type" to "string")),
+        /* definitions= */ mapOf("Foo" to mapOf("type" to "integer")),
       )
 
     val converted = inputSchema.toAdkSchema()
@@ -1259,14 +1271,21 @@ class McpSchemaConverterTest {
       }
     }
 
-    /** Builds an `{"type": "object", ...}` JSON schema map. */
+    /**
+     * Builds an `{"type": "object", ...}` [McpSchema.JsonSchema]; the record is a Java record, so
+     * its components have to be passed positionally.
+     */
     fun jsonSchema(
       properties: Map<String, Any> = emptyMap(),
       required: List<String> = emptyList(),
-    ): Map<String, Any> = buildMap {
-      put("type", "object")
-      if (properties.isNotEmpty()) put("properties", properties)
-      if (required.isNotEmpty()) put("required", required)
-    }
+    ): McpSchema.JsonSchema =
+      McpSchema.JsonSchema(
+        /* type= */ "object",
+        /* properties= */ properties,
+        /* required= */ required,
+        /* additionalProperties= */ null,
+        /* defs= */ null,
+        /* definitions= */ null,
+      )
   }
 }

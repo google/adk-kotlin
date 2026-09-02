@@ -44,13 +44,15 @@ import kotlinx.coroutines.test.runTest
 
 /**
  * Pause-on-long-running-function-call scenarios across the different agent structures, ported from
- * Python ADK 1.x `v1/tests/unittests/runners/test_pause_invocation.py`.
+ * Python ADK `tests/unittests/runners/test_pause_invocation.py`.
  *
- * All scenarios run a resumable app. A long-running tool returns a value, so its function-response
- * event is still emitted, but the function-call event carries `longRunningToolIds`, so the
- * invocation pauses afterwards without emitting an end-of-agent marker (keeping the agent's state
- * live for a later resume). Composite agents additionally emit their state-checkpoint events, which
- * [simplifyResumableEvents] surfaces as the agent's state value.
+ * All scenarios run a resumable app. A long-running tool returns `Unit` ("no response yet"), so no
+ * function-response event is emitted and the function-call event -- which carries
+ * `longRunningToolIds` -- is the turn's final response, so the invocation pauses without emitting
+ * an end-of-agent marker (keeping the agent's state live for a later resume). A value-returning
+ * long-running tool would instead answer the call and let the model continue (covered by
+ * LongRunningToolIntegrationTest). Composite agents additionally emit their state-checkpoint
+ * events, which [simplifyResumableEvents] surfaces as the agent's state value.
  */
 class PauseInvocationTest {
 
@@ -60,7 +62,7 @@ class PauseInvocationTest {
       LlmAgent(name = "root_agent", model = singleCall("root"), tools = listOf(longRunningTool()))
 
     assertEquals(
-      listOf("root_agent" to TEST_TOOL_CALL_PART, "root_agent" to TEST_TOOL_RESPONSE_PART),
+      listOf("root_agent" to TEST_TOOL_CALL_PART),
       simplifyResumableEvents(resumableRunner(agent).runTurn("test")),
     )
   }
@@ -77,7 +79,6 @@ class PauseInvocationTest {
       listOf(
         "root_agent" to SequentialAgentState("sub_agent_1").toStateValue(),
         "sub_agent_1" to TEST_TOOL_CALL_PART,
-        "sub_agent_1" to TEST_TOOL_RESPONSE_PART,
       ),
       simplifyResumableEvents(resumableRunner(rootAgent).runTurn("test")),
     )
@@ -113,7 +114,6 @@ class PauseInvocationTest {
         "sub_agent_1" to END_OF_AGENT,
         "root_agent" to SequentialAgentState("sub_agent_2").toStateValue(),
         "sub_agent_2" to TEST_TOOL_CALL_PART,
-        "sub_agent_2" to TEST_TOOL_RESPONSE_PART,
       ),
       simplifyResumableEvents(resumableRunner(rootAgent).runTurn("test")),
     )
@@ -212,7 +212,6 @@ class PauseInvocationTest {
         "sub_agent_1" to END_OF_AGENT,
         "root_agent" to LoopAgentState("sub_agent_2", 0).toStateValue(),
         "sub_agent_2" to TEST_TOOL_CALL_PART,
-        "sub_agent_2" to TEST_TOOL_RESPONSE_PART,
       ),
       simplifyResumableEvents(resumableRunner(rootAgent).runTurn("test")),
     )
@@ -253,7 +252,6 @@ class PauseInvocationTest {
         "sub_llm_agent_1" to transferToAgentCallPart("sub_llm_agent_2"),
         "sub_llm_agent_1" to TRANSFER_TO_AGENT_RESPONSE_PART,
         "sub_llm_agent_2" to TEST_TOOL_CALL_PART,
-        "sub_llm_agent_2" to TEST_TOOL_RESPONSE_PART,
       ),
       simplifyResumableEvents(resumableRunner(rootAgent).runTurn("test")),
     )
@@ -300,7 +298,6 @@ class PauseInvocationTest {
         "sub_llm_agent_2" to transferToAgentCallPart("root_agent"),
         "sub_llm_agent_2" to TRANSFER_TO_AGENT_RESPONSE_PART,
         "root_agent" to TEST_TOOL_CALL_PART,
-        "root_agent" to TEST_TOOL_RESPONSE_PART,
       ),
       simplifyResumableEvents(resumableRunner(rootAgent).runTurn("test")),
     )
@@ -344,14 +341,11 @@ class PauseInvocationTest {
       DummyModel.createSequential("model-$tag", listOf(LlmResponse(content = modelMessage(text))))
 
     /**
-     * A long-running `test_tool` that returns a value (so a function response is still emitted).
+     * A long-running `test_tool` that returns `Unit` ("no response yet"), so its function-response
+     * event is suppressed and the invocation pauses on the function-call event alone.
      */
     fun longRunningTool(): DummyTool =
-      DummyTool(
-        name = "test_tool",
-        isLongRunning = true,
-        onRun = { _, _ -> mapOf("result" to "result") },
-      )
+      DummyTool(name = "test_tool", isLongRunning = true, onRun = { _, _ -> Unit })
 
     /** A regular (non-long-running) `test_tool` returning the same value. */
     fun regularTool(): DummyTool =

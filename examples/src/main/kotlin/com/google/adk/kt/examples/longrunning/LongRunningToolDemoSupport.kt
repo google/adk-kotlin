@@ -50,12 +50,14 @@ internal const val DEMO_SESSION_ID = "drive-session-1"
 /**
  * A long-running tool standing in for an action that executes on the client (the user's device).
  *
- * Marking it [BaseTool.isLongRunning] tells the framework the real result arrives out-of-band. The
- * tool returns a placeholder acknowledging the dispatch; the device's real result is injected later
- * as a `FunctionResponse` to resume the agent. Returning `Unit` instead would suppress even this
- * placeholder and end the turn on the function call alone.
+ * Marking it [BaseTool.isLongRunning] tells the framework the real result arrives out-of-band. When
+ * [respondImmediately] is true the tool returns a placeholder acknowledging the dispatch, which
+ * answers the call so the model summarizes it; when false it returns `Unit` ("no response yet"),
+ * suppressing the function-response so the turn ends on the function call alone (a genuine pause in
+ * a resumable app). Either way the device's real result is injected later as a `FunctionResponse`
+ * to resume the agent.
  */
-internal class ChangeDestinationTool :
+internal class ChangeDestinationTool(private val respondImmediately: Boolean = true) :
   BaseTool(
     name = CHANGE_DESTINATION_TOOL,
     description = "Change the active navigation destination on the driver's device.",
@@ -81,7 +83,7 @@ internal class ChangeDestinationTool :
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     val destination = args[DESTINATION_ARG] ?: "<unknown>"
     println("   [backend] dispatching client action to the app: $name(destination=$destination)")
-    return mapOf("status" to "dispatched_to_client")
+    return if (respondImmediately) mapOf("status" to "dispatched_to_client") else Unit
   }
 }
 

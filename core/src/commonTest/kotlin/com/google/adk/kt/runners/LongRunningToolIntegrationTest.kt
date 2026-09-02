@@ -80,12 +80,14 @@ class LongRunningToolIntegrationTest {
   // | 2 | off       | {} (empty map)    | 2     | [FC, FR, text] | n/a          |
   // | 3 | off       | {status: pending} | 2     | [FC, FR, text] | n/a          |
   // | 4 | on        | Unit              | 1     | [FC]           | suppressed   |
-  // | 5 | on        | {status: pending} | 1     | [FC, FR]       | suppressed   |
+  // | 5 | on        | {status: pending} | 2     | [FC, FR, text] | suppressed   |
   //
   // A `Unit` return (1, 4) suppresses the FR: the FC event carries `longRunningToolIds` and is
   // therefore `isFinalResponse`, so the turn ends without re-invoking the model -- this is what
-  // stops a HITL tool (e.g. request_input) from looping in non-resumable mode. For non-resumable
-  // mode (1-3) the framework never emits `end_of_agent`. For resumable mode (4, 5) the marker is
+  // stops a HITL tool (e.g. request_input) from looping, and is the only case that pauses a
+  // resumable invocation. A non-`Unit` return (2, 3, 5) answers the call, so the model is
+  // re-invoked to summarize in both modes (Python ADK 2.x `decide_resume`). For non-resumable mode
+  // (1-3) the framework never emits `end_of_agent`; for resumable mode (4, 5) the marker is
   // suppressed by the pause gates in `LlmAgent.runAsyncImpl` so the agent state stays live for an
   // eventual resume.
 
@@ -246,41 +248,27 @@ class LongRunningToolIntegrationTest {
 
   /**
    * Resumable-mode counterpart of
-   * [runAsync_longRunningToolReturnsDict_propagatesPayloadAndAcknowledges]. Differs from the
-   * non-resumable case: only **1 model invocation** happens (vs 2 in non-resumable mode). The
-   * flow's `_run_one_step_async`-equivalent (`LlmAgentTurn.shouldPause`) short-circuits the second
-   * step when it sees the long-running FC in `events[-2:]`, so the model is never re-invoked with
-   * the pending payload in history. Externally-observable events are `[FC, FR]`; no `endOfAgent`
-   * (suppressed for the same reason as scenario 3).
+   * [runAsync_longRunningToolReturnsDict_propagatesPayloadAndAcknowledges]. A non-`Unit` return
+   * answers the long-running call, so the flow does NOT pause: the model is re-invoked with the
+   * payload in history and acknowledges (**2 model invocations**), the same as non-resumable mode.
+   * Externally-observable events are `[FC, FR, text]`; `endOfAgent` stays suppressed because the
+   * long-running call keeps the invocation resumable for an eventual out-of-band resume.
    *
-   * Verified against Python ADK (manual verification: `is_resumable=True, returns={status:
-   * pending}` produces `1 model call, [FC, FR]` events with no `end_of_agent`).
+   * Verified against Python ADK 2.x (`is_resumable=True`, a value-returning long-running tool
+   * produces `2 model calls, [FC, FR, text]` with no `end_of_agent`).
    */
   @Test
-  fun runAsync_resumable_longRunningToolReturnsDict_emitsFunctionResponseAndPauses() = runTest {
+  fun runAsync_resumable_longRunningToolReturnsDict_emitsFunctionResponseAndContinues() = runTest {
     val callId = "lr_call_dict_resumable"
     val payload = mapOf("status" to "pending")
     var modelInvocations = 0
     var toolInvocations = 0
     val agent =
-      LlmAgent(
-        name = AGENT_NAME,
-        model =
-          DummyModel("model") {
-            modelInvocations++
-            flowOf(modelFunctionCallResponse(TOOL_NAME_1, id = callId))
-          },
-        tools =
-          listOf(
-            DummyTool(
-              name = TOOL_NAME_1,
-              isLongRunning = true,
-              onRun = { _, _ ->
-                toolInvocations++
-                payload
-              },
-            )
-          ),
+      singleCallThenAcknowledgeAgent(
+        callId = callId,
+        toolPayload = payload,
+        onModelInvoke = { modelInvocations++ },
+        onToolInvoke = { toolInvocations++ },
       )
     val runner =
       InMemoryRunner(
@@ -301,15 +289,14 @@ class LongRunningToolIntegrationTest {
     assertEquals(setOf(callId), fcEvent.longRunningToolIds)
     val frEvent = agentEvents.first { it.functionResponses().any { resp -> resp.id == callId } }
     assertEquals(payload, frEvent.functionResponses().single().response)
-    assertEquals(
-      1,
-      modelInvocations,
-      "the flow's pause-check at step 2 prevents the second model invocation",
-    )
+    // A value-returning long-running tool answers the call, so the flow continues and the model is
+    // re-invoked to summarize (2 model calls), matching Python ADK 2.x.
+    assertEquals("acknowledged", agentEvents.last().content?.parts?.singleOrNull()?.text)
+    assertEquals(2, modelInvocations)
     assertEquals(1, toolInvocations)
     assertTrue(
       events.none { it.actions.endOfAgent },
-      "endOfAgent must be suppressed on a long-running pause in a resumable invocation",
+      "endOfAgent stays suppressed while the long-running call keeps the invocation resumable",
     )
   }
 
@@ -784,11 +771,11 @@ class LongRunningToolIntegrationTest {
    * Resuming a paused long-running tool call still works after event compaction has summarized the
    * window that contains that call.
    *
-   * Scenario: a resumable app with sliding-window compaction. A long-running tool call pauses
-   * (invocation 2), which crosses the compaction interval, so post-invocation compaction summarizes
-   * a window that includes the long-running `FunctionCall`/placeholder-`FunctionResponse` pair. On
-   * resume with the real `FunctionResponse`, the framework must still deliver it and let the model
-   * produce its final reply.
+   * Scenario: a resumable app with sliding-window compaction. A long-running tool call keeps
+   * invocation 2 resumable (its real result still pending), which crosses the compaction interval,
+   * so post-invocation compaction summarizes a window that includes the long-running
+   * `FunctionCall`/placeholder-`FunctionResponse` pair. On resume with the real `FunctionResponse`,
+   * the framework must still deliver it and let the model produce its final reply.
    *
    * The compactor summarizes the long-running call (its placeholder response balances it, so it is
    * not treated as an open obligation). On resume,
@@ -810,8 +797,10 @@ class LongRunningToolIntegrationTest {
             listOf(
               // Invocation 1: a normal chat turn (no tools).
               LlmResponse(content = modelMessage("hello")),
-              // Invocation 2: issue the long-running tool call that pauses.
+              // Invocation 2: issue the long-running tool call.
               modelFunctionCallResponse(TOOL_NAME_1, id = callId),
+              // Invocation 2 continues: the placeholder answers the call, so the model summarizes.
+              LlmResponse(content = modelMessage("dispatched")),
               // Resume turn: summarize the delivered real result into a final reply.
               LlmResponse(content = modelMessage("resumed")),
             ),
@@ -838,8 +827,9 @@ class LongRunningToolIntegrationTest {
           )
       )
 
-    // Invocation 1: a plain turn. Invocation 2: the long-running call pauses, and post-invocation
-    // compaction then fires over invocations 1+2 -- summarizing away the long-running call.
+    // Invocation 1: a plain turn. Invocation 2: the long-running call continues and summarizes but
+    // stays resumable (its real result pending), then post-invocation compaction fires over
+    // invocations 1+2 -- summarizing away the long-running call.
     runner
       .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("hi"))
       .toList()
@@ -854,7 +844,7 @@ class LongRunningToolIntegrationTest {
       )
     assertTrue(
       session.events.any { it.actions.compaction != null },
-      "compaction must have fired over the paused long-running invocation",
+      "compaction must have fired over the resumable long-running invocation",
     )
     assertTrue(
       session.events.any { event -> event.functionCalls().any { it.id == callId } },

@@ -63,9 +63,9 @@ class McpToolsetTest {
 
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
-        McpSchema.Tool.builder().name("tool3").description("desc 3").build(),
+        McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build(),
+        McpSchema.Tool.builder().name("tool2").description("desc 2").inputSchema(null).build(),
+        McpSchema.Tool.builder().name("tool3").description("desc 3").inputSchema(null).build(),
       )
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
@@ -272,7 +272,8 @@ class McpToolsetTest {
     whenever(failingSession.listTools()).thenThrow(RuntimeException("list failed"))
 
     val recoveringSession = mock<McpAsyncClient>()
-    val toolsList = listOf(McpSchema.Tool.builder().name("tool1").description("desc 1").build())
+    val toolsList =
+      listOf(McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build())
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(recoveringSession.listTools()) doReturn mono { toolsResponse }
 
@@ -297,7 +298,8 @@ class McpToolsetTest {
     // is inside the retry loop, the failure is retried and the second open succeeds -- rather than
     // crashing the whole toolset init on the first attempt.
     val recoveringSession = mock<McpAsyncClient>()
-    val toolsList = listOf(McpSchema.Tool.builder().name("tool1").description("desc 1").build())
+    val toolsList =
+      listOf(McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build())
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(recoveringSession.listTools()) doReturn mono { toolsResponse }
 
@@ -377,8 +379,8 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
+        McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build(),
+        McpSchema.Tool.builder().name("tool2").description("desc 2").inputSchema(null).build(),
       )
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
@@ -405,8 +407,8 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
+        McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build(),
+        McpSchema.Tool.builder().name("tool2").description("desc 2").inputSchema(null).build(),
       )
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
@@ -612,8 +614,8 @@ class McpToolsetTest {
     val readResourceResult =
       McpSchema.ReadResourceResult(
         listOf(
-          McpSchema.TextResourceContents("uri1", "text/plain", ""),
-          McpSchema.BlobResourceContents("uri1", "application/octet-stream", ""),
+          McpSchema.TextResourceContents("uri1", "text/plain", null),
+          McpSchema.BlobResourceContents("uri1", "application/octet-stream", null),
         )
       )
     whenever(mockMcpSession.readResource(McpSchema.ReadResourceRequest("uri1"))) doReturn
@@ -706,8 +708,8 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
+        McpSchema.Tool.builder().name("tool1").description("desc 1").inputSchema(null).build(),
+        McpSchema.Tool.builder().name("tool2").description("desc 2").inputSchema(null).build(),
       )
     val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
@@ -729,7 +731,7 @@ class McpToolsetTest {
 
 /** Returns a minimal server-advertised tool named [name], for tests that only care about names. */
 private fun schemaTool(name: String): McpSchema.Tool =
-  McpSchema.Tool.builder().name(name).description("desc $name").build()
+  McpSchema.Tool.builder().name(name).description("desc $name").inputSchema(null).build()
 
 /**
  * Returns a toolset over a session advertising [serverToolNames] and [capabilities].
