@@ -18,6 +18,7 @@ flogger = "0.9"
 github-api = "1.330"
 google-auth = "1.48.0"
 google-cloud-bigquery = "2.68.0"
+google-cloud-secretmanager = "2.96.0"
 google-cloud-storage = "2.61.0"
 google-firebase-platform = "34.16.0"
 google-genai-kotlin = "0.3.0"
@@ -78,6 +79,7 @@ google-ai-edge-litertlm-android = { module = "com.google.ai.edge.litertlm:litert
 google-ai-edge-litertlm-jvm = { module = "com.google.ai.edge.litertlm:litertlm-jvm", version.ref = "litertlm" }
 google-auth-oauth2-http = { module = "com.google.auth:google-auth-library-oauth2-http", version.ref = "google-auth" }
 google-cloud-bigquery = { module = "com.google.cloud:google-cloud-bigquery", version.ref = "google-cloud-bigquery" }
+google-cloud-secretmanager = { module = "com.google.cloud:google-cloud-secretmanager", version.ref = "google-cloud-secretmanager" }
 google-cloud-storage = { module = "com.google.cloud:google-cloud-storage", version.ref = "google-cloud-storage" }
 google-firebase-ai = { module = "com.google.firebase:firebase-ai" }
 google-firebase-platform = { module = "com.google.firebase:firebase-bom", version.ref = "google-firebase-platform" }
