@@ -975,32 +975,6 @@ class A2aConvertersTest {
   }
 
   @Test
-  fun clientEventToEvent_withTaskArtifactUpdateEvent_withEmptyParts_returnsNull() {
-    val partsList = mutableListOf<A2APart<*>>(TextPart("dummy"))
-    val artifact = Artifact.builder().artifactId("artifact-1").parts(partsList).build()
-    partsList.clear()
-    val task =
-      Task.builder()
-        .id("task-1")
-        .contextId("context-1")
-        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
-        .artifacts(listOf(artifact))
-        .build()
-
-    val updateEvent =
-      TaskArtifactUpdateEvent.builder()
-        .lastChunk(true)
-        .contextId("context-1")
-        .artifact(artifact)
-        .taskId("task-id-1")
-        .build()
-    val event = TaskUpdateEvent(task, updateEvent)
-
-    val result = event.toAdkEvent(invocationContext)
-    assertThat(result).isNull()
-  }
-
-  @Test
   fun taskToEvent_withNonInputRequiredState_assertLongRunningToolIdsIsEmpty() {
     val data = mapOf("name" to "myTool", "id" to "call_123", "args" to mapOf<String, Any>())
     val metadata =

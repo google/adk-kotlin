@@ -461,7 +461,7 @@ internal fun TaskState.isFinalState(): Boolean {
     TaskState.TASK_STATE_CANCELED,
     TaskState.TASK_STATE_FAILED,
     TaskState.TASK_STATE_REJECTED,
-    TaskState.UNRECOGNIZED -> true
+    TaskState.TASK_STATE_UNSPECIFIED -> true
     else -> false
   }
 }

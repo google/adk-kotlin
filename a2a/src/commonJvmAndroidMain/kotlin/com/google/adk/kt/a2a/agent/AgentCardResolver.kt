@@ -25,7 +25,7 @@ import org.a2aproject.sdk.client.http.A2AHttpResponse
 import org.a2aproject.sdk.jsonrpc.common.json.JsonProcessingException
 import org.a2aproject.sdk.jsonrpc.common.json.JsonUtil
 import org.a2aproject.sdk.spec.AgentCard
-import org.a2aproject.sdk.util.Utils
+import org.a2aproject.sdk.spec.util.Utils
 
 /**
  * Fetches an [AgentCard] from [agentCardUrl] (a base agent URL or a full card URL) over
