@@ -34,12 +34,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 
 /**
- * Shared building blocks for the long-running tool demos ([LongRunningToolDemoAgent] and
- * [ResumableLongRunningToolDemoAgent]).
+ * Shared building blocks for the long-running tool demos in this package.
  *
  * They model a "client-side" action: a tool whose real work runs on the user's device, so the
- * backend agent dispatches the action, pauses, and later resumes when the device returns the
- * result. The two demos share this tool and model and differ only in whether the app is resumable.
+ * backend agent dispatches the action and later resumes when the device returns the result. The
+ * change-destination demos share this tool and scripted model; every demo reuses the constants and
+ * event-printing helpers below.
  */
 internal const val CHANGE_DESTINATION_TOOL = "change_destination"
 internal const val DESTINATION_ARG = "destination"
@@ -167,7 +167,7 @@ private fun describeEvent(event: Event): String {
       calls.isNotEmpty() ->
         "call " +
           calls.joinToString { "${it.name}(${it.args})" } +
-          if (event.longRunningToolIds.isNotEmpty()) " [long-running -> paused]" else ""
+          if (event.longRunningToolIds.isNotEmpty()) " [long-running]" else ""
       responses.isNotEmpty() ->
         "response " + responses.joinToString { "${it.name} -> ${it.response}" }
       text.isNotEmpty() -> "text \"$text\""
