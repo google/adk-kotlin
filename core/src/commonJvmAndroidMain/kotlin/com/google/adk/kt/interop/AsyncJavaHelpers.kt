@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.function.Consumer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asFlow as asFlowFromIterable
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.future.future
 import kotlinx.coroutines.reactive.asFlow
@@ -90,6 +91,13 @@ object AsyncJavaHelpers {
     runBlocking { flow.collect { action.accept(it) } }
   }
 
+  /** Passes each element of [publisher] to [action], blocking until [publisher] completes. */
+  @AdkJavaInteropApi
+  @JvmStatic
+  fun <T : Any> forEach(publisher: Publisher<T>, action: Consumer<T>) {
+    forEach(publisher.asFlow(), action)
+  }
+
   /**
    * Exposes [flow] as a [Publisher]. Elements must be non-null; Reactive Streams forbids null. For
    * a single value, use [async] and `Mono.fromFuture(...)` instead.
@@ -104,4 +112,15 @@ object AsyncJavaHelpers {
   @CheckReturnValue
   @JvmStatic
   fun <T : Any> asFlow(publisher: Publisher<T>): Flow<T> = publisher.asFlow()
+
+  /**
+   * Exposes a fixed [items] sequence as a [Publisher] -- the Java-friendly way for a synchronous
+   * model or agent (extending a `BasePublisher*` base) to return already-computed values. Elements
+   * must be non-null; Reactive Streams forbids null.
+   */
+  @AdkJavaInteropApi
+  @CheckReturnValue
+  @JvmStatic
+  fun <T : Any> publisherOf(items: Iterable<T>): Publisher<T> =
+    items.asFlowFromIterable().asPublisher()
 }

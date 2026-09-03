@@ -17,6 +17,7 @@
 package com.google.adk.kt.plugins.agentanalytics
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.plugins.Plugin
@@ -33,6 +34,7 @@ import com.google.cloud.bigquery.TableInfo
 import com.google.cloud.bigquery.TimePartitioning
 import java.time.Instant
 import kotlin.coroutines.CoroutineContext
+import kotlin.jvm.JvmStatic
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -189,9 +191,53 @@ class BigQueryAgentAnalyticsPlugin(
       }
     }
 
+  /**
+   * Fluent builder for [BigQueryAgentAnalyticsPlugin], provided primarily for Java callers. Any
+   * property left unset falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var config: BigQueryLoggerConfig? = null
+    private var bigQuery: BigQuery? = null
+
+    @Suppress("GlobalCoroutineDispatchers") private var ioContext: CoroutineContext = Dispatchers.IO
+
+    private var timeSource: TimeSource = TimeSource.Monotonic
+
+    fun config(config: BigQueryLoggerConfig): Builder = apply { this.config = config }
+
+    fun bigQuery(bigQuery: BigQuery): Builder = apply { this.bigQuery = bigQuery }
+
+    fun ioContext(ioContext: CoroutineContext): Builder = apply { this.ioContext = ioContext }
+
+    fun timeSource(timeSource: TimeSource): Builder = apply { this.timeSource = timeSource }
+
+    fun build(): BigQueryAgentAnalyticsPlugin {
+      val config = checkNotNull(config) { "BigQueryAgentAnalyticsPlugin.Builder requires config." }
+      // Defer the bigQuery default to the constructor so the two never drift apart.
+      val bigQuery = bigQuery
+      return if (bigQuery == null) {
+        BigQueryAgentAnalyticsPlugin(
+          config = config,
+          ioContext = ioContext,
+          timeSource = timeSource,
+        )
+      } else {
+        BigQueryAgentAnalyticsPlugin(
+          config = config,
+          bigQuery = bigQuery,
+          ioContext = ioContext,
+          timeSource = timeSource,
+        )
+      }
+    }
+  }
+
   companion object {
     private val TABLE_CREATION_RETRY_INTERVAL = 10.seconds
     private val logger = LoggerFactory.getLogger(BigQueryAgentAnalyticsPlugin::class)
+
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
 
     /**
      * Creates a [BigQuery] client instance from [config].

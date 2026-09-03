@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools.mcp
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import io.modelcontextprotocol.client.transport.ServerParameters
 import java.time.Duration
 
@@ -62,5 +63,38 @@ sealed class McpConnectionParameters {
     val headers: Map<String, String> = emptyMap(),
     val timeout: Duration = Duration.ofSeconds(5),
     val readTimeout: Duration = Duration.ofMinutes(5),
-  ) : McpConnectionParameters()
+  ) : McpConnectionParameters() {
+
+    /**
+     * Fluent builder for [StreamableHttp], provided primarily for Java callers. Any property left
+     * unset falls back to the same default as the constructor.
+     */
+    @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+    class Builder {
+      private var url: String? = null
+      private var headers: Map<String, String> = emptyMap()
+      private var timeout: Duration = Duration.ofSeconds(5)
+      private var readTimeout: Duration = Duration.ofMinutes(5)
+
+      fun url(url: String): Builder = apply { this.url = url }
+
+      fun headers(headers: Map<String, String>): Builder = apply { this.headers = headers }
+
+      fun timeout(timeout: Duration): Builder = apply { this.timeout = timeout }
+
+      fun readTimeout(readTimeout: Duration): Builder = apply { this.readTimeout = readTimeout }
+
+      fun build(): StreamableHttp =
+        StreamableHttp(
+          url = checkNotNull(url) { "StreamableHttp.Builder requires url to be set." },
+          headers = headers,
+          timeout = timeout,
+          readTimeout = readTimeout,
+        )
+    }
+
+    companion object {
+      @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
+    }
+  }
 }

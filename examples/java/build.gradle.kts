@@ -30,9 +30,11 @@ dependencies {
   implementation(libs.a2a.sdk.client)
   implementation(libs.a2a.sdk.spec)
   implementation(libs.a2a.sdk.transport.jsonrpc)
-  // The interop helpers hand back a kotlinx.coroutines Flow, which core exposes only as an
-  // implementation dependency, so Java callers need it on their own compile classpath.
+  // The interop helpers hand back a kotlinx.coroutines Flow and a Reactive Streams Publisher, which
+  // core exposes only as implementation dependencies, so Java callers need them on their own
+  // compile classpath.
   implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.kotlinx.coroutines.reactive)
 }
 
 // Runs a Java example agent in a REPL, e.g.:
