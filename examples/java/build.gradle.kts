@@ -20,9 +20,11 @@
 // Java-facing surface, rather than as Java sources compiled inside the Kotlin/KMP examples project.
 plugins { id("java") }
 
+// The LiteRT-LM example and its SDK are compiled for Java 21, so this project needs a 21+
+// toolchain.
 val jdkVersion = providers.gradleProperty("jdkVersion").getOrElse("17").toInt()
 
-java { toolchain { languageVersion = JavaLanguageVersion.of(jdkVersion) } }
+java { toolchain { languageVersion = JavaLanguageVersion.of(maxOf(21, jdkVersion)) } }
 
 dependencies {
   implementation(project(":google-adk-kotlin-core"))
@@ -35,6 +37,10 @@ dependencies {
   // compile classpath.
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.kotlinx.coroutines.reactive)
+  implementation(project(":google-adk-kotlin-litertlm"))
+  implementation(libs.google.ai.edge.litertlm.jvm)
+  implementation(libs.opentelemetry.sdk)
+  implementation(project(":google-adk-kotlin-integrations"))
 }
 
 // Runs a Java example agent in a REPL, e.g.:

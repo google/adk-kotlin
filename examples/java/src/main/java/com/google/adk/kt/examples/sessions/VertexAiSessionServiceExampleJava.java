@@ -1,0 +1,206 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.google.adk.kt.examples.sessions;
+
+import com.google.adk.kt.agents.BaseAgent;
+import com.google.adk.kt.agents.LlmAgent;
+import com.google.adk.kt.interop.AsyncJavaHelpers;
+import com.google.adk.kt.interop.BaseFutureTool;
+import com.google.adk.kt.interop.PublisherRunner;
+import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
+import com.google.adk.kt.runners.InMemoryRunner;
+import com.google.adk.kt.sessions.Session;
+import com.google.adk.kt.sessions.SessionKey;
+import com.google.adk.kt.sessions.VertexAiSessionService;
+import com.google.adk.kt.tools.ToolContext;
+import com.google.adk.kt.types.Content;
+import com.google.adk.kt.types.FunctionDeclaration;
+import com.google.adk.kt.types.Part;
+import com.google.adk.kt.types.Role;
+import com.google.adk.kt.types.Schema;
+import com.google.adk.kt.types.Type;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Collectors;
+
+/**
+ * Runs a tool-using agent whose session is persisted in the managed Vertex AI Session Service.
+ *
+ * <p>A {@link VertexAiSessionService} is handed to an {@link InMemoryRunner} (only the session
+ * service is Vertex-backed; artifacts and memory stay in-memory), so the user turn, the agent's
+ * {@code getWeather} function call, the tool response, and the model's reply all round-trip through
+ * the managed service. The example then reads the session back to show the persisted events.
+ *
+ * <p>The Vertex service assigns the session id, so the session is created up front and its id is
+ * reused for the run and the read-back.
+ *
+ * <p>Authentication uses Application Default Credentials ({@code gcloud auth application-default
+ * login}).
+ *
+ * <p>Environment variables:
+ *
+ * <ul>
+ *   <li>{@code GOOGLE_CLOUD_PROJECT} - GCP project id.
+ *   <li>{@code VERTEX_REASONING_ENGINE_ID} - the numeric reasoning-engine id. Passed to the service
+ *       at construction (the session key's app name is just a label and is not parsed for the
+ *       engine).
+ *   <li>{@code GOOGLE_CLOUD_LOCATION} - Vertex region for sessions (optional, defaults to {@code
+ *       us-central1}).
+ * </ul>
+ */
+public final class VertexAiSessionServiceExampleJava {
+
+  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+
+  /**
+   * A single tool the agent can call, exposed to the model via its declaration. Hand-written as a
+   * {@link BaseFutureTool} because this module is compiled by javac; with the Kotlin toolchain
+   * (KSP), the recommended approach is instead the {@code @Tool} annotation shown in
+   * examples/src/main/java/com/google/adk/kt/examples/interop/FunctionToolDemoAgentJava.java.
+   */
+  private static final class GetWeatherTool extends BaseFutureTool {
+    private static final List<String> CONDITIONS = List.of("sunny", "cloudy", "rainy", "windy");
+
+    GetWeatherTool() {
+      super("getWeather", "Function getWeather");
+    }
+
+    @Override
+    public FunctionDeclaration declaration() {
+      return FunctionDeclaration.builder()
+          .name("getWeather")
+          .description("Function getWeather")
+          .parameters(
+              Schema.builder()
+                  .type(Type.OBJECT)
+                  .properties(
+                      Map.of(
+                          "city",
+                          Schema.builder()
+                              .type(Type.STRING)
+                              .description("The city to look up.")
+                              .build()))
+                  .required("city")
+                  .build())
+          .build();
+    }
+
+    @Override
+    public CompletableFuture<Object> runAsync(ToolContext context, Map<String, Object> args) {
+      String city = (String) args.get("city");
+      ThreadLocalRandom random = ThreadLocalRandom.current();
+      Map<String, Object> weather =
+          Map.of(
+              "city",
+              city,
+              "temperatureCelsius",
+              random.nextInt(-5, 35),
+              "condition",
+              CONDITIONS.get(random.nextInt(CONDITIONS.size())));
+      return CompletableFuture.completedFuture(Map.of("result", weather));
+    }
+  }
+
+  public static void main(String[] args) {
+    String project = requireEnv("GOOGLE_CLOUD_PROJECT");
+    String reasoningEngineId = requireEnv("VERTEX_REASONING_ENGINE_ID");
+    String locationEnv = System.getenv("GOOGLE_CLOUD_LOCATION");
+    String location = locationEnv == null || locationEnv.isBlank() ? "us-central1" : locationEnv;
+
+    // Pin the reasoning engine at construction; the session key's app name is then just a label.
+    VertexAiSessionService sessionService =
+        VertexAiSessionService.builder()
+            .project(project)
+            .location(location)
+            .reasoningEngineId(reasoningEngineId)
+            .build();
+    String appName = "weather-app";
+    BaseAgent agent =
+        LlmAgent.builder()
+            .name("weather_agent")
+            .description("Answers weather questions using the getWeather tool.")
+            .model(new Gemini(MODEL_NAME, new VertexCredentials(project, "global", null)))
+            .instruction("Use the getWeather tool to answer weather questions. Answer briefly.")
+            .tools(new GetWeatherTool())
+            .build();
+    PublisherRunner runner =
+        PublisherRunner.of(
+            InMemoryRunner.builder()
+                .agent(agent)
+                .appName(appName)
+                .sessionService(sessionService)
+                .build());
+
+    String userId = "demo-user";
+    // Session management is a SessionService concern, not the runner's. The Vertex service assigns
+    // the session id, so create the session first and reuse its id.
+    Session created =
+        AsyncJavaHelpers.await(
+            c -> sessionService.createSession(new SessionKey(appName, userId, null), null, c));
+    String sessionId = Objects.requireNonNull(created.getKey().getId());
+
+    // The runner hands back a Publisher; this caller chooses to block on it.
+    AsyncJavaHelpers.forEach(
+        runner.runAsync(
+            userId,
+            sessionId,
+            null,
+            Content.fromText(Role.USER, "What's the weather in San Francisco?")),
+        event -> {
+          if (event.getPartial()) {
+            return;
+          }
+          Content content = event.getContent();
+          String text =
+              content == null
+                  ? ""
+                  : content.getParts().stream()
+                      .map(Part::getText)
+                      .filter(Objects::nonNull)
+                      .collect(Collectors.joining(" "));
+          if (!text.isBlank()) {
+            System.out.println(event.getAuthor() + " > " + text);
+          }
+        });
+
+    Session session =
+        AsyncJavaHelpers.await(
+            c -> sessionService.getSession(new SessionKey(appName, userId, sessionId), null, c));
+    System.out.println(
+        "Session "
+            + sessionId
+            + " now has "
+            + (session == null ? 0 : session.getEvents().size())
+            + " persisted event(s).");
+
+    System.exit(0);
+  }
+
+  private static String requireEnv(String name) {
+    String value = System.getenv(name);
+    if (value == null || value.isBlank()) {
+      throw new IllegalStateException("Environment variable " + name + " is not set.");
+    }
+    return value;
+  }
+
+  private VertexAiSessionServiceExampleJava() {}
+}
