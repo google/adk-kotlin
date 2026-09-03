@@ -21,19 +21,19 @@ import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Candidate
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FinishReason
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionCallingConfig
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.PartialArg
+import com.google.adk.kt.types.PartialArgValue
 import com.google.adk.kt.types.ToolConfig
 import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.Client
-import com.google.genai.kotlin.types.Candidate as GenAiCandidate
-import com.google.genai.kotlin.types.Content as GenAiContent
-import com.google.genai.kotlin.types.FinishReason as GenAiFinishReason
-import com.google.genai.kotlin.types.FunctionCall as GenAiFunctionCall
-import com.google.genai.kotlin.types.GenerateContentConfig as GenAiGenerateContentConfig
-import com.google.genai.kotlin.types.GenerateContentResponse as GenAiGenerateContentResponse
-import com.google.genai.kotlin.types.Part as GenAiPart
-import com.google.genai.kotlin.types.PartialArg as GenAiPartialArg
 import kotlin.test.Test
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -63,26 +63,23 @@ class StreamedFunctionCallArgsReassemblyIntegrationTest {
 
         override fun generateContentStream(
           model: String,
-          contents: List<GenAiContent>,
-          config: GenAiGenerateContentConfig,
-        ): Flow<GenAiGenerateContentResponse> =
+          contents: List<Content>,
+          config: GenerateContentConfig,
+        ): Flow<GenerateContentResponse> =
           if (turn++ == 0) {
             // Two multi-arg calls: getTemperature streams city across two chunks plus a unit arg;
             // getCondition uses distinct values. Each call ends with an empty willContinue=false
             // marker.
             flowOf(
-              fcChunk(GenAiFunctionCall(name = "getTemperature", willContinue = true)),
+              fcChunk(FunctionCall(name = "getTemperature", willContinue = true)),
               fcChunk(partialArg("\$.city", "Krak")),
               fcChunk(partialArg("\$.city", "ow")),
               fcChunk(partialArg("\$.unit", "C")),
-              fcChunk(GenAiFunctionCall(willContinue = false)),
-              fcChunk(GenAiFunctionCall(name = "getCondition", willContinue = true)),
+              fcChunk(FunctionCall(willContinue = false)),
+              fcChunk(FunctionCall(name = "getCondition", willContinue = true)),
               fcChunk(partialArg("\$.city", "Warsaw")),
               fcChunk(partialArg("\$.unit", "F")),
-              fcChunk(
-                GenAiFunctionCall(willContinue = false),
-                finishReason = GenAiFinishReason.STOP,
-              ),
+              fcChunk(FunctionCall(willContinue = false), finishReason = FinishReason.STOP),
             )
           } else {
             flowOf(textChunk("Done."))
@@ -90,9 +87,9 @@ class StreamedFunctionCallArgsReassemblyIntegrationTest {
 
         override suspend fun generateContent(
           model: String,
-          contents: List<GenAiContent>,
-          config: GenAiGenerateContentConfig,
-        ): GenAiGenerateContentResponse = throw UnsupportedOperationException("stream only")
+          contents: List<Content>,
+          config: GenerateContentConfig,
+        ): GenerateContentResponse = throw UnsupportedOperationException("stream only")
       }
     val model = Gemini(Client(apiKey = "fake"), "gemini-3.1-flash-preview", models = fakeModels)
 
@@ -137,34 +134,34 @@ class StreamedFunctionCallArgsReassemblyIntegrationTest {
     assertThat(executedTools).containsExactly("getTemperature", "getCondition")
   }
 
-  private fun partialArg(jsonPath: String, value: String): GenAiFunctionCall =
-    GenAiFunctionCall(
-      partialArgs = listOf(GenAiPartialArg(jsonPath = jsonPath, stringValue = value)),
+  private fun partialArg(jsonPath: String, value: String): FunctionCall =
+    FunctionCall(
+      partialArgs =
+        listOf(PartialArg(value = PartialArgValue.StringValue(value), jsonPath = jsonPath)),
       willContinue = true,
     )
 
   private fun fcChunk(
-    functionCall: GenAiFunctionCall,
-    finishReason: GenAiFinishReason? = null,
-  ): GenAiGenerateContentResponse =
-    GenAiGenerateContentResponse(
+    functionCall: FunctionCall,
+    finishReason: FinishReason? = null,
+  ): GenerateContentResponse =
+    GenerateContentResponse(
       candidates =
         listOf(
-          GenAiCandidate(
-            content =
-              GenAiContent(role = "model", parts = listOf(GenAiPart(functionCall = functionCall))),
+          Candidate(
+            content = Content(role = "model", parts = listOf(Part(functionCall = functionCall))),
             finishReason = finishReason,
           )
         )
     )
 
-  private fun textChunk(text: String): GenAiGenerateContentResponse =
-    GenAiGenerateContentResponse(
+  private fun textChunk(text: String): GenerateContentResponse =
+    GenerateContentResponse(
       candidates =
         listOf(
-          GenAiCandidate(
-            content = GenAiContent(role = "model", parts = listOf(GenAiPart(text = text))),
-            finishReason = GenAiFinishReason.STOP,
+          Candidate(
+            content = Content(role = "model", parts = listOf(Part(text = text))),
+            finishReason = FinishReason.STOP,
           )
         )
     )

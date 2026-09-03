@@ -18,17 +18,16 @@ package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Candidate
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.Part
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.Client
-import com.google.genai.kotlin.types.Candidate as GenAiCandidate
-import com.google.genai.kotlin.types.Content as GenAiContent
-import com.google.genai.kotlin.types.FinishReason as GenAiFinishReason
-import com.google.genai.kotlin.types.GenerateContentConfig as GenAiGenerateContentConfig
-import com.google.genai.kotlin.types.GenerateContentResponse as GenAiGenerateContentResponse
-import com.google.genai.kotlin.types.Part as GenAiPart
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Date
@@ -131,14 +130,14 @@ class GeminiJvmTest {
     whenever(
         mockModels.generateContentStream(
           eq("gemini-3.1-flash-preview"),
-          any<List<GenAiContent>>(),
-          any<GenAiGenerateContentConfig>(),
+          any<List<Content>>(),
+          any<GenerateContentConfig>(),
         )
       )
       .thenReturn(
         flowOf(
-          buildGenAiResponse("chunk 1 "),
-          buildGenAiResponse("chunk 2", finishReason = GenAiFinishReason.STOP),
+          buildResponse("chunk 1 "),
+          buildResponse("chunk 2", finishReason = FinishReason.STOP),
         )
       )
     val model = Gemini(client, "gemini-3.1-flash-preview", models = mockModels)
@@ -171,11 +170,11 @@ class GeminiJvmTest {
     whenever(
         mockModels.generateContent(
           eq("gemini-3.1-flash-preview"),
-          any<List<GenAiContent>>(),
-          any<GenAiGenerateContentConfig>(),
+          any<List<Content>>(),
+          any<GenerateContentConfig>(),
         )
       )
-      .thenReturn(buildGenAiResponse("full response", finishReason = GenAiFinishReason.STOP))
+      .thenReturn(buildResponse("full response", finishReason = FinishReason.STOP))
     val model = Gemini(client, "gemini-3.1-flash-preview", models = mockModels)
 
     val responses =
@@ -214,15 +213,15 @@ class GeminiJvmTest {
       .toList()
   }
 
-  private fun buildGenAiResponse(
+  private fun buildResponse(
     text: String,
-    finishReason: GenAiFinishReason? = null,
-  ): GenAiGenerateContentResponse {
-    return GenAiGenerateContentResponse(
+    finishReason: FinishReason? = null,
+  ): GenerateContentResponse {
+    return GenerateContentResponse(
       candidates =
         listOf(
-          GenAiCandidate(
-            content = GenAiContent(role = "model", parts = listOf(GenAiPart(text = text))),
+          Candidate(
+            content = Content(role = "model", parts = listOf(Part(text = text))),
             finishReason = finishReason,
           )
         )

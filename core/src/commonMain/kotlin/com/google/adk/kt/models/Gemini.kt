@@ -20,19 +20,19 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.LlmConstants
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.fromGenaiSdk
 import com.google.adk.kt.types.toGenaiSdk
 import com.google.genai.kotlin.Client
-import com.google.genai.kotlin.types.Content as GenAiContent
-import com.google.genai.kotlin.types.GenerateContentConfig
-import com.google.genai.kotlin.types.GenerateContentResponse as GenAiGenerateContentResponse
 import com.google.genai.kotlin.types.HttpOptions
 import kotlin.jvm.JvmOverloads
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 
 /**
  * Implementation of [Model] that interacts with Google Gemini models using the GenAI SDK.
@@ -43,43 +43,61 @@ import kotlinx.coroutines.flow.flow
  *
  * GenAI SDK based [Gemini] currently prevents usage of `API_KEY` and `GoogleCredentials` on
  * Android. Use Firebase AI instead.
- *
- * @param client The [Client] instance from the GenAI SDK used for making API calls.
- * @param name The name of the specific Gemini model to use (e.g., "gemini-3.1-flash-lite-preview").
  */
-class Gemini(
+class Gemini
+internal constructor(
   internal val client: Client,
   override val name: String,
-  private val models: GeminiModels = RealGeminiModels(client.models),
+  private val models: GeminiModels,
 ) : Model {
 
-  /** Wrapper around GenAI SDK Models to allow mocking in tests. */
-  interface GeminiModels {
+  /**
+   * Creates a [Gemini] from a preconfigured GenAI SDK [Client], for callers that need a custom
+   * transport or auth.
+   *
+   * @param client The [Client] instance from the GenAI SDK used for making API calls.
+   * @param name The name of the specific Gemini model to use (e.g.,
+   *   "gemini-3.1-flash-lite-preview").
+   */
+  constructor(client: Client, name: String) : this(client, name, RealGeminiModels(client.models))
+
+  /**
+   * Wrapper around the GenAI SDK's generate calls, expressed in ADK types, to allow mocking in
+   * tests. Implementations translate to and from the SDK, keeping the SDK off this interface.
+   */
+  internal interface GeminiModels {
     fun generateContentStream(
       model: String,
-      contents: List<GenAiContent>,
-      config: com.google.genai.kotlin.types.GenerateContentConfig,
-    ): Flow<GenAiGenerateContentResponse>
+      contents: List<Content>,
+      config: GenerateContentConfig,
+    ): Flow<GenerateContentResponse>
 
     suspend fun generateContent(
       model: String,
-      contents: List<GenAiContent>,
-      config: com.google.genai.kotlin.types.GenerateContentConfig,
-    ): GenAiGenerateContentResponse
+      contents: List<Content>,
+      config: GenerateContentConfig,
+    ): GenerateContentResponse
   }
 
-  class RealGeminiModels(private val delegate: com.google.genai.kotlin.Models) : GeminiModels {
+  internal class RealGeminiModels(private val delegate: com.google.genai.kotlin.Models) :
+    GeminiModels {
     override fun generateContentStream(
       model: String,
-      contents: List<GenAiContent>,
-      config: com.google.genai.kotlin.types.GenerateContentConfig,
-    ): Flow<GenAiGenerateContentResponse> = delegate.generateContentStream(model, contents, config)
+      contents: List<Content>,
+      config: GenerateContentConfig,
+    ): Flow<GenerateContentResponse> =
+      delegate
+        .generateContentStream(model, contents.map { it.toGenaiSdk() }, config.toGenaiSdk())
+        .map { it.fromGenaiSdk() }
 
     override suspend fun generateContent(
       model: String,
-      contents: List<GenAiContent>,
-      config: com.google.genai.kotlin.types.GenerateContentConfig,
-    ): GenAiGenerateContentResponse = delegate.generateContent(model, contents, config)
+      contents: List<Content>,
+      config: GenerateContentConfig,
+    ): GenerateContentResponse =
+      delegate
+        .generateContent(model, contents.map { it.toGenaiSdk() }, config.toGenaiSdk())
+        .fromGenaiSdk()
   }
 
   /**
@@ -148,31 +166,29 @@ class Gemini(
     val finalRequest = cacheResult?.request ?: preparedRequest
     val cacheMetadata = cacheResult?.cacheMetadata
 
-    val config = finalRequest.config.toGenaiSdk()
-    val contents = finalRequest.contents.map { it.toGenaiSdk() }
-
     logger.debug { "LLM Request:\n${Json.toJsonString(buildLoggingRequestMap(finalRequest))}" }
 
     if (stream) {
       val aggregator = StreamingResponseAggregator()
 
-      models.generateContentStream(name, contents, config).collect { response ->
+      models.generateContentStream(name, finalRequest.contents, finalRequest.config).collect {
+        response ->
         logger.debug {
-          "LLM Streaming Response chunk: ${response.candidates?.size ?: 0} candidates, " +
-            "finishReason=${response.candidates?.firstOrNull()?.finishReason}"
+          "LLM Streaming Response chunk: ${response.candidates.size} candidates, " +
+            "finishReason=${response.candidates.firstOrNull()?.finishReason}"
         }
-        emit(aggregator.processResponse(LlmResponse.from(response.fromGenaiSdk())))
+        emit(aggregator.processResponse(LlmResponse.from(response)))
       }
 
       // After stream loop ends, emit final aggregated response with any cache metadata attached
       aggregator.aggregate()?.let { emit(it.copy(cacheMetadata = cacheMetadata)) }
     } else {
-      val response = models.generateContent(name, contents, config)
+      val response = models.generateContent(name, finalRequest.contents, finalRequest.config)
       logger.debug {
-        "LLM Response: ${response.candidates?.size ?: 0} candidates, " +
-          "finishReason=${response.candidates?.firstOrNull()?.finishReason}"
+        "LLM Response: ${response.candidates.size} candidates, " +
+          "finishReason=${response.candidates.firstOrNull()?.finishReason}"
       }
-      val llmResponse = LlmResponse.from(response.fromGenaiSdk())
+      val llmResponse = LlmResponse.from(response)
       emit(llmResponse.copy(cacheMetadata = cacheMetadata))
     }
   }
@@ -210,9 +226,7 @@ class Gemini(
    * sensitive data (e.g. injected session state), so only its presence is logged, never its
    * content.
    */
-  private fun buildLoggingConfigMap(
-    config: com.google.adk.kt.types.GenerateContentConfig
-  ): Map<String, Any?> = buildMap {
+  private fun buildLoggingConfigMap(config: GenerateContentConfig): Map<String, Any?> = buildMap {
     put("has_system_instruction", config.systemInstruction != null)
     config.temperature?.let { put("temperature", it) }
     config.topP?.let { put("top_p", it) }
