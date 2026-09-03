@@ -17,7 +17,6 @@
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.webserver.dev.AdkDevServer
-import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -170,24 +169,6 @@ class AdkServerLifecycleTest {
   }
 
   @Test
-  fun deprecatedAdkWebServer_stillStartsAndStops() {
-    val port = freePort()
-    val server = newDeprecatedServer(port)
-
-    try {
-      server.start()
-      awaitHealthy(port)
-
-      // The shim must keep the full development surface its callers already had.
-      assertThat(statusOf(port, DEV_ONLY_PATH)).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
-      assertThat(statusOf(port, "/dev-ui/")).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
-    } finally {
-      server.stop()
-    }
-    assertThat(portIsFree(port)).isTrue()
-  }
-
-  @Test
   fun apiServer_bindsLoopbackByDefault() {
     val offLoopback = assumeOffLoopbackAddress()
     val port = freePort()
@@ -205,35 +186,7 @@ class AdkServerLifecycleTest {
     }
   }
 
-  @Test
-  fun deprecatedAdkWebServer_stillBindsEveryInterface() {
-    val offLoopback = assumeOffLoopbackAddress()
-    val port = freePort()
-    val server = newDeprecatedServer(port)
-
-    try {
-      server.start()
-      awaitHealthy(port)
-
-      // Reachable on loopback, and off it too, which a container deployment needs.
-      assertThat(healthStatusOrNull(port)).isEqualTo(HttpURLConnection.HTTP_OK)
-      assertThat(healthStatusOrNull(port, offLoopback)).isEqualTo(HttpURLConnection.HTTP_OK)
-    } finally {
-      server.stop()
-    }
-  }
-
   private fun newServer(port: Int) = AdkApiServer(testConfig(port))
-
-  @Suppress("DEPRECATION") // AdkWebServer is deprecated by this change.
-  private fun newDeprecatedServer(port: Int) =
-    AdkWebServer(
-      port = port,
-      sessionService = FakeSessionService(),
-      artifactService = FakeArtifactService(),
-      agentLoader = FakeAgentLoader(),
-      apiServerSpanExporter = ApiServerSpanExporter(),
-    )
 
   private fun testConfig(port: Int) =
     AdkServerConfig(

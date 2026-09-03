@@ -21,7 +21,6 @@ import com.google.adk.kt.webserver.FakeAgentLoader
 import com.google.adk.kt.webserver.FakeArtifactService
 import com.google.adk.kt.webserver.FakeSessionService
 import com.google.adk.kt.webserver.adkApiModule
-import com.google.adk.kt.webserver.adkModule
 import com.google.adk.kt.webserver.routes.WEB_UI_ENABLED_PROPERTY
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
@@ -85,23 +84,6 @@ class ModuleSurfaceTest {
         routesOf(webUiProperty = "false") { adkDevModule(testConfig().copy(webUiEnabled = true)) }
       )
       .containsExactlyElementsIn(CONTRACT_ROUTES + DEVELOPMENT_ONLY_ROUTES)
-  }
-
-  @Test
-  @Suppress("DEPRECATION")
-  fun adkModule_stillInstallsTheFullSurface() {
-    val config = testConfig()
-    assertThat(
-        routesOf {
-          adkModule(
-            config.sessionService,
-            config.artifactService,
-            config.agentLoader,
-            config.apiServerSpanExporter,
-          )
-        }
-      )
-      .containsExactlyElementsIn(CONTRACT_ROUTES + WEB_UI_ROUTES + DEVELOPMENT_ONLY_ROUTES)
   }
 
   private fun testConfig() =
