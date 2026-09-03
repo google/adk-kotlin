@@ -28,6 +28,8 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.fromGenaiSdk
 import com.google.adk.kt.types.toGenaiSdk
 import com.google.genai.kotlin.Client
+import com.google.genai.kotlin.ClientException
+import com.google.genai.kotlin.GenAiApiException
 import com.google.genai.kotlin.types.HttpOptions
 import kotlin.jvm.JvmOverloads
 import kotlinx.coroutines.flow.Flow
@@ -168,28 +170,33 @@ internal constructor(
 
     logger.debug { "LLM Request:\n${Json.toJsonString(buildLoggingRequestMap(finalRequest))}" }
 
-    if (stream) {
-      val aggregator = StreamingResponseAggregator()
+    try {
+      if (stream) {
+        val aggregator = StreamingResponseAggregator()
 
-      models.generateContentStream(name, finalRequest.contents, finalRequest.config).collect {
-        response ->
+        models.generateContentStream(name, finalRequest.contents, finalRequest.config).collect {
+          response ->
+          logger.debug {
+            "LLM Streaming Response chunk: ${response.candidates.size} candidates, " +
+              "finishReason=${response.candidates.firstOrNull()?.finishReason}"
+          }
+          emit(aggregator.processResponse(LlmResponse.from(response)))
+        }
+
+        // After stream loop ends, emit final aggregated response with any cache metadata attached
+        aggregator.aggregate()?.let { emit(it.copy(cacheMetadata = cacheMetadata)) }
+      } else {
+        val response = models.generateContent(name, finalRequest.contents, finalRequest.config)
         logger.debug {
-          "LLM Streaming Response chunk: ${response.candidates.size} candidates, " +
+          "LLM Response: ${response.candidates.size} candidates, " +
             "finishReason=${response.candidates.firstOrNull()?.finishReason}"
         }
-        emit(aggregator.processResponse(LlmResponse.from(response)))
+        val llmResponse = LlmResponse.from(response)
+        emit(llmResponse.copy(cacheMetadata = cacheMetadata))
       }
-
-      // After stream loop ends, emit final aggregated response with any cache metadata attached
-      aggregator.aggregate()?.let { emit(it.copy(cacheMetadata = cacheMetadata)) }
-    } else {
-      val response = models.generateContent(name, finalRequest.contents, finalRequest.config)
-      logger.debug {
-        "LLM Response: ${response.candidates.size} candidates, " +
-          "finishReason=${response.candidates.firstOrNull()?.finishReason}"
-      }
-      val llmResponse = LlmResponse.from(response)
-      emit(llmResponse.copy(cacheMetadata = cacheMetadata))
+    } catch (e: ClientException) {
+      // Enhance a quota error with a pointer to the mitigation guidance, matching Python ADK.
+      if (e.code == 429) throw ResourceExhaustedException(e) else throw e
     }
   }
 
@@ -249,6 +256,24 @@ internal constructor(
 
     private val logger = LoggerFactory.getLogger(Gemini::class)
   }
+}
+
+private val RESOURCE_EXHAUSTED_FIX =
+  """
+  On how to mitigate this issue, please refer to:
+
+  https://google.github.io/adk-docs/agents/models/google-gemini/#error-code-429-resource_exhausted
+  """
+    .trimIndent()
+
+/**
+ * A quota (429) error from the backend, enhanced with a pointer to the mitigation guidance. Keeps
+ * the original error's code so callers that key off it still work, and chains it as the cause.
+ */
+private class ResourceExhaustedException(source: ClientException) :
+  GenAiApiException(source.code, source.status, "") {
+  override val message: String = "$RESOURCE_EXHAUSTED_FIX\n\n${source.message}"
+  override val cause: Throwable = source
 }
 
 /**

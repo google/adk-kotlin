@@ -28,6 +28,8 @@ import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.Client
+import com.google.genai.kotlin.ClientException
+import com.google.genai.kotlin.GenAiApiException
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Date
@@ -35,6 +37,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -193,6 +196,67 @@ class GeminiJvmTest {
       expectedFinishReason = "STOP",
     )
     assertThat(responses[0].errorMessage).isNull()
+  }
+
+  @Test
+  fun generateContent_quotaExceeded_throwsResourceExhaustedWithMitigation() = runTest {
+    val client = Client(apiKey = "fake")
+    val mockModels = mock<Gemini.GeminiModels>()
+    val quotaError = ClientException(429, "RESOURCE_EXHAUSTED", "Quota exceeded for model")
+    whenever(
+        mockModels.generateContent(
+          eq("gemini-3.1-flash-preview"),
+          any<List<Content>>(),
+          any<GenerateContentConfig>(),
+        )
+      )
+      .thenAnswer { throw quotaError }
+    val model = Gemini(client, "gemini-3.1-flash-preview", models = mockModels)
+
+    val thrown =
+      assertFailsWith<GenAiApiException> {
+        model
+          .generateContent(
+            LlmRequest(contents = listOf(userMessage("Hello")), config = GenerateContentConfig()),
+            stream = false,
+          )
+          .toList()
+      }
+
+    // The 429 is remapped to a sibling type carrying the mitigation guidance, with the original
+    // error chained as the cause; it is no longer a ClientException.
+    assertThat(thrown).isNotInstanceOf(ClientException::class.java)
+    assertThat(thrown.message).contains("#error-code-429-resource_exhausted")
+    assertThat(thrown.message).contains("Quota exceeded for model")
+    assertThat(thrown.cause).isEqualTo(quotaError)
+  }
+
+  @Test
+  fun generateContent_nonQuotaClientError_propagatesUnchanged() = runTest {
+    val client = Client(apiKey = "fake")
+    val mockModels = mock<Gemini.GeminiModels>()
+    val badRequest = ClientException(400, "INVALID_ARGUMENT", "Bad request")
+    whenever(
+        mockModels.generateContent(
+          eq("gemini-3.1-flash-preview"),
+          any<List<Content>>(),
+          any<GenerateContentConfig>(),
+        )
+      )
+      .thenAnswer { throw badRequest }
+    val model = Gemini(client, "gemini-3.1-flash-preview", models = mockModels)
+
+    val thrown =
+      assertFailsWith<ClientException> {
+        model
+          .generateContent(
+            LlmRequest(contents = listOf(userMessage("Hello")), config = GenerateContentConfig()),
+            stream = false,
+          )
+          .toList()
+      }
+
+    assertThat(thrown).isSameInstanceAs(badRequest)
   }
 
   /**
