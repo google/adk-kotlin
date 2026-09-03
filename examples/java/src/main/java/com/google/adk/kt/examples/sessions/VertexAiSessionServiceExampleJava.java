@@ -49,10 +49,11 @@ import org.reactivestreams.Publisher;
  * <p>A {@link VertexAiSessionService} is handed to an {@link InMemoryRunner} (only the session
  * service is Vertex-backed; artifacts and memory stay in-memory), so the user turn, the agent's
  * {@code getWeather} function call, the tool response, and the model's reply all round-trip through
- * the managed service. The example then reads the session back to show the persisted events.
+ * the managed service. Each non-partial event is printed as it streams, showing the run completing
+ * through the managed session service.
  *
  * <p>The Vertex service assigns the session id, so the session is created up front and its id is
- * reused for the run and the read-back.
+ * reused for the run.
  *
  * <p>Authentication uses Application Default Credentials ({@code gcloud auth application-default
  * login}).
@@ -187,16 +188,6 @@ public final class VertexAiSessionServiceExampleJava {
             System.out.println(event.getAuthor() + " > " + text);
           }
         });
-
-    Session session =
-        AsyncJavaHelpers.await(
-            c -> sessionService.getSession(new SessionKey(appName, userId, sessionId), null, c));
-    System.out.println(
-        "Session "
-            + sessionId
-            + " now has "
-            + (session == null ? 0 : session.getEvents().size())
-            + " persisted event(s).");
 
     System.exit(0);
   }

@@ -51,9 +51,9 @@ import org.reactivestreams.Publisher;
  * subclass for a {@link CompletableFuture}. This store does naive keyword matching.
  *
  * <p>{@code main} shows the typical usage: the custom service is configured on an {@link
- * InMemoryRunner}, an agent run writes its session back to memory through it (from an after-agent
- * callback that calls {@code addSessionToMemory}), and the stored memory is then searched through
- * the same service.
+ * InMemoryRunner}, and an agent run writes its session back to memory through it (from an
+ * after-agent callback that calls {@code addSessionToMemory}). The service logs each write, so
+ * persistence is visible without any direct search back into the service.
  */
 public final class FutureMemoryServiceDemoJava {
 
@@ -71,6 +71,12 @@ public final class FutureMemoryServiceDemoJava {
           bucket.add(MemoryEntry.builder().content(content).author(event.getAuthor()).build());
         }
       }
+      System.out.println(
+          "[memory-service] stored session "
+              + session.getKey().getId()
+              + " to memory; bucket now holds "
+              + bucket.size()
+              + " entrie(s)");
       return CompletableFuture.completedFuture(null);
     }
 
@@ -152,14 +158,6 @@ public final class FutureMemoryServiceDemoJava {
             System.out.println("[" + event.getAuthor() + "] " + text);
           }
         });
-
-    // Search the memory the run stored, through the same custom service.
-    SearchMemoryResponse response =
-        AsyncJavaHelpers.await(c -> service.searchMemory(appName, userId, "hiking", c));
-    System.out.println("matches for 'hiking': " + response.getMemories().size());
-    for (MemoryEntry entry : response.getMemories()) {
-      System.out.println("  [" + entry.getAuthor() + "] " + textOf(entry.getContent()));
-    }
   }
 
   private static String textOf(Content content) {

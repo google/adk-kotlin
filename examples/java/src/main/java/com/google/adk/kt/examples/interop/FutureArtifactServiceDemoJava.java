@@ -49,8 +49,9 @@ import org.reactivestreams.Publisher;
  * the list index.
  *
  * <p>{@code main} shows the typical usage: the custom service is configured on an {@link
- * InMemoryRunner}, an agent run saves an artifact through the invocation's artifact service (from
- * an after-agent callback), and the stored artifact is then read back through the same service.
+ * InMemoryRunner}, and an agent run saves an artifact through the invocation's artifact service
+ * (from an after-agent callback). The service logs each save, so persistence is visible without any
+ * direct read back into the service.
  */
 public final class FutureArtifactServiceDemoJava {
 
@@ -70,7 +71,10 @@ public final class FutureArtifactServiceDemoJava {
               .computeIfAbsent(sessionKey, k -> new HashMap<>())
               .computeIfAbsent(filename, f -> new ArrayList<>());
       versions.add(artifact);
-      return CompletableFuture.completedFuture(versions.size() - 1);
+      int version = versions.size() - 1;
+      System.out.println(
+          "[artifact-service] saved artifact '" + filename + "' as version " + version);
+      return CompletableFuture.completedFuture(version);
     }
 
     @Override
@@ -114,10 +118,16 @@ public final class FutureArtifactServiceDemoJava {
     @Override
     protected CompletableFuture<Part> saveAndReloadArtifactAsync(
         SessionKey sessionKey, String filename, Part artifact) {
-      store
-          .computeIfAbsent(sessionKey, k -> new HashMap<>())
-          .computeIfAbsent(filename, f -> new ArrayList<>())
-          .add(artifact);
+      List<Part> versions =
+          store
+              .computeIfAbsent(sessionKey, k -> new HashMap<>())
+              .computeIfAbsent(filename, f -> new ArrayList<>());
+      versions.add(artifact);
+      System.out.println(
+          "[artifact-service] saved artifact '"
+              + filename
+              + "' as version "
+              + (versions.size() - 1));
       return CompletableFuture.completedFuture(artifact);
     }
   }
@@ -195,12 +205,6 @@ public final class FutureArtifactServiceDemoJava {
             System.out.println("[" + event.getAuthor() + "] " + text);
           }
         });
-
-    // Read back through the custom service to show the run saved through it.
-    List<String> keys =
-        AsyncJavaHelpers.await(
-            c -> service.listArtifactKeys(new SessionKey(appName, userId, sessionId), c));
-    System.out.println("artifacts saved via the runner's artifact service: " + keys);
   }
 
   private static String firstText(Content content) {

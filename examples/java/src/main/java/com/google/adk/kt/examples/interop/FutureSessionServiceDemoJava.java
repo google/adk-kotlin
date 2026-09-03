@@ -49,7 +49,8 @@ import org.reactivestreams.Publisher;
  *
  * <p>{@code main} shows the typical usage: the custom service is configured on an {@link
  * InMemoryRunner}, and running an agent drives it (the runner creates the session and appends the
- * turn's events through it). The run's effect is then read back through the same service.
+ * turn's events through it). The service logs each write, so persistence is visible without any
+ * direct read back into the service.
  */
 public final class FutureSessionServiceDemoJava {
 
@@ -64,6 +65,7 @@ public final class FutureSessionServiceDemoJava {
       SessionKey resolved = new SessionKey(key.getAppName(), key.getUserId(), id);
       Session session = Session.builder().key(resolved).build();
       sessions.put(resolved, session);
+      System.out.println("[session-service] created session " + resolved.getId());
       return CompletableFuture.completedFuture(session);
     }
 
@@ -96,6 +98,25 @@ public final class FutureSessionServiceDemoJava {
       Session session = sessions.get(key);
       List<Event> events = session == null ? List.of() : session.getEvents();
       return CompletableFuture.completedFuture(new ListEventsResponse(events, null));
+    }
+
+    @Override
+    protected CompletableFuture<Event> appendEventAsync(Session session, Event event) {
+      // Compose the engine's default append (which mutates the session) so the in-memory session
+      // stays in sync, then log the write to surface persistence.
+      return appendEventDefault(session, event)
+          .thenApply(
+              persisted -> {
+                System.out.println(
+                    "[session-service] persisted event "
+                        + persisted.getId()
+                        + "; session "
+                        + session.getKey().getId()
+                        + " now holds "
+                        + session.getEvents().size()
+                        + " event(s)");
+                return persisted;
+              });
     }
   }
 
@@ -142,19 +163,6 @@ public final class FutureSessionServiceDemoJava {
             System.out.println("[" + event.getAuthor() + "] " + text);
           }
         });
-
-    // Read back through the custom service to show the runner drove it.
-    ListSessionsResponse listed =
-        AsyncJavaHelpers.await(c -> service.listSessions(appName, userId, c));
-    System.out.println("sessions stored by the custom service: " + listed.getSessions().size());
-    Session stored =
-        AsyncJavaHelpers.await(
-            c -> service.getSession(new SessionKey(appName, userId, sessionId), null, c));
-    System.out.println(
-        "events persisted in session "
-            + sessionId
-            + ": "
-            + (stored == null ? 0 : stored.getEvents().size()));
   }
 
   private static String firstText(Content content) {
