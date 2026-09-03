@@ -137,6 +137,21 @@ class EventSerializationTest {
     assertEquals(event, roundTrip(event))
   }
 
+  // Regression: adkJson must serialize dynamic defaults. The loop makes a same-millisecond
+  // timestamp encode near-certain, so this fails reliably if default-omission returns.
+  @Test
+  fun event_defaultTimestampAndId_alwaysSerialized() {
+    repeat(100) {
+      val event = Event(author = "agent")
+
+      val json = adkJson.encodeToString(Event.serializer(), event)
+
+      assertTrue(json.contains("\"timestamp\""), "timestamp must always be serialized")
+      assertTrue(json.contains("\"id\""), "id must always be serialized")
+      assertEquals(event, roundTrip(event))
+    }
+  }
+
   @Test
   fun cacheMetadata_activeCache_roundTripsLosslessly() {
     val event =
