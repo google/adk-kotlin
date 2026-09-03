@@ -134,15 +134,24 @@ public final class FutureMemoryServiceDemoJava {
         PublisherRunner.of(
             InMemoryRunner.builder().agent(agent).appName(appName).memoryService(service).build());
 
-    List<Event> events = new ArrayList<>();
-    AsyncJavaHelpers.forEach(
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
         runner.runAsync(
             userId,
             "demo-session",
             null,
-            Content.fromText(Role.USER, "I love hiking in the mountains.")),
-        events::add);
-    System.out.println("run produced " + events.size() + " event(s)");
+            Content.fromText(Role.USER, "I love hiking in the mountains."));
+    AsyncJavaHelpers.forEach(
+        eventStream,
+        event -> {
+          String text = textOf(event.getContent());
+          if (!text.isBlank()) {
+            System.out.println("[" + event.getAuthor() + "] " + text);
+          }
+        });
 
     // Search the memory the run stored, through the same custom service.
     SearchMemoryResponse response =

@@ -30,7 +30,6 @@ import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -104,17 +103,20 @@ public final class FuturePluginDemoJava {
 
     PublisherRunner runner = PublisherRunner.of(InMemoryRunner.builder().app(app).build());
 
-    List<Event> events = new ArrayList<>();
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
+        runner.runAsync("demo-user", "demo-session", null, Content.fromText(Role.USER, "Hi!"));
     AsyncJavaHelpers.forEach(
-        runner.runAsync("demo-user", "demo-session", null, Content.fromText(Role.USER, "Hi!")),
-        events::add);
-
-    for (Event event : events) {
-      String text = firstText(event.getContent());
-      if (text != null && !text.isBlank()) {
-        System.out.println("[" + event.getAuthor() + "] " + text);
-      }
-    }
+        eventStream,
+        event -> {
+          String text = firstText(event.getContent());
+          if (text != null && !text.isBlank()) {
+            System.out.println("[" + event.getAuthor() + "] " + text);
+          }
+        });
   }
 
   private static String firstText(Content content) {

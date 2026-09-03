@@ -181,17 +181,38 @@ public final class FutureArtifactServiceDemoJava {
                 .artifactService(service)
                 .build());
 
-    List<Event> events = new ArrayList<>();
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
+        runner.runAsync(userId, sessionId, null, Content.fromText(Role.USER, "Write a report."));
     AsyncJavaHelpers.forEach(
-        runner.runAsync(userId, sessionId, null, Content.fromText(Role.USER, "Write a report.")),
-        events::add);
-    System.out.println("run produced " + events.size() + " event(s)");
+        eventStream,
+        event -> {
+          String text = firstText(event.getContent());
+          if (text != null && !text.isBlank()) {
+            System.out.println("[" + event.getAuthor() + "] " + text);
+          }
+        });
 
     // Read back through the custom service to show the run saved through it.
     List<String> keys =
         AsyncJavaHelpers.await(
             c -> service.listArtifactKeys(new SessionKey(appName, userId, sessionId), c));
     System.out.println("artifacts saved via the runner's artifact service: " + keys);
+  }
+
+  private static String firstText(Content content) {
+    if (content == null) {
+      return null;
+    }
+    for (Part part : content.getParts()) {
+      if (part.getText() != null) {
+        return part.getText();
+      }
+    }
+    return null;
   }
 
   private FutureArtifactServiceDemoJava() {}

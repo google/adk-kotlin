@@ -20,15 +20,17 @@ import com.google.adk.kt.agents.ContextCacheConfig;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.annotations.ExperimentalContextCachingFeature;
 import com.google.adk.kt.apps.App;
+import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.AsyncJavaHelpers;
+import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.CacheMetadata;
 import com.google.adk.kt.models.Gemini;
-import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.HttpOptions;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
 import java.util.List;
+import org.reactivestreams.Publisher;
 
 /**
  * End-to-end demo of explicit context caching, using a weather assistant.
@@ -93,7 +95,7 @@ public final class ContextCachingDemoAgentJava {
                     .build())
             .build();
 
-    InMemoryRunner runner = InMemoryRunner.builder().app(app).build();
+    PublisherRunner runner = PublisherRunner.inMemory(app);
     String userId = "demo-user";
     String sessionId = "demo-session";
 
@@ -113,8 +115,14 @@ public final class ContextCachingDemoAgentJava {
       System.out.printf("%n===== Turn %d: \"%s\" =====%n", index + 1, prompt);
 
       TurnSummary summary = new TurnSummary();
+      // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+      // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+      // Reactor: Flux<Event> flux = Flux.from(eventStream);
+      // or block on it directly with AsyncJavaHelpers, as below.
+      Publisher<Event> eventStream =
+          runner.runAsync(userId, sessionId, null, Content.fromText(Role.USER, prompt));
       AsyncJavaHelpers.forEach(
-          runner.runAsync(userId, sessionId, null, Content.fromText(Role.USER, prompt), null, null),
+          eventStream,
           event -> {
             String text = textOf(event.getContent() == null ? null : event.getContent().getParts());
             if (!event.getPartial() && !text.isBlank()) {

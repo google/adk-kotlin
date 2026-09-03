@@ -32,7 +32,6 @@ import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
@@ -106,17 +105,21 @@ public final class FutureCallbacksDemoJava {
   }
 
   private static void runTurn(PublisherRunner runner, String prompt) {
-    List<Event> events = new ArrayList<>();
-    AsyncJavaHelpers.forEach(
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
         runner.runAsync(
-            "demo-user", "session-" + System.nanoTime(), null, Content.fromText(Role.USER, prompt)),
-        events::add);
-    for (Event event : events) {
-      String text = firstText(event.getContent());
-      if (text != null && !text.isBlank()) {
-        System.out.println("[" + event.getAuthor() + "] " + text);
-      }
-    }
+            "demo-user", "session-" + System.nanoTime(), null, Content.fromText(Role.USER, prompt));
+    AsyncJavaHelpers.forEach(
+        eventStream,
+        event -> {
+          String text = firstText(event.getContent());
+          if (text != null && !text.isBlank()) {
+            System.out.println("[" + event.getAuthor() + "] " + text);
+          }
+        });
   }
 
   private static String lastUserText(LlmRequest request) {

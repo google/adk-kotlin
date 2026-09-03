@@ -29,8 +29,8 @@ import com.google.adk.kt.tools.GoogleSearchTool;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.reactivestreams.Publisher;
 
 /**
  * Java port of the plugin demo, exercising {@link BigQueryAgentAnalyticsPlugin} through Java
@@ -95,22 +95,27 @@ public final class BigQueryAnalyticsDemoAgentJava {
     App app = createApp(projectId, datasetId, tableName);
     PublisherRunner runner = PublisherRunner.inMemory(app);
 
-    List<Event> events = new ArrayList<>();
-    AsyncJavaHelpers.forEach(
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
         runner.runAsync(
             "user_123",
             "session_" + System.currentTimeMillis(),
             null,
-            Content.fromText(Role.USER, "What are some of the key features of the Kotlin ADK?")),
-        events::add);
-
-    System.out.println("Agent execution finished. Events collected: " + events.size());
-    for (Event event : events) {
-      String text = firstText(event);
-      if (text != null && !text.isBlank()) {
-        System.out.println("[" + event.getAuthor() + "]: " + text);
-      }
-    }
+            Content.fromText(Role.USER, "What are some of the key features of the Kotlin ADK?"));
+    AtomicInteger eventCount = new AtomicInteger();
+    AsyncJavaHelpers.forEach(
+        eventStream,
+        event -> {
+          eventCount.incrementAndGet();
+          String text = firstText(event);
+          if (text != null && !text.isBlank()) {
+            System.out.println("[" + event.getAuthor() + "]: " + text);
+          }
+        });
+    System.out.println("Agent execution finished. Events collected: " + eventCount.get());
   }
 
   /** Returns the first text part of an event's content, or {@code null} if there is none. */

@@ -18,6 +18,7 @@ package com.google.adk.kt.examples.sessions;
 
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
+import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.AsyncJavaHelpers;
 import com.google.adk.kt.interop.BaseFutureTool;
 import com.google.adk.kt.interop.PublisherRunner;
@@ -40,6 +41,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
+import org.reactivestreams.Publisher;
 
 /**
  * Runs a tool-using agent whose session is persisted in the managed Vertex AI Session Service.
@@ -157,13 +159,18 @@ public final class VertexAiSessionServiceExampleJava {
             c -> sessionService.createSession(new SessionKey(appName, userId, null), null, c));
     String sessionId = Objects.requireNonNull(created.getKey().getId());
 
-    // The runner hands back a Publisher; this caller chooses to block on it.
-    AsyncJavaHelpers.forEach(
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
         runner.runAsync(
             userId,
             sessionId,
             null,
-            Content.fromText(Role.USER, "What's the weather in San Francisco?")),
+            Content.fromText(Role.USER, "What's the weather in San Francisco?"));
+    AsyncJavaHelpers.forEach(
+        eventStream,
         event -> {
           if (event.getPartial()) {
             return;

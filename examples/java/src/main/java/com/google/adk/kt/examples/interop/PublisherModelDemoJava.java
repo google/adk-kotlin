@@ -28,7 +28,6 @@ import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
-import java.util.ArrayList;
 import java.util.List;
 import org.reactivestreams.Publisher;
 
@@ -67,18 +66,21 @@ public final class PublisherModelDemoJava {
         PublisherRunner.of(
             InMemoryRunner.builder().agent(agent).appName("PublisherModelDemo").build());
 
-    List<Event> events = new ArrayList<>();
-    AsyncJavaHelpers.forEach(
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
         runner.runAsync(
-            "demo-user", "demo-session", null, Content.fromText(Role.USER, "Hello, model!")),
-        events::add);
-
-    for (Event event : events) {
-      String text = firstText(event);
-      if (text != null && !text.isBlank()) {
-        System.out.println("[" + event.getAuthor() + "] " + text);
-      }
-    }
+            "demo-user", "demo-session", null, Content.fromText(Role.USER, "Hello, model!"));
+    AsyncJavaHelpers.forEach(
+        eventStream,
+        event -> {
+          String text = firstText(event);
+          if (text != null && !text.isBlank()) {
+            System.out.println("[" + event.getAuthor() + "] " + text);
+          }
+        });
   }
 
   /** Returns the text of the last user turn in [request], or an empty string. */

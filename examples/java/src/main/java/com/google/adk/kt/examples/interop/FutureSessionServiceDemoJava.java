@@ -32,8 +32,8 @@ import com.google.adk.kt.sessions.ListSessionsResponse;
 import com.google.adk.kt.sessions.Session;
 import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.types.Content;
+import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -128,11 +128,20 @@ public final class FutureSessionServiceDemoJava {
         PublisherRunner.of(
             InMemoryRunner.builder().agent(agent).appName(appName).sessionService(service).build());
 
-    List<Event> events = new ArrayList<>();
+    // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
+    // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
+    // Reactor: Flux<Event> flux = Flux.from(eventStream);
+    // or block on it directly with AsyncJavaHelpers, as below.
+    Publisher<Event> eventStream =
+        runner.runAsync(userId, sessionId, null, Content.fromText(Role.USER, "Hello!"));
     AsyncJavaHelpers.forEach(
-        runner.runAsync(userId, sessionId, null, Content.fromText(Role.USER, "Hello!")),
-        events::add);
-    System.out.println("run produced " + events.size() + " event(s)");
+        eventStream,
+        event -> {
+          String text = firstText(event.getContent());
+          if (text != null && !text.isBlank()) {
+            System.out.println("[" + event.getAuthor() + "] " + text);
+          }
+        });
 
     // Read back through the custom service to show the runner drove it.
     ListSessionsResponse listed =
@@ -146,6 +155,18 @@ public final class FutureSessionServiceDemoJava {
             + sessionId
             + ": "
             + (stored == null ? 0 : stored.getEvents().size()));
+  }
+
+  private static String firstText(Content content) {
+    if (content == null) {
+      return null;
+    }
+    for (Part part : content.getParts()) {
+      if (part.getText() != null) {
+        return part.getText();
+      }
+    }
+    return null;
   }
 
   private FutureSessionServiceDemoJava() {}
