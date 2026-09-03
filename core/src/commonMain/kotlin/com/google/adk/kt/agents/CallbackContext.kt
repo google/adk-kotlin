@@ -29,7 +29,7 @@ import com.google.adk.kt.types.Part
  * It provides access to the current invocation context, event actions, and state.
  */
 class CallbackContext(
-  internal val invocationContext: InvocationContext,
+  val invocationContext: InvocationContext,
   eventActions: EventActions? = null,
 ) : ReadonlyContext by ReadonlyContextImpl(invocationContext) {
   val agent: BaseAgent = invocationContext.agent
