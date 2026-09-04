@@ -24,7 +24,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 
-fun Route.evalRoutes() {
+internal fun Route.evalRoutes() {
   route("/apps/{app_name}") {
     get("/eval_results") { call.respond(HttpStatusCode.NotImplemented, "Not implemented yet") }
 

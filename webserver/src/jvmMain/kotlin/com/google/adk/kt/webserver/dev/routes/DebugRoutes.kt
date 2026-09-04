@@ -23,7 +23,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 
-fun Route.debugRoutes(exporter: ApiServerSpanExporter) {
+internal fun Route.debugRoutes(exporter: ApiServerSpanExporter) {
 
   get("/debug/trace/{eventId}") {
     val eventId = call.parameters["eventId"]

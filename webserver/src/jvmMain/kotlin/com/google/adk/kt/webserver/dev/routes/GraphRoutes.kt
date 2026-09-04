@@ -28,9 +28,9 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 
-data class GraphRoutesError(val message: String, val code: HttpStatusCode)
+internal data class GraphRoutesError(val message: String, val code: HttpStatusCode)
 
-object GraphRoutesErrors {
+internal object GraphRoutesErrors {
   val ERR_MISSING_APP_NAME = GraphRoutesError("Missing appName", HttpStatusCode.BadRequest)
   val ERR_MISSING_USER_ID = GraphRoutesError("Missing userId", HttpStatusCode.BadRequest)
   val ERR_MISSING_SESSION_ID = GraphRoutesError("Missing sessionId", HttpStatusCode.BadRequest)
@@ -44,20 +44,20 @@ object GraphRoutesErrors {
     GraphRoutesError("Could not generate graph for this event.", HttpStatusCode.InternalServerError)
 }
 
-data class GraphParams(
+internal data class GraphParams(
   val appName: String,
   val userId: String,
   val sessionId: String,
   val eventId: String,
 )
 
-sealed class GraphRoutesResult {
+internal sealed class GraphRoutesResult {
   data class Success(val params: GraphParams) : GraphRoutesResult()
 
   data class Error(val error: GraphRoutesError) : GraphRoutesResult()
 }
 
-fun extractGraphParams(parameters: Parameters): GraphRoutesResult {
+internal fun extractGraphParams(parameters: Parameters): GraphRoutesResult {
   val appName =
     parameters["appName"] ?: return GraphRoutesResult.Error(GraphRoutesErrors.ERR_MISSING_APP_NAME)
   val userId =
@@ -70,7 +70,7 @@ fun extractGraphParams(parameters: Parameters): GraphRoutesResult {
   return GraphRoutesResult.Success(GraphParams(appName, userId, sessionId, eventId))
 }
 
-fun Route.graphRoutes(agentLoader: AgentLoader, sessionService: SessionService) {
+internal fun Route.graphRoutes(agentLoader: AgentLoader, sessionService: SessionService) {
   val graphGenerator = AgentGraphGenerator(agentLoader)
   route("/apps/{appName}/users/{userId}/sessions/{sessionId}/events/{eventId}/graph") {
     get {

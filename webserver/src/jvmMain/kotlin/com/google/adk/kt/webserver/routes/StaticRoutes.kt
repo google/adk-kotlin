@@ -65,7 +65,7 @@ private fun webUiSettingOrNull(raw: String?, source: String): Boolean? {
   }
 }
 
-fun Route.staticRoutes(application: Application) {
+internal fun Route.staticRoutes(application: Application) {
   var webUiDir =
     System.getProperty("adk.web.ui.dir")
       ?: application.environment.config.propertyOrNull("adk.web.ui.dir")?.getString()

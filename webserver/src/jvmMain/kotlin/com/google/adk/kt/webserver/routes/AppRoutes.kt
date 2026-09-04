@@ -17,14 +17,13 @@
 package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.webserver.loaders.AgentLoader
-import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 
-fun Route.appRoutes(agentLoader: AgentLoader) {
+internal fun Route.appRoutes(agentLoader: AgentLoader) {
   route("/list-apps") {
     get {
       val apps = agentLoader.listAgents()

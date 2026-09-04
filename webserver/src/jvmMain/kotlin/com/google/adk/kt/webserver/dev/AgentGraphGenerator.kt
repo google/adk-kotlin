@@ -40,7 +40,7 @@ import org.slf4j.LoggerFactory
  *
  * @param agentLoader The agent loader to use for loading agents.
  */
-class AgentGraphGenerator(private val agentLoader: AgentLoader) {
+internal class AgentGraphGenerator(private val agentLoader: AgentLoader) {
 
   enum class HighlightDirection {
     NONE,

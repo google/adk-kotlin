@@ -43,7 +43,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.encodeToString
 
 @OptIn(FrameworkInternalApi::class)
-fun Route.runRoutes(
+internal fun Route.runRoutes(
   agentLoader: AgentLoader,
   sessionService: SessionService,
   artifactService: ArtifactService,

@@ -25,7 +25,7 @@ import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
 import org.slf4j.LoggerFactory
 
-class OpenTelemetryConfig(private val apiServerSpanExporter: ApiServerSpanExporter) {
+internal class OpenTelemetryConfig(private val apiServerSpanExporter: ApiServerSpanExporter) {
   private val logger = LoggerFactory.getLogger(OpenTelemetryConfig::class.java)
 
   fun sdkTracerProvider(): SdkTracerProvider {

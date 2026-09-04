@@ -40,7 +40,7 @@ data class AgentRunRequest(
   val invocationId: String? = null,
 )
 
-@Serializable data class RunResponse(val output: String, val sessionId: String)
+@Serializable internal data class RunResponse(val output: String, val sessionId: String)
 
 @Serializable
 data class SessionDto(

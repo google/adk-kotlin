@@ -29,9 +29,9 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 
-data class ArtifactRoutesError(val message: String, val code: HttpStatusCode)
+internal data class ArtifactRoutesError(val message: String, val code: HttpStatusCode)
 
-object ArtifactRoutesErrors {
+internal object ArtifactRoutesErrors {
   val ERR_MISSING_APP_NAME = ArtifactRoutesError("Missing appName", HttpStatusCode.BadRequest)
   val ERR_MISSING_USER_ID = ArtifactRoutesError("Missing userId", HttpStatusCode.BadRequest)
   val ERR_MISSING_SESSION_ID = ArtifactRoutesError("Missing sessionId", HttpStatusCode.BadRequest)
@@ -40,20 +40,20 @@ object ArtifactRoutesErrors {
   val ERR_ARTIFACT_NOT_FOUND = ArtifactRoutesError("Artifact not found", HttpStatusCode.NotFound)
 }
 
-data class ArtifactParams(
+internal data class ArtifactParams(
   val appName: String,
   val userId: String,
   val sessionId: String,
   val artifactName: String? = null,
 )
 
-sealed class ArtifactRoutesResult {
+internal sealed class ArtifactRoutesResult {
   data class Success(val params: ArtifactParams) : ArtifactRoutesResult()
 
   data class Error(val error: ArtifactRoutesError) : ArtifactRoutesResult()
 }
 
-fun extractArtifactParams(
+internal fun extractArtifactParams(
   parameters: io.ktor.http.Parameters,
   requireArtifactName: Boolean = false,
 ): ArtifactRoutesResult {
@@ -73,7 +73,7 @@ fun extractArtifactParams(
   return ArtifactRoutesResult.Success(ArtifactParams(appName, userId, sessionId, artifactName))
 }
 
-fun Route.artifactRoutes(artifactService: ArtifactService) {
+internal fun Route.artifactRoutes(artifactService: ArtifactService) {
 
   route("/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts") {
     get {

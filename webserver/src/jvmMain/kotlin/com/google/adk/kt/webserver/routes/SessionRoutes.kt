@@ -30,24 +30,24 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 
-data class SessionRoutesError(val message: String, val code: HttpStatusCode)
+internal data class SessionRoutesError(val message: String, val code: HttpStatusCode)
 
-object SessionRoutesErrors {
+internal object SessionRoutesErrors {
   val ERR_MISSING_APP_NAME = SessionRoutesError("Missing appName", HttpStatusCode.BadRequest)
   val ERR_MISSING_USER_ID = SessionRoutesError("Missing userId", HttpStatusCode.BadRequest)
   val ERR_MISSING_SESSION_ID = SessionRoutesError("Missing sessionId", HttpStatusCode.BadRequest)
   val ERR_SESSION_NOT_FOUND = SessionRoutesError("Session not found", HttpStatusCode.NotFound)
 }
 
-data class SessionParams(val appName: String, val userId: String, val sessionId: String?)
+internal data class SessionParams(val appName: String, val userId: String, val sessionId: String?)
 
-sealed class SessionRoutesResult {
+internal sealed class SessionRoutesResult {
   data class Success(val params: SessionParams) : SessionRoutesResult()
 
   data class Error(val error: SessionRoutesError) : SessionRoutesResult()
 }
 
-fun extractSessionParams(
+internal fun extractSessionParams(
   parameters: Parameters,
   requireSessionId: Boolean = false,
 ): SessionRoutesResult {
@@ -64,7 +64,7 @@ fun extractSessionParams(
   return SessionRoutesResult.Success(SessionParams(appName, userId, sessionId))
 }
 
-fun Session.toDto() =
+internal fun Session.toDto() =
   SessionDto(
     id = key.id,
     appName = key.appName,
@@ -74,7 +74,7 @@ fun Session.toDto() =
     lastUpdateTime = lastUpdateTime.toEpochMilliseconds(),
   )
 
-fun Route.sessionRoutes(sessionService: SessionService) {
+internal fun Route.sessionRoutes(sessionService: SessionService) {
 
   route("/apps/{appName}/users/{userId}/sessions") {
     get {
