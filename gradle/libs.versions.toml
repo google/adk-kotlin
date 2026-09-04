@@ -3,6 +3,7 @@
 
 a2a = "1.3.0.Final"
 androidx-activity-compose = "1.9.3"
+androidx-appfunctions = "1.0.0-alpha10"
 androidx-appsearch = "1.1.0"
 androidx-compose-bom = "2024.09.03"
 androidx-compose-ui = "1.11.2"
@@ -55,6 +56,8 @@ a2a-sdk-common = { module = "org.a2aproject.sdk:a2a-java-sdk-common", version.re
 a2a-sdk-spec = { module = "org.a2aproject.sdk:a2a-java-sdk-spec", version.ref = "a2a" }
 a2a-sdk-transport-jsonrpc = { module = "org.a2aproject.sdk:a2a-java-sdk-client-transport-jsonrpc", version.ref = "a2a" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity-compose" }
+androidx-appfunctions = { module = "androidx.appfunctions:appfunctions", version.ref = "androidx-appfunctions" }
+androidx-appfunctions-compiler = { module = "androidx.appfunctions:appfunctions-compiler", version.ref = "androidx-appfunctions" }
 androidx-appsearch = { module = "androidx.appsearch:appsearch", version.ref = "androidx-appsearch" }
 androidx-appsearch-localStorage = { module = "androidx.appsearch:appsearch-local-storage", version.ref = "androidx-appsearch" }
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "androidx-compose-bom" }
