@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.0.0](https://github.com/google/adk-kotlin/compare/v0.9.0...v1.0.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* the following are removed, all deprecated since 0.9.0 - com.google.adk.kt.webserver.AdkWebServer, .adkModule, .AgentGraphGenerator; and in com.google.adk.kt.webserver.routes: debugRoutes, evalRoutes, graphRoutes, extractGraphParams, GraphRoutesError, GraphRoutesErrors, GraphParams and GraphRoutesResult. Replacements live in com.google.adk.kt.webserver.dev and com.google.adk.kt.webserver.dev.routes.
+
+### Features
+
+* add Content.text and Event.contentText accessors ([c73935e](https://github.com/google/adk-kotlin/commit/c73935eddeee3950d9e5963e4d3df83ed990c0f9))
+* add Java examples for the Publisher/Future interop base classes ([363ed89](https://github.com/google/adk-kotlin/commit/363ed891088fc439b37d1cc9b33a44b79b365cdd))
+* add Java ports of the callbacks, memory, compaction, HITL, and long-running examples ([e3fd625](https://github.com/google/adk-kotlin/commit/e3fd625ff75635a51f0438e3041ce79f70926456))
+* add Java ports of the structural, service, MCP, and BigQuery examples ([d016357](https://github.com/google/adk-kotlin/commit/d0163572c95e21786fee7653c9a01fd6b0d05201))
+* add Java-friendly interop base classes and MCP/BigQuery config builders ([87eedc6](https://github.com/google/adk-kotlin/commit/87eedc602e972a6e1e5f81fcee88d259dcec9b37))
+* build tools from @Tool-annotated Java methods via ReflectiveTools ([ce72036](https://github.com/google/adk-kotlin/commit/ce720369c0686820f9360de5b349434dc291f5f8))
+* remove the deprecated AdkWebServer surface ([a3e9eb3](https://github.com/google/adk-kotlin/commit/a3e9eb3ed79bd74853a86a023694183a7012a367))
+
+
+### Bug Fixes
+
+* always serialize Event timestamp and id ([683d517](https://github.com/google/adk-kotlin/commit/683d517d95f0fb927e31a9e2951eb6987cfca7ef))
+* continue a resumable invocation after a long-running tool returns a value ([2af60cf](https://github.com/google/adk-kotlin/commit/2af60cfe0ecdf259e7dc0e83e44448d5bf1a9a8d))
+* enhance Gemini quota (429) errors with mitigation guidance ([f880351](https://github.com/google/adk-kotlin/commit/f880351ea2a8bcb9082b865de2c7f24276ca3df2))
+* resume into a transferred peer or parent agent, not only a descendant ([4143a77](https://github.com/google/adk-kotlin/commit/4143a77b6dbe28d00d6f128bf39ad4ee4ca5036d))
+* scope `user:`-prefixed artifacts to the user in InMemoryArtifactService ([258cd34](https://github.com/google/adk-kotlin/commit/258cd348ec54f593978330cd7920e1e3b3f6ef32))
+* **serialization:** serialize Blob and thought-signature bytes as base64 ([0e79ca7](https://github.com/google/adk-kotlin/commit/0e79ca73873a270ccfae90b7a82aecc52ce3cecc))
+
+
+### Documentation
+
+* add long-running tool examples (dynamic, and resumable value return) ([7ea0c11](https://github.com/google/adk-kotlin/commit/7ea0c11531716fb6724afe3c82662af1b1d824db))
+* log persistence in the Java service examples instead of reading back through the service ([6225c7a](https://github.com/google/adk-kotlin/commit/6225c7a673c1cc93a11aa10f8136dc72f665e115))
+* show the PublisherRunner event stream and its RxJava/Reactor adapters in the Java examples ([ee8af34](https://github.com/google/adk-kotlin/commit/ee8af345f1f12b06a67e4393c3e7a47482e92651))
+* use the new Content and Event text accessors in the examples ([3445ba3](https://github.com/google/adk-kotlin/commit/3445ba3e47eab7c28a2029f00644124cb2bdd4f5))
+
 ## [0.9.0](https://github.com/google/adk-kotlin/compare/v0.8.0...v0.9.0) (2026-08-28)
 
 
