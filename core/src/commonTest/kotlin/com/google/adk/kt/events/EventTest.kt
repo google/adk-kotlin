@@ -108,4 +108,43 @@ class EventTest {
     assertNotNull(confirmationEvent)
     assertEquals(actions, confirmationEvent.actions)
   }
+
+  @Test
+  fun contentText_joinsContentTextPartsWithSeparator() {
+    val event =
+      Event(
+        author = "model",
+        content = Content(parts = listOf(Part(text = "Hello"), Part(text = "world"))),
+      )
+
+    assertEquals("Hello world", event.contentText(" "))
+  }
+
+  @Test
+  fun contentText_defaultSeparatorIsEmpty() {
+    val event =
+      Event(
+        author = "model",
+        content = Content(parts = listOf(Part(text = "Hel"), Part(text = "lo"))),
+      )
+
+    assertEquals("Hello", event.contentText())
+  }
+
+  @Test
+  fun contentText_emptyWhenNoContent() {
+    assertEquals("", Event(author = "model").contentText(" "))
+  }
+
+  @Test
+  fun contentText_excludesThoughtPartsUnlessRequested() {
+    val event =
+      Event(
+        author = "model",
+        content = Content(parts = listOf(Part(text = "hi"), Part(text = "hmm", thought = true))),
+      )
+
+    assertEquals("hi", event.contentText(" "))
+    assertEquals("hi hmm", event.contentText(" ", includeThoughts = true))
+  }
 }

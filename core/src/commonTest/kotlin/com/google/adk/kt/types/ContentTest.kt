@@ -83,4 +83,46 @@ class ContentTest {
 
     assertEquals(Content(role = Role.USER, parts = listOf(Part(text = "hello world"))), content)
   }
+
+  @Test
+  fun text_joinsTextPartsWithSeparatorSkippingNonText() {
+    val content =
+      Content(
+        role = Role.MODEL,
+        parts =
+          listOf(
+            Part(text = "Hello"),
+            Part(functionCall = FunctionCall(name = "tool")),
+            Part(text = "world"),
+          ),
+      )
+
+    assertEquals("Hello world", content.text(" "))
+  }
+
+  @Test
+  fun text_defaultSeparatorIsEmpty() {
+    // Matches the google-genai SDK: parts are fragments of one message, joined with no separator.
+    val content = Content(parts = listOf(Part(text = "Hel"), Part(text = "lo")))
+
+    assertEquals("Hello", content.text())
+  }
+
+  @Test
+  fun text_emptyWhenNoTextParts() {
+    assertEquals(
+      "",
+      Content(parts = listOf(Part(functionCall = FunctionCall(name = "t")))).text(" "),
+    )
+    assertEquals("", Content().text(" "))
+  }
+
+  @Test
+  fun text_excludesThoughtPartsUnlessRequested() {
+    val content =
+      Content(parts = listOf(Part(text = "visible"), Part(text = "reason", thought = true)))
+
+    assertEquals("visible", content.text(" "))
+    assertEquals("visible reason", content.text(" ", includeThoughts = true))
+  }
 }

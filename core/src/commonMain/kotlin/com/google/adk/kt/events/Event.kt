@@ -27,6 +27,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.UsageMetadata
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlin.time.Clock
 import kotlinx.serialization.Contextual
@@ -97,6 +98,14 @@ data class Event(
   /** Returns all function responses from this event. */
   fun functionResponses(): List<FunctionResponse> =
     content?.parts?.mapNotNull { it.functionResponse } ?: emptyList()
+
+  /**
+   * Returns this event's [content] text joined with [separator] (none by default), or "" when the
+   * event has no content; forwards [includeThoughts] to [Content.text].
+   */
+  @JvmOverloads
+  fun contentText(separator: CharSequence = "", includeThoughts: Boolean = false): String =
+    content?.text(separator, includeThoughts) ?: ""
 
   /**
    * Returns true if this event is the final response of an agent turn — i.e. it terminates the
