@@ -56,7 +56,7 @@ class GenaiPrompt
 private constructor(val generativeModel: GenerativeModel, override val name: String) : Model {
 
   companion object {
-    val logger = LoggerFactory.getLogger(GenaiPrompt::class)
+    private val logger = LoggerFactory.getLogger(GenaiPrompt::class)
 
     /**
      * Creates a [GenaiPrompt] instance with the given [generativeModel] and [name].
