@@ -219,7 +219,7 @@ fun main() = runBlocking {
         newMessage = Content.fromText(Role.USER, prompt),
       )
       .collect { event ->
-        val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+        val text = event.contentText(" ")
         if (!event.partial && text.isNotBlank()) println("assistant > $text")
         event.cacheMetadata?.let { turnCache = it }
         event.usageMetadata?.cachedContentTokenCount?.let { cachedTokens = it }

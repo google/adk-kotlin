@@ -100,7 +100,7 @@ fun main() {
       )
       .collect { event ->
         if (event.partial == true) return@collect
-        val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+        val text = event.contentText(" ")
         if (text.isNotBlank()) println("${event.author} > $text")
       }
 

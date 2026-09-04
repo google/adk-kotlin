@@ -33,12 +33,9 @@ import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.summarizer.EventsCompactionConfig;
 import com.google.adk.kt.summarizer.LlmEventSummarizer;
 import com.google.adk.kt.types.Content;
-import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
 import java.util.List;
-import java.util.Objects;
 import java.util.Scanner;
-import java.util.stream.Collectors;
 import org.reactivestreams.Publisher;
 
 /**
@@ -75,11 +72,7 @@ public final class CompactionDemoAgentJava {
       System.out.println("\n  >>> " + label + " prompt (" + contents.size() + " content(s)):");
       for (int i = 0; i < contents.size(); i++) {
         Content content = contents.get(i);
-        String text =
-            content.getParts().stream()
-                .map(Part::getText)
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining(" "));
+        String text = content.text(" ");
         System.out.println(
             "        ["
                 + i
@@ -164,7 +157,7 @@ public final class CompactionDemoAgentJava {
         AsyncJavaHelpers.forEach(
             runner.runAsync(USER_ID, SESSION_ID, null, Content.fromText(Role.USER, input)),
             event -> {
-              String text = textOf(event.getContent());
+              String text = event.contentText(" ");
               if (!text.isBlank()) {
                 System.out.println("\nassistant > " + text);
               }
@@ -189,7 +182,7 @@ public final class CompactionDemoAgentJava {
       EventCompaction compaction = event.getActions().getCompaction();
       String description;
       if (compaction != null) {
-        String summary = textOf(compaction.getCompactedContent());
+        String summary = compaction.getCompactedContent().text(" ");
         description =
             "COMPACTION SUMMARY covering ["
                 + compaction.getStartTimestamp()
@@ -198,19 +191,10 @@ public final class CompactionDemoAgentJava {
                 + "]: "
                 + summary;
       } else {
-        description = event.getAuthor() + ": " + textOf(event.getContent());
+        description = event.getAuthor() + ": " + event.contentText(" ");
       }
       System.out.println("  [" + i + "] " + description);
     }
-  }
-
-  private static String textOf(Content content) {
-    return content == null
-        ? ""
-        : content.getParts().stream()
-            .map(Part::getText)
-            .filter(Objects::nonNull)
-            .collect(Collectors.joining(" "));
   }
 
   private static boolean isBlank(String value) {

@@ -33,12 +33,10 @@ import com.google.adk.kt.sessions.Session;
 import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.tools.PreloadMemoryTool;
 import com.google.adk.kt.types.Content;
-import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.stream.Collectors;
 
 /**
  * Java port of the standard-ADK example of using {@link VertexAiMemoryBankService} with an agent.
@@ -130,14 +128,7 @@ public final class VertexAiMemoryBankServiceExampleJava {
           if (event.getPartial()) {
             return;
           }
-          Content content = event.getContent();
-          String text =
-              content == null
-                  ? ""
-                  : content.getParts().stream()
-                      .map(Part::getText)
-                      .filter(Objects::nonNull)
-                      .collect(Collectors.joining(" "));
+          String text = event.contentText(" ");
           if (!text.isBlank()) {
             System.out.println(event.getAuthor() + " > " + text);
           }
@@ -157,13 +148,7 @@ public final class VertexAiMemoryBankServiceExampleJava {
     return FutureCallbacks.beforeModel(
         (context, request) -> {
           Content systemInstruction = request.getConfig().getSystemInstruction();
-          String systemText =
-              systemInstruction == null
-                  ? ""
-                  : systemInstruction.getParts().stream()
-                      .map(Part::getText)
-                      .filter(Objects::nonNull)
-                      .collect(Collectors.joining("\n"));
+          String systemText = systemInstruction == null ? "" : systemInstruction.text("\n");
           System.out.println(
               "[memory] injected past conversations: "
                   + systemText.contains("<PAST_CONVERSATIONS>"));

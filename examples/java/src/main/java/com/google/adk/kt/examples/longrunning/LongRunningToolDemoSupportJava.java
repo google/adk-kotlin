@@ -33,7 +33,6 @@ import com.google.adk.kt.types.Schema;
 import com.google.adk.kt.types.Type;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import kotlin.Unit;
@@ -198,14 +197,7 @@ final class LongRunningToolDemoSupportJava {
   private static String describeEvent(Event event) {
     List<FunctionCall> calls = event.functionCalls();
     List<FunctionResponse> responses = event.functionResponses();
-    Content content = event.getContent();
-    String text =
-        content == null
-            ? ""
-            : content.getParts().stream()
-                .map(Part::getText)
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining(" "));
+    String text = event.contentText(" ");
     String detail;
     if (!calls.isEmpty()) {
       detail =

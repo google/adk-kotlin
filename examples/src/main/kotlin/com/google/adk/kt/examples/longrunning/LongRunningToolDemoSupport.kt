@@ -161,7 +161,7 @@ internal fun printEvents(label: String, events: List<Event>) {
 private fun describeEvent(event: Event): String {
   val calls = event.functionCalls()
   val responses = event.functionResponses()
-  val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+  val text = event.contentText(" ")
   val detail =
     when {
       calls.isNotEmpty() ->

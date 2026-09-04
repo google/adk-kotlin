@@ -32,13 +32,11 @@ import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.sessions.VertexAiSessionService;
 import com.google.adk.kt.tools.BaseTool;
 import com.google.adk.kt.types.Content;
-import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.stream.Collectors;
 import org.reactivestreams.Publisher;
 
 /**
@@ -153,14 +151,7 @@ public final class VertexAiSessionServiceExampleJava {
           if (event.getPartial()) {
             return;
           }
-          Content content = event.getContent();
-          String text =
-              content == null
-                  ? ""
-                  : content.getParts().stream()
-                      .map(Part::getText)
-                      .filter(Objects::nonNull)
-                      .collect(Collectors.joining(" "));
+          String text = event.contentText(" ");
           if (!text.isBlank()) {
             System.out.println(event.getAuthor() + " > " + text);
           }

@@ -76,8 +76,8 @@ public final class PublisherModelDemoJava {
     AsyncJavaHelpers.forEach(
         eventStream,
         event -> {
-          String text = firstText(event);
-          if (text != null && !text.isBlank()) {
+          String text = event.contentText(" ");
+          if (!text.isBlank()) {
             System.out.println("[" + event.getAuthor() + "] " + text);
           }
         });
@@ -97,20 +97,6 @@ public final class PublisherModelDemoJava {
       }
     }
     return "";
-  }
-
-  /** Returns the first text part of an event's content, or {@code null}. */
-  private static String firstText(Event event) {
-    Content content = event.getContent();
-    if (content == null) {
-      return null;
-    }
-    for (Part part : content.getParts()) {
-      if (part.getText() != null) {
-        return part.getText();
-      }
-    }
-    return null;
   }
 
   private PublisherModelDemoJava() {}

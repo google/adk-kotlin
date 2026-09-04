@@ -55,7 +55,7 @@ private class PrintingModel(private val label: String, private val delegate: Mod
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
     println("\n  >>> $label prompt (${request.contents.size} content(s)):")
     request.contents.forEachIndexed { index, content ->
-      val text = content.parts.mapNotNull { it.text }.joinToString(" ").ifEmpty { "<non-text>" }
+      val text = content.text(" ").ifEmpty { "<non-text>" }
       println("        [$index] ${content.role}: $text")
     }
     emitAll(delegate.generateContent(request, stream))
@@ -123,7 +123,7 @@ fun main() = runBlocking {
         newMessage = Content.fromText(Role.USER, input),
       )
       .collect { event ->
-        val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+        val text = event.contentText(" ")
         if (text.isNotBlank()) println("\nassistant > $text")
       }
   }
@@ -136,11 +136,11 @@ fun main() = runBlocking {
     val compaction = event.actions.compaction
     val description =
       if (compaction != null) {
-        val summary = compaction.compactedContent.parts.mapNotNull { it.text }.joinToString(" ")
+        val summary = compaction.compactedContent.text(" ")
         "COMPACTION SUMMARY covering [${compaction.startTimestamp}..${compaction.endTimestamp}]: " +
           summary
       } else {
-        val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+        val text = event.contentText(" ")
         "${event.author}: $text"
       }
     println("  [$index] $description")

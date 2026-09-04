@@ -108,12 +108,7 @@ fun main(args: Array<String>) {
         beforeModelCallbacks =
           listOf(
             BeforeModelCallback { _, request ->
-              val systemText =
-                request.config.systemInstruction
-                  ?.parts
-                  ?.mapNotNull { it.text }
-                  ?.joinToString("\n")
-                  .orEmpty()
+              val systemText = request.config.systemInstruction?.text("\n").orEmpty()
               println(
                 "[memory] injected past conversations: ${"<PAST_CONVERSATIONS>" in systemText}"
               )
@@ -148,7 +143,7 @@ fun main(args: Array<String>) {
       )
       .collect { event ->
         if (event.partial == true) return@collect
-        val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+        val text = event.contentText(" ")
         if (text.isNotBlank()) println("${event.author} > $text")
       }
 

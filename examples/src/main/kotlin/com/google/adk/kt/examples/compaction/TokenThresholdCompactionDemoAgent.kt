@@ -46,8 +46,8 @@ private const val EVENT_RETENTION_SIZE = 2
  * Chat with the agent in your terminal. Before each model call, ADK measures the most recent prompt
  * token count and, once it reaches [TOKEN_THRESHOLD], compacts everything older than the last
  * [EVENT_RETENTION_SIZE] events into a single summary while keeping the recent events raw. Both the
- * agent's model and the compaction summarizer's model are wrapped in a [LabeledPrintingModel] that prints
- * every prompt, so you can watch the history grow and then collapse into a summary once the
+ * agent's model and the compaction summarizer's model are wrapped in a [LabeledPrintingModel] that
+ * prints every prompt, so you can watch the history grow and then collapse into a summary once the
  * threshold is crossed.
  *
  * The prompt token count comes from the model's reported usage metadata. Requires `GEMINI_API_KEY`
@@ -60,7 +60,7 @@ private class LabeledPrintingModel(private val label: String, private val delega
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
     println("\n  >>> $label prompt (${request.contents.size} content(s)):")
     request.contents.forEachIndexed { index, content ->
-      val text = content.parts.mapNotNull { it.text }.joinToString(" ").ifEmpty { "<non-text>" }
+      val text = content.text(" ").ifEmpty { "<non-text>" }
       println("        [$index] ${content.role}: $text")
     }
     emitAll(delegate.generateContent(request, stream))
@@ -108,7 +108,7 @@ fun main() = runBlocking {
         newMessage = Content.fromText(Role.USER, input),
       )
       .collect { event ->
-        val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+        val text = event.contentText(" ")
         if (text.isNotBlank()) println("\nassistant > $text")
       }
   }
@@ -122,11 +122,11 @@ fun main() = runBlocking {
     val compaction = event.actions.compaction
     val description =
       if (compaction != null) {
-        val summary = compaction.compactedContent.parts.mapNotNull { it.text }.joinToString(" ")
+        val summary = compaction.compactedContent.text(" ")
         "COMPACTION SUMMARY covering [${compaction.startTimestamp}..${compaction.endTimestamp}]: " +
           summary
       } else {
-        val text = event.content?.parts?.mapNotNull { it.text }?.joinToString(" ").orEmpty()
+        val text = event.contentText(" ")
         "${event.author}: $text"
       }
     println("  [$index] $description")
