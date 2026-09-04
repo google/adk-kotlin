@@ -248,7 +248,7 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
      * `options` arg, when present, is captured so a numeric reply can select an option.
      */
     @VisibleForTesting
-    fun resolvePendingInputRequest(event: Event): PendingInputRequest? {
+    internal fun resolvePendingInputRequest(event: Event): PendingInputRequest? {
       val call =
         event.functionCalls().firstOrNull { fc ->
           val id = fc.id
@@ -270,7 +270,7 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
      * [FunctionTool.REJECTED_ERROR] after the user explicitly types 'no' - are still surfaced.
      */
     @VisibleForTesting
-    fun shouldDisplayError(error: String): Boolean =
+    internal fun shouldDisplayError(error: String): Boolean =
       error.isNotBlank() && error != FunctionTool.CONFIRMATION_REQUIRED_ERROR
 
     /**
@@ -286,7 +286,7 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
      * state.
      */
     @VisibleForTesting
-    fun resolvePendingConfirmations(event: Event): Map<String, ToolConfirmation> {
+    internal fun resolvePendingConfirmations(event: Event): Map<String, ToolConfirmation> {
       if (event.actions.requestedToolConfirmations.isEmpty()) return emptyMap()
       val synthCalls =
         event.functionCalls().filter {

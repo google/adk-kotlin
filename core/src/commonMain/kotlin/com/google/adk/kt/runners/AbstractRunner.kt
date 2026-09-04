@@ -590,7 +590,7 @@ abstract class AbstractRunner : Runner {
    * @param event The event to modify.
    * @param stateDelta The state changes to apply.
    */
-  fun applyStateDelta(event: Event, stateDelta: Map<String, Any>?) {
+  internal fun applyStateDelta(event: Event, stateDelta: Map<String, Any>?) {
     if (stateDelta != null) {
       event.actions.stateDelta.putAll(stateDelta)
     }
