@@ -133,6 +133,9 @@ kotlin {
         implementation(libs.androidx.appsearch)
         implementation(libs.androidx.appsearch.localStorage)
         implementation(libs.kotlinx.coroutines.guava)
+        // Remote MCP client support for Android uses Ktor's OkHttp engine.
+        implementation(libs.mcp.kotlin.client)
+        implementation(libs.ktor.client.okhttp.mcp)
       }
     }
     getByName("androidHostTest") {
@@ -148,6 +151,7 @@ kotlin {
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.google.truth)
         implementation(libs.robolectric)
+        implementation(libs.ktor.client.mock.mcp)
       }
     }
 

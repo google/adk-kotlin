@@ -22,18 +22,11 @@ import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolFilter
 import com.google.adk.kt.tools.Toolset
-import com.google.adk.kt.tools.isToolSelected
 import com.google.adk.kt.tools.mcp.McpToolException.McpToolLoadingException
-import io.modelcontextprotocol.client.McpAsyncClient
-import io.modelcontextprotocol.spec.McpError
 import io.modelcontextprotocol.spec.McpSchema
+import io.modelcontextprotocol.spec.McpSchema.Tool as McpSchemaTool
 import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.reactor.awaitSingle
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /**
  * Connects to an MCP Server and exposes the server's MCP tools to an agent as ADK [BaseTool]s.
@@ -62,290 +55,57 @@ import kotlinx.coroutines.sync.withLock
  */
 class McpToolset
 internal constructor(
-  private val mcpSessionManager: SessionManager,
-  private val toolFilter: ToolFilter? = null,
-  private val headerProvider: (suspend (ReadonlyContext) -> Map<String, String>)? = null,
-  private val useMcpResources: Boolean = false,
-  private val maxMcpResourceLength: Int = DEFAULT_MAX_RESOURCE_LENGTH,
+  mcpSessionManager: SessionManager,
+  toolFilter: ToolFilter? = null,
+  headerProvider: (suspend (ReadonlyContext) -> Map<String, String>)? = null,
+  useMcpResources: Boolean = false,
+  maxMcpResourceLength: Int = DEFAULT_MAX_MCP_RESOURCE_LENGTH,
 ) : Toolset {
 
-  private val toolsMutex = Mutex()
-  private var cachedTools: LoadedTools? = null
-
-  /** Guarded by [toolsMutex]; keeps the missing-capability warning to one per toolset. */
-  private var warnedResourcesUnsupported = false
-
-  /**
-   * The server's tools, which [toolFilter] selects from, and the resource tools, which it skips.
-   */
-  private class LoadedTools(val serverTools: List<BaseTool>, val resourceTools: List<BaseTool>)
-
-  override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> {
-    val loaded = initAndGetTools(readonlyContext)
-    // Appended after filtering so toolFilter cannot silently undo useMcpResources, as in Python's
-    // get_tools (mcp_toolset.py).
-    return loaded.serverTools.filter { toolFilter.isToolSelected(it, readonlyContext) } +
-      loaded.resourceTools
-  }
-
-  private suspend fun initAndGetTools(readonlyContext: ReadonlyContext?): LoadedTools =
-    toolsMutex.withLock {
-      if (headerProvider == null) {
-        // Cache tools only if headers are static (headerProvider is null).
-        cachedTools ?: initToolsWithRetries(readonlyContext).also { cachedTools = it }
-      } else {
-        // If headers are dynamic, always load tools.
-        initToolsWithRetries(readonlyContext)
-      }
-    }
-
-  private suspend fun initToolsWithRetries(
-    readonlyContext: ReadonlyContext?,
-    times: Int = DEFAULT_RETRY_TIMES,
-    delayMs: Long = DEFAULT_RETRY_DELAY_MS,
-  ): LoadedTools {
-    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    var session: McpAsyncClient? = null
-    for (attempt in 1..times) {
-      try {
-        // First attempt fetches the pooled session (stale=null); later attempts pass the failed
-        // session so the manager replaces it in place and the whole toolset recovers together.
-        // getSession is inside the try because opening a session initializes it over the network,
-        // which can fail (I/O, timeout) -- those failures must retry like loadTools failures do.
-        session = mcpSessionManager.getSession(headers, stale = session)
-        return loadTools(session, headers)
-      } catch (e: Exception) {
-        handleLoadError(e, attempt)
-        if (attempt == times) {
-          throw McpToolLoadingException(LOAD_TOOLS_FAILURE_MESSAGE, e)
+  /** Shared JVM/Android discovery, execution, and resource path. */
+  private val sharedCore =
+    McpToolsetCore(
+      sessionManager = JvmMcpClientSessionManager(mcpSessionManager),
+      toolFilter = toolFilter,
+      headerProvider = headerProvider,
+      useMcpResources = useMcpResources,
+      maxMcpResourceLength = maxMcpResourceLength,
+      onResourcesUnsupported = {
+        logger.warn {
+          "useMcpResources is enabled, but the MCP server did not report the \"resources\" " +
+            "capability, so list_mcp_resources, load_mcp_resource, list_mcp_resource_templates " +
+            "are not exposed to the agent."
         }
-        delay(delayMs)
-      }
-    }
-    error("Exhausted retries without returning or throwing")
-  }
-
-  private suspend fun loadTools(
-    session: McpAsyncClient,
-    headers: Map<String, String>,
-  ): LoadedTools {
-    val toolsResponse = session.listTools().awaitSingle()
-    val serverTools: List<BaseTool> =
-      toolsResponse.tools().map {
+      },
+      toolFactory = McpToolFactory { definition, invocation ->
+        val tool =
+          definition.platformTool as? McpSchemaTool
+            ?: error("JVM MCP tool definition is missing its Java SDK tool.")
         McpTool(
-          name = it.name(),
-          description = it.description() ?: "",
-          mcpSchemaTool = it,
-          mcpSessionManager = mcpSessionManager,
-          headers = headers,
+          name = definition.name,
+          description = definition.description,
+          mcpSchemaTool = tool,
+          invocation = invocation,
         )
-      }
-
-    if (!useMcpResources) {
-      return LoadedTools(serverTools, emptyList())
-    }
-
-    // Built before the capability check so the warning can name them without repeating literals.
-    val resourceTools =
-      listOf(
-        ListMcpResourcesTool(this),
-        LoadMcpResourceTool(this, maxMcpResourceLength),
-        ListMcpResourceTemplatesTool(this),
-      )
-
-    // Withheld, not exposed-and-broken: the MCP client rejects every resource call against such a
-    // server, and each one costs three attempts that evict the pooled session.
-    if (session.serverCapabilities?.resources() != null) {
-      return LoadedTools(serverTools, resourceTools)
-    }
-
-    // Once only: with a headerProvider the tools reload every turn, and the answer never changes.
-    if (!warnedResourcesUnsupported) {
-      warnedResourcesUnsupported = true
-      // "did not report", not "does not advertise": null capabilities means the server never
-      // answered, which is not the same as declining.
-      logger.warn {
-        "useMcpResources is enabled, but the MCP server did not report the \"resources\" " +
-          "capability, so ${resourceTools.joinToString { it.name }} are not exposed to the agent."
-      }
-    }
-    return LoadedTools(serverTools, emptyList())
-  }
-
-  /**
-   * Lists a page of resources advertised by the MCP server.
-   *
-   * @param cursor An opaque pagination cursor from a previous [McpResourceListing.nextCursor], or
-   *   `null` to fetch the first page.
-   */
-  internal suspend fun listResources(
-    cursor: String? = null,
-    readonlyContext: ReadonlyContext? = null,
-  ): McpResourceListing {
-    val result =
-      withSession(readonlyContext) { session ->
-        // Always use the cursor-based overload (McpSchema.FIRST_PAGE == null) so a single page is
-        // fetched and the server's nextCursor is surfaced to the caller. The no-arg overload would
-        // auto-follow every cursor and collapse the whole catalog into one response, defeating
-        // page-by-page browsing (and blowing up context on servers with large resource catalogs).
-        session.listResources(cursor).awaitSingle()
-      }
-    return McpResourceListing(
-      resources = result.resources().map { it.toResourceInfo() },
-      nextCursor = result.nextCursor(),
+      },
     )
-  }
 
-  /**
-   * Fetches every resource advertised by the MCP server, following pagination cursors until the
-   * server reports no further pages.
-   *
-   * This is the full-scan counterpart to the paged [listResources]: MCP keys resources by `uri`, so
-   * resolving a [McpResourceInfo.name] means scanning the catalog, and names are not required to be
-   * unique. It costs one round trip per page of the whole catalog.
-   *
-   * Kept `internal` like the rest of the resource surface for 1.0. Promoting any of it to `public`
-   * later is purely additive.
-   */
-  internal suspend fun listAllResources(
-    readonlyContext: ReadonlyContext? = null
-  ): List<McpResourceInfo> {
-    // Paged here rather than through the SDK's no-arg overload, which chains pages with expand()
-    // under no page cap, no cycle detection and no aggregate deadline: a server returning a
-    // constant nextCursor would loop until the process died, and that is reachable from a
-    // model-chosen load_mcp_resource call. The cap converts that into a bounded, loud failure.
-    val all = mutableListOf<McpResourceInfo>()
-    var cursor: String? = null
-    repeat(MAX_FULL_SCAN_PAGES) {
-      val result =
-        withSession(readonlyContext) { session -> session.listResources(cursor).awaitSingle() }
-      all += result.resources().map { it.toResourceInfo() }
-      cursor = result.nextCursor() ?: return all
+  override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
+    try {
+      sharedCore.getTools(readonlyContext)
+    } catch (error: IllegalArgumentException) {
+      // This has historically been part of the JVM loading error contract.
+      throw McpToolLoadingException("Invalid argument encountered during tool loading.", error)
+    } catch (error: McpToolsetCoreException) {
+      // Preserve the established JVM failure type while the mechanics live in shared code.
+      throw McpToolLoadingException(LOAD_TOOLS_FAILURE_MESSAGE, error.cause ?: error)
     }
-    // Truncating instead would silently corrupt name resolution: a missing page reads as
-    // "no such resource", or hides a collision that should have been reported as ambiguous.
-    throw McpToolException.McpToolExecutionException(
-      "MCP server kept paginating resources/list past $MAX_FULL_SCAN_PAGES pages; giving up " +
-        "rather than scanning forever."
-    )
-  }
-
-  /**
-   * Lists a page of resource templates advertised by the MCP server.
-   *
-   * @param cursor An opaque pagination cursor from a previous
-   *   [McpResourceTemplateListing.nextCursor], or `null` to fetch the first page.
-   */
-  internal suspend fun listResourceTemplates(
-    cursor: String? = null,
-    readonlyContext: ReadonlyContext? = null,
-  ): McpResourceTemplateListing {
-    val result =
-      withSession(readonlyContext) { session ->
-        // Single-page cursor overload, mirroring [listResources]; see the rationale there.
-        session.listResourceTemplates(cursor).awaitSingle()
-      }
-    return McpResourceTemplateListing(
-      resourceTemplates = result.resourceTemplates().map { it.toResourceTemplateInfo() },
-      nextCursor = result.nextCursor(),
-    )
-  }
-
-  /** Fetches and returns the contents of the resource with the given [uri]. */
-  internal suspend fun readResource(
-    uri: String,
-    readonlyContext: ReadonlyContext? = null,
-  ): List<McpResourceContent> {
-    val readResult =
-      withSession(readonlyContext) { session ->
-        session.readResource(McpSchema.ReadResourceRequest(uri)).awaitSingle()
-      }
-    return readResult.contents().map { it.toResourceContent() }
-  }
-
-  /**
-   * Runs [block] against a pooled MCP session, retrying a failed call on a replaced session.
-   *
-   * Like [McpTool]'s retry (which allows one more attempt than the [DEFAULT_RETRY_TIMES] used
-   * here), a session that failed is handed back as `stale` so the manager evicts and recreates it
-   * in place, which every caller sharing that session benefits from. Without this a dead pooled
-   * session is never replaced and every later resource call keeps failing.
-   *
-   * [IllegalArgumentException] is not retried, matching [handleLoadError]: the server rejected the
-   * request itself, so the retries repeat an identical round trip and only delay the error. An
-   * unknown resource uri is the common case, and a model guessing one in `load_mcp_resource` is
-   * routine.
-   *
-   * A session is marked stale only after a failure that is not attributable to the request, so a
-   * rejected request no longer evicts a healthy session out from under everyone sharing it. On
-   * stdio that eviction kills and respawns the server child process.
-   *
-   * [SessionManager.getSession] is inside the `try` because opening a session initializes it over
-   * the network, which can fail on its own and must retry like the call itself does.
-   *
-   * Only the round trip is retried; mapping the result into ADK types happens at the call site, so
-   * a mapping bug is never mistaken for a transient failure.
-   */
-  private suspend fun <T> withSession(
-    readonlyContext: ReadonlyContext?,
-    block: suspend (McpAsyncClient) -> T,
-  ): T {
-    val headers = readonlyContext?.let { headerProvider?.invoke(it) } ?: emptyMap()
-    var stale: McpAsyncClient? = null
-    for (attempt in 1..DEFAULT_RETRY_TIMES) {
-      var session: McpAsyncClient? = null
-      try {
-        session = mcpSessionManager.getSession(headers, stale = stale)
-        return block(session)
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: IllegalArgumentException) {
-        throw e
-      } catch (e: McpError) {
-        // Same reasoning: a resource the server does not have is a rejected request, not a dead
-        // session, so retrying repeats it and evicting punishes everyone sharing the session.
-        if (e.jsonRpcError?.code() == McpSchema.ErrorCodes.RESOURCE_NOT_FOUND) throw e
-        if (attempt == DEFAULT_RETRY_TIMES) throw e
-        stale = session
-        logger.warn(e) { "Retrying MCP resource call, attempt $attempt: ${e.message}" }
-        delay(DEFAULT_RETRY_DELAY_MS)
-      } catch (e: Exception) {
-        if (attempt == DEFAULT_RETRY_TIMES) {
-          throw e
-        }
-        // Null when getSession itself failed, which leaves nothing to evict.
-        stale = session
-        logger.warn(e) { "Retrying MCP resource call, attempt $attempt: ${e.message}" }
-        delay(DEFAULT_RETRY_DELAY_MS)
-      }
-    }
-    error("Exhausted retries without returning or throwing")
-  }
-
-  private fun handleLoadError(e: Exception, attempt: Int) {
-    when (e) {
-      is CancellationException -> throw e
-      is IllegalArgumentException -> {
-        logger.error(e) { "Invalid argument encountered during tool loading." }
-        throw McpToolLoadingException("Invalid argument encountered during tool loading.", e)
-      }
-    }
-
-    logger.error(e) { "Unexpected error during tool loading, retry attempt $attempt" }
-  }
 
   override fun close() {
-    mcpSessionManager.close()
-    cachedTools = null
+    sharedCore.close()
   }
 
   companion object {
-    /** Bound on [listAllResources]; ample for a real catalog, fatal only for a looping server. */
-    private const val MAX_FULL_SCAN_PAGES = 100
-
-    private const val DEFAULT_RETRY_TIMES = 3
-    private const val DEFAULT_RETRY_DELAY_MS = 100L
-    private const val DEFAULT_MAX_RESOURCE_LENGTH = 10000
     private const val LOAD_TOOLS_FAILURE_MESSAGE = "Failed to load tools."
 
     private val logger = LoggerFactory.getLogger(McpToolset::class)
@@ -385,7 +145,7 @@ internal constructor(
     val streamableHttpConnectionParams: McpConnectionParameters.StreamableHttp? = null,
     val toolFilter: ToolFilter? = null,
     val useMcpResources: Boolean = false,
-    val maxMcpResourceLength: Int = DEFAULT_MAX_RESOURCE_LENGTH,
+    val maxMcpResourceLength: Int = DEFAULT_MAX_MCP_RESOURCE_LENGTH,
   ) {
     /**
      * Creates an [McpToolset] from this configuration.
@@ -443,7 +203,7 @@ internal constructor(
       private var streamableHttpConnectionParams: McpConnectionParameters.StreamableHttp? = null
       private var toolFilter: ToolFilter? = null
       private var useMcpResources: Boolean = false
-      private var maxMcpResourceLength: Int = DEFAULT_MAX_RESOURCE_LENGTH
+      private var maxMcpResourceLength: Int = DEFAULT_MAX_MCP_RESOURCE_LENGTH
 
       fun stdioConnectionParams(params: McpConnectionParameters.Stdio?): Builder = apply {
         this.stdioConnectionParams = params
@@ -484,59 +244,3 @@ internal constructor(
     }
   }
 }
-
-// The SDK records are plain Jackson bindings with no non-null validation, so a server may omit
-// any field. The non-null properties below default to "" rather than letting a Kotlin
-// platform-type assignment throw NPE from inside the mapper.
-
-private fun McpSchema.Resource.toResourceInfo(): McpResourceInfo =
-  McpResourceInfo(
-    name = name().orEmpty(),
-    uri = uri().orEmpty(),
-    title = title(),
-    description = description(),
-    mimeType = mimeType(),
-    size = size(),
-    annotations = annotations()?.toAnnotations(),
-    meta = meta(),
-  )
-
-private fun McpSchema.ResourceTemplate.toResourceTemplateInfo(): McpResourceTemplateInfo =
-  McpResourceTemplateInfo(
-    name = name().orEmpty(),
-    uriTemplate = uriTemplate().orEmpty(),
-    title = title(),
-    description = description(),
-    mimeType = mimeType(),
-    annotations = annotations()?.toAnnotations(),
-    meta = meta(),
-  )
-
-private fun McpSchema.Annotations.toAnnotations(): McpAnnotations =
-  McpAnnotations(
-    // `audience` is optional in the schema: annotations may carry only a priority.
-    audience = audience().orEmpty().map { McpRole(it.name.lowercase()) },
-    priority = priority(),
-    lastModified = lastModified(),
-  )
-
-// McpSchema.ResourceContents is a non-sealed interface in the MCP Java SDK, so an explicit else
-// branch is required for exhaustiveness to handle any unsupported or future subtypes.
-private fun McpSchema.ResourceContents.toResourceContent(): McpResourceContent =
-  when (this) {
-    is McpSchema.TextResourceContents ->
-      McpResourceContent.Text(
-        uri = uri().orEmpty(),
-        mimeType = mimeType(),
-        text = text().orEmpty(),
-        meta = meta(),
-      )
-    is McpSchema.BlobResourceContents ->
-      McpResourceContent.Blob(
-        uri = uri().orEmpty(),
-        mimeType = mimeType(),
-        blobBase64 = blob().orEmpty(),
-        meta = meta(),
-      )
-    else -> error("Unsupported ResourceContents type: ${this::class}")
-  }
