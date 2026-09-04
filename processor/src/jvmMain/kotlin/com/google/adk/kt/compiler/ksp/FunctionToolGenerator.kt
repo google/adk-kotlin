@@ -59,7 +59,7 @@ import com.squareup.kotlinpoet.ksp.writeTo
  * which compiles generated code for numerous function signatures and edge cases to ensure
  * correctness and prevent regressions.
  */
-class FunctionToolGenerator(
+internal class FunctionToolGenerator(
   private val codeGenerator: CodeGenerator,
   private val logger: KSPLogger,
 ) {

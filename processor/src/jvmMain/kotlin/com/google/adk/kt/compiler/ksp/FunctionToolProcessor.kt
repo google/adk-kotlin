@@ -30,7 +30,7 @@ import com.squareup.kotlinpoet.ClassName
  * A KSP processor that discovers functions annotated with [com.google.adk.kt.annotations.Tool] and
  * processes them.
  */
-class FunctionToolProcessor(
+internal class FunctionToolProcessor(
   private val codeGenerator: CodeGenerator,
   private val logger: KSPLogger,
 ) : SymbolProcessor {
