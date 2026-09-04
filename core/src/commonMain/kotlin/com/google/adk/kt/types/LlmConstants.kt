@@ -17,7 +17,7 @@
 package com.google.adk.kt.types
 
 /** Internal constants for LLM requests and responses. */
-object LlmConstants {
+internal object LlmConstants {
   const val INLINE_DATA = "inline_data"
   const val FILE_DATA = "file_data"
 

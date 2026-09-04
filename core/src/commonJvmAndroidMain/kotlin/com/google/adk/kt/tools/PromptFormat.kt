@@ -16,10 +16,8 @@
 
 package com.google.adk.kt.tools
 
-/**
- * The format to use when rendering prompt descriptions of tools.
- */
-enum class PromptFormat {
+/** The format to use when rendering prompt descriptions of tools. */
+internal enum class PromptFormat {
   /** Renders the tool description as an XML representation. */
   XML,
 
