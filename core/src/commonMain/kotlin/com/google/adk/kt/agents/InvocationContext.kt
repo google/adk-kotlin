@@ -192,7 +192,7 @@ data class InvocationContext(
    * @param childAgent The agent that will run under the returned context.
    * @return The new InvocationContext.
    */
-  fun forAgent(childAgent: BaseAgent): InvocationContext = this.copy(agent = childAgent)
+  internal fun forAgent(childAgent: BaseAgent): InvocationContext = this.copy(agent = childAgent)
 
   /**
    * Creates a new InvocationContext for a child agent, derived from this context. Appends the given
@@ -390,7 +390,7 @@ data class InvocationContext(
   }
 
   /** Executes a single function call synchronously and builds a corresponding response event. */
-  suspend fun executeSingleFunctionCall(
+  internal suspend fun executeSingleFunctionCall(
     functionCall: FunctionCall,
     tools: Map<String, BaseTool>,
     toolConfirmation: ToolConfirmation? = null,
