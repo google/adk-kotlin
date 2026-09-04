@@ -28,19 +28,13 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.UsageMetadata
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Instant
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 
 /** Mappers between the wire-level DTOs in this package and the ADK domain types. */
 @OptIn(FrameworkInternalApi::class)
@@ -105,55 +99,21 @@ internal fun SessionEventDto.toAdk(): Event {
 
 /**
  * Serializes [content] to the Vertex wire JSON. The wire is proto3-JSON, where a `bytes` field is a
- * base64 string; the domain [Content] serializes a [ByteArray] as a JSON int array (the kotlinx
- * default). Only the two byte-bearing paths (`Part.thoughtSignature` and `Part.inlineData.data`)
- * are rewritten, so the domain wire format used elsewhere (e.g. Room persistence) stays unchanged.
+ * base64 string, which is what the domain [Content] now serializes to directly.
  *
- * `Part.partMetadata` is also stripped: it is an ADK-only field with no counterpart in the Vertex
+ * `Part.partMetadata` is stripped: it is an ADK-only field with no counterpart in the Vertex
  * `Content.Part`, so the strict proto-JSON parser rejects it (400 INVALID_ARGUMENT). It is dropped
  * from this wire only - the domain type keeps it for local persistence - so it does not round-trip
  * through the Vertex backend.
  */
-@OptIn(FrameworkInternalApi::class, ExperimentalEncodingApi::class)
-private fun encodeContentToWire(content: Content): JsonElement {
-  val withBase64Bytes =
-    rewritePartBytes(adkJson.encodeToJsonElement(content)) {
-      JsonPrimitive(Base64.encode(intArrayToBytes(it)))
-    }
-  return stripUnsupportedPartFields(withBase64Bytes)
-}
+@OptIn(FrameworkInternalApi::class)
+private fun encodeContentToWire(content: Content): JsonElement =
+  stripUnsupportedPartFields(adkJson.encodeToJsonElement(content))
 
-/** Inverse of [encodeContentToWire]: decodes Vertex wire JSON (base64 bytes) back to [Content]. */
-@OptIn(FrameworkInternalApi::class, ExperimentalEncodingApi::class)
+/** Inverse of [encodeContentToWire]: decodes Vertex wire JSON back to [Content]. */
+@OptIn(FrameworkInternalApi::class)
 private fun decodeContentFromWire(element: JsonElement): Content =
-  adkJson.decodeFromJsonElement<Content>(
-    rewritePartBytes(element) { bytesToIntArray(Base64.decode(it.jsonPrimitive.content)) }
-  )
-
-/**
- * Applies [transform] to the `bytes` values under `parts[*].thoughtSignature` and
- * `parts[*].inlineData.data`, leaving everything else untouched. Missing or JSON-null fields are
- * skipped.
- */
-private fun rewritePartBytes(
-  content: JsonElement,
-  transform: (JsonElement) -> JsonElement,
-): JsonElement =
-  mapParts(content) { part ->
-    val edited = part.toMutableMap()
-    part["thoughtSignature"]
-      ?.takeUnless { it is JsonNull }
-      ?.let { edited["thoughtSignature"] = transform(it) }
-    (part["inlineData"] as? JsonObject)?.let { inlineData ->
-      inlineData["data"]
-        ?.takeUnless { it is JsonNull }
-        ?.let { data ->
-          edited["inlineData"] =
-            JsonObject(inlineData.toMutableMap().apply { this["data"] = transform(data) })
-        }
-    }
-    JsonObject(edited)
-  }
+  adkJson.decodeFromJsonElement<Content>(element)
 
 /**
  * Removes ADK-only part fields the Vertex `Content.Part` does not define. `Part.partMetadata` has
@@ -178,14 +138,6 @@ private fun mapParts(content: JsonElement, transform: (JsonObject) -> JsonObject
   val mapped = parts.map { (it as? JsonObject)?.let(transform) ?: it }
   return JsonObject(obj.toMutableMap().apply { this["parts"] = JsonArray(mapped) })
 }
-
-private fun intArrayToBytes(element: JsonElement): ByteArray {
-  val array = element.jsonArray
-  return ByteArray(array.size) { array[it].jsonPrimitive.int.toByte() }
-}
-
-private fun bytesToIntArray(bytes: ByteArray): JsonElement =
-  JsonArray(bytes.map { JsonPrimitive(it) })
 
 @OptIn(FrameworkInternalApi::class)
 internal fun SessionDto.toAdk(appName: String, userId: String, fallbackId: String?): Session {

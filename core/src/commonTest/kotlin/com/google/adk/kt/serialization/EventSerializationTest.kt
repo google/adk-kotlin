@@ -287,4 +287,44 @@ class EventSerializationTest {
 
     assertEquals(functionCall, decoded)
   }
+
+  @Test
+  fun blobData_encodedToJson_isBase64StringNotNumberArray() {
+    // A number array round-trips through this decoder just as happily as base64 does, so the wire
+    // shape is the only thing that tells them apart. "AQID" is base64 for the bytes 1, 2, 3.
+    val blob = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))
+
+    val encoded = adkJson.encodeToString(Blob.serializer(), blob)
+
+    assertTrue(encoded.contains("\"data\":\"AQID\""), encoded)
+  }
+
+  @Test
+  fun blobData_base64RoundTrip_preservesBytes() {
+    val blob = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))
+
+    val decoded =
+      adkJson.decodeFromString(Blob.serializer(), adkJson.encodeToString(Blob.serializer(), blob))
+
+    assertEquals(blob, decoded)
+  }
+
+  @Test
+  fun partThoughtSignature_encodedToJson_isBase64StringNotNumberArray() {
+    val part = Part(text = "hello", thoughtSignature = byteArrayOf(1, 2, 3))
+
+    val encoded = adkJson.encodeToString(Part.serializer(), part)
+
+    assertTrue(encoded.contains("\"thoughtSignature\":\"AQID\""), encoded)
+  }
+
+  @Test
+  fun partThoughtSignature_base64RoundTrip_preservesBytes() {
+    val part = Part(text = "hello", thoughtSignature = byteArrayOf(1, 2, 3))
+
+    val decoded =
+      adkJson.decodeFromString(Part.serializer(), adkJson.encodeToString(Part.serializer(), part))
+
+    assertEquals(part, decoded)
+  }
 }

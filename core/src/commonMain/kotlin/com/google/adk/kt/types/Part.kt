@@ -16,6 +16,7 @@
 package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.serialization.LenientByteArraySerializer
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
@@ -49,7 +50,7 @@ class Part(
   /** Indicates whether the part represents the model's thought process. */
   val thought: Boolean? = null,
   /** An opaque signature for the thought. */
-  val thoughtSignature: ByteArray? = null,
+  @Serializable(with = LenientByteArraySerializer::class) val thoughtSignature: ByteArray? = null,
   /** Metadata for a video part (segment offsets and frame rate). */
   val videoMetadata: VideoMetadata? = null,
   /** A tool call the model ran on its own server side, to be echoed back on the next request. */

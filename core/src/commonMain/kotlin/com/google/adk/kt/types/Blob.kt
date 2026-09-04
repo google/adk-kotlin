@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.serialization.LenientByteArraySerializer
 import kotlinx.serialization.Serializable
 
 /** Represents binary data. */
@@ -23,7 +24,7 @@ import kotlinx.serialization.Serializable
 data class Blob(
   val mimeType: String? = null,
   val displayName: String? = null,
-  val data: ByteArray? = null,
+  @Serializable(with = LenientByteArraySerializer::class) val data: ByteArray? = null,
 ) {
   override fun equals(other: Any?): Boolean {
     if (this === other) return true

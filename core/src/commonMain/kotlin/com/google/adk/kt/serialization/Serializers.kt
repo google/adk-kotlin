@@ -18,6 +18,7 @@ package com.google.adk.kt.serialization
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.sessions.State
+import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
@@ -34,6 +35,8 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.modules.SerializersModule
@@ -124,6 +127,61 @@ fun jsonElementToAny(element: JsonElement): Any? =
       }
     is JsonArray -> element.map { jsonElementToAny(it) }
   }
+
+/**
+ * Writes a [ByteArray] as base64, and reads either base64 or the JSON number array this library
+ * used to write.
+ *
+ * Base64 is the correct form and the only one produced: both fields this serializes are proto
+ * `bytes`, which proto3 JSON maps to a base64 string, and the Gen AI SDK annotates its own copies
+ * of these types the same way. Encoding them as an array of numbers was the defect.
+ *
+ * Reading stays tolerant because the fix is otherwise a silent breaking change to data already on
+ * disk. A session persisted by an older build holds the number-array form, and the whole session is
+ * one JSON document: a decode failure on one blob is not a missing field, it is an uncaught failure
+ * loading the entire session, which to the user is indistinguishable from data loss. The old shape
+ * is unambiguous — a JSON array where base64 is a string — so accepting it costs no correctness.
+ *
+ * The numbers are read through [Int] before narrowing, because the old encoder wrote Kotlin's
+ * *signed* bytes: a byte above 0x7F was written as a negative number, and `toByte()` is what turns
+ * it back.
+ *
+ * This is the read half only. New data is base64, which an older binary still cannot parse, so
+ * downgrading a deployment remains breaking; nothing here changes that.
+ *
+ * The base64 branch delegates to [ByteArrayAsBase64Serializer] rather than decoding it here, which
+ * keeps `kotlin.io.encoding.Base64` — and its `@OptIn(ExperimentalEncodingApi::class)` — out of
+ * `commonMain` entirely.
+ *
+ * **Do not apply this to every `ByteArray` field.** Which serializer a field gets is decided by
+ * whether data in the old shape can exist for it, and the two answers are both correct:
+ * - A field that has already shipped — [com.google.adk.kt.types.Blob.data],
+ *   [com.google.adk.kt.types.Part.thoughtSignature] — uses this one, because a persisted session
+ *   out there holds the number array and must still load.
+ * - A field on a type introduced after the base64 fix uses [ByteArrayAsBase64Serializer] directly.
+ *   No old-shape data can exist for a type that never shipped, so tolerance there would accept a
+ *   form nothing ever wrote and quietly widen the format we are committed to.
+ */
+internal object LenientByteArraySerializer : KSerializer<ByteArray> {
+  override val descriptor: SerialDescriptor = ByteArrayAsBase64Serializer.descriptor
+
+  override fun serialize(encoder: Encoder, value: ByteArray) {
+    ByteArrayAsBase64Serializer.serialize(encoder, value)
+  }
+
+  override fun deserialize(decoder: Decoder): ByteArray {
+    // A non-JSON format cannot carry the legacy shape, so there is nothing to be tolerant about.
+    val jsonDecoder =
+      decoder as? JsonDecoder ?: return ByteArrayAsBase64Serializer.deserialize(decoder)
+    val element = jsonDecoder.decodeJsonElement()
+    if (element !is JsonArray) {
+      return jsonDecoder.json.decodeFromJsonElement(ByteArrayAsBase64Serializer, element)
+    }
+    // Not dead code: what a given caller writes today says nothing about what is already on disk.
+    // Blobs persisted before `Blob.data` had a serializer are kotlinx's default number array.
+    return ByteArray(element.size) { element[it].jsonPrimitive.int.toByte() }
+  }
+}
 
 /**
  * The shared `kotlinx.serialization` [Json] instance used to (de)serialize the [Event] graph for
