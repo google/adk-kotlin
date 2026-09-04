@@ -23,7 +23,8 @@ import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
-import java.net.URL
+import java.net.URI
+import java.net.URISyntaxException
 import java.util.Collections
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
@@ -198,7 +199,8 @@ class AdkServerLifecycleTest {
 
   /** HTTP status for [path]: 404 means the route is not mounted. */
   private fun statusOf(port: Int, path: String): Int {
-    val connection = URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection
+    val connection =
+      URI("http://127.0.0.1:$port$path").toURL().openConnection() as HttpURLConnection
     connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
     connection.readTimeout = CONNECT_TIMEOUT_MILLIS
     return try {
@@ -227,7 +229,8 @@ class AdkServerLifecycleTest {
 
   private fun healthStatusOrNull(port: Int, host: String = "127.0.0.1"): Int? =
     try {
-      val connection = URL("http://$host:$port/health").openConnection() as HttpURLConnection
+      val connection =
+        URI("http://$host:$port/health").toURL().openConnection() as HttpURLConnection
       connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
       connection.readTimeout = CONNECT_TIMEOUT_MILLIS
       try {
@@ -236,6 +239,8 @@ class AdkServerLifecycleTest {
         connection.disconnect()
       }
     } catch (_: IOException) {
+      null
+    } catch (_: URISyntaxException) {
       null
     }
 
