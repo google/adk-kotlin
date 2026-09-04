@@ -46,10 +46,11 @@ class ListMcpResourcesToolTest {
 
     val resourceList =
       listOf(
-        McpSchema.Resource.builder().name("res1").uri("uri1").mimeType("text/plain").build(),
-        McpSchema.Resource.builder().name("res2").uri("uri2").build(),
+        McpSchema.Resource.builder("uri1", "res1").mimeType("text/plain").build(),
+        McpSchema.Resource.builder("uri2", "res2").build(),
       )
-    val listResourcesResult = McpSchema.ListResourcesResult(resourceList, "cursor123")
+    val listResourcesResult =
+      McpSchema.ListResourcesResult.builder(resourceList).nextCursor("cursor123").build()
     whenever(mockMcpSession.listResources(isNull())) doReturn mono { listResourcesResult }
 
     val context = testToolContext()
@@ -80,7 +81,7 @@ class ListMcpResourcesToolTest {
     val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
 
     val resourceList = emptyList<McpSchema.Resource>()
-    val listResourcesResult = McpSchema.ListResourcesResult(resourceList, null)
+    val listResourcesResult = McpSchema.ListResourcesResult.builder(resourceList).build()
     whenever(mockMcpSession.listResources("myCursor")) doReturn mono { listResourcesResult }
 
     val context = testToolContext()
@@ -100,7 +101,8 @@ class ListMcpResourcesToolTest {
     val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
 
     val resourceList = emptyList<McpSchema.Resource>()
-    val listResourcesResult = McpSchema.ListResourcesResult(resourceList, "next-cursor")
+    val listResourcesResult =
+      McpSchema.ListResourcesResult.builder(resourceList).nextCursor("next-cursor").build()
     whenever(mockMcpSession.listResources("my-cursor")) doReturn mono { listResourcesResult }
 
     val context = testToolContext()
@@ -123,18 +125,19 @@ class ListMcpResourcesToolTest {
     // First page (null cursor) returns page 1 and a live cursor to the next page.
     whenever(mockMcpSession.listResources(isNull())) doReturn
       mono {
-        McpSchema.ListResourcesResult(
-          listOf(McpSchema.Resource.builder().name("res1").uri("uri1").build()),
-          "page-2",
-        )
+        McpSchema.ListResourcesResult.builder(
+            listOf(McpSchema.Resource.builder("uri1", "res1").build())
+          )
+          .nextCursor("page-2")
+          .build()
       }
     // Passing that cursor back returns page 2, with no further pages.
     whenever(mockMcpSession.listResources("page-2")) doReturn
       mono {
-        McpSchema.ListResourcesResult(
-          listOf(McpSchema.Resource.builder().name("res2").uri("uri2").build()),
-          null,
-        )
+        McpSchema.ListResourcesResult.builder(
+            listOf(McpSchema.Resource.builder("uri2", "res2").build())
+          )
+          .build()
       }
 
     val context = testToolContext()

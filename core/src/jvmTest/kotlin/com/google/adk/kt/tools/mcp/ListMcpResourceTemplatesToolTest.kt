@@ -49,7 +49,7 @@ class ListMcpResourceTemplatesToolTest {
     val tool = ListMcpResourceTemplatesTool(McpToolset(mockSessionManager))
 
     whenever(mockMcpSession.listResourceTemplates(isNull())) doReturn
-      mono { McpSchema.ListResourceTemplatesResult(emptyList(), null) }
+      mono { McpSchema.ListResourceTemplatesResult.builder(emptyList()).build() }
 
     val context = testToolContext()
     val unusedFirst = tool.run(context, emptyMap())
@@ -67,15 +67,14 @@ class ListMcpResourceTemplatesToolTest {
 
     val templateList =
       listOf(
-        McpSchema.ResourceTemplate.builder()
-          .name("tpl1")
-          .uriTemplate("uri1/{id}")
+        McpSchema.ResourceTemplate.builder("uri1/{id}", "tpl1")
           .description("template 1")
           .mimeType("text/plain")
           .build(),
-        McpSchema.ResourceTemplate.builder().name("tpl2").uriTemplate("uri2/{id}").build(),
+        McpSchema.ResourceTemplate.builder("uri2/{id}", "tpl2").build(),
       )
-    val listTemplatesResult = McpSchema.ListResourceTemplatesResult(templateList, "cursor123")
+    val listTemplatesResult =
+      McpSchema.ListResourceTemplatesResult.builder(templateList).nextCursor("cursor123").build()
     whenever(mockMcpSession.listResourceTemplates(isNull())) doReturn mono { listTemplatesResult }
 
     val context = testToolContext()
@@ -108,7 +107,7 @@ class ListMcpResourceTemplatesToolTest {
     val tool = ListMcpResourceTemplatesTool(createMcpToolset(mockMcpSession))
 
     val templateList = emptyList<McpSchema.ResourceTemplate>()
-    val listTemplatesResult = McpSchema.ListResourceTemplatesResult(templateList, null)
+    val listTemplatesResult = McpSchema.ListResourceTemplatesResult.builder(templateList).build()
     whenever(mockMcpSession.listResourceTemplates("myCursor")) doReturn mono { listTemplatesResult }
 
     val context = testToolContext()
@@ -128,7 +127,8 @@ class ListMcpResourceTemplatesToolTest {
     val tool = ListMcpResourceTemplatesTool(createMcpToolset(mockMcpSession))
 
     val templateList = emptyList<McpSchema.ResourceTemplate>()
-    val listTemplatesResult = McpSchema.ListResourceTemplatesResult(templateList, "next-cursor")
+    val listTemplatesResult =
+      McpSchema.ListResourceTemplatesResult.builder(templateList).nextCursor("next-cursor").build()
     whenever(mockMcpSession.listResourceTemplates("my-cursor")) doReturn
       mono { listTemplatesResult }
 

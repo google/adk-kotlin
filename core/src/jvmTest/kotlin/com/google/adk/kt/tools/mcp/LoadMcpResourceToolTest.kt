@@ -46,7 +46,7 @@ class LoadMcpResourceToolTest {
   }
 
   private fun resource(name: String, uri: String, mimeType: String? = null): McpSchema.Resource {
-    val builder = McpSchema.Resource.builder().name(name).uri(uri)
+    val builder = McpSchema.Resource.builder(uri, name)
     mimeType?.let { builder.mimeType(it) }
     return builder.build()
   }
@@ -56,7 +56,7 @@ class LoadMcpResourceToolTest {
     // One page, no nextCursor. listAllResources now follows cursors itself, so a mock can drive
     // real multi-page behavior; see run_resolvesNameToUri_acrossMultiplePages.
     whenever(session.listResources(isNull())) doReturn
-      mono { McpSchema.ListResourcesResult(resources.toList(), null) }
+      mono { McpSchema.ListResourcesResult.builder(resources.toList()).build() }
   }
 
   @Test
@@ -68,11 +68,11 @@ class LoadMcpResourceToolTest {
     stubResources(mockMcpSession, resource("res1", "uri1"))
     val contents =
       listOf(
-        McpSchema.TextResourceContents("uri1", "text/plain", "Part 1 "),
-        McpSchema.TextResourceContents("uri1", "text/plain", "Part 2"),
+        McpSchema.TextResourceContents.builder("uri1", "Part 1 ").mimeType("text/plain").build(),
+        McpSchema.TextResourceContents.builder("uri1", "Part 2").mimeType("text/plain").build(),
       )
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { McpSchema.ReadResourceResult(contents) }
+      mono { McpSchema.ReadResourceResult.builder(contents).build() }
 
     val context = testToolContext()
     val result = tool.run(context, mapOf("name" to "res1"))
@@ -90,9 +90,14 @@ class LoadMcpResourceToolTest {
     stubResources(mockMcpSession, resource("other", "uriOther"), resource("target", "uriTarget"))
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
       mono {
-        McpSchema.ReadResourceResult(
-          listOf(McpSchema.TextResourceContents("uriTarget", "text/plain", "hello"))
-        )
+        McpSchema.ReadResourceResult.builder(
+            listOf(
+              McpSchema.TextResourceContents.builder("uriTarget", "hello")
+                .mimeType("text/plain")
+                .build()
+            )
+          )
+          .build()
       }
 
     val context = testToolContext()
@@ -116,14 +121,25 @@ class LoadMcpResourceToolTest {
 
     // The target is on page 2, so a scan that stopped after page 1 would report it as not found.
     whenever(mockMcpSession.listResources(isNull())) doReturn
-      mono { McpSchema.ListResourcesResult(listOf(resource("other", "uriOther")), "page-2") }
+      mono {
+        McpSchema.ListResourcesResult.builder(listOf(resource("other", "uriOther")))
+          .nextCursor("page-2")
+          .build()
+      }
     whenever(mockMcpSession.listResources("page-2")) doReturn
-      mono { McpSchema.ListResourcesResult(listOf(resource("target", "uriTarget")), null) }
+      mono {
+        McpSchema.ListResourcesResult.builder(listOf(resource("target", "uriTarget"))).build()
+      }
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
       mono {
-        McpSchema.ReadResourceResult(
-          listOf(McpSchema.TextResourceContents("uriTarget", "text/plain", "page two"))
-        )
+        McpSchema.ReadResourceResult.builder(
+            listOf(
+              McpSchema.TextResourceContents.builder("uriTarget", "page two")
+                .mimeType("text/plain")
+                .build()
+            )
+          )
+          .build()
       }
 
     assertThat(tool.run(testToolContext(), mapOf("name" to "target"))).isEqualTo("page two")
@@ -141,7 +157,11 @@ class LoadMcpResourceToolTest {
     // A server handing back a constant cursor: without a cap this scans until the process dies,
     // and it is reachable from a model-chosen tool call.
     whenever(mockMcpSession.listResources(anyOrNull<String>())) doReturn
-      mono { McpSchema.ListResourcesResult(listOf(resource("other", "uriOther")), "same-cursor") }
+      mono {
+        McpSchema.ListResourcesResult.builder(listOf(resource("other", "uriOther")))
+          .nextCursor("same-cursor")
+          .build()
+      }
 
     assertFailsWith<McpToolException.McpToolExecutionException> {
       tool.run(testToolContext(), mapOf("name" to "target"))
@@ -159,9 +179,12 @@ class LoadMcpResourceToolTest {
     val tool = LoadMcpResourceTool(mcpToolset, maxMcpResourceLength = 5)
 
     stubResources(mockMcpSession, resource("res1", "uri1"))
-    val contents = listOf(McpSchema.TextResourceContents("uri1", "text/plain", "HelloWorld"))
+    val contents =
+      listOf(
+        McpSchema.TextResourceContents.builder("uri1", "HelloWorld").mimeType("text/plain").build()
+      )
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { McpSchema.ReadResourceResult(contents) }
+      mono { McpSchema.ReadResourceResult.builder(contents).build() }
 
     val context = testToolContext()
     val result = tool.run(context, mapOf("name" to "res1"))
@@ -180,10 +203,12 @@ class LoadMcpResourceToolTest {
     stubResources(mockMcpSession, resource("res1", "uri1"))
     val contents =
       listOf(
-        McpSchema.BlobResourceContents("uri1", "application/octet-stream", "binary_data_base64")
+        McpSchema.BlobResourceContents.builder("uri1", "binary_data_base64")
+          .mimeType("application/octet-stream")
+          .build()
       )
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { McpSchema.ReadResourceResult(contents) }
+      mono { McpSchema.ReadResourceResult.builder(contents).build() }
 
     val context = testToolContext()
     val result = tool.run(context, mapOf("name" to "res1"))
@@ -201,7 +226,7 @@ class LoadMcpResourceToolTest {
 
     stubResources(mockMcpSession, resource("res1", "uri1"))
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
-      mono { McpSchema.ReadResourceResult(emptyList()) }
+      mono { McpSchema.ReadResourceResult.builder(emptyList()).build() }
 
     val context = testToolContext()
     val result = tool.run(context, mapOf("name" to "res1"))
@@ -307,12 +332,19 @@ class LoadMcpResourceToolTest {
     // Deliberately not in resources/list: a uri expanded from a template, or one handed over by a
     // resource link. Resolving by name could never reach it.
     whenever(
-      mockMcpSession.readResource(McpSchema.ReadResourceRequest("file:///reports/q3.txt"))
+      mockMcpSession.readResource(
+        McpSchema.ReadResourceRequest.builder("file:///reports/q3.txt").build()
+      )
     ) doReturn
       mono {
-        McpSchema.ReadResourceResult(
-          listOf(McpSchema.TextResourceContents("file:///reports/q3.txt", "text/plain", "q3 data"))
-        )
+        McpSchema.ReadResourceResult.builder(
+            listOf(
+              McpSchema.TextResourceContents.builder("file:///reports/q3.txt", "q3 data")
+                .mimeType("text/plain")
+                .build()
+            )
+          )
+          .build()
       }
 
     val result = tool.run(testToolContext(), mapOf("uri" to "file:///reports/q3.txt"))

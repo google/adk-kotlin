@@ -63,11 +63,11 @@ class McpToolsetTest {
 
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
-        McpSchema.Tool.builder().name("tool3").description("desc 3").build(),
+        McpSchema.Tool.builder("tool1", mapOf("type" to "object")).description("desc 1").build(),
+        McpSchema.Tool.builder("tool2", mapOf("type" to "object")).description("desc 2").build(),
+        McpSchema.Tool.builder("tool3", mapOf("type" to "object")).description("desc 3").build(),
       )
-    val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
+    val toolsResponse = McpSchema.ListToolsResult.builder(toolsList).build()
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
     val mockSessionManager =
@@ -93,7 +93,7 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     whenever(mockMcpSession.serverCapabilities) doReturn withResourcesCapabilities
 
-    val toolsResponse = McpSchema.ListToolsResult(emptyList(), null)
+    val toolsResponse = McpSchema.ListToolsResult.builder(emptyList()).build()
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
     val mockSessionManager =
@@ -114,7 +114,7 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     whenever(mockMcpSession.serverCapabilities) doReturn noResourcesCapabilities
 
-    val toolsResponse = McpSchema.ListToolsResult(emptyList(), null)
+    val toolsResponse = McpSchema.ListToolsResult.builder(emptyList()).build()
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
     val mockSessionManager =
@@ -132,7 +132,7 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     whenever(mockMcpSession.serverCapabilities) doReturn withResourcesCapabilities
 
-    val toolsResponse = McpSchema.ListToolsResult(emptyList(), null)
+    val toolsResponse = McpSchema.ListToolsResult.builder(emptyList()).build()
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
 
     val mockSessionManager =
@@ -272,8 +272,11 @@ class McpToolsetTest {
     whenever(failingSession.listTools()).thenThrow(RuntimeException("list failed"))
 
     val recoveringSession = mock<McpAsyncClient>()
-    val toolsList = listOf(McpSchema.Tool.builder().name("tool1").description("desc 1").build())
-    val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
+    val toolsList =
+      listOf(
+        McpSchema.Tool.builder("tool1", mapOf("type" to "object")).description("desc 1").build()
+      )
+    val toolsResponse = McpSchema.ListToolsResult.builder(toolsList).build()
     whenever(recoveringSession.listTools()) doReturn mono { toolsResponse }
 
     val mockSessionManager =
@@ -297,8 +300,11 @@ class McpToolsetTest {
     // is inside the retry loop, the failure is retried and the second open succeeds -- rather than
     // crashing the whole toolset init on the first attempt.
     val recoveringSession = mock<McpAsyncClient>()
-    val toolsList = listOf(McpSchema.Tool.builder().name("tool1").description("desc 1").build())
-    val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
+    val toolsList =
+      listOf(
+        McpSchema.Tool.builder("tool1", mapOf("type" to "object")).description("desc 1").build()
+      )
+    val toolsResponse = McpSchema.ListToolsResult.builder(toolsList).build()
     whenever(recoveringSession.listTools()) doReturn mono { toolsResponse }
 
     val mockSessionManager =
@@ -377,10 +383,10 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
+        McpSchema.Tool.builder("tool1", mapOf("type" to "object")).description("desc 1").build(),
+        McpSchema.Tool.builder("tool2", mapOf("type" to "object")).description("desc 2").build(),
       )
-    val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
+    val toolsResponse = McpSchema.ListToolsResult.builder(toolsList).build()
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
     val mockSessionManager =
       mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
@@ -405,10 +411,10 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
+        McpSchema.Tool.builder("tool1", mapOf("type" to "object")).description("desc 1").build(),
+        McpSchema.Tool.builder("tool2", mapOf("type" to "object")).description("desc 2").build(),
       )
-    val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
+    val toolsResponse = McpSchema.ListToolsResult.builder(toolsList).build()
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
     val mockSessionManager =
       mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
@@ -471,10 +477,11 @@ class McpToolsetTest {
 
     val resourceList =
       listOf(
-        McpSchema.Resource.builder().name("resource1").uri("uri1").build(),
-        McpSchema.Resource.builder().name("resource2").uri("uri2").mimeType("text/plain").build(),
+        McpSchema.Resource.builder("uri1", "resource1").build(),
+        McpSchema.Resource.builder("uri2", "resource2").mimeType("text/plain").build(),
       )
-    val listResourcesResult = McpSchema.ListResourcesResult(resourceList, "next-cursor")
+    val listResourcesResult =
+      McpSchema.ListResourcesResult.builder(resourceList).nextCursor("next-cursor").build()
     whenever(mockMcpSession.listResources(isNull())) doReturn mono { listResourcesResult }
 
     val mockSessionManager =
@@ -499,9 +506,7 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
 
     val resource =
-      McpSchema.Resource.builder()
-        .name("resource1")
-        .uri("uri1")
+      McpSchema.Resource.builder("uri1", "resource1")
         .title("Resource One")
         .description("the first resource")
         .mimeType("text/plain")
@@ -510,7 +515,7 @@ class McpToolsetTest {
         .meta(mapOf("tenant" to "acme"))
         .build()
     whenever(mockMcpSession.listResources(isNull())) doReturn
-      mono { McpSchema.ListResourcesResult(listOf(resource), null) }
+      mono { McpSchema.ListResourcesResult.builder(listOf(resource)).build() }
 
     val mockSessionManager =
       mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
@@ -544,13 +549,10 @@ class McpToolsetTest {
 
     val templateList =
       listOf(
-        McpSchema.ResourceTemplate.builder()
-          .name("tpl1")
-          .uriTemplate("file:///{path}")
-          .mimeType("text/plain")
-          .build()
+        McpSchema.ResourceTemplate.builder("file:///{path}", "tpl1").mimeType("text/plain").build()
       )
-    val listTemplatesResult = McpSchema.ListResourceTemplatesResult(templateList, "next-cursor")
+    val listTemplatesResult =
+      McpSchema.ListResourceTemplatesResult.builder(templateList).nextCursor("next-cursor").build()
     whenever(mockMcpSession.listResourceTemplates(isNull())) doReturn mono { listTemplatesResult }
 
     val mockSessionManager =
@@ -579,9 +581,10 @@ class McpToolsetTest {
 
     val textContents =
       McpSchema.TextResourceContents("uri1", "text/plain", "file contents", mapOf("page" to 1))
-    val readResourceResult = McpSchema.ReadResourceResult(listOf(textContents))
-    whenever(mockMcpSession.readResource(McpSchema.ReadResourceRequest("uri1"))) doReturn
-      mono { readResourceResult }
+    val readResourceResult = McpSchema.ReadResourceResult.builder(listOf(textContents)).build()
+    whenever(
+      mockMcpSession.readResource(McpSchema.ReadResourceRequest.builder("uri1").build())
+    ) doReturn mono { readResourceResult }
 
     val mockSessionManager =
       mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
@@ -600,7 +603,8 @@ class McpToolsetTest {
       ),
       contents,
     )
-    verify(mockMcpSession, times(1)).readResource(McpSchema.ReadResourceRequest("uri1"))
+    verify(mockMcpSession, times(1))
+      .readResource(McpSchema.ReadResourceRequest.builder("uri1").build())
   }
 
   @Test
@@ -610,14 +614,18 @@ class McpToolsetTest {
     // The SDK records apply no non-null validation, so a server can omit `text` or `blob`
     // entirely. That must map to an empty payload rather than an NPE out of the mapper.
     val readResourceResult =
-      McpSchema.ReadResourceResult(
-        listOf(
-          McpSchema.TextResourceContents("uri1", "text/plain", ""),
-          McpSchema.BlobResourceContents("uri1", "application/octet-stream", ""),
+      McpSchema.ReadResourceResult.builder(
+          listOf(
+            McpSchema.TextResourceContents.builder("uri1", "").mimeType("text/plain").build(),
+            McpSchema.BlobResourceContents.builder("uri1", "")
+              .mimeType("application/octet-stream")
+              .build(),
+          )
         )
-      )
-    whenever(mockMcpSession.readResource(McpSchema.ReadResourceRequest("uri1"))) doReturn
-      mono { readResourceResult }
+        .build()
+    whenever(
+      mockMcpSession.readResource(McpSchema.ReadResourceRequest.builder("uri1").build())
+    ) doReturn mono { readResourceResult }
 
     val mockSessionManager =
       mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
@@ -642,7 +650,9 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
 
     whenever(
-      mockMcpSession.readResource(McpSchema.ReadResourceRequest("nonexistent_resource"))
+      mockMcpSession.readResource(
+        McpSchema.ReadResourceRequest.builder("nonexistent_resource").build()
+      )
     ) doReturn mono { throw IllegalArgumentException("Resource not found") }
 
     val mockSessionManager =
@@ -668,9 +678,14 @@ class McpToolsetTest {
       mono { throw IllegalStateException("transport went away") }
     whenever(healthy.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
       mono {
-        McpSchema.ReadResourceResult(
-          listOf(McpSchema.TextResourceContents("uri1", "text/plain", "recovered"))
-        )
+        McpSchema.ReadResourceResult.builder(
+            listOf(
+              McpSchema.TextResourceContents.builder("uri1", "recovered")
+                .mimeType("text/plain")
+                .build()
+            )
+          )
+          .build()
       }
 
     val mockSessionManager =
@@ -706,10 +721,10 @@ class McpToolsetTest {
     val mockMcpSession = mock<McpAsyncClient>()
     val toolsList =
       listOf(
-        McpSchema.Tool.builder().name("tool1").description("desc 1").build(),
-        McpSchema.Tool.builder().name("tool2").description("desc 2").build(),
+        McpSchema.Tool.builder("tool1", mapOf("type" to "object")).description("desc 1").build(),
+        McpSchema.Tool.builder("tool2", mapOf("type" to "object")).description("desc 2").build(),
       )
-    val toolsResponse = McpSchema.ListToolsResult(toolsList, null)
+    val toolsResponse = McpSchema.ListToolsResult.builder(toolsList).build()
     whenever(mockMcpSession.listTools()) doReturn mono { toolsResponse }
     val mockSessionManager =
       mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
@@ -729,7 +744,7 @@ class McpToolsetTest {
 
 /** Returns a minimal server-advertised tool named [name], for tests that only care about names. */
 private fun schemaTool(name: String): McpSchema.Tool =
-  McpSchema.Tool.builder().name(name).description("desc $name").build()
+  McpSchema.Tool.builder(name, mapOf("type" to "object")).description("desc $name").build()
 
 /**
  * Returns a toolset over a session advertising [serverToolNames] and [capabilities].
@@ -747,7 +762,8 @@ private fun fakeToolset(
   val session = mock<McpAsyncClient>()
   capabilities?.let { whenever(session.serverCapabilities) doReturn it }
 
-  val toolsResponse = McpSchema.ListToolsResult(serverToolNames.map { schemaTool(it) }, null)
+  val toolsResponse =
+    McpSchema.ListToolsResult.builder(serverToolNames.map { schemaTool(it) }).build()
   whenever(session.listTools()) doReturn mono { toolsResponse }
 
   val sessionManager =
