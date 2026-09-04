@@ -15,4 +15,4 @@
  */
 package com.google.adk.kt
 
-const val VERSION = "0.9.0" // x-release-please-released-version
+const val VERSION = "1.0.0" // x-release-please-released-version
