@@ -392,7 +392,7 @@ private fun mapPartToContent(part: AdkPart): LiteRtLmContent? {
   }
 }
 
-fun LiteRtLmMessage.toLlmResponse(partial: Boolean = false): LlmResponse {
+private fun LiteRtLmMessage.toLlmResponse(partial: Boolean = false): LlmResponse {
   val adkParts =
     this.contents.contents
       .map { liteRtLmContent ->
