@@ -1,0 +1,32 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.google.adk.kt.types
+
+import com.google.genai.kotlin.types.DurationStringSerializer
+import kotlin.time.Duration
+import kotlinx.serialization.Serializable
+
+/**
+ * Warning that the server will stop serving this connection shortly.
+ *
+ * @property timeLeft How long remains before the connection is terminated. The minimum notice
+ *   depends on the model's rate limits.
+ */
+@Serializable
+data class LiveServerGoAway(
+  @Serializable(with = DurationStringSerializer::class) val timeLeft: Duration? = null
+)
