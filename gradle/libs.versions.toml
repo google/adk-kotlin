@@ -35,9 +35,11 @@ kotlinx-coroutines = "1.11.0"
 kotlinx-serialization = "1.8.1"
 ksp = "2.3.9"
 ktor = "2.3.13"
+ktor-mcp = "3.5.2"
 kxml2 = "2.3.0"
 litertlm = "0.13.1"
 mcp = "2.0.0"
+mcp-kotlin = "0.15.0"
 mockito-android = "5.23.0"
 mockito-kotlin = "6.3.0"
 okhttp = "5.3.2"
@@ -99,6 +101,8 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 kotlinx-serialization = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-java = { module = "io.ktor:ktor-client-java", version.ref = "ktor" }
+ktor-client-mock-mcp = { module = "io.ktor:ktor-client-mock", version.ref = "ktor-mcp" }
+ktor-client-okhttp-mcp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor-mcp" }
 ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
 ktor-server-call-logging = { module = "io.ktor:ktor-server-call-logging", version.ref = "ktor" }
 ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
@@ -107,6 +111,7 @@ ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor"
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 kxml2 = { module = "net.sf.kxml:kxml2", version.ref = "kxml2" }
 mcp = { module = "io.modelcontextprotocol.sdk:mcp", version.ref = "mcp" }
+mcp-kotlin-client = { module = "io.modelcontextprotocol:kotlin-sdk-client", version.ref = "mcp-kotlin" }
 mockito-android = { module = "org.mockito:mockito-android", version.ref = "mockito-android" }
 mockito-kotlin = { module = "org.mockito.kotlin:mockito-kotlin", version.ref = "mockito-kotlin" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
