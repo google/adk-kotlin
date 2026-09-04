@@ -53,7 +53,7 @@ object Telemetry {
   }
 
   /** Resets the test tracer to restore the default tracer. */
-  fun resetTracer() {
+  internal fun resetTracer() {
     internalResetTestTracer()
   }
 

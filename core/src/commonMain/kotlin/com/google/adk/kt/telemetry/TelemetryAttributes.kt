@@ -17,7 +17,7 @@
 package com.google.adk.kt.telemetry
 
 /** OpenTelemetry semantic attributes mapped to the Google ADK execution flow. */
-object TelemetryAttributes {
+internal object TelemetryAttributes {
   // GenAI attributes
   const val GEN_AI_OPERATION_NAME = "gen_ai.operation.name"
   const val GEN_AI_SYSTEM = "gen_ai.system"
