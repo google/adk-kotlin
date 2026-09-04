@@ -45,7 +45,7 @@ data class LoopAgentState(val currentSubAgent: String, val timesLooped: Int) : A
     private const val KEY_CURRENT_SUB_AGENT = "current_sub_agent"
     private const val KEY_TIMES_LOOPED = "times_looped"
 
-    fun fromValue(node: TypedData.MapValue): LoopAgentState? {
+    internal fun fromValue(node: TypedData.MapValue): LoopAgentState? {
       val currentSubAgent = node.getString(KEY_CURRENT_SUB_AGENT) ?: return null
       val timesLooped = node.getInt(KEY_TIMES_LOOPED) ?: return null
       return LoopAgentState(currentSubAgent, timesLooped)

@@ -257,7 +257,7 @@ class SkillToolset(internal val source: SkillSource) : Toolset {
   }
 
   /** Generates instructions detailing the available skills to append to LLM requests. */
-  suspend fun getSkillCatalogInstruction(): String? {
+  internal suspend fun getSkillCatalogInstruction(): String? {
     val frontmatters =
       source.listFrontmatters().getOrElse { e ->
         logger.warn(e) { "Failed to list skill frontmatters; omitting skill catalog instruction." }

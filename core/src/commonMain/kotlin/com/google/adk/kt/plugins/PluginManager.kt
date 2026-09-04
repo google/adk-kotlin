@@ -55,40 +55,40 @@ class PluginManager(
     }
   }
 
-  val onUserMessageCallbacks: List<OnUserMessageCallback> = plugins.map { plugin ->
+  internal val onUserMessageCallbacks: List<OnUserMessageCallback> = plugins.map { plugin ->
     OnUserMessageCallback { ctx, msg -> plugin.onUserMessage(ctx, msg) }
   }
-  val beforeRunCallbacks: List<BeforeRunCallback> = plugins.map { plugin ->
+  internal val beforeRunCallbacks: List<BeforeRunCallback> = plugins.map { plugin ->
     BeforeRunCallback { ctx -> plugin.beforeRun(ctx) }
   }
-  val onEventCallbacks: List<OnEventCallback> = plugins.map { plugin ->
+  internal val onEventCallbacks: List<OnEventCallback> = plugins.map { plugin ->
     OnEventCallback { ctx, event -> plugin.onEvent(ctx, event) }
   }
-  val afterRunCallbacks: List<AfterRunCallback> = plugins.map { plugin ->
+  internal val afterRunCallbacks: List<AfterRunCallback> = plugins.map { plugin ->
     AfterRunCallback { ctx -> plugin.afterRun(ctx) }
   }
-  val beforeAgentCallbacks: List<BeforeAgentCallback> = plugins.map { plugin ->
+  internal val beforeAgentCallbacks: List<BeforeAgentCallback> = plugins.map { plugin ->
     BeforeAgentCallback { ctx -> plugin.beforeAgent(ctx) }
   }
-  val afterAgentCallbacks: List<AfterAgentCallback> = plugins.map { plugin ->
+  internal val afterAgentCallbacks: List<AfterAgentCallback> = plugins.map { plugin ->
     AfterAgentCallback { ctx -> plugin.afterAgent(ctx) }
   }
-  val beforeModelCallbacks: List<BeforeModelCallback> = plugins.map { plugin ->
+  internal val beforeModelCallbacks: List<BeforeModelCallback> = plugins.map { plugin ->
     BeforeModelCallback { ctx, req -> plugin.beforeModel(ctx, req) }
   }
-  val afterModelCallbacks: List<AfterModelCallback> = plugins.map { plugin ->
+  internal val afterModelCallbacks: List<AfterModelCallback> = plugins.map { plugin ->
     AfterModelCallback { ctx, resp -> plugin.afterModel(ctx, resp) }
   }
-  val onModelErrorCallbacks: List<OnModelErrorCallback> = plugins.map { plugin ->
+  internal val onModelErrorCallbacks: List<OnModelErrorCallback> = plugins.map { plugin ->
     OnModelErrorCallback { ctx, req, err -> plugin.onModelError(ctx, req, err) }
   }
-  val beforeToolCallbacks: List<BeforeToolCallback> = plugins.map { plugin ->
+  internal val beforeToolCallbacks: List<BeforeToolCallback> = plugins.map { plugin ->
     BeforeToolCallback { ctx, tool, args -> plugin.beforeTool(ctx, tool, args) }
   }
-  val afterToolCallbacks: List<AfterToolCallback> = plugins.map { plugin ->
+  internal val afterToolCallbacks: List<AfterToolCallback> = plugins.map { plugin ->
     AfterToolCallback { ctx, tool, args, res -> plugin.afterTool(ctx, tool, args, res) }
   }
-  val onToolErrorCallbacks: List<OnToolErrorCallback> = plugins.map { plugin ->
+  internal val onToolErrorCallbacks: List<OnToolErrorCallback> = plugins.map { plugin ->
     OnToolErrorCallback { ctx, tool, args, err -> plugin.onToolError(ctx, tool, args, err) }
   }
 

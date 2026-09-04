@@ -40,7 +40,7 @@ data class SequentialAgentState(val currentSubAgent: String) : AgentState {
   companion object {
     private const val KEY_CURRENT_SUB_AGENT = "current_sub_agent"
 
-    fun fromValue(node: TypedData.MapValue): SequentialAgentState? {
+    internal fun fromValue(node: TypedData.MapValue): SequentialAgentState? {
       val currentSubAgent = node.getString(KEY_CURRENT_SUB_AGENT) ?: return null
       return SequentialAgentState(currentSubAgent)
     }

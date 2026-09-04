@@ -223,7 +223,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
     return CallbackChoice.Continue(Unit)
   }
 
-  fun formatContent(content: Content?): String {
+  internal fun formatContent(content: Content?): String {
     if (content == null || content.parts.isEmpty()) {
       return "None"
     }
@@ -253,7 +253,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
       .joinToString(" | ")
   }
 
-  fun formatArgs(args: Map<String, Any?>?): String {
+  internal fun formatArgs(args: Map<String, Any?>?): String {
     if (args.isNullOrEmpty()) {
       return "{}"
     }
@@ -269,7 +269,7 @@ class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
   companion object {
     private val logger = LoggerFactory.getLogger(LoggingPlugin::class)
 
-    const val MAX_CONTENT_LENGTH = 200
-    const val MAX_ARGS_LENGTH = 300
+    internal const val MAX_CONTENT_LENGTH = 200
+    internal const val MAX_ARGS_LENGTH = 300
   }
 }

@@ -93,9 +93,9 @@ internal class ListMcpResourceTemplatesTool(private val mcpToolset: McpToolset) 
         "{variables} yourself, then call load_mcp_resource with the resulting URI as its 'uri' " +
         "argument to read it."
 
-    const val TEMPLATE_NAME = "name"
-    const val TEMPLATE_URI_TEMPLATE = "uriTemplate"
-    const val TEMPLATE_DESCRIPTION = "description"
-    const val TEMPLATE_MIME_TYPE = "mimeType"
+    private const val TEMPLATE_NAME = "name"
+    private const val TEMPLATE_URI_TEMPLATE = "uriTemplate"
+    private const val TEMPLATE_DESCRIPTION = "description"
+    private const val TEMPLATE_MIME_TYPE = "mimeType"
   }
 }
