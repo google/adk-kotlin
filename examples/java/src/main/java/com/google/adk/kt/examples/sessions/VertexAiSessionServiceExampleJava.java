@@ -18,27 +18,25 @@ package com.google.adk.kt.examples.sessions;
 
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
+import com.google.adk.kt.annotations.Param;
+import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.AsyncJavaHelpers;
-import com.google.adk.kt.interop.BaseFutureTool;
 import com.google.adk.kt.interop.PublisherRunner;
+import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.sessions.Session;
 import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.sessions.VertexAiSessionService;
-import com.google.adk.kt.tools.ToolContext;
+import com.google.adk.kt.tools.BaseTool;
 import com.google.adk.kt.types.Content;
-import com.google.adk.kt.types.FunctionDeclaration;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
-import com.google.adk.kt.types.Schema;
-import com.google.adk.kt.types.Type;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 import org.reactivestreams.Publisher;
@@ -74,53 +72,32 @@ public final class VertexAiSessionServiceExampleJava {
   private static final String MODEL_NAME = "gemini-3.1-flash-lite";
 
   /**
-   * A single tool the agent can call, exposed to the model via its declaration. Hand-written as a
-   * {@link BaseFutureTool} because this module is compiled by javac; with the Kotlin toolchain
-   * (KSP), the recommended approach is instead the {@code @Tool} annotation shown in
-   * examples/src/main/java/com/google/adk/kt/examples/interop/FunctionToolDemoAgentJava.java.
+   * A single tool the agent can call, built from an annotated method by {@link ReflectiveTools}
+   * (used here because this example is compiled with javac, not the Kotlin compiler; prefer the KSP
+   * {@code @Tool} path when available).
    */
-  private static final class GetWeatherTool extends BaseFutureTool {
+  static final class WeatherTools {
     private static final List<String> CONDITIONS = List.of("sunny", "cloudy", "rainy", "windy");
 
-    GetWeatherTool() {
-      super("getWeather", "Function getWeather");
-    }
-
-    @Override
-    public FunctionDeclaration declaration() {
-      return FunctionDeclaration.builder()
-          .name("getWeather")
-          .description("Function getWeather")
-          .parameters(
-              Schema.builder()
-                  .type(Type.OBJECT)
-                  .properties(
-                      Map.of(
-                          "city",
-                          Schema.builder()
-                              .type(Type.STRING)
-                              .description("The city to look up.")
-                              .build()))
-                  .required("city")
-                  .build())
-          .build();
-    }
-
-    @Override
-    public CompletableFuture<Object> runAsync(ToolContext context, Map<String, Object> args) {
-      String city = (String) args.get("city");
+    @Tool(name = "getWeather", description = "Looks up the current weather in a city.")
+    public Map<String, Object> getWeather(
+        @Param(name = "city", description = "The city to look up.") String city) {
       ThreadLocalRandom random = ThreadLocalRandom.current();
-      Map<String, Object> weather =
-          Map.of(
-              "city",
-              city,
-              "temperatureCelsius",
-              random.nextInt(-5, 35),
-              "condition",
-              CONDITIONS.get(random.nextInt(CONDITIONS.size())));
-      return CompletableFuture.completedFuture(Map.of("result", weather));
+      return Map.of(
+          "city",
+          city,
+          "temperatureCelsius",
+          random.nextInt(-5, 35),
+          "condition",
+          CONDITIONS.get(random.nextInt(CONDITIONS.size())));
     }
   }
+
+  // Reflection is costly, so build the tool once and reuse it. javac-only path; with Kotlin + KSP
+  // prefer @Tool -
+  // examples/src/main/java/com/google/adk/kt/examples/interop/FunctionToolDemoAgentJava.java
+  private static final BaseTool GET_WEATHER =
+      ReflectiveTools.fromMethod(new WeatherTools(), "getWeather");
 
   public static void main(String[] args) {
     String project = requireEnv("GOOGLE_CLOUD_PROJECT");
@@ -142,7 +119,7 @@ public final class VertexAiSessionServiceExampleJava {
             .description("Answers weather questions using the getWeather tool.")
             .model(new Gemini(MODEL_NAME, new VertexCredentials(project, "global", null)))
             .instruction("Use the getWeather tool to answer weather questions. Answer briefly.")
-            .tools(new GetWeatherTool())
+            .tools(GET_WEATHER)
             .build();
     PublisherRunner runner =
         PublisherRunner.of(

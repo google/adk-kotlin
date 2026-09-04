@@ -28,6 +28,10 @@ package com.google.adk.kt.annotations
  * Note: this annotation shares its simple name with [com.google.adk.kt.types.Tool], the GenAI tool
  * definition data class. Files that need to reference both should use an import alias.
  *
+ * Retained at runtime so the JVM-only [com.google.adk.kt.interop.ReflectiveTools] can read it via
+ * reflection to build tools from Java methods, which the KSP path cannot process without the Kotlin
+ * compiler.
+ *
  * @property name An optional explicit name for the tool. If not provided, the function name is
  *   used.
  * @property description An optional explicit description. If not provided, the KDoc summary is
@@ -36,7 +40,7 @@ package com.google.adk.kt.annotations
  * @property isLongRunning If true, indicates the tool returns a Pending state and resumes later.
  */
 @Target(AnnotationTarget.FUNCTION)
-@Retention(AnnotationRetention.BINARY)
+@Retention(AnnotationRetention.RUNTIME)
 annotation class Tool(
   val name: String = "",
   val description: String = "",

@@ -196,6 +196,9 @@ class FunctionToolGenerator(
     function: KSFunctionDeclaration,
     executeFun: FunSpec.Builder,
   ): List<String>? {
+    if (!validateWireNames(function)) {
+      return null
+    }
     val invokeArgs = mutableListOf<String>()
     for (param in function.parameters) {
       val paramName = param.name?.asString() ?: continue
@@ -217,15 +220,36 @@ class FunctionToolGenerator(
         return null
       }
 
+      // OPTIONAL is unsatisfiable when the code has no value to supply for an omitted arg: the
+      // schema would tell the model the arg is optional while the signature still demands it.
+      if (requirednessName(param) == "OPTIONAL" && !isNullable && !param.hasDefault) {
+        logger.error(
+          "@Param(required = OPTIONAL) on non-null, no-default parameter '${paramName}': make it " +
+            "nullable or give it a default, or drop OPTIONAL.",
+          param,
+        )
+        return null
+      }
+
       val typeDeclaration = paramType.declaration as? KSClassDeclaration
-      val isRequired = !param.hasDefault && !isNullable
+      val keyName = wireName(param)
+      // Execute-level enforcement is about producing a non-null value so the generated call
+      // compiles; the model-facing "required" list is decided separately in the declaration.
+      val isRequired = executeRequired(param)
 
       when {
         typeNameString in PRIMITIVE_OR_STRING_QUALIFIED_NAMES -> {
-          buildPrimitiveParameter(paramName, typeNameString, isRequired, executeFun)
+          buildPrimitiveParameter(paramName, keyName, typeNameString, isRequired, executeFun)
         }
         typeDeclaration?.classKind == ClassKind.ENUM_CLASS && typeNameString != null -> {
-          buildEnumParameter(paramName, typeNameString, typeDeclaration, isRequired, executeFun)
+          buildEnumParameter(
+            paramName,
+            keyName,
+            typeNameString,
+            typeDeclaration,
+            isRequired,
+            executeFun,
+          )
         }
         typeDeclaration?.isDataClass() == true -> {
           val targetVar = "arg_${paramName}"
@@ -240,6 +264,8 @@ class FunctionToolGenerator(
               executeFun,
               origin,
               mutableSetOf(),
+              keyName = keyName,
+              pathName = keyName,
             )
           ) {
             return null
@@ -247,13 +273,32 @@ class FunctionToolGenerator(
         }
         typeNameString in LIST_QUALIFIED_NAMES -> {
           if (
-            !buildListParameter(paramName, paramType, isRequired, executeFun, param, mutableSetOf())
+            !buildListParameter(
+              paramName,
+              paramType,
+              isRequired,
+              executeFun,
+              param,
+              mutableSetOf(),
+              keyName = keyName,
+              pathName = keyName,
+            )
           ) {
             return null
           }
         }
         typeNameString in MAP_QUALIFIED_NAMES -> {
-          if (!buildMapParameter(paramName, paramType, isRequired, executeFun, mutableSetOf())) {
+          if (
+            !buildMapParameter(
+              paramName,
+              paramType,
+              isRequired,
+              executeFun,
+              mutableSetOf(),
+              keyName = keyName,
+              pathName = keyName,
+            )
+          ) {
             return null
           }
         }
@@ -284,31 +329,33 @@ class FunctionToolGenerator(
 
   private fun buildPrimitiveParameter(
     paramName: String,
+    keyName: String,
     typeNameString: String?,
     isRequired: Boolean,
     executeFun: FunSpec.Builder,
   ) {
     val coerceLogic = getPrimitiveCoercion(typeNameString, "args[%S]") ?: return
 
-    executeFun.addStatement("val arg_${paramName} = ${coerceLogic}", paramName)
+    executeFun.addStatement("val arg_${paramName} = ${coerceLogic}", keyName)
     if (isRequired) {
       executeFun.beginControlFlow("if (arg_${paramName} == null)")
-      executeFun.addFailure("Missing required parameter ${paramName}")
+      executeFun.addFailure("Missing required parameter ${keyName}")
       executeFun.endControlFlow()
     }
   }
 
   private fun buildEnumParameter(
     paramName: String,
+    keyName: String,
     typeNameString: String,
     typeDeclaration: KSClassDeclaration,
     isRequired: Boolean,
     executeFun: FunSpec.Builder,
   ) {
-    executeFun.addStatement("val raw_${paramName} = args[%S] as? String", paramName)
+    executeFun.addStatement("val raw_${paramName} = args[%S] as? String", keyName)
     if (isRequired) {
       executeFun.beginControlFlow("if (raw_${paramName} == null)")
-      executeFun.addFailure("Missing required parameter ${paramName}")
+      executeFun.addFailure("Missing required parameter ${keyName}")
       executeFun.endControlFlow()
     }
     val safeCall = if (isRequired) "" else "?"
@@ -791,17 +838,18 @@ class FunctionToolGenerator(
       funSpec.addCode("    type = %T.OBJECT,\n", Type::class.asClassName())
       funSpec.addCode("    properties = mapOf(\n")
       for (param in paramTypes) {
-        val paramName = param.name?.asString() ?: continue
+        if (param.name == null) continue
+        val schemaName = wireName(param)
         val desc = getParamDescription(param, function.docString)
         val schemaCode =
-          buildSchema(param.type.resolve(), desc, mutableSetOf(), paramName) ?: return null
-        funSpec.addCode("      %S to %L,\n", paramName, schemaCode)
+          buildSchema(param.type.resolve(), desc, mutableSetOf(), schemaName) ?: return null
+        funSpec.addCode("      %S to %L,\n", schemaName, schemaCode)
       }
       funSpec.addCode("    ),\n")
 
       paramTypes
-        .filter { !it.hasDefault && !it.type.resolve().isMarkedNullable }
-        .mapNotNull { it.name?.asString() }
+        .filter { isRequiredParam(it) }
+        .map { wireName(it) }
         .takeIf { it.isNotEmpty() }
         ?.let { required ->
           funSpec.addCode("    required = listOf(${required.joinToString(", ") { "\"$it\"" }}),\n")
@@ -911,6 +959,85 @@ class FunctionToolGenerator(
       return paramDesc
     }
     return extractParamDescription(docString, paramName)
+  }
+
+  private fun paramAnnotation(param: KSValueParameter) =
+    param.annotations.firstOrNull { it.shortName.asString() == "Param" }
+
+  /** The explicit [com.google.adk.kt.annotations.Param.name] if set, else the Kotlin name. */
+  private fun wireName(param: KSValueParameter): String {
+    val explicit =
+      paramAnnotation(param)?.arguments?.firstOrNull { it.name?.asString() == "name" }?.value
+        as? String
+    return explicit?.takeIf { it.isNotEmpty() } ?: param.name?.asString().orEmpty()
+  }
+
+  /**
+   * Fails generation on a blank `@Param(name = ...)` or on two parameters resolving to the same
+   * wire name, since the schema and the `args[...]` lookup are both keyed by it (Kotlin only
+   * guarantees unique parameter names, not wire names).
+   */
+  private fun validateWireNames(function: KSFunctionDeclaration): Boolean {
+    val valueParams =
+      function.parameters.filter {
+        it.type.resolve().declaration.qualifiedName?.asString() != TOOL_CONTEXT_QUALIFIED_NAME
+      }
+    for (param in valueParams) {
+      val explicit =
+        paramAnnotation(param)?.arguments?.firstOrNull { it.name?.asString() == "name" }?.value
+          as? String
+      if (explicit != null && explicit.isNotEmpty() && explicit.isBlank()) {
+        logger.error(
+          "@Param(name = ...) on '${param.name?.asString()}' in " +
+            "'${function.simpleName.asString()}' is blank; give it a non-blank name or drop it.",
+          param,
+        )
+        return false
+      }
+    }
+    val duplicates =
+      valueParams.map { wireName(it) }.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
+    if (duplicates.isNotEmpty()) {
+      logger.error(
+        "Duplicate @Param wire names in '${function.simpleName.asString()}': ${duplicates}; " +
+          "parameter wire names must be unique.",
+        function,
+      )
+      return false
+    }
+    return true
+  }
+
+  /**
+   * The model-facing requiredness for the schema, honoring
+   * [com.google.adk.kt.annotations.Param.required]; `AUTO` falls back to nullability.
+   */
+  private fun isRequiredParam(param: KSValueParameter): Boolean =
+    when (requirednessName(param)) {
+      "REQUIRED" -> true
+      "OPTIONAL" -> false
+      else -> !param.hasDefault && !param.type.resolve().isMarkedNullable
+    }
+
+  /**
+   * Whether the generated `execute` must produce a non-null value: always for a non-null,
+   * no-default parameter (otherwise the call would not compile), and whenever `REQUIRED` is set.
+   * `OPTIONAL` on a non-null, no-default parameter is rejected earlier, so it never reaches here.
+   */
+  private fun executeRequired(param: KSValueParameter): Boolean {
+    val isNullable = param.type.resolve().isMarkedNullable
+    return (!param.hasDefault && !isNullable) || requirednessName(param) == "REQUIRED"
+  }
+
+  private fun requirednessName(param: KSValueParameter): String {
+    val raw =
+      paramAnnotation(param)?.arguments?.firstOrNull { it.name?.asString() == "required" }?.value
+        ?: return "AUTO"
+    return when (raw) {
+      is KSType -> raw.declaration.simpleName.asString()
+      is KSClassDeclaration -> raw.simpleName.asString()
+      else -> raw.toString().substringAfterLast('.')
+    }
   }
 
   private fun resolveDependencies(function: KSFunctionDeclaration) =

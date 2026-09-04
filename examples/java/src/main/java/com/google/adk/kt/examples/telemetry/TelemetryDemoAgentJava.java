@@ -18,10 +18,10 @@ package com.google.adk.kt.examples.telemetry;
 
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
-import com.google.adk.kt.interop.BaseFutureTool;
+import com.google.adk.kt.annotations.Tool;
+import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
-import com.google.adk.kt.tools.ToolContext;
-import com.google.adk.kt.types.FunctionDeclaration;
+import com.google.adk.kt.tools.BaseTool;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
@@ -30,7 +30,6 @@ import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import java.util.Collection;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * A demo agent that demonstrates telemetry emission after every turn using the real OpenTelemetry
@@ -67,29 +66,22 @@ public final class TelemetryDemoAgentJava {
   }
 
   /**
-   * A mock tool to exercise tool tracing. Hand-written as a {@link BaseFutureTool} because this
-   * module is compiled by javac; with the Kotlin toolchain (KSP), the recommended approach is
-   * instead the {@code @Tool} annotation shown in
-   * examples/src/main/java/com/google/adk/kt/examples/interop/FunctionToolDemoAgentJava.java.
+   * A mock tool to exercise tool tracing, built from an annotated method by {@link ReflectiveTools}
+   * (used here because this example is compiled with javac, not the Kotlin compiler; prefer the KSP
+   * {@code @Tool} path when available).
    */
-  private static final class TelemetryMagicTool extends BaseFutureTool {
-    TelemetryMagicTool() {
-      super("telemetry_magic", "A tool that does magic and emits telemetry.");
-    }
-
-    @Override
-    public FunctionDeclaration declaration() {
-      return FunctionDeclaration.builder()
-          .name("telemetry_magic")
-          .description("A tool that does magic and emits telemetry.")
-          .build();
-    }
-
-    @Override
-    public CompletableFuture<Object> runAsync(ToolContext context, Map<String, Object> args) {
-      return CompletableFuture.completedFuture(Map.of("result", "Magic happened!"));
+  static final class MagicTools {
+    @Tool(name = "telemetry_magic", description = "A tool that does magic and emits telemetry.")
+    public Map<String, Object> telemetryMagic() {
+      return Map.of("result", "Magic happened!");
     }
   }
+
+  // Reflection is costly, so build the tool once and reuse it. javac-only path; with Kotlin + KSP
+  // prefer @Tool -
+  // examples/src/main/java/com/google/adk/kt/examples/interop/FunctionToolDemoAgentJava.java
+  private static final BaseTool TELEMETRY_MAGIC =
+      ReflectiveTools.fromMethod(new MagicTools(), "telemetryMagic");
 
   public static final BaseAgent rootAgent = createRootAgent();
 
@@ -109,7 +101,7 @@ public final class TelemetryDemoAgentJava {
             You have access to a tool called `telemetry_magic`.
             Please use this tool if the user asks for magic or to test tool tracing.\
             """)
-        .tools(new TelemetryMagicTool())
+        .tools(TELEMETRY_MAGIC)
         .build();
   }
 

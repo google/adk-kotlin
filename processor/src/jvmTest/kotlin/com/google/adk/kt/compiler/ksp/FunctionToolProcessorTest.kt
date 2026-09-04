@@ -19,6 +19,7 @@ package com.google.adk.kt.compiler.ksp
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.Param
+import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
@@ -73,6 +74,33 @@ class FunctionToolProcessorTest {
     assertThat(declaration.parameters?.properties?.get("age")?.description)
       .isEqualTo("Age from Param annotation")
     assertThat(declaration.parameters?.required).containsExactly("name", "age")
+  }
+
+  @Test
+  fun paramNameOverride_usesWireNameInSchemaAndArgs() = runTest {
+    val tool = NamedParamToolTool()
+    val declaration = tool.declaration()!!
+
+    assertThat(declaration.parameters?.properties).containsKey("wire_name")
+    assertThat(declaration.parameters?.properties).doesNotContainKey("kotlinName")
+    assertThat(declaration.parameters?.required).containsExactly("wire_name")
+    assertThat(tool.execute(createDummyContext(), mapOf("wire_name" to "v")))
+      .isEqualTo(mapOf("result" to "got v"))
+  }
+
+  @Test
+  fun requiredness_required_marksNullableParamRequired() {
+    val declaration = RequiredOverrideToolTool().declaration()!!
+
+    assertThat(declaration.parameters?.required).containsExactly("maybe")
+  }
+
+  @Test
+  fun requiredness_optional_leavesParamOutOfRequired() {
+    val declaration = OptionalOverrideToolTool().declaration()!!
+
+    assertThat(declaration.parameters?.properties).containsKey("note")
+    assertThat(declaration.parameters?.required).isNull()
   }
 
   @Test
@@ -615,3 +643,13 @@ class MyAwesomeService {
 fun customNamedTool(): String {
   return "Custom"
 }
+
+@Tool fun namedParamTool(@Param(name = "wire_name") kotlinName: String): String = "got $kotlinName"
+
+@Tool
+fun requiredOverrideTool(@Param(required = Requiredness.REQUIRED) maybe: String?): String =
+  "maybe=$maybe"
+
+@Tool
+fun optionalOverrideTool(@Param(required = Requiredness.OPTIONAL) note: String?): String =
+  "note=$note"
