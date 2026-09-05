@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.serialization.LenientDurationStringSerializer
 import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -26,9 +27,9 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class VideoMetadata(
   /** The start offset of the video segment to use. */
-  val startOffset: Duration? = null,
+  @Serializable(with = LenientDurationStringSerializer::class) val startOffset: Duration? = null,
   /** The end offset of the video segment to use. */
-  val endOffset: Duration? = null,
+  @Serializable(with = LenientDurationStringSerializer::class) val endOffset: Duration? = null,
   /** The frame rate (frames per second) to sample the video at. */
   val fps: Double? = null,
 ) {

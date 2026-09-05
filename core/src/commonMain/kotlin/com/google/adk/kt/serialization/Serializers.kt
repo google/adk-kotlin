@@ -19,6 +19,8 @@ package com.google.adk.kt.serialization
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.sessions.State
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
+import com.google.genai.kotlin.types.DurationStringSerializer
+import kotlin.time.Duration
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
@@ -47,9 +49,8 @@ import kotlinx.serialization.modules.SerializersModule
  * decodes a single-key object with this marker back into [State.REMOVED].
  */
 private const val REMOVED_MARKER = "__ADK_SENTINEL_REMOVED__"
-private val REMOVED_JSON = lazy {
-  JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true)))
-}
+private val REMOVED_JSON = lazy { JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true))) }
+
 /**
  * `kotlinx.serialization` serializer for free-form `Any` values that appear in the [Event] graph
  * (state deltas, `FunctionCall.args`, `FunctionResponse.response`, `customMetadata`, tool
@@ -180,6 +181,58 @@ internal object LenientByteArraySerializer : KSerializer<ByteArray> {
     // Not dead code: what a given caller writes today says nothing about what is already on disk.
     // Blobs persisted before `Blob.data` had a serializer are kotlinx's default number array.
     return ByteArray(element.size) { element[it].jsonPrimitive.int.toByte() }
+  }
+}
+
+/**
+ * Reads a duration written either as proto3's `"1.5s"` or as kotlinx's ISO-8601 default
+ * (`"PT1.5S"`), and always writes the former.
+ *
+ * [com.google.adk.kt.types.VideoMetadata]'s two offsets shipped without a serializer, so kotlinx
+ * wrote them as ISO-8601, and a session persisted on device by an older build holds that shape. The
+ * whole session is one JSON document: a decode failure on one offset is not a missing field, it is
+ * an uncaught failure loading the entire session, which to the user is indistinguishable from data
+ * loss. The two forms are unambiguous — proto3's ends in `s`, ISO-8601 starts with `P` — so
+ * accepting both costs no correctness.
+ *
+ * This is the read half only. New data is the proto3 form, which an older binary still cannot
+ * parse, so downgrading remains breaking; nothing here changes that.
+ *
+ * Encoding delegates to [DurationStringSerializer] rather than formatting here, so the emitted form
+ * stays whatever the SDK writes for its own copies of these fields.
+ *
+ * **Do not apply this to every `Duration` field.** Which serializer a field gets is decided by
+ * whether data in the old shape can exist for it, and the two answers are both correct:
+ * - A field that has already shipped uses this one, because a persisted session out there holds the
+ *   ISO form and must still load.
+ * - A field on a type introduced after this change uses [DurationStringSerializer] directly. No
+ *   old-shape data can exist for a type that never shipped, so tolerance there would accept a form
+ *   nothing ever wrote and quietly widen the format we are committed to.
+ */
+internal object LenientDurationStringSerializer : KSerializer<Duration> {
+  override val descriptor: SerialDescriptor = DurationStringSerializer.descriptor
+
+  override fun serialize(encoder: Encoder, value: Duration) {
+    DurationStringSerializer.serialize(encoder, value)
+  }
+
+  override fun deserialize(decoder: Decoder): Duration {
+    // A non-JSON format cannot carry the legacy shape, so there is nothing to be tolerant about.
+    val jsonDecoder =
+      decoder as? JsonDecoder ?: return DurationStringSerializer.deserialize(decoder)
+    val element = jsonDecoder.decodeJsonElement()
+    val text = (element as? JsonPrimitive)?.content
+    // Not dead code: what a given caller writes today says nothing about what is already on disk.
+    // Offsets persisted before these fields had a serializer are kotlinx's ISO-8601 form.
+    if (text != null && (text.startsWith("P") || text.startsWith("-P"))) {
+      // OrNull, not parseIsoString: that throws a bare IllegalArgumentException, which the
+      // `catch (SerializationException)` sites around decoding do not catch. A `P`-prefixed string
+      // that is not a duration falls through and the SDK reports it like every other failure here.
+      Duration.parseIsoStringOrNull(text)?.let {
+        return it
+      }
+    }
+    return jsonDecoder.json.decodeFromJsonElement(DurationStringSerializer, element)
   }
 }
 
