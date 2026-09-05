@@ -45,8 +45,8 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.jvm.Volatile
-import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -658,7 +658,7 @@ data class ContextFrameworkData(
  */
 class InvocationCostManager internal constructor() {
   // Atomic so concurrent turns (e.g. sub-agents under a ParallelAgent) count without races.
-  private val numberOfLlmCalls = atomic(0)
+  private val numberOfLlmCalls = AtomicInteger(0)
 
   /**
    * Counts one LLM call and throws once the count exceeds a positive [RunConfig.maxLlmCalls]. A

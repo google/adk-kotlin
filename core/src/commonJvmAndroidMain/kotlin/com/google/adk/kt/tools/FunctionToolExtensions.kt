@@ -27,7 +27,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import org.kxml2.io.KXmlSerializer
+import org.xmlpull.v1.XmlPullParserFactory
+import org.xmlpull.v1.XmlSerializer
 
 /**
  * Generates a text description of the function tools for use in an LLM prompt.
@@ -60,9 +61,13 @@ internal fun Iterable<FunctionTool>.toPromptDescription(
 
 private fun Iterable<FunctionDeclaration>.toXmlPromptDescription(): String {
   val writer = StringWriter()
-  val serializer = KXmlSerializer()
+  val serializer: XmlSerializer = XmlPullParserFactory.newInstance().newSerializer()
   serializer.setOutput(writer)
-  serializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true)
+  try {
+    serializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true)
+  } catch (_: Exception) {
+    // Optional indentation feature; ignore if unsupported by the underlying serializer.
+  }
 
   serializer.startTag(null, "tools")
   for (declaration in this@toXmlPromptDescription) {
@@ -203,7 +208,7 @@ private fun schemaToJsonObject(schema: Schema): JsonObject = jsonObject { fields
  * A union is written out as nested `<anyOf>` entries, because naming the type `anyOf` would
  * describe a type that does not exist and leave the model with no idea what it may send.
  */
-private fun Schema.constraintsXml(serializer: KXmlSerializer) {
+private fun Schema.constraintsXml(serializer: XmlSerializer) {
   fun tag(name: String, value: Any?) {
     if (value == null) return
     serializer.startTag(null, name)
@@ -245,7 +250,7 @@ private fun Schema.typeNameOrNull(): String? =
   type?.takeIf { it != Type.TYPE_UNSPECIFIED }?.name?.lowercase()
     ?: if (anyOf != null) null else "string"
 
-private fun schemaToXml(schema: Schema, serializer: KXmlSerializer) {
+private fun schemaToXml(schema: Schema, serializer: XmlSerializer) {
   when (schema.type) {
     Type.OBJECT -> {
       if (schema.properties != null) {
