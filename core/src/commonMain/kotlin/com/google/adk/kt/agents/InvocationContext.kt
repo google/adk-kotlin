@@ -23,6 +23,7 @@ import com.google.adk.kt.callbacks.runAfterToolCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeToolCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnToolErrorCallbacksPipeline
 import com.google.adk.kt.collections.concurrentMutableMapOf
+import com.google.adk.kt.coroutines.rethrowIfCancellation
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
@@ -426,6 +427,7 @@ data class InvocationContext(
         try {
           tool.run(toolContext, currentArgs)
         } catch (e: Exception) {
+          e.rethrowIfCancellation()
           val recoveredResult =
             runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e)
           if (recoveredResult == null) {
