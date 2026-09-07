@@ -282,6 +282,9 @@ internal class LlmAgentTurn(
 
         // Response-derived span attributes (parity with Python `trace_call_llm`).
         lastResponse?.let { span.recordCallLlmResponse(it) }
+      } catch (e: CancellationException) {
+        // CancellationException is an Exception in Kotlin; rethrow so recovery can't swallow it.
+        throw e
       } catch (e: Exception) {
         val allOnModelErrorCallbacks =
           context.pluginManager.onModelErrorCallbacks + agent.onModelErrorCallbacks
@@ -299,9 +302,7 @@ internal class LlmAgentTurn(
             is CallbackChoice.Continue -> null
           }
         if (recoveredResponse != null) {
-          if (e !is CancellationException) {
-            span.recordException(e)
-          }
+          span.recordException(e)
           modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
           processModelResponse(currentRequest, recoveredResponse, modelResponseEvent) { emit(it) }
         } else {
