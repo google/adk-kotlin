@@ -36,6 +36,9 @@ sealed class McpConnectionParameters {
   /**
    * Parameters for establishing a MCP Server-Sent Events (SSE) connection.
    *
+   * Prefer [StreamableHttp]. Use these parameters only for a server still on the phased-out
+   * `2024-11-05` protocol, which [StreamableHttp] does not fall back to.
+   *
    * @property url The URL of the SSE server.
    * @property sseEndpoint The SSE endpoint.
    * @property headers The headers to include in the request.
