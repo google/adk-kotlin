@@ -267,16 +267,14 @@ private fun annotateTool(): SyncToolSpecification =
 private fun syncTool(
   name: String,
   description: String,
-  inputSchema: McpSchema.JsonSchema = objectSchema(),
+  inputSchema: Map<String, Any> = objectSchema(),
   outputSchema: Map<String, Any>? = null,
   handler: (McpSyncServerExchange, McpSchema.CallToolRequest) -> McpSchema.CallToolResult,
 ): SyncToolSpecification =
   SyncToolSpecification.builder()
     .tool(
-      McpSchema.Tool.builder()
-        .name(name)
+      McpSchema.Tool.builder(name, inputSchema)
         .description(description)
-        .inputSchema(inputSchema)
         .apply { outputSchema?.let { outputSchema(it) } }
         .build()
     )
@@ -349,12 +347,10 @@ private fun slowTool(): SyncToolSpecification =
       val steps = if (requested <= 0) DEFAULT_SLOW_STEPS else requested
       for (i in 1..steps) {
         exchange.progressNotification(
-          McpSchema.ProgressNotification(
-            progressToken,
-            i.toDouble(),
-            steps.toDouble(),
-            "step $i of $steps",
-          )
+          McpSchema.ProgressNotification.builder(progressToken, i.toDouble())
+            .total(steps.toDouble())
+            .message("step $i of $steps")
+            .build()
         )
       }
     }
@@ -431,9 +427,10 @@ private fun resourceTemplateSpecifications(): List<SyncResourceTemplateSpecifica
  */
 private fun docTemplate(): SyncResourceTemplateSpecification {
   val template =
-    McpSchema.ResourceTemplate.builder()
-      .uriTemplate(FakeMcpServer.RESOURCE_DOC_TEMPLATE)
-      .name(FakeMcpServer.RESOURCE_DOC_TEMPLATE_NAME)
+    McpSchema.ResourceTemplate.builder(
+        FakeMcpServer.RESOURCE_DOC_TEMPLATE,
+        FakeMcpServer.RESOURCE_DOC_TEMPLATE_NAME,
+      )
       .description("A document addressed by slug; the family is not enumerable.")
       .mimeType("text/plain")
       .build()
@@ -446,9 +443,10 @@ private fun docTemplate(): SyncResourceTemplateSpecification {
 /** `mem://greeting`: a short text resource that embeds the injected [token]. */
 private fun greetingResource(token: String): SyncResourceSpecification {
   val resource =
-    McpSchema.Resource.builder()
-      .uri(FakeMcpServer.RESOURCE_GREETING_URI)
-      .name(FakeMcpServer.RESOURCE_GREETING_NAME)
+    McpSchema.Resource.builder(
+        FakeMcpServer.RESOURCE_GREETING_URI,
+        FakeMcpServer.RESOURCE_GREETING_NAME,
+      )
       .description("A greeting that embeds the per-run token.")
       .mimeType("text/plain")
       .build()
@@ -496,24 +494,22 @@ private fun textResult(text: String): McpSchema.CallToolResult =
 
 /** Wraps [text] in a single-text-content resource-read result for [uri]. */
 private fun textResource(uri: String, text: String): McpSchema.ReadResourceResult =
-  McpSchema.ReadResourceResult(listOf(McpSchema.TextResourceContents(uri, "text/plain", text)))
+  McpSchema.ReadResourceResult.builder(
+      listOf(McpSchema.TextResourceContents.builder(uri, text).mimeType("text/plain").build())
+    )
+    .build()
 
 /** Builds a JSON-Schema `{ "type": "object", ... }` describing a tool's arguments. */
 private fun objectSchema(
   properties: Map<String, Any> = emptyMap(),
   required: List<String> = emptyList(),
   defs: Map<String, Any>? = null,
-): McpSchema.JsonSchema =
-  // JsonSchema is a Java record, so Kotlin can't use named arguments; the /* name = */ comments
-  // label the positional args (several are null) for readability.
-  McpSchema.JsonSchema(
-    /* type = */ "object",
-    /* properties = */ properties,
-    /* required = */ required,
-    /* additionalProperties = */ null,
-    /* defs = */ defs,
-    /* definitions = */ null,
-  )
+): Map<String, Any> = buildMap {
+  put("type", "object")
+  put("properties", properties)
+  put("required", required)
+  if (defs != null) put("\$defs", defs)
+}
 
 private fun stringProp(): Map<String, Any> = mapOf("type" to "string")
 

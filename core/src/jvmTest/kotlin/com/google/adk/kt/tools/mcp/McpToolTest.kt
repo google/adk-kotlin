@@ -46,7 +46,7 @@ class McpToolTest {
   // The tool fetches its session from the manager on each run; hand it the shared mock session.
   private val mockSessionManager =
     mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
-  private val mcpSchemaTool = McpSchema.Tool.builder().name("testTool").build()
+  private val mcpSchemaTool = McpSchema.Tool.builder("testTool", mapOf("type" to "object")).build()
   private val mcpTool = McpTool("testTool", "description", mcpSchemaTool, mockSessionManager)
   private val toolContext = testToolContext()
 
@@ -54,7 +54,7 @@ class McpToolTest {
   fun annotations_returnsAnnotations() {
     val annotations = McpSchema.ToolAnnotations("title", null, null, null, null, null)
     val mcpSchemaToolWithAnnotations =
-      McpSchema.Tool.builder().name("testTool").annotations(annotations).build()
+      McpSchema.Tool.builder("testTool", mapOf("type" to "object")).annotations(annotations).build()
     val tool = McpTool("testTool", "description", mcpSchemaToolWithAnnotations, mockSessionManager)
     assertEquals(annotations, tool.annotations)
   }
@@ -62,7 +62,8 @@ class McpToolTest {
   @Test
   fun meta_returnsMeta() {
     val meta = mapOf("key" to "value")
-    val mcpSchemaToolWithMeta = McpSchema.Tool.builder().name("testTool").meta(meta).build()
+    val mcpSchemaToolWithMeta =
+      McpSchema.Tool.builder("testTool", mapOf("type" to "object")).meta(meta).build()
     val tool = McpTool("testTool", "description", mcpSchemaToolWithMeta, mockSessionManager)
     assertEquals(meta, tool.meta)
   }
@@ -89,20 +90,13 @@ class McpToolTest {
   fun declaration_failingConversion_throwsEveryTime() {
     // A cached value must not turn a permanent failure into a one-off: `lazy` leaves itself
     // uninitialized when the initializer throws, so each call retries and rethrows.
-    val badSchema =
-      McpSchema.JsonSchema(
-        "object",
-        mapOf("x" to mapOf("type" to "nonsense")),
-        null,
-        null,
-        null,
-        null,
-      )
+    val badSchema: Map<String, Any> =
+      mapOf("type" to "object", "properties" to mapOf("x" to mapOf("type" to "nonsense")))
     val tool =
       McpTool(
         "badTool",
         "description",
-        McpSchema.Tool.builder().name("badTool").inputSchema(badSchema).build(),
+        McpSchema.Tool.builder("badTool", badSchema).build(),
         mockSessionManager,
       )
 
@@ -112,7 +106,7 @@ class McpToolTest {
 
   @Test
   fun run_convertsCallToolResultToJsonNativeMap() = runTest {
-    val responseContent = McpSchema.TextContent("test result")
+    val responseContent = McpSchema.TextContent.builder("test result").build()
     val invokeResponse = McpSchema.CallToolResult.builder().content(listOf(responseContent)).build()
     whenever(mockMcpSession.callTool(any())) doReturn mono { invokeResponse }
 
@@ -171,14 +165,13 @@ class McpToolTest {
 
   @Test
   fun mcpSchemaConverter_convertsMcpSchemaToolToAdkFunctionDeclaration() {
-    val mcpInputSchema =
-      McpSchema.JsonSchema(
-        "object",
-        mapOf("param1" to mapOf("type" to "string", "description" to "param1 description")),
-        listOf("param1"),
-        false,
-        null,
-        null,
+    val mcpInputSchema: Map<String, Any> =
+      mapOf(
+        "type" to "object",
+        "properties" to
+          mapOf("param1" to mapOf("type" to "string", "description" to "param1 description")),
+        "required" to listOf("param1"),
+        "additionalProperties" to false,
       )
     val mcpOutputSchema =
       mapOf(
@@ -188,10 +181,8 @@ class McpToolTest {
       )
 
     val mcpToolSchema =
-      McpSchema.Tool.builder()
-        .name("myTool")
+      McpSchema.Tool.builder("myTool", mcpInputSchema)
         .description("my tool description")
-        .inputSchema(mcpInputSchema)
         .outputSchema(mcpOutputSchema)
         .build()
 
@@ -212,9 +203,10 @@ class McpToolTest {
   @Test
   fun declaration_throwsMcpToolDeclarationException_onMalformedSchema() {
     val malformedMcpSchemaTool =
-      McpSchema.Tool.builder()
-        .name("malformedTool")
-        .inputSchema(McpSchema.JsonSchema("invalid-type", null, null, false, null, null))
+      McpSchema.Tool.builder(
+          "malformedTool",
+          mapOf("type" to "invalid-type", "additionalProperties" to false),
+        )
         .build()
     val tool = McpTool("malformedTool", "description", malformedMcpSchemaTool, mockSessionManager)
     assertFailsWith<McpToolException.McpToolDeclarationException> { tool.declaration() }
@@ -222,7 +214,7 @@ class McpToolTest {
 
   @Test
   fun run_retriesOnSessionErrorAndSucceedsOnLastTry() = runTest {
-    val responseContent = McpSchema.TextContent("test result")
+    val responseContent = McpSchema.TextContent.builder("test result").build()
     val invokeResponse = McpSchema.CallToolResult.builder().content(listOf(responseContent)).build()
 
     // The initial (pooled) session always fails; each failure re-fetches from the manager (passing

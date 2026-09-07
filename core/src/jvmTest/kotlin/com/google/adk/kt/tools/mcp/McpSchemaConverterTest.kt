@@ -507,10 +507,11 @@ class McpSchemaConverterTest {
   @Test
   fun toAdkFunctionDeclaration_toolWithInputSchema_setsNameDescriptionAndParameters() {
     val tool =
-      McpSchema.Tool.builder()
-        .name("add")
+      McpSchema.Tool.builder(
+          "add",
+          jsonSchema(properties = mapOf("a" to mapOf("type" to "integer"))),
+        )
         .description("Adds two numbers.")
-        .inputSchema(jsonSchema(properties = mapOf("a" to mapOf("type" to "integer"))))
         .build()
 
     val declaration = tool.toAdkFunctionDeclaration()
@@ -522,7 +523,7 @@ class McpSchemaConverterTest {
 
   @Test
   fun toAdkFunctionDeclaration_toolWithoutDescription_usesAnEmptyDescription() {
-    val tool = McpSchema.Tool.builder().name("bare").build()
+    val tool = McpSchema.Tool.builder("bare", jsonSchema()).build()
 
     val declaration = tool.toAdkFunctionDeclaration()
 
@@ -530,8 +531,8 @@ class McpSchemaConverterTest {
   }
 
   @Test
-  fun toAdkFunctionDeclaration_toolWithoutInputSchema_setsDefaultObjectParameters() {
-    val tool = McpSchema.Tool.builder().name("bare").build()
+  fun toAdkFunctionDeclaration_toolWithDefaultObjectSchema_setsDefaultObjectParameters() {
+    val tool = McpSchema.Tool.builder("bare", jsonSchema()).build()
 
     val declaration = tool.toAdkFunctionDeclaration()
 
@@ -541,9 +542,10 @@ class McpSchemaConverterTest {
   @Test
   fun toAdkFunctionDeclaration_toolWithNullTypedProperty_doesNotThrow() {
     val tool =
-      McpSchema.Tool.builder()
-        .name("nullable")
-        .inputSchema(jsonSchema(properties = mapOf("maybe" to mapOf("type" to "null"))))
+      McpSchema.Tool.builder(
+          "nullable",
+          jsonSchema(properties = mapOf("maybe" to mapOf("type" to "null"))),
+        )
         .build()
 
     val declaration = tool.toAdkFunctionDeclaration()
@@ -851,9 +853,7 @@ class McpSchemaConverterTest {
   @Test
   fun toAdkFunctionDeclaration_toolWithOutputSchema_convertsItToResponse() {
     val tool =
-      McpSchema.Tool.builder()
-        .name("weather")
-        .inputSchema(jsonSchema())
+      McpSchema.Tool.builder("weather", jsonSchema())
         .outputSchema(
           mapOf(
             "type" to "object",
@@ -873,7 +873,7 @@ class McpSchemaConverterTest {
 
   @Test
   fun toAdkFunctionDeclaration_toolWithoutOutputSchema_leavesResponseUnset() {
-    val tool = McpSchema.Tool.builder().name("weather").inputSchema(jsonSchema()).build()
+    val tool = McpSchema.Tool.builder("weather", jsonSchema()).build()
 
     assertNull(tool.toAdkFunctionDeclaration().response)
   }
@@ -882,9 +882,7 @@ class McpSchemaConverterTest {
   fun toAdkFunctionDeclaration_outputSchemaWithUnknownType_keepsTheDeclaration() {
     // Only the output schema is lost; the tool stays callable.
     val tool =
-      McpSchema.Tool.builder()
-        .name("weather")
-        .inputSchema(jsonSchema())
+      McpSchema.Tool.builder("weather", jsonSchema())
         .outputSchema(mapOf("type" to "temperature"))
         .build()
 
@@ -898,9 +896,7 @@ class McpSchemaConverterTest {
   @Test
   fun toAdkFunctionDeclaration_outputSchemaWithUnknownNestedType_keepsTheDeclaration() {
     val tool =
-      McpSchema.Tool.builder()
-        .name("weather")
-        .inputSchema(jsonSchema())
+      McpSchema.Tool.builder("weather", jsonSchema())
         .outputSchema(
           mapOf(
             "type" to "object",
@@ -960,9 +956,7 @@ class McpSchemaConverterTest {
   fun toAdkFunctionDeclaration_outputSchemaContainingAnyOf_isDropped() {
     // Vertex rejects a response schema carrying anyOf, which fails every call the agent makes.
     val tool =
-      McpSchema.Tool.builder()
-        .name("weather")
-        .inputSchema(jsonSchema())
+      McpSchema.Tool.builder("weather", jsonSchema())
         .outputSchema(
           mapOf(
             "type" to "object",
@@ -979,12 +973,7 @@ class McpSchemaConverterTest {
 
   @Test
   fun toAdkFunctionDeclaration_emptyOutputSchema_leavesResponseUnset() {
-    val tool =
-      McpSchema.Tool.builder()
-        .name("weather")
-        .inputSchema(jsonSchema())
-        .outputSchema(mapOf())
-        .build()
+    val tool = McpSchema.Tool.builder("weather", jsonSchema()).outputSchema(mapOf()).build()
 
     assertNull(tool.toAdkFunctionDeclaration().response)
   }
@@ -992,9 +981,7 @@ class McpSchemaConverterTest {
   @Test
   fun toAdkFunctionDeclaration_outputSchemaWithItsOwnDefs_resolvesTheRef() {
     val tool =
-      McpSchema.Tool.builder()
-        .name("weather")
-        .inputSchema(jsonSchema())
+      McpSchema.Tool.builder("weather", jsonSchema())
         .outputSchema(
           mapOf(
             "type" to "object",
@@ -1031,10 +1018,8 @@ class McpSchemaConverterTest {
     // An output schema arrives as a raw map, where both blocks are ordinary keys rather than record
     // components, so the precedence is decided on a second code path.
     val tool =
-      McpSchema.Tool.builder()
-        .name("t")
+      McpSchema.Tool.builder("t", jsonSchema())
         .description("d")
-        .inputSchema(jsonSchema())
         .outputSchema(
           mapOf(
             "type" to "object",
@@ -1213,17 +1198,14 @@ class McpSchemaConverterTest {
   @Test
   fun toAdkFunctionDeclaration_inputSchemaWithDefs_resolvesRefsInProperties() {
     val tool =
-      McpSchema.Tool.builder()
-        .name("weather")
-        .inputSchema(
-          McpSchema.JsonSchema(
-            "object",
-            mapOf("where" to mapOf("\$ref" to "#/\$defs/City")),
-            listOf("where"),
-            null,
-            mapOf("City" to mapOf("type" to "string", "maxLength" to 20)),
-            null,
-          )
+      McpSchema.Tool.builder(
+          "weather",
+          mapOf(
+            "type" to "object",
+            "properties" to mapOf("where" to mapOf("\$ref" to "#/\$defs/City")),
+            "required" to listOf("where"),
+            "\$defs" to mapOf("City" to mapOf("type" to "string", "maxLength" to 20)),
+          ),
         )
         .build()
 

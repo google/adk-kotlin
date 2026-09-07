@@ -258,7 +258,9 @@ internal constructor(
   ): List<McpResourceContent> {
     val readResult =
       withSession(readonlyContext) { session ->
-        session.readResource(McpSchema.ReadResourceRequest(uri)).awaitSingle()
+        // Not `builder(uri)`: it rejects a blank uri, which a model can produce, where this does
+        // not.
+        session.readResource(McpSchema.ReadResourceRequest(uri, /* meta= */ null)).awaitSingle()
       }
     return readResult.contents().map { it.toResourceContent() }
   }
