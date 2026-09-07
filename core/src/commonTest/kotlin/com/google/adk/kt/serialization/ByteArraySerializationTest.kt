@@ -21,7 +21,9 @@ import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Part
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlinx.serialization.SerializationException
 import org.junit.Test
 
 /**
@@ -89,5 +91,34 @@ class ByteArraySerializationTest {
     val decoded = adkJson.decodeFromString(Blob.serializer(), """{"data":"AQID"}""")
 
     assertContentEquals(byteArrayOf(1, 2, 3), decoded.data)
+  }
+
+  /**
+   * Every route out of the serializer reports a [SerializationException], including the ones the
+   * SDK and `jsonPrimitive` raise as a bare [IllegalArgumentException]. That exception is the
+   * *superclass* of [SerializationException], so an escape is a sibling of it and slips past the
+   * `catch (SerializationException)` sites that guard decoding — turning one malformed field into
+   * an uncaught failure loading the whole document.
+   */
+  @Test
+  fun blobData_invalidBase64_failsAsASerializationError() {
+    // `@` is outside both the standard and the URL-safe alphabet, so the SDK's fallback fails too.
+    assertFailsWith<SerializationException> {
+      adkJson.decodeFromString(Blob.serializer(), """{"data":"@@@@"}""")
+    }
+  }
+
+  @Test
+  fun blobData_oldNumberArrayWithNonNumericElement_failsAsASerializationError() {
+    assertFailsWith<SerializationException> {
+      adkJson.decodeFromString(Blob.serializer(), """{"data":[1,"x",3]}""")
+    }
+  }
+
+  @Test
+  fun blobData_oldNumberArrayWithNestedArray_failsAsASerializationError() {
+    assertFailsWith<SerializationException> {
+      adkJson.decodeFromString(Blob.serializer(), """{"data":[1,[2],3]}""")
+    }
   }
 }

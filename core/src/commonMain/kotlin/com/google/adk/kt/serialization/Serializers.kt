@@ -19,7 +19,10 @@ package com.google.adk.kt.serialization
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.sessions.State
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
+import com.google.genai.kotlin.types.DurationStringSerializer
+import kotlin.time.Duration
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
@@ -47,9 +50,8 @@ import kotlinx.serialization.modules.SerializersModule
  * decodes a single-key object with this marker back into [State.REMOVED].
  */
 private const val REMOVED_MARKER = "__ADK_SENTINEL_REMOVED__"
-private val REMOVED_JSON = lazy {
-  JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true)))
-}
+private val REMOVED_JSON = lazy { JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true))) }
+
 /**
  * `kotlinx.serialization` serializer for free-form `Any` values that appear in the [Event] graph
  * (state deltas, `FunctionCall.args`, `FunctionResponse.response`, `customMetadata`, tool
@@ -169,19 +171,107 @@ internal object LenientByteArraySerializer : KSerializer<ByteArray> {
     ByteArrayAsBase64Serializer.serialize(encoder, value)
   }
 
-  override fun deserialize(decoder: Decoder): ByteArray {
-    // A non-JSON format cannot carry the legacy shape, so there is nothing to be tolerant about.
-    val jsonDecoder =
-      decoder as? JsonDecoder ?: return ByteArrayAsBase64Serializer.deserialize(decoder)
-    val element = jsonDecoder.decodeJsonElement()
-    if (element !is JsonArray) {
-      return jsonDecoder.json.decodeFromJsonElement(ByteArrayAsBase64Serializer, element)
+  override fun deserialize(decoder: Decoder): ByteArray =
+    asSerializationError(MALFORMED_BYTES) {
+      // A non-JSON format cannot carry the legacy shape, so there is nothing to be tolerant about.
+      val jsonDecoder =
+        decoder as? JsonDecoder
+          ?: return@asSerializationError ByteArrayAsBase64Serializer.deserialize(decoder)
+      val element = jsonDecoder.decodeJsonElement()
+      if (element !is JsonArray) {
+        return@asSerializationError jsonDecoder.json.decodeFromJsonElement(
+          ByteArrayAsBase64Serializer,
+          element,
+        )
+      }
+      // Not dead code: what a given caller writes today says nothing about what is already on disk.
+      // Blobs persisted before `Blob.data` had a serializer are kotlinx's default number array.
+      ByteArray(element.size) { element[it].jsonPrimitive.int.toByte() }
     }
-    // Not dead code: what a given caller writes today says nothing about what is already on disk.
-    // Blobs persisted before `Blob.data` had a serializer are kotlinx's default number array.
-    return ByteArray(element.size) { element[it].jsonPrimitive.int.toByte() }
-  }
 }
+
+/**
+ * Reads a duration written either as proto3's `"1.5s"` or as kotlinx's ISO-8601 default
+ * (`"PT1.5S"`), and always writes the former.
+ *
+ * [com.google.adk.kt.types.VideoMetadata]'s two offsets shipped without a serializer, so kotlinx
+ * wrote them as ISO-8601, and a session persisted on device by an older build holds that shape. The
+ * whole session is one JSON document: a decode failure on one offset is not a missing field, it is
+ * an uncaught failure loading the entire session, which to the user is indistinguishable from data
+ * loss. The two forms are unambiguous — proto3's ends in `s`, ISO-8601 starts with `P` — so
+ * accepting both costs no correctness.
+ *
+ * This is the read half only. New data is the proto3 form, which an older binary still cannot
+ * parse, so downgrading remains breaking; nothing here changes that.
+ *
+ * Encoding delegates to [DurationStringSerializer] rather than formatting here, so the emitted form
+ * stays whatever the SDK writes for its own copies of these fields.
+ *
+ * **Do not apply this to every `Duration` field.** Which serializer a field gets is decided by
+ * whether data in the old shape can exist for it, and the two answers are both correct:
+ * - A field that has already shipped uses this one, because a persisted session out there holds the
+ *   ISO form and must still load.
+ * - A field on a type introduced after this change uses [DurationStringSerializer] directly. No
+ *   old-shape data can exist for a type that never shipped, so tolerance there would accept a form
+ *   nothing ever wrote and quietly widen the format we are committed to.
+ */
+internal object LenientDurationStringSerializer : KSerializer<Duration> {
+  override val descriptor: SerialDescriptor = DurationStringSerializer.descriptor
+
+  override fun serialize(encoder: Encoder, value: Duration) {
+    DurationStringSerializer.serialize(encoder, value)
+  }
+
+  override fun deserialize(decoder: Decoder): Duration =
+    asSerializationError(MALFORMED_DURATION) {
+      // A non-JSON format cannot carry the legacy shape, so there is nothing to be tolerant about.
+      val jsonDecoder =
+        decoder as? JsonDecoder
+          ?: return@asSerializationError DurationStringSerializer.deserialize(decoder)
+      val element = jsonDecoder.decodeJsonElement()
+      val text = (element as? JsonPrimitive)?.content
+      // Not dead code: what a given caller writes today says nothing about what is already on disk.
+      // Offsets persisted before these fields had a serializer are kotlinx's ISO-8601 form.
+      if (text != null && (text.startsWith("P") || text.startsWith("-P"))) {
+        // OrNull, not parseIsoString: the throwing variant would abort here, and a `P`-prefixed
+        // string that is not an ISO duration still has to reach the proto3 attempt below.
+        Duration.parseIsoStringOrNull(text)?.let {
+          return@asSerializationError it
+        }
+      }
+      jsonDecoder.json.decodeFromJsonElement(DurationStringSerializer, element)
+    }
+}
+
+private const val MALFORMED_BYTES = "Malformed byte array."
+private const val MALFORMED_DURATION = "Malformed duration string."
+
+/**
+ * Runs [parse], reporting a malformed value as a [SerializationException] carrying [message].
+ *
+ * Both serializers above delegate to the Gen AI SDK, and the SDK lets a bare
+ * [IllegalArgumentException] out on malformed input: `DurationStringSerializer` parses the seconds
+ * with `String.toDouble()`, and `ByteArrayAsBase64Serializer` retries an undecodable string against
+ * the URL-safe alphabet without catching the second failure. The legacy number-array branch does
+ * the same for an element that is not an integer.
+ *
+ * [SerializationException] *extends* [IllegalArgumentException], so those escapes are its siblings
+ * rather than instances of it, and the `catch (SerializationException)` sites around decoding do
+ * not catch them. A malformed field would then surface as an uncaught failure loading the whole
+ * document instead of as one bad field — and `/run` and `/run_sse` decode caller-supplied JSON into
+ * these types, so such input is reachable and untrusted.
+ *
+ * [message] deliberately omits the offending value, which is caller-supplied and reaches logs; the
+ * cause carries it for a debugger.
+ */
+private inline fun <T> asSerializationError(message: String, parse: () -> T): T =
+  try {
+    parse()
+  } catch (e: SerializationException) {
+    throw e
+  } catch (e: IllegalArgumentException) {
+    throw SerializationException(message, e)
+  }
 
 /**
  * The shared `kotlinx.serialization` [Json] instance used to (de)serialize the [Event] graph for
