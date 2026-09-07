@@ -23,7 +23,6 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.int
-import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.examples.hello.HelloAgent
 import com.google.adk.kt.examples.tools.AgentToolDemoAgent
@@ -34,29 +33,7 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.webserver.AdkApiServer
 import com.google.adk.kt.webserver.AdkServerConfig
 import com.google.adk.kt.webserver.dev.AdkDevServer
-import com.google.adk.kt.webserver.loaders.AgentLoader
-
-/**
- * A sample of the example agents, by the name each one gives itself.
- *
- * Built on first use: constructing a Gemini agent needs an API key, and `--help` must not.
- */
-private val agents: Map<String, BaseAgent> by lazy {
-  listOf(
-      HelloAgent.rootAgent,
-      AgentToolDemoAgent.rootAgent,
-      FunctionToolDemoAgent.rootAgent,
-      GoogleSearchExample.rootAgent,
-      AgentTransferDemoAgent.rootAgent,
-    )
-    .associateBy { it.name }
-}
-
-private object ExampleAgentLoader : AgentLoader {
-  override fun listAgents(): List<String> = agents.keys.sorted()
-
-  override fun loadAgent(agentName: String): BaseAgent? = agents[agentName]
-}
+import com.google.adk.kt.webserver.loaders.MultiAgentLoader
 
 /**
  * Serves five of the example agents over HTTP, so the Development UI can drive them.
@@ -77,9 +54,17 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
     option("--dev", help = "Also serve the Development UI and the endpoints it drives.").flag()
 
   override fun run() {
+    // Built here so --help needs no API key: constructing a Gemini agent requires one.
     val config =
       AdkServerConfig(
-        agentLoader = ExampleAgentLoader,
+        agentLoader =
+          MultiAgentLoader(
+            HelloAgent.rootAgent,
+            AgentToolDemoAgent.rootAgent,
+            FunctionToolDemoAgent.rootAgent,
+            GoogleSearchExample.rootAgent,
+            AgentTransferDemoAgent.rootAgent,
+          ),
         sessionService = InMemorySessionService(),
         artifactService = InMemoryArtifactService(),
         port = port,

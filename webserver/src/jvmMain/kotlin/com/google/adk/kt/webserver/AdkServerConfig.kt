@@ -17,6 +17,7 @@
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
@@ -52,6 +53,63 @@ data class AdkServerConfig(
   val plugins: List<Plugin> = emptyList(),
   val webUiEnabled: Boolean? = null,
 ) {
+  /**
+   * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var agentLoader: AgentLoader? = null
+    private var sessionService: SessionService? = null
+    private var artifactService: ArtifactService? = null
+    private var port: Int = DEFAULT_PORT
+    private var host: String = DEFAULT_HOST
+    private var apiServerSpanExporter: ApiServerSpanExporter = ApiServerSpanExporter()
+    private var captureMessageContent: Boolean = false
+    private var plugins: List<Plugin> = emptyList()
+    private var webUiEnabled: Boolean? = null
+
+    fun agentLoader(agentLoader: AgentLoader): Builder = apply { this.agentLoader = agentLoader }
+
+    fun sessionService(sessionService: SessionService): Builder = apply {
+      this.sessionService = sessionService
+    }
+
+    fun artifactService(artifactService: ArtifactService): Builder = apply {
+      this.artifactService = artifactService
+    }
+
+    fun port(port: Int): Builder = apply { this.port = port }
+
+    fun host(host: String): Builder = apply { this.host = host }
+
+    fun apiServerSpanExporter(apiServerSpanExporter: ApiServerSpanExporter): Builder = apply {
+      this.apiServerSpanExporter = apiServerSpanExporter
+    }
+
+    fun captureMessageContent(captureMessageContent: Boolean): Builder = apply {
+      this.captureMessageContent = captureMessageContent
+    }
+
+    fun plugins(plugins: List<Plugin>): Builder = apply { this.plugins = plugins }
+
+    fun webUiEnabled(webUiEnabled: Boolean?): Builder = apply { this.webUiEnabled = webUiEnabled }
+
+    fun build(): AdkServerConfig =
+      AdkServerConfig(
+        agentLoader = checkNotNull(agentLoader) { "agentLoader must be set." },
+        sessionService = checkNotNull(sessionService) { "sessionService must be set." },
+        artifactService = checkNotNull(artifactService) { "artifactService must be set." },
+        port = port,
+        host = host,
+        apiServerSpanExporter = apiServerSpanExporter,
+        captureMessageContent = captureMessageContent,
+        plugins = plugins,
+        webUiEnabled = webUiEnabled,
+      )
+  }
+
   companion object {
     /** Port both server variants listen on unless told otherwise. */
     const val DEFAULT_PORT: Int = 8080
@@ -74,5 +132,7 @@ data class AdkServerConfig(
         artifactService = InMemoryArtifactService(),
         port = port,
       )
+
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
 }

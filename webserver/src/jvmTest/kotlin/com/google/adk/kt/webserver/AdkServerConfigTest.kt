@@ -16,10 +16,14 @@
 
 package com.google.adk.kt.webserver
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -30,12 +34,13 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
 /** [AdkServerConfig.inMemory] is the one-line way to serve a single agent. */
-@OptIn(FrameworkInternalApi::class)
+@OptIn(FrameworkInternalApi::class, AdkJavaInteropApi::class)
 @RunWith(JUnit4::class)
 class AdkServerConfigTest {
   private val agent = FakeAgent()
@@ -104,5 +109,55 @@ class AdkServerConfigTest {
   @Test
   fun inMemory_leavesTheDevUiToTheServerVariant() {
     assertThat(AdkServerConfig.inMemory(agent).webUiEnabled).isNull()
+  }
+
+  @Test
+  fun builder_appliesConstructorDefaultsForUnsetProperties() {
+    val config =
+      AdkServerConfig.builder()
+        .agentLoader(FakeAgentLoader())
+        .sessionService(InMemorySessionService())
+        .artifactService(InMemoryArtifactService())
+        .build()
+
+    assertThat(config.port).isEqualTo(AdkServerConfig.DEFAULT_PORT)
+    assertThat(config.host).isEqualTo(AdkServerConfig.DEFAULT_HOST)
+    assertThat(config.captureMessageContent).isFalse()
+    assertThat(config.plugins).isEmpty()
+    assertThat(config.webUiEnabled).isNull()
+  }
+
+  @Test
+  fun builder_appliesEveryProvidedValue() {
+    val loader = FakeAgentLoader()
+    val sessions = InMemorySessionService()
+    val artifacts = InMemoryArtifactService()
+    val exporter = ApiServerSpanExporter()
+
+    val config =
+      AdkServerConfig.builder()
+        .agentLoader(loader)
+        .sessionService(sessions)
+        .artifactService(artifacts)
+        .port(9123)
+        .host("0.0.0.0")
+        .apiServerSpanExporter(exporter)
+        .captureMessageContent(true)
+        .webUiEnabled(true)
+        .build()
+
+    assertThat(config.agentLoader).isSameInstanceAs(loader)
+    assertThat(config.sessionService).isSameInstanceAs(sessions)
+    assertThat(config.artifactService).isSameInstanceAs(artifacts)
+    assertThat(config.port).isEqualTo(9123)
+    assertThat(config.host).isEqualTo("0.0.0.0")
+    assertThat(config.apiServerSpanExporter).isSameInstanceAs(exporter)
+    assertThat(config.captureMessageContent).isTrue()
+    assertThat(config.webUiEnabled).isTrue()
+  }
+
+  @Test
+  fun builder_requiresAgentLoaderSessionAndArtifactServices() {
+    assertThrows(IllegalStateException::class.java) { AdkServerConfig.builder().build() }
   }
 }
