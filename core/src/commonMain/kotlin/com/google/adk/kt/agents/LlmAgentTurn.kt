@@ -380,13 +380,13 @@ internal class LlmAgentTurn(
    * rather than mutating it. The whole object moves, so control-flow signals cross too, not just
    * the deltas.
    *
-   * Every event a step emits can therefore share one mutable
-   * [EventActions][com.google.adk.kt.events.EventActions], and writers such as
-   * `CallbackContext.saveArtifact`,
-   * [EventActions.removeStateByKey][com.google.adk.kt.events.EventActions.removeStateByKey] and
-   * `LlmAgent.maybeSaveOutputToState` mutate it in place, so a late write also shows up on partial
-   * events already emitted. Java shares the same way; Python instead snapshots the actions onto
-   * each yielded event. Session state is unaffected, as partial events are not appended.
+   * The base event holds the live [EventActions][com.google.adk.kt.events.EventActions] that
+   * in-step writers such as `CallbackContext.saveArtifact` and
+   * [EventActions.removeStateByKey][com.google.adk.kt.events.EventActions.removeStateByKey] mutate
+   * in place. `finalizeModelResponseEvent` snapshots those actions onto each emitted event (via
+   * `EventActions.snapshot`), so a later write -- e.g. `LlmAgent.maybeSaveOutputToState` on the
+   * final event -- no longer leaks back into an already-emitted partial. This matches ADK Python
+   * 1.x's per-event snapshot; Python 2.x and Java share one mutable instance across the step.
    */
   private fun Event.withActionsFrom(callbackContext: CallbackContext): Event =
     if (actions === callbackContext.eventActions) this
@@ -434,6 +434,8 @@ internal class LlmAgentTurn(
   ): Event {
     val finalModelResponseEvent =
       copy(
+          // Snapshot so a later in-step write can't mutate an already-emitted partial.
+          actions = actions.snapshot(),
           content = response.content,
           usageMetadata = response.usageMetadata,
           finishReason = response.finishReason,

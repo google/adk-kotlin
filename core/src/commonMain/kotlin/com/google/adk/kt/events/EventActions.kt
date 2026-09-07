@@ -124,6 +124,23 @@ data class EventActions(
     )
 
   /**
+   * Returns a deep copy of this object with the mutable [stateDelta], [artifactDelta] and
+   * [requestedToolConfirmations] maps duplicated, so a later in-place write to this object is not
+   * seen through the copy. Used to snapshot the actions onto each emitted event. Only these maps
+   * are duplicated; the remaining fields are immutable or only reassigned (never mutated in place),
+   * so sharing the copied reference is safe.
+   */
+  internal fun snapshot(): EventActions =
+    copy(
+      stateDelta = concurrentMutableMapOf<String, Any>().apply { putAll(stateDelta) },
+      artifactDelta = concurrentMutableMapOf<String, Int>().apply { putAll(artifactDelta) },
+      requestedToolConfirmations =
+        concurrentMutableMapOf<String, ToolConfirmation>().apply {
+          putAll(requestedToolConfirmations)
+        },
+    )
+
+  /**
    * Fluent builder for [EventActions], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */
