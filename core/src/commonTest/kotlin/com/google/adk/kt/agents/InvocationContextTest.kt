@@ -1369,4 +1369,191 @@ class InvocationContextTest {
     assertEquals(mapOf("temp" to 21), responses["call_1"]!!.response)
     assertNotNull(responses["call_2"]!!.response["error"])
   }
+
+  @Test
+  fun getEvents_currentBranch_includesUserEventOnSubBranch() = runBlocking {
+    val userOnChild = userEventOn("agent_1.child")
+
+    assertEquals(listOf(userOnChild), contextOn("agent_1", userOnChild).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_excludesAgentEventOnSubBranch() = runBlocking {
+    // Asymmetric with the user case on purpose: descendants' internal events stay hidden.
+    val agentOnChild = agentEventOn("agent_1.child")
+
+    assertEquals(emptyList<Event>(), contextOn("agent_1", agentOnChild).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_excludesSiblingBranch() = runBlocking {
+    val userOnSibling = userEventOn("agent_2")
+
+    assertEquals(emptyList<Event>(), contextOn("agent_1", userOnSibling).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_emptyBranchDoesNotMatchBranchedEvents() = runBlocking {
+    // An empty string is a real branch value, not a synonym for "match everything".
+    val userOnBranch = userEventOn("agent_1")
+
+    assertEquals(emptyList<Event>(), contextOn("", userOnBranch).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_noBranchMatchesEveryUserEventButNotAgentEvents() = runBlocking {
+    val userElsewhere = userEventOn("agent_2.child")
+    val agentElsewhere = agentEventOn("agent_2.child")
+
+    assertEquals(
+      listOf(userElsewhere),
+      contextOn(null, userElsewhere, agentElsewhere).currentBranchEvents(),
+    )
+  }
+
+  @Test
+  fun getEvents_currentBranch_keepsUserResponseToCallInSubtree() = runBlocking {
+    val callOnChild = callEventOn("agent_1.child", "fc_1")
+    val reply = userResponseEventOn("agent_1.child", "fc_1")
+
+    assertEquals(listOf(reply), contextOn("agent_1", callOnChild, reply).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_keepsUserResponseOnThisBranchToSubBranchCall() = runBlocking {
+    // Python's own input: the reply sits here, so only the cross-check can admit it.
+    val callOnChild = callEventOn("agent_1.child", "fc_1")
+    val reply = userResponseEventOn("agent_1", "fc_1")
+
+    assertEquals(listOf(reply), contextOn("agent_1", callOnChild, reply).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_dropsUserResponseToCallElsewhere() = runBlocking {
+    // Sitting on this branch is not enough: the reply answers a parallel tree's call.
+    val callElsewhere = callEventOn("agent_2", "fc_1")
+    val reply = userResponseEventOn("agent_1", "fc_1")
+
+    assertEquals(
+      emptyList<Event>(),
+      contextOn("agent_1", callElsewhere, reply).currentBranchEvents(),
+    )
+  }
+
+  @Test
+  fun getEvents_currentBranch_dropsUserResponseToLookalikeBranchCall() = runBlocking {
+    // "agent_10" shares a prefix with "agent_1" but is not a sub-branch of it.
+    val callOnLookalike = callEventOn("agent_10", "fc_1")
+    val reply = userResponseEventOn("agent_1", "fc_1")
+
+    assertEquals(
+      emptyList<Event>(),
+      contextOn("agent_1", callOnLookalike, reply).currentBranchEvents(),
+    )
+  }
+
+  @Test
+  fun getEvents_currentBranch_judgesEachReplyAgainstItsOwnCall() = runBlocking {
+    val callHere = callEventOn("agent_1", "fc_here")
+    val callOnChild = callEventOn("agent_1.child", "fc_child")
+    val callElsewhere = callEventOn("agent_2", "fc_far")
+    val replyHere = userResponseEventOn("agent_1", "fc_here")
+    val replyFar = userResponseEventOn("agent_1", "fc_far")
+    val replyChild = userResponseEventOn("agent_1", "fc_child")
+
+    val context =
+      contextOn("agent_1", callHere, callOnChild, callElsewhere, replyHere, replyFar, replyChild)
+
+    // callHere matches exactly so it survives; the sub-branch calls do not, but their replies do.
+    assertEquals(listOf(callHere, replyHere, replyChild), context.currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_emptyBranchAndDotPrefixedEvent_isExcluded() = runBlocking {
+    // Pins the empty-branch guard: without it the prefix test would admit a dot-prefixed branch.
+    val dotPrefixed = userEventOn(".x")
+
+    assertEquals(emptyList<Event>(), contextOn("", dotPrefixed).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_excludesRootAgentEventWhenOnSubBranch() = runBlocking {
+    // The narrowing direction: the old rule admitted a null branch, the new one demands equality.
+    val rootAgentEvent = agentEventOn(null)
+
+    assertEquals(emptyList<Event>(), contextOn("agent_1", rootAgentEvent).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_includesRootUserEventWhenOnSubBranch() = runBlocking {
+    // The user twin of the case above: a null-branch user event still matches.
+    val rootUserEvent = userEventOn(null)
+
+    assertEquals(listOf(rootUserEvent), contextOn("agent_1", rootUserEvent).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentBranch_dropsUserResponseToUnbranchedCall() = runBlocking {
+    // A root-level call contributes no id, so a reply answering only it is dropped.
+    val rootCall = callEventOn(null, "fc_1")
+    val reply = userResponseEventOn("agent_1", "fc_1")
+
+    assertEquals(emptyList<Event>(), contextOn("agent_1", rootCall, reply).currentBranchEvents())
+  }
+
+  @Test
+  fun getEvents_currentInvocationAndBranch_appliesBothFilters() = runBlocking {
+    // The id set stays derived from the unfiltered session, so an older call still admits its
+    // reply.
+    val callOnChild = callEventOn("agent_1.child", "fc_1").copy(invocationId = "inv-other")
+    val replyThisInvocation = userResponseEventOn("agent_1.child", "fc_1")
+    val userOtherInvocation = userEventOn("agent_1").copy(invocationId = "inv-other")
+
+    val context = contextOn("agent_1", callOnChild, replyThisInvocation, userOtherInvocation)
+
+    assertEquals(
+      listOf(replyThisInvocation),
+      context.getEvents(currentInvocation = true, currentBranch = true),
+    )
+  }
+
+  private suspend fun InvocationContext.currentBranchEvents(): List<Event> =
+    getEvents(currentInvocation = false, currentBranch = true)
+
+  private fun contextOn(branch: String?, vararg events: Event): InvocationContext {
+    val session = testSession()
+    events.forEach { session.events.add(it) }
+    // Matches the invocationId the event helpers stamp, so currentInvocation = true is meaningful.
+    return testInvocationContext(session = session, branch = branch, invocationId = "inv-1")
+  }
+
+  private fun userEventOn(branch: String?): Event =
+    Event(invocationId = "inv-1", author = Role.USER, branch = branch)
+
+  private fun agentEventOn(branch: String?): Event =
+    Event(invocationId = "inv-1", author = "some_agent", branch = branch)
+
+  private fun callEventOn(branch: String?, callId: String): Event =
+    Event(
+      invocationId = "inv-1",
+      author = "some_agent",
+      branch = branch,
+      content = Content(parts = listOf(Part(functionCall = FunctionCall(id = callId, name = "t")))),
+    )
+
+  private fun userResponseEventOn(branch: String?, callId: String): Event =
+    Event(
+      invocationId = "inv-1",
+      author = Role.USER,
+      branch = branch,
+      content =
+        Content(
+          parts =
+            listOf(
+              Part(
+                functionResponse = FunctionResponse(id = callId, name = "t", response = emptyMap())
+              )
+            )
+        ),
+    )
 }

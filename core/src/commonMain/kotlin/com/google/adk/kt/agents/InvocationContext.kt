@@ -271,7 +271,10 @@ data class InvocationContext(
    * session service each step, matching Python, Java, and Go ADK.
    *
    * @param currentInvocation Whether to filter the events by the current invocation.
-   * @param currentBranch Whether to filter the events by the current branch.
+   * @param currentBranch Whether to filter the events by the current branch. The rule is
+   *   author-asymmetric: a user event matches this branch, a descendant sub-branch, or no branch,
+   *   and one carrying function responses must also answer a call issued on this branch or below,
+   *   while every other event must sit on exactly this branch.
    * @return A list of events from the current session.
    */
   // suspend kept for the ReadonlyContext.getEvents contract; the read never suspends.
@@ -280,14 +283,68 @@ data class InvocationContext(
     currentInvocation: Boolean = false,
     currentBranch: Boolean = false,
   ): List<Event> {
-    var results: List<Event> = session.events.toList()
+    // One snapshot per call, so the filter and the id set derived from it cannot disagree.
+    val allEvents: List<Event> = session.events.toList()
+    var results: List<Event> = allEvents
     if (currentInvocation) {
       results = results.filter { it.invocationId == this.invocationId }
     }
     if (currentBranch) {
-      results = results.filter { it.branch == this.branch || it.branch == null }
+      // Only the user-response cross-check needs these; a null or empty branch skips it.
+      val scopeBranch = branch
+      val branchCallIds =
+        if (scopeBranch.isNullOrEmpty()) emptySet()
+        else branchFunctionCallIds(allEvents, scopeBranch)
+      results = results.filter { isOnCurrentBranch(it, scopeBranch, branchCallIds) }
     }
     return results
+  }
+
+  /**
+   * Returns whether [event] belongs to the branch this invocation is running on.
+   *
+   * A user event matches this branch, a descendant sub-branch, or no branch at all; one carrying
+   * function responses must additionally answer a call issued on this branch or below, which is
+   * what stops a reply leaking in from a parallel tree. Any other event must sit on exactly this
+   * branch, so a descendant's own events stay hidden.
+   */
+  private fun isOnCurrentBranch(
+    event: Event,
+    scopeBranch: String?,
+    branchCallIds: Set<String>,
+  ): Boolean {
+    val eventBranch = event.branch
+    if (event.author != Role.USER) {
+      return eventBranch == scopeBranch
+    }
+    if (!scopeBranch.isNullOrEmpty()) {
+      val responseIds = event.functionResponses().mapNotNull { it.id }.toSet()
+      if (responseIds.isNotEmpty() && responseIds.none { it in branchCallIds }) {
+        return false
+      }
+    }
+    return eventBranch == null ||
+      scopeBranch == null ||
+      eventBranch == scopeBranch ||
+      (scopeBranch.isNotEmpty() && eventBranch.startsWith("$scopeBranch."))
+  }
+
+  /**
+   * Returns the ids of function calls issued on this branch or on a descendant sub-branch.
+   *
+   * Branches are dot-joined, so the trailing dot keeps the prefix test on a segment boundary.
+   */
+  private fun branchFunctionCallIds(events: List<Event>, scopeBranch: String): Set<String> {
+    val descendantPrefix = "$scopeBranch."
+    return events
+      .filter { event ->
+        val eventBranch = event.branch
+        !eventBranch.isNullOrEmpty() &&
+          (eventBranch == scopeBranch || eventBranch.startsWith(descendantPrefix))
+      }
+      .flatMap { it.functionCalls() }
+      .mapNotNull { it.id }
+      .toSet()
   }
 
   /**
