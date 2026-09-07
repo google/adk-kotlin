@@ -539,6 +539,17 @@ class McpSchemaConverterTest {
     assertEquals(Type.OBJECT, declaration.parameters?.type)
   }
 
+  // A server that omits `inputSchema` reaches us with an empty one, which names no type at all.
+  @Test
+  fun toAdkFunctionDeclaration_toolWithEmptyInputSchema_leavesParameterTypeUnset() {
+    val tool = McpSchema.Tool.builder("bare", emptyMap()).build()
+
+    val declaration = tool.toAdkFunctionDeclaration()
+
+    val parameters = assertNotNull(declaration.parameters)
+    assertNull(parameters.type)
+  }
+
   @Test
   fun toAdkFunctionDeclaration_toolWithNullTypedProperty_doesNotThrow() {
     val tool =
