@@ -72,8 +72,8 @@ class McpToolsetIntegrationTest {
   }
 
   @Test
-  fun readResource_returnsServerContentEmbeddingTheInjectedToken(): Unit = runBlocking {
-    contract.readResource_returnsServerContentEmbeddingTheInjectedToken()
+  fun loadResource_returnsServerContentEmbeddingTheInjectedToken(): Unit = runBlocking {
+    contract.loadResource_returnsServerContentEmbeddingTheInjectedToken()
   }
 
   @Test
