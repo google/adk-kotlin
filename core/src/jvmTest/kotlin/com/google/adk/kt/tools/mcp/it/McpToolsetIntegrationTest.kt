@@ -265,7 +265,7 @@ class McpToolsetIntegrationTest {
   @Test
   fun close_afterToolsReinitialize_leavesNoOrphanProcesses(): Unit = runBlocking {
     val pidDir = Files.createTempDirectory("adk-mcp-it-pids")
-    val toolset = newToolset(pidDir = pidDir, requestTimeout = HANG_TEST_REQUEST_TIMEOUT)
+    val toolset = newToolset(pidDir = pidDir, requestTimeout = KILL_TEST_REQUEST_TIMEOUT)
     try {
       val tools = toolset.getTools()
       val echo = tools.single { it.name == FakeMcpServer.TOOL_ECHO }
@@ -317,11 +317,13 @@ class McpToolsetIntegrationTest {
     private const val PROGRESS_TIMEOUT_MILLIS: Long = 30_000
 
     /**
-     * Request timeout for the process-kill test. Kept short because the first post-kill call blocks
-     * for the entire timeout (ADK doesn't fail fast on a broken stdio pipe) before recovery kicks
-     * in; still ample for the trivial retried call on the respawned process.
+     * Request timeout for the two process-kill tests. Nothing they assert depends on it; it is
+     * sized to survive a cold child-JVM respawn on a contended CI runner, because this value also
+     * bounds the `initialize` handshake that follows the deliberate SIGKILL. The price is one full
+     * stall per test -- the SDK only dismisses pending requests on an explicit close, never on a
+     * broken pipe -- so prefer headroom over speed.
      */
-    private val KILL_TEST_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(5)
+    private val KILL_TEST_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(10)
 
     /**
      * Request timeout for the unresponsive-server test. Kept fairly short because the call hits
