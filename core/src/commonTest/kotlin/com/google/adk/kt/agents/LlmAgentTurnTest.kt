@@ -32,10 +32,12 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
 import org.junit.Test
 
 class LlmAgentTurnTest {
@@ -152,5 +154,40 @@ class LlmAgentTurnTest {
 
     assertEquals("SAFETY", modelEvent.errorCode)
     assertEquals(mapOf("trace_id" to "abc123", "attempt" to 2), modelEvent.customMetadata)
+  }
+
+  @Test
+  fun runAsync_streamingStep_eachEmittedEventGetsItsOwnActionsSnapshot() = runBlocking {
+    // Each emitted event must carry its own EventActions, isolating already-emitted partials.
+    val streamingModel =
+      DummyModel(
+        "streaming-model",
+        listOf(
+          flowOf(
+            LlmResponse(content = modelMessage("a"), partial = true),
+            LlmResponse(content = modelMessage("b"), partial = true),
+            LlmResponse(content = modelMessage("ab")),
+          )
+        ),
+      )
+    val agent = LlmAgent(name = "test-agent", model = streamingModel)
+    val runner = InMemoryRunner(agent = agent)
+
+    val modelEvents =
+      runner
+        .runAsync(
+          userId = "user1",
+          sessionId = "session1",
+          newMessage = userMessage("hi"),
+          runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+        )
+        .toList()
+        .filter { it.author == "test-agent" }
+
+    // Two partials followed by the aggregated final event, each with a distinct EventActions.
+    assertEquals(3, modelEvents.size)
+    assertNotSame(modelEvents[0].actions, modelEvents[1].actions)
+    assertNotSame(modelEvents[1].actions, modelEvents[2].actions)
+    assertNotSame(modelEvents[0].actions, modelEvents[2].actions)
   }
 }

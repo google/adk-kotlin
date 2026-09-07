@@ -432,6 +432,8 @@ internal class LlmAgentTurn(
   ): Event {
     val finalModelResponseEvent =
       copy(
+          // Snapshot so a later in-step write can't mutate an already-emitted partial.
+          actions = actions.snapshot(),
           content = response.content,
           usageMetadata = response.usageMetadata,
           finishReason = response.finishReason,
