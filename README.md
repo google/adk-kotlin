@@ -27,6 +27,11 @@ integrated with services in Google Cloud. It allows you to define agent
 behavior, orchestration, and tool use directly in code, enabling robust
 debugging, versioning, and deployment anywhere – from your laptop to the cloud.
 
+ADK for Kotlin now follows a stable release cycle, with regular releases
+published to
+[Maven Central](https://search.maven.org/artifact/com.google.adk/google-adk-kotlin-core)
+under [semantic versioning](https://semver.org/).
+
 --------------------------------------------------------------------------------
 
 ## ✨ Key Features
