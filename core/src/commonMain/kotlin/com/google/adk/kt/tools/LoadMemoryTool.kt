@@ -60,11 +60,27 @@ class LoadMemoryTool :
         )
 
     val session = context.invocationContext.session
-    return memoryService.searchMemory(
-      appName = session.key.appName,
-      userId = session.key.userId,
-      query = query,
-    )
+    val response =
+      memoryService.searchMemory(
+        appName = session.key.appName,
+        userId = session.key.userId,
+        query = query,
+      )
+
+    return buildMap<String, Any?> {
+      put(
+        "memories",
+        response.memories.map { entry ->
+          buildMap<String, Any?> {
+            put("text", entry.content.parts.mapNotNull { it.text }.joinToString("\n"))
+            entry.author?.let { put("author", it) }
+            entry.timestamp?.let { put("timestamp", it) }
+            if (entry.customMetadata.isNotEmpty()) put("metadata", entry.customMetadata)
+          }
+        },
+      )
+      response.nextPageToken?.let { put("nextPageToken", it) }
+    }
   }
 
   override suspend fun processLlmRequest(

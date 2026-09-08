@@ -1,3 +1,5 @@
+@file:OptIn(FrameworkInternalApi::class)
+
 /*
  * Copyright 2026 Google LLC
  *
@@ -16,9 +18,11 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.memory.SearchMemoryResponse
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.testing.DummyMemoryService
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
@@ -26,6 +30,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -46,24 +51,127 @@ class LoadMemoryToolTest {
   }
 
   @Test
-  fun run_withQuery_callsMemoryService() = runTest {
+  fun run_withQuery_returnsJsonNativeMap() = runTest {
     val tool = LoadMemoryTool()
     val memoryService =
       DummyMemoryService().apply {
         searchMemoryResponse =
           SearchMemoryResponse(
             memories =
-              listOf(MemoryEntry(content = Content(parts = listOf(Part(text = "test-query")))))
+              listOf(
+                MemoryEntry(
+                  content = Content(parts = listOf(Part(text = "remembered fact"))),
+                  author = "user",
+                  timestamp = "2026-01-01T00:00:00Z",
+                  customMetadata = mapOf("source" to "chat"),
+                )
+              ),
+            nextPageToken = "page2",
           )
       }
     val context = testToolContext(testInvocationContext(memoryService = memoryService))
 
-    val args = mapOf("query" to "test-query")
-    val result = tool.run(context, args)
+    val result = tool.run(context, mapOf("query" to "test-query"))
 
-    assertTrue(result is SearchMemoryResponse)
-    assertEquals(1, result.memories.size)
-    assertEquals("test-query", result.memories[0].content.parts[0].text)
+    assertTrue(result is Map<*, *>)
+    @Suppress("UNCHECKED_CAST") val resultMap = result as Map<String, Any?>
+
+    val memories = resultMap["memories"] as List<*>
+    assertEquals(1, memories.size)
+
+    @Suppress("UNCHECKED_CAST") val entry = memories[0] as Map<String, Any?>
+    assertEquals("remembered fact", entry["text"])
+    assertEquals("user", entry["author"])
+    assertEquals("2026-01-01T00:00:00Z", entry["timestamp"])
+    assertEquals(mapOf("source" to "chat"), entry["metadata"])
+
+    assertEquals("page2", resultMap["nextPageToken"])
+  }
+
+  @Test
+  fun run_withQuery_resultSerializesWithAnySerializer() = runTest {
+    val tool = LoadMemoryTool()
+    val memoryService =
+      DummyMemoryService().apply {
+        searchMemoryResponse =
+          SearchMemoryResponse(
+            memories =
+              listOf(MemoryEntry(content = Content(parts = listOf(Part(text = "test-memory")))))
+          )
+      }
+    val context = testToolContext(testInvocationContext(memoryService = memoryService))
+
+    val result = tool.run(context, mapOf("query" to "test-query"))
+
+    // Must not throw — this is the exact code path that was broken before the fix.
+    anyToJsonElement(result)
+  }
+
+  @Test
+  fun run_emptyMemories_returnsEmptyList() = runTest {
+    val tool = LoadMemoryTool()
+    val memoryService =
+      DummyMemoryService().apply {
+        searchMemoryResponse = SearchMemoryResponse(memories = emptyList())
+      }
+    val context = testToolContext(testInvocationContext(memoryService = memoryService))
+
+    val result = tool.run(context, mapOf("query" to "nothing"))
+
+    assertTrue(result is Map<*, *>)
+    @Suppress("UNCHECKED_CAST") val resultMap = result as Map<String, Any?>
+    assertEquals(emptyList<Any>(), resultMap["memories"])
+    assertFalse(resultMap.containsKey("nextPageToken"))
+
+    anyToJsonElement(result)
+  }
+
+  @Test
+  fun run_entryWithEmptyParts_returnsEmptyText() = runTest {
+    val tool = LoadMemoryTool()
+    val memoryService =
+      DummyMemoryService().apply {
+        searchMemoryResponse =
+          SearchMemoryResponse(
+            memories = listOf(MemoryEntry(content = Content(parts = emptyList())))
+          )
+      }
+    val context = testToolContext(testInvocationContext(memoryService = memoryService))
+
+    val result = tool.run(context, mapOf("query" to "test"))
+
+    @Suppress("UNCHECKED_CAST") val resultMap = result as Map<String, Any?>
+    @Suppress("UNCHECKED_CAST") val memories = resultMap["memories"] as List<Map<String, Any?>>
+    assertEquals("", memories[0]["text"])
+    assertFalse(memories[0].containsKey("author"))
+    assertFalse(memories[0].containsKey("timestamp"))
+    assertFalse(memories[0].containsKey("metadata"))
+
+    anyToJsonElement(result)
+  }
+
+  @Test
+  fun run_multipleTextParts_joinsWithNewline() = runTest {
+    val tool = LoadMemoryTool()
+    val memoryService =
+      DummyMemoryService().apply {
+        searchMemoryResponse =
+          SearchMemoryResponse(
+            memories =
+              listOf(
+                MemoryEntry(
+                  content = Content(parts = listOf(Part(text = "line1"), Part(text = "line2")))
+                )
+              )
+          )
+      }
+    val context = testToolContext(testInvocationContext(memoryService = memoryService))
+
+    val result = tool.run(context, mapOf("query" to "test"))
+
+    @Suppress("UNCHECKED_CAST") val resultMap = result as Map<String, Any?>
+    @Suppress("UNCHECKED_CAST") val memories = resultMap["memories"] as List<Map<String, Any?>>
+    assertEquals("line1\nline2", memories[0]["text"])
   }
 
   @Test
