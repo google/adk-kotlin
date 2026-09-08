@@ -40,10 +40,8 @@ val firebaseConfigKeys = listOf("FIREBASE_API_KEY", "FIREBASE_APP_ID", "FIREBASE
 android {
   namespace = "com.google.adk.kt.examples.android"
 
-  // compileSdk 36.1: the Firebase example depends on the Firebase AI SDK (via
-  // :google-adk-kotlin-firebase), which is built against 36.1, and the ML Kit GenAI / Gemini Nano
-  // stack pulls in androidx.core:core:1.16.0, which needs compileSdk >= 35. 36.1 satisfies both.
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  // 37: `core` declares minCompileSdk=37, which AGP enforces transitively on this app.
+  compileSdk { version = release(37) }
 
   defaultConfig {
     applicationId = "com.google.adk.kt.examples.android"
