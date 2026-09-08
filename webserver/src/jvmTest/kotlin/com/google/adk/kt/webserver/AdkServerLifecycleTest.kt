@@ -130,7 +130,7 @@ class AdkServerLifecycleTest {
 
       // An unmounted route is Ktor's 404; a mounted stub answers with some other status.
       assertThat(statusOf(port, DEV_ONLY_PATH)).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
-      assertThat(statusOf(port, "/dev-ui/")).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+      assertThat(statusOf(port, "/dev-ui/")).isEqualTo(HttpURLConnection.HTTP_OK)
     } finally {
       server.stop()
     }
@@ -145,7 +145,7 @@ class AdkServerLifecycleTest {
       server.start()
       awaitHealthy(port)
 
-      assertThat(statusOf(port, "/dev-ui/")).isNotEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
+      assertThat(statusOf(port, "/dev-ui/")).isEqualTo(HttpURLConnection.HTTP_OK)
       // Still the API server: the development-only routes stay off.
       assertThat(statusOf(port, DEV_ONLY_PATH)).isEqualTo(HttpURLConnection.HTTP_NOT_FOUND)
     } finally {

@@ -65,6 +65,15 @@ private fun webUiSettingOrNull(raw: String?, source: String): Boolean? {
   }
 }
 
+/**
+ * Redirect target for the Development UI, relative on purpose: Ktor sends `Location` verbatim, so
+ * the browser resolves it against the URL it actually used and a reverse proxy's stripped path
+ * prefix survives. A root-relative "/dev-ui" would drop that prefix and 404. Do not install Ktor's
+ * `IgnoreTrailingSlash`: it would match `/dev-ui/` against this redirect too, sending the browser
+ * on to `dev-ui/dev-ui/`, which 404s.
+ */
+private const val DEV_UI_TARGET = "dev-ui/"
+
 internal fun Route.staticRoutes(application: Application) {
   var webUiDir =
     System.getProperty("adk.web.ui.dir")
@@ -88,7 +97,7 @@ internal fun Route.staticRoutes(application: Application) {
   }
 
   if (dir != null) {
-    get("/dev-ui") { call.respondRedirect("/dev-ui/") }
+    get("/dev-ui") { call.respondRedirect(DEV_UI_TARGET) }
     get("/dev-ui/") {
       val indexFile = File(dir, "index.html")
       if (indexFile.exists()) {
@@ -100,9 +109,9 @@ internal fun Route.staticRoutes(application: Application) {
     staticFiles("/dev-ui", dir)
   } else {
     logger.info("Serving embedded static browser assets as fallback.")
-    get("/dev-ui") { call.respondRedirect("/dev-ui/") }
+    get("/dev-ui") { call.respondRedirect(DEV_UI_TARGET) }
     staticResources("/dev-ui", "browser")
   }
 
-  get("/") { call.respondRedirect("/dev-ui") }
+  get("/") { call.respondRedirect(DEV_UI_TARGET) }
 }

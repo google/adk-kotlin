@@ -53,19 +53,4 @@ class DevUiAssetsTest {
         .isEqualTo(HttpStatusCode.OK)
     }
   }
-
-  /** Runs [body] with the `adk.web.ui.dir` system property cleared. */
-  private fun withoutWebUiDir(body: () -> Unit) {
-    val previous: String? = System.getProperty(WEB_UI_DIR_PROPERTY)
-    System.clearProperty(WEB_UI_DIR_PROPERTY)
-    try {
-      body()
-    } finally {
-      if (previous != null) System.setProperty(WEB_UI_DIR_PROPERTY, previous)
-    }
-  }
-
-  private companion object {
-    const val WEB_UI_DIR_PROPERTY = "adk.web.ui.dir"
-  }
 }
