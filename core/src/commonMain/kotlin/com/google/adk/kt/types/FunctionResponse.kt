@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
@@ -34,4 +36,33 @@ data class FunctionResponse(
   @EncodeDefault(EncodeDefault.Mode.ALWAYS)
   val response: Map<String, @Contextual Any?> = emptyMap(),
   val id: String? = null,
-)
+) {
+  /**
+   * Fluent builder for [FunctionResponse], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var response: Map<String, Any?> = emptyMap()
+    private var id: String? = null
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun response(response: Map<String, Any?>): Builder = apply { this.response = response }
+
+    fun id(id: String?): Builder = apply { this.id = id }
+
+    fun build(): FunctionResponse =
+      FunctionResponse(
+        name = checkNotNull(name) { "FunctionResponse.Builder requires name to be set." },
+        response = response,
+        id = id,
+      )
+  }
+
+  companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
+  }
+}

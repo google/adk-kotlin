@@ -142,12 +142,11 @@ final class LongRunningToolDemoSupportJava {
                         List.of(
                             Part.builder()
                                 .functionCall(
-                                    new FunctionCall(
-                                        CHANGE_DESTINATION_TOOL,
-                                        Map.of(DESTINATION_ARG, REQUESTED_DESTINATION),
-                                        "client-call-1",
-                                        null,
-                                        null))
+                                    FunctionCall.builder()
+                                        .name(CHANGE_DESTINATION_TOOL)
+                                        .args(Map.of(DESTINATION_ARG, REQUESTED_DESTINATION))
+                                        .id("client-call-1")
+                                        .build())
                                 .build())))
                 .build();
       } else {
@@ -167,10 +166,11 @@ final class LongRunningToolDemoSupportJava {
         List.of(
             Part.builder()
                 .functionResponse(
-                    new FunctionResponse(
-                        pausedCall.getName(),
-                        Map.of("status", "applied", "eta_minutes", 12),
-                        pausedCall.getId()))
+                    FunctionResponse.builder()
+                        .name(pausedCall.getName())
+                        .response(Map.of("status", "applied", "eta_minutes", 12))
+                        .id(pausedCall.getId())
+                        .build())
                 .build()));
   }
 

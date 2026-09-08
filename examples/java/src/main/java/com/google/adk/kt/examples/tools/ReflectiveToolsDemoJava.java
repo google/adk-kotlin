@@ -78,12 +78,11 @@ public final class ReflectiveToolsDemoJava {
                         List.of(
                             Part.builder()
                                 .functionCall(
-                                    new FunctionCall(
-                                        "getWeather",
-                                        Map.of("city", "San Francisco"),
-                                        "call-1",
-                                        null,
-                                        null))
+                                    FunctionCall.builder()
+                                        .name("getWeather")
+                                        .args(Map.of("city", "San Francisco"))
+                                        .id("call-1")
+                                        .build())
                                 .build())))
                 .build();
       } else {
