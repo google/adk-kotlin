@@ -13,11 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:OptIn(FrameworkInternalApi::class)
+
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.userMessage

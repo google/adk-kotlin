@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:OptIn(FrameworkInternalApi::class)
+
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
@@ -47,7 +49,12 @@ import kotlinx.coroutines.flow.map
  * Android. Use Firebase AI instead.
  */
 class Gemini
-internal constructor(
+/**
+ * Injects a [GeminiModels] so a test double can stand in for the SDK calls. Opt-in gated; the
+ * two-arg [Client] constructor is the supported entry point.
+ */
+@FrameworkInternalApi
+constructor(
   internal val client: Client,
   override val name: String,
   private val models: GeminiModels,
@@ -66,8 +73,11 @@ internal constructor(
   /**
    * Wrapper around the GenAI SDK's generate calls, expressed in ADK types, to allow mocking in
    * tests. Implementations translate to and from the SDK, keeping the SDK off this interface.
+   * Opt-in gated so it stays out of the supported API while a test double in another module can
+   * implement it.
    */
-  internal interface GeminiModels {
+  @FrameworkInternalApi
+  interface GeminiModels {
     fun generateContentStream(
       model: String,
       contents: List<Content>,
@@ -154,7 +164,6 @@ internal constructor(
     name,
   )
 
-  @OptIn(FrameworkInternalApi::class)
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
     val preparedRequest = request.prepareGenerateContentRequest(!client.enterprise)
 

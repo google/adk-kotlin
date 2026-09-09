@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
+@file:OptIn(FrameworkInternalApi::class)
+
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
@@ -24,6 +27,9 @@ import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.fromGenaiSdk
+import com.google.adk.kt.types.toGenaiSdk
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
@@ -257,6 +263,30 @@ class GeminiJvmTest {
       }
 
     assertThat(thrown).isSameInstanceAs(badRequest)
+  }
+
+  @Test
+  fun adapters_roundTripAdkTypesThroughTheGenAiSdk() {
+    // Arrange
+    val adkResponse =
+      GenerateContentResponse(
+        candidates =
+          listOf(
+            Candidate(
+              content = Content.fromText(Role.MODEL, "hi"),
+              finishReason = FinishReason.STOP,
+            )
+          )
+      )
+    val adkContent = Content.fromText(Role.USER, "hello")
+
+    // Act
+    val responseRoundTrip = adkResponse.toGenaiSdk().toAdkResponse()
+    val contentRoundTrip = adkContent.toGenAiContent().fromGenaiSdk()
+
+    // Assert
+    assertThat(responseRoundTrip).isEqualTo(adkResponse)
+    assertThat(contentRoundTrip).isEqualTo(adkContent)
   }
 
   /**
