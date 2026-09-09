@@ -68,11 +68,12 @@ class VertexAiSessionServiceTest {
       sessionTtl = sessionTtl,
     )
 
-  /** A client that accepts any create call, for asserting which expiration was forwarded. */
+  /** A client that accepts any create call, for asserting what the service forwarded. */
   private fun expiringSessionClient() =
     mock<VertexAiSessionsClient> {
-      onBlocking { createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull()) } doReturn
-        Result.success(SessionDto(name = "reasoningEngines/123/sessions/s"))
+      onBlocking {
+        createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
+      } doReturn Result.success(SessionDto(name = "reasoningEngines/123/sessions/s"))
     }
 
   @Test
@@ -84,7 +85,7 @@ class VertexAiSessionServiceTest {
       service(client).createSession(SessionKey("any-label", "user", id = null), state = null)
 
     verifyBlocking(client) {
-      createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull())
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
     }
   }
 
@@ -149,7 +150,7 @@ class VertexAiSessionServiceTest {
     val client =
       mock<VertexAiSessionsClient> {
         onBlocking {
-          createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull())
+          createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
         } doReturn
           Result.success(
             SessionDto(
@@ -173,8 +174,9 @@ class VertexAiSessionServiceTest {
   fun createSession_clientFails_propagates() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
-        onBlocking { createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull()) } doReturn
-          Result.failure(IOException("boom"))
+        onBlocking {
+          createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
+        } doReturn Result.failure(IOException("boom"))
       }
 
     assertFailsWith<IOException> {
@@ -192,7 +194,7 @@ class VertexAiSessionServiceTest {
     }
 
     verifyBlocking(client) {
-      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(24.hours), eq(null))
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(24.hours), eq(null), anyOrNull())
     }
   }
 
@@ -207,7 +209,7 @@ class VertexAiSessionServiceTest {
     }
 
     verifyBlocking(client) {
-      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(expiry))
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(expiry), anyOrNull())
     }
   }
 
@@ -221,7 +223,7 @@ class VertexAiSessionServiceTest {
     }
 
     verifyBlocking(client) {
-      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(null))
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(null), anyOrNull())
     }
   }
 
@@ -240,7 +242,7 @@ class VertexAiSessionServiceTest {
       }
     }
     verifyBlocking(client, never()) {
-      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull())
+      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
     }
   }
 
@@ -256,7 +258,7 @@ class VertexAiSessionServiceTest {
     }
 
     verifyBlocking(client) {
-      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(24.hours), eq(null))
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(24.hours), eq(null), anyOrNull())
     }
   }
 
@@ -271,7 +273,7 @@ class VertexAiSessionServiceTest {
     }
 
     verifyBlocking(client) {
-      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(48.hours), eq(null))
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(48.hours), eq(null), anyOrNull())
     }
   }
 
@@ -288,7 +290,66 @@ class VertexAiSessionServiceTest {
     }
 
     verifyBlocking(client) {
-      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(expiry))
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), eq(null), eq(expiry), anyOrNull())
+    }
+  }
+
+  @Test
+  fun createSession_keyId_forwardedAsSessionId() {
+    val client = expiringSessionClient()
+
+    val session = runBlocking {
+      service(client).createSession(SessionKey("123", "user", id = "my-session"))
+    }
+
+    // The backend is authoritative: the returned session carries its id, not the requested one.
+    assertThat(session.key.id).isEqualTo("s")
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull(), eq("my-session"))
+    }
+  }
+
+  @Test
+  fun createSession_noKeyId_forwardsNullSessionId() {
+    val client = expiringSessionClient()
+
+    runBlocking {
+      val unused = service(client).createSession(SessionKey("123", "user", id = null))
+    }
+
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull(), eq(null))
+    }
+  }
+
+  @Test
+  fun createSession_emptyKeyId_forwardsNullSessionId() {
+    val client = expiringSessionClient()
+
+    // An empty id means the same as an absent one: let the backend generate it.
+    runBlocking {
+      val unused = service(client).createSession(SessionKey("123", "user", id = ""))
+    }
+
+    verifyBlocking(client) {
+      createSession(eq(ENGINE), eq("user"), anyOrNull(), anyOrNull(), anyOrNull(), eq(null))
+    }
+  }
+
+  @Test
+  fun createSession_invalidKeyId_throwsWithoutCallingBackend() {
+    val client = expiringSessionClient()
+
+    // Whitespace is not empty, so it reaches the allowlist and is rejected there.
+    for (bad in listOf("bad/id", "   ")) {
+      assertFailsWith<IllegalArgumentException> {
+        runBlocking {
+          val unused = service(client).createSession(SessionKey("123", "user", id = bad))
+        }
+      }
+    }
+    verifyBlocking(client, never()) {
+      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
     }
   }
 
@@ -314,7 +375,7 @@ class VertexAiSessionServiceTest {
       }
     }
     verifyBlocking(client, never()) {
-      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull())
+      createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
     }
   }
 

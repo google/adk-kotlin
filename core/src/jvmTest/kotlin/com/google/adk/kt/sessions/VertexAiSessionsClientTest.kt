@@ -171,6 +171,45 @@ class VertexAiSessionsClientTest {
   }
 
   @Test
+  fun createSession_sessionId_sentAsQueryParameter() {
+    enqueueCreateSessionExchange()
+
+    val unused = runBlocking { client.createSession(ENGINE, "user", null, sessionId = "sess-1") }
+
+    val createRequest = server.takeRequest()
+    assertThat(createRequest.target)
+      .isEqualTo(
+        "/v1beta1/projects/test-project/locations/test-location/reasoningEngines/123/" +
+          "sessions?sessionId=sess-1"
+      )
+    assertThat(createRequest.body?.utf8()).doesNotContain("sess-1")
+  }
+
+  @Test
+  fun createSession_sessionIdWithReservedCharacters_isUrlEncoded() {
+    enqueueCreateSessionExchange()
+
+    // The client is reachable without the service's id validation, so escape defensively.
+    val unused = runBlocking { client.createSession(ENGINE, "user", null, sessionId = "a b&c=d") }
+
+    assertThat(server.takeRequest().target).endsWith("/sessions?sessionId=a+b%26c%3Dd")
+  }
+
+  @Test
+  fun createSession_backendRejectsSessionId_returnsFailure() {
+    // The local allowlist is looser than the backend's, so a locally valid id can still be refused.
+    server.enqueue(MockResponse(code = 400, body = "invalid session_id"))
+
+    val result = runBlocking {
+      client.createSession(ENGINE, "user", null, sessionId = "My_Session_ID")
+    }
+
+    assertThat(result.exceptionOrNull()).isInstanceOf(IOException::class.java)
+    // The status has to reach the caller, not collapse into a generic empty-response error.
+    assertThat(result.exceptionOrNull()).hasMessageThat().contains("HTTP 400")
+  }
+
+  @Test
   fun getSession_notFound_returnsNullSuccess() = runBlocking {
     server.enqueue(MockResponse(code = 404))
 
