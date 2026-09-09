@@ -45,8 +45,9 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.Volatile
-import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -656,9 +657,10 @@ data class ContextFrameworkData(
  * because it is an [InvocationContext] constructor-property type; its constructor and members are
  * non-public.
  */
+@OptIn(ExperimentalAtomicApi::class)
 class InvocationCostManager internal constructor() {
   // Atomic so concurrent turns (e.g. sub-agents under a ParallelAgent) count without races.
-  private val numberOfLlmCalls = atomic(0)
+  private val numberOfLlmCalls = AtomicInt(0)
 
   /**
    * Counts one LLM call and throws once the count exceeds a positive [RunConfig.maxLlmCalls]. A
@@ -667,7 +669,7 @@ class InvocationCostManager internal constructor() {
    * @throws LlmCallsLimitExceededException if the limit is exceeded.
    */
   internal fun incrementAndEnforceLlmCallsLimit(runConfig: RunConfig?) {
-    val currentCount = numberOfLlmCalls.incrementAndGet()
+    val currentCount = numberOfLlmCalls.addAndFetch(1)
     if (runConfig != null && runConfig.maxLlmCalls > 0 && currentCount > runConfig.maxLlmCalls) {
       throw LlmCallsLimitExceededException(
         "Max number of llm calls limit of `${runConfig.maxLlmCalls}` exceeded"
