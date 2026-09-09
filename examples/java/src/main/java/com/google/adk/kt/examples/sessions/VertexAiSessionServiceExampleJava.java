@@ -138,7 +138,8 @@ public final class VertexAiSessionServiceExampleJava {
     // runAsync returns a Reactive Streams Publisher<Event>. Adapt it in one line to
     // RxJava:  Flowable<Event> rx = Flowable.fromPublisher(eventStream);
     // Reactor: Flux<Event> flux = Flux.from(eventStream);
-    // or block on it directly with AsyncJavaHelpers, as below.
+    // WebFlux: @GetMapping Flux<Event> stream() { return Flux.from(eventStream); }
+    //          Spring takes eventStream as is, but usually it goes through actual domain logic.
     Publisher<Event> eventStream =
         runner.runAsync(
             userId,
