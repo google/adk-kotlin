@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.skills
 
+import kotlin.jvm.JvmOverloads
+
 /**
  * The exception type returned by [SkillSource] methods.
  *
@@ -25,7 +27,8 @@ package com.google.adk.kt.skills
  * intended to be forwarded to the LLM, so it MUST be precise and self-contained, and MUST NOT leak
  * sensitive internal detail.
  */
-class SkillSourceException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class SkillSourceException @JvmOverloads constructor(message: String, cause: Throwable? = null) :
+  Exception(message, cause)
 
 /**
  * Core interface for accessing skill components.

@@ -16,6 +16,9 @@
 
 package com.google.adk.kt.skills
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
+import kotlin.jvm.JvmStatic
+
 /**
  * Represents the frontmatter of a skill, containing metadata about the skill.
  *
@@ -57,5 +60,49 @@ data class Frontmatter(
     require(compatibility == null || compatibility.length <= 500) {
       "compatibility must not exceed 500 characters"
     }
+  }
+
+  /**
+   * Fluent builder for [Frontmatter], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var description: String? = null
+    private var license: String? = null
+    private var compatibility: String? = null
+    private var allowedTools: String? = null
+    private var metadata: Map<String, Any?> = emptyMap()
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun description(description: String): Builder = apply { this.description = description }
+
+    fun license(license: String?): Builder = apply { this.license = license }
+
+    fun compatibility(compatibility: String?): Builder = apply {
+      this.compatibility = compatibility
+    }
+
+    fun allowedTools(allowedTools: String?): Builder = apply { this.allowedTools = allowedTools }
+
+    fun metadata(metadata: Map<String, Any?>): Builder = apply { this.metadata = metadata }
+
+    fun build(): Frontmatter =
+      Frontmatter(
+        name = checkNotNull(name) { "Frontmatter.Builder requires name to be set." },
+        description =
+          checkNotNull(description) { "Frontmatter.Builder requires description to be set." },
+        license = license,
+        compatibility = compatibility,
+        allowedTools = allowedTools,
+        metadata = metadata,
+      )
+  }
+
+  companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
 }
