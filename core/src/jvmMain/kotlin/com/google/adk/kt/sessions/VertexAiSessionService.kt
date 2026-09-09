@@ -109,7 +109,9 @@ internal constructor(
    * choice; setting both is rejected. The backend also requires the expiry to be at least 24 hours
    * out. When neither is given, the service-wide `sessionTtl` applies if one was configured.
    *
-   * @param key The composite identifier of the session; [SessionKey.appName] is only a label.
+   * @param key The composite identifier of the session; [SessionKey.appName] is only a label, and
+   *   [SessionKey.id], when non-empty, is the requested id and must match `[a-zA-Z0-9_-]+`. The
+   *   backend's own rule is narrower, so it can still reject an id this class accepts.
    * @param state An optional map representing the initial state of the session.
    * @param ttl How long the session lives, measured from creation. Sub-second precision is dropped.
    * @param expireTime The absolute instant at which the session expires.
@@ -128,12 +130,24 @@ internal constructor(
     require(ttl == null || ttl.inWholeSeconds > 0) {
       "ttl must be at least one second, but was $ttl."
     }
+    // Empty means "let the backend generate one", just as a null id does.
+    val requestedSessionId = key.id?.takeIf { it.isNotEmpty() }
+    if (requestedSessionId != null) validateSessionId(requestedSessionId)
     // A per-call arm wins; otherwise the service-wide default applies, so a session created
     // through the SessionService interface still expires.
     val effectiveTtl = if (ttl == null && expireTime == null) sessionTtl else ttl
     val sessionDto =
-      client.createSession(engine, key.userId, state, effectiveTtl, expireTime).getOrThrow()
-    return sessionDto.toAdk(key.appName, key.userId, key.id)
+      client
+        .createSession(
+          engine,
+          key.userId,
+          state,
+          effectiveTtl,
+          expireTime,
+          sessionId = requestedSessionId,
+        )
+        .getOrThrow()
+    return sessionDto.toAdk(key.appName, key.userId, requestedSessionId)
   }
 
   override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {

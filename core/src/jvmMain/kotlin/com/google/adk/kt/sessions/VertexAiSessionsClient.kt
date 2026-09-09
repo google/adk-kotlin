@@ -106,6 +106,8 @@ internal open class VertexAiSessionsClient(
    * @param ttl Optional lifetime of the session, measured from creation.
    * @param expireTime Optional absolute expiry of the session. The wire field is a oneof, so the
    *   caller must not set both this and [ttl].
+   * @param sessionId Optional caller-chosen id for the new session; the backend mints one when it
+   *   is absent.
    * @return The created [SessionDto], or a [Result.failure] describing why creation failed.
    */
   open suspend fun createSession(
@@ -114,6 +116,7 @@ internal open class VertexAiSessionsClient(
     state: Map<String, Any>?,
     ttl: Duration? = null,
     expireTime: Instant? = null,
+    sessionId: String? = null,
   ): Result<SessionDto> {
     val requestBody =
       adkJson.encodeToString(
@@ -126,9 +129,12 @@ internal open class VertexAiSessionsClient(
           expireTime = expireTime?.toString(),
         ),
       )
+    val subPath =
+      if (sessionId == null) "sessions"
+      else "sessions?sessionId=${URLEncoder.encode(sessionId, StandardCharsets.UTF_8.name())}"
     val createResponse =
       postAndDecode(
-          engineUrl(engine, "sessions"),
+          engineUrl(engine, subPath),
           requestBody,
           OperationDto.serializer(),
           "createSession",
@@ -148,14 +154,15 @@ internal open class VertexAiSessionsClient(
         IOException("createSession operation name is malformed: $operationName")
       )
     }
-    val sessionId = parts[parts.size - 3]
+    // The backend is authoritative and mints its own id when the caller supplied none.
+    val createdSessionId = parts[parts.size - 3]
     val operationId = parts.last()
 
     pollOperation(engine, operationId).getOrElse {
       return Result.failure(it)
     }
-    return getSession(engine, sessionId).mapCatching {
-      it ?: throw IOException("Session $sessionId was not found after creation.")
+    return getSession(engine, createdSessionId).mapCatching {
+      it ?: throw IOException("Session $createdSessionId was not found after creation.")
     }
   }
 
