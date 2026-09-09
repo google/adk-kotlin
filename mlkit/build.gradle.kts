@@ -95,12 +95,6 @@ android {
     }
   }
 
-  // The ML Kit GenAI / Gemini Nano stack pulls in androidx.core:core:1.16.0,
-  // which requires compileSdk >= 35. Pin to 36 (matching the other Android
-  // modules) even though the repo-wide default stays lower for the pure-JVM
-  // publications.
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
-
   defaultConfig {
     minSdk = 26
 

@@ -40,8 +40,8 @@ val kotlinCompatVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2
 // compiler; without this the 2.3 compiler would leak a 2.3 stdlib into the POMs
 // and break the kotlinCompatVersion promise above.
 val kotlinCoreLibrariesVersion = "2.1.20"
-// API 36: stable androidx.appsearch requires minCompileSdk=36 (minSdk unchanged).
-val androidCompileSdk = providers.gradleProperty("androidCompileSdk").getOrElse("36").toInt()
+// API 37: androidx.appfunctions requires minCompileSdk=37 (minSdk unchanged).
+val androidCompileSdk = providers.gradleProperty("androidCompileSdk").getOrElse("37").toInt()
 val androidMinSdk = providers.gradleProperty("androidMinSdk").getOrElse("26").toInt()
 
 // Expose the resolved Android SDK levels so subproject build scripts can reuse
