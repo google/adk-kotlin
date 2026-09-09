@@ -94,7 +94,7 @@ internal constructor(
     httpClient: HttpClient = HttpClient(Java),
   ) : this(
     client = VertexAiRagClient(GoogleApiClient(httpClient, credentials), project, location),
-    corpusName = normalizeCorpusName(ragCorpus, project, location),
+    corpusName = normalizeRagCorpusName(ragCorpus, project, location),
     similarityTopK = similarityTopK,
     vectorDistanceThreshold = vectorDistanceThreshold,
   )
@@ -346,36 +346,6 @@ internal constructor(
         merged.add(current)
       }
       return merged
-    }
-
-    /**
-     * Allowed characters for a project, location, or corpus id. Keeps each value within a single
-     * URL path segment (no `/`, `?`, `#`, or `..`), matching the session-service
-     * `validateSessionId` allowlist.
-     */
-    private val RESOURCE_SEGMENT_PATTERN = Regex("^[a-zA-Z0-9_-]+$")
-
-    private fun validateSegment(value: String, label: String) {
-      require(RESOURCE_SEGMENT_PATTERN.matches(value)) {
-        "Invalid $label: '$value'. It must match ${RESOURCE_SEGMENT_PATTERN.pattern}."
-      }
-    }
-
-    /**
-     * Builds the full corpus resource name from a bare [ragCorpus] id under [project]/[location].
-     *
-     * [ragCorpus] must be a bare id, not a full resource name: the project and location come only
-     * from the constructor. Each segment (project, location, corpus id) must match
-     * [RESOURCE_SEGMENT_PATTERN] before being interpolated into a request URL.
-     */
-    internal fun normalizeCorpusName(ragCorpus: String, project: String, location: String): String {
-      validateSegment(project, "project")
-      validateSegment(location, "location")
-      require(!ragCorpus.startsWith("projects/")) {
-        "ragCorpus must be a bare corpus id, not a full resource name: '$ragCorpus'."
-      }
-      validateSegment(ragCorpus, "ragCorpus id")
-      return "projects/$project/locations/$location/ragCorpora/$ragCorpus"
     }
   }
 

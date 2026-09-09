@@ -263,34 +263,6 @@ class VertexAiRagMemoryServiceTest {
   }
 
   @Test
-  fun normalizeCorpusName_expandsBareId() {
-    assertThat(VertexAiRagMemoryService.normalizeCorpusName("my-corpus", "proj", "loc"))
-      .isEqualTo("projects/proj/locations/loc/ragCorpora/my-corpus")
-  }
-
-  @Test
-  fun normalizeCorpusName_rejectsFullResourceName() {
-    // Only a bare id is accepted; a full resource name must be rejected.
-    assertFailsWith<IllegalArgumentException> {
-      VertexAiRagMemoryService.normalizeCorpusName(
-        "projects/proj/locations/loc/ragCorpora/z",
-        "proj",
-        "loc",
-      )
-    }
-  }
-
-  @Test
-  fun normalizeCorpusName_rejectsIdsThatEscapeThePathSegment() {
-    // A bare id must stay within one URL path segment (no `/`, `?`, `#`, or `..`).
-    for (bad in listOf("a/b", "a..b", "a?b", "a#b", "a b")) {
-      assertFailsWith<IllegalArgumentException> {
-        VertexAiRagMemoryService.normalizeCorpusName(bad, "proj", "loc")
-      }
-    }
-  }
-
-  @Test
   fun searchMemory_propagatesClientFailure() = runTest {
     val service =
       VertexAiRagMemoryService(FakeRagClient(failure = IOException("boom")), corpus, null, 10.0)
