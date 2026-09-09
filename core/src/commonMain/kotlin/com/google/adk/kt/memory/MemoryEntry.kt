@@ -19,23 +19,34 @@ package com.google.adk.kt.memory
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.types.Content
 import kotlin.jvm.JvmStatic
+import kotlinx.serialization.Contextual
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
 /**
  * Represents one memory entry in the Vertex AI Memory Bank.
+ *
+ * Serializable because `load_memory` returns entries to the model through this serializer; the
+ * field names below are therefore the ones the model sees.
  *
  * @property content The main content of the memory.
  * @property id The unique identifier of the memory entry, or null if not yet persisted.
  * @property author The author of the memory, or null if not set.
  * @property timestamp The timestamp when the original content of this memory happened, or null if
  *   not set. Preferred format is ISO 8601 format.
- * @property customMetadata Optional key-value metadata associated with this memory.
+ * @property customMetadata Optional key-value metadata associated with this memory. The map must be
+ *   JSON serializable: `load_memory` returns it to the model as part of its tool result.
  */
+@Serializable
 data class MemoryEntry(
   val content: Content,
   val id: String? = null,
   val author: String? = null,
   val timestamp: String? = null,
-  val customMetadata: Map<String, Any> = emptyMap(),
+  // Named to match Python's `custom_metadata`, a plain pydantic field with no alias. Not
+  // @EncodeDefault: unlike Event's id and timestamp, the default here is a constant, so an omitted
+  // empty map decodes straight back to one. Python emits `{}` where this omits the key.
+  @SerialName("custom_metadata") val customMetadata: Map<String, @Contextual Any> = emptyMap(),
 ) {
   /**
    * Fluent builder for [MemoryEntry], provided primarily for Java callers. Any property left unset

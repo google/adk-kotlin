@@ -16,7 +16,11 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
@@ -60,10 +64,15 @@ class LoadMemoryTool :
         )
 
     val session = context.invocationContext.session
-    return memoryService.searchMemory(
-      appName = session.key.appName,
-      userId = session.key.userId,
-      query = query,
+    val response =
+      memoryService.searchMemory(
+        appName = session.key.appName,
+        userId = session.key.userId,
+        query = query,
+      )
+    // BaseTool wraps only a non-Map result, so this tool builds the wrapper itself.
+    return mapOf(
+      BaseTool.RESULT_KEY to mapOf("memories" to response.memories.map { it.toJsonNative() })
     )
   }
 
@@ -84,3 +93,16 @@ class LoadMemoryTool :
     return newRequest.appendInstructions(Content(parts = listOf(Part(text = instructions))))
   }
 }
+
+/**
+ * Converts a memory entry to JSON-native values through its own serializer, so the payload follows
+ * [MemoryEntry] instead of a hand-written field list that has to be kept in step with it.
+ *
+ * Not the platform JSON helper: its Android implementation stringifies a data class instead of
+ * encoding it, and its JVM implementation skips the custom serializers declared on `Part`.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun MemoryEntry.toJsonNative(): Any =
+  // checkNotNull, not a null-skip: encoding a non-null entry never yields JSON null, so an absent
+  // value is a bug rather than an entry to drop silently.
+  checkNotNull(jsonElementToAny(adkJson.encodeToJsonElement(MemoryEntry.serializer(), this)))
