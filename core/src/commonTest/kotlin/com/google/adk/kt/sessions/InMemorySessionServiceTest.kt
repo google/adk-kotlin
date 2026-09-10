@@ -18,42 +18,20 @@ package com.google.adk.kt.sessions
 
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.testing.SessionServiceAssertions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Instant
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /** Unit tests for [InMemorySessionService]. */
 class InMemorySessionServiceTest {
-
-  @Test
-  fun lifecycle_noSession() = runTest {
-    val sessionService = InMemorySessionService()
-
-    assertNull(sessionService.getSession(SessionKey("app-name", "user-id", "session-id")))
-    assertTrue(sessionService.listSessions("app-name", "user-id").sessions.isEmpty())
-    assertTrue(
-      sessionService.listEvents(SessionKey("app-name", "user-id", "session-id")).events.isEmpty()
-    )
-  }
-
-  @Test
-  fun lifecycle_createSession_nullIdGeneratesUuid() = runTest {
-    val sessionService = InMemorySessionService()
-
-    val session = sessionService.createSession(SessionKey("app-name", "user-id", id = null))
-
-    assertTrue(session.key.id!!.isNotEmpty())
-    assertEquals("app-name", session.key.appName)
-    assertEquals("user-id", session.key.userId)
-    assertTrue(session.state.isEmpty())
-  }
 
   @Test
   fun createSession_blankId_throws() = runTest {
@@ -68,7 +46,7 @@ class InMemorySessionServiceTest {
   }
 
   @Test
-  fun lifecycle_createSession_explicitIdIsHonored() = runTest {
+  fun createSession_explicitId_isHonored() = runTest {
     val sessionService = InMemorySessionService()
 
     val session =
@@ -91,19 +69,17 @@ class InMemorySessionServiceTest {
   }
 
   @Test
-  fun lifecycle_getSession() = runTest {
-    val sessionService = InMemorySessionService()
-
-    val session = sessionService.createSession(SessionKey("app-name", "user-id", id = null))
-
-    val retrievedSession = sessionService.getSession(session.key)
-
-    assertNotNull(retrievedSession)
-    assertEquals(session.key.id, retrievedSession.key.id)
+  fun createSession_nullId_mintsId(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionMintsIdWhenAbsent(InMemorySessionService())
   }
 
   @Test
-  fun lifecycle_listSessions() = runTest {
+  fun createSession_withInitialState_retainsState(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionRetainsInitialState(InMemorySessionService())
+  }
+
+  @Test
+  fun listSessions_afterAppend_mergesScopedStateAndOmitsTemp() = runTest {
     val sessionService = InMemorySessionService()
 
     val session = sessionService.createSession(SessionKey("app-name", "user-id", "session-1"))
@@ -135,57 +111,38 @@ class InMemorySessionServiceTest {
     assertEquals("sessionValue", listedSession.state["sessionKey"])
     assertEquals("appValue", listedSession.state["app:appKey"])
     assertEquals("userValue", listedSession.state["user:userKey"])
-    assertEquals("tempValue", listedSession.state["temp:tempKey"])
+    // `temp:` is ephemeral and never persisted, so it does not appear in the stored/listed state.
+    assertFalse(listedSession.state.containsKey("temp:tempKey"))
   }
 
   @Test
-  fun lifecycle_deleteSession() = runTest {
-    val sessionService = InMemorySessionService()
-
-    val session = sessionService.createSession(SessionKey("app-name", "user-id", id = null))
-    val key = session.key
-
-    sessionService.deleteSession(key)
-
-    assertNull(sessionService.getSession(key))
+  fun listSessions_includesCreatedSession(): Unit = runBlocking {
+    SessionServiceAssertions.listSessionsReturnsUsersSessions(InMemorySessionService())
   }
 
   @Test
-  fun lifecycle_deleteSession_missingKey_isNoOp() = runTest {
-    val sessionService = InMemorySessionService()
-
-    // Should not throw.
-    sessionService.deleteSession(SessionKey("app-name", "user-id", "missing"))
+  fun listSessions_unknownUser_isEmpty(): Unit = runBlocking {
+    SessionServiceAssertions.listSessionsIsEmptyForUnknownUser(InMemorySessionService())
   }
 
   @Test
-  fun appendEvent_updatesSessionState() = runTest {
-    val sessionService = InMemorySessionService()
-    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+  fun listEvents_missingSession_returnsEmpty(): Unit = runBlocking {
+    SessionServiceAssertions.listEventsIsEmptyForUnknownSession(InMemorySessionService())
+  }
 
-    val stateDelta =
-      mapOf(
-        "sessionKey" to "sessionValue",
-        "app:appKey" to "appValue",
-        "user:userKey" to "userValue",
-        "temp:tempKey" to "tempValue",
-      )
+  @Test
+  fun listEvents_returnsAppendsInOrder(): Unit = runBlocking {
+    SessionServiceAssertions.listEventsReturnsAppendsInOrder(InMemorySessionService())
+  }
 
-    val event =
-      Event(
-        author = "agent",
-        actions =
-          EventActions(stateDelta = mutableMapOf<String, Any>().apply { putAll(stateDelta) }),
-        timestamp = Clock.System.now().toEpochMilliseconds(),
-      )
+  @Test
+  fun deleteSession_removesSession(): Unit = runBlocking {
+    SessionServiceAssertions.deleteRemovesSession(InMemorySessionService())
+  }
 
-    assertEquals(event, sessionService.appendEvent(session, event))
-
-    val retrievedSession = sessionService.getSession(session.key)
-    assertEquals("sessionValue", retrievedSession?.state?.get("sessionKey"))
-    assertEquals("appValue", retrievedSession?.state?.get("app:appKey"))
-    assertEquals("userValue", retrievedSession?.state?.get("user:userKey"))
-    assertEquals("tempValue", retrievedSession?.state?.get("temp:tempKey"))
+  @Test
+  fun deleteSession_unknownId_isNoOp(): Unit = runBlocking {
+    SessionServiceAssertions.deleteUnknownSessionIsNoOp(InMemorySessionService())
   }
 
   @Test
@@ -242,76 +199,58 @@ class InMemorySessionServiceTest {
   }
 
   @Test
-  fun sequentialAgents_shareTempState() = runTest {
-    val sessionService = InMemorySessionService()
-    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
-    val key = session.key
-
-    val stateDelta1 = mapOf("temp:agent1_output" to "data")
-    val event1 =
-      Event(
-        author = "agent",
-        actions =
-          EventActions(stateDelta = mutableMapOf<String, Any>().apply { putAll(stateDelta1) }),
-        timestamp = Clock.System.now().toEpochMilliseconds(),
-      )
-    assertEquals(event1, sessionService.appendEvent(session, event1))
-
-    var retrievedSession = sessionService.getSession(key)
-    assertEquals("data", retrievedSession?.state?.get("temp:agent1_output"))
-
-    val stateDelta2 =
-      mapOf("temp:agent2_output" to "processed_data", "temp:agent1_output" to State.REMOVED)
-    val event2 =
-      Event(
-        author = "agent",
-        actions =
-          EventActions(stateDelta = mutableMapOf<String, Any>().apply { putAll(stateDelta2) }),
-        timestamp = Clock.System.now().toEpochMilliseconds(),
-      )
-    assertEquals(event2, sessionService.appendEvent(session, event2))
-
-    retrievedSession = sessionService.getSession(key)
-    assertNotNull(retrievedSession)
-    assertFalse(retrievedSession.state.containsKey("temp:agent1_output"))
-    assertEquals("processed_data", retrievedSession.state.get("temp:agent2_output"))
+  fun appendEvent_tempKey_visibleInInvocationButNotPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateVisibleInInvocationButNotPersisted(InMemorySessionService())
   }
 
   @Test
-  fun appendEvent_updatesCallerSessionObject() = runTest {
-    val sessionService = InMemorySessionService()
-    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
-
-    val event =
-      Event(
-        author = "agent",
-        actions = EventActions(stateDelta = mutableMapOf<String, Any>()),
-        timestamp = 123456789L,
-      )
-
-    assertEquals(event, sessionService.appendEvent(session, event))
-    assertTrue(session.events.contains(event))
-    assertEquals(Instant.fromEpochMilliseconds(123456789L), session.lastUpdateTime)
+  fun appendEvent_tempKey_trimmedFromReturnedEvent(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateTrimmedFromReturnedEvent(InMemorySessionService())
   }
 
   @Test
-  fun appendEvent_updatesCallerSessionState() = runTest {
-    val sessionService = InMemorySessionService()
-    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
+  fun appendEvent_tempKeyRemoved_reflectedOnLiveSession(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateRemovalReflectedOnLiveSession(InMemorySessionService())
+  }
 
-    val event =
-      Event(
-        author = "agent",
-        actions = EventActions(stateDelta = mutableMapOf<String, Any>("key" to "value")),
-        timestamp = 123456789L,
-      )
+  @Test
+  fun appendEvent_sessionScopedKey_isPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.appendPersistsSessionScopedState(InMemorySessionService())
+  }
 
-    assertEquals(event, sessionService.appendEvent(session, event))
+  @Test
+  fun appendEvent_removedSentinel_deletesKey(): Unit = runBlocking {
+    SessionServiceAssertions.appendRemovesStateWithSentinel(InMemorySessionService())
+  }
 
-    val retrievedSession = sessionService.getSession(session.key)
-    assertEquals("value", retrievedSession?.state?.get("key"))
-    assertTrue(session.state.containsKey("key"))
-    assertEquals("value", session.state["key"])
+  @Test
+  fun appendEvent_syncsCallerSession(): Unit = runBlocking {
+    SessionServiceAssertions.appendSyncsCallerSession(InMemorySessionService())
+  }
+
+  @Test
+  fun appendEvent_appScopedKey_sharedAcrossSessions(): Unit = runBlocking {
+    SessionServiceAssertions.appScopedStateSharedAcrossSessions(InMemorySessionService())
+  }
+
+  @Test
+  fun appendEvent_userScopedKey_sharedForSameUser(): Unit = runBlocking {
+    SessionServiceAssertions.userScopedStateSharedForSameUser(InMemorySessionService())
+  }
+
+  @Test
+  fun appendEvent_partial_isNotPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.appendPartialNotPersisted(InMemorySessionService())
+  }
+
+  @Test
+  fun getSession_afterCreate_returnsSession(): Unit = runBlocking {
+    SessionServiceAssertions.createdSessionIsRetrievable(InMemorySessionService())
+  }
+
+  @Test
+  fun getSession_unknownId_returnsNull(): Unit = runBlocking {
+    SessionServiceAssertions.getUnknownSessionReturnsNull(InMemorySessionService())
   }
 
   @Test

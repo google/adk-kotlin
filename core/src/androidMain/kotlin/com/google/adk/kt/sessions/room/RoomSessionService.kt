@@ -184,41 +184,27 @@ class RoomSessionService internal constructor(private val database: AdkSessionsD
   }
 
   override suspend fun appendEvent(session: Session, event: Event): Event {
-    if (event.partial) {
-      // Match SessionService base behavior: partial events are short-circuited.
-      return event
-    }
+    // Partial (streaming) events are superseded by the final aggregated event, so skip them.
+    if (event.partial) return event
     val id = requireNotNull(session.key.id) { "Session.key.id must not be null for appendEvent" }
     val appName = session.key.appName
     val userId = session.key.userId
 
-    // Apply `temp:` keys to the caller's in-memory Session state only — they live for the
-    // current invocation but must not be persisted. Mirrors Python's _apply_temp_state. This
-    // happens BEFORE the persistence step so subsequent agents within the invocation can read
-    // them (e.g. SequentialAgent reading a `temp:` output_key).
-    for ((k, v) in event.actions.stateDelta) {
-      if (k.startsWith(State.TEMP_PREFIX)) session.state[k] = v
-    }
+    // Apply+remove `temp:` before persisting; the stale check below reads the old lastUpdateTime.
+    session.state.applyTempDelta(event.actions.stateDelta)
+    event.actions.removeTempKeys()
 
-    // Split the persistable delta into three buckets (app / user / session). `temp:` keys are
-    // dropped here so they never reach the state tables. Mirrors Python's
-    // _trim_temp_delta_state + the prefix-based bucketing in _update_session_state.
+    // Split the (now `temp:`-free) persistable delta into three buckets (app / user / session).
     val appDelta = mutableMapOf<String, Any>()
     val userDelta = mutableMapOf<String, Any>()
     val sessionDelta = mutableMapOf<String, Any>()
     for ((k, v) in event.actions.stateDelta) {
       when {
-        k.startsWith(State.TEMP_PREFIX) -> Unit // already applied above; not persisted
         k.startsWith(State.APP_PREFIX) -> appDelta[k.substring(State.APP_PREFIX.length)] = v
         k.startsWith(State.USER_PREFIX) -> userDelta[k.substring(State.USER_PREFIX.length)] = v
         else -> sessionDelta[k] = v
       }
     }
-
-    // Serialize a copy of the event with `temp:` keys stripped from its stateDelta so the
-    // persisted event log doesn't carry them either — otherwise a future replay would
-    // re-introduce them. Caller's Event is untouched.
-    val eventForStorage = trimTempKeysFromEvent(event)
 
     // The read-merge-write for each non-empty bucket happens inside the @Transaction so concurrent
     // appends across sessions of the same appName/userId cannot lose updates.
@@ -238,26 +224,13 @@ class RoomSessionService internal constructor(private val database: AdkSessionsD
           sessionId = id,
           invocationId = event.invocationId,
           timestamp = event.timestamp,
-          eventData = JsonConverters.eventToJson(eventForStorage),
+          eventData = JsonConverters.eventToJson(event),
         ),
     )
 
-    // Sync the caller's in-memory Session object, mirroring InMemorySessionService.appendEvent.
-    // State.applyDelta inside super.appendEvent ignores `temp:` keys (we already handled them
-    // above) and applies the rest to the caller's session.state.
+    // super applies the remaining (non-`temp:`) delta, appends the event, sets lastUpdateTime.
     val unused = super.appendEvent(session, event)
     return event
-  }
-
-  /**
-   * Returns a copy of [event] whose `actions.stateDelta` has all `temp:` keys removed, leaving the
-   * caller's [event] untouched.
-   */
-  private fun trimTempKeysFromEvent(event: Event): Event {
-    if (event.actions.stateDelta.none { it.key.startsWith(State.TEMP_PREFIX) }) return event
-    val trimmedDelta =
-      event.actions.stateDelta.filterKeys { !it.startsWith(State.TEMP_PREFIX) }.toMutableMap()
-    return event.copy(actions = event.actions.copy(stateDelta = trimmedDelta))
   }
 
   /**
