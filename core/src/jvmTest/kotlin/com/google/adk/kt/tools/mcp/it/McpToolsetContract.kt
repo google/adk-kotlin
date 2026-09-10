@@ -171,6 +171,28 @@ class McpToolsetContract(private val harness: McpToolsetHarness) {
       assertThat(textOf(add.run(testToolContext(), mapOf("a" to 2, "b" to 3)))).isEqualTo("5")
     }
 
+  suspend fun run_toolRejectedAtTheProtocolLevel_returnsErrorAndKeepsTheSession() =
+    harness.withToolset(useMcpResources = false) { toolset ->
+      // A real JSON-RPC error from a real server, not a mocked one: the handler throws, so the
+      // SDK answers with an error response rather than the in-band `isError` channel. It must
+      // come back as a result the model can read, and it must not cost everyone the session.
+      val counter = toolset.getTools().single { it.name == FakeMcpServer.TOOL_COUNTER }
+      val before = textOf(counter.run(testToolContext(), emptyMap())).toInt()
+
+      val throwing = toolset.getTools().single { it.name == FakeMcpServer.TOOL_THROW }
+      val result = throwing.run(testToolContext(), emptyMap())
+      // Pin the channel, not just the text: an `isError` result would carry the same message, so
+      // asserting on the recovery shape is what distinguishes the two.
+      val error = (result as Map<*, *>)["error"].toString()
+      assertThat(error).contains("MCP tool execution failed")
+      assertThat(error).contains(FakeMcpServer.THROW_MESSAGE)
+
+      // The same process still answers, and its counter kept counting -- so the rejection did not
+      // evict the pooled session or respawn the server.
+      val after = textOf(counter.run(testToolContext(), emptyMap())).toInt()
+      assertThat(after).isEqualTo(before + 1)
+    }
+
   suspend fun run_counterTool_incrementsServerStateAcrossCalls() =
     harness.withToolset(useMcpResources = false) { toolset ->
       val counter = toolset.getTools().single { it.name == FakeMcpServer.TOOL_COUNTER }
@@ -283,6 +305,7 @@ class McpToolsetContract(private val harness: McpToolsetHarness) {
         FakeMcpServer.TOOL_WHOAMI,
         FakeMcpServer.TOOL_SLOW,
         FakeMcpServer.TOOL_FAIL,
+        FakeMcpServer.TOOL_THROW,
         FakeMcpServer.TOOL_HANG,
         FakeMcpServer.TOOL_GET_RECORD,
         FakeMcpServer.TOOL_ANNOTATE,

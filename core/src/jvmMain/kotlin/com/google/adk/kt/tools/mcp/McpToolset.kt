@@ -276,7 +276,8 @@ internal constructor(
    * [IllegalArgumentException] is not retried, matching [handleLoadError]: the server rejected the
    * request itself, so the retries repeat an identical round trip and only delay the error. An
    * unknown resource uri is the common case, and a model guessing one in `load_mcp_resource` is
-   * routine.
+   * routine. An [McpError] carrying a JSON-RPC error is the same case whatever code it names, so it
+   * is not retried either.
    *
    * A session is marked stale only after a failure that is not attributable to the request, so a
    * rejected request no longer evicts a healthy session out from under everyone sharing it. On
@@ -304,13 +305,9 @@ internal constructor(
       } catch (e: IllegalArgumentException) {
         throw e
       } catch (e: McpError) {
-        // Same reasoning: a resource the server does not have is a rejected request, not a dead
-        // session, so retrying repeats it and evicting punishes everyone sharing the session.
-        if (e.jsonRpcError?.code() == McpSchema.ErrorCodes.RESOURCE_NOT_FOUND) throw e
-        if (attempt == DEFAULT_RETRY_TIMES) throw e
-        stale = session
-        logger.warn(e) { "Retrying MCP resource call, attempt $attempt: ${e.message}" }
-        delay(DEFAULT_RETRY_DELAY_MS)
+        // Same reasoning: the server answered and rejected the request, so retrying repeats an
+        // identical round trip and evicting punishes everyone sharing the session.
+        throw e
       } catch (e: Exception) {
         if (attempt == DEFAULT_RETRY_TIMES) {
           throw e

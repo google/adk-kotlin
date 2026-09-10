@@ -20,6 +20,7 @@ import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.tools.mcp.McpSchemaConverter.toAdkFunctionDeclaration
 import com.google.adk.kt.types.Type
 import io.modelcontextprotocol.client.McpAsyncClient
+import io.modelcontextprotocol.spec.McpError
 import io.modelcontextprotocol.spec.McpSchema
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -49,6 +50,22 @@ class McpToolTest {
   private val mcpSchemaTool = McpSchema.Tool.builder("testTool", mapOf("type" to "object")).build()
   private val mcpTool = McpTool("testTool", "description", mcpSchemaTool, mockSessionManager)
   private val toolContext = testToolContext()
+
+  @Test
+  fun run_serverRejectsTheCall_returnsErrorWithoutRetrying() = runTest {
+    // A refused call must come back as a result, and must not be retried.
+    whenever(mockMcpSession.callTool(any())) doReturn
+      mono {
+        throw McpError(
+          McpSchema.JSONRPCResponse.JSONRPCError(-32602, "Invalid arguments for tool", null)
+        )
+      }
+
+    val result = mcpTool.run(toolContext, mapOf("a" to 1))
+
+    assertTrue(result.toString().contains("Invalid arguments for tool"))
+    verify(mockMcpSession, times(1)).callTool(any())
+  }
 
   @Test
   fun annotations_returnsAnnotations() {

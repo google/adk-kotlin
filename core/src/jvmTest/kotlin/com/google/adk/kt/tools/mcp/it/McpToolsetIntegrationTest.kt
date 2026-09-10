@@ -122,6 +122,11 @@ class McpToolsetIntegrationTest {
   }
 
   @Test
+  fun run_toolRejectedAtTheProtocolLevel_returnsErrorAndKeepsTheSession(): Unit = runBlocking {
+    contract.run_toolRejectedAtTheProtocolLevel_returnsErrorAndKeepsTheSession()
+  }
+
+  @Test
   fun run_counterTool_incrementsServerStateAcrossCalls(): Unit = runBlocking {
     contract.run_counterTool_incrementsServerStateAcrossCalls()
   }

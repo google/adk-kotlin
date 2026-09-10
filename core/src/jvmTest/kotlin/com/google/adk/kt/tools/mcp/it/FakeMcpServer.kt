@@ -67,10 +67,17 @@ object FakeMcpServer {
   const val TOOL_FAIL = "fail"
   const val TOOL_HANG = "hang"
   const val TOOL_GET_RECORD = "get_record"
+  const val TOOL_THROW = "throw_protocol_error"
   const val TOOL_ANNOTATE = "annotate"
 
   /** Message the [TOOL_FAIL] tool returns inside its `isError: true` result. */
   const val FAIL_MESSAGE = "intentional tool execution error from the 'fail' tool"
+
+  /**
+   * Message the [TOOL_THROW] tool's handler throws, which the server reports as a JSON-RPC error.
+   */
+  const val THROW_MESSAGE =
+    "intentional protocol-level failure from the 'throw_protocol_error' tool"
 
   /**
    * The single id [TOOL_GET_RECORD] has no record for. Arbitrary/non-suggestive (not `404`) so a
@@ -182,6 +189,7 @@ private fun toolSpecifications(token: String): List<SyncToolSpecification> =
     whoamiTool(token),
     slowTool(),
     failTool(),
+    throwTool(),
     hangTool(),
     getRecordTool(),
     annotateTool(),
@@ -372,6 +380,19 @@ private fun failTool(): SyncToolSpecification =
       .addTextContent(FakeMcpServer.FAIL_MESSAGE)
       .isError(true)
       .build()
+  }
+
+/**
+ * `throw_protocol_error() -> (JSON-RPC error)`: the handler throws instead of returning a result,
+ * which the SDK server reports as a JSON-RPC error rather than the in-band `isError` channel
+ * [failTool] uses. That is the only way a tool call reaches a client as an `McpError`.
+ */
+private fun throwTool(): SyncToolSpecification =
+  syncTool(
+    name = FakeMcpServer.TOOL_THROW,
+    description = "Always fails at the protocol level, as a JSON-RPC error.",
+  ) { _, _ ->
+    throw IllegalStateException(FakeMcpServer.THROW_MESSAGE)
   }
 
 /**

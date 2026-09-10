@@ -25,6 +25,7 @@ import com.google.adk.kt.tools.mcp.McpToolException.McpToolDeclarationException
 import com.google.adk.kt.types.FunctionDeclaration
 import io.modelcontextprotocol.client.McpAsyncClient
 import io.modelcontextprotocol.json.McpJsonDefaults
+import io.modelcontextprotocol.spec.McpError
 import io.modelcontextprotocol.spec.McpSchema
 import io.modelcontextprotocol.spec.McpSchema.Tool as McpSchemaTool
 import kotlinx.coroutines.CancellationException
@@ -76,7 +77,14 @@ internal constructor(
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     val request = McpSchema.CallToolRequest(name, args, requestMeta(context))
-    val callResult = retrySessionCall { callTool(request).awaitSingleOrNull() }
+    val callResult =
+      try {
+        retrySessionCall { callTool(request).awaitSingleOrNull() }
+      } catch (e: McpError) {
+        // Returned, not thrown: a refused call is the model's to correct.
+        logger.warn { "MCP server rejected a tool call with code ${e.jsonRpcError?.code()}." }
+        return mapOf("error" to "MCP tool execution failed: ${e.message}")
+      }
 
     return callResult?.toJsonNativeMap()
       ?: mapOf("error" to "MCP framework error: CallToolResult was null")
@@ -119,10 +127,13 @@ internal constructor(
       session = mcpSessionManager.getSession(headers, stale = session)
       try {
         return session.block()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: McpError) {
+        // A server that answered rejected the request, so retrying repeats an identical round
+        // trip -- and each pass evicts the session, which on stdio respawns the server process.
+        throw e
       } catch (e: Exception) {
-        if (e is CancellationException) {
-          throw e
-        }
         delay(delayMs)
         logger.warn(e) { "Retrying callTool due to: ${e.message}" }
       }

@@ -25,7 +25,6 @@ import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import io.modelcontextprotocol.spec.McpError
-import io.modelcontextprotocol.spec.McpSchema
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -64,7 +63,16 @@ internal class LoadMcpResourceTool(
         } else {
           val name = value
           // Resolve the name against the full listing so collisions are detected reliably.
-          val listing = mcpToolset.listAllResources(readonlyContext)
+          val listing =
+            try {
+              mcpToolset.listAllResources(readonlyContext)
+            } catch (e: McpError) {
+              // A refused listing leaves the name unresolvable, which the model can act on.
+              logger.warn {
+                "MCP server rejected a resource listing with code ${e.jsonRpcError?.code()}."
+              }
+              return listingRejectedMessage(e.message ?: "no reason given")
+            }
           logger.debug { "Scanned ${listing.size} MCP resources to resolve name \"$name\"." }
           val matches = listing.filter { it.name == name }
           when (matches.size) {
@@ -81,14 +89,14 @@ internal class LoadMcpResourceTool(
         }
 
       // A rejected uri is a caller mistake like an unknown name, so it comes back as text too.
-      // Transport failures keep throwing; the server tags not-found with its own error code.
+      // An McpError is the server's own error response, whatever code it chose; a transport
+      // failure is not one and still throws.
       val contents =
         try {
           mcpToolset.readResource(resolvedUri, readonlyContext)
         } catch (e: McpError) {
-          if (e.jsonRpcError?.code() != McpSchema.ErrorCodes.RESOURCE_NOT_FOUND) throw e
-          logger.warn { "MCP server has no resource at uri \"$resolvedUri\"." }
-          return uriNotFoundMessage(resolvedUri)
+          logger.warn { "MCP server rejected a resource read with code ${e.jsonRpcError?.code()}." }
+          return uriRejectedMessage(resolvedUri, e.message ?: "no reason given")
         }
       if (contents.isEmpty()) {
         return ""
@@ -146,9 +154,14 @@ internal class LoadMcpResourceTool(
       "resource URI directly."
   }
 
-  private fun uriNotFoundMessage(uri: String): String =
-    "No resource at URI \"$uri\" on the MCP server. Check the URI, or call list_mcp_resources " +
-      "to see what is available by name."
+  /** Carries the server's own reason, since the code alone no longer identifies a not-found. */
+  private fun uriRejectedMessage(uri: String, reason: String): String =
+    "The MCP server rejected the read of URI \"$uri\": $reason. Check the URI, or call " +
+      "list_mcp_resources to see what is available by name."
+
+  private fun listingRejectedMessage(reason: String): String =
+    "The MCP server rejected the resource listing needed to resolve a name: $reason. Retry with " +
+      "the resource's \"$URI\" if you have one."
 
   private fun resourceNotFoundMessage(name: String): String =
     "No resource named \"$name\" is available on the MCP server. " +

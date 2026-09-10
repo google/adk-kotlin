@@ -19,6 +19,7 @@ package com.google.adk.kt.tools.mcp
 import com.google.adk.kt.testing.testToolContext
 import com.google.common.truth.Truth.assertThat
 import io.modelcontextprotocol.client.McpAsyncClient
+import io.modelcontextprotocol.spec.McpError
 import io.modelcontextprotocol.spec.McpSchema
 import kotlin.test.Test
 import kotlinx.coroutines.reactor.mono
@@ -28,6 +29,8 @@ import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.isNull
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.times
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 class ListMcpResourcesToolTest {
@@ -37,6 +40,25 @@ class ListMcpResourcesToolTest {
     val mockSessionManager =
       mock<SessionManager> { onBlocking { getSession(any(), anyOrNull()) } doReturn mockMcpSession }
     return McpToolset(mockSessionManager)
+  }
+
+  @Test
+  fun run_serverRejectsTheCursor_returnsErrorInsteadOfThrowing() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val tool = ListMcpResourcesTool(createMcpToolset(mockMcpSession))
+
+    // `cursor` is model-supplied, so a stale one is the model's to correct: the server's refusal
+    // has to come back as a result rather than aborting the turn.
+    whenever(mockMcpSession.listResources(any<String>())) doReturn
+      mono {
+        throw McpError(McpSchema.JSONRPCResponse.JSONRPCError(-32602, "Invalid cursor", null))
+      }
+
+    val result = tool.run(testToolContext(), mapOf("cursor" to "stale-cursor"))
+
+    assertThat((result as Map<*, *>)["error"].toString()).contains("Invalid cursor")
+    // Not retried: a rejected request is not a dead session.
+    verify(mockMcpSession, times(1)).listResources(any<String>())
   }
 
   @Test

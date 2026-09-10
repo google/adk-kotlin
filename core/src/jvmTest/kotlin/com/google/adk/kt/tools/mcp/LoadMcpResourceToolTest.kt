@@ -380,10 +380,70 @@ class LoadMcpResourceToolTest {
     whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
       mono { throw IllegalStateException("transport went away") }
 
-    // Only not-found becomes text; a broken transport must still surface as a failure.
+    // Only an answered rejection becomes text; a broken transport must still surface as a failure.
     assertFailsWith<McpToolException.McpToolExecutionException> {
       tool.run(testToolContext(), mapOf("uri" to "mem://doc/nope"))
     }
+  }
+
+  @Test
+  fun run_withNameAndRejectedListing_returnsMessageInsteadOfThrowing() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val tool = LoadMcpResourceTool(createMcpToolset(mockMcpSession), maxMcpResourceLength = 1000)
+
+    // Resolving a name needs the listing, so a server that refuses `resources/list` used to abort
+    // the turn on the one path this tool exists to make recoverable.
+    whenever(mockMcpSession.listResources(isNull())) doReturn
+      mono {
+        throw McpError(McpSchema.JSONRPCResponse.JSONRPCError(-32602, "Listing refused", null))
+      }
+
+    val result = tool.run(testToolContext(), mapOf("name" to "greeting"))
+
+    assertThat(result.toString()).contains("Listing refused")
+    verify(mockMcpSession, times(1)).listResources(isNull())
+    verify(mockMcpSession, never()).readResource(any<McpSchema.ReadResourceRequest>())
+  }
+
+  @Test
+  fun run_withUriRejectedByCodeOtherThanNotFound_returnsMessageInsteadOfThrowing() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val tool = LoadMcpResourceTool(createMcpToolset(mockMcpSession), maxMcpResourceLength = 1000)
+
+    // A rejection carrying any code other than -32002 must still come back as text.
+    whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
+      mono {
+        throw McpError(
+          McpSchema.JSONRPCResponse.JSONRPCError(-32602, "Unknown resource: mem://doc/nope", null)
+        )
+      }
+
+    val result = tool.run(testToolContext(), mapOf("uri" to "mem://doc/nope"))
+
+    assertThat(result.toString()).contains("mem://doc/nope")
+    assertThat(result.toString()).contains("Unknown resource")
+    assertThat(result.toString()).contains("list_mcp_resources")
+    // Not retried: a rejected request is not a dead session.
+    verify(mockMcpSession, times(1)).readResource(any<McpSchema.ReadResourceRequest>())
+  }
+
+  @Test
+  fun run_withUriRejectedByUncodedError_returnsMessageInsteadOfThrowing() = runTest {
+    val mockMcpSession = mock<McpAsyncClient>()
+    val tool = LoadMcpResourceTool(createMcpToolset(mockMcpSession), maxMcpResourceLength = 1000)
+
+    // Code 0 classifies nothing, so the message is the only thing carrying the reason.
+    whenever(mockMcpSession.readResource(any<McpSchema.ReadResourceRequest>())) doReturn
+      mono {
+        throw McpError(
+          McpSchema.JSONRPCResponse.JSONRPCError(0, "Unknown resource: mem://doc/nope", null)
+        )
+      }
+
+    val result = tool.run(testToolContext(), mapOf("uri" to "mem://doc/nope"))
+
+    assertThat(result.toString()).contains("Unknown resource")
+    verify(mockMcpSession, times(1)).readResource(any<McpSchema.ReadResourceRequest>())
   }
 
   @Test

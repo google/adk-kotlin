@@ -17,12 +17,14 @@
 package com.google.adk.kt.tools.mcp
 
 import com.google.adk.kt.agents.toReadonlyContext
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.mcp.McpToolException.McpToolExecutionException
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import io.modelcontextprotocol.spec.McpError
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -57,6 +59,12 @@ internal class ListMcpResourceTemplatesTool(private val mcpToolset: McpToolset) 
       }
     } catch (e: CancellationException) {
       throw e // Re-throw cancellation exceptions as they are not indicative of a tool failure.
+    } catch (e: McpError) {
+      // A stale `cursor` is the model's to correct, so the refusal comes back as a result.
+      logger.warn {
+        "MCP server rejected a resource template listing with code ${e.jsonRpcError?.code()}."
+      }
+      return mapOf("error" to "The MCP server rejected the listing: ${e.message}")
     } catch (e: Exception) {
       throw McpToolExecutionException(
         "Failed to list MCP resource templates: ${e.message}",
@@ -86,6 +94,8 @@ internal class ListMcpResourceTemplatesTool(private val mcpToolset: McpToolset) 
   }
 
   companion object {
+    private val logger = LoggerFactory.getLogger(ListMcpResourceTemplatesTool::class)
+
     private const val DESCRIPTION =
       "List resource templates available on the MCP server. Templates cover families of " +
         "resources that cannot be enumerated, so they never appear in list_mcp_resources. Each " +
