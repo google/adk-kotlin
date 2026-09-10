@@ -26,6 +26,7 @@ import com.google.adk.kt.callbacks.BeforeRunCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.OnEventCallback
 import com.google.adk.kt.callbacks.OnModelErrorCallback
+import com.google.adk.kt.callbacks.OnRunErrorCallback
 import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.callbacks.OnUserMessageCallback
 import com.google.adk.kt.logging.LoggerFactory
@@ -66,6 +67,9 @@ class PluginManager(
   }
   internal val afterRunCallbacks: List<AfterRunCallback> = plugins.map { plugin ->
     AfterRunCallback { ctx -> plugin.afterRun(ctx) }
+  }
+  internal val onRunErrorCallbacks: List<OnRunErrorCallback> = plugins.map { plugin ->
+    OnRunErrorCallback { ctx, error -> plugin.onRunError(ctx, error) }
   }
   internal val beforeAgentCallbacks: List<BeforeAgentCallback> = plugins.map { plugin ->
     BeforeAgentCallback { ctx -> plugin.beforeAgent(ctx) }

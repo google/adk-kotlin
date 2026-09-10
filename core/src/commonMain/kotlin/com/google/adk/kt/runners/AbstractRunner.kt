@@ -29,6 +29,7 @@ import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterRunCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeRunCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnEventCallbacksPipeline
+import com.google.adk.kt.callbacks.runOnRunErrorCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnUserMessageCallbacksPipeline
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -50,7 +51,9 @@ import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -168,11 +171,20 @@ abstract class AbstractRunner : Runner {
           return@flow
         }
 
-        // 4. Run agent with plugins
-        emitAll(runAgentWithPlugins(context))
+        // 4. Run agent with plugins. `catch` sees only failures from the run itself (upstream), not
+        // a downstream collector error or cancellation, then re-raises unchanged after notifying
+        // plugins. Mirrors ADK Python `on_run_error_callback` (`_exec_with_plugin`) and ADK Java
+        // `onRunErrorCallback`: notification-only, the error is never suppressed.
+        emitAll(
+          runAgentWithPlugins(context).catch { error ->
+            if (error is CancellationException) throw error
+            runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
+            throw error
+          }
+        )
 
-        // 5. Post-invocation context compaction. Runs once the agent has finished emitting and all
-        // its events have been appended to `session`.
+        // 5. Post-invocation context compaction. Runs after a successful invocation; like Python, a
+        // compaction failure is not a run error, so it stays outside the notification above.
         runPostInvocationCompaction(session)
       }
       .trace("invocation", parent = parentContext)
