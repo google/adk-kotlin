@@ -276,3 +276,5 @@ information, see the
 --------------------------------------------------------------------------------
 
 *Happy Agent Building!*
+
+<!-- Testing release process, please ignore :-) -->
