@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.sessions
 
-import com.google.adk.kt.sessions.State
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -83,7 +82,30 @@ class StateTest {
     assertThat(state["key1"]).isEqualTo("new-value1")
     assertThat(state["key2"]).isEqualTo("value2")
     assertThat(state.containsKey("key3")).isFalse()
+    // temp: entries are skipped by applyDelta.
+    assertThat(state.containsKey("temp:key4")).isFalse()
     assertThat(state.hasDelta).isTrue()
+  }
+
+  @Test
+  fun applyTempDelta_appliesOnlyTempEntries() {
+    val state = State(initialState = mapOf("keep" to "old"))
+
+    state.applyTempDelta(mapOf("temp:key1" to "value1", "sessionKey" to "ignored"))
+
+    assertThat(state["temp:key1"]).isEqualTo("value1")
+    // Non-`temp:` entries are left to applyDelta.
+    assertThat(state.containsKey("sessionKey")).isFalse()
+    assertThat(state["keep"]).isEqualTo("old")
+  }
+
+  @Test
+  fun applyTempDelta_removedSentinel_removesTempKey() {
+    val state = State(initialState = mapOf("temp:key1" to "value1"))
+
+    state.applyTempDelta(mapOf("temp:key1" to State.REMOVED))
+
+    assertThat(state.containsKey("temp:key1")).isFalse()
   }
 
   @Test

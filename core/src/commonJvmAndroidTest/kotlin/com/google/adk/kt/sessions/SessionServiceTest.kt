@@ -72,7 +72,7 @@ class SessionServiceTest {
   }
 
   @Test
-  fun appendEvent_stateDeltaWithTempKeys_ignoresTempKeys() {
+  fun appendEvent_stateDeltaWithTempKeys_appliesToLiveSessionAndTrimsFromEvent() {
     runBlocking {
       val session = Session(SessionKey("test-app", "user-id", "session-id"))
       val event = Event(author = "agent")
@@ -80,7 +80,30 @@ class SessionServiceTest {
 
       val unused = sessionService.appendEvent(session, event)
 
+      // `temp:` is applied to the in-memory session (readable by later agents in the invocation)
+      assertThat(session.state["temp:key1"]).isEqualTo("value1")
+      // but stripped from the event in place, so it is never persisted.
+      assertThat(event.actions.stateDelta.containsKey("temp:key1")).isFalse()
+    }
+  }
+
+  @Test
+  fun appendEvent_tempKeyRemoved_removesFromLiveSessionAndTrimsFromEvent() {
+    runBlocking {
+      val session = Session(SessionKey("test-app", "user-id", "session-id"))
+      val seed = Event(author = "agent")
+      seed.actions.stateDelta["temp:key1"] = "value1"
+      val unusedSeed = sessionService.appendEvent(session, seed)
+      assertThat(session.state["temp:key1"]).isEqualTo("value1")
+
+      val remove = Event(author = "agent")
+      remove.actions.stateDelta["temp:key1"] = State.REMOVED
+      val unused = sessionService.appendEvent(session, remove)
+
+      // A `temp:` key set to REMOVED is removed from the live session,
       assertThat(session.state.containsKey("temp:key1")).isFalse()
+      // and likewise stripped from the event before persistence.
+      assertThat(remove.actions.stateDelta.containsKey("temp:key1")).isFalse()
     }
   }
 

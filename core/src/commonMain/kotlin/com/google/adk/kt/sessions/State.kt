@@ -79,11 +79,35 @@ class State(
     state.remove(key)
   }
 
-  /** Applies a delta to the state and tracks it in the delta map. */
+  /**
+   * Applies the non-`temp:` entries of [delta] to the state, tracking them in the delta map.
+   *
+   * `temp:` entries are skipped; apply those with [applyTempDelta].
+   */
   fun applyDelta(delta: Map<String, Any>) {
     lock.write {
       for ((key, value) in delta) {
         if (key.startsWith(TEMP_PREFIX)) {
+          continue
+        }
+
+        if (value === REMOVED) {
+          remove(key)
+        } else {
+          this[key] = value
+        }
+      }
+    }
+  }
+
+  /**
+   * Applies only the `temp:`-prefixed entries of [delta] to the state, tracking them in the delta
+   * map; the complement of [applyDelta].
+   */
+  fun applyTempDelta(delta: Map<String, Any>) {
+    lock.write {
+      for ((key, value) in delta) {
+        if (!key.startsWith(TEMP_PREFIX)) {
           continue
         }
 
