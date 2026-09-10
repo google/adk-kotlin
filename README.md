@@ -62,14 +62,14 @@ If you're using Maven, add the following to your dependencies:
 <dependency>
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-kotlin-core-jvm</artifactId>
-  <version>1.0.0</version>
+  <version>1.0.1</version>
 </dependency>
 ```
 
 If you're using Gradle:
 
 ```kotlin
-implementation("com.google.adk:google-adk-kotlin-core:1.0.0")
+implementation("com.google.adk:google-adk-kotlin-core:1.0.1")
 ```
 
 <!-- x-release-please-released-end -->
