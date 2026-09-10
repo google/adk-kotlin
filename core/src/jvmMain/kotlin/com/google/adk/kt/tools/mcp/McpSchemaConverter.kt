@@ -121,7 +121,7 @@ internal object McpSchemaConverter {
   /**
    * The schemas a JSON Schema declares under `$defs` or the older `definitions`.
    *
-   * A raw schema map carries them as ordinary keys; [JsonSchema] has them as components. `$defs`
+   * A raw schema map carries them as ordinary keys; `JsonSchema` has them as components. `$defs`
    * wins a name clash, being the current spelling.
    */
   private fun Map<String, Any>.declaredDefinitions(): Map<String, Any> = buildMap {

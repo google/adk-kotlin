@@ -22,7 +22,9 @@ import androidx.room.withTransaction
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.sessions.GetSessionConfig
+import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.ListEventsResponse
 import com.google.adk.kt.sessions.ListSessionsResponse
 import com.google.adk.kt.sessions.Session
@@ -37,15 +39,14 @@ import kotlin.time.Instant
  * storage.
  *
  * Sessions, events, and app/user state survive process death and device reboot. Use this in place
- * of [InMemorySessionService] when constructing a [com.google.adk.kt.runners.Runner] in an Android
- * consumer app.
+ * of [InMemorySessionService] when constructing a [Runner] in an Android consumer app.
  *
  * Default usage — one instance per `Application`:
  * ```kotlin
  * val sessionService = RoomSessionService.fromContext(applicationContext)
  * ```
  *
- * Pass a distinct [databaseName] to give an agent its own SQLite file (e.g. when two agents in the
+ * Pass a distinct `databaseName` to give an agent its own SQLite file (e.g. when two agents in the
  * same app should not see each other's sessions even within the same `appName`):
  * ```kotlin
  * val agentASessions = RoomSessionService.fromContext(context, "agent_a.db")

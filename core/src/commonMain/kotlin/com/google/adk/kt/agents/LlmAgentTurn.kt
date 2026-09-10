@@ -21,6 +21,7 @@ import com.google.adk.kt.callbacks.runAfterModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnModelErrorCallbacksPipeline
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.getLongRunningFunctionIds
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.LlmRequest

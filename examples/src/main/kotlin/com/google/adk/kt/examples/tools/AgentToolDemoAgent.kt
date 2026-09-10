@@ -60,7 +60,7 @@ object AgentToolDemoAgent {
   /**
    * Defines the central [LlmAgent] that will be run.
    *
-   * The agent uses a [GeminiModel] behind the scenes and is dynamically equipped with an
+   * The agent uses a [Gemini] model behind the scenes and is dynamically equipped with an
    * [AgentTool] that delegates to the [chiefEngineer].
    */
   @JvmField

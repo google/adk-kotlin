@@ -28,9 +28,8 @@ package com.google.adk.kt.annotations
  * Note: this annotation shares its simple name with [com.google.adk.kt.types.Tool], the GenAI tool
  * definition data class. Files that need to reference both should use an import alias.
  *
- * Retained at runtime so the JVM-only [com.google.adk.kt.interop.ReflectiveTools] can read it via
- * reflection to build tools from Java methods, which the KSP path cannot process without the Kotlin
- * compiler.
+ * Retained at runtime so the JVM-only `ReflectiveTools` can read it via reflection to build tools
+ * from Java methods, which the KSP path cannot process without the Kotlin compiler.
  *
  * @property name An optional explicit name for the tool. If not provided, the function name is
  *   used.

@@ -38,7 +38,7 @@ private const val PROP_ENTRY_ID = "entryId"
 private const val PROP_CONTENT_JSON = "contentJson"
 private const val PROP_METADATA_JSON = "customMetadataJson"
 
-/** Max results returned by a single [search] call (v1 returns the first page only). */
+/** Max results returned by a single `search` call (v1 returns the first page only). */
 private const val MAX_RESULTS = 25
 
 /** Schema version; bump this and add a `Migrator` when making a backward-incompatible change. */

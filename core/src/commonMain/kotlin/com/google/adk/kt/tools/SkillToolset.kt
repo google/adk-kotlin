@@ -206,7 +206,7 @@ internal class LoadSkillResourceTool(private val toolset: SkillToolset) :
   }
 }
 
-/** Toolset that manages and provides access to a collection of [Skill]s. */
+/** Toolset exposing the skills a [SkillSource] provides. */
 class SkillToolset(internal val source: SkillSource) : Toolset {
 
   companion object {
