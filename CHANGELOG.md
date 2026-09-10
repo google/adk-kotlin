@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/google/adk-kotlin/compare/v1.0.0...v1.0.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* testing release process - please ignore ([be46a96](https://github.com/google/adk-kotlin/commit/be46a9644f67060c2be6c38a3fe66692ec0d0627))
+
 ## [1.0.0](https://github.com/google/adk-kotlin/compare/v0.9.0...v1.0.0) (2026-09-07)
 
 ADK for Kotlin 1.0 is generally available. This release brings full feature parity with ADK 1.0 Core to Kotlin, Java, and Android developers through an idiomatic Kotlin API, and adds Android-first, on-device extensions for building agents on the JVM or on-device.
