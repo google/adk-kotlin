@@ -17,6 +17,7 @@
 package com.google.adk.kt.examples.a2a
 
 import com.google.adk.kt.a2a.jvm.A2AAgent
+import com.google.adk.kt.agents.BaseAgent
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -30,7 +31,7 @@ import kotlinx.coroutines.runBlocking
  * 2. Talking to the agent over the JSON-RPC transport backed by `JdkA2AHttpClient`, the JVM HTTP
  *    client. The factory injects the transport explicitly rather than relying on SDK ServiceLoader
  *    auto-resolution.
- * 3. Wrapping the remote agent as a standard ADK [com.google.adk.kt.agents.Agent].
+ * 3. Wrapping the remote agent as a standard ADK [BaseAgent].
  */
 object A2AAgentDemo {
 

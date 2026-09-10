@@ -20,6 +20,7 @@ import com.google.adk.kt.crypto.sha256Hex
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.HttpOptions
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Tool

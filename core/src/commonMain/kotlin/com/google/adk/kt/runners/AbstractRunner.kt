@@ -47,6 +47,7 @@ import com.google.adk.kt.summarizer.SlidingWindowEventCompactor
 import com.google.adk.kt.telemetry.currentTelemetryContext
 import com.google.adk.kt.telemetry.trace
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -734,7 +735,7 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Finds the appropriate [BaseAgent] to run for the given [session].
+   * Finds the appropriate [BaseAgent] to run for the session in [context].
    *
    * @param context The current invocation context.
    * @param rootAgent The root agent of the runner.
