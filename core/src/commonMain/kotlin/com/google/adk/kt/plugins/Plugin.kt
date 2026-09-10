@@ -89,6 +89,19 @@ interface Plugin : AutoCloseable {
    */
   suspend fun afterRun(invocationContext: InvocationContext) {}
 
+  /**
+   * Callback executed when an unhandled error escapes the ADK runner run.
+   *
+   * Notification-only: the error is always re-raised to the caller after every plugin has been
+   * notified, so this hook is for logging, telemetry, or cleanup, not recovery. It must not attempt
+   * to suppress the error, and a failure thrown from it is logged and does not stop the remaining
+   * plugins from being notified.
+   *
+   * @param invocationContext The context for the entire invocation.
+   * @param error The error that escaped the run.
+   */
+  suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {}
+
   // Agent-level callbacks
 
   /**
