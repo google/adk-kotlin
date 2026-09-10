@@ -81,33 +81,28 @@ interface SessionService {
   }
 
   /**
-   * Appends an event to an in-memory session object and updates the session's state based on the
-   * event's state delta, if applicable.
+   * Appends [event] to [session], applying its state delta to the in-memory session and recording
+   * the event; `temp:` keys are applied to the in-memory state (so later agents in the invocation
+   * can read them) but removed from [event] before persistence.
    *
-   * Note: Implementations of [SessionService] overriding this method should call
-   * `super.appendEvent(session, event)` to ensure that the caller's session object is updated and
-   * kept in sync.
+   * Overriding implementations must run this lifecycle before persisting so the stored event has no
+   * `temp:` keys: call `super.appendEvent` first then persist the trimmed [event], or call
+   * [State.applyTempDelta] and [com.google.adk.kt.events.EventActions.removeTempKeys] before
+   * persisting with `super.appendEvent` last (needed when a stale-write check must read the
+   * pre-update [Session.lastUpdateTime]).
    *
-   * This method primarily modifies the passed [session] object in memory. Persisting these changes
-   * typically requires a separate call to an update/save method provided by the specific service
-   * implementation, or might happen implicitly depending on the implementation's design.
-   *
-   * If the event is marked as partial (e.g., `event.partial == true`), it is returned directly
-   * without modifying the session state or event list. State delta keys starting with
-   * [State.TEMP_PREFIX] are ignored during state updates.
-   *
-   * @param session The [Session] object to which the event should be appended (will be mutated).
-   * @param event The [Event] to append.
-   * @return The appended [Event] instance (or the original event if it was partial).
+   * @param session The [Session] to update in place.
+   * @param event The [Event] to append; its `temp:` state-delta keys are removed in place.
+   * @return The appended [Event], or the original unchanged if it was partial.
    */
   suspend fun appendEvent(session: Session, event: Event): Event {
-    // If the event indicates it's partial or incomplete, don't process it yet.
-    if (event.partial == true) {
-      return event
-    }
+    // Partial (streaming) events are superseded by the final aggregated event, so skip them.
+    if (event.partial) return event
 
-    // Apply the event actions state delta to the session state.
-    event.actions.stateDelta.let { delta -> session.state.applyDelta(delta) }
+    // `temp:` goes to the live session only; drop it from the event before applying the rest.
+    session.state.applyTempDelta(event.actions.stateDelta)
+    event.actions.removeTempKeys()
+    session.state.applyDelta(event.actions.stateDelta)
 
     session.events.add(event)
     session.lastUpdateTime = Instant.fromEpochMilliseconds(event.timestamp)

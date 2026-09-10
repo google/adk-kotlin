@@ -196,9 +196,18 @@ internal constructor(
   override suspend fun appendEvent(session: Session, event: Event): Event {
     val sessionId = requireNotNull(session.key.id) { "Session.key.id is required for appendEvent." }
     validateSessionId(sessionId)
-    val appended = super.appendEvent(session, event)
-    client.appendEvent(engine, sessionId, appended.toDto()).getOrThrow()
-    return appended
+    // A partial event is streamed to the backend but not applied to the in-memory session.
+    if (event.partial) {
+      client.appendEvent(engine, sessionId, event.toDto()).getOrThrow()
+      return event
+    }
+    // Mutate the session only after the append succeeds: apply `temp:` and trim before the post,
+    // then let super apply the non-temp state and append the event). A failed append does neither,
+    // so a retry cannot duplicate the event or re-apply state.
+    session.state.applyTempDelta(event.actions.stateDelta)
+    event.actions.removeTempKeys()
+    client.appendEvent(engine, sessionId, event.toDto()).getOrThrow()
+    return super.appendEvent(session, event)
   }
 
   /**
