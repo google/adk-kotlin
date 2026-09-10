@@ -26,6 +26,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Represents a step in a callback pipeline execution. */
 internal sealed class PipelineStep<out S, out R> {
@@ -228,6 +229,29 @@ internal suspend fun runAfterRunCallbacksPipeline(
     callback.call(context)
     PipelineStep.Continue(Unit)
   }
+
+/**
+ * Executes the [OnRunErrorCallback] pipeline over the provided callbacks.
+ *
+ * Notification-only and best-effort: every callback is invoked in order regardless of return value,
+ * and a callback that throws is logged and skipped so the remaining callbacks still run. The error
+ * being reported is never suppressed here; the caller re-raises it after this pipeline returns.
+ */
+internal suspend fun runOnRunErrorCallbacksPipeline(
+  callbacks: Iterable<OnRunErrorCallback>,
+  context: InvocationContext,
+  error: Throwable,
+) {
+  for (callback in callbacks) {
+    try {
+      callback.call(context, error)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      logger.error(e) { "[${callback.name}] Error during 'onRunError' callback" }
+    }
+  }
+}
 
 /**
  * Executes the [OnUserMessageCallback] pipeline over the provided callbacks.

@@ -33,8 +33,8 @@ import kotlinx.coroutines.future.await
 
 /**
  * Java-friendly base for implementing a [Plugin] -- the cross-cutting interception point. The
- * engine's `Plugin` has 12 `suspend` callbacks plus `close()`, every one with a default body. This
- * base final-overrides all 12 and re-exposes each as a [CompletableFuture]-returning hook whose
+ * engine's `Plugin` has 13 `suspend` callbacks plus `close()`, every one with a default body. This
+ * base final-overrides all 13 and re-exposes each as a [CompletableFuture]-returning hook whose
  * *result* is the outcome; each default hook completes with the value that leaves execution
  * unchanged. Return the future promptly and do any blocking work inside it, not before returning
  * it.
@@ -66,6 +66,10 @@ abstract class BaseFuturePlugin(private val pluginName: String) : Plugin {
 
   final override suspend fun afterRun(invocationContext: InvocationContext) {
     afterRunAsync(invocationContext).await()
+  }
+
+  final override suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {
+    onRunErrorAsync(invocationContext, error).await()
   }
 
   // ---- Agent-level -----------------------------------------------------------------------------
@@ -144,6 +148,12 @@ abstract class BaseFuturePlugin(private val pluginName: String) : Plugin {
   /** Observe the end of a run. */
   protected open fun afterRunAsync(invocationContext: InvocationContext): CompletableFuture<Void?> =
     CompletableFuture.completedFuture(null)
+
+  /** Observe a run that failed with [error]; notification-only, the error still propagates. */
+  protected open fun onRunErrorAsync(
+    invocationContext: InvocationContext,
+    error: Throwable,
+  ): CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
 
   /**
    * Resolve to [Choices.proceed] to rewrite the event actions and continue, or [Choices.breakWith]
