@@ -27,7 +27,6 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.ids.Uuid
-import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.serialization.anyToJsonElement
@@ -43,7 +42,6 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -392,20 +390,15 @@ data class InvocationContext(
     }
   }
 
-  /**
-   * Executes a single function call synchronously and builds a corresponding response event.
-   *
-   * A name that resolves to no tool is the model's own mistake to correct, so it is answered with a
-   * function response listing the tools that do exist rather than raised out of the invocation.
-   */
+  /** Executes a single function call synchronously and builds a corresponding response event. */
   internal suspend fun executeSingleFunctionCall(
     functionCall: FunctionCall,
     tools: Map<String, BaseTool>,
     toolConfirmation: ToolConfirmation? = null,
   ): Event? {
-    val resolvedTool = tools[functionCall.name]
-    // The placeholder lets the tool callbacks answer a call the registry could not resolve.
-    val tool = resolvedTool ?: MissingTool(functionCall.name.ifEmpty { UNNAMED_TOOL })
+    val tool =
+      tools[functionCall.name]
+        ?: throw IllegalArgumentException("BaseTool ${functionCall.name} not found")
     val llmAgent = this.agent as? LlmAgent
     val toolContext =
       ToolContext(
@@ -425,10 +418,6 @@ data class InvocationContext(
           return buildResponseEvent(tool, beforeResult.value, toolContext, responseEventId)
         is CallbackChoice.Continue -> beforeResult.value
       }
-
-    if (resolvedTool == null) {
-      return respondToolNotFound(llmAgent, tool, tools, currentArgs, toolContext, responseEventId)
-    }
 
     // 2. Execute the tool within the `execute_tool` span (parity with Python `trace_tool_call`).
     return withSpan("execute_tool ${tool.name}") { span ->
@@ -478,39 +467,6 @@ data class InvocationContext(
       buildResponseEvent(tool, toolResult, toolContext, responseEventId)
     }
   }
-
-  /**
-   * Answers a call to a tool name that resolves to nothing, giving the on-tool-error callbacks
-   * first refusal and otherwise reporting the miss back to the model so it can retry. The
-   * after-tool callbacks are skipped, mirroring Python's `is_tool_lookup_failure`.
-   */
-  private suspend fun respondToolNotFound(
-    llmAgent: LlmAgent?,
-    tool: BaseTool,
-    tools: Map<String, BaseTool>,
-    args: Map<String, Any?>,
-    toolContext: ToolContext,
-    responseEventId: String,
-  ): Event =
-    withSpan("execute_tool ${tool.name}") { span ->
-      span.recordExecuteToolMeta(tool, toolContext, responseEventId, args)
-      val error = IllegalArgumentException(TOOL_NOT_FOUND_ERROR)
-      span[TelemetryAttributes.ERROR_TYPE] = error::class.simpleName ?: "Exception"
-      val recovered = runErrorBaseToolCallbacks(llmAgent, tool, args, toolContext, error)
-      val response =
-        recovered
-          ?: run {
-            // The name itself is model-provided, so only the shape of the miss is logged.
-            logger.warn {
-              "Model called a tool name that is not registered; ${tools.size} tool(s) available."
-            }
-            buildToolNotFoundResponse(tool.name, tools)
-          }
-      span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
-        toTraceJson(toFinalResponseMap(response))
-      }
-      buildResponseEvent(tool, response, toolContext, responseEventId)
-    }
 
   /** Records the static `execute_tool` span attributes (parity with Python `trace_tool_call`). */
   private fun Span.recordExecuteToolMeta(
@@ -681,45 +637,6 @@ data class InvocationContext(
       }
     }
   }
-
-  private companion object {
-    private val logger = LoggerFactory.getLogger(InvocationContext::class)
-  }
-}
-
-/** Name reported for a function call the model emitted without one. */
-private const val UNNAMED_TOOL = "<unnamed>"
-
-/** Message of the lookup failure handed to the on-tool-error callbacks; carries no model data. */
-private const val TOOL_NOT_FOUND_ERROR = "No tool with the requested name is registered"
-
-/**
- * Stands in for a tool name that resolved to nothing, so the tool callbacks receive a [BaseTool]
- * for a call that can never run (parity with Python's `BaseTool(name=…, description='Tool not
- * found')`).
- */
-private class MissingTool(name: String) : BaseTool(name = name, description = "Tool not found") {
-  override fun declaration(): FunctionDeclaration? = null
-
-  override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any =
-    throw IllegalStateException(TOOL_NOT_FOUND_ERROR)
-}
-
-/**
- * Returns the error payload reported back to the model for a tool name it made up, naming the tools
- * it may call instead. Mirrors Python's `build_tool_not_found_response`.
- */
-private fun buildToolNotFoundResponse(
-  toolName: String,
-  tools: Map<String, BaseTool>,
-): Map<String, Any?> {
-  val available = tools.keys.joinToString(", ").ifEmpty { "none" }
-  return mapOf(
-    "error" to
-      "Invoking `$toolName()` failed as no tool with that name is available. The tools you can " +
-        "call are: $available. You could retry, but it is IMPORTANT that you only call a tool " +
-        "from that list."
-  )
 }
 
 /**
