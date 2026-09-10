@@ -267,7 +267,7 @@ object SessionServiceAssertions {
     assertThat(otherUserReloaded!!.state.containsKey("user:pref")).isFalse()
   }
 
-  // --- partial events (InMemory + Room only; Vertex persists them remotely) ---
+  // --- partial events (all backends: base, InMemory, Room, Vertex) ---
 
   /** A partial event is a no-op passthrough: returned unchanged, and never persisted. */
   suspend fun appendPartialNotPersisted(service: SessionService) {
