@@ -23,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class EventActionsTest {
 
@@ -155,5 +156,28 @@ class EventActionsTest {
   @Test
   fun defaultConstructor_compactionIsNull() {
     assertNull(EventActions().compaction)
+  }
+
+  @Test
+  fun snapshot_isIndependentOfOriginal() {
+    val original =
+      EventActions(
+        stateDelta = mutableMapOf("k" to "v"),
+        artifactDelta = mutableMapOf("f" to 1),
+        escalate = true,
+      )
+
+    val snapshot = original.snapshot()
+
+    // The snapshot carries the same values...
+    assertEquals("v", snapshot.stateDelta["k"])
+    assertEquals(1, snapshot.artifactDelta["f"])
+    assertTrue(snapshot.escalate)
+
+    // ... but later in-place writes to the original's maps do not leak into it.
+    original.stateDelta["k2"] = "v2"
+    original.artifactDelta["f2"] = 2
+    assertNull(snapshot.stateDelta["k2"])
+    assertNull(snapshot.artifactDelta["f2"])
   }
 }
