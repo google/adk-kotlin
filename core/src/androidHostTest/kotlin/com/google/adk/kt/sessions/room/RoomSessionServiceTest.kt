@@ -30,12 +30,14 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.SessionServiceAssertions
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import kotlin.time.Instant
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -91,26 +93,6 @@ class RoomSessionServiceTest {
       partial = partial,
     )
 
-  // --------- lifecycle parity (port of InMemorySessionServiceTest) ---------
-
-  @Test
-  fun lifecycle_noSession() = runTest {
-    assertThat(service.getSession(SessionKey("app-name", "user-id", "session-id"))).isNull()
-    assertThat(service.listSessions("app-name", "user-id").sessions).isEmpty()
-    assertThat(service.listEvents(SessionKey("app-name", "user-id", "session-id")).events).isEmpty()
-  }
-
-  @Test
-  fun lifecycle_createSession_nullIdGeneratesUuid() = runTest {
-    val session = service.createSession(SessionKey("app-name", "user-id", id = null))
-
-    assertThat(session.key.id).isNotNull()
-    assertThat(session.key.id!!).isNotEmpty()
-    assertThat(session.key.appName).isEqualTo("app-name")
-    assertThat(session.key.userId).isEqualTo("user-id")
-    assertThat(session.state).isEmpty()
-  }
-
   @Test
   fun createSession_blankId_throws() = runTest {
     runCatching { service.createSession(SessionKey("app-name", "user-id", "")) }
@@ -120,7 +102,7 @@ class RoomSessionServiceTest {
   }
 
   @Test
-  fun lifecycle_createSession_explicitIdIsHonored() = runTest {
+  fun createSession_explicitId_isHonored() = runTest {
     val session = service.createSession(SessionKey("app-name", "user-id", "explicit-session-id"))
 
     assertThat(session.key.id).isEqualTo("explicit-session-id")
@@ -129,7 +111,17 @@ class RoomSessionServiceTest {
   }
 
   @Test
-  fun lifecycle_listSessions_includesMergedStateAndEmptyEvents() = runTest {
+  fun createSession_nullId_mintsId(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionMintsIdWhenAbsent(service)
+  }
+
+  @Test
+  fun createSession_withInitialState_retainsState(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionRetainsInitialState(service)
+  }
+
+  @Test
+  fun listSessions_afterAppend_includesMergedStateAndEmptyEvents() = runTest {
     val session = service.createSession(SessionKey("app-name", "user-id", "session-1"))
     service.append(
       session,
@@ -154,8 +146,23 @@ class RoomSessionServiceTest {
   }
 
   @Test
-  fun lifecycle_deleteSession_missingKey_isNoOp() = runTest {
-    service.deleteSession(SessionKey("app-name", "user-id", "missing"))
+  fun listSessions_includesCreatedSession(): Unit = runBlocking {
+    SessionServiceAssertions.listSessionsReturnsUsersSessions(service)
+  }
+
+  @Test
+  fun listSessions_unknownUser_isEmpty(): Unit = runBlocking {
+    SessionServiceAssertions.listSessionsIsEmptyForUnknownUser(service)
+  }
+
+  @Test
+  fun listEvents_missingSession_returnsEmpty(): Unit = runBlocking {
+    SessionServiceAssertions.listEventsIsEmptyForUnknownSession(service)
+  }
+
+  @Test
+  fun listEvents_returnsAppendsInOrder(): Unit = runBlocking {
+    SessionServiceAssertions.listEventsReturnsAppendsInOrder(service)
   }
 
   @Test
@@ -170,24 +177,13 @@ class RoomSessionServiceTest {
   }
 
   @Test
-  fun appendEvent_updatesSessionState() = runTest {
-    val session = service.createSession(SessionKey("app", "user", "session1"))
-    val event =
-      session.agentEvent(
-        stateDelta =
-          mapOf(
-            "sessionKey" to "sessionValue",
-            "app:appKey" to "appValue",
-            "user:userKey" to "userValue",
-          )
-      )
+  fun deleteSession_removesSession(): Unit = runBlocking {
+    SessionServiceAssertions.deleteRemovesSession(service)
+  }
 
-    assertThat(service.appendEvent(session, event)).isEqualTo(event)
-
-    val retrieved = service.getSession(session.key)!!
-    assertThat(retrieved.state["sessionKey"]).isEqualTo("sessionValue")
-    assertThat(retrieved.state["app:appKey"]).isEqualTo("appValue")
-    assertThat(retrieved.state["user:userKey"]).isEqualTo("userValue")
+  @Test
+  fun deleteSession_unknownId_isNoOp(): Unit = runBlocking {
+    SessionServiceAssertions.deleteUnknownSessionIsNoOp(service)
   }
 
   @Test
@@ -233,17 +229,6 @@ class RoomSessionServiceTest {
   }
 
   @Test
-  fun appendEvent_updatesCallerSessionObject() = runTest {
-    val session = service.createSession(SessionKey("app", "user", "session1"))
-    val event = session.agentEvent()
-
-    service.append(session, event)
-
-    assertThat(session.events).contains(event)
-    assertThat(session.lastUpdateTime).isEqualTo(Instant.fromEpochMilliseconds(event.timestamp))
-  }
-
-  @Test
   fun appendEvent_emptyBucket_leavesStateRowUntouched() = runTest {
     // Establish a StorageAppState row with a known updateTime by writing an app: delta first.
     val session = service.createSession(SessionKey("app", "user", "session1"))
@@ -265,25 +250,43 @@ class RoomSessionServiceTest {
   }
 
   @Test
-  fun appendEvent_tempKeys_visibleInMemoryOnly_neverPersisted() = runTest {
-    val session = service.createSession(SessionKey("app", "user", "session1"))
-    service.append(
-      session,
-      session.agentEvent(stateDelta = mapOf("temp:scratch" to "v", "real" to "r")),
-    )
+  fun appendEvent_tempKey_visibleInInvocationButNotPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateVisibleInInvocationButNotPersisted(service)
+  }
 
-    // Caller's in-memory session sees the temp key (it's needed for the rest of the invocation).
-    assertThat(session.state["temp:scratch"]).isEqualTo("v")
+  @Test
+  fun appendEvent_tempKey_trimmedFromReturnedEvent(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateTrimmedFromReturnedEvent(service)
+  }
 
-    // But the temp key is NOT persisted in the sessions.state column ...
-    val retrieved = service.getSession(session.key)!!
-    assertThat(retrieved.state.containsKey("temp:scratch")).isFalse()
-    assertThat(retrieved.state["real"]).isEqualTo("r")
+  @Test
+  fun appendEvent_tempKeyRemoved_reflectedOnLiveSession(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateRemovalReflectedOnLiveSession(service)
+  }
 
-    // ... and is NOT in the persisted event_data either, so a future replay won't re-apply it.
-    val replayedDelta = service.listEvents(session.key).events.last().actions.stateDelta
-    assertThat(replayedDelta.containsKey("temp:scratch")).isFalse()
-    assertThat(replayedDelta["real"]).isEqualTo("r")
+  @Test
+  fun appendEvent_sessionScopedKey_isPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.appendPersistsSessionScopedState(service)
+  }
+
+  @Test
+  fun appendEvent_removedSentinel_deletesKey(): Unit = runBlocking {
+    SessionServiceAssertions.appendRemovesStateWithSentinel(service)
+  }
+
+  @Test
+  fun appendEvent_syncsCallerSession(): Unit = runBlocking {
+    SessionServiceAssertions.appendSyncsCallerSession(service)
+  }
+
+  @Test
+  fun appendEvent_appScopedKey_sharedAcrossSessions(): Unit = runBlocking {
+    SessionServiceAssertions.appScopedStateSharedAcrossSessions(service)
+  }
+
+  @Test
+  fun appendEvent_userScopedKey_sharedForSameUser(): Unit = runBlocking {
+    SessionServiceAssertions.userScopedStateSharedForSameUser(service)
   }
 
   @Test
@@ -297,7 +300,61 @@ class RoomSessionServiceTest {
     assertThat(service.getSession(session.key)!!.state.containsKey("key")).isFalse()
   }
 
-  // --------- GetSessionConfig filters ---------
+  @Test
+  fun appendEvent_callerBehindStorage_throws() = runTest {
+    // Storage moved forward (another writer raced us) while the caller still holds the older
+    // lastUpdateTime — this is the classic optimistic-concurrency conflict.
+    val session = service.createSession(SessionKey("app", "user", "session1"))
+    service.append(
+      session,
+      session.agentEvent(timestamp = session.lastUpdateTime.toEpochMilliseconds() + 100),
+    )
+    val storageTs = session.lastUpdateTime
+    val staleSession =
+      session.copy(
+        lastUpdateTime = Instant.fromEpochMilliseconds(storageTs.toEpochMilliseconds() - 1)
+      )
+
+    val result = runCatching {
+      service.appendEvent(
+        staleSession,
+        staleSession.agentEvent(timestamp = storageTs.toEpochMilliseconds() + 1),
+      )
+    }
+
+    assertThat(result.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
+  }
+
+  @Test
+  fun appendEvent_callerAheadOfStorage_throws() = runTest {
+    // Caller's in-memory session claims a lastUpdateTime newer than storage — e.g. a fabricated
+    // Session or a backup-restored DB. Must be rejected rather than silently writing backwards.
+    val session = service.createSession(SessionKey("app", "user", "session1"))
+    val storageTs = session.lastUpdateTime
+    val futureSession =
+      session.copy(
+        lastUpdateTime = Instant.fromEpochMilliseconds(storageTs.toEpochMilliseconds() + 1_000)
+      )
+
+    val result = runCatching {
+      service.appendEvent(
+        futureSession,
+        futureSession.agentEvent(timestamp = futureSession.lastUpdateTime.toEpochMilliseconds() + 1),
+      )
+    }
+
+    assertThat(result.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
+  }
+
+  @Test
+  fun getSession_afterCreate_returnsSession(): Unit = runBlocking {
+    SessionServiceAssertions.createdSessionIsRetrievable(service)
+  }
+
+  @Test
+  fun getSession_unknownId_returnsNull(): Unit = runBlocking {
+    SessionServiceAssertions.getUnknownSessionReturnsNull(service)
+  }
 
   @Test
   fun getSession_numRecentEvents_keepsLastN() = runTest {
@@ -388,7 +445,25 @@ class RoomSessionServiceTest {
       .inOrder()
   }
 
-  // --------- persistence-specific ---------
+  @Test
+  fun getSession_loadedSession_hasNoPendingDelta() = runTest {
+    val key = SessionKey("app", "user", "session1")
+    val created = service.createSession(key)
+    service.append(
+      created,
+      created.agentEvent(
+        stateDelta = mapOf("app:appKey" to "v", "user:userKey" to "v", "sessionKey" to "v")
+      ),
+    )
+
+    val loaded = service.getSession(key)!!
+
+    // app:/user: state is overlaid for reads...
+    assertThat(loaded.state["app:appKey"]).isEqualTo("v")
+    assertThat(loaded.state["user:userKey"]).isEqualTo("v")
+    // ...but a freshly loaded session must not report any of it as a pending change.
+    assertThat(loaded.state.hasDelta).isFalse()
+  }
 
   @Test
   fun session_persistsAcrossReopen() = runTest {
@@ -414,96 +489,6 @@ class RoomSessionServiceTest {
       context.deleteDatabase(dbName)
     }
   }
-
-  @Test
-  fun appState_persistsAcrossSessions() = runTest {
-    val firstSession = service.createSession(SessionKey("app", "user-a", "session1"))
-    service.append(firstSession, firstSession.agentEvent(stateDelta = mapOf("app:shared" to "v")))
-
-    val secondSession = service.createSession(SessionKey("app", "user-b", "session2"))
-
-    assertThat(secondSession.state["app:shared"]).isEqualTo("v")
-  }
-
-  @Test
-  fun userState_persistsAcrossSessionsForSameUser() = runTest {
-    val firstSession = service.createSession(SessionKey("app", "user-a", "session1"))
-    service.append(firstSession, firstSession.agentEvent(stateDelta = mapOf("user:pref" to "v")))
-
-    val sameUserSession = service.createSession(SessionKey("app", "user-a", "session2"))
-    val otherUserSession = service.createSession(SessionKey("app", "user-b", "session3"))
-
-    assertThat(sameUserSession.state["user:pref"]).isEqualTo("v")
-    assertThat(otherUserSession.state.containsKey("user:pref")).isFalse()
-  }
-
-  @Test
-  fun getSession_loadedSession_hasNoPendingDelta() = runTest {
-    val key = SessionKey("app", "user", "session1")
-    val created = service.createSession(key)
-    service.append(
-      created,
-      created.agentEvent(
-        stateDelta = mapOf("app:appKey" to "v", "user:userKey" to "v", "sessionKey" to "v")
-      ),
-    )
-
-    val loaded = service.getSession(key)!!
-
-    // app:/user: state is overlaid for reads...
-    assertThat(loaded.state["app:appKey"]).isEqualTo("v")
-    assertThat(loaded.state["user:userKey"]).isEqualTo("v")
-    // ...but a freshly loaded session must not report any of it as a pending change.
-    assertThat(loaded.state.hasDelta).isFalse()
-  }
-
-  @Test
-  fun appendEvent_callerBehindStorage_throws() = runTest {
-    // Storage moved forward (another writer raced us) while the caller still holds the older
-    // lastUpdateTime — this is the classic optimistic-concurrency conflict.
-    val session = service.createSession(SessionKey("app", "user", "session1"))
-    service.append(
-      session,
-      session.agentEvent(timestamp = session.lastUpdateTime.toEpochMilliseconds() + 100),
-    )
-    val storageTs = session.lastUpdateTime
-    val staleSession =
-      session.copy(
-        lastUpdateTime = Instant.fromEpochMilliseconds(storageTs.toEpochMilliseconds() - 1)
-      )
-
-    val result = runCatching {
-      service.appendEvent(
-        staleSession,
-        staleSession.agentEvent(timestamp = storageTs.toEpochMilliseconds() + 1),
-      )
-    }
-
-    assertThat(result.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
-  }
-
-  @Test
-  fun appendEvent_callerAheadOfStorage_throws() = runTest {
-    // Caller's in-memory session claims a lastUpdateTime newer than storage — e.g. a fabricated
-    // Session or a backup-restored DB. Must be rejected rather than silently writing backwards.
-    val session = service.createSession(SessionKey("app", "user", "session1"))
-    val storageTs = session.lastUpdateTime
-    val futureSession =
-      session.copy(
-        lastUpdateTime = Instant.fromEpochMilliseconds(storageTs.toEpochMilliseconds() + 1_000)
-      )
-
-    val result = runCatching {
-      service.appendEvent(
-        futureSession,
-        futureSession.agentEvent(timestamp = futureSession.lastUpdateTime.toEpochMilliseconds() + 1),
-      )
-    }
-
-    assertThat(result.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
-  }
-
-  // --------- factory ---------
 
   @Test
   fun fromContext_differentDatabaseNames_isolateStorage() = runTest {
