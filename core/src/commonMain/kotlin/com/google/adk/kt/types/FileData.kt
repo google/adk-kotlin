@@ -17,14 +17,15 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Represents file data. */
 @Serializable
 data class FileData(
   /** The MIME type of the file. */
-  val mimeType: String? = null,
+  @JsonNames("mime_type") val mimeType: String? = null,
   /** The display name of the file. */
-  val displayName: String? = null,
+  @JsonNames("display_name") val displayName: String? = null,
   /** The URI of the file. */
-  val fileUri: String? = null,
+  @JsonNames("file_uri") val fileUri: String? = null,
 )

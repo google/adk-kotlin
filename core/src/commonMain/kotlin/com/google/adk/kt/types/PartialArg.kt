@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * Represents one of the possible values within a [PartialArg].
@@ -52,8 +53,8 @@ sealed interface PartialArgValue {
 @Serializable
 data class PartialArg(
   val value: PartialArgValue? = null,
-  val jsonPath: String? = null,
-  val willContinue: Boolean? = null,
+  @JsonNames("json_path") val jsonPath: String? = null,
+  @JsonNames("will_continue") val willContinue: Boolean? = null,
 ) {
   /**
    * Represents a boolean value, if this partial argument is of boolean type, null otherwise.

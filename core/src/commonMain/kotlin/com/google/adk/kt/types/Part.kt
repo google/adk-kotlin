@@ -20,6 +20,7 @@ import com.google.adk.kt.serialization.LenientByteArraySerializer
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * A part of a multi-modal prompt or response.
@@ -40,25 +41,27 @@ class Part(
   /** Plain text. */
   val text: String? = null,
   /** Binary data (e.g., image, audio). */
-  val inlineData: Blob? = null,
+  @JsonNames("inline_data") val inlineData: Blob? = null,
   /** Data from a file. */
-  val fileData: FileData? = null,
+  @JsonNames("file_data") val fileData: FileData? = null,
   /** A call to a function. */
-  val functionCall: FunctionCall? = null,
+  @JsonNames("function_call") val functionCall: FunctionCall? = null,
   /** The response from a function call. */
-  val functionResponse: FunctionResponse? = null,
+  @JsonNames("function_response") val functionResponse: FunctionResponse? = null,
   /** Indicates whether the part represents the model's thought process. */
   val thought: Boolean? = null,
   /** An opaque signature for the thought. */
-  @Serializable(with = LenientByteArraySerializer::class) val thoughtSignature: ByteArray? = null,
+  @JsonNames("thought_signature")
+  @Serializable(with = LenientByteArraySerializer::class)
+  val thoughtSignature: ByteArray? = null,
   /** Metadata for a video part (segment offsets and frame rate). */
-  val videoMetadata: VideoMetadata? = null,
+  @JsonNames("video_metadata") val videoMetadata: VideoMetadata? = null,
   /** A tool call the model ran on its own server side, to be echoed back on the next request. */
-  val toolCall: ToolCall? = null,
+  @JsonNames("tool_call") val toolCall: ToolCall? = null,
   /** The output of a server-side tool call, to be echoed back alongside its [ToolCall]. */
-  val toolResponse: ToolResponse? = null,
+  @JsonNames("tool_response") val toolResponse: ToolResponse? = null,
   /** Arbitrary key-value metadata associated with this part. The map must be JSON serializable. */
-  val partMetadata: Map<String, @Contextual Any?>? = null,
+  @JsonNames("part_metadata") val partMetadata: Map<String, @Contextual Any?>? = null,
 ) {
 
   override fun equals(other: Any?): Boolean {

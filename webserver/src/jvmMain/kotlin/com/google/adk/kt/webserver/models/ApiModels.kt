@@ -20,6 +20,7 @@ import com.google.adk.kt.types.Content
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Response for the `/version` endpoint. */
 @Serializable
@@ -31,13 +32,13 @@ data class VersionInfo(
 
 @Serializable
 data class AgentRunRequest(
-  val appName: String,
-  val userId: String,
-  val sessionId: String? = null,
-  val newMessage: Content? = null,
+  @JsonNames("app_name") val appName: String,
+  @JsonNames("user_id") val userId: String,
+  @JsonNames("session_id") val sessionId: String? = null,
+  @JsonNames("new_message") val newMessage: Content? = null,
   val streaming: Boolean = false,
-  val stateDelta: Map<String, @Contextual Any>? = null,
-  val invocationId: String? = null,
+  @JsonNames("state_delta") val stateDelta: Map<String, @Contextual Any>? = null,
+  @JsonNames("invocation_id") val invocationId: String? = null,
 )
 
 @Serializable internal data class RunResponse(val output: String, val sessionId: String)
