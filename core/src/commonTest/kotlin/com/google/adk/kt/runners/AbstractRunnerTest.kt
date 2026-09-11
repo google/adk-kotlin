@@ -63,6 +63,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class AbstractRunnerTest {
@@ -1499,6 +1500,62 @@ class AbstractRunnerTest {
       assertNotNull(runner.sessionService.getSession(SessionKey(runner.appName, "user", "session")))
         .events
     assertEquals(2, events.count { it.actions.compaction != null })
+  }
+
+  @Test
+  fun runAsync_onEventPluginMutatesEvents_persistsStreamedFinalEventOnly() = runBlocking {
+    // Guards two behaviors: the session stores the onEvent output (not the raw event), and the
+    // partial == false gate keeps a streamed partial event out of history.
+    val plugin =
+      object : Plugin {
+        override val name = "event-mutator"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event =
+          if (event.author == Role.MODEL) event.copy(content = modelMessage("mutated")) else event
+      }
+
+    val agent =
+      DummyAgent(name = "agent") { context ->
+        emit(
+          Event(
+            author = Role.MODEL,
+            invocationId = context.invocationId,
+            content = modelMessage("partial"),
+            partial = true,
+          )
+        )
+        emit(
+          Event(
+            author = Role.MODEL,
+            invocationId = context.invocationId,
+            content = modelMessage("original"),
+          )
+        )
+      }
+
+    val runner =
+      InMemoryRunner(
+        app = App(appName = "on_event_app", rootAgent = agent, plugins = listOf(plugin))
+      )
+
+    val streamed =
+      runner
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+        .toList()
+
+    val streamedModelEvents = streamed.filter { it.author == Role.MODEL }
+    assertEquals(2, streamedModelEvents.size)
+    assertTrue(streamedModelEvents.any { it.partial })
+    assertTrue(streamedModelEvents.all { it.content?.parts?.firstOrNull()?.text == "mutated" })
+    val streamedFinalEvent = streamedModelEvents.single { !it.partial }
+
+    val persisted =
+      assertNotNull(runner.sessionService.getSession(SessionKey("on_event_app", "user", "session")))
+        .events
+    val persistedModelEvent = persisted.single { it.author == Role.MODEL }
+    // The persisted event is the mutated final one; before the fix it was the raw "original".
+    assertEquals("mutated", persistedModelEvent.content?.parts?.firstOrNull()?.text)
+    assertEquals(streamedFinalEvent.id, persistedModelEvent.id)
   }
 }
 

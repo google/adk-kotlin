@@ -529,15 +529,16 @@ abstract class AbstractRunner : Runner {
             .map { applyRunConfigCustomMetadata(it, context.runConfig) }
             .collect { event ->
               val isLiveCall = false
-              if (!isLiveCall) {
-                if (event.partial == false) {
-                  val unused = sessionService.appendEvent(context.session, event)
-                }
-              }
+              // Persist the post-callback event so the session matches what the caller received.
               val finalEvent =
                 runOnEventCallbacksPipeline(pluginManager.onEventCallbacks, context, event).let {
                   applyRunConfigCustomMetadata(it, context.runConfig)
                 }
+              if (!isLiveCall) {
+                if (event.partial == false) {
+                  val unused = sessionService.appendEvent(context.session, finalEvent)
+                }
+              }
 
               emit(finalEvent)
             }
