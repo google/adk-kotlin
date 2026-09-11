@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.sessions.room
 
+import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -26,6 +27,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionAlreadyExistsException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyModel
@@ -36,6 +38,7 @@ import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import kotlin.time.Instant
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -126,6 +129,20 @@ class RoomSessionServiceTest {
     assertThat(session.key.id).isEqualTo("explicit-session-id")
     assertThat(service.getSession(SessionKey("app-name", "user-id", "explicit-session-id")))
       .isNotNull()
+  }
+
+  @Test
+  fun createSession_duplicateExplicitId_throwsAndKeepsExistingSession() = runBlocking {
+    val session = service.createSession(SessionKey("app-name", "user-id", "session-1"))
+    service.append(session, session.agentEvent())
+
+    val failure =
+      runCatching { service.createSession(SessionKey("app-name", "user-id", "session-1")) }
+        .exceptionOrNull()
+
+    assertThat(failure).isInstanceOf(SessionAlreadyExistsException::class.java)
+    assertThat(failure).hasCauseThat().isInstanceOf(SQLiteConstraintException::class.java)
+    assertThat(service.listEvents(session.key).events).hasSize(1)
   }
 
   @Test

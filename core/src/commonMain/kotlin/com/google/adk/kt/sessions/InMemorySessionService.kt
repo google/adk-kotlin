@@ -45,16 +45,18 @@ class InMemorySessionService : SessionService {
   override suspend fun createSession(key: SessionKey, state: Map<String, Any>?): Session {
     require(key.id == null || key.id.isNotBlank()) { "SessionKey.id must not be blank" }
     return mutex.withLock {
-      val resolvedSessionId = key.id ?: Uuid.random()
+      val sessionKey = SessionKey(key.appName, key.userId, key.id ?: Uuid.random())
+      if (sessions.containsKey(sessionKey)) {
+        throw SessionAlreadyExistsException()
+      }
 
       val newSession =
         Session(
-          key = SessionKey(key.appName, key.userId, resolvedSessionId),
+          key = sessionKey,
           state = State(initialState = state ?: emptyMap()),
           events = mutableListOf(),
           lastUpdateTime = Clock.System.now(),
         )
-      val sessionKey = SessionKey(key.appName, key.userId, resolvedSessionId)
       sessions[sessionKey] = newSession
       sessionIndex.getOrPut(UserKey(key.appName, key.userId)) { mutableSetOf() }.add(sessionKey)
 
@@ -78,9 +80,8 @@ class InMemorySessionService : SessionService {
   override suspend fun listSessions(appName: String, userId: String): ListSessionsResponse {
     val indexKey = UserKey(appName, userId)
     return mutex.withLock {
-      val sessionCopies = sessionIndex[indexKey]
-        .orEmpty()
-        .mapNotNull { sessionKey ->
+      val sessionCopies =
+        sessionIndex[indexKey].orEmpty().mapNotNull { sessionKey ->
           sessions[sessionKey]?.let { originalSession ->
             val copy = copySessionWithoutEvent(originalSession)
             mergeWithGlobalState(appName, userId, copy)

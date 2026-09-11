@@ -33,6 +33,9 @@ interface SessionService {
    *   generates a unique session id and the returned [Session] will reflect it.
    * @param state An optional map representing the initial state of the session.
    * @return The newly created [Session] instance.
+   * @throws SessionAlreadyExistsException if a session already exists under [SessionKey.id] for
+   *   this app and user. An existing session is never overwritten. A service backed by a managed
+   *   remote store may surface that backend's own duplicate error instead.
    */
   suspend fun createSession(key: SessionKey, state: Map<String, Any>? = null): Session
 
