@@ -78,9 +78,8 @@ class InMemorySessionService : SessionService {
   override suspend fun listSessions(appName: String, userId: String): ListSessionsResponse {
     val indexKey = UserKey(appName, userId)
     return mutex.withLock {
-      val sessionCopies = sessionIndex[indexKey]
-        .orEmpty()
-        .mapNotNull { sessionKey ->
+      val sessionCopies =
+        sessionIndex[indexKey].orEmpty().mapNotNull { sessionKey ->
           sessions[sessionKey]?.let { originalSession ->
             val copy = copySessionWithoutEvent(originalSession)
             mergeWithGlobalState(appName, userId, copy)
@@ -108,10 +107,17 @@ class InMemorySessionService : SessionService {
   }
 
   override suspend fun appendEvent(session: Session, event: Event): Event = mutex.withLock {
+    // Partial (streaming) events are superseded by the final aggregated event, so skip them.
+    if (event.partial) return@withLock event
+
     val storedSession =
       sessions[session.key] ?: throw IllegalStateException("Session not found: ${session.key.id}")
 
-    // Apply state delta logic to storedSession's state or global app/user state
+    // super first applies `temp:` to the live session and trims the event, so we persist without
+    // it.
+    val unused = super.appendEvent(session, event)
+
+    // Apply the (now `temp:`-free) state delta to storedSession's state or global app/user state.
     for ((stateKey, value) in event.actions.stateDelta) {
       when {
         stateKey.startsWith(State.APP_PREFIX) -> {
@@ -145,11 +151,9 @@ class InMemorySessionService : SessionService {
       }
     }
 
-    // Add event to the stored session's list
+    // Add the (`temp:`-free) event to the stored session's list.
     storedSession.events.add(event)
     storedSession.lastUpdateTime = Instant.fromEpochMilliseconds(event.timestamp)
-    // Also add to the session object passed by the caller to keep it in sync.
-    val unused = super.appendEvent(session, event)
 
     return event
   }
