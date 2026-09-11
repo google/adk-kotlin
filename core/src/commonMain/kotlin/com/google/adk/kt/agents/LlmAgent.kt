@@ -43,6 +43,7 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import kotlin.jvm.JvmStatic

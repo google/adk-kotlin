@@ -17,6 +17,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterToolCallbacksPipeline
@@ -124,8 +125,8 @@ data class InvocationContext(
   /**
    * Optional event-compaction configuration for this invocation.
    *
-   * Threaded from the runner's [com.google.adk.kt.apps.App] so intra-invocation request processors
-   * (e.g. token-threshold compaction) can read it. `null` when no compaction is configured.
+   * Threaded from the runner's [App] so intra-invocation request processors (e.g. token-threshold
+   * compaction) can read it. `null` when no compaction is configured.
    */
   val eventsCompactionConfig: EventsCompactionConfig? = null,
 
