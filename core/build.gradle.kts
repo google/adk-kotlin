@@ -133,6 +133,8 @@ kotlin {
         implementation(libs.androidx.appsearch)
         implementation(libs.androidx.appsearch.localStorage)
         implementation(libs.kotlinx.coroutines.guava)
+        // compileOnly, not implementation: don't force the SDK onto every consumer of core.
+        compileOnly(libs.androidx.appfunctions)
       }
     }
     getByName("androidHostTest") {
@@ -148,6 +150,8 @@ kotlin {
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.google.truth)
         implementation(libs.robolectric)
+        // The real dependency here (not compileOnly) so the Robolectric AppFunctions tests run.
+        implementation(libs.androidx.appfunctions)
       }
     }
 
