@@ -18,6 +18,7 @@ package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.ListSessionsResponse
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
@@ -110,6 +111,22 @@ class SessionRoutesTest {
     val createdSession = fakeService.createdSessions.first()
     assertThat(createdSession.key.appName).isEqualTo("testApp")
     assertThat(createdSession.key.userId).isEqualTo("testUser")
+  }
+
+  @Test
+  fun createSessionWithId_duplicateId_returnsConflict() = testApplication {
+    // Uses the real service: the conflict is the one InMemorySessionService raises, not a fake's.
+    val sessionService = InMemorySessionService()
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { sessionRoutes(sessionService) }
+    }
+
+    val first = client.post("/apps/testApp/users/testUser/sessions/test-session")
+    val second = client.post("/apps/testApp/users/testUser/sessions/test-session")
+
+    assertThat(first.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(second.status).isEqualTo(HttpStatusCode.Conflict)
   }
 
   @Test

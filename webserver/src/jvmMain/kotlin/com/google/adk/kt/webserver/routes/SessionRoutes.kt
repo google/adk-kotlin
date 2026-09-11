@@ -17,6 +17,7 @@
 package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionAlreadyExistsException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.models.SessionDto
@@ -37,6 +38,8 @@ internal object SessionRoutesErrors {
   val ERR_MISSING_USER_ID = SessionRoutesError("Missing userId", HttpStatusCode.BadRequest)
   val ERR_MISSING_SESSION_ID = SessionRoutesError("Missing sessionId", HttpStatusCode.BadRequest)
   val ERR_SESSION_NOT_FOUND = SessionRoutesError("Session not found", HttpStatusCode.NotFound)
+  val ERR_SESSION_ALREADY_EXISTS =
+    SessionRoutesError("Session already exists", HttpStatusCode.Conflict)
 }
 
 internal data class SessionParams(val appName: String, val userId: String, val sessionId: String?)
@@ -147,7 +150,15 @@ internal fun Route.sessionRoutes(sessionService: SessionService) {
         val userId = params.userId
         val sessionId = params.sessionId ?: return@post
 
-        val session = sessionService.createSession(SessionKey(appName, userId, sessionId))
+        val session =
+          try {
+            sessionService.createSession(SessionKey(appName, userId, sessionId))
+          } catch (_: SessionAlreadyExistsException) {
+            return@post call.respond(
+              SessionRoutesErrors.ERR_SESSION_ALREADY_EXISTS.code,
+              SessionRoutesErrors.ERR_SESSION_ALREADY_EXISTS.message,
+            )
+          }
         call.respond(session.toDto())
       }
 
