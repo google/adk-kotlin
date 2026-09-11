@@ -23,6 +23,7 @@ import com.google.adk.kt.sessions.dto.ListSessionsResponseDto
 import com.google.adk.kt.sessions.dto.SessionDto
 import com.google.adk.kt.sessions.dto.SessionEventDto
 import com.google.adk.kt.sessions.dto.TimestampDto
+import com.google.adk.kt.testing.SessionServiceAssertions
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
@@ -143,6 +144,16 @@ class VertexAiSessionServiceTest {
       service(mock<VertexAiSessionsClient>())
         .appendEvent(session, Event(author = "user", timestamp = 1000L))
     }
+  }
+
+  @Test
+  fun createSession_nullId_mintsId(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionMintsIdWhenAbsent(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun createSession_withInitialState_retainsState(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionRetainsInitialState(service(FakeVertexAiSessionsClient()))
   }
 
   @Test
@@ -513,6 +524,16 @@ class VertexAiSessionServiceTest {
   }
 
   @Test
+  fun getSession_afterCreate_returnsSession(): Unit = runBlocking {
+    SessionServiceAssertions.createdSessionIsRetrievable(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun getSession_unknownId_returnsNull(): Unit = runBlocking {
+    SessionServiceAssertions.getUnknownSessionReturnsNull(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
   fun listSessions_mapsClientResponse() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
@@ -563,6 +584,30 @@ class VertexAiSessionServiceTest {
   }
 
   @Test
+  fun listSessions_includesCreatedSession(): Unit = runBlocking {
+    SessionServiceAssertions.listSessionsReturnsUsersSessions(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun listSessions_unknownUser_isEmpty(): Unit = runBlocking {
+    SessionServiceAssertions.listSessionsIsEmptyForUnknownUser(
+      service(FakeVertexAiSessionsClient())
+    )
+  }
+
+  @Test
+  fun listEvents_returnsAppendsInOrder(): Unit = runBlocking {
+    SessionServiceAssertions.listEventsReturnsAppendsInOrder(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun listEvents_missingSession_returnsEmpty(): Unit = runBlocking {
+    SessionServiceAssertions.listEventsIsEmptyForUnknownSession(
+      service(FakeVertexAiSessionsClient())
+    )
+  }
+
+  @Test
   fun listEvents_returnsEventsInServerOrder() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
@@ -579,6 +624,16 @@ class VertexAiSessionServiceTest {
 
     // listEvents does not re-sort; it returns events in the order the server sent them.
     assertThat(response.events.map { it.id }).containsExactly("e2", "e3", "e1").inOrder()
+  }
+
+  @Test
+  fun deleteSession_removesSession(): Unit = runBlocking {
+    SessionServiceAssertions.deleteRemovesSession(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun deleteSession_unknownId_isNoOp(): Unit = runBlocking {
+    SessionServiceAssertions.deleteUnknownSessionIsNoOp(service(FakeVertexAiSessionsClient()))
   }
 
   @Test
@@ -627,6 +682,42 @@ class VertexAiSessionServiceTest {
     assertFailsWith<IllegalArgumentException> {
       service(mock<VertexAiSessionsClient>()).deleteSession(SessionKey("123", "user", id = null))
     }
+  }
+
+  @Test
+  fun appendEvent_tempKey_visibleInInvocationButNotPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateVisibleInInvocationButNotPersisted(
+      service(FakeVertexAiSessionsClient())
+    )
+  }
+
+  @Test
+  fun appendEvent_tempKey_trimmedFromReturnedEvent(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateTrimmedFromReturnedEvent(
+      service(FakeVertexAiSessionsClient())
+    )
+  }
+
+  @Test
+  fun appendEvent_tempKeyRemoved_reflectedOnLiveSession(): Unit = runBlocking {
+    SessionServiceAssertions.tempStateRemovalReflectedOnLiveSession(
+      service(FakeVertexAiSessionsClient())
+    )
+  }
+
+  @Test
+  fun appendEvent_sessionScopedKey_isPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.appendPersistsSessionScopedState(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun appendEvent_removedSentinel_deletesKey(): Unit = runBlocking {
+    SessionServiceAssertions.appendRemovesStateWithSentinel(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun appendEvent_syncsCallerSession(): Unit = runBlocking {
+    SessionServiceAssertions.appendSyncsCallerSession(service(FakeVertexAiSessionsClient()))
   }
 
   @Test
