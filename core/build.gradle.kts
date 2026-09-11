@@ -101,6 +101,9 @@ kotlin {
         implementation(libs.kotlinx.coroutines.reactor)
         implementation(libs.slf4j.api)
         implementation(libs.google.flogger.extensions)
+        // OtelSetup builds the SDK's providers, and `OtelHooks` names the SDK's processor and
+        // reader types in its public signature, so a caller needs them on its own classpath too.
+        api(libs.opentelemetry.sdk)
       }
     }
     getByName("jvmTest") {
