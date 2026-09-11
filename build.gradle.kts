@@ -80,6 +80,21 @@ subprojects {
       jvmToolchain(jdkVersion)
       coreLibrariesVersion = kotlinCoreLibrariesVersion
     }
+
+    // Dokka analyzes `common*` as JVM but hands it the Kotlin metadata classpath, whose `.klib`
+    // entries a JVM analysis session cannot read, so KDoc links into dependencies do not resolve
+    // (Kotlin/dokka#3137). Every target here is jvm or android; revisit if a non-JVM one lands.
+    val kmp = extensions.getByType<org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension>()
+    val jvmCompileClasspath = provider {
+      kmp.targets.getByName("jvm").compilations.getByName("main").compileDependencyFiles
+    }
+    configure<org.jetbrains.dokka.gradle.DokkaExtension> {
+      dokkaSourceSets.configureEach {
+        if (name.startsWith("common")) {
+          classpath.from(jvmCompileClasspath)
+        }
+      }
+    }
   }
 
   // AGP built-in Kotlin: the Android modules no longer apply kotlin-android, so
