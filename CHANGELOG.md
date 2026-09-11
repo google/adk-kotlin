@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.1.0](https://github.com/google/adk-kotlin/compare/v1.0.0...v1.1.0) (2026-09-11)
+
+
+### Features
+
+* add a custom SkillSource example and a BaseFutureSkillSource base for Java ([2992b26](https://github.com/google/adk-kotlin/commit/2992b263c46db6c3103fe2cf2dd7a0d14a30a29b))
+* add an app's AppFunctions guidance to the model's instructions ([7620e9f](https://github.com/google/adk-kotlin/commit/7620e9fa7d0b1e982080a40d17b7208d6993c100))
+* add AppFunctionsToolset for Android AppFunctions ([6f349ef](https://github.com/google/adk-kotlin/commit/6f349ef5af9f777ed10e220896e747a847b3bd78))
+* add Java ports of the dynamic and resumable-value long-running tool examples ([b1eb988](https://github.com/google/adk-kotlin/commit/b1eb9888c034b43cd6e661ce9aa4647c521bf777))
+* add Plugin onRunError notification callback ([77aea89](https://github.com/google/adk-kotlin/commit/77aea89604e64a293ff68827f223a2786c7c66c0))
+* add the Android AppFunctions conversion layer ([cc2928f](https://github.com/google/adk-kotlin/commit/cc2928fb3ac8577c41e1ba69abbb77f893e86d92))
+
+
+### Bug Fixes
+
+* answer an unknown tool name instead of ending the invocation ([93c4beb](https://github.com/google/adk-kotlin/commit/93c4beb889ac11a215a66a3eab6dfeb9e0ac69fe))
+* answer an unknown tool name instead of ending the invocation ([22c1af4](https://github.com/google/adk-kotlin/commit/22c1af461435d9a4e01d0be27b021b39f97a3c0e))
+* correct session-resumability completion and resume for workflow agents ([00de2d5](https://github.com/google/adk-kotlin/commit/00de2d5e69320847ee3deb1fc383b61b41aa9ec2))
+* keep the agent turn alive when an MCP server rejects a request ([245a74a](https://github.com/google/adk-kotlin/commit/245a74a2b3c9a826965e3434e323fb8009197e64))
+* return a JSON-native result from the load_memory tool ([3dccec4](https://github.com/google/adk-kotlin/commit/3dccec4a380b6abd2496de3b055c3e73fb90372c))
+* **runner:** persist the post-onEvent event, not the pre-callback one ([7c8a801](https://github.com/google/adk-kotlin/commit/7c8a8019f9764ffdc7f4bda5e75f2289c5d05961))
+* **sessions:** forward the caller-supplied session id in VertexAiSessionService ([6ca8185](https://github.com/google/adk-kotlin/commit/6ca8185f8c2cf6fe943f5fb7f1719e14f7272abb))
+
+
+### Documentation
+
+* recommend StreamableHttp over Sse for MCP connections ([35c2277](https://github.com/google/adk-kotlin/commit/35c22777c14e87c58539dbf144aedc86c4dfb9ba))
+* show Spring WebFlux adaptation in the Java interop examples ([c2bf608](https://github.com/google/adk-kotlin/commit/c2bf608ac8feb26a953d044de426d125a9ed7aa4))
+
 ## [1.0.0](https://github.com/google/adk-kotlin/compare/v0.9.0...v1.0.0) (2026-09-07)
 
 ADK for Kotlin 1.0 is generally available. This release brings full feature parity with ADK 1.0 Core to Kotlin, Java, and Android developers through an idiomatic Kotlin API, and adds Android-first, on-device extensions for building agents on the JVM or on-device.
