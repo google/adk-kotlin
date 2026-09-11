@@ -17,6 +17,7 @@
 package com.google.adk.kt.serialization
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.State
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import com.google.genai.kotlin.types.DurationStringSerializer

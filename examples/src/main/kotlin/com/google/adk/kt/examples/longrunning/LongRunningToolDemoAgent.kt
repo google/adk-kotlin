@@ -38,7 +38,7 @@ import kotlinx.coroutines.runBlocking
  * 3. The device reports the real result; a fresh `runAsync` (a new invocation) delivers it as a
  *    `FunctionResponse` and the model produces the final answer. The tool is not re-run.
  *
- * Compare with [ResumableLongRunningToolDemoAgent], which pauses immediately instead.
+ * Compare with `ResumableLongRunningToolDemoAgent.kt`, which pauses immediately instead.
  */
 fun main() = runBlocking {
   val model = ScriptedNavModel()

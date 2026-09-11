@@ -17,7 +17,9 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.LlmAgentTurn
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.types.Content
@@ -40,7 +42,7 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
    * Synthetic `adk_request_confirmation` calls awaiting a user yes/no decision. Keyed by the
    * synthetic call id so we can send a wire-format `FunctionResponse` back to resume the paused
    * invocation. Resolved from events' [Event.functionCalls] in [handleEvent] whenever an event
-   * arrives with [com.google.adk.kt.events.EventActions.requestedToolConfirmations] populated.
+   * arrives with [EventActions.requestedToolConfirmations] populated.
    */
   private var pendingConfirmations: Map<String, ToolConfirmation> = emptyMap()
 
@@ -274,7 +276,7 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
       error.isNotBlank() && error != FunctionTool.CONFIRMATION_REQUIRED_ERROR
 
     /**
-     * Resolves an event's [Event.actions.requestedToolConfirmations] into a map keyed by SYNTHETIC
+     * Resolves an event's [EventActions.requestedToolConfirmations] into a map keyed by SYNTHETIC
      * `adk_request_confirmation` call id (the id the wire-format `FunctionResponse` resume path
      * expects), suitable to assign to [pendingConfirmations].
      *
