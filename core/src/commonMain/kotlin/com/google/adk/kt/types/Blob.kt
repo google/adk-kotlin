@@ -18,12 +18,13 @@ package com.google.adk.kt.types
 
 import com.google.adk.kt.serialization.LenientByteArraySerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Represents binary data. */
 @Serializable
 data class Blob(
-  val mimeType: String? = null,
-  val displayName: String? = null,
+  @JsonNames("mime_type") val mimeType: String? = null,
+  @JsonNames("display_name") val displayName: String? = null,
   @Serializable(with = LenientByteArraySerializer::class) val data: ByteArray? = null,
 ) {
   override fun equals(other: Any?): Boolean {

@@ -22,6 +22,7 @@ import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * Represents a function call in a generation response.
@@ -38,8 +39,8 @@ data class FunctionCall(
   // Always emit args (even empty {}) to match the genai/Python golden shape.
   @EncodeDefault(EncodeDefault.Mode.ALWAYS) val args: Map<String, @Contextual Any?> = emptyMap(),
   val id: String? = null,
-  val partialArgs: List<PartialArg>? = null,
-  val willContinue: Boolean? = null,
+  @JsonNames("partial_args") val partialArgs: List<PartialArg>? = null,
+  @JsonNames("will_continue") val willContinue: Boolean? = null,
 ) {
   /**
    * Fluent builder for [FunctionCall], provided primarily for Java callers. Any property left unset
