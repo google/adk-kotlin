@@ -41,6 +41,8 @@ dependencies {
   implementation(libs.google.ai.edge.litertlm.jvm)
   implementation(libs.opentelemetry.sdk)
   implementation(project(":google-adk-kotlin-integrations"))
+  implementation(project(":google-adk-kotlin-integrations-spring"))
+  implementation(libs.spring.ai.google.genai)
   implementation(project(":google-adk-kotlin-webserver"))
 }
 
