@@ -115,9 +115,9 @@ internal class FunctionToolGenerator(
     typeBuilder.addSuperclassConstructorParameter("%S", toolName)
     typeBuilder.addSuperclassConstructorParameter("%S", functionDesc)
     typeBuilder.addSuperclassConstructorParameter("%L", isLongRunning)
-    // The `customMetadata` constructor parameter is not exposed via @Tool today; pass the
-    // default. `requiresConfirmation` is forwarded from @Tool(requireConfirmation = ...).
-    typeBuilder.addSuperclassConstructorParameter("emptyMap()")
+    // `customMetadata` is built by customMetadataArg (source class/method for a member @Tool);
+    // `requiresConfirmation` is forwarded from @Tool.
+    typeBuilder.addSuperclassConstructorParameter(customMetadataArg(function, toolName))
     typeBuilder.addSuperclassConstructorParameter("%L", requiresConfirmation)
 
     val instanceProperty = buildPrimaryConstructor(function, typeBuilder)
@@ -147,6 +147,30 @@ internal class FunctionToolGenerator(
     fileSpec.writeTo(codeGenerator, dependencies)
 
     return ClassName(packageName, className)
+  }
+
+  /** The `customMetadata` constructor argument: a member @Tool's source class and method. */
+  private fun customMetadataArg(function: KSFunctionDeclaration, toolName: String): CodeBlock {
+    val entries = mutableListOf<Pair<String, CodeBlock>>()
+    // Record a member @Tool's source class + method so a consumer can re-resolve it.
+    (function.parentDeclaration as? KSClassDeclaration)?.let { parent ->
+      entries.add(
+        FunctionTool.SOURCE_CLASS_METADATA_KEY to
+          CodeBlock.of("%S", parent.toClassName().reflectionName())
+      )
+      entries.add(
+        FunctionTool.SOURCE_METHOD_METADATA_KEY to
+          CodeBlock.of("%S", function.simpleName.asString())
+      )
+    }
+    if (entries.isEmpty()) {
+      return CodeBlock.of("emptyMap()")
+    }
+    val builder = CodeBlock.builder().add("mapOf(\n").indent()
+    for ((key, value) in entries) {
+      builder.add("%S to %L,\n", key, value)
+    }
+    return builder.unindent().add(")").build()
   }
 
   private fun buildPrimaryConstructor(
