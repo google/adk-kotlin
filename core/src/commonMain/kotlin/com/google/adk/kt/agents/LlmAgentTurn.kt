@@ -516,26 +516,8 @@ internal class LlmAgentTurn(
     return functionResponseEvent
   }
 
-  private suspend fun InvocationContext.shouldPause(): Boolean {
-    if (!isResumable) return false
-    val events = getEvents(currentInvocation = true, currentBranch = true)
-    if (events.size < 2) return false
-    // A long-running call is pending only until a function response resolves it. That response may
-    // be the tool's own same-turn value (a long-running tool that answered instead of deferring
-    // with `Unit`) or a later user-injected resume; either way the call is answered, so continue
-    // and let the model summarize rather than pausing. Only a `Unit` return, which emits no
-    // response, leaves the call unanswered and pauses. Mirrors Python ADK 2.x `decide_resume`,
-    // which continues once the pending long-running calls are answered.
-    val last = events.last()
-    if (last.functionResponses().isNotEmpty()) {
-      val pending = events[events.size - 2]
-      val pausedIds =
-        pending.functionCalls().mapNotNull { it.id }.filter { it in pending.longRunningToolIds }
-      val resolvedIds = last.functionResponses().mapNotNull { it.id }.toSet()
-      if (pausedIds.isNotEmpty() && resolvedIds.containsAll(pausedIds)) return false
-    }
-    return shouldPauseInvocation(last) || shouldPauseInvocation(events[events.size - 2])
-  }
+  // Pauses while any long-running call remains unanswered, mirroring Python decide_resume.
+  private suspend fun InvocationContext.shouldPause(): Boolean = hasUnansweredPausedCall()
 }
 
 /**

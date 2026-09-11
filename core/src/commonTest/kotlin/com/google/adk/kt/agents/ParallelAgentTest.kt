@@ -17,6 +17,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.userMessage
@@ -25,6 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -169,5 +171,66 @@ class ParallelAgentTest {
     val subAgentEvents = events.filter { it.author == "sub1" || it.author == "sub2" }
     assertEquals(1, subAgentEvents.size)
     assertEquals("sub2", subAgentEvents[0].author)
+  }
+
+  /**
+   * Tests that a direct sub-agent escalation completes a resumable [ParallelAgent], mirroring
+   * Python `parallel_agent.py` (`_asks_this_agent_to_exit`). Without this, the parent would wait
+   * indefinitely because the escalating sub-agent never records end-of-agent state.
+   */
+  @Test
+  fun runAsync_subAgentEscalates_endsParallelAgent() = runTest {
+    val subAgent =
+      DummyAgent(
+        "sub1",
+        onRunAsync = { emit(Event(author = "sub1", actions = EventActions(escalate = true))) },
+      )
+    val parallelAgent = ParallelAgent(name = "parallel", subAgents = listOf(subAgent))
+    val context = createTestContext(parallelAgent)
+
+    parallelAgent.runAsync(context).toList()
+
+    assertTrue(context.endOfAgents["parallel"] == true)
+  }
+
+  /**
+   * A direct sub-agent escalation cancels the still-running sibling branches (parity with Python
+   * `_asks_this_agent_to_exit` and ADK Java's takeUntil). sub2 suspends forever; without the
+   * early-exit the merge would wait for it and the collection would never complete.
+   */
+  @Test
+  fun runAsync_subAgentEscalates_cancelsSiblingBranches() = runTest {
+    val escalating =
+      DummyAgent(
+        "sub1",
+        onRunAsync = { emit(Event(author = "sub1", actions = EventActions(escalate = true))) },
+      )
+    val neverFinishing = DummyAgent("sub2", onRunAsync = { awaitCancellation() })
+    val parallelAgent =
+      ParallelAgent(name = "parallel", subAgents = listOf(escalating, neverFinishing))
+    val context = createTestContext(parallelAgent)
+
+    val events = parallelAgent.runAsync(context).toList()
+
+    assertTrue(events.any { it.author == "sub1" && it.actions.escalate })
+    assertTrue(context.endOfAgents["parallel"] == true)
+  }
+
+  /**
+   * Tests that a resumable [ParallelAgent] completes when its [SequentialAgent] child finishes,
+   * verifying the child records end-of-agent in context state rather than only emitting an event.
+   */
+  @Test
+  fun runAsync_sequentialChildRecordsEndState_endsParallelAgent() = runTest {
+    val leaf =
+      DummyAgent("leaf", onRunAsync = { emit(Event(author = "leaf", content = userMessage("hi"))) })
+    val sequentialChild = SequentialAgent(name = "seq_child", subAgents = listOf(leaf))
+    val parallelAgent = ParallelAgent(name = "parallel", subAgents = listOf(sequentialChild))
+    val context = createTestContext(parallelAgent)
+
+    parallelAgent.runAsync(context).toList()
+
+    assertTrue(context.endOfAgents["seq_child"] == true)
+    assertTrue(context.endOfAgents["parallel"] == true)
   }
 }

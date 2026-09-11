@@ -16,10 +16,15 @@
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.ParallelAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
@@ -32,10 +37,13 @@ import com.google.adk.kt.testing.simplifyResumableEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -84,9 +92,9 @@ class ResumeInvocationTest {
       listOf(
         "root_agent" to transferToAgentCallPart("sub_agent"),
         "root_agent" to TRANSFER_TO_AGENT_RESPONSE_PART,
+        "root_agent" to END_OF_AGENT,
         "sub_agent" to "first response from sub_agent",
         "sub_agent" to END_OF_AGENT,
-        "root_agent" to END_OF_AGENT,
       ),
       simplifyResumableEvents(inv1),
     )
@@ -196,6 +204,179 @@ class ResumeInvocationTest {
       ),
       simplifyResumableEvents(resumed),
     )
+  }
+
+  /**
+   * root transfers to sub_agent, which issues a long-running call and pauses. Resuming with the
+   * function response must run the sub-agent, not the finished root. Regression: marking the root
+   * end-of-agent on transfer must still let the runner route the resume to the paused sub-agent.
+   */
+  @Test
+  fun resumeTransferredSubAgent_thatPausedOnLongRunningCall() = runTest {
+    val subAgent =
+      LlmAgent(
+        name = "sub_agent",
+        model =
+          DummyModel.createSequential(
+            "sub",
+            listOf(
+              modelFunctionCallResponse("pending_tool", id = "lro-1"),
+              LlmResponse(content = modelMessage("sub_agent resumed")),
+            ),
+          ),
+        tools =
+          listOf(DummyTool(name = "pending_tool", isLongRunning = true, onRun = { _, _ -> Unit })),
+      )
+    val rootAgent =
+      LlmAgent(
+        name = "root_agent",
+        model =
+          DummyModel.createSequential("root", listOf(modelTransferToAgentResponse("sub_agent"))),
+        subAgents = listOf(subAgent),
+      )
+    val runner =
+      InMemoryRunner(
+        App(
+          appName = "InMemoryRunner",
+          rootAgent = rootAgent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
+
+    // Turn 1: root transfers; sub_agent issues the long-running call and pauses.
+    val turn1 = runner.runAsync(USER_ID, SESSION_ID, newMessage = userMessage("start")).toList()
+    val invId = turn1.first().invocationId!!
+    assertFalse(simplifyResumableEvents(turn1).any { it.second == "sub_agent resumed" })
+
+    // Turn 2: resume with the tool response -> the sub-agent runs, not the finished root.
+    val resumed =
+      runner
+        .runAsync(
+          USER_ID,
+          SESSION_ID,
+          invocationId = invId,
+          newMessage =
+            userFunctionResponse(
+              name = "pending_tool",
+              id = "lro-1",
+              response = mapOf("status" to "done"),
+            ),
+        )
+        .toList()
+    assertEquals(
+      listOf("sub_agent" to "sub_agent resumed", "sub_agent" to END_OF_AGENT),
+      simplifyResumableEvents(resumed),
+    )
+  }
+
+  /**
+   * Tests that resuming a leaf nested under a [ParallelAgent] seeds the context with the leaf's
+   * full branch. Without restoring the branch, the empty root branch hides branch-scoped paused
+   * calls and causes the model to re-invoke prematurely.
+   */
+  @Test
+  fun resume_leafPausedUnderParallelBranch_seedsBranchAndStaysPaused() = runTest {
+    val invId = "inv-1"
+    val leafBranch = "root_agent.leaf"
+    val leaf =
+      LlmAgent(
+        name = "leaf",
+        model =
+          DummyModel.createSequential(
+            "leaf",
+            listOf(LlmResponse(content = modelMessage("summary after tools"))),
+          ),
+        tools =
+          listOf(
+            DummyTool(name = "tool_one", isLongRunning = true, onRun = { _, _ -> Unit }),
+            DummyTool(name = "tool_two", isLongRunning = true, onRun = { _, _ -> Unit }),
+          ),
+      )
+    val rootAgent = ParallelAgent(name = "root_agent", subAgents = listOf(leaf))
+    val runner = ResumeBranchTestRunner(rootAgent)
+
+    val session = runner.sessionService.createSession(SessionKey(APP_NAME, USER_ID, SESSION_ID))
+    // The leaf's pause point: two long-running calls on its own branch. The ParallelAgent's state
+    // checkpoint is intentionally omitted so the resume resolves the leaf directly.
+    val unusedAppend =
+      runner.sessionService.appendEvent(
+        session,
+        Event(
+          author = "leaf",
+          invocationId = invId,
+          branch = leafBranch,
+          content =
+            Content(
+              Role.MODEL,
+              listOf(
+                Part(
+                  functionCall =
+                    FunctionCall(name = "tool_one", args = emptyMap(), id = "tool_one_id")
+                ),
+                Part(
+                  functionCall =
+                    FunctionCall(name = "tool_two", args = emptyMap(), id = "tool_two_id")
+                ),
+              ),
+            ),
+          longRunningToolIds = setOf("tool_one_id", "tool_two_id"),
+        ),
+      )
+
+    val resumedContext =
+      runner.resumeContext(
+        session,
+        userFunctionResponse(
+          name = "tool_one",
+          id = "tool_one_id",
+          response = mapOf("result" to "ok"),
+        ),
+        invId,
+      )
+
+    // Verifies the resumed context restores the leaf's branch rather than the root branch.
+    assertEquals("leaf", resumedContext.agent.name)
+    assertEquals(leafBranch, resumedContext.branch)
+
+    // With its branch restored, the leaf sees the remaining unanswered call and stays paused.
+    val sessionService = resumedContext.sessionService!!
+    val resumedEvents = mutableListOf<Event>()
+    resumedContext.agent.runAsync(resumedContext).collect { event ->
+      val unused = sessionService.appendEvent(resumedContext.session, event)
+      resumedEvents.add(event)
+    }
+    val simplified = simplifyResumableEvents(resumedEvents)
+    assertFalse(
+      simplified.any { it.second == "summary after tools" },
+      "the model must not be re-invoked while a branch-scoped paused call is unanswered: $simplified",
+    )
+    assertFalse(
+      simplified.contains("leaf" to END_OF_AGENT),
+      "the leaf must stay paused (no end-of-agent): $simplified",
+    )
+  }
+
+  /** Exposes the protected [setupContextForResumedInvocation] hook for the branch-seed test. */
+  private class ResumeBranchTestRunner(agent: BaseAgent) :
+    InMemoryRunner(
+      App(
+        appName = "InMemoryRunner",
+        rootAgent = agent,
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+      )
+    ) {
+    suspend fun resumeContext(
+      session: Session,
+      newMessage: Content,
+      invocationId: String,
+    ): InvocationContext =
+      setupContextForResumedInvocation(
+        session = session,
+        newMessage = newMessage,
+        invocationId = invocationId,
+        runConfig = null,
+        stateDelta = null,
+      )
   }
 
   private companion object {

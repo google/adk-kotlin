@@ -712,11 +712,43 @@ abstract class AbstractRunner : Runner {
 
     currentContext.populateInvocationAgentStates()
 
-    return if (!currentContext.endOfAgents.containsKey(agent.name)) {
-      currentContext.copy(agent = findAgentToRun(currentContext, agent))
-    } else {
+    return if (currentContext.endOfAgents[agent.name] == false) {
+      // The root has a pending checkpoint (a mid-run workflow such as Sequential/Loop/Parallel):
+      // keep it as the agent to run so it fast-forwards and advances its remaining sub-agents.
       currentContext
+    } else {
+      // The root is finished (e.g. an LlmAgent that transferred and closed) or has no checkpoint:
+      // resolve the agent to actually resume from history -- e.g. the transferred-to sub-agent --
+      // and restore its branch. A genuinely finished invocation is caught by the endOfAgents no-op
+      // guard in runAsync.
+      val resumeAgent = findAgentToRun(currentContext, agent)
+      currentContext.copy(
+        agent = resumeAgent,
+        branch = resumeBranch(session.events, effectiveInvocationId, resumeAgent),
+      )
     }
+  }
+
+  /**
+   * Returns the branch [resumeAgent] ran under in this invocation, or null for the root branch.
+   * Restoring the branch allows an agent nested under a [ParallelAgent] to see its branch-scoped
+   * paused calls.
+   */
+  private fun resumeBranch(
+    events: List<Event>,
+    invocationId: String,
+    resumeAgent: BaseAgent,
+  ): String? {
+    for (event in events.asReversed()) {
+      if (
+        event.invocationId == invocationId &&
+          event.author == resumeAgent.name &&
+          event.branch != null
+      ) {
+        return event.branch
+      }
+    }
+    return null
   }
 
   private fun findUserMessageForInvocation(events: List<Event>, invocationId: String): Content? {

@@ -134,6 +134,9 @@ class LoopAgent(
     }
 
     if (context.isResumable) {
+      // Record end-of-agent in invocation state, not just as an emitted event, so a parent
+      // ParallelAgent observes completion; mirrors Python loop_agent.py.
+      context.setAgentState(name, endOfAgent = true)
       emitEndOfAgent(context)
     }
   }

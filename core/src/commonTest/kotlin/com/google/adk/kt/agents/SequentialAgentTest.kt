@@ -141,6 +141,25 @@ class SequentialAgentTest {
   }
 
   @Test
+  fun testSequentialResumable_recordsEndOfAgentStateInContext() = runTest {
+    // Records end-of-agent in context.endOfAgents on completion so a parent ParallelAgent observes
+    // this child as ended, mirroring Python sequential_agent.py.
+    val agent1 = DummyAgent("agent1", onRunAsync = { emit(createEvent("agent1", "msg1")) })
+    val sequentialAgent = SequentialAgent(name = "seq", subAgents = listOf(agent1))
+
+    val context =
+      testInvocationContext(
+        session = session,
+        agent = DummyAgent("root"),
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+      )
+
+    sequentialAgent.runAsync(context).toList()
+
+    assertEquals(true, context.endOfAgents["seq"])
+  }
+
+  @Test
   fun testSequentialNotResumable_doesNotEmitEndOfAgent() = runTest {
     val agent1 = DummyAgent("agent1", onRunAsync = { emit(createEvent("agent1", "msg1")) })
 

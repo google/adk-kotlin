@@ -250,27 +250,43 @@ class LlmAgent(
     if (agentState != null) {
       val agentToTransfer = getSubagentToResume(context)
       if (agentToTransfer != null) {
-        agentToTransfer.runAsync(context).collect { emit(it) }
-        context.setAgentState(name, endOfAgent = true)
-        emitEndOfAgent(context)
+        // Suppress end-of-agent if the resumed sub-agent pauses again so a later turn can resume
+        // it, mirroring Python llm_agent.py.
+        var resumePaused = false
+        agentToTransfer.runAsync(context).collect { event ->
+          emit(event)
+          if (context.shouldPauseInvocation(event)) {
+            resumePaused = true
+          }
+        }
+        if (!resumePaused) {
+          context.setAgentState(name, endOfAgent = true)
+          emitEndOfAgent(context)
+        }
         return@flow
       }
     }
 
-    // On a resumable invocation that paused on a long-running tool call, do not emit the
-    // end-of-agent marker so a follow-up `runAsync(newMessage = userFunctionResponse(...))` can
-    // resume the same agent. We detect a pause both per-event (during `executeTurns`) and, as a
-    // backstop, from the session's last two events afterwards. Mirrors Python ADK
-    // `agents/llm_agent.py:522-541`.
+    // Suppress end-of-agent on a paused long-running call so a follow-up response can resume this
+    // agent, checking events both in-stream and in the last two events (Python llm_agent.py).
     var shouldPause = false
+    var transferred = false
     executeTurns(context).collect { event ->
       maybeSaveOutputToState(event)
       emit(event)
       if (context.shouldPauseInvocation(event)) {
         shouldPause = true
       }
+      // On a transfer this agent authored, close this agent here -- before the transferred-to
+      // sub-agent runs -- so its checkpoint marks it done and a later turn resumes at the
+      // sub-agent, not the finished root (Python 2.x transfer).
+      if (context.isResumable && !transferred && getTransferToAgentOrNull(event, name) != null) {
+        transferred = true
+        context.setAgentState(name, endOfAgent = true)
+        emitEndOfAgent(context)
+      }
     }
-    if (shouldPause) return@flow
+    if (shouldPause || transferred) return@flow
 
     if (context.isResumable && context.agent == this@LlmAgent) {
       val events = context.getEvents(currentInvocation = true, currentBranch = true)

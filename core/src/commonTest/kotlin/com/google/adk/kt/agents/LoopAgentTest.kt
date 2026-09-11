@@ -211,6 +211,20 @@ class LoopAgentTest {
   }
 
   @Test
+  fun testLoopResumable_recordsEndOfAgentStateInContext() = runTest {
+    // Records end-of-agent in context.endOfAgents on completion so a parent ParallelAgent observes
+    // this child as ended, mirroring Python loop_agent.py.
+    val agent1 = DummyAgent("agent1", onRunAsync = { emit(createEvent("agent1", "msg1")) })
+    val loopAgent = LoopAgent(name = "loop", subAgents = listOf(agent1), maxIterations = 1)
+
+    val context = createTestContext() // resumable
+
+    loopAgent.runAsync(context).toList()
+
+    assertEquals(true, context.endOfAgents["loop"])
+  }
+
+  @Test
   fun testLoopNotResumable_doesNotEmitEndOfAgent() = runTest {
     var count = 0
     val agent1 =

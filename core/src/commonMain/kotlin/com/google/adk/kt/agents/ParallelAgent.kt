@@ -26,6 +26,7 @@ import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.transformWhile
 
 /**
  * A shell agent that runs its sub-agents in parallel in an isolated manner.
@@ -75,6 +76,8 @@ class ParallelAgent(
     }
 
     var pauseInvocation = false
+    var escalated = false
+    val subAgentNames = subAgents.map { it.name }.toSet()
 
     // Run each sub-agent on its own isolated branch (`<parent>.<parallel>.<sub>`) so parallel
     // siblings cannot see each other's conversation history. This is the only place a branch is
@@ -84,16 +87,32 @@ class ParallelAgent(
       runBlock(subAgent, context.branch(this@ParallelAgent).branch(subAgent))
     }
 
-    flows.merge().collect { event ->
-      emit(event)
-      if (context.shouldPauseInvocation(event)) {
-        pauseInvocation = true
+    // Stop at a direct sub-agent escalation (still emitting that event), which cancels the
+    // still-running sibling branches via structured concurrency -- mirrors Python
+    // `_asks_this_agent_to_exit` and ADK Java's takeUntil(escalate). A pause seen earlier in the
+    // merged stream still takes precedence via the check below.
+    flows
+      .merge()
+      .transformWhile { event ->
+        if (context.shouldPauseInvocation(event)) {
+          pauseInvocation = true
+        }
+        val escalate = event.actions.escalate && event.author in subAgentNames
+        if (escalate) {
+          escalated = true
+        }
+        emit(event)
+        !escalate
       }
-    }
+      .collect { emit(it) }
 
     if (pauseInvocation) return@flow
 
-    if (context.isResumable && activeSubAgents.all { context.endOfAgents[it.name] == true }) {
+    // Ends when a sub-agent escalates or all active branches finish (Python parallel_agent.py).
+    if (
+      context.isResumable &&
+        (escalated || activeSubAgents.all { context.endOfAgents[it.name] == true })
+    ) {
       context.setAgentState(name, endOfAgent = true)
       emitEndOfAgent(context)
     }

@@ -25,6 +25,7 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.ResumableEvents.END_OF_AGENT
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyResumableEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
@@ -35,6 +36,7 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -62,9 +64,9 @@ class ResumableLlmAgentTest {
     assertEquals(
       listOf(
         "root_agent" to TRANSFER_TO_AGENT_RESPONSE_PART,
+        "root_agent" to END_OF_AGENT,
         "sub_agent_1" to "response from sub_agent_1",
         "sub_agent_1" to END_OF_AGENT,
-        "root_agent" to END_OF_AGENT,
       ),
       resumeAndSimplify(rootAgent, ctx),
     )
@@ -298,6 +300,134 @@ class ResumableLlmAgentTest {
     )
   }
 
+  @Test
+  fun resumeFromTransferResponse_subAgentRePauses_doesNotEndRootAgent() = runTest {
+    // When a resumed sub-agent re-pauses on an unanswered long-running call, the root agent must
+    // not emit end-of-agent so a subsequent turn can resume the pause.
+    val subAgent1 =
+      LlmAgent(
+        name = "sub_agent_1",
+        model =
+          DummyModel.createSequential(
+            "sub",
+            listOf(modelFunctionCallResponse("long_tool", id = "long_tool_id")),
+          ),
+        tools = listOf(longRunningTool("long_tool")),
+      )
+    val rootAgent = llmAgent("root_agent", "response from root", subAgents = listOf(subAgent1))
+    val ctx =
+      resumableContext(
+        rootAgent,
+        listOf(
+          Event(
+            author = "root_agent",
+            invocationId = INVOCATION_ID,
+            content = Content(Role.MODEL, listOf(TRANSFER_TO_AGENT_RESPONSE_PART)),
+            actions = EventActions(transferToAgent = "sub_agent_1"),
+          )
+        ),
+      )
+    ctx.agentStates["root_agent"] = baseAgentState()
+
+    val simplified = resumeAndSimplify(rootAgent, ctx)
+
+    // Neither agent ends while the resumed sub-agent remains paused.
+    assertFalse(
+      simplified.contains("root_agent" to END_OF_AGENT),
+      "root_agent must not end while the resumed sub-agent re-paused: $simplified",
+    )
+    assertFalse(
+      simplified.contains("sub_agent_1" to END_OF_AGENT),
+      "sub_agent_1 re-paused, so it must not end: $simplified",
+    )
+  }
+
+  @Test
+  fun resumePausedOnTwoLongRunningCalls_onlyOneAnswered_doesNotReinvokeModel() = runTest {
+    // Partially answering parallel long-running calls must not re-invoke the model. The extra
+    // history pushes the pause event beyond the latest two events, ensuring
+    // hasUnansweredPausedCall scans full branch history.
+    val rootAgent =
+      LlmAgent(
+        name = "root_agent",
+        model = sequentialModel("root", "summary after tools"),
+        tools = listOf(longRunningTool("tool_one"), longRunningTool("tool_two")),
+      )
+    val ctx =
+      resumableContext(
+        rootAgent,
+        listOf(
+          // The pause point: a single model event that requested two long-running calls.
+          Event(
+            author = "root_agent",
+            invocationId = INVOCATION_ID,
+            content =
+              Content(
+                Role.MODEL,
+                listOf(
+                  Part(
+                    functionCall =
+                      FunctionCall(name = "tool_one", args = emptyMap(), id = "tool_one_id")
+                  ),
+                  Part(
+                    functionCall =
+                      FunctionCall(name = "tool_two", args = emptyMap(), id = "tool_two_id")
+                  ),
+                ),
+              ),
+            longRunningToolIds = setOf("tool_one_id", "tool_two_id"),
+          ),
+          // A placeholder response for tool_one (tool_two is still deferred).
+          Event(
+            author = "root_agent",
+            invocationId = INVOCATION_ID,
+            content =
+              Content(
+                Role.USER,
+                listOf(
+                  Part(
+                    functionResponse =
+                      FunctionResponse(
+                        name = "tool_one",
+                        id = "tool_one_id",
+                        response = mapOf("status" to "pending"),
+                      )
+                  )
+                ),
+              ),
+          ),
+          // The resume answers tool_one only; tool_two remains unanswered.
+          Event(
+            author = Role.USER,
+            invocationId = INVOCATION_ID,
+            content =
+              Content(
+                Role.USER,
+                listOf(
+                  Part(
+                    functionResponse =
+                      FunctionResponse(
+                        name = "tool_one",
+                        id = "tool_one_id",
+                        response = mapOf("result" to "ok"),
+                      )
+                  )
+                ),
+              ),
+          ),
+        ),
+      )
+    ctx.agentStates["root_agent"] = baseAgentState()
+
+    val simplified = resumeAndSimplify(rootAgent, ctx)
+
+    // The model must not be re-invoked while a paused call is unanswered (no post-tool summary).
+    assertFalse(
+      simplified.any { it.second == "summary after tools" },
+      "the model must not be re-invoked while a paused call is unanswered: $simplified",
+    )
+  }
+
   // -- Helpers -----------------------------------------------------------------------------------
 
   private companion object {
@@ -319,6 +449,13 @@ class ResumableLlmAgentTest {
     /** A regular (non-long-running) tool returning `{"result": "ok"}`. */
     fun someTool(name: String = "some_tool"): DummyTool =
       DummyTool(name = name, onRun = { _, _ -> mapOf("result" to "ok") })
+
+    /**
+     * A long-running tool that returns `Unit` ("no response yet"), so its function-response event
+     * is suppressed and the invocation pauses on the function-call event alone.
+     */
+    fun longRunningTool(name: String): DummyTool =
+      DummyTool(name = name, isLongRunning = true, onRun = { _, _ -> Unit })
 
     fun baseAgentState(): TypedData.MapValue = TypedData.MapValue(emptyMap())
 

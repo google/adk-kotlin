@@ -322,6 +322,34 @@ data class InvocationContext(
   }
 
   /**
+   * Returns whether any long-running call this invocation paused on remains unanswered, scanning
+   * all events in the current invocation and branch including the last. Including the last event is
+   * intentional and load-bearing: it lets a resume catch a last-event long-running call before the
+   * replay path would re-run it, and keeps partially answered parallel calls waiting while a fully
+   * answered set resumes.
+   */
+  internal suspend fun hasUnansweredPausedCall(): Boolean {
+    val events = getEvents(currentInvocation = true, currentBranch = true)
+    if (events.isEmpty()) return false
+    val awaited = mutableSetOf<String>()
+    for (event in events) {
+      if (!shouldPauseInvocation(event)) continue
+      for (call in event.functionCalls()) {
+        call.id?.let { awaited.add(it) }
+      }
+      awaited.addAll(event.longRunningToolIds)
+    }
+    if (awaited.isEmpty()) return false
+    val answered = mutableSetOf<String>()
+    for (event in events) {
+      for (response in event.functionResponses()) {
+        response.id?.let { answered.add(it) }
+      }
+    }
+    return !answered.containsAll(awaited)
+  }
+
+  /**
    * Processes a list of function calls by executing them efficiently and safely.
    *
    * This handles parallel execution, argument conversion, error processing, and merging all
