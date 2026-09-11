@@ -54,6 +54,16 @@ extra["androidMinSdk"] = androidMinSdk
 // kotlin.jvm/multiplatform plugins configured below) can reuse the same pin.
 extra["kotlinCoreLibrariesVersion"] = kotlinCoreLibrariesVersion
 
+// Versions for the Dokka `externalDocumentationLinks` URLs below, read from the catalog so a
+// dependency bump carries the doc link with it. Resolved here because the type-safe `libs`
+// accessors do not resolve inside `subprojects {}`, where those links are configured.
+val docsAuthVersion = libs.versions.google.auth.get()
+val docsOtelVersion = libs.versions.opentelemetry.get()
+val docsGcsVersion = libs.versions.google.cloud.storage.get()
+val docsBigQueryVersion = libs.versions.google.cloud.bigquery.get()
+val docsSlf4jVersion = libs.versions.slf4j.get()
+val docsFloggerVersion = libs.versions.flogger.get()
+
 allprojects {
   group = "com.google.adk"
   version = "1.0.1-SNAPSHOT" // x-release-please-version
@@ -68,6 +78,78 @@ allprojects {
 subprojects {
   apply(plugin = "org.jetbrains.dokka")
 
+  // Dokka renders a reference as a plain span unless an `externalDocumentationLinks` entry gives
+  // it a URL; only kotlin-stdlib, the JDK and Android are on by default. Javadoc 9+ publishes
+  // `element-list`, not the `package-list` Dokka assumes, so the Java entries name it explicitly.
+  // A list URL that stops resolving leaves its entry silently inert, so re-check them on a bump.
+  configure<org.jetbrains.dokka.gradle.DokkaExtension> {
+    dokkaSourceSets.configureEach {
+      fun link(name: String, base: String, list: String = "package-list") {
+        externalDocumentationLinks.register(name) {
+          url(base)
+          packageListUrl("$base$list")
+        }
+      }
+
+      // The four entries below keep literal URLs: the kotlinlang.org ones carry no version,
+      // error-prone uses javadoc.io's moving `latest/`, and reactive-streams arrives
+      // transitively via kotlinx-coroutines-reactive with no catalog entry of its own.
+      link("kotlinx-coroutines", "https://kotlinlang.org/api/kotlinx.coroutines/")
+      link("kotlinx-serialization", "https://kotlinlang.org/api/kotlinx.serialization/")
+      link(
+        "error-prone-annotations",
+        "https://javadoc.io/doc/com.google.errorprone/error_prone_annotations/latest/",
+        "element-list",
+      )
+      link(
+        "reactive-streams",
+        "https://www.reactive-streams.org/reactive-streams-1.0.4-javadoc/",
+        "element-list",
+      )
+      link(
+        "google-auth-oauth2",
+        "https://javadoc.io/doc/com.google.auth/google-auth-library-oauth2-http/$docsAuthVersion/",
+        "element-list",
+      )
+      link(
+        "google-auth-credentials",
+        "https://javadoc.io/doc/com.google.auth/google-auth-library-credentials/$docsAuthVersion/",
+        "element-list",
+      )
+      link(
+        "opentelemetry-api",
+        "https://javadoc.io/doc/io.opentelemetry/opentelemetry-api/$docsOtelVersion/",
+        "element-list",
+      )
+      link(
+        "opentelemetry-sdk-common",
+        "https://javadoc.io/doc/io.opentelemetry/opentelemetry-sdk-common/$docsOtelVersion/",
+        "element-list",
+      )
+      link(
+        "opentelemetry-sdk-trace",
+        "https://javadoc.io/doc/io.opentelemetry/opentelemetry-sdk-trace/$docsOtelVersion/",
+        "element-list",
+      )
+      link(
+        "google-cloud-storage",
+        "https://javadoc.io/doc/com.google.cloud/google-cloud-storage/$docsGcsVersion/",
+        "element-list",
+      )
+      link(
+        "google-cloud-bigquery",
+        "https://javadoc.io/doc/com.google.cloud/google-cloud-bigquery/$docsBigQueryVersion/",
+        "element-list",
+      )
+      link("slf4j", "https://javadoc.io/doc/org.slf4j/slf4j-api/$docsSlf4jVersion/", "element-list")
+      link(
+        "flogger",
+        "https://javadoc.io/doc/com.google.flogger/google-extensions/$docsFloggerVersion/",
+        "element-list",
+      )
+    }
+  }
+
   plugins.withId("org.jetbrains.kotlin.jvm") {
     configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
       jvmToolchain(jdkVersion)
@@ -79,6 +161,21 @@ subprojects {
     configure<org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension> {
       jvmToolchain(jdkVersion)
       coreLibrariesVersion = kotlinCoreLibrariesVersion
+    }
+
+    // Dokka analyzes `common*` as JVM but hands it unreadable `.klib` metadata, so KDoc links into
+    // dependencies do not resolve (Kotlin/dokka#3137). Every KMP module here has a `jvm` target,
+    // whose jar classpath is the right stand-in; revisit if an Android-only or non-JVM one lands.
+    val kmp = extensions.getByType<org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension>()
+    val jvmCompileClasspath = provider {
+      kmp.targets.getByName("jvm").compilations.getByName("main").compileDependencyFiles
+    }
+    configure<org.jetbrains.dokka.gradle.DokkaExtension> {
+      dokkaSourceSets.configureEach {
+        if (name.startsWith("common")) {
+          classpath.from(jvmCompileClasspath)
+        }
+      }
     }
   }
 

@@ -309,7 +309,7 @@ internal class HistoryRewriterProcessor {
   /**
    * Presents another agent's message as user context for the current agent.
    *
-   * Reformats the event with role='user' and adds '[agent_name] said:' prefix to provide context
+   * Reformats the event with role='user' and adds an `[agent_name] said:` prefix to provide context
    * without confusion about authorship.
    *
    * @param event The event from another agent to present as context.
