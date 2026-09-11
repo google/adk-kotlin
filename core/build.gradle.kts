@@ -157,6 +157,7 @@ kotlin {
 
     getByName("androidDeviceTest") {
       dependencies {
+        implementation(project(":google-adk-kotlin-testing"))
         implementation(libs.androidx.compose.ui.test.junit4)
         implementation(libs.androidx.compose.ui.test.manifest)
         implementation(libs.androidx.test.espresso.core)
@@ -165,6 +166,8 @@ kotlin {
         implementation(libs.google.truth)
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.mockito.android)
+        // The real dependency here (not compileOnly) so the on-device e2e test can run.
+        implementation(libs.androidx.appfunctions)
       }
     }
   }
@@ -218,12 +221,18 @@ dependencies {
   add("kspAndroidHostTest", project(":google-adk-kotlin-processor"))
 }
 
+// The AppFunctions KSP compiler runs only on the Android device-test compilation; the main code
+// consumes app functions rather than declaring them.
+// Aggregation is deliberately off. Only the `.v2` asset is generated, so these cases need a device
+// whose platform indexer reads `.v2` (API 37 or newer).
+dependencies { add("kspAndroidDeviceTest", libs.androidx.appfunctions.compiler) }
+
 // Room's annotation processor runs via KSP. Wire it only against the Android target since the
 // Room runtime is androidMain-only.
 dependencies { add("kspAndroid", libs.androidx.room.compiler) }
 
 // Export the Room schema so migrations can be validated/generated. Baselines are committed under
-// core/schemas (the same directory the Blaze build writes to via -Aroom.schemaLocation).
+// core/schemas, the same directory the `-Aroom.schemaLocation` processor argument points at.
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 
 // Gradle 9 strictly validates task dependencies, and AGP's Android lint tasks
