@@ -63,10 +63,10 @@ public final class LiteRtLmDemoAgentJava {
           ">>> LocalToolService [SYSTEM]: getWeather() called for city '" + city + "'...");
       List<String> mockReports =
           List.of(
-              "Sunny, 75°F (24°C), with a light breeze.",
-              "Rainy, 55°F (13°C), with 80% humidity.",
-              "Partly cloudy, 68°F (20°C), perfect weather.",
-              "Foggy, 50°F (10°C), visibility 1 mile.");
+              "Sunny, 75F (24C), with a light breeze.",
+              "Rainy, 55F (13C), with 80% humidity.",
+              "Partly cloudy, 68F (20C), perfect weather.",
+              "Foggy, 50F (10C), visibility 1 mile.");
       int hash = Math.floorMod(city.hashCode(), mockReports.size());
       return Map.of("weather", "The current weather in " + city + " is: " + mockReports.get(hash));
     }
