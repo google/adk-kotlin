@@ -135,6 +135,19 @@ kotlin {
         implementation(libs.kotlinx.coroutines.guava)
         // compileOnly, not implementation: don't force the SDK onto every consumer of core.
         compileOnly(libs.androidx.appfunctions)
+        // Remote MCP client support for Android uses Ktor's OkHttp engine.
+        // kotlin-sdk 0.5.0 is a single artifact that also pulls the Ktor server stack and CIO
+        // client. Those engines are unused on Android and should not ship in the APK.
+        val mcpKotlinClient = libs.mcp.kotlin.client.get()
+        implementation(
+          "${mcpKotlinClient.module.group}:${mcpKotlinClient.module.name}:${mcpKotlinClient.version}"
+        ) {
+          exclude(group = "io.ktor", module = "ktor-server-cio")
+          exclude(group = "io.ktor", module = "ktor-server-sse")
+          exclude(group = "io.ktor", module = "ktor-server-websockets")
+          exclude(group = "io.ktor", module = "ktor-client-cio")
+        }
+        implementation(libs.ktor.client.okhttp.mcp)
       }
     }
     getByName("androidHostTest") {
@@ -152,6 +165,7 @@ kotlin {
         implementation(libs.robolectric)
         // The real dependency here (not compileOnly) so the Robolectric AppFunctions tests run.
         implementation(libs.androidx.appfunctions)
+        implementation(libs.ktor.client.mock.mcp)
       }
     }
 
