@@ -84,6 +84,11 @@ subprojects {
   // `element-list`, not the `package-list` Dokka assumes, so the Java entries name it explicitly.
   // A list URL that stops resolving leaves its entry silently inert, so re-check them on a bump.
   configure<org.jetbrains.dokka.gradle.DokkaExtension> {
+    // Fails `dokkaGenerate` on any Dokka warning. In practice that is a `[Reference]` Dokka
+    // cannot resolve, which renders as plain text and is easy to miss in review; it does not
+    // catch links that resolve but lack a URL.
+    dokkaPublications.configureEach { failOnWarning.set(true) }
+
     dokkaSourceSets.configureEach {
       fun link(name: String, base: String, list: String = "package-list") {
         externalDocumentationLinks.register(name) {
