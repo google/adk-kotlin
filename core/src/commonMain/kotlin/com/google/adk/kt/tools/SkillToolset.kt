@@ -17,6 +17,9 @@
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.agents.ReadonlyContext
+import com.google.adk.kt.annotations.ExperimentalEnvironmentApi
+import com.google.adk.kt.environment.Environment
+import com.google.adk.kt.environment.EnvironmentException
 import com.google.adk.kt.logging.Logger
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
@@ -26,6 +29,8 @@ import com.google.adk.kt.skills.SkillSourceException
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema as GenaiSchema
 import com.google.adk.kt.types.Type
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /** Builds the standard `{error}` response map used by all skill tools. */
 private fun errorResponse(message: String): Map<String, Any?> =
@@ -47,6 +52,24 @@ private fun Throwable.toSkillSourceErrorResponse(logger: Logger): Map<String, An
   }
   logger.warn(this) {
     "SkillSource returned Result.failure wrapping an unrecognized exception type (${this::class.simpleName})."
+  }
+  throw this
+}
+
+/**
+ * Maps a [Result.failure] from a [Environment] method into a tool error response.
+ *
+ * Mirrors [toSkillSourceErrorResponse]: the environment contract states that the only exception a
+ * method should wrap in [Result.failure] is [EnvironmentException], whose message is forwarded
+ * verbatim to the LLM. Any other throwable is a contract violation, so it is logged and re-thrown.
+ */
+@OptIn(ExperimentalEnvironmentApi::class)
+private fun Throwable.toEnvironmentErrorResponse(logger: Logger): Map<String, Any?> {
+  if (this is EnvironmentException) {
+    return errorResponse(message ?: "An unspecified environment error occurred.")
+  }
+  logger.warn(this) {
+    "Environment returned Result.failure wrapping an unrecognized exception type (${this::class.simpleName})."
   }
   throw this
 }
@@ -206,8 +229,189 @@ internal class LoadSkillResourceTool(private val toolset: SkillToolset) :
   }
 }
 
-/** Toolset that manages and provides access to a collection of [Skill]s. */
-class SkillToolset(internal val source: SkillSource) : Toolset {
+/**
+ * Quotes [value] for POSIX `sh`, so that skill-supplied paths and model-supplied arguments cannot
+ * be interpreted as shell syntax. Wraps in single quotes, escaping any embedded single quote.
+ */
+private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+
+/**
+ * Resolves [filePath] to a path under a skill's `scripts/` directory, or returns `null` if it does
+ * not name a file there.
+ *
+ * A skill refers to its own scripts by name, so both `run.sh` and `scripts/run.sh` are accepted, as
+ * are nested paths such as `scripts/lib/run.sh`. A `..` segment is rejected rather than resolved:
+ * no skill needs to reach outside its `scripts/` directory, and allowing traversal would make an
+ * arbitrary file executable, including a non-script resource of the same skill.
+ */
+private fun resolveScriptPath(filePath: String): String? {
+  if (filePath.startsWith("/")) return null
+
+  val segments = mutableListOf<String>()
+  for (segment in filePath.split('/')) {
+    when (segment) {
+      "",
+      "." -> {}
+      ".." -> return null
+      else -> segments.add(segment)
+    }
+  }
+
+  val relativeToScripts =
+    if (segments.firstOrNull() == SkillSource.DIR_SCRIPTS) segments.drop(1) else segments
+  // Require a file inside scripts/, rather than the directory itself.
+  if (relativeToScripts.isEmpty()) return null
+  return (listOf(SkillSource.DIR_SCRIPTS) + relativeToScripts).joinToString("/")
+}
+
+/**
+ * BaseTool that runs a script from a skill's `scripts/` directory inside the toolset's environment.
+ *
+ * The skill's resources are copied into the environment before each run (see
+ * [SkillToolset.copySkillResourcesToEnvironment]), then the script is executed directly so that its
+ * shebang line selects the interpreter.
+ */
+@OptIn(ExperimentalEnvironmentApi::class)
+internal class RunSkillScriptTool(
+  private val toolset: SkillToolset,
+  private val environment: Environment,
+  private val scriptTimeout: Duration,
+) :
+  BaseTool(
+    name = SkillToolset.TOOL_NAME_RUN_SKILL_SCRIPT,
+    description = "Executes a script from a skill's scripts/ directory.",
+  ) {
+  private val logger = LoggerFactory.getLogger(RunSkillScriptTool::class)
+
+  override fun declaration(): FunctionDeclaration {
+    return FunctionDeclaration(
+      name = name,
+      description = description,
+      parameters =
+        GenaiSchema(
+          type = Type.OBJECT,
+          properties =
+            mapOf(
+              SkillToolset.PARAM_SKILL_NAME to
+                GenaiSchema(type = Type.STRING, description = "The name of the skill."),
+              SkillToolset.PARAM_FILE_PATH to
+                GenaiSchema(
+                  type = Type.STRING,
+                  description = "The relative path to the script (e.g., 'scripts/setup.sh').",
+                ),
+              SkillToolset.PARAM_ARGS to
+                GenaiSchema(
+                  type = Type.ARRAY,
+                  items = GenaiSchema(type = Type.STRING),
+                  description = "Optional command-line arguments passed to the script verbatim.",
+                ),
+            ),
+          required = listOf(SkillToolset.PARAM_SKILL_NAME, SkillToolset.PARAM_FILE_PATH),
+        ),
+    )
+  }
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any>): Map<String, Any?> {
+    val skillName = args[SkillToolset.PARAM_SKILL_NAME] as? String
+    if (skillName.isNullOrEmpty()) return errorResponse("Skill name is required.")
+
+    val filePath = args[SkillToolset.PARAM_FILE_PATH] as? String
+    if (filePath.isNullOrEmpty()) return errorResponse("Script path is required.")
+
+    val scriptPath =
+      resolveScriptPath(filePath)
+        ?: return errorResponse(
+          "Invalid script path: $filePath must be within '${SkillSource.DIR_SCRIPTS}/'."
+        )
+
+    // Verifies both the skill and the script exist before touching the environment.
+    val unused =
+      toolset.source.loadResource(skillName, scriptPath).getOrElse { e ->
+        return e.toSkillSourceErrorResponse(logger)
+      }
+    val scriptArgs =
+      when (val raw = args[SkillToolset.PARAM_ARGS]) {
+        null -> emptyList()
+        is List<*> -> raw.map { it.toString() }
+        else -> return errorResponse("`${SkillToolset.PARAM_ARGS}` must be a list of strings.")
+      }
+
+    toolset.ensureEnvironmentInitialized()
+    val skillDir = "${SkillToolset.ENV_SKILLS_DIR}/$skillName"
+    val envScriptPath = "$skillDir/$scriptPath"
+    toolset.copySkillResourcesToEnvironment(skillName, skillDir).getOrElse { e ->
+      return e.toEnvironmentErrorResponseOrSkillSource(logger)
+    }
+
+    // Run from the skill's directory so that paths inside the skill (`references/...`,
+    // `assets/...`) resolve as documented in its SKILL.md, and run the script directly rather than
+    // via a fixed interpreter so its shebang decides how it is executed.
+    val quotedScript = shellQuote(scriptPath)
+    val command =
+      (listOf("cd", shellQuote(skillDir), "&&", "chmod", "+x", quotedScript, "&&", quotedScript) +
+          scriptArgs.map(::shellQuote))
+        .joinToString(" ")
+    logger.debug { "Running skill script: $envScriptPath" }
+
+    val result =
+      environment.execute(command, scriptTimeout).getOrElse { e ->
+        return e.toEnvironmentErrorResponse(logger)
+      }
+
+    if (result.timedOut) {
+      return errorResponse("Script timed out after ${scriptTimeout.inWholeSeconds}s: $scriptPath")
+    }
+
+    return mapOf(
+      SkillToolset.PARAM_SKILL_NAME to skillName,
+      SkillToolset.PARAM_FILE_PATH to scriptPath,
+      SkillToolset.KEY_STATUS to
+        if (result.exitCode == 0) SkillToolset.STATUS_OK else SkillToolset.STATUS_ERROR,
+      SkillToolset.KEY_STDOUT to result.stdout,
+      SkillToolset.KEY_STDERR to result.stderr,
+      SkillToolset.KEY_EXIT_CODE to result.exitCode,
+    )
+  }
+}
+
+/**
+ * Maps a failure from copying a skill into the environment, which may originate from either the
+ * [SkillSource] or the [Environment], into a tool error response.
+ */
+private fun Throwable.toEnvironmentErrorResponseOrSkillSource(logger: Logger): Map<String, Any?> =
+  if (this is SkillSourceException) {
+    toSkillSourceErrorResponse(logger)
+  } else {
+    toEnvironmentErrorResponse(logger)
+  }
+
+/**
+ * Toolset that manages and provides access to a collection of [Skill]s.
+ *
+ * Skills are always read through [source]. When an [environment] is supplied, the toolset
+ * additionally exposes a `run_skill_script` tool: the skill's resources are copied into the
+ * environment under `skills/<skill_name>/` and the requested script is executed there. Without an
+ * [environment] no script execution is available.
+ *
+ * The same [environment] may be shared with an
+ * [com.google.adk.kt.tools.environment.EnvironmentToolset], in which case skills copied into the
+ * environment are visible to that toolset's file and command tools.
+ *
+ * @param source Where skills and their resources are read from.
+ * @param environment Environment used to execute skill scripts.
+ * @param scriptTimeout Maximum execution time for a single skill script.
+ */
+@OptIn(ExperimentalEnvironmentApi::class)
+class SkillToolset
+@ExperimentalEnvironmentApi
+constructor(
+  internal val source: SkillSource,
+  private val environment: Environment?,
+  private val scriptTimeout: Duration = DEFAULT_SCRIPT_TIMEOUT,
+) : Toolset {
+
+  /** Creates a toolset that reads skills from [source] but cannot execute their scripts. */
+  constructor(source: SkillSource) : this(source, environment = null)
 
   companion object {
     /** The name of the tool used to list available skills. */
@@ -216,11 +420,17 @@ class SkillToolset(internal val source: SkillSource) : Toolset {
     const val TOOL_NAME_LOAD_SKILL = "load_skill"
     /** The name of the tool used to load a skill's resource file. */
     const val TOOL_NAME_LOAD_SKILL_RESOURCE = "load_skill_resource"
+    /** The name of the tool used to run a skill's script. */
+    const val TOOL_NAME_RUN_SKILL_SCRIPT = "run_skill_script"
 
     /** Parameter key for the skill name. */
     const val PARAM_SKILL_NAME = "skill_name"
     /** Parameter key for the resource path used in the load_skill_resource tool. */
     const val PARAM_PATH = "path"
+    /** Parameter key for the script path used in the run_skill_script tool. */
+    const val PARAM_FILE_PATH = "file_path"
+    /** Parameter key for the script arguments used in the run_skill_script tool. */
+    const val PARAM_ARGS = "args"
 
     /** Response map key containing the human-readable error message. */
     const val KEY_ERROR = "error"
@@ -232,17 +442,87 @@ class SkillToolset(internal val source: SkillSource) : Toolset {
     const val KEY_CONTENT = "content"
     /** Response map key containing the status of a script execution or resource loading. */
     const val KEY_STATUS = "status"
+    /** Response map key containing a script's standard output. */
+    const val KEY_STDOUT = "stdout"
+    /** Response map key containing a script's standard error. */
+    const val KEY_STDERR = "stderr"
+    /** Response map key containing a script's exit code. */
+    const val KEY_EXIT_CODE = "exit_code"
+
+    /** Status value reported when a script completed with a zero exit code. */
+    const val STATUS_OK = "ok"
+    /** Status value reported when a script completed with a non-zero exit code. */
+    const val STATUS_ERROR = "error"
 
     /** Message indicating that a loaded resource is a binary file. */
     const val MSG_BINARY_FILE = "Binary file detected. Content not shown."
+
+    /** Directory, relative to the environment's working directory, holding the copied skills. */
+    const val ENV_SKILLS_DIR = "skills"
+
+    /** Default maximum execution time for a single skill script. */
+    val DEFAULT_SCRIPT_TIMEOUT: Duration = 300.seconds
   }
 
   private val logger = LoggerFactory.getLogger(SkillToolset::class)
 
+  private var environmentInitialized = false
+
   private val tools: List<BaseTool> =
-    listOf(ListSkillsTool(this), LoadSkillTool(this), LoadSkillResourceTool(this))
+    listOfNotNull(
+      ListSkillsTool(this),
+      LoadSkillTool(this),
+      LoadSkillResourceTool(this),
+      environment?.let { RunSkillScriptTool(this, it, scriptTimeout) },
+    )
+
+  /** Initializes the environment on first use; subsequent calls are no-ops. */
+  internal suspend fun ensureEnvironmentInitialized() {
+    if (!environmentInitialized) {
+      checkNotNull(environment) { "No environment configured." }.initialize()
+      environmentInitialized = true
+    }
+  }
+
+  /**
+   * Copies a skill's resources into [skillDir] in the environment, overwriting any previous copy.
+   *
+   * All of the skill's resources are written, not just the requested script, because scripts
+   * routinely read sibling references and assets at runtime.
+   *
+   * A resource deleted from the skill is left behind in the environment, but is unusable, because
+   * the caller resolves it through [source] before running it.
+   */
+  internal suspend fun copySkillResourcesToEnvironment(
+    skillName: String,
+    skillDir: String,
+  ): Result<Unit> {
+    val env = checkNotNull(environment) { "No environment configured." }
+    logger.debug { "Copying resources for skill $skillName into $skillDir" }
+    val resourcePaths =
+      source.listResources(skillName, "").getOrElse { e ->
+        return Result.failure(e)
+      }
+    for (resourcePath in resourcePaths) {
+      val bytes =
+        source.loadResource(skillName, resourcePath).getOrElse { e ->
+          return Result.failure(e)
+        }
+      env.writeFile("$skillDir/$resourcePath", bytes).getOrElse { e ->
+        return Result.failure(e)
+      }
+    }
+    return Result.success(Unit)
+  }
 
   override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> = tools
+
+  override fun close() {
+    if (environmentInitialized) {
+      environment?.close()
+      environmentInitialized = false
+    }
+  }
 
   override suspend fun processLlmRequest(
     toolContext: ToolContext,
@@ -276,6 +556,18 @@ class SkillToolset(internal val source: SkillSource) : Toolset {
       appendLine("</available_skills>")
     }
 
+    // Only advertise script execution when an environment is configured to perform it.
+    val scriptRules =
+      if (environment == null) {
+        ""
+      } else {
+        """
+        4. Use `run_skill_script` to run scripts from a skill's `scripts/` directory. Do NOT use other tools to run these scripts.
+        5. If `run_skill_script` returns an error, do not retry the same script or guess a different script path. Report the error to the user and stop.
+        """
+          .trimIndent()
+      }
+
     return """
 You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
@@ -283,13 +575,14 @@ Skills are folders of instructions and resources that extend your capabilities f
 - **SKILL.md** (required): The main instruction file with skill metadata and detailed markdown instructions.
 - **references/** (Optional): Additional documentation or examples for skill usage.
 - **assets/** (Optional): Templates, scripts or other resources used by the skill.
-- **scripts/** (Optional): Executable scripts that can be run via bash.
+- **scripts/** (Optional): Executable scripts that the skill can run.
 
 This is very important:
 
 1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `skill_name=\"<SKILL_NAME>\"` to read its full instructions before proceeding.
 2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
 3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.
+$scriptRules
 
 $skillsXml
 """
