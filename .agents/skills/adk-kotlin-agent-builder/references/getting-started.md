@@ -15,12 +15,7 @@ val rootAgent =
   )
 ```
 
-`Gemini(name)` with no `apiKey` reads `GOOGLE_API_KEY` or `GEMINI_API_KEY`
-from the environment inside the GenAI SDK. For Vertex AI use
-`Gemini(name, vertexCredentials = VertexCredentials(project, location))`.
-On Android neither API keys nor `GoogleCredentials` work in the GenAI SDK;
-use the Firebase AI model from `google-adk-kotlin-firebase-android` or an
-on-device model.
+`Gemini(name)` with no `apiKey` reads `GOOGLE_API_KEY` or `GEMINI_API_KEY` from the environment inside the GenAI SDK. For Vertex AI use `Gemini(name, vertexCredentials = VertexCredentials(project, location))`. On Android neither API keys nor `GoogleCredentials` work in the GenAI SDK; use the Firebase AI model from `google-adk-kotlin-firebase-android` or an on-device model.
 
 `LlmAgent` parameters you will reach for first:
 
@@ -30,7 +25,7 @@ on-device model.
 | `model` | `Model` | `Gemini`, `LiteRtLm`, Firebase, ML Kit, or your own |
 | `description` | `String` | what the parent agent's model sees when deciding to transfer |
 | `instruction` | `Instruction?` | `Instruction("text")`, `Instruction(content)`, or `Instruction { ctx -> Content? }` |
-| `staticInstruction` | `Content?` | verbatim, never templated; setting it moves `instruction` into user content |
+| `staticInstruction` | `Content?` | sent verbatim, never templated; setting it moves `instruction` out of the system instruction and into user content, which must then carry `role = Role.USER` |
 | `tools` | `List<BaseTool>` | |
 | `toolsets` | `List<Toolset>` | MCP, skills, AppFunctions |
 | `subAgents` | `List<BaseAgent>` | enables LLM-driven transfer |
@@ -44,11 +39,7 @@ Every `LlmAgent` also has a `Builder` for Java.
 
 ## Instruction placeholders
 
-`{key}` is replaced by `session.state["key"]`, and `{key?}` becomes an empty
-string when the key is missing. A plain `{key}` that is missing throws
-`IllegalArgumentException` at call time. `{artifact.name}` inlines an artifact.
-Prefixes `app:`, `user:` and `temp:` are allowed inside the braces. Anything
-that is not a valid identifier, such as JSON in the prompt, is left as is.
+`{key}` is replaced by `session.state["key"]`, and `{key?}` becomes an empty string when the key is missing. A plain `{key}` that is missing throws `IllegalArgumentException` at call time. `{artifact.name}` inlines an artifact. Prefixes `app:`, `user:` and `temp:` are allowed inside the braces. Anything that is not a valid identifier, such as JSON in the prompt, is left as is.
 
 For values that are not in state, use a provider:
 
@@ -81,14 +72,9 @@ fun main() = runBlocking {
 ```
 
 - `runAsync` returns a cold `Flow<Event>`; nothing runs until you collect.
-- The session is created on first use; there is no separate create call
-  needed for `InMemoryRunner`. To seed state, pass `stateDelta` to `runAsync`
-  or call `runner.sessionService.createSession(SessionKey(appName, userId,
-  sessionId), state)` first.
-- `Runner` is `AutoCloseable`. Closing it closes every tool and toolset in
-  the tree (MCP sessions in particular) and the plugins.
-- `runner.run(userId, sessionId, newMessage)` is the blocking variant for
-  Java and scripts. Never call it inside a coroutine.
+- The session is created on first use; there is no separate create call needed for `InMemoryRunner`. To seed state, pass `stateDelta` to `runAsync` or call `runner.sessionService.createSession(SessionKey(appName, userId, sessionId), state)` first.
+- `Runner` is `AutoCloseable`. Closing it closes every tool and toolset in the tree (MCP sessions in particular) and the plugins.
+- `runner.run(userId, sessionId, newMessage)` is the blocking variant for Java and scripts. Never call it inside a coroutine.
 
 ## Reading events
 
@@ -111,13 +97,8 @@ runner.runAsync(userId, sessionId, newMessage = msg, runConfig = RunConfig(strea
   }
 ```
 
-In `SSE` mode both the partial chunks and the aggregated final event are
-emitted, so always branch on `event.partial` or you will print the answer
-twice.
+In `SSE` mode both the partial chunks and the aggregated final event are emitted, so always branch on `event.partial` or you will print the answer twice.
 
 ## Serving over HTTP
 
-Add `google-adk-kotlin-webserver` and run
-`AdkApiServer(AdkServerConfig.inMemory(rootAgent)).start(wait = true)`, or
-`AdkDevServer` for the Dev UI at `/dev-ui`. Both bind loopback because the
-endpoints are unauthenticated.
+Add `google-adk-kotlin-webserver` and run `AdkApiServer(AdkServerConfig.inMemory(rootAgent)).start(wait = true)`, or `AdkDevServer` for the Dev UI at `/dev-ui`. Both bind loopback because the endpoints are unauthenticated.

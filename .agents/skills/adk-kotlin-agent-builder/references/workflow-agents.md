@@ -1,9 +1,6 @@
 # Workflow agents and multi-agent trees
 
-There is no graph workflow in ADK Kotlin. Orchestration is three deterministic
-containers plus LLM-driven transfer. All three containers take `name`,
-`description`, `subAgents`, `beforeAgentCallbacks`, `afterAgentCallbacks`;
-none takes a model, tools or instruction.
+There is no graph workflow in ADK Kotlin. Orchestration is three deterministic containers plus LLM-driven transfer. All three containers take `name`, `description`, `subAgents`, `beforeAgentCallbacks`, `afterAgentCallbacks`; none takes a model, tools or instruction.
 
 ## SequentialAgent
 
@@ -14,9 +11,7 @@ SequentialAgent(
 )
 ```
 
-Runs each child in order. A child's `outputKey` is the usual way to pass data
-forward; the next child reads it with `{key}` in its instruction. Children
-share the session and branch.
+Runs each child in order. A child's `outputKey` is the usual way to pass data forward; the next child reads it with `{key}` in its instruction. Children share the session and branch.
 
 ## ParallelAgent
 
@@ -24,14 +19,9 @@ share the session and branch.
 ParallelAgent(name = "research", subAgents = listOf(webSearcher, dbSearcher, docSearcher))
 ```
 
-Every child runs concurrently on its own branch (`research.webSearcher`,
-...). Children do not see each other's events during the run; they do see
-prior history and shared state. Give each child a distinct `outputKey`, then
-add a downstream agent in a `SequentialAgent` that reads all of them. If a
-direct child emits `escalate`, the remaining children are cancelled.
+Every child runs concurrently on its own branch (`research.webSearcher`, ...). Children do not see each other's events during the run; they do see prior history and shared state. Give each child a distinct `outputKey`, then add a downstream agent in a `SequentialAgent` that reads all of them. If a direct child emits `escalate`, the remaining children are cancelled.
 
-Tools inside parallel children run on the collector's dispatcher, so wrap
-blocking I/O in `withContext(Dispatchers.IO)`.
+Tools inside parallel children run on the collector's dispatcher, so wrap blocking I/O in `withContext(Dispatchers.IO)`.
 
 ## LoopAgent
 
@@ -43,14 +33,9 @@ LoopAgent(
 )
 ```
 
-Repeats the child sequence until `maxIterations` or until any event carries
-`actions.escalate = true`. `maxIterations = null` loops until escalate. To
-exit from an LLM child, give it `ExitLoopTool()` and tell it when to call
-`exit_loop`. To exit from code, set `escalate` in a tool, a callback, or a
-custom agent.
+Repeats the child sequence until `maxIterations` or until any event carries `actions.escalate = true`. `maxIterations = null` loops until escalate. To exit from an LLM child, give it `ExitLoopTool()` and tell it when to call `exit_loop`. To exit from code, set `escalate` in a tool, a callback, or a custom agent.
 
-`endInvocation()` is not an exit: it only stops the current `LlmAgent`'s step
-loop, and the container moves on to the next child or iteration.
+`endInvocation()` is not an exit: it only stops the current `LlmAgent`'s step loop, and the container moves on to the next child or iteration.
 
 ## LLM-driven transfer
 
@@ -64,16 +49,9 @@ val root =
   )
 ```
 
-With `subAgents` set, the framework adds a `transfer_to_agent` tool and the
-child descriptions to the request. A transfer moves the conversation to the
-child; later user turns keep going to that child until it transfers back or
-the tree forbids it. `disallowTransferToParent = true` on a child stops it
-handing back; `disallowTransferToPeers = true` stops sibling transfers. A
-`description` on every child is what the router's model reads, so write it
-for the model, not for humans.
+With `subAgents` set, the framework adds a `transfer_to_agent` tool and the child descriptions to the request. A transfer moves the conversation to the child; later user turns keep going to that child until it transfers back or the tree forbids it. `disallowTransferToParent = true` on a child stops it handing back; `disallowTransferToPeers = true` stops sibling transfers. A `description` on every child is what the router's model reads, so write it for the model, not for humans.
 
-Each `BaseAgent` instance can have exactly one parent. Reusing an instance in
-two `subAgents` lists throws at construction time; build a second instance.
+Each `BaseAgent` instance can have exactly one parent. Reusing an instance in two `subAgents` lists throws at construction time; build a second instance.
 
 ## Custom BaseAgent
 
@@ -96,13 +74,9 @@ class MonsterFightAgent(name: String) : BaseAgent(name = name) {
 Rules for `runAsyncImpl`:
 
 - Return a cold `flow { }`; do not launch coroutines that outlive it.
-- Set `author = name` and `invocationId = context.invocationId` on every
-  event, or the runner's agent selection and the Dev UI get confused.
-- Write state through `EventActions(stateDelta = ...)` on an emitted event;
-  do not mutate `context.session.state` directly. The runner applies deltas
-  when it persists the event.
+- Set `author = name` and `invocationId = context.invocationId` on every event, or the runner's agent selection and the Dev UI get confused.
+- Write state through `EventActions(stateDelta = ...)` on an emitted event; do not mutate `context.session.state` directly. The runner applies deltas when it persists the event.
 - Use `context.branch` on events if you emit inside a `ParallelAgent`.
 - To delegate, collect `child.runAsync(context)` and re-emit its events.
 
-`examples/src/main/kotlin/com/google/adk/kt/examples/structural/` has a
-runnable demo for each container.
+`examples/src/main/kotlin/com/google/adk/kt/examples/structural/` has a runnable demo for each container.

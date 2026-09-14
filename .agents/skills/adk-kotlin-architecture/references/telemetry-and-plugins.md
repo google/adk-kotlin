@@ -2,13 +2,7 @@
 
 ## Spans
 
-The `telemetry` package defines platform-neutral `Tracer`, `Span`,
-`SpanBuilder`, `TelemetryContext` and a `TelemetryContextElement` that rides
-in the `CoroutineContext`. `commonJvmAndroidMain/telemetry/otel/` adapts them
-to OpenTelemetry; `Telemetry.tracer` defaults to
-`GlobalOpenTelemetry.getTracerProvider().tracerBuilder("gcp.vertex.agent")`,
-so with no SDK installed everything degrades to OpenTelemetry's own no-op.
-`Telemetry.setTracerForTest` swaps in a fake per thread.
+The `telemetry` package defines platform-neutral `Tracer`, `Span`, `SpanBuilder`, `TelemetryContext` and a `TelemetryContextElement` that rides in the `CoroutineContext`. `commonJvmAndroidMain/telemetry/otel/` adapts them to OpenTelemetry; `Telemetry.tracer` defaults to `GlobalOpenTelemetry.getTracerProvider().tracerBuilder("gcp.vertex.agent")`, so with no SDK installed everything degrades to OpenTelemetry's own no-op. `Telemetry.setTracerForTest` swaps in a fake per thread.
 
 | Span | Created in | Notable attributes |
 |---|---|---|
@@ -18,13 +12,9 @@ so with no SDK installed everything degrades to OpenTelemetry's own no-op.
 | `execute_tool <name>` | `InvocationContext.executeSingleFunctionCall` | tool name, description, `gen_ai.tool.call.id`, args and response JSON, MCP server id when the tool has it |
 | `execute_tool (merged)` | `InvocationContext.handleFunctionCalls` | only when more than one tool ran in parallel |
 
-Prompt and response content is put on spans only when
-`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` is `true` or `1`.
+Prompt and response content is put on spans only when `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` is `true` or `1`.
 
-Helpers in `telemetry/Coroutines.kt` are internal: `withSpan` uses
-`withContext` and is unsafe inside `flow { }` (it breaks flow context
-preservation), so flow code uses `Flow.trace(name)` (backed by `flowOn`) or
-`tracedFlow(name) { span, spanContext -> ... }`.
+Helpers in `telemetry/Coroutines.kt` are internal: `withSpan` uses `withContext` and is unsafe inside `flow { }` (it breaks flow context preservation), so flow code uses `Flow.trace(name)` (backed by `flowOn`) or `tracedFlow(name) { span, spanContext -> ... }`.
 
 ## Plugins
 
@@ -38,24 +28,12 @@ interface Plugin : AutoCloseable {
 }
 ```
 
-Every hook has a pass-through default, so a plugin overrides only what it
-needs. `PluginManager(plugins, skipClosingPlugins = false)` rejects duplicate
-names and pre-builds one callback list per hook. In every pipeline the plugin
-callbacks run **before** the agent's own callbacks. `onRunError` is
-notification only; it cannot suppress the exception.
+Every hook has a pass-through default, so a plugin overrides only what it needs. `PluginManager(plugins, skipClosingPlugins = false)` rejects duplicate names and pre-builds one callback list per hook. In every pipeline the plugin callbacks run **before** the agent's own callbacks. `onRunError` is notification only; it cannot suppress the exception.
 
-Runner-level hooks (`beforeRun`, `afterRun`, `onEvent`, `onUserMessage`,
-`onRunError`) exist only on plugins; there is no agent-level equivalent.
-`onEvent` may return a replacement event, and the replacement is what gets
-persisted.
+Runner-level hooks (`beforeRun`, `afterRun`, `onEvent`, `onUserMessage`, `onRunError`) exist only on plugins; there is no agent-level equivalent. `onEvent` may return a replacement event, and the replacement is what gets persisted.
 
-Bundled: `LoggingPlugin` (commonMain) and `DebugLoggingPlugin`
-(commonJvmAndroidMain). `integrations` adds a BigQuery analytics plugin.
+Bundled: `LoggingPlugin` (commonMain) and `DebugLoggingPlugin` (commonJvmAndroidMain). `integrations` adds a BigQuery analytics plugin.
 
 ## App
 
-`App(appName, rootAgent, plugins, resumabilityConfig, eventsCompactionConfig,
-contextCacheConfig)` groups a root agent with runner-level configuration.
-`appName` must match `[a-zA-Z][a-zA-Z0-9_-]*` and cannot be `"user"`.
-Compaction and context caching are only reachable through an `App`; the
-plain `InMemoryRunner(agent)` constructor leaves them null.
+`App(appName, rootAgent, plugins, resumabilityConfig, eventsCompactionConfig, contextCacheConfig)` groups a root agent with runner-level configuration. `appName` must match `[a-zA-Z][a-zA-Z0-9_-]*` and cannot be `"user"`. Compaction and context caching are only reachable through an `App`; the plain `InMemoryRunner(agent)` constructor leaves them null.

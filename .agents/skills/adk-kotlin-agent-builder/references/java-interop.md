@@ -1,15 +1,10 @@
 # Calling ADK Kotlin from Java
 
-`examples/java/` is a javac-only module that exists to keep this surface
-honest. Patterns that work:
+`examples/java/` is a javac-only module that exists to keep this surface honest. Patterns that work:
 
 ## Constructing agents and runners
 
-Every public data type with defaults has a `Builder`: `LlmAgent`,
-`SequentialAgent`, `ParallelAgent`, `LoopAgent`, `InMemoryRunner`, `App`,
-`RunConfig`, `Event`, `EventActions`, `Schema`, `FunctionDeclaration`,
-`AgentTool`, `GoogleSearchTool`, `McpToolsetConfig`, `LlmRequest`, `Session`,
-`AdkServerConfig`.
+Every public data type with defaults has a `Builder`: `LlmAgent`, `SequentialAgent`, `ParallelAgent`, `LoopAgent`, `InMemoryRunner`, `App`, `RunConfig`, `Event`, `EventActions`, `Schema`, `FunctionDeclaration`, `AgentTool`, `GoogleSearchTool`, `McpToolsetConfig`, `LlmRequest`, `Session`, `AdkServerConfig`.
 
 ```java
 LlmAgent agent = LlmAgent.builder()
@@ -20,9 +15,7 @@ LlmAgent agent = LlmAgent.builder()
 InMemoryRunner runner = InMemoryRunner.builder().agent(agent).build();
 ```
 
-Kotlin default arguments are invisible to Java; when you call a Kotlin
-function directly, pass every argument
-(`runner.runAsync(user, session, null, message, null, null)`).
+Kotlin default arguments are invisible to Java; when you call a Kotlin function directly, pass every argument (`runner.runAsync(user, session, null, message, null, null)`).
 
 ## Bridging suspend and Flow
 
@@ -36,28 +29,24 @@ function directly, pass every argument
 | `forEach(flow, consumer)` | block and stream |
 | `asPublisher(flow)` / `asFlow(publisher)` | Reactive Streams in either direction |
 
-`PublisherRunner.of(runner)` or `PublisherRunner.inMemory(agent)` wraps a
-runner so `runAsync` returns a `Publisher<Event>`. Do not call the blocking
-helpers from a thread the coroutine machinery needs (an event-loop thread,
-a Ktor handler); that deadlocks.
+`PublisherRunner.of(runner)` or `PublisherRunner.inMemory(agent)` wraps a runner so `runAsync` returns a `Publisher<Event>`. Do not call the blocking helpers from a thread the coroutine machinery needs (an event-loop thread, a Ktor handler); that deadlocks.
 
 ## Implementing ADK interfaces in Java
 
-`BaseFutureTool`, `BaseFutureToolset`, `BaseFutureSessionService`,
-`BaseFutureArtifactService`, `BaseFutureMemoryService`, `BaseFuturePlugin`,
-`BaseFutureSkillSource`, `BasePublisherAgent` and `BasePublisherModel` expose
-`CompletableFuture` and `Publisher` variants of the suspend and Flow methods.
-Callback interfaces can be implemented directly; each has a single `call`
-method.
+`BaseFutureTool`, `BaseFutureToolset`, `BaseFutureSessionService`, `BaseFutureArtifactService`, `BaseFutureMemoryService`, `BaseFuturePlugin`, `BaseFutureSkillSource`, `BasePublisherAgent` and `BasePublisherModel` expose `CompletableFuture` and `Publisher` variants of the suspend and Flow methods.
+
+Callbacks cannot be implemented directly from Java. Every callback interface has a single `suspend fun call(...)`, which no Java lambda or class can implement. Use the `FutureCallbacks` factories, which pair each callback with a `CompletableFuture`-returning functional interface, and build the return value with `Choices`:
+
+```java
+BeforeToolCallback logArgs =
+    FutureCallbacks.beforeTool(
+        (context, tool, args) -> CompletableFuture.completedFuture(Choices.proceed(args)));
+```
+
+`Choices.proceed(value)` continues with that value, `Choices.proceed()` is the no-value variant for the callbacks whose continue branch carries nothing (`afterAgent`, `onModelError`, `onToolError`), and `Choices.breakWith(value)` short-circuits. Factories exist for `beforeAgent`, `afterAgent`, `beforeModel`, `afterModel`, `beforeTool`, `afterTool`, `onModelError` and `onToolError`.
 
 ## Tools from Java
 
-- If KSP runs on the module (a Kotlin module with Java sources), `@Tool` on a
-  Java method works and generates the same classes.
-- In a javac-only module use `ReflectiveTools.fromMethod(instance,
-  "methodName")`. It needs a non-empty `@Tool(description = ...)` and
-  `@Param(name = ...)` on every parameter, because Java bytecode keeps neither
-  KDoc nor parameter names. It rejects `isLongRunning` and
-  `requireConfirmation`.
-- Tool results must be `Map<String, Object>` or another JSON-native value; a
-  `null` return is coerced to an empty map.
+- If KSP runs on the module (a Kotlin module with Java sources), `@Tool` on a Java method works and generates the same classes.
+- In a javac-only module use `ReflectiveTools.fromMethod(instance, "methodName")`. It needs a non-empty `@Tool(description = ...)` and `@Param(name = ...)` on every parameter, because Java bytecode keeps neither KDoc nor parameter names. It rejects `isLongRunning` and `requireConfirmation`.
+- Tool results must be `Map<String, Object>` or another JSON-native value; a `null` return is coerced to an empty map.

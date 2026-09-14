@@ -2,9 +2,7 @@
 
 ## Agent-level callbacks
 
-Pass lists on `LlmAgent` (and the agent-level pair on any `BaseAgent`). Each
-callback type is an interface with one `suspend fun call(...)`, plus a
-companion `invoke` so a lambda works:
+Pass lists on `LlmAgent` (and the agent-level pair on any `BaseAgent`). Each callback type is an interface with one `suspend fun call(...)`, plus a companion `invoke` so a lambda works:
 
 ```kotlin
 val logArgs = BeforeToolCallback { context, tool, args ->
@@ -31,18 +29,13 @@ LlmAgent(name = "a", model = model, tools = tools, beforeToolCallbacks = listOf(
 | `AfterToolCallback` | `(ToolContext, BaseTool, args, result) -> Map<String, Any?>` | return value replaces the result |
 | `OnToolErrorCallback` | `(ToolContext, BaseTool, args, Throwable) -> CallbackChoice<Unit, Map<String, Any?>>` | recover with this map |
 
-`CallbackChoice.Continue(value)` passes the possibly-modified value to the
-next callback. Callbacks run in list order; the first `Break` wins.
+`CallbackChoice.Continue(value)` passes the possibly-modified value to the next callback. Callbacks run in list order; the first `Break` wins.
 
-`CallbackContext` gives you `state` (merged view of session state plus this
-event's pending delta), `updateState(key, value)`, `mergeEventActions(...)`,
-`endInvocation()`, artifact save/load, and `addSessionToMemory()`. `BeforeAgentCallback` returning `Continue(EventActions(...))` lets you attach
-state changes without producing content.
+`CallbackContext` gives you `state` (merged view of session state plus this event's pending delta), `updateState(key, value)`, `mergeEventActions(...)`, `endInvocation()`, artifact save/load, and `addSessionToMemory()`. `BeforeAgentCallback` returning `Continue(EventActions(...))` lets you attach state changes without producing content.
 
 ## Plugins
 
-A `Plugin` is a named bundle of callbacks installed on the runner rather than
-on an agent, plus five runner-level hooks agents cannot see:
+A `Plugin` is a named bundle of callbacks installed on the runner rather than on an agent, plus five runner-level hooks agents cannot see:
 
 ```kotlin
 class AuditPlugin : Plugin {
@@ -58,10 +51,6 @@ class AuditPlugin : Plugin {
 InMemoryRunner(agent = root, plugins = listOf(AuditPlugin()))
 ```
 
-Every hook has a pass-through default. Plugin callbacks always run before the
-agent's own callbacks of the same kind. Plugin names must be unique within a
-runner. Plugins are `AutoCloseable` and are closed with the runner unless the
-`App`-based runner constructor is given `skipClosingPlugins = true`.
+Every hook has a pass-through default. Plugin callbacks always run before the agent's own callbacks of the same kind. Plugin names must be unique within a runner. Plugins are `AutoCloseable` and are closed with the runner unless the `App`-based runner constructor is given `skipClosingPlugins = true`.
 
-Bundled: `LoggingPlugin`, `DebugLoggingPlugin` (JVM and Android), and the
-BigQuery analytics plugin in `google-adk-kotlin-integrations`.
+Bundled: `LoggingPlugin`, `DebugLoggingPlugin` (JVM and Android), and the BigQuery analytics plugin in `google-adk-kotlin-integrations`.

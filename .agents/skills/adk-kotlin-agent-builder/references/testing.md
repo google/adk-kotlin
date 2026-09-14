@@ -1,11 +1,6 @@
 # Testing agents
 
-Tests are `kotlin.test` plus `kotlinx.coroutines.test.runTest`. Core keeps
-its fakes in `core/src/commonTest/kotlin/com/google/adk/kt/testing/` and the
-`testing` module holds shared fixtures (`DummyAgent`, `testSession()`,
-`testInvocationContext()`, `testToolContext()`, `userMessage()`,
-`modelMessage()`, `modelFunctionCallResponse()`). The `testing` module is not
-published, so in your own project copy the two small fakes below.
+Tests are `kotlin.test` plus `kotlinx.coroutines.test.runTest`. Core keeps its fakes in `core/src/commonTest/kotlin/com/google/adk/kt/testing/` and the `testing` module holds shared fixtures (`DummyAgent`, `testSession()`, `testInvocationContext()`, `testToolContext()`, `userMessage()`, `modelMessage()`, `modelFunctionCallResponse()`). The `testing` module is not published, so in your own project copy the two small fakes below.
 
 ## A fake model
 
@@ -25,8 +20,7 @@ class DummyModel(
 }
 ```
 
-Each call to `generateContent` is one model turn, so a tool round-trip needs
-two responses: one with the function call, one with the final text.
+Each call to `generateContent` is one model turn, so a tool round-trip needs two responses: one with the function call, one with the final text.
 
 ## A fake tool
 
@@ -65,31 +59,18 @@ fun toolRoundTrip() = runTest {
 }
 ```
 
-The runner path exercises session persistence, plugins and agent selection.
-For a narrower unit test, build an `InvocationContext(agent = agent, session
-= session)` and collect `agent.runAsync(context)` directly; that skips the
-runner and the `user` event.
+The runner path exercises session persistence, plugins and agent selection. For a narrower unit test, build an `InvocationContext(agent = agent, session = session)` and collect `agent.runAsync(context)` directly; that skips the runner and the `user` event.
 
 ## Asserting on state and streaming
 
-- State written by a tool shows up as `event.actions.stateDelta` on the
-  function-response event and in `runner.sessionService.getSession(key)!!.state`
-  afterwards.
-- With `RunConfig(streamingMode = StreamingMode.SSE)` a `DummyModel` can emit
-  several `LlmResponse(partial = true)` chunks followed by the final one to
-  test partial handling.
-- To assert an `outputKey`, read `session.state[key]` after collection, not
-  the final event's content.
+- State written by a tool shows up as `event.actions.stateDelta` on the function-response event and in `runner.sessionService.getSession(key)!!.state` afterwards.
+- With `RunConfig(streamingMode = StreamingMode.SSE)` a `DummyModel` can emit several `LlmResponse(partial = true)` chunks followed by the final one to test partial handling.
+- To assert an `outputKey`, read `session.state[key]` after collection, not the final event's content.
 
 ## Testing a `@Tool` function
 
-Generated tools are plain classes, so call `GetWeatherTool(service).run(
-testToolContext(), mapOf("city" to "Paris"))` and assert on the returned
-map (`{"result": ...}`). Remember that generated sources must be referenced
-from a leaf test source set (`jvmTest`, not `commonTest`) in a KMP project.
+Generated tools are plain classes, so call `GetWeatherTool(service).run( testToolContext(), mapOf("city" to "Paris"))` and assert on the returned map (`{"result": ...}`). Remember that generated sources must be referenced from a leaf test source set (`jvmTest`, not `commonTest`) in a KMP project.
 
 ## Telemetry in tests
 
-`Telemetry.setTracerForTest(tracer)` swaps in a recording tracer per thread;
-core's `DummyTracer` shows the shape. Without it, spans go to OpenTelemetry's
-no-op and cost nothing.
+`Telemetry.setTracerForTest(tracer)` swaps in a recording tracer per thread; core's `DummyTracer` shows the shape. Without it, spans go to OpenTelemetry's no-op and cost nothing.

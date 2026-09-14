@@ -1,8 +1,6 @@
 # Events, sessions and state
 
-Files: `events/Event.kt`, `events/EventActions.kt`, `sessions/Session.kt`,
-`sessions/State.kt`, `sessions/SessionService.kt`,
-`sessions/InMemorySessionService.kt`.
+Files: `events/Event.kt`, `events/EventActions.kt`, `sessions/Session.kt`, `sessions/State.kt`, `sessions/SessionService.kt`, `sessions/InMemorySessionService.kt`.
 
 ## Event
 
@@ -23,9 +21,7 @@ Files: `events/Event.kt`, `events/EventActions.kt`, `sessions/Session.kt`,
 | `customMetadata` | from `RunConfig.customMetadata` or callbacks |
 | `timestamp` | epoch millis, `@EncodeDefault(ALWAYS)` |
 
-Helpers: `functionCalls()`, `functionResponses()`,
-`contentText(separator = "", includeThoughts = false)`, and the property that
-drives the turn loop:
+Helpers: `functionCalls()`, `functionResponses()`, `contentText(separator = "", includeThoughts = false)`, and the property that drives the turn loop:
 
 ```kotlin
 val isFinalResponse: Boolean
@@ -50,22 +46,13 @@ var agentState: TypedData?
 var compaction: EventCompaction?
 ```
 
-`removeStateByKey(key)` records `State.REMOVED` in the delta so the removal
-persists. `removeTempKeys()` drops `temp:` entries. `mergeWith(other)` ORs the
-booleans, unions the maps with `other` winning, and is how parallel tool
-responses are folded into one event.
+`removeStateByKey(key)` records `State.REMOVED` in the delta so the removal persists. `removeTempKeys()` drops `temp:` entries. `mergeWith(other)` ORs the booleans, unions the maps with `other` winning, and is how parallel tool responses are folded into one event.
 
-Events from one LLM step can share one mutable `EventActions` instance. A
-tool that writes `context.actions.stateDelta` late is visible on already
-emitted partial events. Partials are never persisted, so session state is
-unaffected, but a consumer reading actions off a partial event may see them
-change.
+Events from one LLM step can share one mutable `EventActions` instance. A tool that writes `context.actions.stateDelta` late is visible on already emitted partial events. Partials are never persisted, so session state is unaffected, but a consumer reading actions off a partial event may see them change.
 
 ## State
 
-`class State(initialState, initialDelta) : Map<String, Any>`; every read and
-write is guarded by a `Lock`. Mutators: `set`, `putAll`, `remove` (records
-`REMOVED`), `clear`, `applyDelta`, `applyTempDelta`.
+`class State(initialState, initialDelta) : Map<String, Any>`; every read and write is guarded by a `Lock`. Mutators: `set`, `putAll`, `remove`, `clear`, `applyDelta`, `applyTempDelta`. Each of these also records into the `State`'s own delta map, which backs `hasDelta` and is the session service's bookkeeping. That delta is not an event's `stateDelta`, so mutating a `State` directly changes the live session object only; a durable change must travel on an event.
 
 Prefixes:
 
@@ -92,13 +79,7 @@ suspend fun appendEvent(session: Session, event: Event): Event {
 }
 ```
 
-Two consequences. A tool can write `temp:x` and a later agent in the same
-invocation can read it, but the event a caller gets back from `runAsync` no
-longer carries `temp:x` in its `stateDelta`. And an overriding service must
-either call `super.appendEvent` first and then persist the trimmed event, or
-call `applyTempDelta` and `removeTempKeys` itself before persisting.
-`RoomSessionService` does the latter because its stale-write check needs the
-pre-update `lastUpdateTime`.
+Two consequences. A tool can write `temp:x` and a later agent in the same invocation can read it, but the event a caller gets back from `runAsync` no longer carries `temp:x` in its `stateDelta`. And an overriding service must either call `super.appendEvent` first and then persist the trimmed event, or call `applyTempDelta` and `removeTempKeys` itself before persisting. `RoomSessionService` does the latter because its stale-write check needs the pre-update `lastUpdateTime`.
 
 ## Session services
 
@@ -108,18 +89,10 @@ pre-update `lastUpdateTime`.
 | `VertexAiSessionService` | jvmMain | Vertex AI Agent Engine sessions; `super.appendEvent` then a remote append |
 | `RoomSessionService` | androidMain | Room database with an atomic append inside a `@Transaction` |
 
-Artifact services: `InMemoryArtifactService`, `FileArtifactService`
-(JVM and Android, `Dispatchers.IO`), `GcsArtifactService` (JVM), plus a
-`ForwardingArtifactService` used by `ToolContext`. A filename starting with
-`user:` is user-scoped rather than session-scoped.
+Artifact services: `InMemoryArtifactService`, `FileArtifactService` (JVM and Android, `Dispatchers.IO`), `GcsArtifactService` (JVM), plus a `ForwardingArtifactService` used by `ToolContext`. A filename starting with `user:` is user-scoped rather than session-scoped.
 
-Memory services: `InMemoryMemoryService`, `VertexAiMemoryBankService`,
-`VertexAiRagMemoryService` (JVM), `AppSearchMemoryService` (Android).
+Memory services: `InMemoryMemoryService`, `VertexAiMemoryBankService`, `VertexAiRagMemoryService` (JVM), `AppSearchMemoryService` (Android).
 
 ## Rewind
 
-`Runner.rewindAsync(userId, sessionId, rewindBeforeInvocationId)` computes the
-reverse `stateDelta` (skipping `app:` and `user:` keys, using `State.REMOVED`
-for keys that did not exist) and the reverse `artifactDelta` (re-saving the
-older version as a new version), then appends a synthetic `user` event with
-`rewindBeforeInvocationId` set. History is never deleted.
+`Runner.rewindAsync(userId, sessionId, rewindBeforeInvocationId)` computes the reverse `stateDelta` (skipping `app:` and `user:` keys, using `State.REMOVED` for keys that did not exist) and the reverse `artifactDelta` (re-saving the older version as a new version), then appends a synthetic `user` event with `rewindBeforeInvocationId` set. History is never deleted.

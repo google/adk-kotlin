@@ -1,9 +1,6 @@
 # Source layout and expect/actual pairs
 
-Core is Kotlin Multiplatform with targets `jvm()` and the AGP 9 KMP Android
-library. Two custom intermediate source sets sit between `commonMain` and the
-leaves, which is why `gradle.properties` disables the default hierarchy
-template.
+Core is Kotlin Multiplatform with targets `jvm()` and the AGP 9 KMP Android library. Two custom intermediate source sets sit between `commonMain` and the leaves, which is why `gradle.properties` disables the default hierarchy template.
 
 ```
 commonMain
@@ -22,23 +19,15 @@ androidMain                   (dependsOn commonJvmAndroidMain)
   serialization  sessions/room  skills/AssetSkillSource  tools/appfunctions
 ```
 
-Tests mirror this: `commonTest`, `commonJvmAndroidTest`, `jvmTest`,
-`androidHostTest` (Robolectric), `androidDeviceTest` (instrumented).
-`src/jvmAndroidKspTest/kotlin` is an extra source dir added to both leaf test
-sets for KSP-generated `@Tool` fixtures, because a `common*` test set cannot
-reference per-platform KSP output.
+Tests mirror this: `commonTest`, `commonJvmAndroidTest`, `jvmTest`, `androidHostTest` (Robolectric), `androidDeviceTest` (instrumented). `src/jvmAndroidKspTest/kotlin` is an extra source dir added to both leaf test sets for KSP-generated `@Tool` fixtures, because a `common*` test set cannot reference per-platform KSP output.
 
 ## Placement rules
 
-- Platform-neutral runtime code: `commonMain`. It may use kotlinx
-  coroutines, serialization, `kotlin.uuid`, `kotlin.time`, and the GenAI
-  Kotlin SDK, but no `java.*` beyond what the stdlib surfaces.
-- Anything that needs `java.util.concurrent`, `java.io`, OpenTelemetry, or
-  Reactive Streams: `commonJvmAndroidMain`.
+- Platform-neutral runtime code: `commonMain`. It may use kotlinx coroutines, serialization, `kotlin.uuid`, `kotlin.time`, and the GenAI Kotlin SDK, but no `java.*` beyond what the stdlib surfaces.
+- Anything that needs `java.util.concurrent`, `java.io`, OpenTelemetry, or Reactive Streams: `commonJvmAndroidMain`.
 - MCP, Google Cloud client libraries, Flogger: `jvmMain`.
 - Room, AppSearch, AppFunctions, Android `Context`: `androidMain`.
-- Test fixtures shared with other modules: the `testing` module (source-only,
-  not published).
+- Test fixtures shared with other modules: the `testing` module (source-only, not published).
 
 ## expect / actual pairs
 
@@ -54,9 +43,7 @@ reference per-platform KSP output.
 | `fun Lock(): Lock` (`sessions/Lock.kt`) | commonJvmAndroidMain |
 | `defaultTracer()`, `getTestTracer()`, `internalSetTestTracer()`, `internalResetTestTracer()`, `currentTelemetryContext()` (`telemetry/Telemetry.kt`) | commonJvmAndroidMain (OpenTelemetry) |
 
-`-Xexpect-actual-classes` is on globally because `GoogleCredentials` is an
-expect class. Only logging and JSON are actualised separately per platform;
-everything else is shared in `commonJvmAndroidMain`.
+`-Xexpect-actual-classes` is on globally because `GoogleCredentials` is an expect class. Only logging and JSON are actualised separately per platform; everything else is shared in `commonJvmAndroidMain`.
 
 ## Other modules
 
