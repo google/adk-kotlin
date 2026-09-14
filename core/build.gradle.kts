@@ -84,9 +84,11 @@ kotlin {
           // telemetry/otel compiles into both JVM and Android; opentelemetry-context
           // comes in transitively via the API.
           implementation(libs.opentelemetry.api)
-          // AsyncJavaHelpers bridges a Flow to a Reactive Streams Publisher (pulls in
-          // reactivestreams).
+          // Declared rather than left transitive so its version lives in the catalog and
+          // feeds the Dokka link in the root build. Scope matches coroutines-core/-reactive;
+          // the api-vs-implementation question for the Java-interop signatures is separate.
           implementation(libs.kotlinx.coroutines.reactive)
+          implementation(libs.reactive.streams)
         }
       }
     val commonJvmAndroidTest = create("commonJvmAndroidTest") { dependsOn(commonTest) }
