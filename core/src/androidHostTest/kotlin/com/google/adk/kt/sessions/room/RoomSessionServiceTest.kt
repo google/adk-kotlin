@@ -30,12 +30,16 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.assertTempStateRemovalReflectedOnLiveSession
+import com.google.adk.kt.testing.assertTempStateTrimmedFromReturnedEvent
+import com.google.adk.kt.testing.assertTempStateVisibleInInvocationButNotPersisted
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import kotlin.time.Instant
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -264,26 +268,20 @@ class RoomSessionServiceTest {
       .isEqualTo(appUpdateTimeAfterFirst)
   }
 
+  // The `temp:` lifecycle is covered by the shared cross-backend contract asserts.
   @Test
-  fun appendEvent_tempKeys_visibleInMemoryOnly_neverPersisted() = runTest {
-    val session = service.createSession(SessionKey("app", "user", "session1"))
-    service.append(
-      session,
-      session.agentEvent(stateDelta = mapOf("temp:scratch" to "v", "real" to "r")),
-    )
+  fun tempState_visibleInInvocationButNotPersisted(): Unit = runBlocking {
+    assertTempStateVisibleInInvocationButNotPersisted(service)
+  }
 
-    // Caller's in-memory session sees the temp key (it's needed for the rest of the invocation).
-    assertThat(session.state["temp:scratch"]).isEqualTo("v")
+  @Test
+  fun tempState_trimmedFromReturnedEvent(): Unit = runBlocking {
+    assertTempStateTrimmedFromReturnedEvent(service)
+  }
 
-    // But the temp key is NOT persisted in the sessions.state column ...
-    val retrieved = service.getSession(session.key)!!
-    assertThat(retrieved.state.containsKey("temp:scratch")).isFalse()
-    assertThat(retrieved.state["real"]).isEqualTo("r")
-
-    // ... and is NOT in the persisted event_data either, so a future replay won't re-apply it.
-    val replayedDelta = service.listEvents(session.key).events.last().actions.stateDelta
-    assertThat(replayedDelta.containsKey("temp:scratch")).isFalse()
-    assertThat(replayedDelta["real"]).isEqualTo("r")
+  @Test
+  fun tempState_removalReflectedOnLiveSession(): Unit = runBlocking {
+    assertTempStateRemovalReflectedOnLiveSession(service)
   }
 
   @Test

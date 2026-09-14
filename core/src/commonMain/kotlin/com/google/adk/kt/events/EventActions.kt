@@ -76,6 +76,16 @@ data class EventActions(
   }
 
   /**
+   * Deletes the `temp:`-prefixed entries from [stateDelta] in place, so they are never persisted.
+   *
+   * Unlike [removeStateByKey], which marks a key with [State.REMOVED], this drops the entries
+   * outright; the live session still receives `temp:` values via [State.applyTempDelta].
+   */
+  fun removeTempKeys() {
+    stateDelta.keys.removeAll { it.startsWith(State.TEMP_PREFIX) }
+  }
+
+  /**
    * Merges this [EventActions] with another one.
    *
    * @param other The other [EventActions] to merge with.

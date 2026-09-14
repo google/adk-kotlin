@@ -650,11 +650,10 @@ class LlmAgentTest {
   }
 
   @Test
-  fun runAsync_withTempPrefixOutputKey_writesDeltaButIsNotPersisted() = runTest {
-    // The LlmAgent contract is to write to `event.actions.stateDelta` regardless of key prefix;
-    // it is the `State.applyDelta` layer that drops `temp:`-prefixed keys before persisting them
-    // into the session state. This test pins down both halves of that contract so a future change
-    // to either side is caught.
+  fun runAsync_withTempPrefixOutputKey_readableInInvocationButNotPersisted() = runTest {
+    // The LlmAgent writes to `event.actions.stateDelta` regardless of key prefix. appendEvent then
+    // applies `temp:` to the in-memory session (so later agents in the invocation can read it) and
+    // strips it from the event in place before persistence. This pins both halves.
     val model =
       DummyModel.createSequential(
         "test-model",
@@ -666,17 +665,21 @@ class LlmAgentTest {
     val context = InvocationContext(agent = agent, session = session, runConfig = null)
 
     val events = agent.runAsync(context).toList()
+    assertEquals(1, events.size)
+    // The agent publishes the value via the event's state delta, prefix notwithstanding.
+    assertEquals("Saved output", events[0].actions.stateDelta["temp:tempKey"])
+
     for (event in events) {
       val unused = sessionService.appendEvent(session, event)
     }
 
-    assertEquals(1, events.size)
-    // The agent must still publish the value via the event's state delta.
-    assertEquals("Saved output", events[0].actions.stateDelta["temp:tempKey"])
-    // But State.applyDelta strips temp:-prefixed keys, so the session state must not contain it.
+    // appendEvent applies `temp:` to the in-memory session, so it is readable during the
+    // invocation,
+    assertEquals("Saved output", session.state["temp:tempKey"])
+    // and strips it from the event in place, so it is never persisted.
     assertFalse(
-      "temp: outputKey must not be persisted to session.state",
-      session.state.containsKey("temp:tempKey"),
+      "temp: outputKey must be trimmed from the event before persistence",
+      events[0].actions.stateDelta.containsKey("temp:tempKey"),
     )
   }
 

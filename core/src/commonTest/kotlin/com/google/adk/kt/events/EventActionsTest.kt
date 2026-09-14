@@ -21,6 +21,7 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 
@@ -31,6 +32,25 @@ class EventActionsTest {
     val eventActions = EventActions(stateDelta = mutableMapOf("key1" to "value1"))
     eventActions.removeStateByKey("key1")
     assertEquals(State.REMOVED, eventActions.stateDelta["key1"])
+  }
+
+  @Test
+  fun removeTempKeys_deletesTempEntries_keepingTheRest() {
+    val eventActions = EventActions(stateDelta = mutableMapOf("temp:scratch" to "v", "keep" to "w"))
+
+    eventActions.removeTempKeys()
+
+    assertFalse(eventActions.stateDelta.containsKey("temp:scratch"))
+    assertEquals("w", eventActions.stateDelta["keep"])
+  }
+
+  @Test
+  fun removeTempKeys_noTempEntries_isNoOp() {
+    val eventActions = EventActions(stateDelta = mutableMapOf("keep" to "w"))
+
+    eventActions.removeTempKeys()
+
+    assertEquals(mapOf<String, Any>("keep" to "w"), eventActions.stateDelta)
   }
 
   @Test

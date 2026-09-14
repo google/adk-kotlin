@@ -18,6 +18,9 @@ package com.google.adk.kt.sessions
 
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.testing.assertTempStateRemovalReflectedOnLiveSession
+import com.google.adk.kt.testing.assertTempStateTrimmedFromReturnedEvent
+import com.google.adk.kt.testing.assertTempStateVisibleInInvocationButNotPersisted
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -27,6 +30,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Instant
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /** Unit tests for [InMemorySessionService]. */
@@ -135,7 +139,8 @@ class InMemorySessionServiceTest {
     assertEquals("sessionValue", listedSession.state["sessionKey"])
     assertEquals("appValue", listedSession.state["app:appKey"])
     assertEquals("userValue", listedSession.state["user:userKey"])
-    assertEquals("tempValue", listedSession.state["temp:tempKey"])
+    // `temp:` is ephemeral and never persisted, so it does not appear in the stored/listed state.
+    assertFalse(listedSession.state.containsKey("temp:tempKey"))
   }
 
   @Test
@@ -185,7 +190,8 @@ class InMemorySessionServiceTest {
     assertEquals("sessionValue", retrievedSession?.state?.get("sessionKey"))
     assertEquals("appValue", retrievedSession?.state?.get("app:appKey"))
     assertEquals("userValue", retrievedSession?.state?.get("user:userKey"))
-    assertEquals("tempValue", retrievedSession?.state?.get("temp:tempKey"))
+    // `temp:` is ephemeral and never persisted, so it is absent from the reloaded session.
+    assertFalse(retrievedSession!!.state.containsKey("temp:tempKey"))
   }
 
   @Test
@@ -241,40 +247,20 @@ class InMemorySessionServiceTest {
     assertFalse(retrievedSessionRemove.state.containsKey("temp:tempKey"))
   }
 
+  // The `temp:` lifecycle is covered by the shared cross-backend contract asserts.
   @Test
-  fun sequentialAgents_shareTempState() = runTest {
-    val sessionService = InMemorySessionService()
-    val session = sessionService.createSession(SessionKey("app", "user", "session1"))
-    val key = session.key
+  fun tempState_visibleInInvocationButNotPersisted(): Unit = runBlocking {
+    assertTempStateVisibleInInvocationButNotPersisted(InMemorySessionService())
+  }
 
-    val stateDelta1 = mapOf("temp:agent1_output" to "data")
-    val event1 =
-      Event(
-        author = "agent",
-        actions =
-          EventActions(stateDelta = mutableMapOf<String, Any>().apply { putAll(stateDelta1) }),
-        timestamp = Clock.System.now().toEpochMilliseconds(),
-      )
-    assertEquals(event1, sessionService.appendEvent(session, event1))
+  @Test
+  fun tempState_trimmedFromReturnedEvent(): Unit = runBlocking {
+    assertTempStateTrimmedFromReturnedEvent(InMemorySessionService())
+  }
 
-    var retrievedSession = sessionService.getSession(key)
-    assertEquals("data", retrievedSession?.state?.get("temp:agent1_output"))
-
-    val stateDelta2 =
-      mapOf("temp:agent2_output" to "processed_data", "temp:agent1_output" to State.REMOVED)
-    val event2 =
-      Event(
-        author = "agent",
-        actions =
-          EventActions(stateDelta = mutableMapOf<String, Any>().apply { putAll(stateDelta2) }),
-        timestamp = Clock.System.now().toEpochMilliseconds(),
-      )
-    assertEquals(event2, sessionService.appendEvent(session, event2))
-
-    retrievedSession = sessionService.getSession(key)
-    assertNotNull(retrievedSession)
-    assertFalse(retrievedSession.state.containsKey("temp:agent1_output"))
-    assertEquals("processed_data", retrievedSession.state.get("temp:agent2_output"))
+  @Test
+  fun tempState_removalReflectedOnLiveSession(): Unit = runBlocking {
+    assertTempStateRemovalReflectedOnLiveSession(InMemorySessionService())
   }
 
   @Test

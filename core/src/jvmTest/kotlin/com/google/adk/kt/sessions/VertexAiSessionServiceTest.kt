@@ -23,6 +23,9 @@ import com.google.adk.kt.sessions.dto.ListSessionsResponseDto
 import com.google.adk.kt.sessions.dto.SessionDto
 import com.google.adk.kt.sessions.dto.SessionEventDto
 import com.google.adk.kt.sessions.dto.TimestampDto
+import com.google.adk.kt.testing.assertTempStateRemovalReflectedOnLiveSession
+import com.google.adk.kt.testing.assertTempStateTrimmedFromReturnedEvent
+import com.google.adk.kt.testing.assertTempStateVisibleInInvocationButNotPersisted
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
@@ -75,6 +78,22 @@ class VertexAiSessionServiceTest {
         createSession(any(), any(), anyOrNull(), anyOrNull(), anyOrNull(), anyOrNull())
       } doReturn Result.success(SessionDto(name = "reasoningEngines/123/sessions/s"))
     }
+
+  // Full `temp:` round-trip against a stateful fake client, sharing the cross-backend contract.
+  @Test
+  fun tempState_visibleInInvocationButNotPersisted(): Unit = runBlocking {
+    assertTempStateVisibleInInvocationButNotPersisted(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun tempState_trimmedFromReturnedEvent(): Unit = runBlocking {
+    assertTempStateTrimmedFromReturnedEvent(service(FakeVertexAiSessionsClient()))
+  }
+
+  @Test
+  fun tempState_removalReflectedOnLiveSession(): Unit = runBlocking {
+    assertTempStateRemovalReflectedOnLiveSession(service(FakeVertexAiSessionsClient()))
+  }
 
   @Test
   fun addressesConfiguredEngineRegardlessOfAppName() = runTest {
