@@ -53,9 +53,9 @@ private const val REMOVED_MARKER = "__ADK_SENTINEL_REMOVED__"
 private val REMOVED_JSON = lazy { JsonObject(mapOf(REMOVED_MARKER to JsonPrimitive(true))) }
 
 /**
- * `kotlinx.serialization` serializer for free-form `Any` values that appear in the [Event] graph
- * (state deltas, `FunctionCall.args`, `FunctionResponse.response`, `customMetadata`, tool
- * confirmation payloads).
+ * `kotlinx.serialization` serializer for free-form `Any` values that appear in the
+ * [Event][com.google.adk.kt.events.Event] graph (state deltas, `FunctionCall.args`,
+ * `FunctionResponse.response`, `customMetadata`, tool confirmation payloads).
  *
  * It maps Kotlin values to and from [JsonElement] and only supports JSON formats. It is
  * reflection-free and works in `commonMain` (unlike a `serializer(KClass)` lookup). Integral
@@ -274,9 +274,10 @@ private inline fun <T> asSerializationError(message: String, parse: () -> T): T 
   }
 
 /**
- * The shared `kotlinx.serialization` [Json] instance used to (de)serialize the [Event] graph for
- * persistence. Defaults are omitted to keep payloads small, unknown keys are ignored for
- * forward-compatibility, and [AnySerializer] is registered contextually for free-form `Any` values.
+ * The shared `kotlinx.serialization` [Json] instance used to (de)serialize the
+ * [Event][com.google.adk.kt.events.Event] graph for persistence. Defaults are omitted to keep
+ * payloads small, unknown keys are ignored for forward-compatibility, and [AnySerializer] is
+ * registered contextually for free-form `Any` values.
  */
 @FrameworkInternalApi
 val adkJson: Json = Json {

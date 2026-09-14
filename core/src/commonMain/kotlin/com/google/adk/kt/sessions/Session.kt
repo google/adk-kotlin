@@ -33,7 +33,7 @@ import kotlin.time.Instant
  *   call/response, etc. Defaults to a concurrent list so that appending an event (e.g. from one
  *   parallel branch) while another reads the history does not throw
  *   `ConcurrentModificationException`.
- * @property lastUpdateTime The last update time of the session. Defaults to [Instant.EPOCH].
+ * @property lastUpdateTime The last update time of the session. Defaults to the Unix epoch.
  */
 data class Session(
   val key: SessionKey,

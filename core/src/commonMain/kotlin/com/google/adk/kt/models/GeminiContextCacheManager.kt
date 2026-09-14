@@ -37,8 +37,9 @@ import kotlinx.serialization.json.encodeToJsonElement
  *
  * This handles cache creation, validation, cleanup, and metadata population for Gemini context
  * caching. It uses content hashing (a fingerprint) to determine cache compatibility and applies an
- * existing cache to the request by referencing it via [GenerateContentConfig.cachedContent] and
- * dropping the cached prefix from the request.
+ * existing cache to the request by referencing it via
+ * [GenerateContentConfig.cachedContent][com.google.adk.kt.types.GenerateContentConfig.cachedContent]
+ * and dropping the cached prefix from the request.
  *
  * The cache backend is delegated to a [CacheClient] interface so the manager stays decoupled from
  * the GenAI SDK's cache API and can be faked in tests: the SDK's cache types are final with

@@ -33,11 +33,11 @@ private const val APP_NAME = "nav_value_app"
  * Runnable demo of a long-running tool that returns a **value** in a **resumable** app
  * ([ResumabilityConfig] with `isResumable = true`).
  *
- * This is the counterpart of [ResumableLongRunningToolDemoAgent] (which defers with `Unit`): here
- * [ChangeDestinationTool] answers the dispatch with a placeholder value, so the call is resolved
- * and the model is re-invoked to summarize it in the **same turn** (two model calls) instead of
- * pausing. The `endOfAgent` marker is still suppressed, so the invocation stays live and the
- * device's real result can be delivered later by a resume.
+ * This is the counterpart of `ResumableLongRunningToolDemoAgent.kt` (which defers with `Unit`):
+ * here [ChangeDestinationTool] answers the dispatch with a placeholder value, so the call is
+ * resolved and the model is re-invoked to summarize it in the **same turn** (two model calls)
+ * instead of pausing. The `endOfAgent` marker is still suppressed, so the invocation stays live and
+ * the device's real result can be delivered later by a resume.
  */
 fun main() = runBlocking {
   val model = ScriptedNavModel()

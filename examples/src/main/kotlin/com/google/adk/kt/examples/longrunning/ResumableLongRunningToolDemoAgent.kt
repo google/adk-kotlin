@@ -44,8 +44,8 @@ private const val APP_NAME = "nav_app"
  *    process/server as long as the session is persisted.
  *
  * A long-running tool that instead returns a value answers the call and lets the model continue in
- * the same turn, in a resumable app too; see [LongRunningToolDemoAgent] for the non-resumable value
- * case.
+ * the same turn, in a resumable app too; see `LongRunningToolDemoAgent.kt` for the non-resumable
+ * value case.
  */
 fun main() = runBlocking {
   val model = ScriptedNavModel()

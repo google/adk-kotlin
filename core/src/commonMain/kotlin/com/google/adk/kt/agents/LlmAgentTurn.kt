@@ -380,8 +380,10 @@ internal class LlmAgentTurn(
    * rather than mutating it. The whole object moves, so control-flow signals cross too, not just
    * the deltas.
    *
-   * Every event a step emits can therefore share one mutable [EventActions], and writers such as
-   * `CallbackContext.saveArtifact`, [EventActions.removeStateByKey] and
+   * Every event a step emits can therefore share one mutable
+   * [EventActions][com.google.adk.kt.events.EventActions], and writers such as
+   * `CallbackContext.saveArtifact`,
+   * [EventActions.removeStateByKey][com.google.adk.kt.events.EventActions.removeStateByKey] and
    * `LlmAgent.maybeSaveOutputToState` mutate it in place, so a late write also shows up on partial
    * events already emitted. Java shares the same way; Python instead snapshots the actions onto
    * each yielded event. Session state is unaffected, as partial events are not appended.

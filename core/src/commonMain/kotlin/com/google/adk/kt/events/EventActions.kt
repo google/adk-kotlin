@@ -44,7 +44,7 @@ import kotlinx.serialization.Serializable
  *   (`SequentialAgent`, `LoopAgent`, `ParallelAgent`). To break out of a `LoopAgent`, set
  *   [escalate] instead. `CallbackContext.endInvocation()` / `ToolContext.endInvocation()` are
  *   convenience helpers for the same per-agent stop signal via
- *   [InvocationContext.isEndOfInvocation].
+ *   [InvocationContext.isEndOfInvocation][com.google.adk.kt.agents.InvocationContext.isEndOfInvocation].
  * @property requestedToolConfirmations A map of tool confirmations requested by this event, keyed
  *   by function call ID.
  * @property rewindBeforeInvocationId If set, the agent will rewind history before the specified

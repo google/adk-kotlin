@@ -40,7 +40,9 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
    * Synthetic `adk_request_confirmation` calls awaiting a user yes/no decision. Keyed by the
    * synthetic call id so we can send a wire-format `FunctionResponse` back to resume the paused
    * invocation. Resolved from events' [Event.functionCalls] in [handleEvent] whenever an event
-   * arrives with [com.google.adk.kt.events.EventActions.requestedToolConfirmations] populated.
+   * arrives with
+   * [EventActions.requestedToolConfirmations][com.google.adk.kt.events.EventActions.requestedToolConfirmations]
+   * populated.
    */
   private var pendingConfirmations: Map<String, ToolConfirmation> = emptyMap()
 
@@ -274,16 +276,17 @@ open class ReplRunner(agent: BaseAgent) : InMemoryRunner(agent) {
       error.isNotBlank() && error != FunctionTool.CONFIRMATION_REQUIRED_ERROR
 
     /**
-     * Resolves an event's [Event.actions.requestedToolConfirmations] into a map keyed by SYNTHETIC
-     * `adk_request_confirmation` call id (the id the wire-format `FunctionResponse` resume path
-     * expects), suitable to assign to [pendingConfirmations].
+     * Resolves an event's
+     * [EventActions.requestedToolConfirmations][com.google.adk.kt.events.EventActions.requestedToolConfirmations]
+     * into a map keyed by SYNTHETIC `adk_request_confirmation` call id (the id the wire-format
+     * `FunctionResponse` resume path expects), suitable to assign to [pendingConfirmations].
      *
      * Returns the empty map for events that do not carry synthetic confirmation calls. This is
-     * important because [LlmAgentTurn] emits TWO events per pause - the synthetic-call event and
-     * the underlying tool's response event - and both share the same [Event.actions] reference (so
-     * both satisfy `requestedToolConfirmations.isNotEmpty()`). Only the synthetic-call event
-     * actually contains the synth calls; the response event must not be allowed to wipe the pending
-     * state.
+     * important because [LlmAgentTurn][com.google.adk.kt.agents.LlmAgentTurn] emits TWO events per
+     * pause - the synthetic-call event and the underlying tool's response event - and both share
+     * the same [Event.actions] reference (so both satisfy
+     * `requestedToolConfirmations.isNotEmpty()`). Only the synthetic-call event actually contains
+     * the synth calls; the response event must not be allowed to wipe the pending state.
      */
     @VisibleForTesting
     internal fun resolvePendingConfirmations(event: Event): Map<String, ToolConfirmation> {

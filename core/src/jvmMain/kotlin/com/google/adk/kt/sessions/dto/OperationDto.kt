@@ -20,7 +20,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * Minimal wire representation of a `google.longrunning.Operation`. Only the fields inspected by the
- * LRO polling loop in [com.google.adk.kt.sessions.VertexAiClient] are modeled; unknown fields are
- * silently ignored by the shared JSON reader.
+ * LRO polling loop in [com.google.adk.kt.sessions.VertexAiSessionsClient] are modeled; unknown
+ * fields are silently ignored by the shared JSON reader.
  */
 @Serializable internal data class OperationDto(val name: String? = null, val done: Boolean? = null)

@@ -338,7 +338,7 @@ class LlmAgent(
    *   check; an empty string is treated as unset rather than written to `stateDelta[""]`).
    * - Only fires on [Event.isFinalResponse] events that carry text content.
    * - Concatenates the text from every non-thought part with no separator. Parts where
-   *   [Part.thought] is `true` are ignored.
+   *   [Part.thought][com.google.adk.kt.types.Part.thought] is `true` are ignored.
    * - If no non-thought text parts are present, leaves [Event.actions]`.stateDelta` untouched so
    *   that values already written by other code paths (e.g. tool-side state updates on
    *   function-response-only events) are not overwritten.

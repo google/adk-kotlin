@@ -124,14 +124,15 @@ data class InvocationContext(
   /**
    * Optional event-compaction configuration for this invocation.
    *
-   * Threaded from the runner's [com.google.adk.kt.apps.App] so intra-invocation request processors
-   * (e.g. token-threshold compaction) can read it. `null` when no compaction is configured.
+   * Threaded from the runner's [App][com.google.adk.kt.apps.App] so intra-invocation request
+   * processors (e.g. token-threshold compaction) can read it. `null` when no compaction is
+   * configured.
    */
   val eventsCompactionConfig: EventsCompactionConfig? = null,
 
   /**
-   * Optional context cache configuration for this invocation, propagated from the [App]. When
-   * `null`, context caching is disabled for the invocation.
+   * Optional context cache configuration for this invocation, propagated from the
+   * [App][com.google.adk.kt.apps.App]. When `null`, context caching is disabled for the invocation.
    */
   val contextCacheConfig: ContextCacheConfig? = null,
 

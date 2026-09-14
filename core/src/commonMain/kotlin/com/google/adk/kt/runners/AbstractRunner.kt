@@ -220,9 +220,10 @@ abstract class AbstractRunner : Runner {
   /**
    * Closes this runner, releasing the resources it owns.
    *
-   * Closes, in order, every [Toolset] and [BaseTool] reachable from [agent]'s subtree (walking
-   * [BaseAgent.subAgents]), then the [pluginManager]. Mirrors ADK Python's `Runner.close`, which
-   * likewise collects toolsets recursively across the agent tree before closing plugins.
+   * Closes, in order, every [Toolset][com.google.adk.kt.tools.Toolset] and [BaseTool] reachable
+   * from [agent]'s subtree (walking [BaseAgent.subAgents]), then the [pluginManager]. Mirrors ADK
+   * Python's `Runner.close`, which likewise collects toolsets recursively across the agent tree
+   * before closing plugins.
    *
    * Each resource is closed exactly once even when shared by several agents.
    *
@@ -274,9 +275,9 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Recursively collects every [Toolset] and [BaseTool] reachable from [current] and its
-   * [BaseAgent.subAgents] into [into]. Only [LlmAgent] carries tools, so other agent types
-   * contribute solely their sub-agents.
+   * Recursively collects every [Toolset][com.google.adk.kt.tools.Toolset] and [BaseTool] reachable
+   * from [current] and its [BaseAgent.subAgents] into [into]. Only [LlmAgent] carries tools, so
+   * other agent types contribute solely their sub-agents.
    */
   private fun collectToolsToClose(current: BaseAgent, into: MutableSet<AutoCloseable>) {
     if (current is LlmAgent) {
@@ -731,8 +732,8 @@ abstract class AbstractRunner : Runner {
 
   /**
    * Returns the branch [resumeAgent] ran under in this invocation, or null for the root branch.
-   * Restoring the branch allows an agent nested under a [ParallelAgent] to see its branch-scoped
-   * paused calls.
+   * Restoring the branch allows an agent nested under a
+   * [ParallelAgent][com.google.adk.kt.agents.ParallelAgent] to see its branch-scoped paused calls.
    */
   private fun resumeBranch(
     events: List<Event>,
@@ -767,7 +768,7 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Finds the appropriate [BaseAgent] to run for the given [session].
+   * Finds the appropriate [BaseAgent] to run for the session in [context].
    *
    * @param context The current invocation context.
    * @param rootAgent The root agent of the runner.
