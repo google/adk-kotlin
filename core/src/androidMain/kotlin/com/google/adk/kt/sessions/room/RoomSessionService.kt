@@ -17,6 +17,7 @@
 package com.google.adk.kt.sessions.room
 
 import android.content.Context
+import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Room
 import androidx.room.withTransaction
 import com.google.adk.kt.events.Event
@@ -26,6 +27,7 @@ import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.ListEventsResponse
 import com.google.adk.kt.sessions.ListSessionsResponse
 import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionAlreadyExistsException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
@@ -68,28 +70,33 @@ class RoomSessionService internal constructor(private val database: AdkSessionsD
 
     // Wrap the session insert and the app/user state seeds in a single transaction so a partial
     // failure (e.g. process death) cannot leave a session row without its required state seeds.
-    database.withTransaction {
-      dao.insertSession(
-        StorageSession(
-          appName = key.appName,
-          userId = key.userId,
-          id = resolvedId,
-          state = state ?: emptyMap(),
-          createTime = now,
-          updateTime = now,
+    try {
+      database.withTransaction {
+        dao.insertSession(
+          StorageSession(
+            appName = key.appName,
+            userId = key.userId,
+            id = resolvedId,
+            state = state ?: emptyMap(),
+            createTime = now,
+            updateTime = now,
+          )
         )
-      )
-      dao.insertAppStateIfAbsent(
-        StorageAppState(appName = key.appName, state = emptyMap(), updateTime = now)
-      )
-      dao.insertUserStateIfAbsent(
-        StorageUserState(
-          appName = key.appName,
-          userId = key.userId,
-          state = emptyMap(),
-          updateTime = now,
+        dao.insertAppStateIfAbsent(
+          StorageAppState(appName = key.appName, state = emptyMap(), updateTime = now)
         )
-      )
+        dao.insertUserStateIfAbsent(
+          StorageUserState(
+            appName = key.appName,
+            userId = key.userId,
+            state = emptyMap(),
+            updateTime = now,
+          )
+        )
+      }
+    } catch (e: SQLiteConstraintException) {
+      // The session row is the only abort-on-conflict insert here, so the id is already taken.
+      throw SessionAlreadyExistsException(e)
     }
 
     val resolvedKey = SessionKey(key.appName, key.userId, resolvedId)

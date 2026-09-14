@@ -85,6 +85,33 @@ class InMemorySessionServiceTest {
   }
 
   @Test
+  fun createSession_duplicateExplicitId_throwsAndKeepsExistingSession() = runBlocking {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app-name", "user-id", "session-1"))
+    val event = Event(author = "agent", timestamp = Clock.System.now().toEpochMilliseconds())
+    assertEquals(event, sessionService.appendEvent(session, event))
+
+    assertFailsWith<SessionAlreadyExistsException> {
+      sessionService.createSession(SessionKey("app-name", "user-id", "session-1"))
+    }
+
+    val stored =
+      assertNotNull(sessionService.getSession(SessionKey("app-name", "user-id", "session-1")))
+    assertEquals(listOf(event), stored.events)
+  }
+
+  @Test
+  fun createSession_sameIdDifferentUser_isAllowed() = runBlocking {
+    val sessionService = InMemorySessionService()
+    val unused = sessionService.createSession(SessionKey("app-name", "user-a", "session-1"))
+
+    val other = sessionService.createSession(SessionKey("app-name", "user-b", "session-1"))
+
+    assertEquals("session-1", other.key.id)
+    assertEquals("user-b", other.key.userId)
+  }
+
+  @Test
   fun createSession_idWithSurroundingWhitespace_isUsedVerbatim() = runTest {
     val sessionService = InMemorySessionService()
 
