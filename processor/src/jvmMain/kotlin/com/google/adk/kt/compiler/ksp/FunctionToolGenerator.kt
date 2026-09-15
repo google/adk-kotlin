@@ -115,9 +115,8 @@ internal class FunctionToolGenerator(
     typeBuilder.addSuperclassConstructorParameter("%S", toolName)
     typeBuilder.addSuperclassConstructorParameter("%S", functionDesc)
     typeBuilder.addSuperclassConstructorParameter("%L", isLongRunning)
-    // The `customMetadata` constructor parameter is not exposed via @Tool today; pass the
-    // default. `requiresConfirmation` is forwarded from @Tool(requireConfirmation = ...).
-    typeBuilder.addSuperclassConstructorParameter("emptyMap()")
+    // `customMetadata` defaults to empty; `requiresConfirmation` is forwarded from @Tool.
+    typeBuilder.addSuperclassConstructorParameter(customMetadataArg(function, toolName))
     typeBuilder.addSuperclassConstructorParameter("%L", requiresConfirmation)
 
     val instanceProperty = buildPrimaryConstructor(function, typeBuilder)
@@ -147,6 +146,11 @@ internal class FunctionToolGenerator(
     fileSpec.writeTo(codeGenerator, dependencies)
 
     return ClassName(packageName, className)
+  }
+
+  /** The `customMetadata` constructor argument; empty by default. */
+  private fun customMetadataArg(function: KSFunctionDeclaration, toolName: String): CodeBlock {
+    return CodeBlock.of("emptyMap()")
   }
 
   private fun buildPrimaryConstructor(
