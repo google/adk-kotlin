@@ -39,6 +39,9 @@ kotlin {
       dependencies {
         api(libs.google.cloud.bigquery)
         api(libs.google.auth.oauth2.http)
+        // No Secret Manager type reaches a public signature, so consumers need not compile
+        // against it.
+        implementation(libs.google.cloud.secretmanager)
       }
     }
     getByName("jvmTest") {
