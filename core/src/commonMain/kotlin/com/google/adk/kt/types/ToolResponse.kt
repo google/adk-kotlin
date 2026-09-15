@@ -17,6 +17,7 @@ package com.google.adk.kt.types
 
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * The output of a server-side [ToolCall] the model ran itself.
@@ -31,6 +32,6 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ToolResponse(
   val id: String? = null,
-  val toolType: ToolType? = null,
+  @JsonNames("tool_type") val toolType: ToolType? = null,
   val response: Map<String, @Contextual Any?>? = null,
 )

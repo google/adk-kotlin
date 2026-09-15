@@ -22,14 +22,19 @@ import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Metadata describing how to interpret a video [Part]. */
 @Serializable
 data class VideoMetadata(
   /** The start offset of the video segment to use. */
-  @Serializable(with = LenientDurationStringSerializer::class) val startOffset: Duration? = null,
+  @JsonNames("start_offset")
+  @Serializable(with = LenientDurationStringSerializer::class)
+  val startOffset: Duration? = null,
   /** The end offset of the video segment to use. */
-  @Serializable(with = LenientDurationStringSerializer::class) val endOffset: Duration? = null,
+  @JsonNames("end_offset")
+  @Serializable(with = LenientDurationStringSerializer::class)
+  val endOffset: Duration? = null,
   /** The frame rate (frames per second) to sample the video at. */
   val fps: Double? = null,
 ) {
