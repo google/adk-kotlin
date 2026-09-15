@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools.mcp
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.tools.mcp.McpSchemaConverter.toAdkFunctionDeclaration
 import com.google.adk.kt.types.Type
@@ -68,12 +69,30 @@ class McpToolTest {
   }
 
   @Test
-  fun annotations_returnsAnnotations() {
-    val annotations = McpSchema.ToolAnnotations("title", null, null, null, null, null)
+  @OptIn(FrameworkInternalApi::class)
+  fun annotations_returnsSdkNeutralAnnotations() {
+    // Each hint non-null and alternating true/false, so a dropped or mis-mapped hint is caught.
+    val annotations = McpSchema.ToolAnnotations("title", true, false, true, false, null)
     val mcpSchemaToolWithAnnotations =
       McpSchema.Tool.builder("testTool", mapOf("type" to "object")).annotations(annotations).build()
     val tool = McpTool("testTool", "description", mcpSchemaToolWithAnnotations, mockSessionManager)
-    assertEquals(annotations, tool.annotations)
+    assertEquals(
+      McpToolAnnotations(
+        title = "title",
+        readOnlyHint = true,
+        destructiveHint = false,
+        idempotentHint = true,
+        openWorldHint = false,
+      ),
+      tool.annotations,
+    )
+  }
+
+  @Test
+  @OptIn(FrameworkInternalApi::class)
+  fun annotations_toolWithoutAnnotations_returnsNull() {
+    // A tool the server sent without annotations maps to null, not an all-null McpToolAnnotations.
+    assertNull(mcpTool.annotations)
   }
 
   @Test
