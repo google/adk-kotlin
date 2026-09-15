@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools.mcp
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
@@ -141,8 +142,10 @@ internal constructor(
     return mcpSessionManager.getSession(headers, stale = session).block()
   }
 
-  internal val annotations: McpSchema.ToolAnnotations?
-    get() = mcpSchemaTool.annotations()
+  /** The MCP tool annotations as an SDK-neutral value, exposed for framework interop. */
+  @FrameworkInternalApi
+  val annotations: McpToolAnnotations?
+    get() = mcpSchemaTool.annotations()?.toMcpToolAnnotations()
 
   internal val meta: Map<String, Any>?
     get() = mcpSchemaTool.meta()
@@ -175,3 +178,14 @@ private fun McpSchema.CallToolResult.toJsonNativeMap(): Map<String, Any?> {
   @Suppress("UNCHECKED_CAST")
   return jsonMapper.convertValue(this, Map::class.java) as Map<String, Any?>
 }
+
+/** Maps the Java MCP SDK's tool annotations to the SDK-neutral [McpToolAnnotations]. */
+@OptIn(FrameworkInternalApi::class)
+private fun McpSchema.ToolAnnotations.toMcpToolAnnotations(): McpToolAnnotations =
+  McpToolAnnotations(
+    title = title,
+    readOnlyHint = readOnlyHint,
+    destructiveHint = destructiveHint,
+    idempotentHint = idempotentHint,
+    openWorldHint = openWorldHint,
+  )
