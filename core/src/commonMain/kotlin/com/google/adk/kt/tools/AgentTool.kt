@@ -123,11 +123,12 @@ open class AgentTool(
         skipClosingPlugins = includePlugins && childPlugins.isNotEmpty(),
       )
 
-    // Seed the child session from the parent's merged session state, excluding ADK-internal
+    // Seed the child session from the parent's committed session state, excluding ADK-internal
     // ("_adk") and temporary ("temp:") keys. Temp state is invocation-scoped and must not cross
-    // into the child session.
+    // into the child session, and neither must this tool call's uncommitted `actions.stateDelta`.
     val parentState =
-      context.context.state
+      context.invocationContext.session.state
+        .toMap()
         .filterKeys { key -> !key.startsWith("_adk") && !key.startsWith(State.TEMP_PREFIX) }
         .takeIf { it.isNotEmpty() }
 

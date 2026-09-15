@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.interop
 
+import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
@@ -66,6 +67,12 @@ class Fixture {
   fun readState(context: ToolContext): String {
     lastContext = context
     return "ok"
+  }
+
+  @Tool(description = "Takes the merged base Context instead of the ToolContext subclass.")
+  fun readBaseContext(context: Context, @Param(name = "key") key: String): String {
+    lastContext = context as ToolContext
+    return "base:$key"
   }
 
   @Tool(description = "Uses a ToolContext alongside a value parameter.")
@@ -230,6 +237,19 @@ class ReflectiveToolsTest {
     val result = tool.run(context, mapOf("key" to "k"))
 
     assertEquals("value:k", result)
+    assertSame(context, fixture.lastContext)
+  }
+
+  @Test
+  fun run_injectsTheMergedBaseContext() = runBlocking {
+    // A Java caller following the new "prefer Context" advice writes the base type. It must be
+    // injected, not demanded as a @Param argument.
+    val tool = ReflectiveTools.fromMethod(fixture, "readBaseContext")
+    val context = testToolContext()
+
+    val result = tool.run(context, mapOf("key" to "k"))
+
+    assertEquals("base:k", result)
     assertSame(context, fixture.lastContext)
   }
 

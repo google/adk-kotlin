@@ -210,9 +210,7 @@ class CallbackContextTest {
 
   @Test
   fun endInvocation_setsIsEndOfInvocationOnContext() = runBlocking {
-    // Callbacks that live outside the `com.google.adk.kt` module cannot reach
-    // `CallbackContext.invocationContext` directly (it is `internal`). The public
-    // `endInvocation()` helper is the supported way for them to terminate the invocation,
+    // `endInvocation()` is the supported way for a callback to terminate the invocation,
     // mirroring Python ADK's `callback_context._invocation_context.end_invocation = True` and
     // Java ADK's `EventActions.setEndInvocation(true)`.
     val context = testInvocationContext(session = testSession())
