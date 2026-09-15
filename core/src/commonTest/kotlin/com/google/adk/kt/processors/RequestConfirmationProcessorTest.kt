@@ -33,6 +33,7 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.assertEquals
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -986,12 +987,83 @@ class RequestConfirmationProcessorTest {
    * `.events.add(...)`) and the context (so tests can read its `invocationId` and pass it to the
    * processor).
    */
+  @Test
+  fun process_approvalOnParallelBranch_doesNotExecuteTool() = runBlocking {
+    // An approval answered in a parallel tree is not this branch's, though it names the call.
+    val toolName = "risky_tool"
+    val toolRuns = mutableListOf<String>()
+    val (session, context) = contextWithRecordingTool(toolName, toolRuns, branch = "agent_1")
+    session.events.addAll(
+      originalCallEvents(context.invocationId, toolName, "orig_1", branch = "agent_1")
+    )
+    session.events.add(
+      agentEvent(context.invocationId, synthConfirmationCallPart("synth_1", toolName, "orig_1"))
+        .copy(branch = "agent_1")
+    )
+    session.events.add(
+      approvalEvent(context.invocationId, synthId = "synth_1").copy(branch = "agent_2")
+    )
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(emptyList(), emittedEvents)
+    assertEquals(emptyList(), toolRuns)
+  }
+
+  @Test
+  fun process_approvalOnSubBranch_executesTool() = runBlocking {
+    // The user may answer on a descendant sub-branch, so scoping must not break the normal path.
+    val toolName = "risky_tool"
+    val toolRuns = mutableListOf<String>()
+    val (session, context) = contextWithRecordingTool(toolName, toolRuns, branch = "agent_1")
+    session.events.addAll(
+      originalCallEvents(context.invocationId, toolName, "orig_1", branch = "agent_1")
+    )
+    session.events.add(
+      agentEvent(context.invocationId, synthConfirmationCallPart("synth_1", toolName, "orig_1"))
+        .copy(branch = "agent_1")
+    )
+    session.events.add(
+      approvalEvent(context.invocationId, synthId = "synth_1").copy(branch = "agent_1.child")
+    )
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(listOf(toolName), toolRuns)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_nullBranchApprovalOnBranchedCall_doesNotExecuteTool() = runBlocking {
+    // At a null branch every user event matches, so pin that the branched call stays unresumable.
+    val toolName = "risky_tool"
+    val toolRuns = mutableListOf<String>()
+    val (session, context) = contextWithRecordingTool(toolName, toolRuns, branch = null)
+    session.events.addAll(
+      originalCallEvents(context.invocationId, toolName, "orig_1", branch = "agent_1")
+    )
+    session.events.add(
+      agentEvent(context.invocationId, synthConfirmationCallPart("synth_1", toolName, "orig_1"))
+        .copy(branch = "agent_1")
+    )
+    session.events.add(
+      approvalEvent(context.invocationId, synthId = "synth_1").copy(branch = "agent_1")
+    )
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(emptyList(), emittedEvents)
+    assertEquals(emptyList(), toolRuns)
+  }
+
   private fun newConfirmationContext(
-    tools: List<DummyTool> = emptyList()
+    tools: List<DummyTool> = emptyList(),
+    branch: String? = null,
   ): Pair<Session, InvocationContext> {
     val agent = LlmAgent(name = AGENT_NAME, model = DummyModel("gemini"), tools = tools)
     val session = testSession()
-    val context = InvocationContext(session = session, runConfig = null, agent = agent)
+    val context =
+      InvocationContext(session = session, runConfig = null, agent = agent, branch = branch)
     return session to context
   }
 
@@ -1002,6 +1074,7 @@ class RequestConfirmationProcessorTest {
   private fun contextWithRecordingTool(
     toolName: String,
     toolRuns: MutableList<String>,
+    branch: String? = null,
   ): Pair<Session, InvocationContext> =
     newConfirmationContext(
       tools =
@@ -1010,7 +1083,8 @@ class RequestConfirmationProcessorTest {
             toolRuns.add(toolName)
             mapOf("status" to "executed")
           }
-        )
+        ),
+      branch = branch,
     )
 
   /** An agent-authored [Event] with the given [parts] in a `model`-role [Content]. */
