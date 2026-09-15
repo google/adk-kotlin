@@ -84,13 +84,11 @@ class RoomSessionServiceTest {
   private fun Session.agentEvent(
     stateDelta: Map<String, Any> = emptyMap(),
     timestamp: Long = lastUpdateTime.toEpochMilliseconds() + 1,
-    partial: Boolean = false,
   ): Event =
     Event(
       author = "agent",
       actions = EventActions(stateDelta = stateDelta.toMutableMap()),
       timestamp = timestamp,
-      partial = partial,
     )
 
   @Test
@@ -290,14 +288,8 @@ class RoomSessionServiceTest {
   }
 
   @Test
-  fun appendEvent_partialEvent_isNotPersisted() = runTest {
-    val session = service.createSession(SessionKey("app", "user", "session1"))
-    val partial = session.agentEvent(stateDelta = mapOf("key" to "v"), partial = true)
-
-    assertThat(service.appendEvent(session, partial)).isEqualTo(partial)
-
-    assertThat(service.listEvents(session.key).events).isEmpty()
-    assertThat(service.getSession(session.key)!!.state.containsKey("key")).isFalse()
+  fun appendEvent_partial_isNotPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.appendPartialNotPersisted(service)
   }
 
   @Test

@@ -91,11 +91,16 @@ interface SessionService {
    * persisting with `super.appendEvent` last (needed when a stale-write check must read the
    * pre-update [Session.lastUpdateTime]).
    *
+   * Overrides must also return early when [Event.partial] is true, before running this lifecycle:
+   * `super.appendEvent` skips partials without trimming `temp:` keys, so persisting after `super`
+   * would store an untrimmed partial event.
+   *
    * @param session The [Session] to update in place.
    * @param event The [Event] to append; its `temp:` state-delta keys are removed in place.
    * @return The appended [Event], or the original unchanged if it was partial.
    */
   suspend fun appendEvent(session: Session, event: Event): Event {
+    // Partial (streaming) events are superseded by the final aggregated event, so skip them.
     if (event.partial) return event
 
     // `temp:` goes to the live session only; drop it from the event before applying the rest.

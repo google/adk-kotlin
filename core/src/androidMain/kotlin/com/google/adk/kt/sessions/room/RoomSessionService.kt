@@ -184,10 +184,8 @@ class RoomSessionService internal constructor(private val database: AdkSessionsD
   }
 
   override suspend fun appendEvent(session: Session, event: Event): Event {
-    if (event.partial) {
-      // Match SessionService base behavior: partial events are short-circuited.
-      return event
-    }
+    // Partial (streaming) events are superseded by the final aggregated event, so skip them.
+    if (event.partial) return event
     val id = requireNotNull(session.key.id) { "Session.key.id must not be null for appendEvent" }
     val appName = session.key.appName
     val userId = session.key.userId

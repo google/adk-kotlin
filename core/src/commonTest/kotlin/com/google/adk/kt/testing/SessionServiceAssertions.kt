@@ -38,11 +38,15 @@ object SessionServiceAssertions {
   private const val USER_ID = "contract-user"
 
   /** An `agent`-authored event whose timestamp is strictly after the session's last update. */
-  private fun Session.nextAgentEvent(stateDelta: Map<String, Any>): Event =
+  private fun Session.nextAgentEvent(
+    stateDelta: Map<String, Any>,
+    partial: Boolean = false,
+  ): Event =
     Event(
       author = "agent",
       actions = EventActions(stateDelta = stateDelta.toMutableMap()),
       timestamp = lastUpdateTime.toEpochMilliseconds() + 1,
+      partial = partial,
     )
 
   // --- temp: state contract (all backends) ---
@@ -261,5 +265,21 @@ object SessionServiceAssertions {
     val otherUserReloaded = service.getSession(otherUser.key)
     assertThat(otherUserReloaded).isNotNull()
     assertThat(otherUserReloaded!!.state.containsKey("user:pref")).isFalse()
+  }
+
+  // --- partial events (InMemory + Room only; Vertex persists them remotely) ---
+
+  /** A partial event is a no-op passthrough: returned unchanged, and never persisted. */
+  suspend fun appendPartialNotPersisted(service: SessionService) {
+    val session = service.createSession(SessionKey(APP_NAME, USER_ID, id = null))
+    val partial = session.nextAgentEvent(mapOf("k" to "v", "temp:x" to "t"), partial = true)
+
+    assertThat(service.appendEvent(session, partial)).isSameInstanceAs(partial)
+
+    assertThat(service.listEvents(session.key).events).isEmpty()
+    val reloaded = service.getSession(session.key)
+    assertThat(reloaded).isNotNull()
+    assertThat(reloaded!!.state.containsKey("k")).isFalse()
+    assertThat(reloaded.state.containsKey("temp:x")).isFalse()
   }
 }

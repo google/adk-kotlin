@@ -239,6 +239,11 @@ class InMemorySessionServiceTest {
   }
 
   @Test
+  fun appendEvent_partial_isNotPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.appendPartialNotPersisted(InMemorySessionService())
+  }
+
+  @Test
   fun getSession_afterCreate_returnsSession(): Unit = runBlocking {
     SessionServiceAssertions.createdSessionIsRetrievable(InMemorySessionService())
   }

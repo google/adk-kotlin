@@ -106,53 +106,58 @@ class InMemorySessionService : SessionService {
     ListEventsResponse(events = storedSession.events.toList())
   }
 
-  override suspend fun appendEvent(session: Session, event: Event): Event = mutex.withLock {
-    val storedSession =
-      sessions[session.key] ?: throw IllegalStateException("Session not found: ${session.key.id}")
+  override suspend fun appendEvent(session: Session, event: Event): Event {
+    // Partial (streaming) events are superseded by the final aggregated event, so skip them.
+    if (event.partial) return event
 
-    // super first applies `temp:` to the live session and trims the event, so we persist without
-    // it.
-    val unused = super.appendEvent(session, event)
+    return mutex.withLock {
+      val storedSession =
+        sessions[session.key] ?: throw IllegalStateException("Session not found: ${session.key.id}")
 
-    // Apply the (now `temp:`-free) state delta to storedSession's state or global app/user state.
-    for ((stateKey, value) in event.actions.stateDelta) {
-      when {
-        stateKey.startsWith(State.APP_PREFIX) -> {
-          val appStateKey = stateKey.substring(State.APP_PREFIX.length)
-          val appMap = appState.getOrPut(storedSession.key.appName) { mutableMapOf() }
-          if (value === State.REMOVED) {
-            appMap.remove(appStateKey)
-          } else {
-            appMap[appStateKey] = value
-          }
-        }
-        stateKey.startsWith(State.USER_PREFIX) -> {
-          val userStateKey = stateKey.substring(State.USER_PREFIX.length)
-          val userMap =
-            userState.getOrPut(UserKey(storedSession.key.appName, storedSession.key.userId)) {
-              mutableMapOf()
+      // super first applies `temp:` to the live session and trims the event, so we persist without
+      // it.
+      val unused = super.appendEvent(session, event)
+
+      // Apply the (now `temp:`-free) state delta to storedSession's state or global app/user state.
+      for ((stateKey, value) in event.actions.stateDelta) {
+        when {
+          stateKey.startsWith(State.APP_PREFIX) -> {
+            val appStateKey = stateKey.substring(State.APP_PREFIX.length)
+            val appMap = appState.getOrPut(storedSession.key.appName) { mutableMapOf() }
+            if (value === State.REMOVED) {
+              appMap.remove(appStateKey)
+            } else {
+              appMap[appStateKey] = value
             }
-          if (value === State.REMOVED) {
-            userMap.remove(userStateKey)
-          } else {
-            userMap[userStateKey] = value
           }
-        }
-        else -> {
-          if (value === State.REMOVED) {
-            storedSession.state.remove(stateKey)
-          } else {
-            storedSession.state[stateKey] = value
+          stateKey.startsWith(State.USER_PREFIX) -> {
+            val userStateKey = stateKey.substring(State.USER_PREFIX.length)
+            val userMap =
+              userState.getOrPut(UserKey(storedSession.key.appName, storedSession.key.userId)) {
+                mutableMapOf()
+              }
+            if (value === State.REMOVED) {
+              userMap.remove(userStateKey)
+            } else {
+              userMap[userStateKey] = value
+            }
+          }
+          else -> {
+            if (value === State.REMOVED) {
+              storedSession.state.remove(stateKey)
+            } else {
+              storedSession.state[stateKey] = value
+            }
           }
         }
       }
+
+      // Add the (`temp:`-free) event to the stored session's list.
+      storedSession.events.add(event)
+      storedSession.lastUpdateTime = Instant.fromEpochMilliseconds(event.timestamp)
+
+      event
     }
-
-    // Add the (`temp:`-free) event to the stored session's list.
-    storedSession.events.add(event)
-    storedSession.lastUpdateTime = Instant.fromEpochMilliseconds(event.timestamp)
-
-    return event
   }
 
   private fun copySession(original: Session, events: List<Event> = original.events): Session {
