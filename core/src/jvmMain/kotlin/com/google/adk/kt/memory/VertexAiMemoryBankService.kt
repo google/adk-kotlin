@@ -18,6 +18,8 @@ package com.google.adk.kt.memory
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.clients.closingHttpClientOnFailure
+import com.google.adk.kt.clients.validateSegment
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.gcp.GoogleApiClient
 import com.google.adk.kt.logging.LoggerFactory
@@ -66,15 +68,16 @@ class VertexAiMemoryBankService internal constructor(private val client: VertexA
   /**
    * Creates a service for Agent Engine [agentEngineId] under [project] and [location].
    *
-   * @param project The Google Cloud project id used to address the API; must match
-   *   [RESOURCE_SEGMENT_PATTERN].
-   * @param location The Google Cloud location; `"global"` selects the global endpoint. Must match
-   *   [RESOURCE_SEGMENT_PATTERN].
+   * @param project The Google Cloud project id used to address the API; must be a single URL path
+   *   segment (letters, digits, `_`, or `-`).
+   * @param location The Google Cloud location; `"global"` selects the global endpoint. Must be a
+   *   single URL path segment (letters, digits, `_`, or `-`).
    * @param agentEngineId The numeric Agent Engine (reasoning engine) id to address, e.g.
    *   `"1234567890"`.
    * @param credentials Credentials for the Vertex AI API; defaults to application-default
    *   credentials scoped for Google Cloud Platform.
-   * @param httpClient The underlying ktor [HttpClient].
+   * @param httpClient The underlying ktor [HttpClient]; it is closed (and the failure rethrown) if
+   *   the arguments are invalid, so a bad project/location/engine id never leaves a client behind.
    */
   constructor(
     project: String,
@@ -83,12 +86,14 @@ class VertexAiMemoryBankService internal constructor(private val client: VertexA
     credentials: GoogleCredentials = GoogleApiClient.defaultCredentials(),
     httpClient: HttpClient = HttpClient(Java),
   ) : this(
-    VertexAiMemoryBankClient(
-      GoogleApiClient(httpClient, credentials),
-      validateSegment(project, "project"),
-      validateSegment(location, "location"),
-      validateAgentEngineId(agentEngineId),
-    )
+    closingHttpClientOnFailure(httpClient) {
+      VertexAiMemoryBankClient(
+        GoogleApiClient(httpClient, credentials),
+        validateSegment(project, "project"),
+        validateSegment(location, "location"),
+        validateAgentEngineId(agentEngineId),
+      )
+    }
   )
 
   override suspend fun addSessionToMemory(session: Session) {
@@ -536,21 +541,6 @@ class VertexAiMemoryBankService internal constructor(private val client: VertexA
           " name; pass project and location as separate arguments. Got: $agentEngineId"
       }
       return agentEngineId
-    }
-
-    /**
-     * Allowed characters for a project or location. Keeps each value within a single URL path
-     * segment (no `/`, `?`, `#`, or `..`), matching the `VertexAiRagMemoryService` and
-     * session-service `validateSessionId` allowlist.
-     */
-    internal val RESOURCE_SEGMENT_PATTERN = Regex("^[a-zA-Z0-9_-]+$")
-
-    /** Requires [value] to match [RESOURCE_SEGMENT_PATTERN] before it goes into a URL path. */
-    internal fun validateSegment(value: String, label: String): String {
-      require(RESOURCE_SEGMENT_PATTERN.matches(value)) {
-        "Invalid $label: '$value'. It must match ${RESOURCE_SEGMENT_PATTERN.pattern}."
-      }
-      return value
     }
   }
 }

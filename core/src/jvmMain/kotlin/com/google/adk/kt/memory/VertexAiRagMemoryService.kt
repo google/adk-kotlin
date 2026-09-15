@@ -18,6 +18,7 @@ package com.google.adk.kt.memory
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.clients.closingHttpClientOnFailure
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.gcp.GoogleApiClient
 import com.google.adk.kt.logging.LoggerFactory
@@ -82,7 +83,8 @@ internal constructor(
    *   threshold.
    * @param credentials Credentials for the Vertex AI API; defaults to application-default
    *   credentials scoped for Google Cloud Platform.
-   * @param httpClient The underlying ktor [HttpClient].
+   * @param httpClient The underlying ktor [HttpClient]; it is closed (and the failure rethrown) if
+   *   the arguments are invalid, so a bad corpus/project/location never leaves a client behind.
    */
   constructor(
     project: String,
@@ -93,8 +95,12 @@ internal constructor(
     credentials: GoogleCredentials = GoogleApiClient.defaultCredentials(),
     httpClient: HttpClient = HttpClient(Java),
   ) : this(
+    // Validate before wrapping httpClient, closing it if the corpus is invalid.
+    corpusName =
+      closingHttpClientOnFailure(httpClient) {
+        normalizeRagCorpusName(ragCorpus, project, location)
+      },
     client = VertexAiRagClient(GoogleApiClient(httpClient, credentials), project, location),
-    corpusName = normalizeCorpusName(ragCorpus, project, location),
     similarityTopK = similarityTopK,
     vectorDistanceThreshold = vectorDistanceThreshold,
   )
@@ -346,36 +352,6 @@ internal constructor(
         merged.add(current)
       }
       return merged
-    }
-
-    /**
-     * Allowed characters for a project, location, or corpus id. Keeps each value within a single
-     * URL path segment (no `/`, `?`, `#`, or `..`), matching the session-service
-     * `validateSessionId` allowlist.
-     */
-    private val RESOURCE_SEGMENT_PATTERN = Regex("^[a-zA-Z0-9_-]+$")
-
-    private fun validateSegment(value: String, label: String) {
-      require(RESOURCE_SEGMENT_PATTERN.matches(value)) {
-        "Invalid $label: '$value'. It must match ${RESOURCE_SEGMENT_PATTERN.pattern}."
-      }
-    }
-
-    /**
-     * Builds the full corpus resource name from a bare [ragCorpus] id under [project]/[location].
-     *
-     * [ragCorpus] must be a bare id, not a full resource name: the project and location come only
-     * from the constructor. Each segment (project, location, corpus id) must match
-     * [RESOURCE_SEGMENT_PATTERN] before being interpolated into a request URL.
-     */
-    internal fun normalizeCorpusName(ragCorpus: String, project: String, location: String): String {
-      validateSegment(project, "project")
-      validateSegment(location, "location")
-      require(!ragCorpus.startsWith("projects/")) {
-        "ragCorpus must be a bare corpus id, not a full resource name: '$ragCorpus'."
-      }
-      validateSegment(ragCorpus, "ragCorpus id")
-      return "projects/$project/locations/$location/ragCorpora/$ragCorpus"
     }
   }
 

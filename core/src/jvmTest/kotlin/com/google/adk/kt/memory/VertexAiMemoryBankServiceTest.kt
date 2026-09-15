@@ -33,9 +33,12 @@ import com.google.adk.kt.types.VideoMetadata
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.java.Java
 import java.io.IOException
 import java.util.Date
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -349,16 +352,30 @@ class VertexAiMemoryBankServiceTest {
   }
 
   @Test
-  fun validateSegment_allowsSafeValuesAndRejectsPathEscapes() {
-    assertThat(VertexAiMemoryBankService.validateSegment("my-project_1", "project"))
-      .isEqualTo("my-project_1")
-    assertThat(VertexAiMemoryBankService.validateSegment("global", "location")).isEqualTo("global")
-    // Anything that could escape the URL path segment is rejected.
-    for (bad in listOf("a/b", "a..b", "a?b", "a#b", "a b", "")) {
-      assertFailsWith<IllegalArgumentException> {
-        VertexAiMemoryBankService.validateSegment(bad, "project")
-      }
+  fun constructor_rejectsNonNumericAgentEngineId() {
+    assertFailsWith<IllegalArgumentException> {
+      VertexAiMemoryBankService(
+        project = "p",
+        location = "l",
+        agentEngineId = "not-numeric",
+        credentials = fakeCredentials(),
+      )
     }
+  }
+
+  @Test
+  fun constructor_invalidInput_closesHttpClient() {
+    val httpClient = HttpClient(Java)
+    assertFailsWith<IllegalArgumentException> {
+      VertexAiMemoryBankService(
+        project = "p",
+        location = "l",
+        agentEngineId = "not-numeric",
+        credentials = fakeCredentials(),
+        httpClient = httpClient,
+      )
+    }
+    assertThat(httpClient.isActive).isFalse()
   }
 
   @Test

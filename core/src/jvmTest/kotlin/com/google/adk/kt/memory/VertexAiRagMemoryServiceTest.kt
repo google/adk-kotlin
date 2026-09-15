@@ -29,10 +29,13 @@ import com.google.adk.kt.types.Part
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.java.Java
 import java.io.IOException
 import java.util.Base64
 import java.util.Date
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -263,34 +266,6 @@ class VertexAiRagMemoryServiceTest {
   }
 
   @Test
-  fun normalizeCorpusName_expandsBareId() {
-    assertThat(VertexAiRagMemoryService.normalizeCorpusName("my-corpus", "proj", "loc"))
-      .isEqualTo("projects/proj/locations/loc/ragCorpora/my-corpus")
-  }
-
-  @Test
-  fun normalizeCorpusName_rejectsFullResourceName() {
-    // Only a bare id is accepted; a full resource name must be rejected.
-    assertFailsWith<IllegalArgumentException> {
-      VertexAiRagMemoryService.normalizeCorpusName(
-        "projects/proj/locations/loc/ragCorpora/z",
-        "proj",
-        "loc",
-      )
-    }
-  }
-
-  @Test
-  fun normalizeCorpusName_rejectsIdsThatEscapeThePathSegment() {
-    // A bare id must stay within one URL path segment (no `/`, `?`, `#`, or `..`).
-    for (bad in listOf("a/b", "a..b", "a?b", "a#b", "a b")) {
-      assertFailsWith<IllegalArgumentException> {
-        VertexAiRagMemoryService.normalizeCorpusName(bad, "proj", "loc")
-      }
-    }
-  }
-
-  @Test
   fun searchMemory_propagatesClientFailure() = runTest {
     val service =
       VertexAiRagMemoryService(FakeRagClient(failure = IOException("boom")), corpus, null, 10.0)
@@ -311,6 +286,33 @@ class VertexAiRagMemoryServiceTest {
         )
       )
     }
+  }
+
+  @Test
+  fun constructor_rejectsFullResourceNameAsCorpus() {
+    assertFailsWith<IllegalArgumentException> {
+      VertexAiRagMemoryService(
+        project = "p",
+        location = "l",
+        ragCorpus = "projects/p/locations/l/ragCorpora/c",
+        credentials = fakeCredentials(),
+      )
+    }
+  }
+
+  @Test
+  fun constructor_invalidCorpus_closesHttpClient() {
+    val httpClient = HttpClient(Java)
+    assertFailsWith<IllegalArgumentException> {
+      VertexAiRagMemoryService(
+        project = "p",
+        location = "l",
+        ragCorpus = "projects/p/locations/l/ragCorpora/c",
+        credentials = fakeCredentials(),
+        httpClient = httpClient,
+      )
+    }
+    assertThat(httpClient.isActive).isFalse()
   }
 
   /**
