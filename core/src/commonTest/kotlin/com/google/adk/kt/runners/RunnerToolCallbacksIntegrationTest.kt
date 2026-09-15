@@ -28,10 +28,13 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -223,6 +226,41 @@ class RunnerToolCallbacksIntegrationTest {
           generateSequence<Throwable>(e.cause) { it.cause }
             .any { (it.message ?: "").contains("boom") }
       )
+    }
+  }
+
+  /**
+   * A cancellation raised by a tool must not be routed into the `onToolError` recovery pipeline.
+   * `CancellationException` is an `Exception` in Kotlin, so a recovering callback could otherwise
+   * swallow it; the tool-call path must rethrow it first. Python ADK 1.x is safe structurally
+   * (CancelledError is a BaseException); see functions._execute_single_function_call_async.
+   */
+  @Test
+  fun runAsync_toolThrowsCancellation_recoveryCallbackDoesNotSwallowIt(): Unit = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = twoTurnFunctionCallModel("cancelling_tool"),
+        tools =
+          listOf(
+            DummyTool(
+              name = "cancelling_tool",
+              onRun = { _, _ -> throw CancellationException("cancelled") },
+            )
+          ),
+        onToolErrorCallbacks =
+          listOf(
+            OnToolErrorCallback { _, _, _, _ ->
+              CallbackChoice.Break(mapOf("result" to "recovered"))
+            }
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    assertFailsWith<CancellationException> {
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
     }
   }
 

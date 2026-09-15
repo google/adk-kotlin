@@ -20,6 +20,7 @@ import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnModelErrorCallbacksPipeline
+import com.google.adk.kt.coroutines.rethrowIfCancellation
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.getLongRunningFunctionIds
 import com.google.adk.kt.ids.Uuid
@@ -46,7 +47,6 @@ import com.google.adk.kt.tools.createGoogleSearchAgent
 import com.google.adk.kt.tools.createVertexAiSearchAgent
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -283,6 +283,7 @@ internal class LlmAgentTurn(
         // Response-derived span attributes (parity with Python `trace_call_llm`).
         lastResponse?.let { span.recordCallLlmResponse(it) }
       } catch (e: Exception) {
+        e.rethrowIfCancellation()
         val allOnModelErrorCallbacks =
           context.pluginManager.onModelErrorCallbacks + agent.onModelErrorCallbacks
         val recoveredResponse =
@@ -299,9 +300,7 @@ internal class LlmAgentTurn(
             is CallbackChoice.Continue -> null
           }
         if (recoveredResponse != null) {
-          if (e !is CancellationException) {
-            span.recordException(e)
-          }
+          span.recordException(e)
           modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
           processModelResponse(currentRequest, recoveredResponse, modelResponseEvent) { emit(it) }
         } else {

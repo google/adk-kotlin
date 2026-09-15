@@ -35,11 +35,14 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -473,5 +476,34 @@ class RunnerModelCallbacksIntegrationTest {
       events.firstNotNullOfOrNull { it.actions.artifactDelta["note.txt"] },
       "a beforeModel artifact save must be carried by an emitted event",
     )
+  }
+
+  /**
+   * A cancellation raised by the model must not be routed into the `onModelError` recovery
+   * pipeline. `CancellationException` is an `Exception` in Kotlin, so a recovering callback could
+   * otherwise swallow it; the model-call path must rethrow it first. Python ADK 1.x is safe
+   * structurally (CancelledError is a BaseException); see base_llm_flow._run_and_handle_error.
+   */
+  @Test
+  fun runAsync_modelThrowsCancellation_recoveryCallbackDoesNotSwallowIt(): Unit = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model =
+          DummyModel("cancelling-model") { flow { throw CancellationException("cancelled") } },
+        onModelErrorCallbacks =
+          listOf(
+            OnModelErrorCallback { _, _, _ ->
+              CallbackChoice.Break(LlmResponse(content = modelMessage("recovered")))
+            }
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    assertFailsWith<CancellationException> {
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+    }
   }
 }
