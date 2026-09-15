@@ -48,6 +48,7 @@ reactive-streams = "1.0.4"
 robolectric = "4.16.1"
 slf4j = "2.0.17"
 snakeyaml = "2.2"
+spring-ai = "2.0.1"
 # go/keep-sorted end
 
 [libraries]
@@ -123,6 +124,8 @@ robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectr
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
 snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
+spring-ai-google-genai = { module = "org.springframework.ai:spring-ai-google-genai", version.ref = "spring-ai" }
+spring-ai-model = { module = "org.springframework.ai:spring-ai-model", version.ref = "spring-ai" }
 # go/keep-sorted end
 
 [plugins]
