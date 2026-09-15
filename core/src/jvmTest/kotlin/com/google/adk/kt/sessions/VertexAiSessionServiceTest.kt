@@ -745,7 +745,7 @@ class VertexAiSessionServiceTest {
   }
 
   @Test
-  fun appendEvent_partial_persistsRemotelyButNotInMemory() = runTest {
+  fun appendEvent_partial_notWrittenRemotelyOrInMemory() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
         onBlocking { appendEvent(any(), any(), any()) } doReturn Result.success(Unit)
@@ -753,12 +753,19 @@ class VertexAiSessionServiceTest {
     val session = Session(SessionKey("123", "user", "s1"))
     val event = Event(author = "user", partial = true, timestamp = 1000L)
 
-    val unused = service(client).appendEvent(session, event)
+    val returned = service(client).appendEvent(session, event)
 
-    // Matching the Java/Python ADK: a partial event is still written to the remote service, but the
-    // base implementation does not add it to the in-memory session.
-    verifyBlocking(client) { appendEvent(eq(ENGINE), eq("s1"), any()) }
+    // Diverging from Python (which posts partials to the backend), Vertex now matches the base
+    // service, InMemory, Room, and ADK Go: a partial event is a no-op passthrough, neither posted
+    // remotely nor applied in-memory.
+    assertThat(returned).isSameInstanceAs(event)
+    verifyBlocking(client, never()) { appendEvent(any(), any(), any()) }
     assertThat(session.events).isEmpty()
+  }
+
+  @Test
+  fun appendEvent_partial_isNotPersisted(): Unit = runBlocking {
+    SessionServiceAssertions.appendPartialNotPersisted(service(FakeVertexAiSessionsClient()))
   }
 
   @Test
@@ -773,6 +780,51 @@ class VertexAiSessionServiceTest {
     assertFailsWith<IOException> {
       service(client).appendEvent(session, Event(author = "user", timestamp = 1000L))
     }
+  }
+
+  @Test
+  fun appendEvent_clientFails_appliesNoNonTempStateAndAppendsNoEvent() = runTest {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { appendEvent(any(), any(), any()) } doReturn
+          Result.failure(IOException("append failed"))
+      }
+    val session = Session(SessionKey("123", "user", "s1"))
+    val event =
+      Event(
+        author = "agent",
+        timestamp = 1000L,
+        actions = EventActions(stateDelta = mutableMapOf<String, Any>("k" to "v")),
+      )
+
+    assertFailsWith<IOException> { service(client).appendEvent(session, event) }
+
+    // A failed remote append applies no persistent state and appends no event (super never runs).
+    assertThat(session.events).isEmpty()
+    assertThat(session.state).doesNotContainKey("k")
+  }
+
+  @Test
+  fun appendEvent_clientFails_stillAppliesTempState() = runTest {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { appendEvent(any(), any(), any()) } doReturn
+          Result.failure(IOException("append failed"))
+      }
+    val session = Session(SessionKey("123", "user", "s1"))
+    val event =
+      Event(
+        author = "agent",
+        timestamp = 1000L,
+        actions = EventActions(stateDelta = mutableMapOf<String, Any>("temp:k" to "v")),
+      )
+
+    assertFailsWith<IOException> { service(client).appendEvent(session, event) }
+
+    // `temp:` state is applied before the post (matching Python), so it survives a failed append;
+    // the event itself is still not appended, since super never runs.
+    assertThat(session.state["temp:k"]).isEqualTo("v")
+    assertThat(session.events).isEmpty()
   }
 
   private companion object {
