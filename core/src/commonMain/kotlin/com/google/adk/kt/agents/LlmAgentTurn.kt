@@ -375,14 +375,13 @@ internal class LlmAgentTurn(
 
   /**
    * Returns this event carrying the actions [callbackContext] accumulated, so a model callback's
-   * writes reach the session. Python and Java ADK instead alias the event's actions into the
-   * context; Kotlin cannot, because [CallbackContext.updateState] replaces the actions object
-   * rather than mutating it. The whole object moves, so control-flow signals cross too, not just
-   * the deltas.
+   * writes reach the session. The event is built with its own
+   * [EventActions][com.google.adk.kt.events.EventActions], so the context's object has to replace
+   * it; the whole object moves, so control-flow signals cross too, not just the deltas.
    *
    * Every event a step emits can therefore share one mutable
    * [EventActions][com.google.adk.kt.events.EventActions], and writers such as
-   * `CallbackContext.saveArtifact`,
+   * `Context.updateState`, `Context.saveArtifact`,
    * [EventActions.removeStateByKey][com.google.adk.kt.events.EventActions.removeStateByKey] and
    * `LlmAgent.maybeSaveOutputToState` mutate it in place, so a late write also shows up on partial
    * events already emitted. Java shares the same way; Python instead snapshots the actions onto

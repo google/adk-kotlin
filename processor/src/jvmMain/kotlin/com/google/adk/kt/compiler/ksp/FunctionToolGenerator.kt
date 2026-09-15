@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.compiler.ksp
 
+import com.google.adk.kt.agents.CallbackContext
+import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.Tool as ToolAnnotation
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
@@ -205,7 +207,7 @@ internal class FunctionToolGenerator(
       val paramType = param.type.resolve()
       val typeNameString = paramType.declaration.qualifiedName?.asString()
 
-      if (typeNameString == TOOL_CONTEXT_QUALIFIED_NAME) {
+      if (isContextParameter(paramType)) {
         invokeArgs.add("context")
         continue
       }
@@ -301,6 +303,14 @@ internal class FunctionToolGenerator(
           ) {
             return null
           }
+        }
+        typeNameString == CALLBACK_CONTEXT_QUALIFIED_NAME -> {
+          logger.error(
+            "A tool call is not given a CallbackContext. Declare parameter '${paramName}' in " +
+              "'${function.simpleName.asString()}' as Context or ToolContext instead.",
+            param,
+          )
+          return null
         }
         else -> {
           logger.error(
@@ -829,10 +839,7 @@ internal class FunctionToolGenerator(
     funSpec.addCode("  name = %S,\n", toolName)
     funSpec.addCode("  description = %S,\n", functionDesc)
 
-    val paramTypes =
-      function.parameters.filter {
-        it.type.resolve().declaration.qualifiedName?.asString() != TOOL_CONTEXT_QUALIFIED_NAME
-      }
+    val paramTypes = function.parameters.filter { !isContextParameter(it.type.resolve()) }
     if (paramTypes.isNotEmpty()) {
       funSpec.addCode("  parameters = %T(\n", Schema::class.asClassName())
       funSpec.addCode("    type = %T.OBJECT,\n", Type::class.asClassName())
@@ -978,10 +985,7 @@ internal class FunctionToolGenerator(
    * guarantees unique parameter names, not wire names).
    */
   private fun validateWireNames(function: KSFunctionDeclaration): Boolean {
-    val valueParams =
-      function.parameters.filter {
-        it.type.resolve().declaration.qualifiedName?.asString() != TOOL_CONTEXT_QUALIFIED_NAME
-      }
+    val valueParams = function.parameters.filter { !isContextParameter(it.type.resolve()) }
     for (param in valueParams) {
       val explicit =
         paramAnnotation(param)?.arguments?.firstOrNull { it.name?.asString() == "name" }?.value
@@ -1214,7 +1218,11 @@ internal class FunctionToolGenerator(
     private val LIST_QUALIFIED_NAMES = setOf(LIST_QUALIFIED_NAME, MUTABLE_LIST_QUALIFIED_NAME)
     private val MAP_QUALIFIED_NAMES = setOf(MAP_QUALIFIED_NAME, MUTABLE_MAP_QUALIFIED_NAME)
     private val ANY_QUALIFIED_NAME = Any::class.qualifiedName
-    private val TOOL_CONTEXT_QUALIFIED_NAME = ToolContext::class.qualifiedName
+    // The injected context may be written as the base type or as the tool subclass.
+    private val CONTEXT_QUALIFIED_NAMES =
+      setOfNotNull(Context::class.qualifiedName, ToolContext::class.qualifiedName)
+    // Also a Context, but never what a tool call is handed; worth its own diagnostic.
+    private val CALLBACK_CONTEXT_QUALIFIED_NAME = CallbackContext::class.qualifiedName
     private val PRIMITIVE_OR_STRING_QUALIFIED_NAMES =
       setOf(
         STRING_QUALIFIED_NAME,
@@ -1226,5 +1234,9 @@ internal class FunctionToolGenerator(
 
     val FLOW = ClassName("kotlinx.coroutines.flow", "Flow")
     val FLOW_MEMBER = MemberName("kotlinx.coroutines.flow", "flow")
+
+    /** True for the injected context parameter, written as `Context` or as `ToolContext`. */
+    private fun isContextParameter(type: KSType): Boolean =
+      type.declaration.qualifiedName?.asString() in CONTEXT_QUALIFIED_NAMES
   }
 }

@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.interop
 
+import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
@@ -87,8 +88,13 @@ object ReflectiveTools {
     description: String,
   ) : BaseFutureTool(name, description) {
 
+    // Accept the parameter written as either the base type or the tool subclass, matching the
+    // KSP processor. Not `isAssignableFrom`, which would also match CallbackContext and then fail
+    // at call time, since the framework passes a ToolContext.
     private val contextIndex: Int =
-      method.parameterTypes.indexOfFirst { ToolContext::class.java.isAssignableFrom(it) }
+      method.parameterTypes.indexOfFirst {
+        it == ToolContext::class.java || it == Context::class.java
+      }
 
     private val bound: List<Bound> =
       method.parameters
