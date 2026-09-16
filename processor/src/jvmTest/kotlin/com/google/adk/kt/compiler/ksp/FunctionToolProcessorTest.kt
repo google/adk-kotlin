@@ -17,6 +17,7 @@
 package com.google.adk.kt.compiler.ksp
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
@@ -470,9 +471,25 @@ class FunctionToolProcessorTest {
     assertThat(declaration.name).isEqualTo("custom_name")
     assertThat(declaration.description).isEqualTo("Custom description")
   }
+
+  @Test
+  fun execute_toolWithBaseContextParam_injectsContext() = runTest {
+    val tool = BaseContextToolTool()
+    val context = createDummyContext()
+
+    assertThat(tool.declaration()?.parameters?.properties).doesNotContainKey("context")
+    val result = tool.execute(context, mapOf("name" to "Alice"))
+
+    assertThat(result).isEqualTo(mapOf("result" to "test:Alice"))
+  }
 }
 
 // -- Test Fixtures --
+
+@Tool
+fun baseContextTool(context: Context, name: String): String {
+  return "${context.agentName}:$name"
+}
 
 @Tool
 fun sampleTool(context: ToolContext, name: String, age: Int): String {

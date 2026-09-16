@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.interop
 
+import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
@@ -113,8 +114,12 @@ object ReflectiveTools {
         ),
     ) {
 
+    // Match either Context or ToolContext explicitly (not isAssignableFrom, which would also match
+    // CallbackContext and fail at invocation time).
     private val contextIndex: Int =
-      method.parameterTypes.indexOfFirst { ToolContext::class.java.isAssignableFrom(it) }
+      method.parameterTypes.indexOfFirst {
+        it == ToolContext::class.java || it == Context::class.java
+      }
 
     private val bound: List<Bound> =
       method.parameters
