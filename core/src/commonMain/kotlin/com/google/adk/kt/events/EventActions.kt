@@ -20,6 +20,8 @@ import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.workflow.Route
+import com.google.adk.kt.workflow.RouteListSerializer
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
@@ -49,6 +51,8 @@ import kotlinx.serialization.Serializable
  *   by function call ID.
  * @property rewindBeforeInvocationId If set, the agent will rewind history before the specified
  *   invocation ID.
+ * @property route For a workflow node, the routes this event selects; an edge is followed when it
+ *   carries one.
  * @property agentState The state of the agent for resumability.
  * @property compaction If set, this event carries a context-compaction summary that replaces the
  *   compacted range of events when the next LLM prompt is built. See [EventCompaction].
@@ -63,6 +67,7 @@ data class EventActions(
   var endOfAgent: Boolean = false,
   val requestedToolConfirmations: MutableMap<String, ToolConfirmation> = concurrentMutableMapOf(),
   var rewindBeforeInvocationId: String? = null,
+  @Serializable(with = RouteListSerializer::class) var route: List<Route>? = null,
   var agentState: TypedData? = null,
   var compaction: EventCompaction? = null,
 ) {
@@ -113,6 +118,7 @@ data class EventActions(
           putAll(other.requestedToolConfirmations)
         },
       rewindBeforeInvocationId = other.rewindBeforeInvocationId ?: this.rewindBeforeInvocationId,
+      route = other.route ?: this.route,
       agentState = other.agentState ?: this.agentState,
       compaction = other.compaction ?: this.compaction,
     )
@@ -132,6 +138,7 @@ data class EventActions(
     private var requestedToolConfirmations: MutableMap<String, ToolConfirmation> =
       concurrentMutableMapOf()
     private var rewindBeforeInvocationId: String? = null
+    private var route: List<Route>? = null
     private var agentState: TypedData? = null
     private var compaction: EventCompaction? = null
 
@@ -163,6 +170,8 @@ data class EventActions(
       this.rewindBeforeInvocationId = rewindBeforeInvocationId
     }
 
+    fun route(route: List<Route>?): Builder = apply { this.route = route }
+
     fun agentState(agentState: TypedData?): Builder = apply { this.agentState = agentState }
 
     fun compaction(compaction: EventCompaction?): Builder = apply { this.compaction = compaction }
@@ -177,6 +186,7 @@ data class EventActions(
         endOfAgent = endOfAgent,
         requestedToolConfirmations = requestedToolConfirmations,
         rewindBeforeInvocationId = rewindBeforeInvocationId,
+        route = route,
         agentState = agentState,
         compaction = compaction,
       )
