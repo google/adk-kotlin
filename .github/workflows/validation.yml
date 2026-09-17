@@ -5,10 +5,20 @@ on:
   pull_request:
     branches:
       - main
+  # Also build on `main` pushes: PR runs only read the cache, so these seed it.
+  push:
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on PR branches, but let `main` runs finish so
+  # post-merge verification and cache seeding are never aborted mid-run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Read-only: no step in this workflow writes to the repository.
+permissions:
+  contents: read
 
 jobs:
   build-modules:
@@ -20,14 +30,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Only local git commands run later; don't leave the token on disk.
+          persist-credentials: false
 
       # JDK 21 is required by the litertlm/examples module toolchains (the
       # upstream litert-lm artifacts are compiled for Java 21). The matrix JDK
       # is used for the rest of the project; the last version listed becomes
       # JAVA_HOME, so Gradle starts up on the matrix JDK.
       - name: Set up JDK 21 and JDK ${{ matrix.java-version }}
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: |
@@ -37,28 +50,23 @@ jobs:
       # The `com.android.library` subprojects need an SDK to resolve
       # compileSdk / minSdk. Installed explicitly to pin the components.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           # Keep these in sync with the values in build.gradle.kts
           # (androidCompileSdk / androidMinSdk).
           packages: "platforms;android-37.0 build-tools;37.0.0"
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v5
+      # `basic` (MIT) provider: one entry per build-file hash, for all JDKs.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ matrix.java-version }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-${{ matrix.java-version }}-
-            ${{ runner.os }}-gradle-
+          cache-provider: basic
+          # Only the JDK 17 leg on `main` saves the cache: it also runs Dokka.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' || matrix.java-version != '17' }}
 
       - name: Build and test (Java ${{ matrix.java-version }})
-        # `gradle.properties` is tuned for local/corp dev machines and sets
-        # heap sizes (Xmx16g for Gradle, Xmx32g for the Kotlin daemon) that
-        # exceed the ~16 GB available on GitHub-hosted `ubuntu-latest` runners.
-        # We override them here so CI does not OOM at daemon startup.
+        # GRADLE_OPTS sizes only the Gradle client JVM, not the build daemon.
+        # --no-build-cache: secret-bearing outputs must stay out of the cache.
         env:
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
@@ -69,7 +77,7 @@ jobs:
         run: |
           ./gradlew \
             -PjdkVersion=${{ matrix.java-version }} \
-            -Pkotlin.daemon.jvmargs="-Xmx4g" \
+            --no-build-cache \
             --no-daemon \
             --stacktrace \
             build
@@ -79,16 +87,17 @@ jobs:
         # invocation from `build` so the two never run concurrently, capping
         # peak memory at max(build, dokka) on the runner. Docs output is
         # JDK-independent, so generate once. Keep the pinned JDK below in sync
-        # with the matrix's lowest entry (line 19) so the step keeps running if
-        # the matrix changes. No FIREBASE_* env: dokkaGenerate reads none of it
-        # (the Firebase config is only consumed by tests and by assemble/install).
+        # with the matrix's lowest entry and with `cache-read-only` above, so
+        # the step keeps running if the matrix changes. No FIREBASE_* env:
+        # dokkaGenerate reads none of it (the Firebase config is only consumed
+        # by tests and by assemble/install).
         if: matrix.java-version == '17'
         env:
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
         run: |
           ./gradlew \
             -PjdkVersion=${{ matrix.java-version }} \
-            -Pkotlin.daemon.jvmargs="-Xmx4g" \
+            --no-build-cache \
             --no-daemon \
             --stacktrace \
             dokkaGenerate
