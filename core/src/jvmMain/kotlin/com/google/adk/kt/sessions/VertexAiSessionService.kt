@@ -194,11 +194,17 @@ internal constructor(
   }
 
   override suspend fun appendEvent(session: Session, event: Event): Event {
+    // Partial (streaming) events are superseded by the final aggregated event, so skip them.
+    if (event.partial) return event
+
     val sessionId = requireNotNull(session.key.id) { "Session.key.id is required for appendEvent." }
     validateSessionId(sessionId)
-    val appended = super.appendEvent(session, event)
-    client.appendEvent(engine, sessionId, appended.toDto()).getOrThrow()
-    return appended
+    // "super last": apply `temp:` and strip the event's temp keys before the post, then
+    // persist non-temp state and append the event via super only after it succeeds (retry-safe).
+    session.state.applyTempDelta(event.actions.stateDelta)
+    event.actions.removeTempKeys()
+    client.appendEvent(engine, sessionId, event.toDto()).getOrThrow()
+    return super.appendEvent(session, event)
   }
 
   /**
