@@ -59,6 +59,16 @@ class InMemorySessionServiceTest {
   }
 
   @Test
+  fun createSession_duplicateExplicitId_throwsAndKeepsExistingSession(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionRejectsDuplicateId(InMemorySessionService())
+  }
+
+  @Test
+  fun createSession_sameIdDifferentUser_isAllowed(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionAllowsSameIdForDifferentUser(InMemorySessionService())
+  }
+
+  @Test
   fun createSession_idWithSurroundingWhitespace_isUsedVerbatim() = runTest {
     val sessionService = InMemorySessionService()
 

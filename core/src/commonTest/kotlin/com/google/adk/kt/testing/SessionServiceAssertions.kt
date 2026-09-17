@@ -19,10 +19,12 @@ package com.google.adk.kt.testing
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
 import com.google.common.truth.Truth.assertThat
+import kotlin.test.assertFailsWith
 
 /**
  * Shared, cross-backend assertions every [SessionService] implementation must satisfy, grouped in
@@ -229,6 +231,41 @@ object SessionServiceAssertions {
     assertThat(session.events).contains(event)
     assertThat(session.state["k"]).isEqualTo("v")
     assertThat(session.lastUpdateTime.toEpochMilliseconds()).isEqualTo(event.timestamp)
+  }
+
+  // --- createSession id conflicts (InMemory + Room only; not Vertex) ---
+
+  /**
+   * createSession rejects an id already taken for the same app and user, leaving the stored session
+   * intact. VertexAiSessionService is excluded: it surfaces the managed backend's own duplicate
+   * error rather than a [SessionException].
+   */
+  suspend fun createSessionRejectsDuplicateId(service: SessionService) {
+    val taken = SessionKey(APP_NAME, USER_ID, "taken-id")
+    val session = service.createSession(taken)
+    val unused = service.appendEvent(session, session.nextAgentEvent(mapOf("keep" to "v")))
+
+    val failure = assertFailsWith<SessionException> { service.createSession(taken) }
+
+    assertThat(failure).hasMessageThat().isEqualTo(SessionException.SESSION_ALREADY_EXISTS)
+    // The stored session is untouched: the rejected create neither replaced it nor dropped its
+    // event and state.
+    val stored = service.getSession(taken)
+    assertThat(stored).isNotNull()
+    assertThat(stored!!.state["keep"]).isEqualTo("v")
+    assertThat(service.listEvents(taken).events).hasSize(1)
+  }
+
+  /** The same id under a different user is a different session, so it is created, not rejected. */
+  suspend fun createSessionAllowsSameIdForDifferentUser(service: SessionService) {
+    val first = service.createSession(SessionKey(APP_NAME, "user-a", "shared-id"))
+
+    val second = service.createSession(SessionKey(APP_NAME, "user-b", "shared-id"))
+
+    assertThat(second.key.id).isEqualTo("shared-id")
+    assertThat(second.key.userId).isEqualTo("user-b")
+    // Creating the second must not have displaced the first.
+    assertThat(service.getSession(first.key)).isNotNull()
   }
 
   // --- app:/user: scoped state (InMemory + Room only; not Vertex) ---

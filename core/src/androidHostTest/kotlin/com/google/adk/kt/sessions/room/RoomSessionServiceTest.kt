@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.sessions.room
 
+import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -26,6 +27,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyModel
@@ -35,6 +37,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
+import kotlin.test.assertFailsWith
 import kotlin.time.Instant
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -116,6 +119,28 @@ class RoomSessionServiceTest {
   @Test
   fun createSession_withInitialState_retainsState(): Unit = runBlocking {
     SessionServiceAssertions.createSessionRetainsInitialState(service)
+  }
+
+  @Test
+  fun createSession_duplicateExplicitId_throwsAndKeepsExistingSession(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionRejectsDuplicateId(service)
+  }
+
+  @Test
+  fun createSession_sameIdDifferentUser_isAllowed(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionAllowsSameIdForDifferentUser(service)
+  }
+
+  @Test
+  fun createSession_duplicateExplicitId_keepsSqliteConstraintAsCause(): Unit = runBlocking {
+    // Backend-specific on top of the shared contract: the raw SQLite violation stays reachable for
+    // a debugger instead of being swallowed by the translation.
+    val taken = SessionKey("app-name", "user-id", "session-1")
+    val unused = service.createSession(taken)
+
+    val failure = assertFailsWith<SessionException> { service.createSession(taken) }
+
+    assertThat(failure).hasCauseThat().isInstanceOf(SQLiteConstraintException::class.java)
   }
 
   @Test

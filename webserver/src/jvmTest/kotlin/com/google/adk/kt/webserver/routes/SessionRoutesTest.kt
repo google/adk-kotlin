@@ -18,8 +18,10 @@ package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.ListSessionsResponse
 import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
@@ -42,7 +44,7 @@ import org.junit.runners.JUnit4
 @RunWith(JUnit4::class)
 class SessionRoutesTest {
 
-  class FakeSessionService : SessionService {
+  open class FakeSessionService : SessionService {
     val createdSessions = mutableListOf<Session>()
     val deletedSessions = mutableSetOf<String>()
 
@@ -81,6 +83,12 @@ class SessionRoutesTest {
     ): com.google.adk.kt.sessions.ListEventsResponse = TODO()
   }
 
+  /** A service whose [createSession] always fails with [failure]. */
+  class FailingSessionService(private val failure: SessionException) : FakeSessionService() {
+    override suspend fun createSession(key: SessionKey, state: Map<String, Any>?): Session =
+      throw failure
+  }
+
   @Test
   fun listSessions_empty_returnsEmptyList() = testApplication {
     val fakeService = FakeSessionService()
@@ -110,6 +118,39 @@ class SessionRoutesTest {
     val createdSession = fakeService.createdSessions.first()
     assertThat(createdSession.key.appName).isEqualTo("testApp")
     assertThat(createdSession.key.userId).isEqualTo("testUser")
+  }
+
+  @Test
+  fun createSessionWithId_duplicateId_returnsConflict() = testApplication {
+    // Uses the real service: the conflict is the one InMemorySessionService raises, not a fake's.
+    val sessionService = InMemorySessionService()
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { sessionRoutes(sessionService) }
+    }
+
+    val first = client.post("/apps/testApp/users/testUser/sessions/test-session")
+    val second = client.post("/apps/testApp/users/testUser/sessions/test-session")
+
+    assertThat(first.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(second.status).isEqualTo(HttpStatusCode.Conflict)
+  }
+
+  @Test
+  fun createSessionWithId_unrelatedSessionFailure_isNotConflict() = testApplication {
+    // Only a taken id is a conflict; any other SessionException must reach the caller instead.
+    val failure = SessionException("Session storage unavailable")
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { sessionRoutes(FailingSessionService(failure)) }
+    }
+
+    val outcome = runCatching { client.post("/apps/testApp/users/testUser/sessions/test-session") }
+
+    // No StatusPages is installed, so it surfaces as a throw, and coroutine stack-trace recovery
+    // re-wraps it, so match on type and message rather than on identity.
+    assertThat(outcome.exceptionOrNull()).isInstanceOf(SessionException::class.java)
+    assertThat(outcome.exceptionOrNull()).hasMessageThat().isEqualTo(failure.message)
   }
 
   @Test
