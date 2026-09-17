@@ -24,6 +24,7 @@ import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
@@ -440,6 +441,15 @@ class FunctionToolProcessorTest {
 
     assertThat(tools).hasSize(2)
     assertThat(tools.map { it.name }).containsExactly("myMethod", "anotherMethod")
+  }
+
+  @Test
+  fun classMethodTool_recordsSourceClassAndMethodInCustomMetadata() {
+    val tool = MyAwesomeService().generatedTools().first { it.name == "myMethod" }
+
+    assertThat(tool.customMetadata[FunctionTool.SOURCE_CLASS_METADATA_KEY])
+      .isEqualTo(MyAwesomeService::class.java.name)
+    assertThat(tool.customMetadata[FunctionTool.SOURCE_METHOD_METADATA_KEY]).isEqualTo("myMethod")
   }
 
   @Test

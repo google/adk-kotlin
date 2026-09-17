@@ -23,6 +23,7 @@ import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.testing.testToolContext
+import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Type
 import kotlin.test.Test
@@ -104,6 +105,11 @@ class Fixture {
 
   fun overloaded(a: Int): String = a.toString()
 
+  @Tool(description = "The annotated overload.")
+  fun annotatedOverload(@Param(name = "text") text: String): String = "text:$text"
+
+  fun annotatedOverload(count: Int): String = "count:$count"
+
   fun notATool(): String = ""
 }
 
@@ -124,6 +130,19 @@ class ReflectiveToolsTest {
     val tool = ReflectiveTools.fromMethod(fixture, "addNumbers")
 
     assertEquals("addNumbers", tool.name)
+  }
+
+  @Test
+  fun fromMethod_recordsSourceClassAndMethodInCustomMetadata() {
+    val tool = ReflectiveTools.fromMethod(fixture, "currentTime")
+
+    // The recorded class + method names let a metadata consumer re-resolve the method and read its
+    // annotations, the way a FunctionTool consumer reads them off func().
+    assertEquals(
+      Fixture::class.java.name,
+      tool.customMetadata[FunctionTool.SOURCE_CLASS_METADATA_KEY],
+    )
+    assertEquals("currentTime", tool.customMetadata[FunctionTool.SOURCE_METHOD_METADATA_KEY])
   }
 
   @Test
@@ -288,8 +307,18 @@ class ReflectiveToolsTest {
   }
 
   @Test
-  fun fromMethod_overloadedMethod_fails() {
+  fun fromMethod_overloadedMethodWithoutTool_fails() {
+    // Overloads with no @Tool at all cannot be resolved to a single tool method.
     assertFailsWith<IllegalArgumentException> { ReflectiveTools.fromMethod(fixture, "overloaded") }
+  }
+
+  @Test
+  fun fromMethod_overloadWithSingleAnnotatedOverload_resolvesAnnotatedOne() {
+    // Overloaded names are allowed as long as exactly one overload carries @Tool.
+    val tool = ReflectiveTools.fromMethod(fixture, "annotatedOverload")
+
+    assertEquals("annotatedOverload", tool.name)
+    assertEquals("annotatedOverload", tool.customMetadata[FunctionTool.SOURCE_METHOD_METADATA_KEY])
   }
 
   @Test

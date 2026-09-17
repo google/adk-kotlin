@@ -109,6 +109,17 @@ abstract class FunctionTool(
 
   companion object {
     /**
+     * A `customMetadata` key holding the binary name of the class a tool was generated or built
+     * from, paired with [SOURCE_METHOD_METADATA_KEY]. Both the KSP `@Tool` processor and
+     * `ReflectiveTools` record it, so a metadata consumer can resolve the source method and read
+     * its annotations.
+     */
+    const val SOURCE_CLASS_METADATA_KEY = "adk_tool_source_class"
+
+    /** A `customMetadata` key holding the name of the method a tool was generated or built from. */
+    const val SOURCE_METHOD_METADATA_KEY = "adk_tool_source_method"
+
+    /**
      * A standard note appended to the description of long-running tools. This signals to the
      * generation engine that the tool will yield a pending state.
      */

@@ -23,6 +23,7 @@ import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
@@ -42,21 +43,24 @@ import java.util.concurrent.CompletableFuture
 @AdkJavaInteropApi
 object ReflectiveTools {
 
-  /** Builds a [BaseTool] from the uniquely-named [Tool] method [methodName] on [instance]. */
+  /** Builds a [BaseTool] from the [Tool]-annotated method named [methodName] on [instance]. */
   @JvmStatic
   fun fromMethod(instance: Any, methodName: String): BaseTool {
     // Skip compiler-generated bridge/synthetic overloads so covariant returns don't look
     // overloaded.
-    val candidates =
+    val named =
       instance.javaClass.methods.filter { it.name == methodName && !it.isSynthetic && !it.isBridge }
-    require(candidates.isNotEmpty()) {
-      "No method named '$methodName' on ${instance.javaClass.name}."
+    require(named.isNotEmpty()) { "No method named '$methodName' on ${instance.javaClass.name}." }
+    // Overloaded names are allowed as long as exactly one overload carries @Tool; select it.
+    val annotated = named.filter { it.isAnnotationPresent(Tool::class.java) }
+    require(annotated.isNotEmpty()) {
+      "No @Tool-annotated method named '$methodName' on ${instance.javaClass.name}."
     }
-    require(candidates.size == 1) {
-      "Method '$methodName' on ${instance.javaClass.name} is overloaded; tool methods must be" +
-        " unambiguous."
+    require(annotated.size == 1) {
+      "Method '$methodName' on ${instance.javaClass.name} has multiple @Tool overloads; a tool" +
+        " method's name must be unambiguous."
     }
-    return fromMethod(instance, candidates.single())
+    return fromMethod(instance, annotated.single())
   }
 
   /** Builds a [BaseTool] from an explicit [method] on [instance]. */
@@ -74,6 +78,19 @@ object ReflectiveTools {
       "ReflectiveTools builds plain tools only; @Tool.isLongRunning and requireConfirmation on" +
         " ${method.name} are not supported here."
     }
+    // A metadata consumer re-resolves the recorded method by name and picks the @Tool-annotated
+    // overload, so exactly one overload sharing this name may carry @Tool.
+    require(
+      instance.javaClass.methods.count {
+        it.name == method.name &&
+          !it.isSynthetic &&
+          !it.isBridge &&
+          it.isAnnotationPresent(Tool::class.java)
+      } == 1
+    ) {
+      "Method '${method.name}' on ${instance.javaClass.name} must be the sole @Tool-annotated" +
+        " overload of its name so a metadata consumer can re-resolve it."
+    }
     val name = annotation.name.ifEmpty { method.name }
     return ReflectiveTool(instance, method, name, annotation.description)
   }
@@ -85,7 +102,16 @@ object ReflectiveTools {
     private val method: Method,
     name: String,
     description: String,
-  ) : BaseFutureTool(name, description) {
+  ) :
+    BaseFutureTool(
+      name,
+      description,
+      customMetadata =
+        mapOf(
+          FunctionTool.SOURCE_CLASS_METADATA_KEY to instance.javaClass.name,
+          FunctionTool.SOURCE_METHOD_METADATA_KEY to method.name,
+        ),
+    ) {
 
     private val contextIndex: Int =
       method.parameterTypes.indexOfFirst { ToolContext::class.java.isAssignableFrom(it) }
