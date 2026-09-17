@@ -353,6 +353,14 @@ class LlmAgentTest {
     assertNotNull(systemInstruction)
     assertEquals("Static Instruction", systemInstruction!!.parts.firstOrNull()?.text)
 
+    // 2b. Verifies IdentityProcessor has run, appending the framework identity after the
+    // instruction.
+    assertTrue(
+      systemInstruction.parts.any {
+        it.text?.contains("You are an agent. Your internal name is \"test-agent\".") == true
+      }
+    )
+
     // 3. Verifies ContentsProcessor has run
     assertEquals(1, req.contents.size)
     assertEquals("Hello", req.contents.first().parts.firstOrNull()?.text)

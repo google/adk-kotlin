@@ -34,6 +34,7 @@ import com.google.adk.kt.processors.BasicRequestProcessor
 import com.google.adk.kt.processors.CompactionRequestProcessor
 import com.google.adk.kt.processors.ContentsProcessor
 import com.google.adk.kt.processors.ContextCacheRequestProcessor
+import com.google.adk.kt.processors.IdentityProcessor
 import com.google.adk.kt.processors.InstructionsProcessor
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
@@ -192,6 +193,7 @@ class LlmAgent(
       BasicRequestProcessor(),
       RequestConfirmationProcessor(),
       InstructionsProcessor(),
+      IdentityProcessor(),
       // Compaction should run before contents so compacted events are reflected in the model
       // request context.
       CompactionRequestProcessor(),

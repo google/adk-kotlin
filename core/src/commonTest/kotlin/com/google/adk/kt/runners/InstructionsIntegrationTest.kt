@@ -86,7 +86,12 @@ class InstructionsIntegrationTest {
 
     runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
 
-    assertEquals("User role=admin, tier=gold.", capturedSystemInstruction)
+    // Pin the full composed system instruction: the resolved instruction followed by the
+    // framework identity that IdentityProcessor appends.
+    assertEquals(
+      "User role=admin, tier=gold. \n\nYou are an agent. Your internal name is \"agent\".",
+      capturedSystemInstruction,
+    )
   }
 
   /**
@@ -129,7 +134,11 @@ class InstructionsIntegrationTest {
     runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("second")).toList()
 
     assertEquals(2, providerInvocations)
-    assertEquals(listOf("turn-1", "turn-2"), capturedInstructions)
+    // Each captured system instruction has the agent identity appended after the per-turn
+    // instruction (identity is covered by IdentityProcessorTest).
+    assertEquals(2, capturedInstructions.size)
+    assertTrue(capturedInstructions[0].startsWith("turn-1"))
+    assertTrue(capturedInstructions[1].startsWith("turn-2"))
   }
 
   /**
@@ -168,7 +177,9 @@ class InstructionsIntegrationTest {
 
       runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
 
-      assertEquals("static-instruction", capturedSystemText)
+      // IdentityProcessor appends the agent identity to the system channel after the static
+      // instruction (identity is covered by IdentityProcessorTest).
+      assertTrue(capturedSystemText.startsWith("static-instruction"))
       assertNotNull(capturedDynamicTextInContents)
       assertTrue(capturedDynamicTextInContents!!.contains("dynamic-instruction"))
     }
