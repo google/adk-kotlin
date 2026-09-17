@@ -19,11 +19,17 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.models.SessionDto
+import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -33,18 +39,19 @@ import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
 /**
- * Covers the wire rules the agent runtime contract puts on every endpoint: read `snake_case` or
- * `camelCase`, ignore unrecognized keys, and write `camelCase` without null fields.
+ * Covers the wire rules the agent runtime contract puts on every endpoint, against real responses:
+ * read `snake_case` or `camelCase`, ignore unrecognized keys, and emit `camelCase` without null
+ * fields.
  */
 @RunWith(JUnit4::class)
 class WireContractTest {
@@ -143,45 +150,6 @@ class WireContractTest {
   }
 
   @Test
-  fun run_response_emitsCamelCaseWithoutNulls() = testApplication {
-    application { adkApiModule(testConfig()) }
-
-    val body = client.post("/run") { jsonBody(camelCaseRun) }.bodyAsText()
-
-    assertThat(body).contains("\"turnComplete\":true")
-    assertThat(keysOf(body)).contains("invocationId")
-    assertThat(keysOf(body).filter { it.contains('_') }).isEmpty()
-    assertThat(nullValuedKeysOf(body)).isEmpty()
-  }
-
-  @Test
-  fun runSse_frames_emitCamelCaseWithoutNulls() = testApplication {
-    application { adkApiModule(testConfig()) }
-
-    // The stream is encoded outside content negotiation, so it needs its own assertion.
-    val body =
-      client
-        .post("/run_sse") {
-          jsonBody(camelCaseRun.replace("\"sessionId\"", "\"streaming\": true, \"sessionId\""))
-        }
-        .bodyAsText()
-
-    assertThat(body).contains("data: ")
-    val frames =
-      body
-        .lineSequence()
-        .filter { it.startsWith("data: ") }
-        .map { it.removePrefix("data: ") }
-        .toList()
-    assertThat(frames).isNotEmpty()
-    for (frame in frames) {
-      assertThat(keysOf(frame)).contains("turnComplete")
-      assertThat(keysOf(frame).filter { it.contains('_') }).isEmpty()
-      assertThat(nullValuedKeysOf(frame)).isEmpty()
-    }
-  }
-
-  @Test
   fun run_malformedBody_isRejected() = testApplication {
     application { adkApiModule(testConfig()) }
 
@@ -190,38 +158,166 @@ class WireContractTest {
     assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
   }
 
+  @Test
+  fun version_byDefault_emitsThePreContractSpellingOnly() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.get("/version")
+    val body = response.bodyAsText()
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    // Exactly one spelling: a strict decoder rejects a key it does not model, so emitting both
+    // would break any client that models only one of them.
+    assertThat((Json.parseToJsonElement(body) as JsonObject).keys)
+      .containsExactly("version", "language", LEGACY_VERSION_KEY)
+    assertEmissionRule(body, VersionInfo.serializer().descriptor, "VersionInfo", minKeys = 3)
+  }
+
+  @Test
+  fun version_whenCamelCaseEnforced_emitsTheContractSpellingOnly() = testApplication {
+    application { adkApiModule(testConfig().copy(camelCaseEnforced = true)) }
+
+    val response = client.get("/version")
+    val body = response.bodyAsText()
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat((Json.parseToJsonElement(body) as JsonObject).keys)
+      .containsExactly("version", "language", "languageVersion")
+    assertEmissionRule(body, VersionInfo.serializer().descriptor, "VersionInfo", minKeys = 3)
+  }
+
+  @Test
+  fun version_theProperty_overridesAnExplicitSetting() = testApplication {
+    // Deliberately beats the config, as it does for the Development UI: when the default moves, a
+    // deployment whose code pins the wrong value needs a lever that needs no rebuild.
+    withProperty(CAMEL_CASE_ENFORCED_PROPERTY, "true") {
+      application { adkApiModule(testConfig().copy(camelCaseEnforced = false)) }
+
+      val body = client.get("/version").bodyAsText()
+
+      assertThat((Json.parseToJsonElement(body) as JsonObject).keys).contains("languageVersion")
+      assertThat((Json.parseToJsonElement(body) as JsonObject).keys)
+        .doesNotContain(LEGACY_VERSION_KEY)
+    }
+  }
+
+  @Test
+  fun health_emitsOk() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.get("/health")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat((Json.parseToJsonElement(response.bodyAsText()) as JsonObject).keys)
+      .containsExactly("status")
+  }
+
+  @Test
+  fun listApps_emitsAStringArray() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.get("/list-apps")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(Json.parseToJsonElement(response.bodyAsText())).isInstanceOf(JsonArray::class.java)
+  }
+
+  @Test
+  fun createSession_emitsCamelCaseWithoutNulls() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/apps/echo-agent/users/u/sessions")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertEmissionRule(
+      response.bodyAsText(),
+      SessionDto.serializer().descriptor,
+      "SessionDto",
+      minKeys = 4,
+    )
+  }
+
+  @Test
+  fun uploadArtifact_emitsCamelCaseWithoutNulls() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/apps/a/users/u/sessions/s/artifacts") {
+        jsonBody("""{"inlineData":{"mimeType":"image/png","displayName":"chart.png"}}""")
+      }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertEmissionRule(response.bodyAsText(), Part.serializer().descriptor, "Part", minKeys = 3)
+  }
+
+  @Test
+  fun run_emitsCamelCaseWithoutNulls() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody(camelCaseRun) }
+    val body = response.bodyAsText()
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(body).contains("\"turnComplete\":true")
+    assertThat(body).contains("\"invocationId\"")
+    assertEmissionRule(body, EVENT_LIST_DESCRIPTOR, "Event", minKeys = 8)
+  }
+
+  @Test
+  fun runSse_framesEmitCamelCaseWithoutNulls() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    // The stream is encoded outside content negotiation, so it needs its own assertion.
+    val response =
+      client.post("/run_sse") {
+        jsonBody(camelCaseRun.replace("\"sessionId\"", "\"streaming\": true, \"sessionId\""))
+      }
+    val body = response.bodyAsText()
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    val frames =
+      body
+        .lineSequence()
+        .filter { it.startsWith(SSE_PREFIX) }
+        .map { it.removePrefix(SSE_PREFIX) }
+        .toList()
+    assertThat(frames).isNotEmpty()
+    for (frame in frames) {
+      assertThat(frame).contains("\"turnComplete\":true")
+      assertEmissionRule(frame, Event.serializer().descriptor, "Event", minKeys = 8)
+    }
+  }
+
+  @Test
+  fun run_callerDataKeepsItsOwnSpelling() = testApplication {
+    application { adkApiModule(testConfig(agentLoader = CallerDataAgentLoader())) }
+
+    val response =
+      client.post("/run") { jsonBody(camelCaseRun.replace("echo-agent", "mock-agent")) }
+    val body = response.bodyAsText()
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(body).contains("\"agent_name\":\"other-agent\"")
+    assertThat(body).contains("\"report_v2.txt\":1")
+    assertThat(body).contains("\"user_tier\":\"gold\"")
+    assertThat(body).contains("\"detail\":null")
+    assertEmissionRule(body, EVENT_LIST_DESCRIPTOR, "Event", minKeys = 8)
+  }
+
+  /** Runs [body] with a system property set, restoring whatever was there before. */
+  private inline fun withProperty(name: String, value: String, body: () -> Unit) {
+    val previous: String? = System.getProperty(name)
+    System.setProperty(name, value)
+    try {
+      body()
+    } finally {
+      if (previous == null) System.clearProperty(name) else System.setProperty(name, previous)
+    }
+  }
+
   private fun io.ktor.client.request.HttpRequestBuilder.jsonBody(body: String) {
     contentType(ContentType.Application.Json)
     setBody(body)
-  }
-
-  /** Returns every object key in [body], at any depth, so a key rule is checked on keys alone. */
-  private fun keysOf(body: String): List<String> = buildList {
-    fun walk(element: JsonElement) {
-      when (element) {
-        is JsonObject ->
-          element.forEach { (key, value) ->
-            add(key)
-            walk(value)
-          }
-        is JsonArray -> element.forEach(::walk)
-        else -> {}
-      }
-    }
-    walk(Json.parseToJsonElement(body))
-  }
-
-  /** Returns the keys in [body] whose value is JSON `null`, at any depth. */
-  private fun nullValuedKeysOf(body: String): List<String> = buildList {
-    fun walk(element: JsonElement) {
-      when (element) {
-        is JsonObject ->
-          element.forEach { (key, value) -> if (value is JsonNull) add(key) else walk(value) }
-        is JsonArray -> element.forEach(::walk)
-        else -> {}
-      }
-    }
-    walk(Json.parseToJsonElement(body))
   }
 
   /** Blanks the event id and timestamp, which differ between two runs of the same request. */
@@ -231,13 +327,19 @@ class WireContractTest {
       .replace(Regex("\"invocationId\":\"[^\"]*\""), "\"invocationId\":\"\"")
       .replace(Regex("\"timestamp\":[0-9]+"), "\"timestamp\":0")
 
-  private fun testConfig() =
+  private fun testConfig(agentLoader: AgentLoader = this.agentLoader) =
     AdkServerConfig(
       agentLoader = agentLoader,
       sessionService = sessionService,
       artifactService = artifactService,
       apiServerSpanExporter = ApiServerSpanExporter(),
     )
+
+  private companion object {
+    const val SSE_PREFIX = "data: "
+
+    val EVENT_LIST_DESCRIPTOR: SerialDescriptor = ListSerializer(Event.serializer()).descriptor
+  }
 }
 
 /**
@@ -275,4 +377,48 @@ private class EchoAgentLoader : AgentLoader {
   override fun listAgents() = listOf("echo-agent")
 
   override fun loadAgent(agentName: String) = if (agentName == "echo-agent") EchoAgent() else null
+}
+
+/** Emits one event whose free-form maps hold the spellings and nulls the rule does not govern. */
+private class CallerDataAgent : BaseAgent(name = "mock-agent", description = "Caller data agent") {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+    emit(
+      Event(
+        invocationId = context.invocationId,
+        author = "mock-agent",
+        content =
+          Content(
+            role = "model",
+            parts =
+              listOf(
+                // The built-in transfer tool declares its parameter as `agent_name`.
+                Part(
+                  functionCall =
+                    FunctionCall(
+                      name = "transfer_to_agent",
+                      args = mapOf("agent_name" to "other-agent"),
+                    )
+                ),
+                Part(
+                  functionResponse =
+                    FunctionResponse(name = "transfer_to_agent", response = mapOf("detail" to null))
+                ),
+              ),
+          ),
+        actions =
+          EventActions(
+            stateDelta = mutableMapOf<String, Any>("user_tier" to "gold"),
+            artifactDelta = mutableMapOf("report_v2.txt" to 1),
+          ),
+        turnComplete = true,
+      )
+    )
+  }
+}
+
+private class CallerDataAgentLoader : AgentLoader {
+  override fun listAgents() = listOf("mock-agent")
+
+  override fun loadAgent(agentName: String) =
+    if (agentName == "mock-agent") CallerDataAgent() else null
 }
