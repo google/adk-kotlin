@@ -58,7 +58,10 @@ interface ReadonlyContext {
    * Returns the events from the current session.
    *
    * @param currentInvocation Whether to filter the events by the current invocation.
-   * @param currentBranch Whether to filter the events by the current branch.
+   * @param currentBranch Whether to filter the events by the current branch. The rule is
+   *   author-asymmetric: a user event matches this branch, a descendant sub-branch, or no branch,
+   *   and one carrying function responses must also answer a call issued on this branch or below,
+   *   while every other event must sit on exactly this branch.
    * @return A list of events from the current session.
    */
   suspend fun getEvents(
