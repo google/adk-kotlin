@@ -721,6 +721,57 @@ class VertexAiSessionServiceTest {
   }
 
   @Test
+  fun appendEvent_appAndUserScopedKeys_roundTripWithinSession(): Unit = runBlocking {
+    val client = FakeVertexAiSessionsClient()
+    val session = service(client).createSession(SessionKey("123", "user", id = null))
+    val unused =
+      service(client)
+        .appendEvent(
+          session,
+          Event(
+            author = "agent",
+            timestamp = 1000L,
+            actions =
+              EventActions(
+                stateDelta = mutableMapOf<String, Any>("app:shared" to "v", "user:pref" to "w")
+              ),
+          ),
+        )
+
+    // Vertex has no app:/user: scope, so these persist as plain session state and round-trip.
+    val reloaded = service(client).getSession(session.key)
+    assertThat(reloaded).isNotNull()
+    assertThat(reloaded!!.state["app:shared"]).isEqualTo("v")
+    assertThat(reloaded.state["user:pref"]).isEqualTo("w")
+  }
+
+  @Test
+  fun appendEvent_appAndUserScopedKeys_notSharedAcrossSessions(): Unit = runBlocking {
+    val client = FakeVertexAiSessionsClient()
+    val writer = service(client).createSession(SessionKey("123", "user", id = null))
+    val unused =
+      service(client)
+        .appendEvent(
+          writer,
+          Event(
+            author = "agent",
+            timestamp = 1000L,
+            actions =
+              EventActions(
+                stateDelta = mutableMapOf<String, Any>("app:shared" to "v", "user:pref" to "w")
+              ),
+          ),
+        )
+
+    // Vertex has no app:/user: scope, so unlike InMemory/Room they are not shared across sessions.
+    val other = service(client).createSession(SessionKey("123", "user", id = null))
+    val reloaded = service(client).getSession(other.key)
+    assertThat(reloaded).isNotNull()
+    assertThat(reloaded!!.state.containsKey("app:shared")).isFalse()
+    assertThat(reloaded.state.containsKey("user:pref")).isFalse()
+  }
+
+  @Test
   fun appendEvent_nonPartial_writesThroughAndUpdatesSession() = runTest {
     val client =
       mock<VertexAiSessionsClient> {
