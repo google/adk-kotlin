@@ -168,8 +168,6 @@ kotlin {
         implementation(libs.google.truth)
         implementation(libs.kotlinx.coroutines.test)
         implementation(libs.mockito.android)
-        // The real dependency here (not compileOnly) so the on-device e2e test can run.
-        implementation(libs.androidx.appfunctions)
       }
     }
   }
@@ -222,12 +220,6 @@ dependencies {
   add("kspJvmTest", project(":google-adk-kotlin-processor"))
   add("kspAndroidHostTest", project(":google-adk-kotlin-processor"))
 }
-
-// The AppFunctions KSP compiler runs only on the Android device-test compilation; the main code
-// consumes app functions rather than declaring them.
-// Aggregation is deliberately off. Only the `.v2` asset is generated, so these cases need a device
-// whose platform indexer reads `.v2` (API 37 or newer).
-dependencies { add("kspAndroidDeviceTest", libs.androidx.appfunctions.compiler) }
 
 // Room's annotation processor runs via KSP. Wire it only against the Android target since the
 // Room runtime is androidMain-only.
