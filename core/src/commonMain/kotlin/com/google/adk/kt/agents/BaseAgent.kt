@@ -14,8 +14,12 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
+
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -28,6 +32,7 @@ import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.trace
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.BaseNode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.emitAll
@@ -58,14 +63,14 @@ import kotlinx.coroutines.flow.flow
  *   one-shot utility agents. Violations are surfaced by the runner as `IllegalArgumentException`.
  */
 abstract class BaseAgent(
-  val name: String,
-  open val description: String = "",
+  name: String,
+  description: String = "",
   val subAgents: List<BaseAgent> = emptyList(),
   val beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList(),
   val afterAgentCallbacks: List<AfterAgentCallback> = emptyList(),
   val disallowTransferToParent: Boolean = false,
   val disallowTransferToPeers: Boolean = false,
-) {
+) : BaseNode(name = name, description = description) {
   /** Parent agent, set when this agent is added to another agent's subAgents list. */
   internal var parentAgent: BaseAgent? = null
 
@@ -272,6 +277,14 @@ abstract class BaseAgent(
       )
     emit(endStateEvent)
   }
+
+  /**
+   * Runs this agent as a graph node by driving its [runAsync] lifecycle, so an agent placed in a
+   * workflow graph executes exactly as it would under a runner. Its events are forwarded as the
+   * node's output; the node runner stamps each event's path and author.
+   */
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> =
+    runAsync(context.invocationContext)
 
   /** Abstract method for agent-specific asynchronous logic. */
   protected abstract fun runAsyncImpl(context: InvocationContext): Flow<Event>
