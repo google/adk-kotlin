@@ -72,3 +72,16 @@ adk-python for validation.
 ### KDocs
 
 We want our KDocs to be concise and meaningful.
+
+## Agent skills
+
+Instructions for coding agents live in [AGENTS.md](AGENTS.md), which points at
+the skills under `.agents/skills/`. Keep them in step with the code: a change
+to the runner, the KSP processor, or the build setup usually needs a matching
+edit to the skill that documents it.
+
+How each tool loads them:
+
+-   **Gemini CLI** reads `AGENTS.md` via `.gemini/settings.json`.
+-   **Anything else** should be pointed at `AGENTS.md` and `.agents/skills/`
+    directly rather than given a duplicate copy of the content.
