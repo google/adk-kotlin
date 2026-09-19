@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.2.0](https://github.com/google/adk-kotlin/compare/v1.1.0...v1.2.0) (2026-09-19)
+
+
+### Features
+
+* accept snake_case and camelCase in web server request bodies ([94dcdd1](https://github.com/google/adk-kotlin/commit/94dcdd1353028b5a95aaf05dcbaafe9002cd7dd4))
+* add a client-side Vertex AI RAG retrieval tool ([2ac2835](https://github.com/google/adk-kotlin/commit/2ac2835c40da3e611d65b70e7273638bfd74af68))
+* add an identity processor that tells the model the agent's name ([894e56f](https://github.com/google/adk-kotlin/commit/894e56f7c6d532f88b8ea02ef0810b781431166a))
+* expose MCP tool annotations as an SDK-agnostic data class ([e0b109a](https://github.com/google/adk-kotlin/commit/e0b109a273fa138f1bfb7ae3c19479c9089c4d1d))
+* introduce experimental workflow event seams ([183a212](https://github.com/google/adk-kotlin/commit/183a2128243ad3b336dedb07629ee5786020ed83))
+* introduce the experimental Node and BaseNode workflow abstractions ([146b779](https://github.com/google/adk-kotlin/commit/146b779ddf5679771c6e68d1c2cd26441b3f6857))
+* record a @Tool's source class and method in its generated metadata ([ce6bc85](https://github.com/google/adk-kotlin/commit/ce6bc85a7eaf49c026521d0ec6546d1b66ebd8c2))
+
+
+### Bug Fixes
+
+* align getEvents(currentBranch) with the reference branch-scoping rule ([1f83223](https://github.com/google/adk-kotlin/commit/1f83223c73937a412804f94d98a7b3dcc988f8f1))
+* apply temp-prefixed session state to the live session without persisting it ([254d05b](https://github.com/google/adk-kotlin/commit/254d05b98e5763a9ed16497753dc558ae4c5425f))
+* apply Vertex session state only after the remote append succeeds ([1bc97e4](https://github.com/google/adk-kotlin/commit/1bc97e46ed1bf639c8e7e76466415cd9aeb5f6ca))
+* **sessions:** reject a duplicate session id instead of overwriting the session ([22b0584](https://github.com/google/adk-kotlin/commit/22b058429db005aa18fc4bd69d9d5211f07474ae))
+* skip persisting partial events in InMemorySessionService ([a613325](https://github.com/google/adk-kotlin/commit/a613325056cd8d51ff769082e1c7c06b5d71a1cd))
+
 ## [1.1.0](https://github.com/google/adk-kotlin/compare/v1.0.0...v1.1.0) (2026-09-14)
 
 
