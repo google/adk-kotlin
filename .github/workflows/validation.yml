@@ -74,5 +74,24 @@ jobs:
             --stacktrace \
             build
 
+      - name: Generate API docs (Dokka)
+        # Validates that KDoc `[references]` resolve. Run as a separate Gradle
+        # invocation from `build` so the two never run concurrently, capping
+        # peak memory at max(build, dokka) on the runner. Docs output is
+        # JDK-independent, so generate once. Keep the pinned JDK below in sync
+        # with the matrix's lowest entry (line 19) so the step keeps running if
+        # the matrix changes. No FIREBASE_* env: dokkaGenerate reads none of it
+        # (the Firebase config is only consumed by tests and by assemble/install).
+        if: matrix.java-version == '17'
+        env:
+          GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
+        run: |
+          ./gradlew \
+            -PjdkVersion=${{ matrix.java-version }} \
+            -Pkotlin.daemon.jvmargs="-Xmx4g" \
+            --no-daemon \
+            --stacktrace \
+            dokkaGenerate
+
       - name: Detect wrongly formatted files
         run: git status && git diff --exit-code
