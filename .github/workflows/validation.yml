@@ -5,10 +5,20 @@ on:
   pull_request:
     branches:
       - main
+  # Also build on pushes to `main` (Copybara exports and merges). Only these
+  # runs write cache entries, and the default-branch cache scope is the ONLY
+  # scope a pull request is allowed to restore from, so without them every new
+  # PR starts from a cold Gradle cache.
+  # https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#restrictions-for-accessing-a-cache
+  push:
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on PR branches, but let `main` runs finish so
+  # post-merge verification and cache seeding are never aborted mid-run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build-modules:
@@ -43,22 +53,31 @@ jobs:
           # (androidCompileSdk / androidMinSdk).
           packages: "platforms;android-37.0 build-tools;37.0.0"
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v5
+      # Restore the Gradle caches: downloaded dependencies, wrapper
+      # distributions, and the local build cache (caches/build-cache-1). The key
+      # carries the commit SHA so each build writes a fresh entry (actions/cache
+      # never overwrites an existing key, which would otherwise freeze the build
+      # cache at its first-saved contents); restore-keys fall back to the most
+      # recent entry for this OS + JDK.
+      - name: Restore Gradle caches
+        id: gradle-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ matrix.java-version }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+          key: ${{ runner.os }}-gradle-${{ matrix.java-version }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-gradle-${{ matrix.java-version }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}-
             ${{ runner.os }}-gradle-${{ matrix.java-version }}-
             ${{ runner.os }}-gradle-
 
       - name: Build and test (Java ${{ matrix.java-version }})
-        # `gradle.properties` is tuned for local/corp dev machines and sets
-        # heap sizes (Xmx16g for Gradle, Xmx32g for the Kotlin daemon) that
-        # exceed the ~16 GB available on GitHub-hosted `ubuntu-latest` runners.
-        # We override them here so CI does not OOM at daemon startup.
+        # `gradle.properties` sets a 32 GB Gradle heap (`org.gradle.jvmargs`)
+        # tuned for corp dev machines, exceeding the ~16 GB available on
+        # GitHub-hosted `ubuntu-latest` runners; we override it via `GRADLE_OPTS`
+        # so CI does not OOM. Kotlin compiles in-process, so this one heap covers
+        # compilation too.
         env:
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
@@ -69,7 +88,7 @@ jobs:
         run: |
           ./gradlew \
             -PjdkVersion=${{ matrix.java-version }} \
-            -Pkotlin.daemon.jvmargs="-Xmx4g" \
+            --build-cache \
             --no-daemon \
             --stacktrace \
             build
@@ -95,3 +114,16 @@ jobs:
 
       - name: Detect wrongly formatted files
         run: git status && git diff --exit-code
+
+      # Only pushes to `main` write cache entries, so pull requests read the
+      # shared default-branch cache without filling the repository's 10 GB cache
+      # quota with per-PR entries (which would evict the shared entries). Runs
+      # last so only a fully green build seeds the cache.
+      - name: Save Gradle caches
+        if: github.ref == 'refs/heads/main' && steps.gradle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
