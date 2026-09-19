@@ -41,6 +41,13 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  *   variant, off for [AdkApiServer] and on for [AdkDevServer]. The `adk.web.ui.enabled` property
  *   overrides it either way, so that a deployment which cannot change code can still turn the UI
  *   off; the corollary is that an ambient property beats an explicit setting here.
+ * @property camelCaseEnforced Whether responses use the strict camelCase spelling. Off leaves every
+ *   response as it is today: `/version` emits `language_version` and the development trace
+ *   endpoints emit `span_id` and its siblings, which the Development UI reads under those names.
+ *   Every other response has always been camelCase either way. Null means unset, so the default can
+ *   move to true in a later release without overriding a deployment that pinned it;
+ *   `adk.wire.camelcase.enforced` overrides it either way, so a deployment that cannot change code
+ *   can still choose.
  */
 data class AdkServerConfig(
   val agentLoader: AgentLoader,
@@ -52,6 +59,7 @@ data class AdkServerConfig(
   val captureMessageContent: Boolean = false,
   val plugins: List<Plugin> = emptyList(),
   val webUiEnabled: Boolean? = null,
+  val camelCaseEnforced: Boolean? = null,
 ) {
   /**
    * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
@@ -69,6 +77,7 @@ data class AdkServerConfig(
     private var captureMessageContent: Boolean = false
     private var plugins: List<Plugin> = emptyList()
     private var webUiEnabled: Boolean? = null
+    private var camelCaseEnforced: Boolean? = null
 
     fun agentLoader(agentLoader: AgentLoader): Builder = apply { this.agentLoader = agentLoader }
 
@@ -96,6 +105,10 @@ data class AdkServerConfig(
 
     fun webUiEnabled(webUiEnabled: Boolean?): Builder = apply { this.webUiEnabled = webUiEnabled }
 
+    fun camelCaseEnforced(camelCaseEnforced: Boolean?): Builder = apply {
+      this.camelCaseEnforced = camelCaseEnforced
+    }
+
     fun build(): AdkServerConfig =
       AdkServerConfig(
         agentLoader = checkNotNull(agentLoader) { "agentLoader must be set." },
@@ -107,6 +120,7 @@ data class AdkServerConfig(
         captureMessageContent = captureMessageContent,
         plugins = plugins,
         webUiEnabled = webUiEnabled,
+        camelCaseEnforced = camelCaseEnforced,
       )
   }
 

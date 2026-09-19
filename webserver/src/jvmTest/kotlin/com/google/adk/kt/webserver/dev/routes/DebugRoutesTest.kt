@@ -19,6 +19,7 @@ package com.google.adk.kt.webserver.dev.routes
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
+import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -36,6 +37,54 @@ import org.junit.runners.JUnit4
 @RunWith(JUnit4::class)
 class DebugRoutesTest {
 
+  /** Drives the real SDK so the exporter holds a span the session endpoint will render. */
+  private fun exporterWithSpan(sessionId: String): ApiServerSpanExporter {
+    val exporter = ApiServerSpanExporter()
+    val provider = OpenTelemetryConfig(exporter).sdkTracerProvider()
+    val span =
+      provider
+        .get("test")
+        .spanBuilder("call_llm")
+        .setAttribute("gcp.vertex.agent.session_id", sessionId)
+        .startSpan()
+    span.end()
+    provider.forceFlush().join(5, java.util.concurrent.TimeUnit.SECONDS)
+    return exporter
+  }
+
+  @Test
+  fun getSessionTrace_byDefault_usesThePreContractSpelling() = testApplication {
+    val exporter = exporterWithSpan("s1")
+
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { debugRoutes(exporter) }
+    }
+
+    val body = client.get("/debug/trace/session/s1").bodyAsText()
+
+    // The bundled Development UI reads these names and has no camelCase fallback.
+    assertThat(body).contains("\"span_id\"")
+    assertThat(body).contains("\"parent_span_id\"")
+    assertThat(body).doesNotContain("\"spanId\"")
+  }
+
+  @Test
+  fun getSessionTrace_whenCamelCaseEnforced_usesTheContractSpelling() = testApplication {
+    val exporter = exporterWithSpan("s2")
+
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { debugRoutes(exporter, camelCase = true) }
+    }
+
+    val body = client.get("/debug/trace/session/s2").bodyAsText()
+
+    assertThat(body).contains("\"spanId\"")
+    assertThat(body).contains("\"parentSpanId\"")
+    assertThat(body).doesNotContain("\"span_id\"")
+  }
+
   @Test
   fun getTrace_existing_returnsData() = testApplication {
     val exporter = ApiServerSpanExporter()
@@ -50,6 +99,43 @@ class DebugRoutesTest {
 
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
     assertThat(response.bodyAsText()).contains("\"key\":\"value\"")
+  }
+
+  @Test
+  fun getTrace_whenCamelCaseEnforced_renamesOnlyTheKeysWeInject() = testApplication {
+    val exporter = ApiServerSpanExporter()
+    // The dotted key is an OpenTelemetry semantic convention and has no camelCase form; the other
+    // two this server injects itself, so only those follow the contract's spelling.
+    exporter.eventIdTraceStorage["e1"] =
+      mapOf("gcp.vertex.agent.event_id" to "e1", "trace_id" to "t", "span_id" to "s")
+
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { debugRoutes(exporter, camelCase = true) }
+    }
+
+    val body = client.get("/debug/trace/e1").bodyAsText()
+
+    assertThat(body).contains("\"traceId\"")
+    assertThat(body).contains("\"spanId\"")
+    assertThat(body).doesNotContain("\"trace_id\"")
+    assertThat(body).contains("\"gcp.vertex.agent.event_id\"")
+  }
+
+  @Test
+  fun getTrace_byDefault_leavesInjectedKeysAlone() = testApplication {
+    val exporter = ApiServerSpanExporter()
+    exporter.eventIdTraceStorage["e2"] = mapOf("trace_id" to "t", "span_id" to "s")
+
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { debugRoutes(exporter) }
+    }
+
+    val body = client.get("/debug/trace/e2").bodyAsText()
+
+    assertThat(body).contains("\"trace_id\"")
+    assertThat(body).doesNotContain("\"traceId\"")
   }
 
   @Test

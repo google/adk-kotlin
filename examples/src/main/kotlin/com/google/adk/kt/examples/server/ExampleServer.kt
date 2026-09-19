@@ -53,6 +53,15 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
   private val dev: Boolean by
     option("--dev", help = "Also serve the Development UI and the endpoints it drives.").flag()
 
+  private val camelCase: Boolean by
+    option(
+        "--camel-case",
+        help =
+          "Emit the agent runtime contract's camelCase spelling everywhere. Off by default, " +
+            "since the Development UI reads the older spelling on /version and the trace views.",
+      )
+      .flag()
+
   override fun run() {
     // Built here so --help needs no API key: constructing a Gemini agent requires one.
     val config =
@@ -68,6 +77,7 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
         sessionService = InMemorySessionService(),
         artifactService = InMemoryArtifactService(),
         port = port,
+        camelCaseEnforced = camelCase,
       )
 
     val server = if (dev) AdkDevServer(config) else AdkApiServer(config)

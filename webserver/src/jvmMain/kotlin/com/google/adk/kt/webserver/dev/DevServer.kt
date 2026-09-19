@@ -22,6 +22,7 @@ import com.google.adk.kt.webserver.adkApiModule
 import com.google.adk.kt.webserver.dev.routes.debugRoutes
 import com.google.adk.kt.webserver.dev.routes.evalRoutes
 import com.google.adk.kt.webserver.dev.routes.graphRoutes
+import com.google.adk.kt.webserver.resolveCamelCase
 import io.ktor.server.application.Application
 import io.ktor.server.routing.routing
 
@@ -49,9 +50,11 @@ class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
 fun Application.adkDevModule(config: AdkServerConfig) {
   adkApiModule(config.copy(webUiEnabled = config.webUiEnabled ?: true))
 
+  val camelCase = resolveCamelCase(config)
+
   // A second `routing` block merges into the one adkApiModule installed.
   routing {
-    debugRoutes(config.apiServerSpanExporter)
+    debugRoutes(config.apiServerSpanExporter, camelCase)
     evalRoutes()
     graphRoutes(config.agentLoader, config.sessionService)
   }
