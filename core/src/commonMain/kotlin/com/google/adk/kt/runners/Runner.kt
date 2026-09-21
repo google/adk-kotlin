@@ -25,12 +25,26 @@ import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.workflow.Node
 import kotlinx.coroutines.flow.Flow
 
 /** The Runner interface defines the contract for running agents. */
 interface Runner : AutoCloseable {
   val appName: String
+
+  /**
+   * The agent this runner runs. For a node-rooted runner this is a NodeViewAgent over the running
+   * node.
+   */
   val agent: BaseAgent
+
+  /**
+   * The node this runner runs, set when rooted on a node graph. The go-forward field; once [agent]
+   * is removed it holds the running unit for every runner.
+   */
+  val node: Node?
+    get() = null
+
   val sessionService: SessionService
   val artifactService: ArtifactService?
   val memoryService: MemoryService?

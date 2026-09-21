@@ -23,6 +23,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.findAgent
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -51,6 +52,7 @@ import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.Node
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -64,7 +66,10 @@ import kotlinx.coroutines.runBlocking
 abstract class AbstractRunner : Runner {
 
   final override val appName: String
+
   final override val agent: BaseAgent
+  final override val node: Node?
+
   final override val sessionService: SessionService
   final override val artifactService: ArtifactService?
   final override val memoryService: MemoryService?
@@ -74,6 +79,13 @@ abstract class AbstractRunner : Runner {
   /** Effective compaction config, with a default summarizer injected when one was not supplied. */
   private val eventsCompactionConfig: EventsCompactionConfig?
   private val contextCacheConfig: ContextCacheConfig?
+
+  /**
+   * The unit this runner runs, as a [Node]: the [node] when node-rooted, otherwise the [agent].
+   * Internal replacement for the removed public `root`.
+   */
+  private val root: Node
+    get() = node ?: agent
 
   /**
    * Creates a runner from explicit fields, not using an [App].
@@ -93,6 +105,7 @@ abstract class AbstractRunner : Runner {
   ) {
     this.appName = appName
     this.agent = agent
+    this.node = null
     this.sessionService = sessionService
     this.artifactService = artifactService
     this.memoryService = memoryService
@@ -122,6 +135,7 @@ abstract class AbstractRunner : Runner {
   ) {
     this.appName = app.appName
     this.agent = app.rootAgent
+    this.node = app.rootNode
     this.sessionService = sessionService
     this.artifactService = artifactService
     this.memoryService = memoryService
@@ -167,7 +181,7 @@ abstract class AbstractRunner : Runner {
         // 3. No-op if the resolved agent for a resumed invocation is already final -- there is
         // nothing left to run. Mirrors Python ADK 1.x `runners.run_async`. For a new invocation
         // `endOfAgents` is empty, so this never short-circuits a fresh run.
-        if (context.endOfAgents[context.agent.name] == true) {
+        if (context.endOfAgents[context.node?.name ?: context.agent.name] == true) {
           return@flow
         }
 
@@ -221,7 +235,7 @@ abstract class AbstractRunner : Runner {
    * Closes this runner, releasing the resources it owns.
    *
    * Closes, in order, every [Toolset][com.google.adk.kt.tools.Toolset] and [BaseTool] reachable
-   * from [agent]'s subtree (walking [BaseAgent.subAgents]), then the [pluginManager]. Mirrors ADK
+   * from [root]'s subtree (walking [BaseAgent.subAgents]), then the [pluginManager]. Mirrors ADK
    * Python's `Runner.close`, which likewise collects toolsets recursively across the agent tree
    * before closing plugins.
    *
@@ -243,7 +257,7 @@ abstract class AbstractRunner : Runner {
 
     // Deduplicates so a tool shared by several agents is closed once.
     val toolsToClose = mutableSetOf<AutoCloseable>()
-    collectToolsToClose(agent, toolsToClose)
+    (root as? BaseAgent)?.let { collectToolsToClose(it, toolsToClose) }
 
     for (tool in toolsToClose) {
       closeQuietly(tool, if (tool is BaseTool) "tool '${tool.name}'" else "toolset", exceptions)
@@ -522,11 +536,10 @@ abstract class AbstractRunner : Runner {
           emit(earlyExitEvent)
         }
         is CallbackChoice.Continue -> {
-          // 2. Dispatch to `context.agent` rather than the runner's root `agent`: on a follow-up
+          // 2. Dispatch to the resolved root rather than the runner's root `agent`: on a follow-up
           // user turn, `findAgentToRun` may have selected a sub-agent based on the prior turn's
           // history (see `findAgentToRun` below for the selection rules).
-          context.agent
-            .runAsync(context)
+          runRoot(context)
             .map { applyRunConfigCustomMetadata(it, context.runConfig) }
             .collect { event ->
               val isLiveCall = false
@@ -636,6 +649,7 @@ abstract class AbstractRunner : Runner {
         session = session,
         runConfig = runConfig,
         agent = agent,
+        node = node,
         invocationId = invocationId ?: newInvocationId(),
         artifactService = artifactService,
         memoryService = memoryService,
@@ -651,8 +665,8 @@ abstract class AbstractRunner : Runner {
         handleNewUserContent(it, newMessage, stateDelta)
       }
       .let {
-        // Find agent to run in this invocation
-        it.copy(agent = findAgentToRun(it, agent))
+        // Find the unit to run in this invocation
+        it.withRoot(selectAgentToRun(it))
       }
   }
 
@@ -693,6 +707,7 @@ abstract class AbstractRunner : Runner {
         session = session,
         runConfig = runConfig,
         agent = agent,
+        node = node,
         invocationId = effectiveInvocationId,
         artifactService = artifactService,
         memoryService = memoryService,
@@ -713,7 +728,7 @@ abstract class AbstractRunner : Runner {
 
     currentContext.populateInvocationAgentStates()
 
-    return if (currentContext.endOfAgents[agent.name] == false) {
+    return if (currentContext.endOfAgents[root.name] == false) {
       // The root has a pending checkpoint (a mid-run workflow such as Sequential/Loop/Parallel):
       // keep it as the agent to run so it fast-forwards and advances its remaining sub-agents.
       currentContext
@@ -722,11 +737,12 @@ abstract class AbstractRunner : Runner {
       // resolve the agent to actually resume from history -- e.g. the transferred-to sub-agent --
       // and restore its branch. A genuinely finished invocation is caught by the endOfAgents no-op
       // guard in runAsync.
-      val resumeAgent = findAgentToRun(currentContext, agent)
-      currentContext.copy(
-        agent = resumeAgent,
-        branch = resumeBranch(session.events, effectiveInvocationId, resumeAgent),
-      )
+      val resumeRoot = selectAgentToRun(currentContext)
+      // A node root has no agent tree to restore a branch from, so it keeps the one it has.
+      val resumedBranch =
+        (resumeRoot as? BaseAgent)?.let { resumeBranch(session.events, effectiveInvocationId, it) }
+          ?: currentContext.branch
+      currentContext.withRoot(resumeRoot).copy(branch = resumedBranch)
     }
   }
 
@@ -766,6 +782,28 @@ abstract class AbstractRunner : Runner {
     }
     return null
   }
+
+  /**
+   * Runs whatever this invocation is rooted on. Only an agent root runs here; a bare node root
+   * fails until the workflow engine lands and adds its branch.
+   */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private fun runRoot(context: InvocationContext): Flow<Event> =
+    when (val root = context.node ?: context.agent) {
+      is BaseAgent -> root.runAsync(context)
+      else ->
+        error(
+          "Invocation root '${root.name}' is not an agent; only agent roots are supported until " +
+            "the workflow engine lands."
+        )
+    }
+
+  /**
+   * Picks which agent handles this turn. A follow-up turn can land on a sub-agent chosen from the
+   * prior turn's history; a node root has no agent tree, so it always runs itself.
+   */
+  private suspend fun selectAgentToRun(context: InvocationContext): Node =
+    (root as? BaseAgent)?.let { findAgentToRun(context, it) } ?: root
 
   /**
    * Finds the appropriate [BaseAgent] to run for the session in [context].
@@ -899,7 +937,7 @@ abstract class AbstractRunner : Runner {
      * is set.
      */
     private fun resolveEventsCompactionConfig(
-      rootAgent: BaseAgent,
+      rootAgent: BaseAgent?,
       config: EventsCompactionConfig?,
     ): EventsCompactionConfig? {
       if (config == null || config.summarizer != null) return config

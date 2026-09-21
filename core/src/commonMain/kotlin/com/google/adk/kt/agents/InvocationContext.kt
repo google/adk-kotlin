@@ -47,6 +47,7 @@ import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.Node
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.Volatile
@@ -98,8 +99,17 @@ data class InvocationContext(
   val session: Session,
   /** Configurations for live agents under this invocation. */
   val runConfig: RunConfig? = null,
-  /** The current agent of this invocation context. Readonly. */
+  /**
+   * The agent this invocation runs. For a node-rooted invocation this is a NodeViewAgent over the
+   * running node, so `agent.name` and the other [BaseAgent] members stay correct.
+   */
   val agent: BaseAgent,
+  /**
+   * The node this invocation runs, set when rooted on a node graph rather than an agent tree. The
+   * go-forward field; once [agent] is removed it holds the running unit for every invocation.
+   * Readonly.
+   */
+  val node: Node? = null,
   /**
    * The branch of the invocation context.
    *
@@ -171,6 +181,11 @@ data class InvocationContext(
   private val invocationCostManager: InvocationCostManager = InvocationCostManager(),
 ) {
 
+  init {
+    // A node-view agent must carry its node so `node` exposes the running unit.
+    require(agent !is NodeViewAgent || node != null) { "A node-view agent requires its node." }
+  }
+
   /** Returns whether the current invocation is resumable. */
   val isResumable: Boolean
     get() = resumabilityConfig?.isResumable == true
@@ -196,7 +211,8 @@ data class InvocationContext(
    * @param childAgent The agent that will run under the returned context.
    * @return The new InvocationContext.
    */
-  internal fun forAgent(childAgent: BaseAgent): InvocationContext = this.copy(agent = childAgent)
+  internal fun forAgent(childAgent: BaseAgent): InvocationContext =
+    this.copy(agent = childAgent, node = null)
 
   /**
    * Creates a new InvocationContext for a child agent, derived from this context. Appends the given
@@ -212,8 +228,16 @@ data class InvocationContext(
   fun branch(childAgent: BaseAgent): InvocationContext {
     val newBranchPath =
       if (this.branch.isNullOrEmpty()) childAgent.name else "${this.branch}.${childAgent.name}"
-    return this.copy(branch = newBranchPath, agent = childAgent)
+    return this.copy(branch = newBranchPath, agent = childAgent, node = null)
   }
+
+  /**
+   * Returns a copy of this context rooted on [root], routing it to [agent] or [node] by type. Used
+   * by the runner when it resolves which unit to run.
+   */
+  internal fun withRoot(root: Node): InvocationContext =
+    if (root is BaseAgent) copy(agent = root, node = null)
+    else copy(agent = NodeViewAgent(root), node = root)
 
   /** Set state of an agent explicitly. Does not implicitly initialize. */
   fun setAgentState(agentName: String, agentState: TypedData? = null, endOfAgent: Boolean = false) {
@@ -230,6 +254,7 @@ data class InvocationContext(
   }
 
   /** Resets the state of all sub-agents of the given agent recursively. */
+  @Suppress("DEPRECATION")
   fun resetSubAgentStates(agentName: String) {
     val targetAgent = agent.findAgent(agentName) ?: return
     for (subAgent in targetAgent.subAgents) {
@@ -626,6 +651,7 @@ data class InvocationContext(
     this[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = capturedJson { toTraceJson(args) }
   }
 
+  @Suppress("DEPRECATION")
   private fun buildResponseEvent(
     tool: BaseTool,
     toolResult: Any?,

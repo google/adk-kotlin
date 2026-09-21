@@ -33,6 +33,7 @@ import com.google.adk.kt.telemetry.trace
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.BaseNode
+import com.google.adk.kt.workflow.Node
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.emitAll
@@ -308,4 +309,15 @@ fun BaseAgent.findAgent(targetName: String): BaseAgent? {
     if (found != null) return found
   }
   return null
+}
+
+/**
+ * Read-only [BaseAgent] view over a non-agent [Node], so the deprecated non-null agent members
+ * expose the running node's common fields (name, description) during the deprecation window. Never
+ * runs: the engine dispatches on the underlying [node].
+ */
+internal class NodeViewAgent(val node: Node) :
+  BaseAgent(name = node.name, description = node.description) {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> =
+    error("NodeViewAgent is a view over node '${node.name}' and never runs.")
 }

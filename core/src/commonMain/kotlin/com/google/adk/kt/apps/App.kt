@@ -18,10 +18,12 @@ package com.google.adk.kt.apps
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.agents.NodeViewAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
+import com.google.adk.kt.workflow.Node
 import kotlin.jvm.JvmStatic
 
 /**
@@ -39,6 +41,8 @@ import kotlin.jvm.JvmStatic
  *
  * @property appName The application name.
  * @property rootAgent The root agent of the application's agent tree.
+ * @property rootNode The application's entry point, set for a graph app. The go-forward field; once
+ *   [rootAgent] is removed it holds the running unit for every app.
  * @property plugins Application-wide [Plugin]s providing shared callbacks and services to the
  *   entire system. Defaults to an empty list.
  * @property resumabilityConfig Optional resumability configuration applied to the application's
@@ -51,12 +55,17 @@ import kotlin.jvm.JvmStatic
 data class App(
   val appName: String,
   val rootAgent: BaseAgent,
+  val rootNode: Node? = null,
   val plugins: List<Plugin> = emptyList(),
   val resumabilityConfig: ResumabilityConfig? = null,
   val eventsCompactionConfig: EventsCompactionConfig? = null,
   val contextCacheConfig: ContextCacheConfig? = null,
 ) {
   init {
+    // A node-view root agent must carry its node so `rootNode` exposes the running unit.
+    require(rootAgent !is NodeViewAgent || rootNode != null) {
+      "A node-view root agent requires its rootNode."
+    }
     require(VALID_APP_NAME_REGEX.matches(appName)) {
       "Invalid app name '$appName': must start with a letter and can only consist of letters, " +
         "digits, underscores, and hyphens."
@@ -67,6 +76,28 @@ data class App(
   }
 
   /**
+   * Creates an app rooted on a node graph rather than an agent tree. Wraps [rootNode] in a
+   * NodeViewAgent so the future-deprecated [rootAgent] stays non-null during the deprecation
+   * window.
+   */
+  constructor(
+    appName: String,
+    rootNode: Node,
+    plugins: List<Plugin> = emptyList(),
+    resumabilityConfig: ResumabilityConfig? = null,
+    eventsCompactionConfig: EventsCompactionConfig? = null,
+    contextCacheConfig: ContextCacheConfig? = null,
+  ) : this(
+    appName = appName,
+    rootAgent = NodeViewAgent(rootNode),
+    rootNode = rootNode,
+    plugins = plugins,
+    resumabilityConfig = resumabilityConfig,
+    eventsCompactionConfig = eventsCompactionConfig,
+    contextCacheConfig = contextCacheConfig,
+  )
+
+  /**
    * Fluent builder for [App], provided primarily for Java callers. Any property left unset falls
    * back to the same default as the constructor.
    */
@@ -74,6 +105,7 @@ data class App(
   class Builder {
     private var appName: String? = null
     private var rootAgent: BaseAgent? = null
+    private var rootNode: Node? = null
     private var plugins: List<Plugin> = emptyList()
     private var resumabilityConfig: ResumabilityConfig? = null
     private var eventsCompactionConfig: EventsCompactionConfig? = null
@@ -82,6 +114,8 @@ data class App(
     fun appName(appName: String): Builder = apply { this.appName = appName }
 
     fun rootAgent(rootAgent: BaseAgent): Builder = apply { this.rootAgent = rootAgent }
+
+    fun rootNode(rootNode: Node): Builder = apply { this.rootNode = rootNode }
 
     fun plugins(plugins: List<Plugin>): Builder = apply { this.plugins = plugins }
 
@@ -102,7 +136,12 @@ data class App(
     fun build(): App =
       App(
         appName = checkNotNull(appName) { "App.Builder requires appName to be set." },
-        rootAgent = checkNotNull(rootAgent) { "App.Builder requires rootAgent to be set." },
+        rootAgent =
+          rootAgent
+            ?: NodeViewAgent(
+              checkNotNull(rootNode) { "App.Builder requires rootAgent or rootNode to be set." }
+            ),
+        rootNode = rootNode,
         plugins = plugins,
         resumabilityConfig = resumabilityConfig,
         eventsCompactionConfig = eventsCompactionConfig,
