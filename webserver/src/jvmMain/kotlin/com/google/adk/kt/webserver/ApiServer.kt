@@ -54,8 +54,8 @@ private const val STOP_TIMEOUT_MILLIS = 5000L
 private val logger = LoggerFactory.getLogger(AdkApiServer::class.java)
 
 /**
- * Serves the ADK agent runtime contract, so it can be deployed headlessly; the Development UI stays
- * unmounted unless [AdkServerConfig.webUiEnabled] or the `adk.web.ui.enabled` property asks for it.
+ * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
+ * `adk.web.ui.enabled` property asks for it.
  *
  * [AdkDevServer] widens the surface with the development-only endpoints. [start] and [stop] are
  * safe to call from different threads; a [stop] arriving while [start] is still binding aborts it,
@@ -117,8 +117,8 @@ private class StatusAwareLogger(private val delegate: Logger) : Logger by delega
 }
 
 /**
- * Installs the ADK agent runtime contract: health, version, app discovery, sessions, artifacts and
- * the run endpoints.
+ * Installs the ADK agent runtime: health, version, app discovery, sessions, artifacts and the run
+ * endpoints.
  *
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
@@ -161,14 +161,24 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
     )
   }
 
+  val camelCase = resolveCamelCase(config)
   routing {
     get("/health") { call.respond(mapOf("status" to "ok")) }
+    if (!camelCase) {
+      logger.warn(
+        "Responses use the mixed spelling: /version emits `language_version` and the " +
+          "development trace endpoints emit `span_id`. This default will change in a future " +
+          "release; set camelCaseEnforced or {}=true to migrate now.",
+        CAMEL_CASE_ENFORCED_PROPERTY,
+      )
+    }
     get("/version") {
       call.respond(
-        VersionInfo(
+        VersionInfo.of(
           version = VERSION,
           language = "kotlin",
           languageVersion = System.getProperty("java.version", "unknown"),
+          camelCase = camelCase,
         )
       )
     }
@@ -184,3 +194,32 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
 
 private fun Application.resolveWebUi(config: AdkServerConfig): Boolean =
   isWebUiEnabled(default = config.webUiEnabled ?: false)
+
+/** Property that switches responses to the enforced camelCase spelling. */
+internal const val CAMEL_CASE_ENFORCED_PROPERTY = "adk.wire.camelcase.enforced"
+
+/**
+ * Whether responses use the enforced camelCase spelling: the property first, then the Ktor config,
+ * then [AdkServerConfig], else the pre-enforced spelling so the Development UI keeps working.
+ *
+ * The property deliberately beats an explicit setting, as it does for the Development UI: when this
+ * default moves, a deployment whose code pins the wrong value needs a lever that does not require a
+ * rebuild. Moving the default is a one-line change here.
+ */
+internal fun Application.resolveCamelCase(config: AdkServerConfig): Boolean =
+  camelCaseSettingOrNull(System.getProperty(CAMEL_CASE_ENFORCED_PROPERTY))
+    ?: camelCaseSettingOrNull(
+      environment.config.propertyOrNull(CAMEL_CASE_ENFORCED_PROPERTY)?.getString()
+    )
+    ?: config.camelCaseEnforced
+    ?: false
+
+/** Parses one configured value; null when absent or not a boolean, warning in the latter case. */
+private fun camelCaseSettingOrNull(raw: String?): Boolean? {
+  if (raw == null) return null
+  return raw.trim().lowercase().toBooleanStrictOrNull().also {
+    if (it == null) {
+      logger.warn("Ignoring a non-boolean {}: \"{}\"", CAMEL_CASE_ENFORCED_PROPERTY, raw.trim())
+    }
+  }
+}

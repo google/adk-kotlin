@@ -22,13 +22,26 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonNames
 
-/** Response for the `/version` endpoint. */
+/**
+ * Response for the `/version` endpoint.
+ *
+ * Exactly one of [languageVersion] and [legacyLanguageVersion] is set; `adkJson` omits the other,
+ * so the response never carries both spellings for a strict decoder to reject.
+ */
 @Serializable
 data class VersionInfo(
   val version: String,
   val language: String,
-  @SerialName("language_version") val languageVersion: String,
-)
+  val languageVersion: String? = null,
+  @SerialName("language_version") val legacyLanguageVersion: String? = null,
+) {
+  companion object {
+    /** Builds the response in the enforced camelCase spelling, or the default one. */
+    fun of(version: String, language: String, languageVersion: String, camelCase: Boolean) =
+      if (camelCase) VersionInfo(version, language, languageVersion = languageVersion)
+      else VersionInfo(version, language, legacyLanguageVersion = languageVersion)
+  }
+}
 
 @Serializable
 data class AgentRunRequest(

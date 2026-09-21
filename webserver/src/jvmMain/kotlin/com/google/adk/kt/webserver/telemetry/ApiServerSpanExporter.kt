@@ -21,7 +21,12 @@ import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SpanExporter
 import java.util.Collections
-import java.util.concurrent.ConcurrentHashMap
+
+/** The trace id this server injects into a span's attributes. */
+internal const val TRACE_ID_ATTRIBUTE = "trace_id"
+
+/** The span id this server injects into a span's attributes. */
+internal const val SPAN_ID_ATTRIBUTE = "span_id"
 
 /**
  * A custom SpanExporter that stores relevant span data. It handles two types of trace data storage:
@@ -99,8 +104,8 @@ class ApiServerSpanExporter : SpanExporter {
         if (!eventId.isNullOrEmpty()) {
           val attributesMap = mutableMapOf<String, Any>()
           span.attributes.forEach { key, value -> attributesMap[key.key] = value }
-          attributesMap["trace_id"] = span.spanContext.traceId
-          attributesMap["span_id"] = span.spanContext.spanId
+          attributesMap[TRACE_ID_ATTRIBUTE] = span.spanContext.traceId
+          attributesMap[SPAN_ID_ATTRIBUTE] = span.spanContext.spanId
           attributesMap.putIfAbsent("gcp.vertex.agent.event_id", eventId)
           eventIdTraceStorage[eventId] = attributesMap
         }

@@ -17,13 +17,15 @@
 package com.google.adk.kt.webserver.dev.routes
 
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
+import com.google.adk.kt.webserver.telemetry.SPAN_ID_ATTRIBUTE
+import com.google.adk.kt.webserver.telemetry.TRACE_ID_ATTRIBUTE
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 
-internal fun Route.debugRoutes(exporter: ApiServerSpanExporter) {
+internal fun Route.debugRoutes(exporter: ApiServerSpanExporter, camelCase: Boolean = false) {
 
   get("/debug/trace/{eventId}") {
     val eventId = call.parameters["eventId"]
@@ -39,7 +41,7 @@ internal fun Route.debugRoutes(exporter: ApiServerSpanExporter) {
         mapOf("message" to "Trace not found for eventId: $eventId"),
       )
     } else {
-      call.respond(HttpStatusCode.OK, traceData)
+      call.respond(HttpStatusCode.OK, traceData.withInjectedKeysSpelled(camelCase))
     }
   }
 
@@ -67,21 +69,22 @@ internal fun Route.debugRoutes(exporter: ApiServerSpanExporter) {
         val spanMap =
           mutableMapOf<String, Any?>(
             "name" to span.name,
-            "span_id" to span.spanContext.spanId,
-            "trace_id" to span.spanContext.traceId,
-            "start_time" to span.startEpochNanos,
-            "end_time" to span.endEpochNanos,
+            key(SPAN_ID_ATTRIBUTE, "spanId", camelCase) to span.spanContext.spanId,
+            key(TRACE_ID_ATTRIBUTE, "traceId", camelCase) to span.spanContext.traceId,
+            key("start_time", "startTime", camelCase) to span.startEpochNanos,
+            key("end_time", "endTime", camelCase) to span.endEpochNanos,
           )
 
         val attributesMap = mutableMapOf<String, Any>()
         span.attributes.forEach { key, value -> attributesMap[key.key] = value }
         spanMap["attributes"] = attributesMap
 
+        val parentKey = key("parent_span_id", "parentSpanId", camelCase)
         val parentSpanId = span.parentSpanId
         if (parentSpanId != io.opentelemetry.api.trace.SpanId.getInvalid()) {
-          spanMap["parent_span_id"] = parentSpanId
+          spanMap[parentKey] = parentSpanId
         } else {
-          spanMap["parent_span_id"] = null
+          spanMap[parentKey] = null
         }
         resultSpans.add(spanMap)
       }
@@ -90,3 +93,22 @@ internal fun Route.debugRoutes(exporter: ApiServerSpanExporter) {
     call.respond(HttpStatusCode.OK, resultSpans)
   }
 }
+
+/** The non-enforced key, or the enforced camelCase one when the server enforces it. */
+private fun key(legacy: String, camel: String, camelCase: Boolean) =
+  if (camelCase) camel else legacy
+
+/**
+ * Renames the two keys this server injects into a span's attributes. The rest are OpenTelemetry
+ * semantic conventions - dotted, with no camelCase form - so they are left alone.
+ */
+private fun Map<String, Any>.withInjectedKeysSpelled(camelCase: Boolean): Map<String, Any> =
+  if (!camelCase) this
+  else
+    mapKeys { (name, _) ->
+      when (name) {
+        TRACE_ID_ATTRIBUTE -> "traceId"
+        SPAN_ID_ATTRIBUTE -> "spanId"
+        else -> name
+      }
+    }
