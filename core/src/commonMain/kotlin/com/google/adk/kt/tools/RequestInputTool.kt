@@ -16,10 +16,12 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import com.google.adk.kt.workflow.RequestInput
 
 /**
  * Built-in long-running tool that asks the user a question and pauses the invocation until they
@@ -29,6 +31,7 @@ import com.google.adk.kt.types.Type
  * the caller injects a matching `FunctionResponse`; the tool is not re-run on resume. The call name
  * `adk_request_input` matches Python ADK's `request_input` for cross-language interop.
  */
+@OptIn(ExperimentalWorkflowApi::class)
 class RequestInputTool :
   BaseTool(
     name = FunctionCall.REQUEST_INPUT_FUNCTION_CALL_NAME,
@@ -46,12 +49,12 @@ class RequestInputTool :
           type = Type.OBJECT,
           properties =
             mapOf(
-              MESSAGE_ARG to
+              RequestInput.MESSAGE_KEY to
                 Schema(
                   type = Type.STRING,
                   description = "The question or prompt to display to the user.",
                 ),
-              RESPONSE_SCHEMA_ARG to
+              RequestInput.RESPONSE_SCHEMA_KEY to
                 Schema(
                   type = Type.OBJECT,
                   description =
@@ -60,23 +63,21 @@ class RequestInputTool :
                       "structured object schema for complex input.",
                 ),
             ),
-          required = listOf(MESSAGE_ARG),
+          required = listOf(RequestInput.MESSAGE_KEY),
         ),
     )
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     // Mirror Python: the mandatory-arg error fires only when the parameter is absent, not when it
     // is present but empty or not a string.
-    if (!args.containsKey(MESSAGE_ARG)) {
-      return InternalToolHelpers.missingMandatoryParamsError(name, listOf(MESSAGE_ARG))
+    if (!args.containsKey(RequestInput.MESSAGE_KEY)) {
+      return InternalToolHelpers.missingMandatoryParamsError(name, listOf(RequestInput.MESSAGE_KEY))
     }
     // Defer: returning Unit pauses the invocation until a FunctionResponse is injected.
     return Unit
   }
 
   private companion object {
-    const val MESSAGE_ARG = "message"
-    const val RESPONSE_SCHEMA_ARG = "response_schema"
     const val DESCRIPTION =
       "Ask the user a question and wait for their response. Use this when you need clarification " +
         "or additional information before proceeding."

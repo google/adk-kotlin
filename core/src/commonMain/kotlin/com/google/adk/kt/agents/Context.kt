@@ -34,13 +34,16 @@ import com.google.adk.kt.types.Schema
 import com.google.adk.kt.workflow.BranchPath
 import com.google.adk.kt.workflow.DynamicNodeFailedException
 import com.google.adk.kt.workflow.EventSink
+import com.google.adk.kt.workflow.Interception
 import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.NodeExecutionFailure
 import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.adk.kt.workflow.NodeRunner
 import com.google.adk.kt.workflow.OutputRecord
+import com.google.adk.kt.workflow.ResumeScan
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.validateInput
 import com.google.adk.kt.workflow.validateNodeName
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.concurrent.atomics.AtomicReference
@@ -91,6 +94,7 @@ open class Context(
    * @param actions Deltas this node accumulates, flushed onto the next event it emits.
    * @param useAsOutput Whether this node's output also serves as its parent's output.
    * @param childRunIds Per-name run-ID counters for this node's children.
+   * @param completedChildren Children that already finished, kept across this node's attempts.
    */
   @ExperimentalWorkflowApi
   internal constructor(
@@ -105,6 +109,7 @@ open class Context(
     useAsOutput: Boolean = false,
     nodePath: String? = null,
     childRunIds: ChildRunIds = ChildRunIds(),
+    completedChildren: CompletedChildren = CompletedChildren(),
   ) : this(invocationContext, actions) {
     this.parent = parent
     this.runId = runId
@@ -128,6 +133,7 @@ open class Context(
         outputParent = if (useAsOutput) parentState else null,
         outputForAncestors = outputForAncestors,
         childRunIds = childRunIds,
+        completedChildren = completedChildren,
       )
   }
 
@@ -501,9 +507,11 @@ open class Context(
    *
    * @param node Child node to execute.
    * @param nodeInput Input passed to [node], or `null` if none.
-   * @param runId Explicit run ID for [node]. Must contain at least one non-digit character and must
-   *   not contain `'/'`, `'@'`, or `'.'`. When `null` or empty, an incrementing numeric ID is
-   *   generated per child node name.
+   * @param runId Explicit run ID for [node]: at least one non-digit, and no `'/'`, `'@'`, or `'.'`.
+   *   A child that finished in an earlier turn or attempt under the same ID returns its recorded
+   *   output without running again. When `null` or empty, the child gets the next number for its
+   *   name, which follows call order and changes on retry, so concurrent children need explicit
+   *   IDs.
    * @param useAsOutput When `true`, delegates this node's output to [node]. This node must not
    *   produce or return its own output unless [node] fails before emitting an output.
    * @param useSubBranch When `true`, runs [node] on a sub-branch `<branch>.<node.name>@<runId>`.
@@ -513,7 +521,11 @@ open class Context(
    * @throws IllegalStateException if called outside a node activation, if this node does not set
    *   `rerunOnResume = true`, or if [useAsOutput] is `true` after this node already produced or
    *   delegated its output.
-   * @throws IllegalArgumentException if [node]'s name or [runId] is invalid.
+   * @throws IllegalArgumentException if [node]'s name or [runId] is invalid, or if [nodeInput]
+   *   fails [node]'s input schema. A [node][com.google.adk.kt.workflow.node] child's input check
+   *   throws
+   *   [NodeInputValidationException][com.google.adk.kt.workflow.NodeInputValidationException]
+   *   instead.
    */
   @CanIgnoreReturnValue
   @ExperimentalWorkflowApi
@@ -602,12 +614,17 @@ open class Context(
       throw NodeInterruptedException()
     }
     if (delegatesOutput && childState.hasProducedOutput) {
-      ns.recordDelegatedOutput(childState.output)
+      // A replayed delegate's output is not on the wire yet, so this node emits it.
+      if (childState.hasEmittedOutput) ns.recordDelegatedOutput(childState.output)
+      else ns.adoptReplayedOutput(childState.output)
     }
     return childState.output
   }
 
-  /** Runs [node] as a child activation and returns its [Context]. */
+  /**
+   * Runs [node] as a child activation and returns its [Context], replaying a completed or waiting
+   * child on resume.
+   */
   @ExperimentalWorkflowApi
   internal suspend fun runNodeForContext(
     node: Node,
@@ -620,15 +637,41 @@ open class Context(
     validateNodeName(node.name)
     val ns = requireNodeState()
     val id = runId?.takeIf { it.isNotEmpty() } ?: ns.nextChildRunId(node.name)
-    return NodeRunner(
-        node = node,
-        parent = this,
-        runId = id,
-        useAsOutput = useAsOutput,
-        useSubBranch = useSubBranch,
-        overrideBranch = overrideBranch,
-      )
-      .run(nodeInput)
+    // Input validation runs in the caller so a rejected input fails this node.
+    val input = node.validateInput(nodeInput)
+    val childKey = BranchPath.segment(node.name, id)
+    ns.completedChild(childKey)?.let { interception ->
+      return ResumeScan.replayContext(this, node, id, useAsOutput, interception)
+    }
+    val recovered = recoveredChildren[childKey]
+    val interception = ResumeScan.intercept(node, recovered, dynamic = true)
+    if (!interception.shouldRun) {
+      return ResumeScan.replayContext(this, node, id, useAsOutput, interception)
+    }
+    val childContext =
+      NodeRunner(
+          node = node,
+          parent = this,
+          runId = id,
+          useAsOutput = useAsOutput,
+          resumeInputs = interception.resumeInputs,
+          useSubBranch = useSubBranch,
+          overrideBranch = overrideBranch,
+        )
+        .run(input, validateInput = false)
+    if (!runId.isNullOrEmpty() && !runId.all { it.isDigit() }) {
+      ns.recordCompletedChild(childKey, childContext)
+    }
+    return childContext
+  }
+
+  /**
+   * Reconstructed states of this activation's children from earlier turns or earlier attempts of
+   * this node, keyed by `name@runId`.
+   */
+  private val recoveredChildren by lazy {
+    val path = requireNodeState().nodePath
+    ResumeScan.scan(invocationContext.session.events, path, invocationContext.invocationId)
   }
 
   private var nodeState: NodeExecutionState? = null
@@ -638,12 +681,12 @@ open class Context(
 
   companion object {
     internal fun buildNodePath(parentPath: String?, name: String, runId: String): String =
-      BranchPath.appendSegment(parentPath, name, runId, separator = '/')
+      BranchPath.childNodePath(parentPath, BranchPath.segment(name, runId))
   }
 }
 
 /** Mutable execution state for a single node activation. */
-@OptIn(ExperimentalAtomicApi::class)
+@OptIn(ExperimentalAtomicApi::class, ExperimentalWorkflowApi::class)
 internal class NodeExecutionState(
   val node: Node,
   val eventSink: EventSink,
@@ -654,6 +697,7 @@ internal class NodeExecutionState(
   /** Ancestor node paths this activation's output also satisfies, nearest ancestor first. */
   val outputForAncestors: List<String> = emptyList(),
   private val childRunIds: ChildRunIds = ChildRunIds(),
+  private val completedChildren: CompletedChildren = CompletedChildren(),
 ) {
   /** Node paths this activation's output satisfies: [nodePath] followed by [outputForAncestors]. */
   val outputFor: List<String> = listOf(nodePath) + outputForAncestors
@@ -729,6 +773,41 @@ internal class NodeExecutionState(
     outputRecordRef.store(OutputRecord.Emitted(value))
   }
 
+  /**
+   * Takes [value] from a replayed `useAsOutput` child as this activation's output, not yet emitted,
+   * so [NodeRunner] emits it for this attempt.
+   */
+  fun adoptReplayedOutput(value: Any?) {
+    outputRecordRef.store(OutputRecord.Produced(value))
+  }
+
+  /** Returns the result of a child that already completed in this node, keyed by `name@runId`. */
+  fun completedChild(key: String): Interception? = completedChildren[key]
+
+  /** Records a completed child so a repeat dispatch with the same explicit `runId` replays it. */
+  fun recordCompletedChild(key: String, childContext: Context) {
+    val childState = childContext.requireNodeState()
+    val childNode = childState.node
+    if (childState.failure != null || childState.interruptIds.isNotEmpty()) return
+    if (
+      !childState.hasProducedOutput &&
+        childContext.routes == null &&
+        childContext.actions.transferToAgent == null &&
+        (childNode is Workflow || childNode.waitForOutput)
+    ) {
+      return
+    }
+    val completed =
+      Interception(
+        shouldRun = false,
+        output = childState.output,
+        route = childContext.routes,
+        branch = childContext.invocationContext.branch,
+        transferToAgent = childContext.actions.transferToAgent,
+      )
+    completedChildren.record(key, completed)
+  }
+
   /** Selects the outgoing routes for this activation. */
   fun selectRoutes(routes: List<Route>?) {
     selectedRoutes = routes
@@ -769,6 +848,23 @@ internal class NodeExecutionState(
 
   private fun secondOutputMessage() =
     "Node '${node.name}' produced a second output; a node produces at most one output."
+}
+
+/**
+ * Children of a node that completed, with their recorded result and branch, keyed by `name@runId`.
+ */
+@OptIn(ExperimentalAtomicApi::class)
+internal class CompletedChildren {
+  private val byKey = AtomicReference<Map<String, Interception>>(emptyMap())
+
+  operator fun get(key: String): Interception? = byKey.load()[key]
+
+  fun record(key: String, completed: Interception) {
+    while (true) {
+      val current = byKey.load()
+      if (byKey.compareAndSet(current, current + (key to completed))) return
+    }
+  }
 }
 
 /** Per-child-name run-ID counters for a node activation. */

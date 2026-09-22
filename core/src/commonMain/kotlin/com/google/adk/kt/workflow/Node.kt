@@ -16,9 +16,9 @@
 
 package com.google.adk.kt.workflow
 
-import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.types.Schema
 import kotlinx.coroutines.flow.Flow
 
@@ -87,6 +87,8 @@ interface Node {
    * Emits any of:
    * - A raw output value (e.g. String, Int, a data class, List, Map), which becomes this node's
    *   output and is normalized into an [Event][com.google.adk.kt.events.Event] by the engine.
+   * - A [RequestInput], which the engine normalizes into an `adk_request_input` interrupt event
+   *   that pauses the graph until the user answers.
    * - An [Event][com.google.adk.kt.events.Event], which passes through directly (useful for
    *   progress emissions or custom events).
    * - `null` or [Unit], both of which signify that no output was produced. [Unit] represents
@@ -96,22 +98,9 @@ interface Node {
   @ExperimentalWorkflowApi fun runNode(context: Context, nodeInput: Any?): Flow<Any?>
 }
 
-/**
- * Checks [nodeInput] against this node's [Node.inputSchema] with [SchemaUtils.validateValue] and
- * returns it. A fan-in node receives its predecessors' outputs keyed by name, so the schema applies
- * to each output rather than to the joined map.
- */
-@OptIn(ExperimentalWorkflowApi::class)
-internal fun Node.validateInput(nodeInput: Any?): Any? {
-  val schema = inputSchema ?: return nodeInput
-  if (requiresAllPredecessors && nodeInput is Map<*, *>) {
-    return nodeInput.entries.associate { (predecessor, output) ->
-      val side = "output of '$predecessor' into node '$name'"
-      predecessor.toString() to SchemaUtils.validateValue(output, schema, side).getOrThrow()
-    }
-  }
-  return SchemaUtils.validateValue(nodeInput, schema, "input of node '$name'").getOrThrow()
-}
+/** Validates [nodeInput] as this node does when it runs. */
+@OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
+internal fun Node.validateInput(nodeInput: Any?): Any? = asBaseNode(this).validateInput(nodeInput)
 
 /** Validates that [name] is non-empty and contains no '/', '@', or '.' characters. */
 internal fun validateNodeName(name: String) {

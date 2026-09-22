@@ -22,9 +22,16 @@ package com.google.adk.kt.workflow
  */
 internal object BranchPath {
 
+  /** Formats a `name@runId` path segment for a node activation. */
+  fun segment(name: String, runId: String): String = "$name@$runId"
+
+  /** Appends a [segment] to a `/`-separated node [parentPath]. */
+  fun childNodePath(parentPath: String?, segment: String): String =
+    if (parentPath.isNullOrEmpty()) segment else "$parentPath/$segment"
+
   /** Appends a `name@runId` segment to [base] using [separator]. */
   fun appendSegment(base: String?, name: String, runId: String, separator: Char): String {
-    val segment = "$name@$runId"
+    val segment = segment(name, runId)
     return if (base.isNullOrEmpty()) segment else "$base$separator$segment"
   }
 
@@ -45,6 +52,10 @@ internal object BranchPath {
     }
     return common.joinToString(".")
   }
+
+  /** The run ids of [branch]'s segments, e.g. `parent@1.child@a.node` -> `{1, a}`. */
+  fun runIds(branch: String?): Set<String> =
+    segmentsOf(branch).mapNotNull { it.substringAfterLast('@', "").ifEmpty { null } }.toSet()
 
   private fun segmentsOf(branch: String?): List<String> =
     if (branch.isNullOrEmpty()) emptyList() else branch.split(".")

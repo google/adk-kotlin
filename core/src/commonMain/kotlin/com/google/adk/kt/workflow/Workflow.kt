@@ -42,8 +42,8 @@ import kotlinx.coroutines.flow.flow
  * @property maxConcurrency The most nodes to run at once. Null does not limit.
  * @property config The workflow's own retry policy and execution timeout, applied whether it runs
  *   as the root of an invocation or nested inside another graph. A workflow reports a child's
- *   failure rather than raising, so its retry policy re-runs the whole graph on a child failure;
- *   each retry runs the graph fresh, since replaying already-produced children is a later change.
+ *   failure rather than raising, so its retry policy re-runs the graph on a child failure; a retry
+ *   replays the children that already finished and reruns the rest.
  * @property inputSchema Validates the workflow's input before it runs.
  * @property outputSchema Validates the terminal node's output as the workflow's own output, which
  *   an enclosing workflow reads as this node's result.
