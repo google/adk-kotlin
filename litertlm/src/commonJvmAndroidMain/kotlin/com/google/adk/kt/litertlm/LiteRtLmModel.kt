@@ -22,25 +22,15 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.StreamingResponseAggregator
-import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.Content as AdkContent
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall as AdkFunctionCall
-import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part as AdkPart
-import com.google.adk.kt.types.Schema
-import com.google.adk.kt.types.Type as AdkSchemaType
 import com.google.ai.edge.litertlm.Content as LiteRtLmContent
-import com.google.ai.edge.litertlm.Contents as LiteRtLmContents
-import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message as LiteRtLmMessage
 import com.google.ai.edge.litertlm.MessageCallback
-import com.google.ai.edge.litertlm.OpenApiTool
-import com.google.ai.edge.litertlm.Role as LiteRtLmRole
-import com.google.ai.edge.litertlm.ToolCall as LiteRtLmToolCall
-import com.google.ai.edge.litertlm.tool
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -138,13 +128,10 @@ private constructor(
       val finalResponse = aggregator.aggregate()?.copy(finishReason = FinishReason.STOP)
       val modelResponseContent = finalResponse?.content
       if (modelResponseContent != null) {
-        // Commit the aggregated turn as the next turn's cache key.
-        synchronized(activeConversation) {
-          activeConversation.update(
-            conversation,
-            request.contents + modelResponseContent.withoutGeneratedFunctionCallIds(),
-          )
-        }
+        // Commit the aggregated turn as the next turn's cache key. Built outside the monitor, since
+        // translating tools to their description JSON should not happen under the lock.
+        val committedDto = request.toConversationDto(request.contents + modelResponseContent)
+        synchronized(activeConversation) { activeConversation.update(conversation, committedDto) }
       } else {
         // A content-free turn leaves the native conversation ambiguous, so discard it.
         discardActiveConversation()
@@ -169,14 +156,12 @@ private constructor(
             .sendMessage(liteRtLmLastMessage)
             .toLlmResponse(partial = false)
             .copy(finishReason = FinishReason.STOP)
-        // Commit the cache key (request contents + model response) for the next turn.
+        // Commit the cache key (request contents + model response) for the next turn. Built outside
+        // the monitor, since translating tools to their description JSON should not happen under
+        // it.
         modelResponse.content?.let { modelResponseContent ->
-          synchronized(activeConversation) {
-            activeConversation.update(
-              conversation,
-              request.contents + modelResponseContent.withoutGeneratedFunctionCallIds(),
-            )
-          }
+          val committedDto = request.toConversationDto(request.contents + modelResponseContent)
+          synchronized(activeConversation) { activeConversation.update(conversation, committedDto) }
         }
         modelResponse
       } catch (e: Exception) {
@@ -243,43 +228,20 @@ private constructor(
     val lastMessage =
       request.contents.lastOrNull() ?: throw IllegalArgumentException("Empty request contents")
 
-    val liteRtLmLastMessage = mapContentToLiteRtLmMessage(lastMessage)
+    val liteRtLmLastMessage = lastMessage.toLiteRtLmMessage()
+
+    val dto = request.toConversationDto(history)
 
     // Released before building the replacement, and outside the lock, since closing blocks.
-    discardActiveConversation(keepMatching = history)
+    discardActiveConversation(keepMatching = dto)
 
     val conversation =
       synchronized(activeConversation) {
-        if (activeConversation.matches(history)) {
+        if (activeConversation.matches(dto)) {
           activeConversation.conversation!!
         } else {
-          val liteRtLmTools =
-            request.config.tools
-              ?.flatMap { tool ->
-                tool.functionDeclarations.orEmpty().map { declaration ->
-                  tool(ManualOpenApiTool(declaration))
-                }
-              }
-              .orEmpty()
-
-          val systemInstruction =
-            request.config.systemInstruction?.let { si ->
-              val parts = si.parts.mapNotNull { mapPartToContent(it) }
-              LiteRtLmContents.of(parts)
-            }
-
-          val initialMessages = history.map { mapContentToLiteRtLmMessage(it) }
-
-          val conversationConfig =
-            ConversationConfig(
-              systemInstruction = systemInstruction,
-              initialMessages = initialMessages,
-              tools = liteRtLmTools,
-              automaticToolCalling = false,
-            )
-
-          val newConversation = engine.createConversation(conversationConfig)
-          activeConversation.update(newConversation, history)
+          val newConversation = engine.createConversation(dto.toConversationConfig())
+          activeConversation.update(newConversation, dto)
           newConversation
         }
       }
@@ -296,10 +258,10 @@ private constructor(
   }
 
   /**
-   * Releases the cached conversation, unless its history is [keepMatching]. Detached under the lock
-   * but released outside it, since releasing needs the lock the terminal callback holds.
+   * Releases the cached conversation, unless it was built from [keepMatching]. Detached under the
+   * lock but released outside it, since releasing needs the lock the terminal callback holds.
    */
-  private fun discardActiveConversation(keepMatching: List<AdkContent>? = null) {
+  private fun discardActiveConversation(keepMatching: LiteRtLmConversationDto? = null) {
     val detached =
       synchronized(activeConversation) {
         if (keepMatching != null && activeConversation.matches(keepMatching)) null
@@ -326,71 +288,7 @@ private constructor(
   }
 }
 
-// --- Helpers for Mapping ---
-
-private fun mapContentToLiteRtLmMessage(adkContent: AdkContent): LiteRtLmMessage {
-  val role =
-    if (adkContent.parts.any { it.functionResponse != null }) {
-      LiteRtLmRole.TOOL
-    } else {
-      when (adkContent.role) {
-        "user" -> LiteRtLmRole.USER
-        "model" -> LiteRtLmRole.MODEL
-        "system" -> LiteRtLmRole.SYSTEM
-        "tool" -> LiteRtLmRole.TOOL
-        else -> LiteRtLmRole.USER
-      }
-    }
-  val parts = adkContent.parts.mapNotNull { mapPartToContent(it) }
-  val contents = LiteRtLmContents.of(parts)
-
-  return when (role) {
-    LiteRtLmRole.USER -> LiteRtLmMessage.user(contents)
-    LiteRtLmRole.SYSTEM -> LiteRtLmMessage.system(contents)
-    LiteRtLmRole.TOOL -> LiteRtLmMessage.tool(contents)
-    LiteRtLmRole.MODEL -> {
-      val toolCalls =
-        adkContent.parts.mapNotNull { part ->
-          part.functionCall?.let { fc -> LiteRtLmToolCall(fc.name, fc.args) }
-        }
-      LiteRtLmMessage.model(contents, toolCalls)
-    }
-  }
-}
-
-private fun mapPartToContent(part: AdkPart): LiteRtLmContent? {
-  // Use local variables to enable smart casts on properties from other module
-  val text = part.text
-  val inlineData = part.inlineData
-  val fileData = part.fileData
-  val functionResponse = part.functionResponse
-
-  return when {
-    text != null -> LiteRtLmContent.Text(text)
-    inlineData != null -> {
-      val mimeType = inlineData.mimeType.orEmpty().lowercase()
-      val data = inlineData.data ?: byteArrayOf()
-      when {
-        mimeType.startsWith("image/") -> LiteRtLmContent.ImageBytes(data)
-        mimeType.startsWith("audio/") -> LiteRtLmContent.AudioBytes(data)
-        else -> null
-      }
-    }
-    fileData != null -> {
-      val mimeType = fileData.mimeType.orEmpty().lowercase()
-      val path = fileData.fileUri.orEmpty()
-      when {
-        mimeType.startsWith("image/") -> LiteRtLmContent.ImageFile(path)
-        mimeType.startsWith("audio/") -> LiteRtLmContent.AudioFile(path)
-        else -> null
-      }
-    }
-    functionResponse != null -> {
-      LiteRtLmContent.ToolResponse(functionResponse.name, functionResponse.response)
-    }
-    else -> null // functionCall is handled separately
-  }
-}
+// --- LiteRT-LM response mapping ---
 
 private fun LiteRtLmMessage.toLlmResponse(partial: Boolean = false): LlmResponse {
   val adkParts =
@@ -428,87 +326,3 @@ private fun LiteRtLmMessage.toLlmResponse(partial: Boolean = false): LlmResponse
  */
 private fun LlmResponse.isContentFree(): Boolean =
   content?.parts?.none { it.functionCall != null || !it.text.isNullOrEmpty() } ?: true
-
-/**
- * Drops the function call ids the aggregator generates, since the framework strips them from the
- * history it sends back. Keeping them would make the cache key of a tool-calling turn unmatchable.
- */
-private fun AdkContent.withoutGeneratedFunctionCallIds(): AdkContent {
-  fun AdkFunctionCall.isGenerated() =
-    id?.startsWith(AdkFunctionCall.ADK_FUNCTION_CALL_ID_PREFIX) == true
-
-  if (parts.none { it.functionCall?.isGenerated() == true }) return this
-  return copy(
-    parts =
-      parts.map { part ->
-        val functionCall = part.functionCall
-        if (functionCall?.isGenerated() == true)
-          part.copy(functionCall = functionCall.copy(id = null))
-        else part
-      }
-  )
-}
-
-// --- Manual Tool Adapter ---
-
-internal class ManualOpenApiTool(private val declaration: FunctionDeclaration) : OpenApiTool {
-  override fun execute(paramsJsonString: String): String {
-    throw UnsupportedOperationException("Manual tool execution not supported")
-  }
-
-  override fun getToolDescriptionJsonString(): String {
-    val tool = mutableMapOf<String, Any>()
-    tool["name"] = declaration.name
-    tool["description"] = declaration.description
-    declaration.parameters?.let { params -> tool["parameters"] = params.toMap() }
-    // Describing what the tool returns helps the model decide whether to call it at all, and this
-    // description is plain JSON, so there is nothing stopping it carrying the response schema.
-    declaration.response?.let { response -> tool["response"] = response.toMap() }
-    return Json.toJsonString(tool)
-  }
-}
-
-internal fun Schema.toMap(): Map<String, Any> {
-  val map = mutableMapOf<String, Any>()
-
-  type?.let { t ->
-    val typeName =
-      when (t) {
-        AdkSchemaType.OBJECT -> "object"
-        AdkSchemaType.STRING -> "string"
-        AdkSchemaType.INTEGER -> "integer"
-        AdkSchemaType.NUMBER -> "number"
-        AdkSchemaType.BOOLEAN -> "boolean"
-        AdkSchemaType.ARRAY -> "array"
-        AdkSchemaType.NULL -> "null"
-        // A schema carrying only `anyOf` has no type of its own; naming one here would sit next
-        // to the alternatives and contradict them.
-        else -> if (anyOf != null) null else "string"
-      }
-    typeName?.let { map["type"] = it }
-  }
-
-  description?.let { map["description"] = it }
-  properties?.let { props -> map["properties"] = props.mapValues { (_, schema) -> schema.toMap() } }
-  items?.let { map["items"] = it.toMap() }
-  required?.let { map["required"] = it }
-  enum?.let { map["enum"] = it }
-  // The tool description is plain JSON rather than a typed backend schema, so every constraint a
-  // caller can express is emitted verbatim under its JSON Schema name.
-  format?.let { map["format"] = it }
-  nullable?.let { map["nullable"] = it }
-  default?.let { map["default"] = it }
-  anyOf?.let { schemas -> map["anyOf"] = schemas.map { it.toMap() } }
-  title?.let { map["title"] = it }
-  pattern?.let { map["pattern"] = it }
-  minimum?.let { map["minimum"] = it }
-  maximum?.let { map["maximum"] = it }
-  minLength?.let { map["minLength"] = it }
-  maxLength?.let { map["maxLength"] = it }
-  minItems?.let { map["minItems"] = it }
-  maxItems?.let { map["maxItems"] = it }
-  minProperties?.let { map["minProperties"] = it }
-  maxProperties?.let { map["maxProperties"] = it }
-
-  return map
-}

@@ -24,17 +24,23 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.tools.AgentTool
+import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content as AdkContent
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall as AdkFunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part as AdkPart
 import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.Type
 import com.google.ai.edge.litertlm.Contents as LiteRtLmContents
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message as LiteRtLmMessage
 import com.google.ai.edge.litertlm.MessageCallback
+import com.google.ai.edge.litertlm.Role as LiteRtLmRole
 import com.google.ai.edge.litertlm.ToolCall as LiteRtLmToolCall
+import com.google.ai.edge.litertlm.ToolManager
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertFailsWith
@@ -680,6 +686,138 @@ class LiteRtLmModelTest {
     model.close()
   }
 
+  /**
+   * Non-streaming twin of the tool-call reuse test: a follow-up after a tool call reuses the cached
+   * conversation, so dropping the generated-id stripping keeps working on this path too.
+   */
+  @Test
+  fun generateContent_streamFalse_afterToolCall_reusesConversationOnCacheHit() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation)
+    whenever(mockConversation.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(
+        LiteRtLmMessage.model(
+          LiteRtLmContents.of(emptyList()),
+          listOf(LiteRtLmToolCall("get_weather", mapOf("city" to "Paris"))),
+        ),
+        LiteRtLmMessage.model(LiteRtLmContents.of("Sunny")),
+      )
+
+    val model = LiteRtLmModel.create(mockEngine)
+    val request1 =
+      LlmRequest(
+        contents = listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Weather?"))))
+      )
+    model.generateContent(request1, stream = false).toList()
+
+    // The history the framework sends back: the same tool call, with the generated id removed.
+    val request2 =
+      LlmRequest(
+        contents =
+          listOf(
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Weather?"))),
+            AdkContent(
+              role = "model",
+              parts =
+                listOf(
+                  AdkPart(
+                    functionCall =
+                      AdkFunctionCall(name = "get_weather", args = mapOf("city" to "Paris"))
+                  )
+                ),
+            ),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "And tomorrow?"))),
+          )
+      )
+    model.generateContent(request2, stream = false).toList()
+
+    verify(mockEngine, times(1)).createConversation(any())
+
+    model.close()
+  }
+
+  /**
+   * A follow-up whose history carries a tool response (TOOL role) still reuses the conversation, so
+   * the reuse path exercises the function-response mapping in the cache key.
+   */
+  @Test
+  fun generateContent_streamFalse_toolResponseInHistory_reusesConversationOnCacheHit() =
+    runBlocking {
+      val mockEngine = mock<LiteRtLmEngine>()
+      val mockConversation = mock<LiteRtLmConversation>()
+      whenever(mockEngine.isInitialized()).thenReturn(true)
+      whenever(mockEngine.createConversation(any())).thenReturn(mockConversation)
+      whenever(mockConversation.sendMessage(any<LiteRtLmMessage>()))
+        .thenReturn(
+          LiteRtLmMessage.model(
+            LiteRtLmContents.of(emptyList()),
+            listOf(LiteRtLmToolCall("get_weather", mapOf("city" to "Paris"))),
+          ),
+          LiteRtLmMessage.model(LiteRtLmContents.of("Sunny")),
+          LiteRtLmMessage.model(LiteRtLmContents.of("Rainy")),
+        )
+
+      val userTurn = AdkContent(role = "user", parts = listOf(AdkPart(text = "Weather?")))
+      val modelToolCall =
+        AdkContent(
+          role = "model",
+          parts =
+            listOf(
+              AdkPart(
+                functionCall =
+                  AdkFunctionCall(name = "get_weather", args = mapOf("city" to "Paris"))
+              )
+            ),
+        )
+      val toolResponse =
+        AdkContent(
+          role = "user",
+          parts =
+            listOf(
+              AdkPart(
+                functionResponse =
+                  com.google.adk.kt.types.FunctionResponse(
+                    name = "get_weather",
+                    response = mapOf("sky" to "sunny"),
+                  )
+              )
+            ),
+        )
+
+      val model = LiteRtLmModel.create(mockEngine)
+      // Turn 1: user question -> model asks for the tool.
+      model.generateContent(LlmRequest(contents = listOf(userTurn)), stream = false).toList()
+      // Same turn: the tool response is sent back -> model gives the final answer.
+      model
+        .generateContent(
+          LlmRequest(contents = listOf(userTurn, modelToolCall, toolResponse)),
+          stream = false,
+        )
+        .toList()
+      // Next turn: the history now carries the TOOL-role response; it must still be a cache hit.
+      model
+        .generateContent(
+          LlmRequest(
+            contents =
+              listOf(
+                userTurn,
+                modelToolCall,
+                toolResponse,
+                AdkContent(role = "model", parts = listOf(AdkPart(text = "Sunny"))),
+                AdkContent(role = "user", parts = listOf(AdkPart(text = "And tomorrow?"))),
+              )
+          ),
+          stream = false,
+        )
+        .toList()
+
+      verify(mockEngine, times(1)).createConversation(any())
+
+      model.close()
+    }
+
   /** Streaming: cancelling mid-stream discards the incomplete conversation. */
   @Test
   fun generateContent_streamTrue_cancelledMidStream_discardsConversation() = runTest {
@@ -977,6 +1115,489 @@ class LiteRtLmModelTest {
 
     model.close()
     verify(mockConversation2).close()
+  }
+
+  /**
+   * Non-streaming: a follow-up whose history matches but whose system instruction changed must not
+   * reuse the conversation, which baked in the old instruction at creation.
+   */
+  @Test
+  fun generateContent_streamFalse_changedInstruction_createsNewConversation() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation1 = mock<LiteRtLmConversation>()
+    val mockConversation2 = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation1, mockConversation2)
+    whenever(mockConversation1.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(LiteRtLmMessage.model(LiteRtLmContents.of("Response 1")))
+    whenever(mockConversation2.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(LiteRtLmMessage.model(LiteRtLmContents.of("Response 2")))
+
+    val model = LiteRtLmModel.create(mockEngine)
+
+    val request1 =
+      LlmRequest(
+        contents =
+          listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request")))),
+        config = configWithInstruction("instruction A"),
+      )
+    model.generateContent(request1, stream = false).toList()
+
+    // Same history as request1 + its response, but a different system instruction.
+    val request2 =
+      LlmRequest(
+        contents =
+          listOf(
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request"))),
+            AdkContent(role = "model", parts = listOf(AdkPart(text = "Response 1"))),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2 request"))),
+          ),
+        config = configWithInstruction("instruction B"),
+      )
+    model.generateContent(request2, stream = false).toList()
+
+    // The changed instruction is a cache miss: the first conversation is closed and a fresh one is
+    // created rather than continuing the one built with instruction A.
+    verify(mockEngine, times(2)).createConversation(any())
+    verify(mockConversation1).close()
+
+    model.close()
+  }
+
+  /**
+   * Non-streaming: a follow-up whose history matches but whose function declarations changed must
+   * not reuse the conversation, which baked in the old declarations at creation.
+   */
+  @Test
+  fun generateContent_streamFalse_changedFunctionDeclarations_createsNewConversation() =
+    runBlocking {
+      val mockEngine = mock<LiteRtLmEngine>()
+      val mockConversation1 = mock<LiteRtLmConversation>()
+      val mockConversation2 = mock<LiteRtLmConversation>()
+      whenever(mockEngine.isInitialized()).thenReturn(true)
+      whenever(mockEngine.createConversation(any()))
+        .thenReturn(mockConversation1, mockConversation2)
+      whenever(mockConversation1.sendMessage(any<LiteRtLmMessage>()))
+        .thenReturn(LiteRtLmMessage.model(LiteRtLmContents.of("Response 1")))
+      whenever(mockConversation2.sendMessage(any<LiteRtLmMessage>()))
+        .thenReturn(LiteRtLmMessage.model(LiteRtLmContents.of("Response 2")))
+
+      val model = LiteRtLmModel.create(mockEngine)
+
+      val request1 =
+        LlmRequest(
+          contents =
+            listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request")))),
+          config = configWithTools("get_weather"),
+        )
+      model.generateContent(request1, stream = false).toList()
+
+      // Same history as request1 + its response, but a different set of function declarations.
+      val request2 =
+        LlmRequest(
+          contents =
+            listOf(
+              AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request"))),
+              AdkContent(role = "model", parts = listOf(AdkPart(text = "Response 1"))),
+              AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2 request"))),
+            ),
+          config = configWithTools("get_time"),
+        )
+      model.generateContent(request2, stream = false).toList()
+
+      verify(mockEngine, times(2)).createConversation(any())
+      verify(mockConversation1).close()
+
+      model.close()
+    }
+
+  /**
+   * Non-streaming: an unchanged system instruction must still reuse the conversation on a history
+   * cache hit, so adding the instruction to the key does not over-invalidate.
+   */
+  @Test
+  fun generateContent_streamFalse_unchangedInstruction_reusesConversation() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation)
+    whenever(mockConversation.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(
+        LiteRtLmMessage.model(LiteRtLmContents.of("Response 1")),
+        LiteRtLmMessage.model(LiteRtLmContents.of("Response 2")),
+      )
+
+    val model = LiteRtLmModel.create(mockEngine)
+
+    val request1 =
+      LlmRequest(
+        contents =
+          listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request")))),
+        config = configWithInstruction("instruction A"),
+      )
+    model.generateContent(request1, stream = false).toList()
+
+    val request2 =
+      LlmRequest(
+        contents =
+          listOf(
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request"))),
+            AdkContent(role = "model", parts = listOf(AdkPart(text = "Response 1"))),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2 request"))),
+          ),
+        config = configWithInstruction("instruction A"),
+      )
+    model.generateContent(request2, stream = false).toList()
+
+    verify(mockEngine, times(1)).createConversation(any())
+    verify(mockConversation, never()).close()
+
+    model.close()
+  }
+
+  /**
+   * Streaming: a follow-up whose history matches but whose system instruction changed must not
+   * reuse the conversation, mirroring the non-streaming path.
+   */
+  @Test
+  fun generateContent_streamTrue_changedInstruction_createsNewConversation() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation1 = mock<LiteRtLmConversation>()
+    val mockConversation2 = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation1, mockConversation2)
+
+    doAnswer { invocation ->
+        val callback = invocation.getArgument<MessageCallback>(1)
+        callback.onMessage(LiteRtLmMessage.model(LiteRtLmContents.of("Response 1")))
+        callback.onDone()
+        null
+      }
+      .whenever(mockConversation1)
+      .sendMessageAsync(any<LiteRtLmMessage>(), any<MessageCallback>())
+    doAnswer { invocation ->
+        val callback = invocation.getArgument<MessageCallback>(1)
+        callback.onMessage(LiteRtLmMessage.model(LiteRtLmContents.of("Response 2")))
+        callback.onDone()
+        null
+      }
+      .whenever(mockConversation2)
+      .sendMessageAsync(any<LiteRtLmMessage>(), any<MessageCallback>())
+
+    val model = LiteRtLmModel.create(mockEngine)
+
+    val request1 =
+      LlmRequest(
+        contents = listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1")))),
+        config = configWithInstruction("instruction A"),
+      )
+    model.generateContent(request1, stream = true).toList()
+
+    val request2 =
+      LlmRequest(
+        contents =
+          listOf(
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1"))),
+            AdkContent(role = "model", parts = listOf(AdkPart(text = "Response 1"))),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2"))),
+          ),
+        config = configWithInstruction("instruction B"),
+      )
+    model.generateContent(request2, stream = true).toList()
+
+    verify(mockEngine, times(2)).createConversation(any())
+    verify(mockConversation1).close()
+
+    model.close()
+  }
+
+  /**
+   * Streaming: a follow-up whose history matches but whose function declarations changed must not
+   * reuse the conversation, mirroring the non-streaming path.
+   */
+  @Test
+  fun generateContent_streamTrue_changedFunctionDeclarations_createsNewConversation() =
+    runBlocking {
+      val mockEngine = mock<LiteRtLmEngine>()
+      val mockConversation1 = mock<LiteRtLmConversation>()
+      val mockConversation2 = mock<LiteRtLmConversation>()
+      whenever(mockEngine.isInitialized()).thenReturn(true)
+      whenever(mockEngine.createConversation(any()))
+        .thenReturn(mockConversation1, mockConversation2)
+
+      doAnswer { invocation ->
+          val callback = invocation.getArgument<MessageCallback>(1)
+          callback.onMessage(LiteRtLmMessage.model(LiteRtLmContents.of("Response 1")))
+          callback.onDone()
+          null
+        }
+        .whenever(mockConversation1)
+        .sendMessageAsync(any<LiteRtLmMessage>(), any<MessageCallback>())
+      doAnswer { invocation ->
+          val callback = invocation.getArgument<MessageCallback>(1)
+          callback.onMessage(LiteRtLmMessage.model(LiteRtLmContents.of("Response 2")))
+          callback.onDone()
+          null
+        }
+        .whenever(mockConversation2)
+        .sendMessageAsync(any<LiteRtLmMessage>(), any<MessageCallback>())
+
+      val model = LiteRtLmModel.create(mockEngine)
+
+      val request1 =
+        LlmRequest(
+          contents = listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1")))),
+          config = configWithTools("get_weather"),
+        )
+      model.generateContent(request1, stream = true).toList()
+
+      val request2 =
+        LlmRequest(
+          contents =
+            listOf(
+              AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1"))),
+              AdkContent(role = "model", parts = listOf(AdkPart(text = "Response 1"))),
+              AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2"))),
+            ),
+          config = configWithTools("get_time"),
+        )
+      model.generateContent(request2, stream = true).toList()
+
+      verify(mockEngine, times(2)).createConversation(any())
+      verify(mockConversation1).close()
+
+      model.close()
+    }
+
+  /**
+   * Non-streaming: unchanged function declarations must still reuse the conversation on a history
+   * cache hit, so adding the tools to the key does not over-invalidate.
+   */
+  @Test
+  fun generateContent_streamFalse_unchangedFunctionDeclarations_reusesConversation() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation)
+    whenever(mockConversation.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(
+        LiteRtLmMessage.model(LiteRtLmContents.of("Response 1")),
+        LiteRtLmMessage.model(LiteRtLmContents.of("Response 2")),
+      )
+
+    val model = LiteRtLmModel.create(mockEngine)
+
+    val request1 =
+      LlmRequest(
+        contents =
+          listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request")))),
+        config = configWithTools("get_weather"),
+      )
+    model.generateContent(request1, stream = false).toList()
+
+    val request2 =
+      LlmRequest(
+        contents =
+          listOf(
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request"))),
+            AdkContent(role = "model", parts = listOf(AdkPart(text = "Response 1"))),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2 request"))),
+          ),
+        config = configWithTools("get_weather"),
+      )
+    model.generateContent(request2, stream = false).toList()
+
+    verify(mockEngine, times(1)).createConversation(any())
+    verify(mockConversation, never()).close()
+
+    model.close()
+  }
+
+  /**
+   * Non-streaming: a tool whose name is unchanged but whose parameter schema changed must not reuse
+   * the conversation, since the tool description baked into it differs.
+   */
+  @Test
+  fun generateContent_streamFalse_changedToolSchemaSameName_createsNewConversation() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation1 = mock<LiteRtLmConversation>()
+    val mockConversation2 = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation1, mockConversation2)
+    whenever(mockConversation1.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(LiteRtLmMessage.model(LiteRtLmContents.of("Response 1")))
+    whenever(mockConversation2.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(LiteRtLmMessage.model(LiteRtLmContents.of("Response 2")))
+
+    fun toolWithParam(paramName: String) =
+      GenerateContentConfig(
+        tools =
+          listOf(
+            Tool(
+              functionDeclarations =
+                listOf(
+                  FunctionDeclaration(
+                    name = "get_weather",
+                    description = "desc",
+                    parameters =
+                      Schema(
+                        type = Type.OBJECT,
+                        properties = mapOf(paramName to Schema(type = Type.STRING)),
+                        required = listOf(paramName),
+                      ),
+                  )
+                )
+            )
+          )
+      )
+
+    val model = LiteRtLmModel.create(mockEngine)
+
+    val request1 =
+      LlmRequest(
+        contents =
+          listOf(AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request")))),
+        config = toolWithParam("city"),
+      )
+    model.generateContent(request1, stream = false).toList()
+
+    // Same tool name, but a different parameter schema: the tool description differs, so the cache
+    // key differs and a fresh conversation must be created.
+    val request2 =
+      LlmRequest(
+        contents =
+          listOf(
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1 request"))),
+            AdkContent(role = "model", parts = listOf(AdkPart(text = "Response 1"))),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2 request"))),
+          ),
+        config = toolWithParam("location"),
+      )
+    model.generateContent(request2, stream = false).toList()
+
+    verify(mockEngine, times(2)).createConversation(any())
+    verify(mockConversation1).close()
+
+    model.close()
+  }
+
+  /**
+   * The captured [ConversationConfig] carries the request's system instruction, history messages,
+   * and tools, so the request -> DTO -> ConversationConfig mapping is asserted rather than only the
+   * createConversation call count.
+   */
+  @Test
+  fun generateContent_buildsConversationConfigFromRequest() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation)
+    whenever(mockConversation.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(LiteRtLmMessage.model(LiteRtLmContents.of("ok")))
+
+    val model = LiteRtLmModel.create(mockEngine)
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 1"))),
+            AdkContent(role = "model", parts = listOf(AdkPart(text = "Reply 1"))),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Turn 2"))),
+          ),
+        config =
+          GenerateContentConfig(
+            systemInstruction =
+              AdkContent(role = "system", parts = listOf(AdkPart(text = "Be brief"))),
+            tools =
+              listOf(
+                Tool(
+                  functionDeclarations =
+                    listOf(
+                      FunctionDeclaration(
+                        name = "get_weather",
+                        description = "Get weather",
+                        parameters =
+                          Schema(
+                            type = Type.OBJECT,
+                            properties = mapOf("city" to Schema(type = Type.STRING)),
+                            required = listOf("city"),
+                          ),
+                      )
+                    )
+                )
+              ),
+          ),
+      )
+
+    model.generateContent(request, stream = false).toList()
+
+    val captor = org.mockito.kotlin.argumentCaptor<ConversationConfig>()
+    verify(mockEngine).createConversation(captor.capture())
+    val config = captor.firstValue
+
+    // Tools are supplied to the model, not auto-called.
+    assertFalse(config.automaticToolCalling)
+    // The system instruction survives the mapping.
+    assertEquals("Be brief", config.systemInstruction?.toString())
+    // The history (everything but the last message) becomes the initial messages, in order.
+    assertEquals(2, config.initialMessages.size)
+    assertEquals(LiteRtLmRole.USER, config.initialMessages[0].role)
+    assertEquals("Turn 1", config.initialMessages[0].toString())
+    assertEquals(LiteRtLmRole.MODEL, config.initialMessages[1].role)
+    assertEquals("Reply 1", config.initialMessages[1].toString())
+    // The tool declaration survives with its name.
+    assertEquals(1, config.tools.size)
+    assertTrue(ToolManager(config.tools).getToolsDescription().toString().contains("get_weather"))
+
+    model.close()
+  }
+
+  /**
+   * A follow-up whose history carries an inline-data (image) part reuses the conversation when the
+   * bytes are the same instance, covering the image/audio branch of the cache key.
+   */
+  @Test
+  fun generateContent_streamFalse_inlineDataInHistory_reusesConversationOnCacheHit() = runBlocking {
+    val mockEngine = mock<LiteRtLmEngine>()
+    val mockConversation = mock<LiteRtLmConversation>()
+    whenever(mockEngine.isInitialized()).thenReturn(true)
+    whenever(mockEngine.createConversation(any())).thenReturn(mockConversation)
+    whenever(mockConversation.sendMessage(any<LiteRtLmMessage>()))
+      .thenReturn(
+        LiteRtLmMessage.model(LiteRtLmContents.of("I see it")),
+        LiteRtLmMessage.model(LiteRtLmContents.of("Still there")),
+      )
+
+    // The same ByteArray instance flows through both turns; ImageBytes compares by identity, so a
+    // shared instance is what makes the follow-up a cache hit.
+    val imageBytes = byteArrayOf(1, 2, 3, 4)
+    val userImage =
+      AdkContent(
+        role = "user",
+        parts =
+          listOf(
+            AdkPart(text = "What is in this image?"),
+            AdkPart(inlineData = Blob(mimeType = "image/png", data = imageBytes)),
+          ),
+      )
+
+    val model = LiteRtLmModel.create(mockEngine)
+    model.generateContent(LlmRequest(contents = listOf(userImage)), stream = false).toList()
+
+    val request2 =
+      LlmRequest(
+        contents =
+          listOf(
+            userImage,
+            AdkContent(role = "model", parts = listOf(AdkPart(text = "I see it"))),
+            AdkContent(role = "user", parts = listOf(AdkPart(text = "Is it still there?"))),
+          )
+      )
+    model.generateContent(request2, stream = false).toList()
+
+    verify(mockEngine, times(1)).createConversation(any())
+
+    model.close()
   }
 
   @Test
@@ -1393,4 +2014,20 @@ class LiteRtLmModelTest {
       .sendMessageAsync(any<LiteRtLmMessage>(), any<MessageCallback>())
     return conversation
   }
+
+  private fun configWithInstruction(text: String): GenerateContentConfig =
+    GenerateContentConfig(
+      systemInstruction = AdkContent(role = "system", parts = listOf(AdkPart(text = text)))
+    )
+
+  private fun configWithTools(vararg functionNames: String): GenerateContentConfig =
+    GenerateContentConfig(
+      tools =
+        listOf(
+          Tool(
+            functionDeclarations =
+              functionNames.map { FunctionDeclaration(name = it, description = "desc") }
+          )
+        )
+    )
 }

@@ -16,24 +16,24 @@
 
 package com.google.adk.kt.litertlm
 
-import com.google.adk.kt.types.Content as AdkContent
-
-/** Represents the active [LiteRtLmConversation] and its corresponding [AdkContent] history key. */
+/**
+ * Represents the active [LiteRtLmConversation] and the [LiteRtLmConversationDto] it was built from.
+ */
 internal class ActiveLiteRtLmConversation {
   var conversation: LiteRtLmConversation? = null
     private set
 
-  var history: List<AdkContent>? = null
+  var dto: LiteRtLmConversationDto? = null
     private set
 
-  fun update(conversation: LiteRtLmConversation, history: List<AdkContent>) {
+  fun update(conversation: LiteRtLmConversation, dto: LiteRtLmConversationDto) {
     this.conversation = conversation
-    this.history = history
+    this.dto = dto
   }
 
-  /** Checks if the active conversation history matches the given history. */
-  fun matches(history: List<AdkContent>): Boolean {
-    return conversation != null && this.history == history
+  /** Checks if the active conversation was built from the given [dto]. */
+  fun matches(dto: LiteRtLmConversationDto): Boolean {
+    return conversation != null && this.dto == dto
   }
 
   /**
@@ -43,7 +43,7 @@ internal class ActiveLiteRtLmConversation {
   fun detach(): LiteRtLmConversation? {
     val detached = conversation
     conversation = null
-    history = null
+    dto = null
     return detached
   }
 }
