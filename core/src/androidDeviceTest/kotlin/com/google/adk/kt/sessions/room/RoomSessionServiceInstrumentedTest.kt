@@ -22,9 +22,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
+import com.google.adk.kt.testing.modelMessage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -67,11 +65,7 @@ class RoomSessionServiceInstrumentedTest {
   fun appendEvent_persistsAcrossDatabaseReopen(): Unit = runBlocking {
     val key = SessionKey(APP_NAME, "user-persist", "session-persist")
     val session = sessionService.createSession(key)
-    val event =
-      Event(
-        author = "agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "persisted answer"))),
-      )
+    val event = Event(author = "agent", content = modelMessage("persisted answer"))
     val appended = sessionService.appendEvent(session, event)
 
     // Reopen the on-disk database with a fresh service instance to prove durability.

@@ -16,6 +16,7 @@
 package com.google.adk.kt.a2a.agent
 
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -48,7 +49,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Hello"))),
+        content = modelMessage("Hello"),
       )
     val setupResult =
       aggregator.processEvent(
@@ -81,7 +82,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "World"))),
+        content = modelMessage("World"),
       )
     val result =
       aggregator.processEvent(
@@ -101,7 +102,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Old"))),
+        content = modelMessage("Old"),
       )
     val setupResult =
       aggregator.processEvent(
@@ -117,7 +118,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "New"))),
+        content = modelMessage("New"),
       )
     val result =
       aggregator.processEvent(
@@ -137,7 +138,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Hello"))),
+        content = modelMessage("Hello"),
       )
     val setupResult =
       aggregator.processEvent(
@@ -149,11 +150,7 @@ class A2AStreamingResponseAggregatorTest {
     assertEquals(listOf(partialEvent), setupResult)
 
     val completedEvent =
-      Event(
-        author = agentName,
-        invocationId = invocationId,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Final"))),
-      )
+      Event(author = agentName, invocationId = invocationId, content = modelMessage("Final"))
     val result =
       aggregator.processEvent(
         completedEvent,
@@ -174,7 +171,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Buffered"))),
+        content = modelMessage("Buffered"),
       )
     val setupResult =
       aggregator.processEvent(
@@ -212,7 +209,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Part 1"))),
+        content = modelMessage("Part 1"),
       )
     val setupResult =
       aggregator.processEvent(
@@ -228,7 +225,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = false,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Part 2"))),
+        content = modelMessage("Part 2"),
       )
     val result =
       aggregator.processEvent(
@@ -250,7 +247,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Part 1"))),
+        content = modelMessage("Part 1"),
       )
     val unused =
       aggregator.processEvent(
@@ -265,7 +262,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = false,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Part 2"))),
+        content = modelMessage("Part 2"),
       )
     val result =
       aggregator.processEvent(
@@ -285,8 +282,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content =
-          Content(role = Role.MODEL, parts = listOf(Part(text = "Thinking...", thought = true))),
+        content = modelMessage(Part(text = "Thinking...", thought = true)),
       )
     val setupResult =
       aggregator.processEvent(
@@ -319,8 +315,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content =
-          Content(role = Role.MODEL, parts = listOf(Part(text = "Thinking...", thought = true))),
+        content = modelMessage(Part(text = "Thinking...", thought = true)),
       )
     val r1 =
       aggregator.processEvent(
@@ -336,7 +331,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Hello"))),
+        content = modelMessage("Hello"),
       )
     val r2 =
       aggregator.processEvent(
@@ -352,11 +347,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content =
-          Content(
-            role = Role.MODEL,
-            parts = listOf(Part(text = "More thinking...", thought = true)),
-          ),
+        content = modelMessage(Part(text = "More thinking...", thought = true)),
       )
     val r3 =
       aggregator.processEvent(
@@ -394,7 +385,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Hello"))),
+        content = modelMessage("Hello"),
       )
     val r1 =
       aggregator.processEvent(
@@ -410,7 +401,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = " World"))),
+        content = modelMessage(" World"),
       )
     val r2 =
       aggregator.processEvent(
@@ -442,8 +433,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content =
-          Content(role = Role.MODEL, parts = listOf(Part(text = "Thinking", thought = true))),
+        content = modelMessage(Part(text = "Thinking", thought = true)),
       )
     val r1 =
       aggregator.processEvent(
@@ -459,8 +449,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content =
-          Content(role = Role.MODEL, parts = listOf(Part(text = " more...", thought = true))),
+        content = modelMessage(Part(text = " more...", thought = true)),
       )
     val r2 =
       aggregator.processEvent(
@@ -493,7 +482,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Old"))),
+        content = modelMessage("Old"),
       )
     val unused =
       aggregator.processEvent(
@@ -528,7 +517,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Part 1"))),
+        content = modelMessage("Part 1"),
       )
     val unused1 =
       aggregator.processEvent(
@@ -544,7 +533,7 @@ class A2AStreamingResponseAggregatorTest {
         author = agentName,
         invocationId = invocationId,
         partial = true,
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "Part 2"))),
+        content = modelMessage("Part 2"),
       )
     val result =
       aggregator.processEvent(

@@ -24,6 +24,8 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCall
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
@@ -139,17 +141,7 @@ class RequestConfirmationProcessorTest {
       Event(
         author = "remote_a2a_agent",
         invocationId = context.invocationId,
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(
-                  functionCall =
-                    FunctionCall(name = "peer_noise", id = "orig_1", args = mapOf("x" to "y"))
-                )
-              ),
-          ),
+        content = modelFunctionCall(name = "peer_noise", id = "orig_1", args = mapOf("x" to "y")),
       )
     )
     session.events.add(approvalEvent(context.invocationId, synthId = "synth_1"))
@@ -186,19 +178,10 @@ class RequestConfirmationProcessorTest {
         author = "remote_a2a_agent",
         invocationId = context.invocationId,
         content =
-          Content(
-            role = Role.USER,
-            parts =
-              listOf(
-                Part(
-                  functionResponse =
-                    FunctionResponse(
-                      name = "peer_noise",
-                      id = "orig_1",
-                      response = mapOf("status" to "whatever"),
-                    )
-                )
-              ),
+          userFunctionResponse(
+            name = "peer_noise",
+            id = "orig_1",
+            response = mapOf("status" to "whatever"),
           ),
       )
     )
@@ -244,16 +227,7 @@ class RequestConfirmationProcessorTest {
         author = "remote_a2a_agent",
         invocationId = context.invocationId,
         content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(
-                  functionCall =
-                    FunctionCall(name = toolName, id = "orig_1", args = mapOf("param" to "value"))
-                )
-              ),
-          ),
+          modelFunctionCall(name = toolName, id = "orig_1", args = mapOf("param" to "value")),
       )
     )
     session.events.add(
@@ -287,16 +261,12 @@ class RequestConfirmationProcessorTest {
         author = "remote_a2a_agent",
         invocationId = context.invocationId,
         content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                synthConfirmationCallPart(
-                  synthId = "synth_1",
-                  originalToolName = toolName,
-                  originalCallId = "orig_1",
-                )
-              ),
+          modelMessage(
+            synthConfirmationCallPart(
+              synthId = "synth_1",
+              originalToolName = toolName,
+              originalCallId = "orig_1",
+            )
           ),
       )
     )
@@ -569,16 +539,12 @@ class RequestConfirmationProcessorTest {
         author = AGENT_NAME,
         branch = "child_branch",
         content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                synthConfirmationCallPart(
-                  synthId = "synth_1",
-                  originalToolName = toolName,
-                  originalCallId = originalCallId,
-                )
-              ),
+          modelMessage(
+            synthConfirmationCallPart(
+              synthId = "synth_1",
+              originalToolName = toolName,
+              originalCallId = originalCallId,
+            )
           ),
         invocationId = context.invocationId,
       )
@@ -699,13 +665,9 @@ class RequestConfirmationProcessorTest {
       Event(
         author = Role.USER,
         content =
-          Content(
-            role = Role.USER,
-            parts =
-              listOf(
-                approvalResponsePart(synthId = "synth_a"),
-                approvalResponsePart(synthId = "synth_b"),
-              ),
+          userMessage(
+            approvalResponsePart(synthId = "synth_a"),
+            approvalResponsePart(synthId = "synth_b"),
           ),
         invocationId = context.invocationId,
       )
@@ -763,13 +725,9 @@ class RequestConfirmationProcessorTest {
       Event(
         author = Role.USER,
         content =
-          Content(
-            role = Role.USER,
-            parts =
-              listOf(
-                approvalResponsePart(synthId = "synth_a"),
-                approvalResponsePart(synthId = "synth_b"),
-              ),
+          userMessage(
+            approvalResponsePart(synthId = "synth_a"),
+            approvalResponsePart(synthId = "synth_b"),
           ),
         invocationId = context.invocationId,
       )
@@ -1115,36 +1073,22 @@ class RequestConfirmationProcessorTest {
         author = AGENT_NAME,
         branch = branch,
         invocationId = invocationId,
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(
-                  functionCall =
-                    FunctionCall(name = toolName, id = originalCallId, args = originalArgs)
-                )
-              ),
-          ),
+        content = modelFunctionCall(name = toolName, id = originalCallId, args = originalArgs),
       ),
       Event(
         author = AGENT_NAME,
         branch = branch,
         invocationId = invocationId,
         content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(
-                  functionResponse =
-                    FunctionResponse(
-                      name = toolName,
-                      id = originalCallId,
-                      response = mapOf("error" to "requires confirmation"),
-                    )
+          modelMessage(
+            Part(
+              functionResponse =
+                FunctionResponse(
+                  name = toolName,
+                  id = originalCallId,
+                  response = mapOf("error" to "requires confirmation"),
                 )
-              ),
+            )
           ),
         actions =
           EventActions().apply {
