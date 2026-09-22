@@ -29,6 +29,7 @@ import com.google.adk.kt.webserver.dev.AdkDevServer
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.loaders.SingleAgentLoader
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
+import com.google.adk.kt.workflow.Node
 
 /**
  * What an [AdkApiServer] or [AdkDevServer] needs to serve a set of agents over HTTP.
@@ -167,20 +168,28 @@ data class AdkServerConfig(
     const val DEFAULT_HOST: String = "127.0.0.1"
 
     /**
-     * Config for serving a single [agent], with session and artifact state held in memory.
+     * Config for serving a single [agent], or other root [Node] such as a workflow, with session
+     * and artifact state held in memory.
      *
      * That state is lost when the process exits, so this suits a local run or a test rather than a
      * deployment. Serve several agents, or persist state, by building [AdkServerConfig] directly.
      */
     @JvmStatic
     @JvmOverloads
-    fun inMemory(agent: BaseAgent, port: Int = DEFAULT_PORT): AdkServerConfig =
+    fun inMemory(agent: Node, port: Int = DEFAULT_PORT): AdkServerConfig =
       AdkServerConfig(
         agentLoader = SingleAgentLoader(agent),
         sessionService = InMemorySessionService(),
         artifactService = InMemoryArtifactService(),
         port = port,
       )
+
+    /** Keeps code compiled against the agent-only [inMemory] linking. */
+    @Deprecated("Binary compatibility only.", level = DeprecationLevel.HIDDEN)
+    @JvmStatic
+    @JvmOverloads
+    fun inMemory(agent: BaseAgent, port: Int = DEFAULT_PORT): AdkServerConfig =
+      inMemory(agent as Node, port)
 
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
