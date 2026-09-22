@@ -18,7 +18,12 @@ package com.google.adk.kt.types
 
 import com.google.genai.kotlin.types.BlockedReason as SdkBlockedReason
 import com.google.genai.kotlin.types.FinishReason as SdkFinishReason
+import com.google.genai.kotlin.types.FunctionCallingConfigMode as SdkFunctionCallingConfigMode
+import com.google.genai.kotlin.types.HarmBlockMethod as SdkHarmBlockMethod
+import com.google.genai.kotlin.types.Language as SdkLanguage
 import com.google.genai.kotlin.types.ModelRoutingPreference as SdkModelRoutingPreference
+import com.google.genai.kotlin.types.Outcome as SdkOutcome
+import com.google.genai.kotlin.types.PartMediaResolutionLevel as SdkPartMediaResolutionLevel
 import com.google.genai.kotlin.types.ThinkingLevel as SdkThinkingLevel
 import com.google.genai.kotlin.types.Type as SdkType
 import kotlin.test.Test
@@ -64,6 +69,41 @@ class EnumConvertersTest {
   }
 
   @Test
+  fun functionCallingConfigMode_roundTripsThroughSdk() {
+    for (value in FunctionCallingConfigMode.entries) {
+      assertEquals(value, value.toGenaiSdk().toKt())
+    }
+  }
+
+  @Test
+  fun harmBlockMethod_roundTripsThroughSdk() {
+    for (value in HarmBlockMethod.entries) {
+      assertEquals(value, value.toGenaiSdk().toKt())
+    }
+  }
+
+  @Test
+  fun language_roundTripsThroughSdk() {
+    for (value in Language.entries) {
+      assertEquals(value, value.toGenaiSdk().toKt())
+    }
+  }
+
+  @Test
+  fun outcome_roundTripsThroughSdk() {
+    for (value in Outcome.entries) {
+      assertEquals(value, value.toGenaiSdk().toKt())
+    }
+  }
+
+  @Test
+  fun partMediaResolutionLevel_roundTripsThroughSdk() {
+    for (value in PartMediaResolutionLevel.entries) {
+      assertEquals(value, value.toGenaiSdk().toKt())
+    }
+  }
+
+  @Test
   fun toKt_unknownSdkValue_fallsBackToDefault() {
     // An SDK value with no matching ADK constant degrades to the catch-all (or null for `Type`)
     // rather than throwing.
@@ -72,6 +112,20 @@ class EnumConvertersTest {
     assertEquals(ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, SdkThinkingLevel("UNRECOGNIZED").toKt())
     assertEquals(ModelRoutingPreference.UNKNOWN, SdkModelRoutingPreference("UNRECOGNIZED").toKt())
     assertNull(SdkType("UNRECOGNIZED").toKt())
+    assertEquals(
+      FunctionCallingConfigMode.MODE_UNSPECIFIED,
+      SdkFunctionCallingConfigMode("UNRECOGNIZED").toKt(),
+    )
+    assertEquals(
+      HarmBlockMethod.HARM_BLOCK_METHOD_UNSPECIFIED,
+      SdkHarmBlockMethod("UNRECOGNIZED").toKt(),
+    )
+    assertEquals(Language.LANGUAGE_UNSPECIFIED, SdkLanguage("UNRECOGNIZED").toKt())
+    assertEquals(Outcome.OUTCOME_UNSPECIFIED, SdkOutcome("UNRECOGNIZED").toKt())
+    assertEquals(
+      PartMediaResolutionLevel.MEDIA_RESOLUTION_UNSPECIFIED,
+      SdkPartMediaResolutionLevel("UNRECOGNIZED").toKt(),
+    )
   }
 
   @Test

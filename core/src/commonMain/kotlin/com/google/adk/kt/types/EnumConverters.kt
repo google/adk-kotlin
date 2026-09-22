@@ -17,11 +17,16 @@ package com.google.adk.kt.types
 
 import com.google.genai.kotlin.types.BlockedReason as GenAiBlockedReason
 import com.google.genai.kotlin.types.FinishReason as GenAiFinishReason
+import com.google.genai.kotlin.types.FunctionCallingConfigMode as GenAiFunctionCallingConfigMode
+import com.google.genai.kotlin.types.HarmBlockMethod as GenAiHarmBlockMethod
 import com.google.genai.kotlin.types.HarmBlockThreshold as GenAiHarmBlockThreshold
 import com.google.genai.kotlin.types.HarmCategory as GenAiHarmCategory
+import com.google.genai.kotlin.types.Language as GenAiLanguage
 import com.google.genai.kotlin.types.MediaModality as GenAiMediaModality
 import com.google.genai.kotlin.types.MediaResolution as GenAiMediaResolution
 import com.google.genai.kotlin.types.ModelRoutingPreference as GenAiModelRoutingPreference
+import com.google.genai.kotlin.types.Outcome as GenAiOutcome
+import com.google.genai.kotlin.types.PartMediaResolutionLevel as GenAiPartMediaResolutionLevel
 import com.google.genai.kotlin.types.ServiceTier as GenAiServiceTier
 import com.google.genai.kotlin.types.ThinkingLevel as GenAiThinkingLevel
 import com.google.genai.kotlin.types.Type as GenAiType
@@ -127,3 +132,64 @@ internal fun GenAiModelRoutingPreference.toKt(): ModelRoutingPreference =
  */
 internal fun ModelRoutingPreference.toGenaiSdk(): GenAiModelRoutingPreference =
   GenAiModelRoutingPreference(this.name)
+
+/**
+ * Converts a [GenAiFunctionCallingConfigMode] from the GenAI SDK to an ADK
+ * [FunctionCallingConfigMode]. The SDK models enums as `value class` wrappers, so unknown values
+ * map to [FunctionCallingConfigMode.MODE_UNSPECIFIED].
+ */
+internal fun GenAiFunctionCallingConfigMode.toKt(): FunctionCallingConfigMode =
+  runCatching { FunctionCallingConfigMode.valueOf(this.value) }
+    .getOrDefault(FunctionCallingConfigMode.MODE_UNSPECIFIED)
+
+/**
+ * Converts an ADK [FunctionCallingConfigMode] to a [GenAiFunctionCallingConfigMode] for the GenAI
+ * SDK.
+ */
+internal fun FunctionCallingConfigMode.toGenaiSdk(): GenAiFunctionCallingConfigMode =
+  GenAiFunctionCallingConfigMode(this.name)
+
+/**
+ * Converts a [GenAiHarmBlockMethod] from the GenAI SDK to an ADK [HarmBlockMethod]. The SDK models
+ * enums as `value class` wrappers, so unknown values map to
+ * [HarmBlockMethod.HARM_BLOCK_METHOD_UNSPECIFIED].
+ */
+internal fun GenAiHarmBlockMethod.toKt(): HarmBlockMethod =
+  runCatching { HarmBlockMethod.valueOf(this.value) }
+    .getOrDefault(HarmBlockMethod.HARM_BLOCK_METHOD_UNSPECIFIED)
+
+/** Converts an ADK [HarmBlockMethod] to a [GenAiHarmBlockMethod] for the GenAI SDK. */
+internal fun HarmBlockMethod.toGenaiSdk(): GenAiHarmBlockMethod = GenAiHarmBlockMethod(this.name)
+
+/**
+ * Converts a [GenAiLanguage] from the GenAI SDK to an ADK [Language]. The SDK models enums as
+ * `value class` wrappers, so unknown values map to [Language.LANGUAGE_UNSPECIFIED].
+ */
+internal fun GenAiLanguage.toKt(): Language =
+  runCatching { Language.valueOf(this.value) }.getOrDefault(Language.LANGUAGE_UNSPECIFIED)
+
+/** Converts an ADK [Language] to a [GenAiLanguage] for the GenAI SDK. */
+internal fun Language.toGenaiSdk(): GenAiLanguage = GenAiLanguage(this.name)
+
+/**
+ * Converts a [GenAiOutcome] from the GenAI SDK to an ADK [Outcome]. The SDK models enums as `value
+ * class` wrappers, so unknown values map to [Outcome.OUTCOME_UNSPECIFIED].
+ */
+internal fun GenAiOutcome.toKt(): Outcome =
+  runCatching { Outcome.valueOf(this.value) }.getOrDefault(Outcome.OUTCOME_UNSPECIFIED)
+
+/** Converts an ADK [Outcome] to a [GenAiOutcome] for the GenAI SDK. */
+internal fun Outcome.toGenaiSdk(): GenAiOutcome = GenAiOutcome(this.name)
+
+/**
+ * Converts a [GenAiPartMediaResolutionLevel] from the GenAI SDK to an ADK
+ * [PartMediaResolutionLevel]. The SDK models enums as `value class` wrappers, so unknown values map
+ * to [PartMediaResolutionLevel.MEDIA_RESOLUTION_UNSPECIFIED].
+ */
+internal fun GenAiPartMediaResolutionLevel.toKt(): PartMediaResolutionLevel =
+  runCatching { PartMediaResolutionLevel.valueOf(this.value) }
+    .getOrDefault(PartMediaResolutionLevel.MEDIA_RESOLUTION_UNSPECIFIED)
+
+/** Converts an ADK [PartMediaResolutionLevel] to a [GenAiPartMediaResolutionLevel] for the SDK. */
+internal fun PartMediaResolutionLevel.toGenaiSdk(): GenAiPartMediaResolutionLevel =
+  GenAiPartMediaResolutionLevel(this.name)

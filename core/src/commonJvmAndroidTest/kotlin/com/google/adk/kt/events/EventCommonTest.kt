@@ -16,9 +16,11 @@
 
 package com.google.adk.kt.events
 
+import com.google.adk.kt.types.CodeExecutionResult
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.Outcome
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.UsageMetadata
 import com.google.common.truth.Truth.assertThat
@@ -218,5 +220,47 @@ class EventCommonTest {
         partial = true,
       )
     assertThat(event.isFinalResponse).isFalse()
+  }
+
+  @Test
+  fun isFinalResponse_returnsFalseIfTrailingCodeExecutionResult() {
+    val event =
+      Event(
+        id = "e1",
+        invocationId = "i1",
+        author = "agent",
+        content =
+          Content(
+            role = null,
+            parts =
+              listOf(
+                Part(text = "running code"),
+                Part(codeExecutionResult = CodeExecutionResult(outcome = Outcome.OUTCOME_OK)),
+              ),
+          ),
+      )
+    assertThat(event.hasTrailingCodeExecutionResult()).isTrue()
+    assertThat(event.isFinalResponse).isFalse()
+  }
+
+  @Test
+  fun hasTrailingCodeExecutionResult_returnsFalseWhenNotLast() {
+    val event =
+      Event(
+        id = "e1",
+        invocationId = "i1",
+        author = "agent",
+        content =
+          Content(
+            role = null,
+            parts =
+              listOf(
+                Part(codeExecutionResult = CodeExecutionResult(outcome = Outcome.OUTCOME_OK)),
+                Part(text = "the answer is 4"),
+              ),
+          ),
+      )
+    assertThat(event.hasTrailingCodeExecutionResult()).isFalse()
+    assertThat(event.isFinalResponse).isTrue()
   }
 }

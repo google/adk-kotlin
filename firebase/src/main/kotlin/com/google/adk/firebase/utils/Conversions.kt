@@ -26,12 +26,18 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionCallingConfig
+import com.google.adk.kt.types.FunctionCallingConfigMode
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GoogleMaps
 import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.HarmBlockMethod
+import com.google.adk.kt.types.HarmBlockThreshold
+import com.google.adk.kt.types.HarmCategory
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.SafetySetting
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.ThinkingConfig
 import com.google.adk.kt.types.ThinkingLevel
@@ -45,6 +51,7 @@ import com.google.firebase.ai.type.Content as FirebaseContent
 import com.google.firebase.ai.type.FileDataPart
 import com.google.firebase.ai.type.FinishReason as FirebaseFinishReason
 import com.google.firebase.ai.type.FunctionCallPart
+import com.google.firebase.ai.type.FunctionCallingConfig as FirebaseFunctionCallingConfig
 import com.google.firebase.ai.type.FunctionDeclaration as FirebaseFunctionDeclaration
 import com.google.firebase.ai.type.FunctionResponsePart
 import com.google.firebase.ai.type.GenerateContentResponse
@@ -52,11 +59,15 @@ import com.google.firebase.ai.type.GenerationConfig
 import com.google.firebase.ai.type.GoogleMaps as FirebaseGoogleMaps
 import com.google.firebase.ai.type.GoogleSearch as FirebaseGoogleSearch
 import com.google.firebase.ai.type.GroundingMetadata as FirebaseGroundingMetadata
+import com.google.firebase.ai.type.HarmBlockMethod as FirebaseHarmBlockMethod
+import com.google.firebase.ai.type.HarmBlockThreshold as FirebaseHarmBlockThreshold
+import com.google.firebase.ai.type.HarmCategory as FirebaseHarmCategory
 import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.Part as FirebasePart
 import com.google.firebase.ai.type.PublicPreviewAPI
 import com.google.firebase.ai.type.RequestOptions
-import com.google.firebase.ai.type.SafetySetting
+import com.google.firebase.ai.type.ResponseModality
+import com.google.firebase.ai.type.SafetySetting as FirebaseSafetySetting
 import com.google.firebase.ai.type.Schema as FirebaseSchema
 import com.google.firebase.ai.type.StringFormat
 import com.google.firebase.ai.type.TextPart
@@ -224,6 +235,48 @@ internal class Conversions {
       thinkingLevel = thinkingConfig.thinkingLevel?.let { toFirebaseThinkingLevel(it) }
     }
 
+  /**
+   * Maps an ADK response-modality string to a Firebase [ResponseModality], warning and dropping any
+   * value Firebase does not model (it supports only TEXT, IMAGE, and AUDIO).
+   */
+  fun toFirebaseResponseModality(modality: String): ResponseModality? =
+    when (modality) {
+      "TEXT" -> ResponseModality.TEXT
+      "IMAGE" -> ResponseModality.IMAGE
+      "AUDIO" -> ResponseModality.AUDIO
+      else -> {
+        logger.warn { "Response modality is not supported in Firebase and is dropped: $modality" }
+        null
+      }
+    }
+
+  /**
+   * Maps an ADK [FunctionCallingConfig] to Firebase's, which models a mode as a factory rather than
+   * a field. Returns null (no tool config) when the mode is unset or one Firebase cannot express.
+   */
+  fun toFirebaseFunctionCallingConfig(
+    functionCallingConfig: FunctionCallingConfig
+  ): FirebaseFunctionCallingConfig? =
+    with(functionCallingConfig) {
+      when (mode) {
+        FunctionCallingConfigMode.AUTO -> FirebaseFunctionCallingConfig.auto()
+        FunctionCallingConfigMode.ANY ->
+          allowedFunctionNames
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { FirebaseFunctionCallingConfig.any(it) } ?: FirebaseFunctionCallingConfig.any()
+        FunctionCallingConfigMode.NONE -> FirebaseFunctionCallingConfig.none()
+        // An unset or unspecified mode is a valid config (e.g. only allowedFunctionNames set), so
+        // it
+        // is a silent no-op rather than a dropped-mode warning.
+        null,
+        FunctionCallingConfigMode.MODE_UNSPECIFIED -> null
+        else -> {
+          logger.warn { "Function calling mode is not supported in Firebase and is dropped: $mode" }
+          null
+        }
+      }
+    }
+
   fun toFirebaseThinkingLevel(thinkingLevel: ThinkingLevel): FirebaseThinkingLevel? =
     when (thinkingLevel) {
       ThinkingLevel.MINIMAL -> FirebaseThinkingLevel.MINIMAL
@@ -231,6 +284,72 @@ internal class Conversions {
       ThinkingLevel.MEDIUM -> FirebaseThinkingLevel.MEDIUM
       ThinkingLevel.HIGH -> FirebaseThinkingLevel.HIGH
       ThinkingLevel.THINKING_LEVEL_UNSPECIFIED -> null
+    }
+
+  /**
+   * Maps an ADK [SafetySetting] to Firebase's. Firebase requires both a category and a threshold it
+   * can express, so a setting missing either is warned about and dropped.
+   */
+  fun toFirebaseSafetySetting(setting: SafetySetting): FirebaseSafetySetting? {
+    val category = setting.category?.let { toFirebaseHarmCategory(it) }
+    val threshold = setting.threshold?.let { toFirebaseHarmBlockThreshold(it) }
+    if (category == null || threshold == null) {
+      logger.warn {
+        "Safety setting has no category or threshold Firebase can express and is dropped"
+      }
+      return null
+    }
+    return FirebaseSafetySetting(
+      category,
+      threshold,
+      setting.method?.let { toFirebaseHarmBlockMethod(it) },
+    )
+  }
+
+  /** Maps an ADK [HarmCategory] to Firebase's, warning and dropping any value it cannot express. */
+  fun toFirebaseHarmCategory(category: HarmCategory): FirebaseHarmCategory? =
+    when (category) {
+      HarmCategory.HARM_CATEGORY_HARASSMENT -> FirebaseHarmCategory.HARASSMENT
+      HarmCategory.HARM_CATEGORY_HATE_SPEECH -> FirebaseHarmCategory.HATE_SPEECH
+      HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT -> FirebaseHarmCategory.SEXUALLY_EXPLICIT
+      HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT -> FirebaseHarmCategory.DANGEROUS_CONTENT
+      HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY -> FirebaseHarmCategory.CIVIC_INTEGRITY
+      HarmCategory.HARM_CATEGORY_IMAGE_HATE -> FirebaseHarmCategory.IMAGE_HATE
+      HarmCategory.HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT ->
+        FirebaseHarmCategory.IMAGE_DANGEROUS_CONTENT
+      HarmCategory.HARM_CATEGORY_IMAGE_HARASSMENT -> FirebaseHarmCategory.IMAGE_HARASSMENT
+      HarmCategory.HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT ->
+        FirebaseHarmCategory.IMAGE_SEXUALLY_EXPLICIT
+      HarmCategory.HARM_CATEGORY_UNSPECIFIED,
+      HarmCategory.HARM_CATEGORY_JAILBREAK -> {
+        logger.warn { "Harm category is not supported in Firebase and is dropped: $category" }
+        null
+      }
+    }
+
+  /**
+   * Maps an ADK [HarmBlockThreshold] to Firebase's; the unspecified value has no Firebase
+   * counterpart and becomes null.
+   */
+  fun toFirebaseHarmBlockThreshold(threshold: HarmBlockThreshold): FirebaseHarmBlockThreshold? =
+    when (threshold) {
+      HarmBlockThreshold.BLOCK_LOW_AND_ABOVE -> FirebaseHarmBlockThreshold.LOW_AND_ABOVE
+      HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE -> FirebaseHarmBlockThreshold.MEDIUM_AND_ABOVE
+      HarmBlockThreshold.BLOCK_ONLY_HIGH -> FirebaseHarmBlockThreshold.ONLY_HIGH
+      HarmBlockThreshold.BLOCK_NONE -> FirebaseHarmBlockThreshold.NONE
+      HarmBlockThreshold.OFF -> FirebaseHarmBlockThreshold.OFF
+      HarmBlockThreshold.HARM_BLOCK_THRESHOLD_UNSPECIFIED -> null
+    }
+
+  /**
+   * Maps an ADK [HarmBlockMethod] to Firebase's; the unspecified value has no Firebase counterpart
+   * and becomes null.
+   */
+  fun toFirebaseHarmBlockMethod(method: HarmBlockMethod): FirebaseHarmBlockMethod? =
+    when (method) {
+      HarmBlockMethod.SEVERITY -> FirebaseHarmBlockMethod.SEVERITY
+      HarmBlockMethod.PROBABILITY -> FirebaseHarmBlockMethod.PROBABILITY
+      HarmBlockMethod.HARM_BLOCK_METHOD_UNSPECIFIED -> null
     }
 
   // warn if role is not one of the role strings allowed by firebase api - don't throw just yet,
@@ -755,19 +874,23 @@ internal class Conversions {
           stopSequences = config.stopSequences
           candidateCount = config.candidateCount
           responseMimeType = config.responseMimeType
+          responseModalities =
+            config.responseModalities?.mapNotNull { toFirebaseResponseModality(it) }
           thinkingConfig = config.thinkingConfig?.let { toFirebaseThinkingConfig(it) }
         }
       }
 
-    // returning null since there doesn't seem to be an equivalent configuration setting available
-    // in adk
-    fun safetySettings(): List<SafetySetting>? = null
+    fun safetySettings(): List<FirebaseSafetySetting>? =
+      request.config.safetySettings
+        ?.mapNotNull { toFirebaseSafetySetting(it) }
+        ?.takeIf { it.isNotEmpty() }
 
     fun tools(): List<FirebaseTool>? = request.config.tools?.mapNotNull { toFirebaseTool(it) }
 
-    // returning null since there doesn't seem to be an equivalent configuration setting available
-    // in adk
-    fun toolConfig(): ToolConfig? = null
+    fun toolConfig(): ToolConfig? =
+      request.config.toolConfig?.functionCallingConfig?.let {
+        toFirebaseFunctionCallingConfig(it)?.let { firebaseConfig -> ToolConfig(firebaseConfig) }
+      }
 
     fun systemInstruction(): FirebaseContent? =
       request.config.systemInstruction?.let { toFirebaseContent(it) }

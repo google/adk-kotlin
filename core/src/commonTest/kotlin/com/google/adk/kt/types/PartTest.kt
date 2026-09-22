@@ -89,4 +89,50 @@ class PartTest {
     assertEquals(part.toolCall, part.copy(text = "bye").toolCall)
     assertEquals(part.toolResponse, part.copy(text = "bye").toolResponse)
   }
+
+  @Test
+  fun equals_differentExecutableCode_returnsFalse() {
+    val part1 = Part(executableCode = ExecutableCode(code = "print(1)"))
+    val part2 = Part(executableCode = ExecutableCode(code = "print(2)"))
+
+    assertNotEquals(part1, part2)
+    assertNotEquals(part1.hashCode(), part2.hashCode())
+  }
+
+  @Test
+  fun equals_differentCodeExecutionResult_returnsFalse() {
+    val part1 = Part(codeExecutionResult = CodeExecutionResult(output = "1"))
+    val part2 = Part(codeExecutionResult = CodeExecutionResult(output = "2"))
+
+    assertNotEquals(part1, part2)
+    assertNotEquals(part1.hashCode(), part2.hashCode())
+  }
+
+  @Test
+  fun equals_differentMediaResolution_returnsFalse() {
+    val part1 = Part(mediaResolution = PartMediaResolution(numTokens = 64))
+    val part2 = Part(mediaResolution = PartMediaResolution(numTokens = 256))
+
+    assertNotEquals(part1, part2)
+    assertNotEquals(part1.hashCode(), part2.hashCode())
+  }
+
+  @Test
+  fun copy_preservesCodeExecutionAndMediaResolutionParts() {
+    val part =
+      Part(
+        text = "hi",
+        executableCode = ExecutableCode(code = "print(1)", language = Language.PYTHON),
+        codeExecutionResult = CodeExecutionResult(outcome = Outcome.OUTCOME_OK, output = "ok"),
+        mediaResolution =
+          PartMediaResolution(
+            level = PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH,
+            numTokens = 256,
+          ),
+      )
+
+    assertEquals(part.executableCode, part.copy(text = "bye").executableCode)
+    assertEquals(part.codeExecutionResult, part.copy(text = "bye").codeExecutionResult)
+    assertEquals(part.mediaResolution, part.copy(text = "bye").mediaResolution)
+  }
 }
