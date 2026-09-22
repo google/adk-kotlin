@@ -25,6 +25,9 @@ import com.google.adk.kt.events.ToolConfirmation
  * Context passed to tool executions.
  *
  * This subclass is kept for backward compatibility. Prefer [Context] in new code.
+ *
+ * A tool context is not a node activation, so the node-only members inherited from [Context] (such
+ * as [Context.output] and [Context.routes]) throw [IllegalStateException] here.
  */
 class ToolContext(
   invocationContext: InvocationContext,

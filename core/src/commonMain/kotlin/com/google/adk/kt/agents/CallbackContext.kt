@@ -22,6 +22,9 @@ import com.google.adk.kt.events.EventActions
  * Context passed to agent and model callbacks.
  *
  * This subclass is kept for backward compatibility. Prefer [Context] in new code.
+ *
+ * A callback context is not a node activation, so the node-only members inherited from [Context]
+ * (such as [Context.output] and [Context.routes]) throw [IllegalStateException] here.
  */
 class CallbackContext(invocationContext: InvocationContext, eventActions: EventActions? = null) :
   Context(invocationContext, eventActions)

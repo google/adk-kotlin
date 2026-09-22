@@ -282,10 +282,14 @@ abstract class BaseAgent(
   /**
    * Runs this agent as a graph node by driving its [runAsync] lifecycle, so an agent placed in a
    * workflow graph executes exactly as it would under a runner. Its events are forwarded as the
-   * node's output; the node runner stamps each event's path and author.
+   * node's output and its author is tracked; the node runner stamps each event's path.
    */
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> =
-    runAsync(context.invocationContext)
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    runAsync(context.invocationContext).collect { event ->
+      if (event.author.isNotEmpty()) context.eventAuthor = event.author
+      emit(event)
+    }
+  }
 
   /** Abstract method for agent-specific asynchronous logic. */
   protected abstract fun runAsyncImpl(context: InvocationContext): Flow<Event>

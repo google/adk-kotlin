@@ -31,10 +31,10 @@ import kotlinx.serialization.encoding.Encoder
  *
  * @property path The emitting node's path. Segments are `/`-separated and each is `name@runId`, so
  *   a node of workflow `wf` reads `wf@1/a@1`. An empty path denotes the workflow's top-level node.
- * @property outputFor The node paths this event's output counts for: the emitter's own path plus
- *   any delegating ancestor, since a terminal node's output is also its workflow's. It is set only
- *   on an event that carries an output value, and the output then counts for each listed path in
- *   the same invocation.
+ * @property outputFor The node paths this event's output counts for, currently the emitter's own
+ *   path. It is set on an event that carries the node's output, either in the event's `output`
+ *   field or as a message-as-output event whose content is the output, and the output then counts
+ *   for each listed path in the same invocation.
  * @property messageAsOutput When true this event's content *is* the node's output, so no separate
  *   output event follows.
  */

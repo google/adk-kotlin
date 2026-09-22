@@ -16,15 +16,19 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.workflow.Node
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * Tests the unified [Context] behavior shared across callback and tool execution: copy-on-write
@@ -146,5 +150,41 @@ class ContextTest {
     // Both subclasses expose the full Context API surface.
     assertNull(callbackContext.functionCallId)
     assertEquals("fc-1", toolContext.functionCallId)
+  }
+
+  // Non-node contexts (tools, callbacks) route temp: writes to actions.stateDelta and state.
+  @Test
+  fun updateState_tempKeyOnNonNodeContext_writesToActionsAndState() {
+    val original = EventActions()
+    val context = Context(testInvocationContext(), original)
+
+    context.updateState("temp:scratch", "temp-value")
+
+    assertNull(original.stateDelta["temp:scratch"])
+    assertEquals("temp-value", context.actions.stateDelta["temp:scratch"])
+    assertEquals("temp-value", context.eventActions.stateDelta["temp:scratch"])
+    assertEquals("temp-value", context.state["temp:scratch"])
+  }
+
+  // On a node context, temp: writes stay on the activation's transientState and do not reach
+  // actions.
+  @Test
+  @OptIn(ExperimentalWorkflowApi::class)
+  fun updateState_tempKeyOnNodeContext_writesToTransientStateAndNotActions() {
+    val node =
+      object : Node {
+        override val name = "test-node"
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = emptyFlow()
+      }
+    val context = Context(invocationContext = testInvocationContext(), node = node, eventSink = {})
+
+    context.updateState("temp:scratch", "transient-value")
+    context.updateState("persistent", "persistent-value")
+
+    assertNull(context.actions.stateDelta["temp:scratch"])
+    assertEquals("transient-value", context.state["temp:scratch"])
+    assertEquals("persistent-value", context.actions.stateDelta["persistent"])
+    assertEquals("persistent-value", context.state["persistent"])
   }
 }

@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
@@ -28,13 +29,28 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.tools.ReadonlyToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.workflow.BranchPath
+import com.google.adk.kt.workflow.EventSink
+import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.NodeExecutionFailure
+import com.google.adk.kt.workflow.OutputRecord
+import com.google.adk.kt.workflow.Route
 
 /**
- * Execution context passed to agent callbacks, model callbacks, and tools during an invocation.
+ * Execution context passed to agent callbacks, model callbacks, tools, and workflow nodes during an
+ * invocation.
  *
  * Provides read access to invocation metadata and session state, along with methods to record state
  * deltas, artifacts, and control-flow signals. Tool-specific operations such as
- * [requestConfirmation] require a [functionCallId], which is only populated during a tool call.
+ * [requestConfirmation] require a [functionCallId], which is only populated during a tool call. The
+ * node-only members (such as [output] and [routes]) throw [IllegalStateException] unless this
+ * context was created for a workflow node; a callback, model-callback, or tool context is not a
+ * node activation and so has none of them.
+ *
+ * A context is created in one of two ways: the public constructor is used for callbacks and tools,
+ * while the internal constructor is used for workflow node activations. Only the internal
+ * constructor populates node execution state (such as [node] and [parent]); contexts created with
+ * the public constructor leave that state empty, causing node-only members to throw.
  *
  * [CallbackContext] and [com.google.adk.kt.tools.ToolContext] are thin subclasses kept for backward
  * compatibility. Prefer [Context] in new code.
@@ -52,6 +68,67 @@ open class Context(
   val toolConfirmation: ToolConfirmation? = null,
   final override val eventId: String? = null,
 ) : ReadonlyContext, ReadonlyToolContext {
+
+  /**
+   * Creates the context of one node activation.
+   *
+   * The `node` and `eventSink` parameters have no counterpart on the public constructor, so this
+   * constructor is what a call resolves to whenever they are supplied; that is why it needs no
+   * separate marker to disambiguate it.
+   *
+   * @param eventSink Where this activation's events are sent; one workflow run shares a single
+   *   sink.
+   * @param actions Deltas this node accumulates, flushed onto the next event it emits.
+   */
+  @ExperimentalWorkflowApi
+  internal constructor(
+    invocationContext: InvocationContext,
+    node: Node,
+    eventSink: EventSink,
+    parent: Context? = null,
+    runId: String = "1",
+    attemptCount: Int = 1,
+    resumeInputs: Map<String, Any?> = emptyMap(),
+    actions: EventActions = EventActions(),
+    nodePath: String? = null,
+  ) : this(invocationContext, actions) {
+    this.parent = parent
+    this.runId = runId
+    this.attemptCount = attemptCount
+    this.resumeInputs = resumeInputs
+    val resolvedNodePath = nodePath ?: buildNodePath(parent?.nodeState?.nodePath, node.name, runId)
+    val resolvedEventAuthor = parent?.nodeState?.eventAuthor ?: ""
+    this.nodeState =
+      NodeExecutionState(
+        node = node,
+        eventSink = eventSink,
+        nodePath = resolvedNodePath,
+        eventAuthor = resolvedEventAuthor,
+      )
+  }
+
+  /** The context of the node that scheduled this one, or null at the root or off-graph. */
+  @ExperimentalWorkflowApi
+  var parent: Context? = null
+    private set
+
+  /**
+   * This activation's id within its node, counting from "1". It is a string because it forms the
+   * `name@runId` segment of a node path. "1" off-graph.
+   */
+  @ExperimentalWorkflowApi
+  var runId: String = "1"
+    private set
+
+  /** 1-based attempt number, which a retry increments. 1 off-graph. */
+  @ExperimentalWorkflowApi
+  var attemptCount: Int = 1
+    private set
+
+  /** Answers to this node's interrupts, keyed by interrupt id. Empty off-graph. */
+  @ExperimentalWorkflowApi
+  var resumeInputs: Map<String, Any?> = emptyMap()
+    private set
 
   // Delegate ReadonlyContext members explicitly rather than using `by`, because Kotlin generates
   // delegated interface members as `open` and every member of this class must remain `final`.
@@ -114,24 +191,36 @@ open class Context(
 
   /**
    * The delta-aware state of the current session: committed session state merged with pending
-   * [actions] `stateDelta` writes, with removed keys filtered out.
+   * [actions] `stateDelta` writes and this activation's transient writes, with removed keys
+   * filtered out.
    *
-   * This map is read-only; modify state through [updateState] (Python's `ctx.state['foo'] = 'bar'`
-   * has no direct equivalent here).
+   * This map is read-only; modify state through [updateState]. A [State.TEMP_PREFIX] key on a node
+   * activation stays on that activation, per [updateState].
    */
   final override val state: Map<String, Any>
-    get() =
-      (invocationContext.session.state.toMap() + actions.stateDelta).filterValues {
-        it != State.REMOVED
-      }
+    get() = buildMap {
+      putAll(invocationContext.session.state.toMap())
+      putAll(actions.stateDelta)
+      putAll(nodeState?.transientState.orEmpty())
+      values.removeAll { it == State.REMOVED }
+    }
 
   /**
-   * Records a state change by replacing [actions] with a copy carrying the new delta, so a holder
-   * of the previous [actions] instance does not see the write. Matches the pre-unification
-   * `CallbackContext.updateState`.
+   * Records a state change so it shows up in [state] and, on a callback or tool context, flushes on
+   * the next event as a delta.
+   *
+   * On a node activation, a [State.TEMP_PREFIX] key is held on this activation alone: it shows up
+   * in [state] but reaches no event and no successor node. Every other key writes into [actions]
+   * `stateDelta` via copy-on-write, so a holder of the previous [actions] instance does not see the
+   * write.
    */
   fun updateState(key: String, value: Any) {
-    actions = actions.copy(stateDelta = (actions.stateDelta + (key to value)).toMutableMap())
+    val ns = nodeState
+    if (ns != null && key.startsWith(State.TEMP_PREFIX)) {
+      ns.transientState[key] = value
+    } else {
+      actions = actions.copy(stateDelta = (actions.stateDelta + (key to value)).toMutableMap())
+    }
   }
 
   /**
@@ -290,5 +379,137 @@ open class Context(
     }
     actions.requestedToolConfirmations[functionCallId] =
       ToolConfirmation(hint = hint, confirmed = false, payload = payload)
+  }
+
+  /** The node this context is an activation of. */
+  @ExperimentalWorkflowApi
+  val node: Node
+    get() = requireNodeState().node
+
+  /** This activation's path: `name@runId` segments joined by `/`, rooted at the outermost node. */
+  @ExperimentalWorkflowApi
+  val nodePath: String
+    get() = requireNodeState().nodePath
+
+  /** The author stamped on events this node emits. */
+  @ExperimentalWorkflowApi
+  var eventAuthor: String
+    get() = requireNodeState().eventAuthor
+    set(value) {
+      requireNodeState().eventAuthor = value
+    }
+
+  /**
+   * The node's result. Settable once per activation, whether by emitting it or by assigning it.
+   *
+   * @throws IllegalStateException if set a second time.
+   */
+  @ExperimentalWorkflowApi
+  var output: Any?
+    get() = requireNodeState().output
+    set(value) {
+      requireNodeState().produceOutput(value)
+    }
+
+  /** Whether an output has been set, which distinguishes "no output" from "the output was null". */
+  @ExperimentalWorkflowApi
+  val hasProducedOutput: Boolean
+    get() = requireNodeState().hasProducedOutput
+
+  /** The routes this node selected, read by the scheduler to pick the outgoing edges. */
+  @ExperimentalWorkflowApi
+  var routes: List<Route>?
+    get() = requireNodeState().selectedRoutes
+    set(value) {
+      requireNodeState().selectRoutes(value)
+    }
+
+  /**
+   * The ids of the input requests this activation raised and is now waiting on, which the graph
+   * pauses on until an answer arrives keyed by that id.
+   */
+  @ExperimentalWorkflowApi
+  val interruptIds: Set<String>
+    get() = requireNodeState().interruptIds.toSet()
+
+  /**
+   * This activation's node execution state. Present only on a node activation; null on a callback,
+   * model-callback, or tool context, which is why the public node-only members below throw.
+   */
+  internal var nodeState: NodeExecutionState? = null
+    private set
+
+  internal fun requireNodeState(): NodeExecutionState =
+    checkNotNull(nodeState) { "This member is available only on a node activation context." }
+
+  companion object {
+    internal fun buildNodePath(parentPath: String?, name: String, runId: String): String =
+      BranchPath.appendSegment(parentPath, name, runId, separator = '/')
+  }
+}
+
+/**
+ * The engine state of one node activation: the data a running node accumulates and the behavior
+ * over it. A [Context] holds one only while it is a node activation, which is what makes Context's
+ * node-only members throw on a callback or tool context.
+ */
+internal class NodeExecutionState(
+  val node: Node,
+  val eventSink: EventSink,
+  val nodePath: String,
+  var eventAuthor: String,
+) {
+  val interruptIds = mutableSetOf<String>()
+  // Holds temporary state for the current activation only.
+  val transientState = mutableMapOf<String, Any>()
+  var selectedRoutes: List<Route>? = null
+  var routesEmitted: Boolean = false
+  var failure: NodeExecutionFailure? = null
+
+  private var outputRecord: OutputRecord = OutputRecord.None
+
+  /** The node's result, or null if none was produced or the produced value was null. */
+  val output: Any?
+    get() =
+      when (val r = outputRecord) {
+        is OutputRecord.None -> null
+        is OutputRecord.Produced -> r.value
+        is OutputRecord.Emitted -> r.value
+      }
+
+  /** Whether an output has been set, which distinguishes "no output" from "the output was null". */
+  val hasProducedOutput: Boolean
+    get() = outputRecord !is OutputRecord.None
+
+  /** Whether an event carrying the output has already been sent. */
+  val hasEmittedOutput: Boolean
+    get() = outputRecord is OutputRecord.Emitted
+
+  /** Records this activation's single output; a second call is a programming error. */
+  fun produceOutput(value: Any?) {
+    check(outputRecord is OutputRecord.None) {
+      "Node '${node.name}' produced a second output; a node produces at most one output."
+    }
+    outputRecord = OutputRecord.Produced(value)
+  }
+
+  /** Marks the produced output as emitted on the wire; only a produced output may be marked. */
+  fun markOutputEmitted() {
+    when (val r = outputRecord) {
+      is OutputRecord.Produced -> outputRecord = OutputRecord.Emitted(r.value)
+      is OutputRecord.Emitted -> error("Node '${node.name}' output was already emitted.")
+      is OutputRecord.None -> error("Node '${node.name}' has no produced output to emit.")
+    }
+  }
+
+  /** Selects the outgoing routes; a fresh selection has not been dispatched on an event yet. */
+  fun selectRoutes(routes: List<Route>?) {
+    selectedRoutes = routes
+    routesEmitted = false
+  }
+
+  /** Records the interrupts this activation is waiting on; [interruptIds] reads them back. */
+  fun addInterruptIds(ids: Collection<String>) {
+    interruptIds.addAll(ids)
   }
 }
