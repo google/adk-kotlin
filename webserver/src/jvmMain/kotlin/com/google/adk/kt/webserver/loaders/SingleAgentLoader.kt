@@ -17,10 +17,17 @@
 package com.google.adk.kt.webserver.loaders
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.workflow.Node
 
-/** An [AgentLoader] serving one agent, under its own name only. */
-class SingleAgentLoader(private val agent: BaseAgent) : AgentLoader {
+/** A [NodeLoader] serving one agent or other root [Node], under its own name only. */
+class SingleAgentLoader(private val agent: Node) : NodeLoader {
+  /** Keeps code compiled against the agent-only constructor linking. */
+  @Deprecated("Binary compatibility only.", level = DeprecationLevel.HIDDEN)
+  constructor(agent: BaseAgent) : this(agent as Node)
+
   override fun listAgents(): List<String> = listOf(agent.name)
 
-  override fun loadAgent(agentName: String): BaseAgent? = agent.takeIf { it.name == agentName }
+  override fun loadAgent(agentName: String): BaseAgent? = loadNode(agentName) as? BaseAgent
+
+  override fun loadNode(agentName: String): Node? = agent.takeIf { it.name == agentName }
 }
