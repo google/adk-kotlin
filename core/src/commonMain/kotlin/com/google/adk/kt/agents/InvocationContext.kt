@@ -51,6 +51,7 @@ import com.google.adk.kt.workflow.Node
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.Volatile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -549,6 +550,9 @@ data class InvocationContext(
       var toolResult: Any =
         try {
           tool.run(toolContext, currentArgs)
+        } catch (e: CancellationException) {
+          // CancellationException is an Exception in Kotlin; rethrow so recovery can't swallow it.
+          throw e
         } catch (e: Exception) {
           val recoveredResult =
             runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e)
