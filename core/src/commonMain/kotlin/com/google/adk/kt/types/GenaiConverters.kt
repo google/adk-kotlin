@@ -25,7 +25,9 @@ import com.google.genai.kotlin.types.Blob as GenAiBlob
 import com.google.genai.kotlin.types.Candidate as GenAiCandidate
 import com.google.genai.kotlin.types.Citation as GenAiCitation
 import com.google.genai.kotlin.types.CitationMetadata as GenAiCitationMetadata
+import com.google.genai.kotlin.types.CodeExecutionResult as GenAiCodeExecutionResult
 import com.google.genai.kotlin.types.Content as GenAiContent
+import com.google.genai.kotlin.types.ExecutableCode as GenAiExecutableCode
 import com.google.genai.kotlin.types.FileData as GenAiFileData
 import com.google.genai.kotlin.types.FunctionCall as GenAiFunctionCall
 import com.google.genai.kotlin.types.FunctionCallingConfig as GenAiFunctionCallingConfig
@@ -53,6 +55,7 @@ import com.google.genai.kotlin.types.LogprobsResultTopCandidates as GenAiLogprob
 import com.google.genai.kotlin.types.ModalityTokenCount as GenAiModalityTokenCount
 import com.google.genai.kotlin.types.NullValue as GenAiNullValue
 import com.google.genai.kotlin.types.Part as GenAiPart
+import com.google.genai.kotlin.types.PartMediaResolution as GenAiPartMediaResolution
 import com.google.genai.kotlin.types.PartialArg as GenAiPartialArg
 import com.google.genai.kotlin.types.Retrieval as GenAiRetrieval
 import com.google.genai.kotlin.types.RetrievalMetadata as GenAiRetrievalMetadata
@@ -66,6 +69,7 @@ import com.google.genai.kotlin.types.ToolCall as GenAiToolCall
 import com.google.genai.kotlin.types.ToolConfig as GenAiToolConfig
 import com.google.genai.kotlin.types.ToolResponse as GenAiToolResponse
 import com.google.genai.kotlin.types.ToolType as GenAiToolType
+import com.google.genai.kotlin.types.TrafficType as GenAiTrafficType
 import com.google.genai.kotlin.types.UrlContext as GenAiUrlContext
 import com.google.genai.kotlin.types.VertexAISearch as GenAiVertexAISearch
 import com.google.genai.kotlin.types.VertexAISearchDataStoreSpec as GenAiVertexAISearchDataStoreSpec
@@ -322,6 +326,8 @@ internal fun GenAiGenerateContentConfig.fromGenaiSdk(): GenerateContentConfig =
     responseLogprobs = responseLogprobs,
     responseMimeType = responseMimeType,
     responseSchema = responseSchema?.toKtSchema(),
+    responseModalities = responseModalities,
+    seed = seed,
     thinkingConfig = thinkingConfig?.fromGenaiSdk(),
     toolConfig = toolConfig?.fromGenaiSdk(),
     safetySettings = safetySettings?.map { it.fromGenaiSdk() },
@@ -348,6 +354,8 @@ internal fun GenerateContentConfig.toGenaiSdk(): GenAiGenerateContentConfig =
     responseLogprobs = responseLogprobs,
     responseMimeType = responseMimeType,
     responseSchema = responseSchema?.toGenAiSchema(),
+    responseModalities = responseModalities,
+    seed = seed,
     thinkingConfig = thinkingConfig?.toGenaiSdk(),
     toolConfig = toolConfig?.toGenaiSdk(),
     safetySettings = safetySettings?.map { it.toGenaiSdk() },
@@ -421,6 +429,7 @@ internal fun GenerationConfigRoutingConfigManualRoutingMode.toGenaiSdk():
 internal fun GenAiFunctionCallingConfig.fromGenaiSdk(): FunctionCallingConfig =
   FunctionCallingConfig(
     allowedFunctionNames = allowedFunctionNames,
+    mode = mode?.toKt(),
     streamFunctionCallArguments = streamFunctionCallArguments,
   )
 
@@ -428,6 +437,7 @@ internal fun GenAiFunctionCallingConfig.fromGenaiSdk(): FunctionCallingConfig =
 internal fun FunctionCallingConfig.toGenaiSdk(): GenAiFunctionCallingConfig =
   GenAiFunctionCallingConfig(
     allowedFunctionNames = allowedFunctionNames,
+    mode = mode?.toGenaiSdk(),
     streamFunctionCallArguments = streamFunctionCallArguments,
   )
 
@@ -443,11 +453,15 @@ internal fun ToolConfig.toGenaiSdk(): GenAiToolConfig =
 // --- SafetySetting ---
 /** Converts a [GenAiSafetySetting] from the GenAI SDK to an ADK [SafetySetting]. */
 internal fun GenAiSafetySetting.fromGenaiSdk(): SafetySetting =
-  SafetySetting(category = category?.toKt(), threshold = threshold?.toKt())
+  SafetySetting(category = category?.toKt(), threshold = threshold?.toKt(), method = method?.toKt())
 
 /** Converts an ADK [SafetySetting] to a [GenAiSafetySetting] for the GenAI SDK. */
 internal fun SafetySetting.toGenaiSdk(): GenAiSafetySetting =
-  GenAiSafetySetting(category = category?.toGenaiSdk(), threshold = threshold?.toGenaiSdk())
+  GenAiSafetySetting(
+    category = category?.toGenaiSdk(),
+    threshold = threshold?.toGenaiSdk(),
+    method = method?.toGenaiSdk(),
+  )
 
 // --- GenerateContentResponse ---
 /**
@@ -818,6 +832,7 @@ internal fun GenAiGenerateContentResponseUsageMetadata.fromGenaiSdk(): UsageMeta
     promptTokensDetails = promptTokensDetails?.map { it.fromGenaiSdk() },
     candidatesTokensDetails = candidatesTokensDetails?.map { it.fromGenaiSdk() },
     toolUsePromptTokensDetails = toolUsePromptTokensDetails?.map { it.fromGenaiSdk() },
+    trafficType = trafficType?.value,
   )
 
 /**
@@ -835,6 +850,7 @@ internal fun UsageMetadata.toGenaiSdk(): GenAiGenerateContentResponseUsageMetada
     promptTokensDetails = promptTokensDetails?.map { it.toGenaiSdk() },
     candidatesTokensDetails = candidatesTokensDetails?.map { it.toGenaiSdk() },
     toolUsePromptTokensDetails = toolUsePromptTokensDetails?.map { it.toGenaiSdk() },
+    trafficType = trafficType?.let { GenAiTrafficType(it) },
   )
 
 // --- Part ---
@@ -852,6 +868,9 @@ internal fun GenAiPart.fromGenaiSdk(): Part =
     toolCall = toolCall?.fromGenaiSdk(),
     toolResponse = toolResponse?.fromGenaiSdk(),
     partMetadata = partMetadata?.mapValues { it.value.toAny() },
+    executableCode = executableCode?.fromGenaiSdk(),
+    codeExecutionResult = codeExecutionResult?.fromGenaiSdk(),
+    mediaResolution = mediaResolution?.fromGenaiSdk(),
   )
 
 /** Converts an ADK [Part] to a [GenAiPart] for the GenAI SDK. */
@@ -868,7 +887,28 @@ internal fun Part.toGenaiSdk(): GenAiPart =
     toolCall = toolCall?.toGenaiSdk(),
     toolResponse = toolResponse?.toGenaiSdk(),
     partMetadata = partMetadata?.mapValues { it.value.toJsonElement() },
+    executableCode = executableCode?.toGenaiSdk(),
+    codeExecutionResult = codeExecutionResult?.toGenaiSdk(),
+    mediaResolution = mediaResolution?.toGenaiSdk(),
   )
+
+// --- ExecutableCode ---
+/** Converts a [GenAiExecutableCode] from the GenAI SDK to an ADK [ExecutableCode]. */
+internal fun GenAiExecutableCode.fromGenaiSdk(): ExecutableCode =
+  ExecutableCode(code = code, language = language?.toKt(), id = id)
+
+/** Converts an ADK [ExecutableCode] to a [GenAiExecutableCode] for the GenAI SDK. */
+internal fun ExecutableCode.toGenaiSdk(): GenAiExecutableCode =
+  GenAiExecutableCode(code = code, language = language?.toGenaiSdk(), id = id)
+
+// --- CodeExecutionResult ---
+/** Converts a [GenAiCodeExecutionResult] from the GenAI SDK to an ADK [CodeExecutionResult]. */
+internal fun GenAiCodeExecutionResult.fromGenaiSdk(): CodeExecutionResult =
+  CodeExecutionResult(outcome = outcome?.toKt(), output = output, id = id)
+
+/** Converts an ADK [CodeExecutionResult] to a [GenAiCodeExecutionResult] for the GenAI SDK. */
+internal fun CodeExecutionResult.toGenaiSdk(): GenAiCodeExecutionResult =
+  GenAiCodeExecutionResult(outcome = outcome?.toGenaiSdk(), output = output, id = id)
 
 // --- ToolCall ---
 /** Converts a [GenAiToolCall] from the GenAI SDK to an ADK [ToolCall]. */
@@ -912,6 +952,15 @@ internal fun GenAiVideoMetadata.fromGenaiSdk(): VideoMetadata =
 /** Converts an ADK [VideoMetadata] to a [GenAiVideoMetadata] for the GenAI SDK. */
 internal fun VideoMetadata.toGenaiSdk(): GenAiVideoMetadata =
   GenAiVideoMetadata(startOffset = startOffset, endOffset = endOffset, fps = fps)
+
+// --- PartMediaResolution ---
+/** Converts a [GenAiPartMediaResolution] from the GenAI SDK to an ADK [PartMediaResolution]. */
+internal fun GenAiPartMediaResolution.fromGenaiSdk(): PartMediaResolution =
+  PartMediaResolution(level = level?.toKt(), numTokens = numTokens)
+
+/** Converts an ADK [PartMediaResolution] to a [GenAiPartMediaResolution] for the GenAI SDK. */
+internal fun PartMediaResolution.toGenaiSdk(): GenAiPartMediaResolution =
+  GenAiPartMediaResolution(level = level?.toGenaiSdk(), numTokens = numTokens)
 
 // --- PartialArg ---
 /** Converts a [GenAiPartialArg] from the GenAI SDK to an ADK [PartialArg]. */

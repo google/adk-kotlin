@@ -133,14 +133,11 @@ data class Event(
 
   /**
    * Returns true if the last part of this event is a code-execution result. Mirrors ADK Java's
-   * `Event.hasTrailingCodeExecutionResult()`.
-   *
-   * The Kotlin `Part` type does not yet model `codeExecutionResult` (see
-   * `com.google.adk.kt.types.Part`). Until it does, this helper is always `false`. The clause is
-   * still present in [isFinalResponse] so that the call structure matches Java verbatim and so a
-   * future `Part.codeExecutionResult` field is wired into the right gate by construction.
+   * `Event.hasTrailingCodeExecutionResult()`, keeping such an event out of [isFinalResponse] so the
+   * turn loop runs again to let the model act on the result.
    */
-  fun hasTrailingCodeExecutionResult(): Boolean = false
+  fun hasTrailingCodeExecutionResult(): Boolean =
+    content?.parts?.lastOrNull()?.codeExecutionResult != null
 
   /**
    * Scans a model response event's parts for function calls missing an ID and generates one for

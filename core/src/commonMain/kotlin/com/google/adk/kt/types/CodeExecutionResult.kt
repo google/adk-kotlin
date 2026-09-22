@@ -18,13 +18,13 @@ package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
 
-/** A per-request safety setting controlling the block threshold for a single [HarmCategory]. */
+/** The result of executing an [ExecutableCode]. Produced when the code-execution tool is used. */
 @Serializable
-data class SafetySetting(
-  /** The harm category this setting applies to. */
-  val category: HarmCategory? = null,
-  /** The probability threshold at or above which content in [category] is blocked. */
-  val threshold: HarmBlockThreshold? = null,
-  /** The method used to block content. Not supported by the Gemini API. */
-  val method: HarmBlockMethod? = null,
+data class CodeExecutionResult(
+  /** The outcome of the code execution. */
+  val outcome: Outcome? = null,
+  /** stdout when execution succeeds, or stderr / a description otherwise. */
+  val output: String? = null,
+  /** The identifier of the [ExecutableCode] this result is for, if that part carried an id. */
+  val id: String? = null,
 )

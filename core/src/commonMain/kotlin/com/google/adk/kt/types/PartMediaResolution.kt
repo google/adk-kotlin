@@ -18,13 +18,11 @@ package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
 
-/** A per-request safety setting controlling the block threshold for a single [HarmCategory]. */
+/** The media resolution applied to a [Part]'s media input. */
 @Serializable
-data class SafetySetting(
-  /** The harm category this setting applies to. */
-  val category: HarmCategory? = null,
-  /** The probability threshold at or above which content in [category] is blocked. */
-  val threshold: HarmBlockThreshold? = null,
-  /** The method used to block content. Not supported by the Gemini API. */
-  val method: HarmBlockMethod? = null,
+data class PartMediaResolution(
+  /** The tokenization quality used for the media. */
+  val level: PartMediaResolutionLevel? = null,
+  /** The required sequence length for media tokenization. */
+  val numTokens: Int? = null,
 )
