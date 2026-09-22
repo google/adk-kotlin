@@ -30,7 +30,6 @@ import com.google.adk.kt.webserver.models.AgentRunRequest
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
-import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.routing.Route
@@ -51,7 +50,7 @@ internal fun Route.runRoutes(
 ) {
   route("/run") {
     post {
-      val request = call.receive<AgentRunRequest>()
+      val request = call.receiveRequiredBody<AgentRunRequest>()
       val agent = agentLoader.loadAgent(request.appName)
       if (agent == null) {
         return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
@@ -80,7 +79,7 @@ internal fun Route.runRoutes(
   }
 
   post("/run_sse") {
-    val request = call.receive<AgentRunRequest>()
+    val request = call.receiveRequiredBody<AgentRunRequest>()
     val agent = agentLoader.loadAgent(request.appName)
     if (agent == null) {
       return@post call.respond(HttpStatusCode.NotFound, "Agent not found")

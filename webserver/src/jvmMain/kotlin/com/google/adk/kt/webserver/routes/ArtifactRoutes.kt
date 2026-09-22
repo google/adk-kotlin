@@ -21,7 +21,6 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.types.Part
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
-import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
@@ -105,7 +104,7 @@ internal fun Route.artifactRoutes(artifactService: ArtifactService) {
       val userId = params.userId
       val sessionId = params.sessionId
 
-      val part = call.receive<Part>()
+      val part = call.receiveRequiredBody<Part>()
       val artifactName =
         part.fileData?.displayName
           ?: part.inlineData?.displayName

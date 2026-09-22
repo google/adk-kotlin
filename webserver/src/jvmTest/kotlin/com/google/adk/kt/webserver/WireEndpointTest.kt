@@ -50,7 +50,8 @@ import org.junit.runners.JUnit4
 
 /**
  * Covers the wire rules the ADK agent runtime puts on every endpoint, against real responses: read
- * `snake_case` or `camelCase`, ignore unrecognized keys, and emit `camelCase` without null fields.
+ * `snake_case` or `camelCase`, ignore unrecognized keys, emit `camelCase` without null fields, and
+ * answer 400 for a missing body but 415 for a content type it cannot read.
  */
 @RunWith(JUnit4::class)
 class WireEndpointTest {
@@ -155,6 +156,46 @@ class WireEndpointTest {
     val response = client.post("/run") { jsonBody("{\"app_name\": ") }
 
     assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_emptyBody_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun runSse_emptyBody_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run_sse") { jsonBody("") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun uploadArtifact_emptyBody_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/apps/a/users/u/sessions/s/artifacts") { jsonBody("") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_unreadableContentType_isRejectedAsUnsupported() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/run") {
+        contentType(ContentType.Text.Plain)
+        setBody(camelCaseRun)
+      }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnsupportedMediaType)
   }
 
   @Test
