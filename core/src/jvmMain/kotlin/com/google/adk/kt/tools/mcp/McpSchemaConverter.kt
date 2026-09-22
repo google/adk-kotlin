@@ -16,11 +16,22 @@
 
 package com.google.adk.kt.tools.mcp
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import io.modelcontextprotocol.spec.McpSchema
+
+/**
+ * Converts a decoded JSON Schema map to an ADK [Schema], resolving `$ref`/`$defs`, splitting type
+ * unions into `anyOf`, narrowing `required`, and bounding recursion. Exposed so an adapter that
+ * receives a tool schema as JSON (for example the Spring AI tool bridge) reuses this one converter
+ * rather than forking it.
+ */
+@FrameworkInternalApi
+fun jsonSchemaToAdkSchema(schema: Map<String, Any>): Schema =
+  with(McpSchemaConverter) { schema.toAdkSchema() }
 
 /**
  * Converts between MCP schema types and ADK types.
@@ -213,7 +224,7 @@ internal object McpSchemaConverter {
   private fun parsePropertyMap(map: Map<String, Any>, depth: Int, scope: RefScope): Schema {
     if (depth >= MAX_SCHEMA_DEPTH) {
       logger.warn {
-        "MCP tool schema nests deeper than $MAX_SCHEMA_DEPTH levels; converting the sub-schema at " +
+        "A tool schema nests deeper than $MAX_SCHEMA_DEPTH levels; converting the sub-schema at " +
           "that depth to an untyped object."
       }
       return Schema(type = Type.OBJECT)
@@ -229,7 +240,7 @@ internal object McpSchemaConverter {
     map.resolveRef(scope.definitions)?.let {
       if (!scope.spend()) {
         logger.warn {
-          "MCP tool schema expands more than $MAX_REF_EXPANSIONS \$refs; converting the rest to " +
+          "A tool schema expands more than $MAX_REF_EXPANSIONS \$refs; converting the rest to " +
             "an untyped object."
         }
         return Schema(type = Type.OBJECT)
@@ -237,7 +248,7 @@ internal object McpSchemaConverter {
       return parsePropertyMap(it, depth + 1, scope.following(checkNotNull(ref)))
     }
     if (map.containsKey("\$ref")) {
-      logger.warn { "MCP tool schema has an unresolvable \$ref: ${map["\$ref"]}" }
+      logger.warn { "A tool schema has an unresolvable \$ref." }
     }
 
     // A union of two or more real types cannot be one ADK `Schema`, but it is exactly an `anyOf` of
@@ -261,8 +272,9 @@ internal object McpSchemaConverter {
     }
 
     // A `"null"` in an `anyOf` says the same thing as a `"null"` in `type`, so it is reported the
-    // same way rather than left in the union.
-    val anyOfMembers = map["anyOf"].toAnyOfSchemas(depth + 1, scope)
+    // same way rather than left in the union. `oneOf` is lowered to `anyOf` (as ADK Python does),
+    // so a union spelled either way is kept rather than dropped.
+    val anyOfMembers = (map["anyOf"] ?: map["oneOf"]).toAnyOfSchemas(depth + 1, scope)
     val anyOfAllowsNull = anyOfMembers?.any { it.type == Type.NULL } == true
     val anyOf = anyOfMembers?.filterNot { it.type == Type.NULL }?.takeIf { it.isNotEmpty() }
 

@@ -71,6 +71,21 @@ tasks.register<JavaExec>("runBigQueryAnalyticsDemo") {
   classpath = sourceSets["main"].runtimeClasspath
 }
 
+// Convenience task to run the Spring AI tools demo against Vertex Gemini, e.g.:
+//   GOOGLE_CLOUD_PROJECT=my-project GOOGLE_API_USE_CLIENT_CERTIFICATE=false \
+//       ./gradlew :google-adk-kotlin-examples:runSpringAiToolsDemo
+tasks.register<JavaExec>("runSpringAiToolsDemo") {
+  group = "application"
+  description = "Runs the Spring AI adapter and tool-bridge demo cases."
+  mainClass.set("com.google.adk.kt.examples.springai.SpringAiToolsDemoKt")
+  classpath = sourceSets["main"].runtimeClasspath
+  System.getenv("GOOGLE_CLOUD_PROJECT")?.let { environment("GOOGLE_CLOUD_PROJECT", it) }
+  System.getenv("GOOGLE_CLOUD_LOCATION")?.let { environment("GOOGLE_CLOUD_LOCATION", it) }
+  System.getenv("GOOGLE_API_USE_CLIENT_CERTIFICATE")?.let {
+    environment("GOOGLE_API_USE_CLIENT_CERTIFICATE", it)
+  }
+}
+
 // Convenience task to serve a sample of the example agents over HTTP, e.g.:
 //   GOOGLE_API_KEY=... ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
 // then browse http://localhost:8080/dev-ui and pick an agent.

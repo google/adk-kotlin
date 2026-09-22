@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools.mcp
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.tools.mcp.McpSchemaConverter.toAdkFunctionDeclaration
 import com.google.adk.kt.tools.mcp.McpSchemaConverter.toAdkSchema
 import com.google.adk.kt.types.Schema
@@ -54,6 +55,35 @@ class McpSchemaConverterTest {
     assertFailsWith<IllegalArgumentException> { McpSchemaConverter.parseTypeString("unknown") }
   }
 
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun jsonSchemaToAdkSchema_resolvesRefAgainstDefs() {
+    val schema =
+      mapOf(
+        "type" to "object",
+        "properties" to mapOf("origin" to mapOf("\$ref" to "#/\$defs/Location")),
+        "required" to listOf("origin"),
+        "\$defs" to
+          mapOf(
+            "Location" to
+              mapOf(
+                "type" to "object",
+                "properties" to mapOf("city" to mapOf("type" to "string")),
+                "required" to listOf("city"),
+              )
+          ),
+      )
+
+    val result = jsonSchemaToAdkSchema(schema)
+
+    assertEquals(Type.OBJECT, result.type)
+    val origin = result.properties?.get("origin")
+    assertNotNull(origin)
+    assertEquals(Type.OBJECT, origin.type)
+    assertEquals(Type.STRING, origin.properties?.get("city")?.type)
+    assertEquals(listOf("origin"), result.required)
+  }
+
   // Type unions.
 
   @Test
@@ -63,6 +93,18 @@ class McpSchemaConverterTest {
     val converted = McpSchemaConverter.parsePropertyMap(property)
 
     assertEquals(Type.STRING, converted.type)
+  }
+
+  @Test
+  fun parsePropertyMap_oneOf_isLoweredToAnyOf() {
+    val property =
+      mapOf<String, Any>("oneOf" to listOf(mapOf("type" to "string"), mapOf("type" to "integer")))
+
+    val converted = McpSchemaConverter.parsePropertyMap(property)
+
+    assertEquals(2, converted.anyOf?.size)
+    assertEquals(Type.STRING, converted.anyOf?.get(0)?.type)
+    assertEquals(Type.INTEGER, converted.anyOf?.get(1)?.type)
   }
 
   @Test
