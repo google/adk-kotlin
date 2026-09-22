@@ -19,14 +19,24 @@ package com.google.adk.kt.webserver.dev.routes
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.dev.AgentGraphGenerator
+import com.google.adk.kt.webserver.dev.appGraphOf
+import com.google.adk.kt.webserver.dev.find
+import com.google.adk.kt.webserver.dev.graphNodeOf
+import com.google.adk.kt.webserver.dev.plotGraph
+import com.google.adk.kt.webserver.dev.workflowsByPath
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.loadRoot
+import com.google.adk.kt.workflow.Node
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
+import io.ktor.server.util.getOrFail
+import kotlinx.serialization.Serializable
 
 internal data class GraphRoutesError(val message: String, val code: HttpStatusCode)
 
@@ -42,6 +52,9 @@ internal object GraphRoutesErrors {
     GraphRoutesError("Agent app not loaded", HttpStatusCode.InternalServerError)
   val ERR_GRAPH_GENERATION_FAILED =
     GraphRoutesError("Could not generate graph for this event.", HttpStatusCode.InternalServerError)
+  val ERR_INVALID_DARK_MODE =
+    GraphRoutesError("dark_mode must be true or false", HttpStatusCode.BadRequest)
+  val ERR_NODE_NOT_FOUND = GraphRoutesError("Node not found", HttpStatusCode.NotFound)
 }
 
 internal data class GraphParams(
@@ -146,4 +159,86 @@ internal fun Route.graphRoutes(agentLoader: AgentLoader, sessionService: Session
       }
     }
   }
+
+  // The app's structure, which the Dev UI navigates and lays out its node-state view from.
+  get("/dev/build_graph/{appName}") {
+    val appName = call.parameters.getOrFail("appName")
+    val root = call.loadRootOrRespond(agentLoader, appName) ?: return@get
+    call.respond(appGraphOf(appName, root))
+  }
+
+  // DOT source for the root and every workflow below it, or a bare DotGraph for a non-empty `node`.
+  get("/dev/build_graph_image/{appName}") {
+    val appName = call.parameters.getOrFail("appName")
+    val darkModeParam = call.request.queryParameters["dark_mode"]
+    val darkMode =
+      if (darkModeParam == null) false
+      else
+        queryBooleanOrNull(darkModeParam)
+          ?: return@get call.respond(
+            GraphRoutesErrors.ERR_INVALID_DARK_MODE.code,
+            GraphRoutesErrors.ERR_INVALID_DARK_MODE.message,
+          )
+    val root = call.loadRootOrRespond(agentLoader, appName) ?: return@get
+    val nodePath = call.request.queryParameters["node"].orEmpty()
+    val target =
+      graphNodeOf(root).find(nodePath)
+        ?: return@get call.respond(
+          GraphRoutesErrors.ERR_NODE_NOT_FOUND.code,
+          GraphRoutesErrors.ERR_NODE_NOT_FOUND.message,
+        )
+    if (nodePath.isNotEmpty()) {
+      // On-demand drill-in requests expect a single DotGraph object rather than a path-keyed map.
+      return@get call.respond(DotGraph(plotGraph(target, darkMode)))
+    }
+    // A root that is not a workflow is drawn as its agent tree.
+    val graphs = LinkedHashMap(target.workflowsByPath(""))
+    graphs.putIfAbsent("", target)
+    call.respond(graphs.mapValues { (_, node) -> DotGraph(plotGraph(node, darkMode)) })
+  }
+}
+
+private val TRUE_QUERY_VALUES = setOf("1", "on", "t", "true", "y", "yes")
+
+private val FALSE_QUERY_VALUES = setOf("0", "off", "f", "false", "n", "no")
+
+/** Parses [value] as a case-insensitive boolean query parameter, or returns null if invalid. */
+private fun queryBooleanOrNull(value: String): Boolean? =
+  when (value.lowercase()) {
+    in TRUE_QUERY_VALUES -> true
+    in FALSE_QUERY_VALUES -> false
+    else -> null
+  }
+
+/**
+ * DOT source for one graph, under the `dotSrc` key the Dev UI reads.
+ *
+ * `GET /dev/build_graph_image/{appName}` returns a bare [DotGraph] when a non-empty `node` query
+ * parameter requests a single subtree, and a path-keyed map of [DotGraph]s when `node` is omitted
+ * or empty.
+ */
+@Serializable internal data class DotGraph(val dotSrc: String)
+
+/** Loads the root node for [appName], or sends an error response and returns null. */
+private suspend fun ApplicationCall.loadRootOrRespond(
+  agentLoader: AgentLoader,
+  appName: String,
+): Node? {
+  val root =
+    try {
+      agentLoader.loadRoot(appName)
+    } catch (e: Exception) {
+      respond(
+        GraphRoutesErrors.ERR_AGENT_NOT_LOADED.code,
+        GraphRoutesErrors.ERR_AGENT_NOT_LOADED.message,
+      )
+      return null
+    }
+  if (root == null) {
+    respond(
+      GraphRoutesErrors.ERR_AGENT_NOT_FOUND.code,
+      GraphRoutesErrors.ERR_AGENT_NOT_FOUND.message,
+    )
+  }
+  return root
 }
