@@ -17,20 +17,27 @@
 package com.google.adk.kt.webserver.loaders
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.workflow.Node
 
 /**
- * An [AgentLoader] serving a fixed set of agents, each under its own name.
+ * A [NodeLoader] serving a fixed set of agents or other root [Node]s, each under its own name.
  *
  * [SingleAgentLoader] is the one-agent case.
  */
-class MultiAgentLoader(vararg agents: BaseAgent) : AgentLoader {
-  private val agentsByName: Map<String, BaseAgent> = agents.associateBy(BaseAgent::name)
+class MultiAgentLoader(vararg agents: Node) : NodeLoader {
+  private val agentsByName: Map<String, Node> = agents.associateBy(Node::name)
 
   init {
     require(agentsByName.size == agents.size) { "Agent names must be unique." }
   }
 
+  /** Keeps code compiled against the agent-only constructor linking. */
+  @Deprecated("Binary compatibility only.", level = DeprecationLevel.HIDDEN)
+  constructor(vararg agents: BaseAgent) : this(*arrayOf<Node>(*agents))
+
   override fun listAgents(): List<String> = agentsByName.keys.sorted()
 
-  override fun loadAgent(agentName: String): BaseAgent? = agentsByName[agentName]
+  override fun loadAgent(agentName: String): BaseAgent? = agentsByName[agentName] as? BaseAgent
+
+  override fun loadNode(agentName: String): Node? = agentsByName[agentName]
 }

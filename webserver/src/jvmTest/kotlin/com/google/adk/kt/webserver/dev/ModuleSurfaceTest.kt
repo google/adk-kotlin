@@ -183,6 +183,7 @@ class ModuleSurfaceTest {
         "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval/(method:POST)",
         "/apps/{app_name}/eval_results/(method:GET)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/events/{eventId}/graph/(method:GET)",
+        "/dev/build_graph/{appName}/(method:GET)",
       )
   }
 }
