@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.flow
  * @property waitForOutput Whether the node stays re-triggerable until it produces an output or a
  *   route, instead of completing when [runNode] returns. A node that never produces either then
  *   waits forever, which is a graph-authoring error.
+ * @property config The node's retry policy and execution timeout.
  */
 @ExperimentalWorkflowApi
 @FrameworkInternalApi
@@ -48,6 +49,7 @@ abstract class BaseNode(
   override val description: String = "",
   override val rerunOnResume: Boolean = false,
   override val waitForOutput: Boolean = false,
+  override val config: NodeConfig = NodeConfig(),
 ) : Node {
 
   /**

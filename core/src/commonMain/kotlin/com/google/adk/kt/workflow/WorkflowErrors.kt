@@ -17,6 +17,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import kotlin.time.Duration
 
 /**
  * A node failure that reports under a [typeName] other than this class's own, so a failure raised
@@ -28,6 +29,14 @@ open class NodeExecutionException(val typeName: String, message: String, cause: 
 
 /** Encapsulates the failure of a node activation along with the node path where it occurred. */
 internal data class NodeExecutionFailure(val cause: Throwable, val nodePath: String)
+
+/**
+ * A node exceeded its configured timeout. An ordinary exception, so a timed-out node is still
+ * eligible for retry.
+ */
+@ExperimentalWorkflowApi
+class NodeTimeoutException(val nodeName: String, val timeout: Duration, cause: Throwable? = null) :
+  NodeExecutionException("NodeTimeoutError", "Node '$nodeName' timed out after $timeout.", cause)
 
 /**
  * A workflow graph failed validation. Raised when the graph is built, not when it runs. Graph

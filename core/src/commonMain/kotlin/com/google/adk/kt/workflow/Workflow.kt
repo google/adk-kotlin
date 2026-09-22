@@ -37,6 +37,10 @@ import kotlinx.coroutines.flow.flow
  *
  * @property edges The graph. A workflow with no edges runs nothing and produces nothing.
  * @property maxConcurrency The most nodes to run at once. Null does not limit.
+ * @property config The workflow's own retry policy and execution timeout, applied whether it runs
+ *   as the root of an invocation or nested inside another graph. A workflow reports a child's
+ *   failure rather than raising, so its retry policy re-runs the whole graph on a child failure;
+ *   each retry runs the graph fresh, since replaying already-produced children is a later change.
  */
 @ExperimentalWorkflowApi
 class Workflow(
@@ -46,12 +50,14 @@ class Workflow(
   val maxConcurrency: Int? = null,
   rerunOnResume: Boolean = true,
   waitForOutput: Boolean = false,
+  config: NodeConfig = NodeConfig(),
 ) :
   BaseNode(
     name = name,
     description = description,
     rerunOnResume = rerunOnResume,
     waitForOutput = waitForOutput,
+    config = config,
   ) {
 
   /** The assembled graph, or null when the workflow has no edges. */
@@ -65,16 +71,20 @@ class Workflow(
   }
 
   /**
-   * Runs this workflow as the root of an invocation, which is how a runner drives it. Nested inside
-   * another graph it runs through [runNode] instead.
+   * Runs this workflow as the root of an invocation, which is how a runner drives it. It runs
+   * through the node runner, like a nested workflow, so its own timeout and retry policy apply at
+   * the root instead of being ignored there. Nested inside another graph it runs through [runNode].
    */
   fun runAsync(context: InvocationContext): Flow<Event> = channelFlow {
-    val graph = graph ?: return@channelFlow
+    if (graph == null) return@channelFlow
     val sink = EventSink { event -> send(event) }
-    val rootContext = Context(invocationContext = context, node = this@Workflow, eventSink = sink)
-    rootContext.eventAuthor = name
-    Scheduler(this@Workflow, graph, rootContext).run(nodeInput = context.userContent)
-    rootContext.requireNodeState().failure?.let { throw it.cause }
+    // A synthetic root parent at the empty path lets the node runner rebuild this workflow's own
+    // context at the same path the direct run used, so node paths, authors and branches are kept.
+    val rootParent =
+      Context(invocationContext = context, node = this@Workflow, eventSink = sink, nodePath = "")
+    val result =
+      NodeRunner(node = this@Workflow, parent = rootParent, runId = "1").run(context.userContent)
+    result.requireNodeState().failure?.let { throw it.cause }
   }
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {

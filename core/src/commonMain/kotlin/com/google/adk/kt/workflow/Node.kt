@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.Flow
  *   completing it with the resuming answer as its output.
  * @property waitForOutput Whether the node stays re-triggerable until it produces an output or a
  *   route, instead of completing when its run completes.
+ * @property config The node's retry policy and execution timeout.
  */
 interface Node {
   val name: String
@@ -42,6 +43,10 @@ interface Node {
 
   val waitForOutput: Boolean
     get() = false
+
+  @ExperimentalWorkflowApi
+  val config: NodeConfig
+    get() = NodeConfig()
 
   /**
    * Whether the node runs only once every predecessor has completed, receiving all their outputs

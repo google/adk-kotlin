@@ -25,14 +25,19 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeout
 
 /**
  * Runs one node to completion and returns the context holding its results.
  *
- * This is where a node's declared behavior is applied: the stamping that gives every event its
- * author and its place in the graph. The scheduler reads `output`, `routes` and `interruptIds` off
- * the returned context.
+ * This is where a node's declared behavior is applied: the timeout around an attempt, the retry
+ * budget across attempts, and the stamping that gives every event its author and its place in the
+ * graph. The scheduler reads `output`, `routes` and `interruptIds` off the returned context.
  */
 internal class NodeRunner(
   private val node: Node,
@@ -43,10 +48,37 @@ internal class NodeRunner(
   private val overrideBranch: String? = null,
 ) {
 
-  /** Runs the node and returns the context of the run. */
-  suspend fun run(nodeInput: Any?): Context = Activation(newContext()).run(nodeInput)
+  /**
+   * Runs the node, retrying per its policy, and returns the context of the final attempt.
+   *
+   * A retry runs fresh: it builds a new context, so a partial attempt's un-emitted writes are
+   * dropped, and retrying the root re-runs the whole graph rather than replaying already-produced
+   * children (that replay is a later change).
+   */
+  suspend fun run(nodeInput: Any?): Context {
+    val policy = node.config.retryConfig
+    var attempt = 1
+    while (true) {
+      val activation = Activation(newContext(attempt))
+      val context = activation.run(nodeInput)
+      // A workflow reports a child's failure by setting it on the context and returning, not by
+      // raising, so both thrown exceptions and child failures run through the retry policy here.
+      val failure = context.requireNodeState().failure
+      if (
+        activation.canRetry &&
+          failure != null &&
+          policy != null &&
+          policy.shouldRetry(failure.cause, attempt)
+      ) {
+        delay(policy.delayFor(attempt))
+        attempt += 1
+        continue
+      }
+      return context
+    }
+  }
 
-  private fun newContext(): Context {
+  private fun newContext(attempt: Int): Context {
     val nodePath = Context.buildNodePath(parent.nodePath, node.name, runId)
     // TODO: on resume, recovering interrupt answers from session history (ResumeScan.answersFor) is
     // added in a later change; until then only explicitly-passed resume inputs are used.
@@ -56,6 +88,7 @@ internal class NodeRunner(
       eventSink = parent.requireNodeState().eventSink,
       parent = parent,
       runId = runId,
+      attemptCount = attempt,
       resumeInputs = resumeInputs,
       nodePath = nodePath,
     )
@@ -89,25 +122,51 @@ internal class NodeRunner(
    */
   private inner class Activation(val context: Context) {
     private val nodeState = context.requireNodeState()
+    var canRetry = true
+      private set
 
     suspend fun run(nodeInput: Any?): Context {
       try {
-        asBaseNode(node).run(context, nodeInput).collect(::dispatch)
+        runAttempt(nodeInput)
         flushPending()
       } catch (e: NodeInterruptedException) {
         // A dynamically dispatched child interrupted. Its ids are already on the context, and the
         // node is waiting rather than failing, so this attempt counts as finished.
         flushPending()
       } catch (e: DynamicNodeFailedException) {
-        // A dynamically dispatched child failed; carry its failure up. Dynamic dispatch lands in a
-        // later change, so nothing raises this yet.
+        // A dynamically dispatched child failed; carry its failure up without retrying here.
+        // Dynamic dispatch lands in a later change, so nothing raises this yet.
+        canRetry = false
         nodeState.failure = NodeExecutionFailure(e.error, e.errorNodePath)
       } catch (e: CancellationException) {
+        // This node's own timeout already surfaced as a NodeTimeoutException, so a cancellation
+        // reaching here is an outer scope tearing the node down and must not be retried.
         throw e
       } catch (e: Exception) {
         fail(e)
       }
       return context
+    }
+
+    /**
+     * Runs one attempt, bounding it by the node's timeout when one is set. A timeout cancels the
+     * attempt and surfaces as a [NodeTimeoutException], which is an ordinary failure the retry
+     * policy can act on.
+     */
+    private suspend fun runAttempt(nodeInput: Any?) {
+      val timeout = node.config.timeout
+      if (timeout == null) {
+        asBaseNode(node).run(context, nodeInput).collect(::dispatch)
+        return
+      }
+      try {
+        withTimeout(timeout) { asBaseNode(node).run(context, nodeInput).collect(::dispatch) }
+      } catch (e: TimeoutCancellationException) {
+        // Only relabel our own timeout: if an outer scope already cancelled us the coroutine is no
+        // longer active, so rethrow the cancellation rather than blaming this node.
+        if (currentCoroutineContext().isActive) throw NodeTimeoutException(node.name, timeout, e)
+        else throw e
+      }
     }
 
     /** Records the event's output and routing on [context], then stamps and forwards the event. */
@@ -185,14 +244,15 @@ internal class NodeRunner(
 
     /** Records the exception as a node failure and emits an error event carrying pending deltas. */
     private suspend fun fail(e: Exception) {
-      // Only Exceptions become node failures; Errors are fatal and propagate. Attach any pending
-      // state deltas to the error event so state changes made before the failure are not lost.
+      // Only Exceptions become node failures; Errors are fatal and propagate. Each failed attempt
+      // is reported so a retried node's history shows every try, and pending state deltas ride the
+      // error event so state changes made before the failure are not lost.
       val errorEvent =
         withPendingDeltas(
           stamp(
             Event(
               author = "",
-              errorCode = (e as? NodeExecutionException)?.typeName ?: e::class.simpleName,
+              errorCode = RetryConfig.errorTypeName(e),
               errorMessage = e.message ?: "",
             )
           )
@@ -258,6 +318,7 @@ private fun asBaseNode(node: Node): BaseNode =
         description = node.description,
         rerunOnResume = node.rerunOnResume,
         waitForOutput = node.waitForOutput,
+        config = node.config,
       ) {
       override val requiresAllPredecessors: Boolean
         get() = node.requiresAllPredecessors
