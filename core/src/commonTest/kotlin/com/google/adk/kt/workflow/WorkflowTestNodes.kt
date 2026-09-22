@@ -20,8 +20,12 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.testing.testInvocationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 
 /**
  * Test node helpers shared across the workflow test suites. Kept in one file so the open-source
@@ -43,3 +47,8 @@ internal fun yes() = Route.Tag("yes")
 
 /** The `no` tag route, for routing tests. */
 internal fun no() = Route.Tag("no")
+
+/** Runs [workflow] as an invocation root and collects the events it emits. */
+internal fun runWorkflow(workflow: Workflow): List<Event> = runBlocking {
+  workflow.runAsync(testInvocationContext()).toList()
+}

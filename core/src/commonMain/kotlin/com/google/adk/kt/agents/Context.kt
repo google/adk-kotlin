@@ -436,8 +436,7 @@ open class Context(
    * This activation's node execution state. Present only on a node activation; null on a callback,
    * model-callback, or tool context, which is why the public node-only members below throw.
    */
-  internal var nodeState: NodeExecutionState? = null
-    private set
+  private var nodeState: NodeExecutionState? = null
 
   internal fun requireNodeState(): NodeExecutionState =
     checkNotNull(nodeState) { "This member is available only on a node activation context." }

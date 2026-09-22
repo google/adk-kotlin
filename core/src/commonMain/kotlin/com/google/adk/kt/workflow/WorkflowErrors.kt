@@ -37,6 +37,13 @@ internal data class NodeExecutionFailure(val cause: Throwable, val nodePath: Str
 class GraphValidationException(message: String) : IllegalArgumentException(message)
 
 /**
+ * A workflow is misconfigured in a way surfaced only at run time -- for example, more than one
+ * terminal node producing an output. Matches Python's WorkflowConfigurationError.
+ */
+@ExperimentalWorkflowApi
+class WorkflowConfigurationError(message: String) : IllegalStateException(message)
+
+/**
  * A dynamically dispatched child node interrupted, so the node that dispatched it cannot finish.
  * Thrown past user code and caught by the node runner, which reads the interrupt ids off the
  * context rather than from this exception. Dynamic dispatch lands in a later change, so nothing
