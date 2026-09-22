@@ -29,12 +29,12 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.jvm.JvmStatic
-import kotlinx.coroutines.flow.lastOrNull
 
 /**
  * A tool that wraps a [BaseAgent].
@@ -142,38 +142,34 @@ open class AgentTool(
         state = parentState,
       )
 
-    val lastEvent =
-      runner
-        .runAsync(
-          userId = childSession.key.userId,
-          sessionId = childSession.key.id!!,
-          newMessage = content,
-        )
-        .lastOrNull()
-
-    if (lastEvent != null) {
-      // Propagate non-internal state back to the parent context. Artifact deltas are recorded
-      // per-save by [ForwardingArtifactService] into `context.actions.artifactDelta`, so no
-      // post-hoc merge is needed (and the child's last-event delta would refer to its throwaway
-      // session anyway).
-      context.actions.stateDelta.putAll(lastEvent.actions.stateDelta)
-
-      if (propagateGroundingMetadata) {
-        lastEvent.groundingMetadata?.let {
-          context.actions.stateDelta[GROUNDING_METADATA_TEMP_KEY] = it
+    var lastContent: Content? = null
+    var lastGroundingMetadata: GroundingMetadata? = null
+    runner
+      .runAsync(
+        userId = childSession.key.userId,
+        sessionId = childSession.key.id!!,
+        newMessage = content,
+      )
+      .collect { event ->
+        // The child session is discarded, so every event's state must reach the parent.
+        context.actions.stateDelta.putAll(event.actions.stateDelta)
+        // Skips content-less events, e.g. from an after-agent callback, so the last answer stays.
+        if (event.content != null) {
+          lastContent = event.content
+          lastGroundingMetadata = event.groundingMetadata
         }
       }
 
-      val text =
-        lastEvent.content
-          ?.parts
-          ?.filter { it.thought != true }
-          ?.joinToString("\n") { it.text ?: "" } ?: ""
-
-      return text
+    if (propagateGroundingMetadata) {
+      lastGroundingMetadata?.let { context.actions.stateDelta[GROUNDING_METADATA_TEMP_KEY] = it }
     }
 
-    return ""
+    return lastContent
+      ?.parts
+      ?.filter { it.thought != true }
+      ?.mapNotNull { it.text?.takeIf(String::isNotEmpty) }
+      ?.joinToString("\n")
+      .orEmpty()
   }
 
   /**
