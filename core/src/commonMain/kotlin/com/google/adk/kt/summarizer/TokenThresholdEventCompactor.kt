@@ -34,7 +34,8 @@ import com.google.adk.kt.types.Role
  * ## Safety net
  *
  * The window never strands an open interaction: the window is shrunk to its
- * [longestSelfContainedPrefix].
+ * [longestSelfContainedPrefix]. A summarizer failure skips the compaction instead of failing the
+ * caller, since the uncompacted history is still usable.
  *
  * @param config The compaction configuration; must have token-threshold fields set.
  * @param agentName The current agent name, used when estimating the prompt token count.
@@ -65,7 +66,7 @@ class TokenThresholdEventCompactor(
     if (promptTokenCount < tokenThreshold) return
 
     val compactionWindow = selectTailRetentionWindow(liveEvents, eventRetentionSize) ?: return
-    val compactionEvent = summarizer.summarizeEvents(compactionWindow) ?: return
+    val compactionEvent = trySummarizeEvents(summarizer, compactionWindow, logger) ?: return
     val appendedEvent = sessionService.appendEvent(session, compactionEvent)
     logger.debug {
       "Token-threshold compaction summarized ${compactionWindow.size} events into " +

@@ -16,9 +16,34 @@
 package com.google.adk.kt.summarizer
 
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.logging.Logger
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Returns true when this event carries a context-compaction summary. */
 internal fun Event.isCompactionEvent(): Boolean = actions.compaction != null
+
+/**
+ * Summarizes [events] with [summarizer], returning `null` when it produces no summary or fails; a
+ * failure is reported to [logger].
+ *
+ * Compaction only shrinks a history that is still usable in full, so a summarizer failure skips
+ * compaction instead of ending the invocation; cancellation still propagates.
+ */
+internal suspend fun trySummarizeEvents(
+  summarizer: EventSummarizer,
+  events: List<Event>,
+  logger: Logger,
+): Event? =
+  try {
+    summarizer.summarizeEvents(events)
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: Exception) {
+    logger.warn {
+      "Event compaction failed (${e::class.simpleName}); continuing with the uncompacted history."
+    }
+    null
+  }
 
 /**
  * Returns the longest prefix of the given window that can be summarized without splitting a

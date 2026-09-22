@@ -38,6 +38,9 @@ import com.google.adk.kt.sessions.SessionService
  * - no function call is summarized without its response,
  * - no tool-confirmation request (`event.actions.requestedToolConfirmations`) without its resolving
  *   response.
+ *
+ * A summarizer failure skips the compaction instead of failing the caller, since the uncompacted
+ * history is still usable.
  */
 class SlidingWindowEventCompactor(private val config: EventsCompactionConfig) : EventCompactor {
 
@@ -54,7 +57,7 @@ class SlidingWindowEventCompactor(private val config: EventsCompactionConfig) : 
     // otherwise rewound content would leak back into future prompts via the compaction summary.
     val liveEvents = applyRewinds(session.events)
     val compactionWindow = selectCompactionWindow(liveEvents) ?: return
-    val compactionEvent = summarizer.summarizeEvents(compactionWindow) ?: return
+    val compactionEvent = trySummarizeEvents(summarizer, compactionWindow, logger) ?: return
     val appendedEvent = sessionService.appendEvent(session, compactionEvent)
     logger.debug {
       "Sliding-window compaction summarized ${compactionWindow.size} events into ${appendedEvent.id}."

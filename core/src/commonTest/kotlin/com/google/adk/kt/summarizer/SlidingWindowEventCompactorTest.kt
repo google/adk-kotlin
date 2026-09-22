@@ -30,10 +30,12 @@ import com.google.adk.kt.testing.modelEvent
 import com.google.adk.kt.testing.rewindEvent
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userEvent
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class SlidingWindowEventCompactorTest {
@@ -87,6 +89,52 @@ class SlidingWindowEventCompactorTest {
     compactor.compact(session, sessionService)
 
     assertTrue(sessionService.appended.isEmpty())
+  }
+
+  @Test
+  fun compact_summarizerFails_skipsCompaction() {
+    runBlocking {
+      val sessionService = RecordingSessionService()
+      val summarizer = FailingSummarizer()
+      val compactor =
+        SlidingWindowEventCompactor(
+          EventsCompactionConfig(compactionInterval = 2, overlapSize = 1, summarizer = summarizer)
+        )
+      val session = testSession()
+      session.events.add(userEvent("a", invocationId = "inv_1", timestamp = 100L))
+      session.events.add(modelEvent("b", invocationId = "inv_1", timestamp = 110L))
+      session.events.add(userEvent("c", invocationId = "inv_2", timestamp = 200L))
+      session.events.add(modelEvent("d", invocationId = "inv_2", timestamp = 210L))
+
+      // The uncompacted history is still usable, so the failure must not surface to the caller.
+      compactor.compact(session, sessionService)
+
+      assertTrue(summarizer.called)
+      assertTrue(sessionService.appended.isEmpty())
+    }
+  }
+
+  @Test
+  fun compact_summarizerCancelled_propagatesCancellation() {
+    runBlocking {
+      val sessionService = RecordingSessionService()
+      val compactor =
+        SlidingWindowEventCompactor(
+          EventsCompactionConfig(
+            compactionInterval = 2,
+            overlapSize = 1,
+            summarizer = CancellingSummarizer(),
+          )
+        )
+      val session = testSession()
+      session.events.add(userEvent("a", invocationId = "inv_1", timestamp = 100L))
+      session.events.add(modelEvent("b", invocationId = "inv_1", timestamp = 110L))
+      session.events.add(userEvent("c", invocationId = "inv_2", timestamp = 200L))
+      session.events.add(modelEvent("d", invocationId = "inv_2", timestamp = 210L))
+
+      assertFailsWith<CancellationException> { compactor.compact(session, sessionService) }
+      assertTrue(sessionService.appended.isEmpty())
+    }
   }
 
   @Test
@@ -510,6 +558,22 @@ class SlidingWindowEventCompactorTest {
   }
 
   // ----- helpers -----
+
+  /** An [EventSummarizer] that fails the way a summarizer's model call can fail. */
+  private class FailingSummarizer : EventSummarizer {
+    var called: Boolean = false
+
+    override suspend fun summarizeEvents(events: List<Event>): Event {
+      called = true
+      error("summarizer model is unavailable")
+    }
+  }
+
+  /** An [EventSummarizer] that is cancelled the way a summarizer's model call can be cancelled. */
+  private class CancellingSummarizer : EventSummarizer {
+    override suspend fun summarizeEvents(events: List<Event>): Event =
+      throw CancellationException("invocation cancelled")
+  }
 
   /**
    * An [EventSummarizer] that records every event list passed to [summarizeEvents] in [calls] and

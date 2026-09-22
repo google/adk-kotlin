@@ -29,6 +29,7 @@ import com.google.adk.kt.testing.modelEvent
 import com.google.adk.kt.testing.modelEventWithPromptTokens
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userEvent
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -96,6 +97,48 @@ class TokenThresholdEventCompactorTest {
 
     assertTrue(summarizer.calls.isEmpty())
     assertTrue(sessionService.appended.isEmpty())
+  }
+
+  @Test
+  fun compact_summarizerFails_skipsCompaction() {
+    runBlocking {
+      val sessionService = RecordingSessionService()
+      val summarizer = FailingSummarizer()
+      val compactor =
+        tokenThresholdCompactor(tokenThreshold = 100, eventRetentionSize = 2, summarizer)
+      val session = testSession()
+      session.events.add(userEvent("u1", invocationId = "inv_1", timestamp = 100L))
+      session.events.add(modelEvent("m1", invocationId = "inv_1", timestamp = 110L))
+      session.events.add(userEvent("u2", invocationId = "inv_2", timestamp = 200L))
+      session.events.add(modelEventWithPromptTokens(150, invocationId = "inv_2", timestamp = 210L))
+
+      // This runs before a model call, so a failure here must not take the invocation down with it.
+      compactor.compact(session, sessionService)
+
+      assertTrue(summarizer.called)
+      assertTrue(sessionService.appended.isEmpty())
+    }
+  }
+
+  @Test
+  fun compact_summarizerCancelled_propagatesCancellation() {
+    runBlocking {
+      val sessionService = RecordingSessionService()
+      val compactor =
+        tokenThresholdCompactor(
+          tokenThreshold = 100,
+          eventRetentionSize = 2,
+          CancellingSummarizer(),
+        )
+      val session = testSession()
+      session.events.add(userEvent("u1", invocationId = "inv_1", timestamp = 100L))
+      session.events.add(modelEvent("m1", invocationId = "inv_1", timestamp = 110L))
+      session.events.add(userEvent("u2", invocationId = "inv_2", timestamp = 200L))
+      session.events.add(modelEventWithPromptTokens(150, invocationId = "inv_2", timestamp = 210L))
+
+      assertFailsWith<CancellationException> { compactor.compact(session, sessionService) }
+      assertTrue(sessionService.appended.isEmpty())
+    }
   }
 
   @Test
@@ -427,6 +470,22 @@ class TokenThresholdEventCompactorTest {
       agentName = "agent",
       branch = null,
     )
+
+  /** An [EventSummarizer] that fails the way a summarizer's model call can fail. */
+  private class FailingSummarizer : EventSummarizer {
+    var called: Boolean = false
+
+    override suspend fun summarizeEvents(events: List<Event>): Event {
+      called = true
+      error("summarizer model is unavailable")
+    }
+  }
+
+  /** An [EventSummarizer] that is cancelled the way a summarizer's model call can be cancelled. */
+  private class CancellingSummarizer : EventSummarizer {
+    override suspend fun summarizeEvents(events: List<Event>): Event =
+      throw CancellationException("invocation cancelled")
+  }
 
   /**
    * An [EventSummarizer] that records every event list passed to [summarizeEvents] in [calls] and
