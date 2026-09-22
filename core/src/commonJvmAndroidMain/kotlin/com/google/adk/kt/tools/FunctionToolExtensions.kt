@@ -157,6 +157,13 @@ private fun defaultAsJson(value: Any): JsonElement =
 private fun Schema.describesArguments(): Boolean =
   if (properties != null) properties.isNotEmpty() else anyOf != null || type != null
 
+/**
+ * Renders this [Schema] as a JSON Schema [JsonObject], the same shape used in prompt tool
+ * descriptions. Exposed so an adapter can hand a tool's parameter schema to another framework
+ * rather than forking this conversion.
+ */
+@FrameworkInternalApi fun Schema.toJsonSchema(): JsonObject = schemaToJsonObject(this)
+
 private fun schemaToJsonObject(schema: Schema): JsonObject = jsonObject { fields ->
   schema.typeNameOrNull()?.let { fields["type"] = JsonPrimitive(it) }
   schema.description?.let { fields["description"] = JsonPrimitive(it) }

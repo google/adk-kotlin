@@ -79,16 +79,31 @@ implementation("com.google.adk:google-adk-kotlin-core:1.1.0")
 Every module is published under the `com.google.adk` group and shares the
 version shown above.
 
-Module         | Artifact                             | What it is for
--------------- | ------------------------------------ | --------------
-`core`         | `google-adk-kotlin-core`             | Agents, models, tools, sessions, memory, artifacts and runners. The only dependency most projects need.
-`processor`    | `google-adk-kotlin-processor`        | KSP processor that generates tools from `@Tool`-annotated functions. Add it with `ksp(...)`.
-`webserver`    | `google-adk-kotlin-webserver`        | HTTP serving for your agents, headless or with the Development UI.
-`integrations` | `google-adk-kotlin-integrations`     | Plugins and integrations with external services (e.g. BigQuery agent analytics).
-`a2a`          | `google-adk-kotlin-a2a`              | Agent2Agent (A2A) support for talking to remote agents.
-`litertlm`     | `google-adk-kotlin-litertlm`         | On-device models through LiteRT-LM. Requires JDK 21+; see [litertlm/README.md](litertlm/README.md).
-`firebase`     | `google-adk-kotlin-firebase-android` | Android-only model backed by Firebase AI Logic.
-`mlkit`        | `google-adk-kotlin-mlkit-android`    | Android-only on-device Gemini Nano through the ML Kit GenAI Prompt API. Published as a `-beta` pre-release.
+| Module                | Artifact                                | What it is for                            |
+| --------------------- | --------------------------------------- | ----------------------------------------- |
+| `core`                | `google-adk-kotlin-core`                | Agents, models, tools, sessions, memory,  |
+:                       :                                         : artifacts and runners. The only           :
+:                       :                                         : dependency most projects need.            :
+| `processor`           | `google-adk-kotlin-processor`           | KSP processor that generates tools from   |
+:                       :                                         : `@Tool`-annotated functions. Add it with  :
+:                       :                                         : `ksp(...)`.                               :
+| `webserver`           | `google-adk-kotlin-webserver`           | HTTP serving for your agents, headless or |
+:                       :                                         : with the Development UI.                  :
+| `integrations`        | `google-adk-kotlin-integrations`        | Plugins and integrations with external    |
+:                       :                                         : services (e.g. BigQuery agent analytics). :
+| `integrations/spring` | `google-adk-kotlin-integrations-spring` | Use any Spring AI `ChatModel` (OpenAI,    |
+:                       :                                         : Anthropic, Vertex, ...) to drive an ADK   :
+:                       :                                         : agent. JVM only.                          :
+| `a2a`                 | `google-adk-kotlin-a2a`                 | Agent2Agent (A2A) support for talking to  |
+:                       :                                         : remote agents.                            :
+| `litertlm`            | `google-adk-kotlin-litertlm`            | On-device models through LiteRT-LM.       |
+:                       :                                         : Requires JDK 21+; see                     :
+:                       :                                         : [litertlm/README.md](litertlm/README.md). :
+| `firebase`            | `google-adk-kotlin-firebase-android`    | Android-only model backed by Firebase AI  |
+:                       :                                         : Logic.                                    :
+| `mlkit`               | `google-adk-kotlin-mlkit-android`       | Android-only on-device Gemini Nano        |
+:                       :                                         : through the ML Kit GenAI Prompt API.      :
+:                       :                                         : Published as a `-beta` pre-release.       :
 
 ## 📚 Documentation
 

@@ -33,6 +33,8 @@ dependencies {
   implementation(project(":google-adk-kotlin-a2a"))
   implementation(project(":google-adk-kotlin-core"))
   implementation(project(":google-adk-kotlin-integrations"))
+  implementation(project(":google-adk-kotlin-integrations-spring"))
+  implementation(libs.spring.ai.google.genai)
   implementation(libs.a2a.sdk.client)
   implementation(libs.a2a.sdk.spec)
   implementation(libs.a2a.sdk.transport.jsonrpc)
