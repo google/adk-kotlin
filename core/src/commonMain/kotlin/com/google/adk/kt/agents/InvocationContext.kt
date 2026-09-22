@@ -712,6 +712,7 @@ data class InvocationContext(
     eventId: String,
   ): Event {
     return Event(
+      id = eventId,
       invocationId = this.invocationId,
       author = this.agent.name,
       content =
@@ -742,8 +743,8 @@ data class InvocationContext(
       Content(role = "user", parts = events.mapNotNull { it.content?.parts }.flatten())
 
     val mergedActions = events.fold(EventActions()) { acc, event -> acc.mergeWith(event.actions) }
-    // Use the first event as the "base" for common attributes
-    return events.first().copy(content = mergedContent, actions = mergedActions)
+    // New id: the first event's id belongs to its own tool span. Python also builds a new event.
+    return events.first().copy(id = Uuid.random(), content = mergedContent, actions = mergedActions)
   }
 
   private suspend fun runBeforeToolCallbacks(
