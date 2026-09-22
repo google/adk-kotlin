@@ -16,6 +16,7 @@
 package com.google.adk.kt.summarizer
 
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.modelEvent
 import com.google.adk.kt.testing.modelEventWithPromptTokens
 import com.google.adk.kt.testing.rewindEvent
 import com.google.adk.kt.testing.userEvent
@@ -37,15 +38,91 @@ class PromptTokenCountTest {
   }
 
   @Test
-  fun latestPromptTokenCount_skipsEventsWithoutUsageMetadata() {
+  fun latestPromptTokenCount_skipsUserEvents() {
     val events =
       listOf(
         modelEventWithPromptTokens(promptTokenCount = 30, timestamp = 100L, invocationId = "inv_1"),
-        // Newer events without usage metadata must be skipped in favor of the last reported count.
         userEvent("follow up", timestamp = 200L, invocationId = "inv_2"),
       )
 
     assertEquals(30, latestPromptTokenCount(events, agentName = "agent", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_skipsEventsWithoutUsageMetadata() {
+    val events =
+      listOf(
+        modelEventWithPromptTokens(promptTokenCount = 30, timestamp = 100L, invocationId = "inv_1"),
+        // Newer agent-authored event without usage metadata must be skipped in favor of the last
+        // reported count.
+        modelEvent("follow up", timestamp = 200L, invocationId = "inv_2", author = "agent"),
+      )
+
+    assertEquals(30, latestPromptTokenCount(events, agentName = "agent", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_skipsCountsFromOtherAgents() {
+    // A turn that ends in a small sub-agent: its count describes the sub-agent's prompt, not this
+    // agent's, so the agent's own (much larger) count is the one that must be measured.
+    val events =
+      listOf(
+        modelEventWithPromptTokens(
+          promptTokenCount = 5000,
+          timestamp = 100L,
+          invocationId = "inv_1",
+        ),
+        modelEventWithPromptTokens(
+          promptTokenCount = 100,
+          timestamp = 200L,
+          invocationId = "inv_1",
+          author = "formatter",
+        ),
+      )
+
+    assertEquals(5000, latestPromptTokenCount(events, agentName = "agent", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_emptyAgentName_usesLatestCountFromAnyAuthor() {
+    // An empty name scopes to no agent, so a caller driving the compactor outside an agent context
+    // keeps reading real counts instead of silently dropping to the estimate.
+    val events =
+      listOf(
+        modelEventWithPromptTokens(
+          promptTokenCount = 5000,
+          timestamp = 100L,
+          invocationId = "inv_1",
+        ),
+        modelEventWithPromptTokens(
+          promptTokenCount = 100,
+          timestamp = 200L,
+          invocationId = "inv_1",
+          author = "formatter",
+        ),
+      )
+
+    assertEquals(100, latestPromptTokenCount(events, agentName = "", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_onlyOtherAgentsReportedCounts_fallsBackToEstimate() {
+    // The sole reported count belongs to another agent, so it is ignored rather than borrowed and
+    // the estimate covers the rewritten prompt instead.
+    val events =
+      listOf(
+        userEvent("a".repeat(100), timestamp = 100L, invocationId = "inv_1"),
+        modelEventWithPromptTokens(
+          promptTokenCount = 5000,
+          timestamp = 200L,
+          invocationId = "inv_1",
+          author = "formatter",
+        ),
+      )
+
+    // 100-char user message plus the sub-agent's reply presented as context ("For context:" +
+    // "[formatter] said: ok" = 32 chars) -> 132 / 4 = 33 tokens, nowhere near the ignored 5000.
+    assertEquals(33, latestPromptTokenCount(events, agentName = "agent", branch = null))
   }
 
   @Test

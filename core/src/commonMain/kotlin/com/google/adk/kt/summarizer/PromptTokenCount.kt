@@ -23,21 +23,23 @@ import com.google.adk.kt.processors.HistoryRewriterProcessor
 private const val CHARS_PER_TOKEN = 4
 
 /**
- * Returns the most recently observed prompt token count from [events], or `null` when one cannot be
- * determined.
+ * Returns the most recent [Event.usageMetadata]`.promptTokenCount` that [agentName] recorded in
+ * [events], or the [estimatePromptTokenCount] fallback when that agent has not reported one yet.
  *
- * Walks [events] from newest to oldest and returns the first non-null
- * [Event.usageMetadata]`.promptTokenCount` it finds (the token count the model reported for the
- * most recent LLM call). When no event carries usage metadata yet -- e.g. before the first model
- * response of a session -- it falls back to [estimatePromptTokenCount].
+ * When [agentName] is given, only counts recorded by that agent are considered. A count belongs to
+ * whichever agent made the model call, so reading another agent's is reading another context: a
+ * multi-agent app whose turn ends in a small sub-agent otherwise measures that sub-agent forever
+ * and never reaches its threshold.
  *
  * @param events The session events to inspect.
- * @param agentName The current agent name, used by the estimate fallback to build effective prompt
+ * @param agentName The current agent name. When non-empty, only counts from events with a matching
+ *   [Event.author] are considered; also used by the estimate fallback to build effective prompt
  *   contents.
  * @param branch The current invocation branch, used by the estimate fallback.
  */
 internal fun latestPromptTokenCount(events: List<Event>, agentName: String, branch: String?): Int? {
   for (event in events.asReversed()) {
+    if (agentName.isNotEmpty() && event.author != agentName) continue
     if (event.usageMetadata?.promptTokenCount != null) return event.usageMetadata.promptTokenCount
   }
   return estimatePromptTokenCount(events, agentName, branch)

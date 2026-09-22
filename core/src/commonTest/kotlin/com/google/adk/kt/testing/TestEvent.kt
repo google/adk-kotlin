@@ -35,23 +35,32 @@ fun userEvent(text: String, timestamp: Long = 0L, invocationId: String? = null):
   )
 
 /** A `model`-authored [Event] carrying a single text part. */
-fun modelEvent(text: String, timestamp: Long = 0L, invocationId: String? = null): Event =
+fun modelEvent(
+  text: String,
+  timestamp: Long = 0L,
+  invocationId: String? = null,
+  author: String = Role.MODEL,
+): Event =
   Event(
-    author = Role.MODEL,
+    author = author,
     invocationId = invocationId,
     content = modelMessage(text),
     timestamp = timestamp,
   )
 
-/** A `model`-authored [Event] reporting [promptTokenCount] in its [Event.usageMetadata]. */
+/**
+ * An [Event] reporting [promptTokenCount] in its [Event.usageMetadata], authored by [author]
+ * (defaults to `"agent"`, matching the default agent name in tests).
+ */
 fun modelEventWithPromptTokens(
   promptTokenCount: Int,
+  author: String = "agent",
   text: String = "ok",
   timestamp: Long = 0L,
   invocationId: String? = null,
 ): Event =
   Event(
-    author = Role.MODEL,
+    author = author,
     invocationId = invocationId,
     content = modelMessage(text),
     usageMetadata = UsageMetadata(promptTokenCount = promptTokenCount),

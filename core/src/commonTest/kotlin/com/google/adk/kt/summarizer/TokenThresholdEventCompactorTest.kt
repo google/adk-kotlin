@@ -35,6 +35,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class TokenThresholdEventCompactorTest {
@@ -135,6 +136,36 @@ class TokenThresholdEventCompactorTest {
 
     assertEquals(listOf(e1, e2), summarizer.calls.single())
     assertEquals(1, sessionService.appended.size)
+  }
+
+  @Test
+  fun compact_turnEndsInSubAgent_measuresCompactedAgentsOwnPrompt() {
+    runBlocking {
+      val summarizer =
+        RecordingSummarizer(returning = compactionEvent(startTs = 100L, endTs = 110L))
+      val sessionService = RecordingSessionService()
+      val compactor =
+        tokenThresholdCompactor(tokenThreshold = 100, eventRetentionSize = 2, summarizer)
+      val session = testSession()
+      val e1 = userEvent("u1", invocationId = "inv_1", timestamp = 100L)
+      val e2 = modelEvent("m1", invocationId = "inv_1", timestamp = 110L)
+      val e3 = modelEventWithPromptTokens(150, invocationId = "inv_2", timestamp = 200L)
+      // The turn ends in a small sub-agent. Its 10-token prompt is a different context, so it must
+      // not mask the compacted agent's own 150-token prompt and hold compaction back forever.
+      val e4 =
+        modelEventWithPromptTokens(
+          10,
+          invocationId = "inv_2",
+          timestamp = 210L,
+          author = "formatter",
+        )
+      session.events.addAll(listOf(e1, e2, e3, e4))
+
+      compactor.compact(session, sessionService)
+
+      assertEquals(listOf(e1, e2), summarizer.calls.single())
+      assertEquals(1, sessionService.appended.size)
+    }
   }
 
   @Test
