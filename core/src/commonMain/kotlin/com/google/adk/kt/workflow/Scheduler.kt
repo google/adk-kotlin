@@ -41,6 +41,9 @@ internal class Scheduler(
   private val nodeBranches = mutableMapOf<String, String?>()
   private val triggerQueue = TriggerQueue()
   private val interruptIds = mutableSetOf<String>()
+  // Per fan-in target, each node's runCounter when the barrier last fired, so a loop waits for an
+  // active upstream branch instead of re-firing the join on stale output.
+  private val barrierConsumed = mutableMapOf<String, MutableMap<String, Int>>()
 
   // TODO: on resume, reconstructing progress from session history (ResumeScan) and fast-forwarding
   // already-completed nodes is added in a later change; this engine runs every node fresh.
@@ -278,30 +281,68 @@ internal class Scheduler(
   }
 
   /**
-   * Buffers a trigger for a fan-in [target] once every predecessor has completed, handing it all of
+   * Buffers a trigger for a fan-in [target] once every predecessor is ready, handing it all of
    * their outputs keyed by name. A no-op while any predecessor is still outstanding. START never
    * runs, so it is satisfied as soon as the workflow begins, and its seeded input joins the
    * aggregate.
    */
   private fun enqueueBarrierTrigger(target: String) {
     val predecessors = graph.predecessorsOf(target)
-    // A predecessor is done once it has COMPLETED with nothing queued for it. Status alone is not
-    // enough: it flips to RUNNING only in start(), so a predecessor a loop re-triggered still reads
-    // COMPLETED while its trigger waits. Firing then would hand the join that predecessor's stale
-    // output, and fire again once it really re-runs.
+    val consumed = barrierConsumed.getOrPut(target) { mutableMapOf() }
     val queued = triggerQueue.queuedNodeNames.toSet()
-    if (
-      !predecessors.all {
-        it == START_NODE_NAME || (nodeStates[it]?.status == NodeStatus.COMPLETED && it !in queued)
-      }
-    ) {
-      return
+    // A predecessor is ready when it has COMPLETED, is not waiting to re-run, and either has a
+    // newer activation than the last firing consumed or has no active upstream branch (so a static
+    // predecessor outside the loop reuses its output, while a multi-hop loop predecessor waits for
+    // its upstream path).
+    val ready = predecessors.all { pred ->
+      if (pred == START_NODE_NAME) return@all true
+      val state = nodeStates[pred] ?: return@all false
+      state.status == NodeStatus.COMPLETED &&
+        pred !in queued &&
+        (state.runCounter > (consumed[pred] ?: 0) ||
+          !hasActiveUpstream(pred, target, queued, consumed))
+    }
+    if (!ready) return
+    for ((name, state) in nodeStates) {
+      consumed[name] = state.runCounter
     }
     val aggregated = predecessors.associateWith { nodeOutputs[it] }
     // A join re-merges onto the branch its predecessors forked from: the common prefix of theirs.
     // An empty prefix means they share no branch, which re-merges to the root (null).
     val branch = BranchPath.commonPrefix(predecessors.map { nodeBranches[it] }).ifEmpty { null }
     triggerQueue.enqueue(target, Trigger(aggregated, useSubBranch = false, branch = branch))
+  }
+
+  /**
+   * Whether any ancestor of [node] before [stopAt] is queued, running, waiting, or has already run
+   * since the barrier last fired (meaning [node]'s upstream branch was triggered this round, so
+   * [node] either has a new activation on the way or was conditionally skipped).
+   */
+  private fun hasActiveUpstream(
+    node: String,
+    stopAt: String,
+    queued: Set<String>,
+    consumed: Map<String, Int>,
+  ): Boolean {
+    val visited = mutableSetOf(stopAt, START_NODE_NAME)
+    val stack = ArrayDeque<String>()
+    stack.addAll(graph.predecessorsOf(node))
+    while (stack.isNotEmpty()) {
+      val curr = stack.removeLast()
+      if (!visited.add(curr)) continue
+      val state = nodeStates[curr]
+      val status = state?.status
+      if (
+        curr in queued ||
+          status == NodeStatus.RUNNING ||
+          status == NodeStatus.WAITING ||
+          (state?.runCounter ?: 0) > (consumed[curr] ?: 0)
+      ) {
+        return true
+      }
+      stack.addAll(graph.predecessorsOf(curr))
+    }
+    return false
   }
 
   /**

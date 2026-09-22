@@ -508,4 +508,70 @@ class SchedulerTest {
       join.seen,
     )
   }
+
+  @Test
+  fun aLoopRetriggeringATwoHopJoinPredecessorDoesNotFireTheBarrierOnItsStaleOutput() {
+    // Arrange: a2 sits two hops from START (a1 -> a2), b one hop. The loop routes to b and a1, and
+    // the cap lets b re-run and reach the join before a1 re-triggers a2, so a2 is still COMPLETED
+    // and unqueued from the prior iteration. Edge order matters, hence b's loop edge comes first.
+    val a1 = CountingEmitter("a1")
+    val a2 = CountingEmitter("a2")
+    val b = CountingEmitter("b")
+    val join = LoopingJoin("join")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, b),
+            Edge(Start, a1),
+            Edge(a1, a2),
+            Edge(a2, join),
+            Edge(b, join),
+            Edge(join, b, listOf(yes())),
+            Edge(join, a1, listOf(yes())),
+          ),
+        maxConcurrency = 1,
+      )
+
+    // Act
+    val unused = runScheduler(workflow, branch = "root")
+
+    // Assert: one firing per iteration, each pairing same-iteration outputs; without the fix a
+    // third firing carries b's second output beside a2's stale first output.
+    assertEquals<List<Any?>>(
+      listOf(mapOf("b" to "b1", "a2" to "a21"), mapOf("b" to "b2", "a2" to "a22")),
+      join.seen,
+    )
+  }
+
+  @Test
+  fun aLoopJoinWithAStaticPredecessorReusesItsOutputAcrossIterations() {
+    // Arrange: seed runs once from START and is outside the loop, while b loops through join.
+    val seed = CountingEmitter("seed")
+    val b = CountingEmitter("b")
+    val join = LoopingJoin("join")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, seed),
+            Edge(Start, b),
+            Edge(seed, join),
+            Edge(b, join),
+            Edge(join, b, listOf(yes())),
+          ),
+        maxConcurrency = 1,
+      )
+
+    // Act
+    val unused = runScheduler(workflow, branch = "root")
+
+    // Assert: the static predecessor's output is reused on each loop iteration without stalling.
+    assertEquals<List<Any?>>(
+      listOf(mapOf("seed" to "seed1", "b" to "b1"), mapOf("seed" to "seed1", "b" to "b2")),
+      join.seen,
+    )
+  }
 }
