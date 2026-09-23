@@ -42,6 +42,31 @@ internal class StubNode(override val name: String, private val value: Any? = nul
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { emit(value) }
 }
 
+/** Throws whatever [error] builds, so a runner's failure path can be observed. */
+internal class ThrowingNode(override val name: String, private val error: () -> Throwable) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { throw error() }
+}
+
+/** Writes one state key, so where the delta lands is observable. */
+internal class StateWriter(override val name: String, private val key: String) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    context.updateState(key, "v")
+    emit("done")
+  }
+}
+
+/** Records a state change, then throws, so the failure path's delta handling can be observed. */
+internal class StateThenFailNode(
+  override val name: String,
+  private val key: String,
+  private val value: Any,
+) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    context.updateState(key, value)
+    throw IllegalStateException("node failed")
+  }
+}
+
 /** The `yes` tag route, for routing tests. */
 internal fun yes() = Route.Tag("yes")
 

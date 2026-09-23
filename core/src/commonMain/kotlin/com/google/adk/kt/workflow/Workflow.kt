@@ -24,7 +24,6 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 
 /**
@@ -71,21 +70,12 @@ class Workflow(
   }
 
   /**
-   * Runs this workflow as the root of an invocation, which is how a runner drives it. It runs
-   * through the node runner, like a nested workflow, so its own timeout and retry policy apply at
-   * the root instead of being ignored there. Nested inside another graph it runs through [runNode].
+   * Runs this workflow as the root of an invocation, through the node runner, so its own timeout
+   * and retry policy apply. Each non-partial event pauses the node that emitted it until the flow's
+   * collector returns, and a node failure is rethrown only after the event stream drains. Nested
+   * inside another graph it runs through [runNode] instead.
    */
-  fun runAsync(context: InvocationContext): Flow<Event> = channelFlow {
-    if (graph == null) return@channelFlow
-    val sink = EventSink { event -> send(event) }
-    // A synthetic root parent at the empty path lets the node runner rebuild this workflow's own
-    // context at the same path the direct run used, so node paths, authors and branches are kept.
-    val rootParent =
-      Context(invocationContext = context, node = this@Workflow, eventSink = sink, nodePath = "")
-    val result =
-      NodeRunner(node = this@Workflow, parent = rootParent, runId = "1").run(context.userContent)
-    result.requireNodeState().failure?.let { throw it.cause }
-  }
+  fun runAsync(context: InvocationContext): Flow<Event> = NodeRunner.runRoot(this, context)
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     val graph = graph ?: return@flow

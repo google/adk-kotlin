@@ -53,7 +53,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.Node
-import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.NodeRunner
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -785,17 +785,15 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Runs whatever this invocation is rooted on. An agent runs its own lifecycle; a [Workflow] runs
-   * its scheduler instead.
+   * Runs whatever this invocation is rooted on. An agent runs its own lifecycle; any other [Node]
+   * (a [Workflow][com.google.adk.kt.workflow.Workflow] or a standalone node) runs through
+   * [NodeRunner].
    */
   @OptIn(ExperimentalWorkflowApi::class)
   private fun runRoot(context: InvocationContext): Flow<Event> =
     when (val root = context.node ?: context.agent) {
       is BaseAgent -> root.runAsync(context)
-      // TODO: run any Node as an invocation root, not only a Workflow, mirroring Python's
-      // BaseAgent-vs-BaseNode branch (runners.py:1147). Added in a follow-up change.
-      is Workflow -> root.runAsync(context)
-      else -> error("Invocation root '${root.name}' is neither an agent nor a workflow.")
+      else -> NodeRunner.runRoot(root, context)
     }
 
   /**

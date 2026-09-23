@@ -98,14 +98,6 @@ private class Router(override val name: String, private val route: Route) : Node
   }
 }
 
-/** Writes one state key, so where the delta lands is observable. */
-private class StateWriter(override val name: String, private val key: String) : Node {
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    context.updateState(key, "v")
-    emit("done")
-  }
-}
-
 /** Emits a value that changes each activation, so a loop's iterations are distinguishable. */
 private class CountingEmitter(override val name: String) : Node {
   private var activations = 0

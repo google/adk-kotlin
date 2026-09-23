@@ -25,10 +25,15 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeout
 
@@ -39,14 +44,35 @@ import kotlinx.coroutines.withTimeout
  * budget across attempts, and the stamping that gives every event its author and its place in the
  * graph. The scheduler reads `output`, `routes` and `interruptIds` off the returned context.
  */
-internal class NodeRunner(
+internal class NodeRunner
+private constructor(
   private val node: Node,
-  private val parent: Context,
+  private val invocationContext: InvocationContext,
+  private val eventSink: EventSink,
+  private val parent: Context? = null,
   private val runId: String = "1",
   private val resumeInputs: Map<String, Any?> = emptyMap(),
   private val useSubBranch: Boolean = false,
   private val overrideBranch: String? = null,
 ) {
+
+  constructor(
+    node: Node,
+    parent: Context,
+    runId: String = "1",
+    resumeInputs: Map<String, Any?> = emptyMap(),
+    useSubBranch: Boolean = false,
+    overrideBranch: String? = null,
+  ) : this(
+    node = node,
+    invocationContext = parent.invocationContext,
+    eventSink = parent.requireNodeState().eventSink,
+    parent = parent,
+    runId = runId,
+    resumeInputs = resumeInputs,
+    useSubBranch = useSubBranch,
+    overrideBranch = overrideBranch,
+  )
 
   /**
    * Runs the node, retrying per its policy, and returns the context of the final attempt.
@@ -79,18 +105,16 @@ internal class NodeRunner(
   }
 
   private fun newContext(attempt: Int): Context {
-    val nodePath = Context.buildNodePath(parent.nodePath, node.name, runId)
     // TODO: on resume, recovering interrupt answers from session history (ResumeScan.answersFor) is
     // added in a later change; until then only explicitly-passed resume inputs are used.
     return Context(
       invocationContext = childInvocationContext(),
       node = node,
-      eventSink = parent.requireNodeState().eventSink,
+      eventSink = eventSink,
       parent = parent,
       runId = runId,
       attemptCount = attempt,
       resumeInputs = resumeInputs,
-      nodePath = nodePath,
     )
   }
 
@@ -102,12 +126,11 @@ internal class NodeRunner(
    * LLM history.
    */
   private fun childInvocationContext(): InvocationContext {
-    val ic = parent.invocationContext
-    val base = overrideBranch ?: ic.branch
+    val base = overrideBranch ?: invocationContext.branch
     return when {
-      useSubBranch -> ic.copy(branch = BranchPath.subBranch(base, node.name, runId))
-      overrideBranch != null -> ic.copy(branch = overrideBranch)
-      else -> ic
+      useSubBranch -> invocationContext.copy(branch = BranchPath.subBranch(base, node.name, runId))
+      overrideBranch != null -> invocationContext.copy(branch = overrideBranch)
+      else -> invocationContext
     }
   }
 
@@ -299,7 +322,61 @@ internal class NodeRunner(
           ),
       )
   }
+
+  companion object {
+    /**
+     * Runs [node] as the root of [context], streaming the events it (and any nested graph) emits.
+     *
+     * Each non-partial event suspends the emitting node until the downstream collector has
+     * persisted and emitted it, so a successor node always observes its predecessor's committed
+     * state deltas and session history, and a failure's error event is persisted before its
+     * exception surfaces. Partial events flow through without waiting for the collector.
+     */
+    // Confined to the flow's coroutineScope: async sends to channel, and emit runs on the collector
+    // coroutine.
+    @Suppress("UnsafeCoroutineCrossing")
+    fun runRoot(node: Node, context: InvocationContext): Flow<Event> = flow {
+      validateNodeName(node.name)
+      val failure = coroutineScope {
+        val channel = Channel<QueuedEvent>(Channel.BUFFERED)
+        val failureDeferred = async {
+          try {
+            val sink = EventSink { event ->
+              if (event.partial) {
+                channel.send(QueuedEvent(event, processed = null))
+              } else {
+                val processed = CompletableDeferred<Unit>()
+                channel.send(QueuedEvent(event, processed))
+                processed.await()
+              }
+            }
+            NodeRunner(node = node, invocationContext = context, eventSink = sink)
+              .run(nodeInput = context.userContent)
+              .requireNodeState()
+              .failure
+              ?.cause
+          } finally {
+            val unused = channel.close()
+          }
+        }
+        // If emit throws, leaving the scope cancels the node waiting on that event.
+        try {
+          for ((event, processed) in channel) {
+            emit(event)
+            processed?.complete(Unit)
+          }
+        } finally {
+          channel.cancel()
+        }
+        failureDeferred.await()
+      }
+      if (failure != null) throw failure
+    }
+  }
 }
+
+/** An event on its way to the root collector; [processed] is null for a partial event. */
+private data class QueuedEvent(val event: Event, val processed: CompletableDeferred<Unit>?)
 
 /**
  * A final content event whose content *is* the node's output, so no separate output event follows.

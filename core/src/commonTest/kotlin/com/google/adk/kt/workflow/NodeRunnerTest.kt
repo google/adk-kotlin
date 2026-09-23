@@ -54,11 +54,6 @@ private class MessageNode(
   }
 }
 
-/** Throws whatever [error] builds, so the runner's failure path can be observed. */
-private class ThrowingNode(override val name: String, private val error: () -> Throwable) : Node {
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { throw error() }
-}
-
 /** Emits one native event carrying a transfer-to-agent directive. */
 private class TransferNode(override val name: String, private val target: String) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
@@ -66,14 +61,12 @@ private class TransferNode(override val name: String, private val target: String
   }
 }
 
-/** Records a state change, then throws, so the failure path's delta handling can be observed. */
-private class StateThenFailNode(
-  override val name: String,
-  private val key: String,
-  private val value: Any,
-) : Node {
+/** Sets an output, a route and a state change without emitting them, then throws. */
+private class UnflushedResultsThenFailNode(override val name: String) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    context.updateState(key, value)
+    context.output = "unflushed"
+    context.routes = listOf(Route.Tag("unflushed"))
+    context.updateState("k", "v")
     throw IllegalStateException("node failed")
   }
 }
@@ -367,5 +360,27 @@ class NodeRunnerTest {
     assertEquals("worker", contentEvent.author)
     assertEquals("router@1", contentEvent.nodeInfo?.path)
     assertTrue(events.all { it.nodeInfo?.path == "router@1" }, "every event is path-stamped")
+  }
+
+  @Test
+  fun runRootEmitsTheErrorEventBeforeRethrowingTheFailure() = runBlocking {
+    // Arrange
+    val node = UnflushedResultsThenFailNode("worker")
+    val collected = mutableListOf<Event>()
+
+    // Act
+    assertFailsWith<IllegalStateException> {
+      NodeRunner.runRoot(node, testInvocationContext()).collect { collected.add(it) }
+    }
+
+    // Assert: the error event carries the state delta, but not the unflushed output or routes.
+    val errorEvent = collected.single()
+    assertEquals("worker", errorEvent.author)
+    assertEquals("worker@1", errorEvent.nodeInfo?.path)
+    assertNull(errorEvent.nodeInfo?.outputFor)
+    assertNull(errorEvent.output)
+    assertNull(errorEvent.actions.route)
+    assertEquals("IllegalStateException", errorEvent.errorCode)
+    assertEquals("v", errorEvent.actions.stateDelta["k"])
   }
 }
