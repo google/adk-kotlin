@@ -130,15 +130,22 @@ fun rewindEvent(invocationId: String, rewoundInvocationId: String, timestamp: Lo
     timestamp = timestamp,
   )
 
-/** An [Event] carrying an [EventCompaction] [summary] spanning [startTs]..[endTs]. */
+/**
+ * An [Event] carrying an [EventCompaction] [summary] spanning [startTs]..[endTs].
+ *
+ * A summarizer authors this event and can attach the usage of its own model call, so [author] and
+ * [promptTokenCount] are settable.
+ */
 fun compactionEvent(
   startTs: Long,
   endTs: Long,
   timestamp: Long = 0L,
   summary: String = "summary",
+  author: String = Role.USER,
+  promptTokenCount: Int? = null,
 ): Event =
   Event(
-    author = Role.USER,
+    author = author,
     actions =
       EventActions(
         compaction =
@@ -148,5 +155,6 @@ fun compactionEvent(
             compactedContent = modelMessage(summary),
           )
       ),
+    usageMetadata = promptTokenCount?.let { UsageMetadata(promptTokenCount = it) },
     timestamp = timestamp,
   )

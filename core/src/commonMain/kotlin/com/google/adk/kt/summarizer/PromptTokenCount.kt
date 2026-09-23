@@ -24,7 +24,10 @@ private const val CHARS_PER_TOKEN = 4
 
 /**
  * Returns the most recent [Event.usageMetadata]`.promptTokenCount` that [agentName] recorded in
- * [events], or the [estimatePromptTokenCount] fallback when that agent has not reported one yet.
+ * [events], or the [estimatePromptTokenCount] fallback when no such count is available.
+ *
+ * The scan stops at a compaction event, because a count recorded at or before a summarization
+ * measures the prompt that summary replaced.
  *
  * When [agentName] is given, only counts recorded by that agent are considered. A count belongs to
  * whichever agent made the model call, so reading another agent's is reading another context: a
@@ -39,6 +42,7 @@ private const val CHARS_PER_TOKEN = 4
  */
 internal fun latestPromptTokenCount(events: List<Event>, agentName: String, branch: String?): Int? {
   for (event in events.asReversed()) {
+    if (event.isCompactionEvent()) break
     if (agentName.isNotEmpty() && event.author != agentName) continue
     if (event.usageMetadata?.promptTokenCount != null) return event.usageMetadata.promptTokenCount
   }

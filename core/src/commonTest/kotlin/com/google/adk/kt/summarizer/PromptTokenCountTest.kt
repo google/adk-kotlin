@@ -126,6 +126,63 @@ class PromptTokenCountTest {
   }
 
   @Test
+  fun latestPromptTokenCount_countRecordedBeforeCompaction_fallsBackToEstimate() {
+    // The only reported count measures the prompt the summary replaced, so it is dropped and the
+    // estimate describes the compacted history instead.
+    val events =
+      listOf(
+        modelEventWithPromptTokens(
+          promptTokenCount = 5000,
+          timestamp = 100L,
+          invocationId = "inv_1",
+        ),
+        compactionEvent(startTs = 100L, endTs = 100L, timestamp = 110L, summary = "s".repeat(40)),
+      )
+
+    // Rewritten prompt is the 40-char summary -> 10 tokens, nowhere near the dropped 5000.
+    assertEquals(10, latestPromptTokenCount(events, agentName = "agent", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_countRecordedAfterCompaction_isUsed() {
+    // A count recorded after the summarization measures the compacted prompt, so the scan returns
+    // it rather than stopping at the compaction event.
+    val events =
+      listOf(
+        modelEventWithPromptTokens(
+          promptTokenCount = 5000,
+          timestamp = 100L,
+          invocationId = "inv_1",
+        ),
+        compactionEvent(startTs = 100L, endTs = 100L, timestamp = 110L),
+        modelEventWithPromptTokens(promptTokenCount = 120, timestamp = 200L, invocationId = "inv_2"),
+      )
+
+    assertEquals(120, latestPromptTokenCount(events, agentName = "agent", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_compactionEventReportsOwnCount_fallsBackToEstimate() {
+    // A summarizer attaches the usage of its own model call to the compaction event it authors. If
+    // that event were also authored as the agent, its prompt size would be read as the agent's.
+    val events =
+      listOf(
+        userEvent("a".repeat(100), timestamp = 100L, invocationId = "inv_1"),
+        compactionEvent(
+          startTs = 100L,
+          endTs = 100L,
+          timestamp = 110L,
+          summary = "s".repeat(40),
+          author = "agent",
+          promptTokenCount = 90_000,
+        ),
+      )
+
+    // Rewritten prompt is the 40-char summary -> 10 tokens, not the summarizer's own 90_000.
+    assertEquals(10, latestPromptTokenCount(events, agentName = "agent", branch = null))
+  }
+
+  @Test
   fun latestPromptTokenCount_noUsageMetadata_fallsBackToCharEstimate() {
     // 100 text chars with no usage metadata -> 100 / 4 = 25 estimated tokens.
     val events = listOf(userEvent("a".repeat(100), timestamp = 100L, invocationId = "inv_1"))
