@@ -42,4 +42,6 @@ data class GenerateContentConfig(
   val responseLogprobs: Boolean? = null,
   val routingConfig: GenerationConfigRoutingConfig? = null,
   val cachedContent: String? = null,
+  val responseModalities: List<String>? = null,
+  val seed: Int? = null,
 )

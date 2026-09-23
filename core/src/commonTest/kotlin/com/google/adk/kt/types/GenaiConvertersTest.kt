@@ -794,6 +794,26 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun part_mediaResolution_convertsCorrectly() {
+    val adkPart =
+      Part(
+        inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3)),
+        mediaResolution =
+          PartMediaResolution(
+            level = PartMediaResolutionLevel.MEDIA_RESOLUTION_ULTRA_HIGH,
+            numTokens = 256,
+          ),
+      )
+
+    val genaiPart = adkPart.toGenaiSdk()
+    assertEquals("MEDIA_RESOLUTION_ULTRA_HIGH", genaiPart.mediaResolution?.level?.value)
+    assertEquals(256, genaiPart.mediaResolution?.numTokens)
+
+    val convertedBack = genaiPart.fromGenaiSdk()
+    assertEquals(adkPart, convertedBack)
+  }
+
+  @Test
   fun partialArg_null_convertsCorrectly() {
     val adkPartialArgNull =
       PartialArg(value = PartialArgValue.NullValue, jsonPath = "$.null", willContinue = false)
@@ -932,5 +952,78 @@ class GenaiConvertersTest {
 
     assertEquals(cacheName, genaiConfig.cachedContent)
     assertEquals(cacheName, genaiConfig.fromGenaiSdk().cachedContent)
+  }
+
+  @Test
+  fun functionCallingConfig_mode_convertsCorrectly() {
+    val adkConfig =
+      GenerateContentConfig(
+        toolConfig =
+          ToolConfig(
+            functionCallingConfig = FunctionCallingConfig(mode = FunctionCallingConfigMode.ANY)
+          )
+      )
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals("ANY", genaiConfig.toolConfig?.functionCallingConfig?.mode?.value)
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(adkConfig.toolConfig, convertedBack.toolConfig)
+  }
+
+  @Test
+  fun safetySetting_method_convertsCorrectly() {
+    val adkSetting =
+      SafetySetting(
+        category = HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        threshold = HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        method = HarmBlockMethod.SEVERITY,
+      )
+
+    val genaiSetting = adkSetting.toGenaiSdk()
+    assertEquals("SEVERITY", genaiSetting.method?.value)
+
+    assertEquals(adkSetting, genaiSetting.fromGenaiSdk())
+  }
+
+  @Test
+  fun part_codeExecution_convertsCorrectly() {
+    val adkPart =
+      Part(
+        executableCode = ExecutableCode(code = "print(1)", language = Language.PYTHON, id = "e1"),
+        codeExecutionResult =
+          CodeExecutionResult(outcome = Outcome.OUTCOME_OK, output = "1", id = "e1"),
+      )
+
+    val genaiPart = adkPart.toGenaiSdk()
+    assertEquals("print(1)", genaiPart.executableCode?.code)
+    assertEquals("PYTHON", genaiPart.executableCode?.language?.value)
+    assertEquals("OUTCOME_OK", genaiPart.codeExecutionResult?.outcome?.value)
+
+    assertEquals(adkPart, genaiPart.fromGenaiSdk())
+  }
+
+  @Test
+  fun generateContentConfig_seedAndResponseModalities_convertCorrectly() {
+    val adkConfig = GenerateContentConfig(seed = 42, responseModalities = listOf("TEXT", "IMAGE"))
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertEquals(42, genaiConfig.seed)
+    assertEquals(listOf("TEXT", "IMAGE"), genaiConfig.responseModalities)
+
+    val convertedBack = genaiConfig.fromGenaiSdk()
+    assertEquals(42, convertedBack.seed)
+    assertEquals(listOf("TEXT", "IMAGE"), convertedBack.responseModalities)
+  }
+
+  @Test
+  fun usageMetadata_trafficType_convertsCorrectly() {
+    val adkUsageMetadata =
+      UsageMetadata(totalTokenCount = 3, trafficType = "PROVISIONED_THROUGHPUT")
+
+    val genaiUsageMetadata = adkUsageMetadata.toGenaiSdk()
+    assertEquals("PROVISIONED_THROUGHPUT", genaiUsageMetadata.trafficType?.value)
+
+    assertEquals(adkUsageMetadata, genaiUsageMetadata.fromGenaiSdk())
   }
 }

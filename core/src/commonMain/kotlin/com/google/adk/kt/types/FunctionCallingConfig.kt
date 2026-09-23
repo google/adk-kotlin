@@ -28,4 +28,6 @@ data class FunctionCallingConfig(
    * than returned all at once. Vertex-only; not supported by the Gemini Developer API.
    */
   val streamFunctionCallArguments: Boolean? = null,
+  /** How the model chooses whether to emit function calls. */
+  val mode: FunctionCallingConfigMode? = null,
 )

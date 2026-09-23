@@ -22,16 +22,23 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionCallingConfig
+import com.google.adk.kt.types.FunctionCallingConfigMode
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GoogleMaps
 import com.google.adk.kt.types.GoogleSearch
+import com.google.adk.kt.types.HarmBlockMethod
+import com.google.adk.kt.types.HarmBlockThreshold
+import com.google.adk.kt.types.HarmCategory
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.SafetySetting
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.ThinkingConfig
 import com.google.adk.kt.types.ThinkingLevel
 import com.google.adk.kt.types.ToolCall
+import com.google.adk.kt.types.ToolConfig
 import com.google.adk.kt.types.ToolType
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
@@ -42,10 +49,14 @@ import com.google.firebase.ai.type.FinishReason as FirebaseFinishReason
 import com.google.firebase.ai.type.FunctionCallPart
 import com.google.firebase.ai.type.FunctionResponsePart
 import com.google.firebase.ai.type.GenerateContentResponse
+import com.google.firebase.ai.type.HarmBlockMethod as FirebaseHarmBlockMethod
+import com.google.firebase.ai.type.HarmBlockThreshold as FirebaseHarmBlockThreshold
+import com.google.firebase.ai.type.HarmCategory as FirebaseHarmCategory
 import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.Part as FirebasePart
 import com.google.firebase.ai.type.PromptFeedback
 import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.ResponseModality
 import com.google.firebase.ai.type.TextPart
 import com.google.firebase.ai.type.ThinkingLevel as FirebaseThinkingLevel
 import kotlin.test.assertFailsWith
@@ -497,6 +508,106 @@ class ConversionsTest {
       .isNull()
   }
 
+  // The drop path (a category Firebase cannot express) logs a warning, which reaches
+  // android.util.Log and throws under the non-Robolectric host stub, so it is left to
+  // Robolectric-backed coverage - as the sibling enum converters (e.g. response modality) already
+  // are.
+  @Test
+  fun toFirebaseHarmCategory_returnsFirebaseHarmCategory() {
+    val conversions = Conversions()
+
+    assertThat(conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_HARASSMENT))
+      .isEqualTo(FirebaseHarmCategory.HARASSMENT)
+    assertThat(conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_HATE_SPEECH))
+      .isEqualTo(FirebaseHarmCategory.HATE_SPEECH)
+    assertThat(conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT))
+      .isEqualTo(FirebaseHarmCategory.SEXUALLY_EXPLICIT)
+    assertThat(conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT))
+      .isEqualTo(FirebaseHarmCategory.DANGEROUS_CONTENT)
+    assertThat(conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY))
+      .isEqualTo(FirebaseHarmCategory.CIVIC_INTEGRITY)
+    assertThat(conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_IMAGE_HATE))
+      .isEqualTo(FirebaseHarmCategory.IMAGE_HATE)
+    assertThat(
+        conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT)
+      )
+      .isEqualTo(FirebaseHarmCategory.IMAGE_DANGEROUS_CONTENT)
+    assertThat(conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_IMAGE_HARASSMENT))
+      .isEqualTo(FirebaseHarmCategory.IMAGE_HARASSMENT)
+    assertThat(
+        conversions.toFirebaseHarmCategory(HarmCategory.HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT)
+      )
+      .isEqualTo(FirebaseHarmCategory.IMAGE_SEXUALLY_EXPLICIT)
+  }
+
+  @Test
+  fun toFirebaseHarmBlockThreshold_returnsFirebaseHarmBlockThreshold() {
+    val conversions = Conversions()
+
+    assertThat(conversions.toFirebaseHarmBlockThreshold(HarmBlockThreshold.BLOCK_LOW_AND_ABOVE))
+      .isEqualTo(FirebaseHarmBlockThreshold.LOW_AND_ABOVE)
+    assertThat(conversions.toFirebaseHarmBlockThreshold(HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE))
+      .isEqualTo(FirebaseHarmBlockThreshold.MEDIUM_AND_ABOVE)
+    assertThat(conversions.toFirebaseHarmBlockThreshold(HarmBlockThreshold.BLOCK_ONLY_HIGH))
+      .isEqualTo(FirebaseHarmBlockThreshold.ONLY_HIGH)
+    assertThat(conversions.toFirebaseHarmBlockThreshold(HarmBlockThreshold.BLOCK_NONE))
+      .isEqualTo(FirebaseHarmBlockThreshold.NONE)
+    assertThat(conversions.toFirebaseHarmBlockThreshold(HarmBlockThreshold.OFF))
+      .isEqualTo(FirebaseHarmBlockThreshold.OFF)
+
+    assertThat(
+        conversions.toFirebaseHarmBlockThreshold(
+          HarmBlockThreshold.HARM_BLOCK_THRESHOLD_UNSPECIFIED
+        )
+      )
+      .isNull()
+  }
+
+  @Test
+  fun toFirebaseHarmBlockMethod_returnsFirebaseHarmBlockMethod() {
+    val conversions = Conversions()
+
+    assertThat(conversions.toFirebaseHarmBlockMethod(HarmBlockMethod.SEVERITY))
+      .isEqualTo(FirebaseHarmBlockMethod.SEVERITY)
+    assertThat(conversions.toFirebaseHarmBlockMethod(HarmBlockMethod.PROBABILITY))
+      .isEqualTo(FirebaseHarmBlockMethod.PROBABILITY)
+    assertThat(conversions.toFirebaseHarmBlockMethod(HarmBlockMethod.HARM_BLOCK_METHOD_UNSPECIFIED))
+      .isNull()
+  }
+
+  @Test
+  fun requestConverter_safetySettings_mapsSupportedSettings() {
+    val request =
+      LlmRequest(
+        config =
+          GenerateContentConfig(
+            safetySettings =
+              listOf(
+                SafetySetting(
+                  category = HarmCategory.HARM_CATEGORY_HARASSMENT,
+                  threshold = HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                  method = HarmBlockMethod.SEVERITY,
+                ),
+                SafetySetting(
+                  category = HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                  threshold = HarmBlockThreshold.BLOCK_NONE,
+                ),
+              )
+          )
+      )
+
+    val safetySettings = Conversions().forRequest(request).safetySettings()
+
+    assertThat(safetySettings).hasSize(2)
+  }
+
+  @Test
+  fun requestConverter_safetySettings_returnsNullWhenUnset() {
+    val request = LlmRequest(config = GenerateContentConfig())
+
+    assertThat(Conversions().forRequest(request).safetySettings()).isNull()
+  }
+
   @Test
   fun toAdkPart_functionCall_returnsPart() {
     val conversions = Conversions()
@@ -716,6 +827,92 @@ class ConversionsTest {
       assertThat(candidateCount).isEqualTo(42)
       assertThat(responseMimeType).isEqualTo("example/response")
     }
+  }
+
+  @Test
+  fun requestConverter_generationConfigBuilder_mapsResponseModalities() {
+    val request =
+      LlmRequest(config = GenerateContentConfig(responseModalities = listOf("TEXT", "IMAGE")))
+
+    val builder = Conversions().forRequest(request).generationConfigBuilder()
+
+    assertThat(builder.responseModalities)
+      .containsExactly(ResponseModality.TEXT, ResponseModality.IMAGE)
+      .inOrder()
+  }
+
+  @Test
+  fun requestConverter_toolConfig_mapsFunctionCallingMode() {
+    val request =
+      LlmRequest(
+        config =
+          GenerateContentConfig(
+            toolConfig =
+              ToolConfig(
+                functionCallingConfig =
+                  FunctionCallingConfig(
+                    mode = FunctionCallingConfigMode.ANY,
+                    allowedFunctionNames = listOf("getWeather"),
+                  )
+              )
+          )
+      )
+
+    val toolConfig = Conversions().forRequest(request).toolConfig()
+
+    assertThat(toolConfig).isNotNull()
+  }
+
+  @Test
+  fun requestConverter_toolConfig_nullWhenAbsent() {
+    val request = LlmRequest(config = GenerateContentConfig())
+
+    assertThat(Conversions().forRequest(request).toolConfig()).isNull()
+  }
+
+  // Firebase's FunctionCallingConfig exposes no public fields to assert on, so the supported modes
+  // are checked for a non-null result and the unset/unspecified modes for a silent null. VALIDATED
+  // is left out: its drop path logs a warning, which the non-Robolectric host android.util.Log stub
+  // rejects.
+  @Test
+  fun toFirebaseFunctionCallingConfig_mapsModes() {
+    val conversions = Conversions()
+
+    assertThat(conversions.toFirebaseFunctionCallingConfig(FunctionCallingConfig(mode = null)))
+      .isNull()
+    assertThat(
+        conversions.toFirebaseFunctionCallingConfig(
+          FunctionCallingConfig(mode = FunctionCallingConfigMode.MODE_UNSPECIFIED)
+        )
+      )
+      .isNull()
+    assertThat(
+        conversions.toFirebaseFunctionCallingConfig(
+          FunctionCallingConfig(mode = FunctionCallingConfigMode.AUTO)
+        )
+      )
+      .isNotNull()
+    assertThat(
+        conversions.toFirebaseFunctionCallingConfig(
+          FunctionCallingConfig(mode = FunctionCallingConfigMode.NONE)
+        )
+      )
+      .isNotNull()
+    assertThat(
+        conversions.toFirebaseFunctionCallingConfig(
+          FunctionCallingConfig(
+            mode = FunctionCallingConfigMode.ANY,
+            allowedFunctionNames = listOf("getWeather"),
+          )
+        )
+      )
+      .isNotNull()
+    assertThat(
+        conversions.toFirebaseFunctionCallingConfig(
+          FunctionCallingConfig(mode = FunctionCallingConfigMode.ANY)
+        )
+      )
+      .isNotNull()
   }
 
   @Test

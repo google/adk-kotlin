@@ -18,13 +18,15 @@ package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
 
-/** A per-request safety setting controlling the block threshold for a single [HarmCategory]. */
+/** The method used to block content for a [HarmCategory]. Not supported by the Gemini API. */
 @Serializable
-data class SafetySetting(
-  /** The harm category this setting applies to. */
-  val category: HarmCategory? = null,
-  /** The probability threshold at or above which content in [category] is blocked. */
-  val threshold: HarmBlockThreshold? = null,
-  /** The method used to block content. Not supported by the Gemini API. */
-  val method: HarmBlockMethod? = null,
-)
+enum class HarmBlockMethod {
+  /** The harm block method is unspecified. */
+  HARM_BLOCK_METHOD_UNSPECIFIED,
+
+  /** Block using both probability and severity scores. */
+  SEVERITY,
+
+  /** Block using the probability score. */
+  PROBABILITY,
+}

@@ -18,13 +18,21 @@ package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
 
-/** A per-request safety setting controlling the block threshold for a single [HarmCategory]. */
+/** The mode controlling how the model chooses whether to emit function calls. */
 @Serializable
-data class SafetySetting(
-  /** The harm category this setting applies to. */
-  val category: HarmCategory? = null,
-  /** The probability threshold at or above which content in [category] is blocked. */
-  val threshold: HarmBlockThreshold? = null,
-  /** The method used to block content. Not supported by the Gemini API. */
-  val method: HarmBlockMethod? = null,
-)
+enum class FunctionCallingConfigMode {
+  /** Unspecified mode. This value should not be used. */
+  MODE_UNSPECIFIED,
+
+  /** The model decides whether to predict a function call or a natural language response. */
+  AUTO,
+
+  /** The model is constrained to always predict a function call. */
+  ANY,
+
+  /** The model will not predict any function calls. */
+  NONE,
+
+  /** The model predicts either a function call or a natural language response, validated. */
+  VALIDATED,
+}
