@@ -21,13 +21,22 @@ import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.request.receiveNullable
 
 /**
- * Reads a body the endpoint requires.
+ * Reads a body the endpoint requires, reporting a failure without quoting what was sent.
  *
  * The receive has to be nullable: content negotiation reports an empty body as no body only for a
  * nullable type, and a non-nullable one leaves the body untransformed, which the engine answers
  * with `415`.
  *
- * @throws BadRequestException if the request carries no body; Ktor answers it with `400`
+ * @throws BadRequestException if the body is missing, or could not be read; Ktor answers `400`
  */
-internal suspend inline fun <reified T : Any> ApplicationCall.receiveRequiredBody(): T =
-  receiveNullable<T?>() ?: throw BadRequestException("Missing request body")
+internal suspend inline fun <reified T : Any> ApplicationCall.receiveRequiredBody(): T {
+  val body =
+    try {
+      receiveNullable<T?>()
+    } catch (cause: BadRequestException) {
+      // Ktor's message quotes the input it rejected, and the engine logs it with the cause, so
+      // only the underlying failure's type survives - enough to tell a parse error from a fault.
+      throw BadRequestException("Unreadable request: ${cause.cause?.let { it::class.simpleName }}")
+    }
+  return body ?: throw BadRequestException("Missing request body")
+}

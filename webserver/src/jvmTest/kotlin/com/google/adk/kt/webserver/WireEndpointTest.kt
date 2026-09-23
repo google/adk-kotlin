@@ -36,7 +36,10 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.testing.testApplication
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -159,6 +162,31 @@ class WireEndpointTest {
     val response = client.post("/run") { jsonBody("{\"app_name\": ") }
 
     assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_malformedBody_failureDoesNotQuoteTheBody() = testApplication {
+    val canary = "do-not-log-this-value"
+    val thrown = AtomicReference<Throwable?>()
+    application {
+      intercept(ApplicationCallPipeline.Setup) {
+        try {
+          proceed()
+        } catch (cause: Throwable) {
+          thrown.set(cause)
+          throw cause
+        }
+      }
+      adkApiModule(testConfig())
+    }
+
+    val response = client.post("/run") { jsonBody("{\"appName\": \"$canary") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+    assertThat(thrown.get()).isInstanceOf(BadRequestException::class.java)
+    // The engine logs the failure with its cause attached, so no message in the chain may hold it.
+    val messages = generateSequence(thrown.get()) { it.cause }.map { it.message.orEmpty() }.toList()
+    assertThat(messages.filter { it.contains(canary) }).isEmpty()
   }
 
   @Test

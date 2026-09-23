@@ -26,12 +26,14 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.plugin
 import io.ktor.server.routing.HttpMethodRouteSelector
 import io.ktor.server.routing.Routing
 import io.ktor.server.routing.getAllRoutes
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -40,7 +42,8 @@ import org.junit.runners.JUnit4
  * Holds the rule on reading a body to every POST route, not only the three that read one today.
  *
  * A route added later with a plain `receive` compiles and passes its own test while quietly
- * bringing back the status this change exists to fix. Surveying the route tree is what notices.
+ * bringing back both defects these rules exist to prevent: the wrong status for an empty body, and
+ * the rejected body quoted in a failure the engine logs. Surveying the route tree is what notices.
  */
 @RunWith(JUnit4::class)
 class RequestBodyCoverageTest {
@@ -59,6 +62,24 @@ class RequestBodyCoverageTest {
     assertThat(offenders).isEmpty()
   }
 
+  @Test
+  fun noPostRoute_quotesTheBody_inAFailureItRaises() = testApplication {
+    val raised = CopyOnWriteArrayList<Throwable>()
+    val app = startedApplication { raised.add(it) }
+    val paths = app.postRoutePaths()
+
+    for (path in paths) {
+      client.post(path) { jsonBody("{\"field\": \"$CANARY") }
+    }
+
+    val quoted =
+      raised
+        .flatMap { failure -> generateSequence(failure) { it.cause }.map { it.message.orEmpty() } }
+        .filter { it.contains(CANARY) }
+    assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
+    assertThat(quoted).isEmpty()
+  }
+
   /** Every POST route the server mounts, with a value substituted for each path parameter. */
   private fun Application.postRoutePaths(): List<String> =
     plugin(Routing)
@@ -67,9 +88,19 @@ class RequestBodyCoverageTest {
       .map { PATH_PARAMETER.replace(it.parent.toString(), PROBE) }
 
   /** Returns the application, which `testApplication` builds lazily on the first request. */
-  private suspend fun ApplicationTestBuilder.startedApplication(): Application {
+  private suspend fun ApplicationTestBuilder.startedApplication(
+    onFailure: (Throwable) -> Unit = {}
+  ): Application {
     lateinit var started: Application
     application {
+      intercept(ApplicationCallPipeline.Setup) {
+        try {
+          proceed()
+        } catch (cause: Throwable) {
+          onFailure(cause)
+          throw cause
+        }
+      }
       adkApiModule(
         AdkServerConfig(
           agentLoader = FakeAgentLoader(),
@@ -91,6 +122,7 @@ class RequestBodyCoverageTest {
 
   private companion object {
     const val PROBE = "probe"
+    const val CANARY = "do-not-log-this-value"
 
     val PATH_PARAMETER = Regex("\\{[^}]*}")
 
