@@ -693,14 +693,7 @@ class LlmAgentTest {
 
   @Test
   fun runAsync_withPartialEvent_doesNotWriteStateDelta() = runTest {
-    // Sequential model calls: the first returns a partial event; the second returns the final
-    // response. Each LlmAgentTurn iteration constructs a fresh EventActions, so the partial
-    // event's stateDelta is independent of the final event's and can be asserted on its own.
-    //
-    // (Aside: within a single `model.generateContent` flow, LlmAgentTurn reuses one base event
-    // and emits shallow copies that share an EventActions instance; that path is harmless in
-    // practice because SessionService.appendEvent skips partial events, but it is unsuited to
-    // asserting per-event stateDelta state here.)
+    // The first model call ends on a partial event, which ends the turn before the second call.
     val model =
       DummyModel.createSequential(
         "test-model",
@@ -716,18 +709,34 @@ class LlmAgentTest {
 
     val events = agent.runAsync(context).toList()
 
-    assertEquals(2, events.size)
-    // Partial chunk: not a final response, no state delta write.
+    assertEquals(1, events.size)
     assertTrue("first event should be partial", events[0].partial)
     assertFalse("first event must not be a final response", events[0].isFinalResponse)
     assertTrue(
       "partial events must not write to stateDelta",
       events[0].actions.stateDelta.isEmpty(),
     )
-    // Final response from a separate turn: stateDelta is populated.
-    assertFalse("second event should not be partial", events[1].partial)
-    assertTrue("second event must be a final response", events[1].isFinalResponse)
-    assertEquals("Final response", events[1].actions.stateDelta["myOutput"])
+  }
+
+  @Test
+  fun runAsync_streamEndingOnPartialEvent_stopsAfterOneModelCall() = runBlocking {
+    var modelCallCount = 0
+    val model =
+      DummyModel("test-model") {
+        modelCallCount++
+        flow { emit(LlmResponse(content = modelMessage("Interrupted chunk"), partial = true)) }
+      }
+    val agent = LlmAgent(name = "test-agent", model = model)
+    val session = InMemorySessionService().createSession(SessionKey("app", "user", "session"))
+    // Caps the calls so a missing break fails the test instead of hanging it.
+    val context =
+      InvocationContext(agent = agent, session = session, runConfig = RunConfig(maxLlmCalls = 3))
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(1, modelCallCount)
+    assertEquals(1, events.size)
+    assertTrue(events[0].partial)
   }
 
   @Test

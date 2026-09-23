@@ -318,6 +318,11 @@ class LlmAgent(
         logger.debug { "Ending agent execution for $name: reached maxSteps=$maxSteps." }
         break
       }
+      // Partial events are not saved, so another step would resend the same history.
+      if (lastEvent?.partial == true) {
+        logger.warn { "The last event is partial, which is not expected." }
+        break
+      }
     } while (
       !context.isEndOfInvocation &&
         lastEvent?.isFinalResponse == false &&
