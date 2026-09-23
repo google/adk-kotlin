@@ -26,6 +26,7 @@ import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.workflow.NodeInfo
 import com.google.adk.kt.workflow.NodeInfoNullIfEmptySerializer
@@ -344,3 +345,12 @@ internal fun List<FunctionCall>.getLongRunningFunctionIds(
   }
   return longRunningToolIds
 }
+
+/**
+ * Whether this user event has no content and is therefore not a turn. A message-less resume appends
+ * one to carry its state delta; rewind markers and compactions have the same shape.
+ */
+internal fun Event.isStateOnlyUserEvent(): Boolean = author == Role.USER && content == null
+
+/** Returns the last turn event, skipping trailing state-only user events. */
+internal fun List<Event>.lastTurnEvent(): Event? = lastOrNull { !it.isStateOnlyUserEvent() }

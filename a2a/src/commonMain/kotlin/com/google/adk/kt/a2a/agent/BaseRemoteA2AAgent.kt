@@ -21,6 +21,7 @@ import com.google.adk.kt.a2a.converters.ADK_METADATA_TASK_ID
 import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.a2a.converters.extractPreprocessedEvents
 import com.google.adk.kt.a2a.converters.findUserFunctionCall
+import com.google.adk.kt.a2a.converters.lastTurnEvent
 import com.google.adk.kt.a2a.converters.taskId
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
@@ -75,9 +76,9 @@ abstract class BaseRemoteA2AAgent(
   /** Returns the prepared event to be sent to the remote agent. */
   protected fun prepareOutboundEvent(context: InvocationContext): Event {
     val callEvent = context.session.events.findUserFunctionCall()
+    val responseEvent = context.session.events.lastTurnEvent()
 
-    if (callEvent != null) {
-      val responseEvent = context.session.events.last()
+    if (callEvent != null && responseEvent != null) {
       val updatedMetadata = (responseEvent.customMetadata ?: emptyMap()).toMutableMap()
       updatedMetadata[ADK_METADATA_TASK_ID] = callEvent.taskId
       updatedMetadata[ADK_METADATA_CONTEXT_ID] = callEvent.contextId

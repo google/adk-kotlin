@@ -22,6 +22,7 @@ import com.google.adk.kt.callbacks.runBeforeModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnModelErrorCallbacksPipeline
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.getLongRunningFunctionIds
+import com.google.adk.kt.events.lastTurnEvent
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
@@ -130,7 +131,7 @@ internal class LlmAgentTurn(
     // long-running pause. A long-running call answered by a response (the tool's own value, or a
     // user-injected resume) does not pause; the model summarizes it instead.
     val events = context.getEvents(currentInvocation = true, currentBranch = true)
-    val lastEvent = events.lastOrNull()
+    val lastEvent = events.lastTurnEvent()
     if (context.isResumable && lastEvent != null && lastEvent.functionCalls().isNotEmpty()) {
       emitAll(handleActions(lastEvent, getToolMap(request)))
       return@flow

@@ -710,6 +710,52 @@ class InMemoryRunnerTest {
   }
 
   @Test
+  fun runAsync_withResumability_noNewMessage_appliesStateDelta() =
+    runBlocking<Unit> {
+      var stateSeenByAgent: Any? = null
+      val testAgent = DummyAgent { context ->
+        stateSeenByAgent = context.session.state["color"]
+        emit(Event(author = "test-agent", content = Content(parts = listOf(Part(text = "done")))))
+      }
+      val runner =
+        InMemoryRunner(
+          App(
+            appName = "InMemoryRunner",
+            rootAgent = testAgent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+        )
+      val key = SessionKey(runner.appName, "user1", "session1")
+      val session = runner.sessionService.createSession(key, State())
+      val unused =
+        runner.sessionService.appendEvent(
+          session,
+          Event(invocationId = "test-inv", author = "user", content = userMessage("hi")),
+        )
+
+      val unusedEvents =
+        runner
+          .runAsync(
+            userId = "user1",
+            sessionId = "session1",
+            invocationId = "test-inv",
+            newMessage = null,
+            stateDelta = mapOf("color" to "green"),
+            runConfig = RunConfig(customMetadata = mapOf("tag" to "v1")),
+          )
+          .toList()
+
+      // The resumed agent sees the delta, and a content-less user event persists it.
+      assertThat(stateSeenByAgent).isEqualTo("green")
+      val storedSession = runner.sessionService.getSession(key)!!
+      assertThat(storedSession.state["color"]).isEqualTo("green")
+      val deltaEvent = storedSession.events.single { it.author == Role.USER && it.content == null }
+      assertThat(deltaEvent.invocationId).isEqualTo("test-inv")
+      assertThat(deltaEvent.actions.stateDelta).containsExactly("color", "green")
+      assertThat(deltaEvent.customMetadata).containsExactly("tag", "v1")
+    }
+
+  @Test
   fun runAsync_withResumability_andNewMessage_handlesNewUserContent() = runTest {
     val testAgent = DummyAgent(name = "test-agent")
     val runner =

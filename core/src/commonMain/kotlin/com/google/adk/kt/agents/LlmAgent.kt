@@ -27,6 +27,7 @@ import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.OnModelErrorCallback
 import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.isStateOnlyUserEvent
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.processors.AgentTransferProcessor
@@ -216,7 +217,11 @@ class LlmAgent(
   }
 
   private suspend fun getSubagentToResume(context: InvocationContext): BaseAgent? {
-    val events = context.getEvents(currentInvocation = true, currentBranch = true)
+    // A state-only user event is not a turn, so it neither answers nor starts a transfer.
+    val events =
+      context.getEvents(currentInvocation = true, currentBranch = true).filterNot {
+        it.isStateOnlyUserEvent()
+      }
     if (events.isEmpty()) return null
 
     val lastEvent = events.last()
@@ -291,7 +296,11 @@ class LlmAgent(
     if (shouldPause || transferred) return@flow
 
     if (context.isResumable && context.agent == this@LlmAgent) {
-      val events = context.getEvents(currentInvocation = true, currentBranch = true)
+      // A state-only user event is not a turn and must not push a pending pause out of view.
+      val events =
+        context.getEvents(currentInvocation = true, currentBranch = true).filterNot {
+          it.isStateOnlyUserEvent()
+        }
       if (events.takeLast(2).any { context.shouldPauseInvocation(it) }) {
         return@flow
       }

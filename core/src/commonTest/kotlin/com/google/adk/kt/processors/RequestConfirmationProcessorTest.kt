@@ -115,6 +115,84 @@ class RequestConfirmationProcessorTest {
   }
 
   @Test
+  fun process_stateOnlyUserEventAfterApproval_stillExecutesConfirmedTool() =
+    runBlocking<Unit> {
+      // A message-less resume appends a content-less user event that carries only its stateDelta.
+      val toolName = "risky_tool"
+      val toolRuns = mutableListOf<String>()
+      val (session, context) = contextWithRecordingTool(toolName, toolRuns)
+      session.events.addAll(originalCallEvents(context.invocationId, toolName, "orig_1"))
+      session.events.add(
+        agentEvent(
+          context.invocationId,
+          synthConfirmationCallPart(
+            synthId = "synth_1",
+            originalToolName = toolName,
+            originalCallId = "orig_1",
+          ),
+        )
+      )
+      session.events.add(approvalEvent(context.invocationId, synthId = "synth_1"))
+      session.events.add(
+        Event(
+          invocationId = context.invocationId,
+          author = Role.USER,
+          actions = EventActions(stateDelta = mutableMapOf("color" to "green")),
+        )
+      )
+
+      val unusedEvents = collectEmittedEvents(context)
+
+      assertEquals(listOf(toolName), toolRuns)
+    }
+
+  @Test
+  fun process_stateOnlyUserEventAfterExecutedApproval_doesNotRunToolAgain() =
+    runBlocking<Unit> {
+      val toolName = "risky_tool"
+      val toolRuns = mutableListOf<String>()
+      val (session, context) = contextWithRecordingTool(toolName, toolRuns)
+      session.events.addAll(originalCallEvents(context.invocationId, toolName, "orig_1"))
+      session.events.add(
+        agentEvent(
+          context.invocationId,
+          synthConfirmationCallPart(
+            synthId = "synth_1",
+            originalToolName = toolName,
+            originalCallId = "orig_1",
+          ),
+        )
+      )
+      session.events.add(approvalEvent(context.invocationId, synthId = "synth_1"))
+      // The approved tool already ran before the state-only event was appended.
+      session.events.add(
+        agentEvent(
+          context.invocationId,
+          Part(
+            functionResponse =
+              FunctionResponse(
+                name = toolName,
+                id = "orig_1",
+                response = mapOf("status" to "executed"),
+              )
+          ),
+        )
+      )
+      session.events.add(
+        Event(
+          invocationId = context.invocationId,
+          author = Role.USER,
+          actions = EventActions(stateDelta = mutableMapOf("color" to "green")),
+        )
+      )
+
+      val emittedEvents = collectEmittedEvents(context)
+
+      assertEquals(emptyList(), toolRuns)
+      assertEquals(emptyList(), emittedEvents)
+    }
+
+  @Test
   fun process_peerReusesPendingCallId_stillExecutesLegitimateConfirmation() = runTest {
     // A peer must not be able to veto a pending confirmation by reusing the id of a call this
     // agent is waiting on. The history index resolves collisions last-wins, so without author

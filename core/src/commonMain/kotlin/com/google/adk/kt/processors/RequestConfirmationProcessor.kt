@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
+import com.google.adk.kt.events.isStateOnlyUserEvent
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.serialization.adkJson
@@ -66,8 +67,11 @@ internal class RequestConfirmationProcessor : LlmRequestProcessor {
     // Scan ALL session events (not invocation-scoped) so the resume works even when the
     // confirmation `runAsync(...)` lands in a fresh invocation.
     val events = context.getEvents(currentInvocation = false, currentBranch = true)
+    // A state-only user event is not a turn, so look past it for the latest user reply.
     val (lastUserIndex, lastUserEvent) =
-      events.withIndex().findLast { it.value.author == Role.USER } ?: return request
+      events.withIndex().findLast {
+        it.value.author == Role.USER && !it.value.isStateOnlyUserEvent()
+      } ?: return request
     val responses = lastUserEvent.functionResponses()
     // No function responses in the latest user event, meaning no confirmations either.
     if (responses.isEmpty()) return request

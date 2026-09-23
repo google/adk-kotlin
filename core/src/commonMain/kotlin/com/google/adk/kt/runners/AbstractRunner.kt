@@ -34,6 +34,7 @@ import com.google.adk.kt.callbacks.runOnRunErrorCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnUserMessageCallbacksPipeline
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.events.lastTurnEvent
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.memory.MemoryService
@@ -723,6 +724,7 @@ abstract class AbstractRunner : Runner {
       if (newMessage != null) {
         handleNewUserContent(context, newMessage, stateDelta)
       } else {
+        if (!stateDelta.isNullOrEmpty()) appendStateDeltaEvent(context, stateDelta)
         context
       }
 
@@ -766,6 +768,22 @@ abstract class AbstractRunner : Runner {
       }
     }
     return null
+  }
+
+  /**
+   * Persists [stateDelta] on a content-less user event when a resume carries no message to attach
+   * it to, so the delta is applied rather than dropped. Mirrors Python ADK
+   * `runners.py:_append_state_delta_event`.
+   */
+  private suspend fun appendStateDeltaEvent(
+    context: InvocationContext,
+    stateDelta: Map<String, Any>,
+  ) {
+    val event =
+      Event(invocationId = context.invocationId, author = Role.USER)
+        .apply { applyStateDelta(this, stateDelta) }
+        .let { applyRunConfigCustomMetadata(it, context.runConfig) }
+    val unused = sessionService.appendEvent(context.session, event)
   }
 
   private fun findUserMessageForInvocation(events: List<Event>, invocationId: String): Content? {
@@ -813,7 +831,8 @@ abstract class AbstractRunner : Runner {
     context: InvocationContext,
     rootAgent: BaseAgent,
   ): BaseAgent {
-    val lastEvent = context.session.events.lastOrNull()
+    // A state-only user event is not a turn, so it never carries a response to route.
+    val lastEvent = context.session.events.lastTurnEvent()
 
     // 1. If the last event is a USER function response, route it back to the agent that issued the
     // corresponding function call, regardless of that agent's type or transferability (e.g. a

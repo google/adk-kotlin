@@ -127,6 +127,27 @@ class EventA2aSupportTest {
   }
 
   @Test
+  fun findUserFunctionCall_stateOnlyUserEventLast_looksPastIt() {
+    val fc = FunctionCall(name = "my-func", id = "fc-id")
+    val userEventWithCall =
+      Event(
+        author = Role.USER,
+        content = Content(role = Role.USER, parts = listOf(Part(functionCall = fc))),
+      )
+    val fr = FunctionResponse(name = "my-func", id = "fc-id")
+    val userEventWithResponse =
+      Event(
+        author = Role.USER,
+        content = Content(role = Role.USER, parts = listOf(Part(functionResponse = fr))),
+      )
+    // A message-less resume appends a content-less user event that carries only its stateDelta.
+    val stateOnlyEvent = Event(author = Role.USER)
+
+    val events = listOf(userEventWithCall, userEventWithResponse, stateOnlyEvent)
+    assertEquals(userEventWithCall, events.findUserFunctionCall())
+  }
+
+  @Test
   fun findUserFunctionCall_noMatchingCall_returnsNull() {
     val fc = FunctionCall(name = "my-func", id = "other-id")
     val userEventWithCall =

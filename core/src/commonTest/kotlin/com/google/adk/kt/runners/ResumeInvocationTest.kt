@@ -33,6 +33,7 @@ import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyResumableEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
@@ -271,6 +272,312 @@ class ResumeInvocationTest {
       simplifyResumableEvents(resumed),
     )
   }
+
+  @Test
+  fun resumeWithoutMessage_withStateDelta_appliesItAndKeepsAPausedAgentPaused() =
+    runBlocking<Unit> {
+      val agent =
+        LlmAgent(
+          name = "root_agent",
+          model =
+            DummyModel.createSequential(
+              "root",
+              listOf(
+                modelFunctionCallResponse("pending_tool", id = "lro-1"),
+                LlmResponse(content = modelMessage("root_agent resumed")),
+              ),
+            ),
+          tools =
+            listOf(DummyTool(name = "pending_tool", isLongRunning = true, onRun = { _, _ -> Unit })),
+        )
+      val runner =
+        InMemoryRunner(
+          App(
+            appName = APP_NAME,
+            rootAgent = agent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+        )
+      val turn1 = runner.runAsync(USER_ID, SESSION_ID, newMessage = userMessage("start")).toList()
+      val invId = turn1.first().invocationId!!
+
+      // The long-running call remains unanswered, so neither resume runs or closes the agent.
+      for (stateDelta in listOf(mapOf("color" to "green"), mapOf("size" to "large"))) {
+        val resumed =
+          runner
+            .runAsync(
+              USER_ID,
+              SESSION_ID,
+              invocationId = invId,
+              newMessage = null,
+              stateDelta = stateDelta,
+            )
+            .toList()
+        assertTrue(resumed.isEmpty())
+      }
+      val session = runner.sessionService.getSession(SessionKey(APP_NAME, USER_ID, SESSION_ID))!!
+      assertEquals("green", session.state["color"])
+      assertEquals("large", session.state["size"])
+
+      val answered =
+        runner
+          .runAsync(
+            USER_ID,
+            SESSION_ID,
+            invocationId = invId,
+            newMessage =
+              userFunctionResponse(
+                name = "pending_tool",
+                id = "lro-1",
+                response = mapOf("status" to "done"),
+              ),
+          )
+          .toList()
+      assertEquals(
+        listOf("root_agent" to "root_agent resumed", "root_agent" to END_OF_AGENT),
+        simplifyResumableEvents(answered),
+      )
+    }
+
+  @Test
+  fun resumeWithoutMessage_withStateDelta_afterAPartialAnswer_keepsTheAgentPaused() =
+    runBlocking<Unit> {
+      val agent =
+        LlmAgent(
+          name = "root_agent",
+          model =
+            DummyModel.createSequential(
+              "root",
+              listOf(
+                modelParallelFunctionCallsResponse(
+                  FunctionCall(name = "pending_tool", id = "lro-1"),
+                  FunctionCall(name = "pending_tool", id = "lro-2"),
+                ),
+                LlmResponse(content = modelMessage("root_agent resumed")),
+              ),
+            ),
+          tools =
+            listOf(DummyTool(name = "pending_tool", isLongRunning = true, onRun = { _, _ -> Unit })),
+        )
+      val runner =
+        InMemoryRunner(
+          App(
+            appName = APP_NAME,
+            rootAgent = agent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+        )
+      val turn1 = runner.runAsync(USER_ID, SESSION_ID, newMessage = userMessage("start")).toList()
+      val invId = turn1.first().invocationId!!
+      suspend fun answer(callId: String): List<Event> =
+        runner
+          .runAsync(
+            USER_ID,
+            SESSION_ID,
+            invocationId = invId,
+            newMessage =
+              userFunctionResponse(
+                name = "pending_tool",
+                id = callId,
+                response = mapOf("status" to "done"),
+              ),
+          )
+          .toList()
+
+      // lro-2 stays unanswered; with lro-1 answered, one state-only event could hide the pause.
+      assertTrue(answer("lro-1").isEmpty())
+      val resumed =
+        runner
+          .runAsync(
+            USER_ID,
+            SESSION_ID,
+            invocationId = invId,
+            newMessage = null,
+            stateDelta = mapOf("color" to "green"),
+          )
+          .toList()
+      assertTrue(resumed.isEmpty())
+
+      assertEquals(
+        listOf("root_agent" to "root_agent resumed", "root_agent" to END_OF_AGENT),
+        simplifyResumableEvents(answer("lro-2")),
+      )
+    }
+
+  @Test
+  fun resumeWithoutMessage_withStateDelta_routesAPendingResponseToItsCaller() =
+    runBlocking<Unit> {
+      val subAgent =
+        LlmAgent(
+          name = "sub_agent",
+          model =
+            DummyModel.createSequential(
+              "sub",
+              listOf(
+                modelFunctionCallResponse("pending_tool", id = "lro-1"),
+                LlmResponse(content = modelMessage("sub_agent resumed")),
+              ),
+            ),
+          tools =
+            listOf(
+              DummyTool(name = "pending_tool", isLongRunning = true, onRun = { _, _ -> Unit })
+            ),
+          // Not transferable, so only the pending response can route the resume back to it.
+          disallowTransferToParent = true,
+        )
+      val rootAgent =
+        LlmAgent(
+          name = "root_agent",
+          model =
+            DummyModel.createSequential("root", listOf(modelTransferToAgentResponse("sub_agent"))),
+          subAgents = listOf(subAgent),
+        )
+      val runner =
+        InMemoryRunner(
+          App(
+            appName = APP_NAME,
+            rootAgent = rootAgent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+        )
+      val turn1 = runner.runAsync(USER_ID, SESSION_ID, newMessage = userMessage("start")).toList()
+      val invId = turn1.first().invocationId!!
+      // A resume that stopped after persisting the tool's response, before the sub-agent ran.
+      val session = runner.sessionService.getSession(SessionKey(APP_NAME, USER_ID, SESSION_ID))!!
+      val unusedResponse =
+        runner.sessionService.appendEvent(
+          session,
+          Event(
+            invocationId = invId,
+            author = Role.USER,
+            content =
+              userFunctionResponse(
+                name = "pending_tool",
+                id = "lro-1",
+                response = mapOf("status" to "done"),
+              ),
+          ),
+        )
+
+      val resumed =
+        runner
+          .runAsync(
+            USER_ID,
+            SESSION_ID,
+            invocationId = invId,
+            newMessage = null,
+            stateDelta = mapOf("color" to "green"),
+          )
+          .toList()
+
+      assertEquals(
+        listOf("sub_agent" to "sub_agent resumed", "sub_agent" to END_OF_AGENT),
+        simplifyResumableEvents(resumed),
+      )
+    }
+
+  @Test
+  fun resumeWithoutMessage_withStateDelta_stillReplaysAnUnansweredCall() =
+    runBlocking<Unit> {
+      var toolRuns = 0
+      val agent =
+        LlmAgent(
+          name = "root_agent",
+          model =
+            DummyModel.createSequential(
+              "root",
+              listOf(LlmResponse(content = modelMessage("done"))),
+            ),
+          tools =
+            listOf(
+              DummyTool(
+                name = "tool",
+                onRun = { _, _ ->
+                  toolRuns++
+                  "ok"
+                },
+              )
+            ),
+        )
+      val runner =
+        InMemoryRunner(
+          App(
+            appName = APP_NAME,
+            rootAgent = agent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+        )
+      val session = runner.sessionService.createSession(SessionKey(APP_NAME, USER_ID, SESSION_ID))
+      val unusedUser =
+        runner.sessionService.appendEvent(
+          session,
+          Event(invocationId = "inv-1", author = Role.USER, content = userMessage("start")),
+        )
+      // The invocation stopped after the model called the tool but before the tool ran.
+      val unusedCall =
+        runner.sessionService.appendEvent(
+          session,
+          Event(
+            invocationId = "inv-1",
+            author = "root_agent",
+            content =
+              Content(
+                role = Role.MODEL,
+                parts = listOf(Part(functionCall = FunctionCall(name = "tool", id = "call-1"))),
+              ),
+          ),
+        )
+
+      val resumed =
+        runner
+          .runAsync(
+            USER_ID,
+            SESSION_ID,
+            invocationId = "inv-1",
+            newMessage = null,
+            stateDelta = mapOf("color" to "green"),
+          )
+          .toList()
+
+      assertEquals(1, toolRuns)
+      assertTrue(simplifyResumableEvents(resumed).any { it.second == "done" })
+    }
+
+  @Test
+  fun resumeFinishedInvocation_withoutMessage_appliesStateDeltaAndRunsNothing() =
+    runBlocking<Unit> {
+      val agent =
+        LlmAgent(
+          name = "root_agent",
+          model =
+            DummyModel.createSequential("root", listOf(LlmResponse(content = modelMessage("hi")))),
+        )
+      val runner =
+        InMemoryRunner(
+          App(
+            appName = APP_NAME,
+            rootAgent = agent,
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+        )
+      val turn1 = runner.runAsync(USER_ID, SESSION_ID, newMessage = userMessage("start")).toList()
+      val invId = turn1.first().invocationId!!
+
+      val resumed =
+        runner
+          .runAsync(
+            USER_ID,
+            SESSION_ID,
+            invocationId = invId,
+            newMessage = null,
+            stateDelta = mapOf("color" to "green"),
+          )
+          .toList()
+
+      assertTrue(resumed.isEmpty())
+      val session = runner.sessionService.getSession(SessionKey(APP_NAME, USER_ID, SESSION_ID))!!
+      assertEquals("green", session.state["color"])
+    }
 
   /**
    * Tests that resuming a leaf nested under a [ParallelAgent] seeds the context with the leaf's

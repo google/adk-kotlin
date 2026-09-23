@@ -84,6 +84,42 @@ class BaseRemoteA2AAgentTest {
   }
 
   @Test
+  fun prepareOutboundEvent_stateOnlyUserEventAfterResponse_returnsResponseEvent() {
+    val agent = TestRemoteAgent("my-agent")
+    val fc = FunctionCall(name = "my-func", id = "fc-id")
+    val userCall =
+      Event(
+        author = Role.USER,
+        content = Content(role = Role.USER, parts = listOf(Part(functionCall = fc))),
+        customMetadata = mapOf("adk_task_id" to "task-123", "adk_context_id" to "ctx-456"),
+      )
+    val fr = FunctionResponse(name = "my-func", id = "fc-id")
+    val userResponse =
+      Event(
+        author = Role.USER,
+        content = Content(role = Role.USER, parts = listOf(Part(functionResponse = fr))),
+      )
+    // A message-less resume appends a content-less user event that carries only its stateDelta.
+    val stateOnlyEvent = Event(author = Role.USER)
+
+    val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
+    session.events.addAll(listOf(userCall, userResponse, stateOnlyEvent))
+
+    val context =
+      InvocationContext(
+        invocationId = "inv-123",
+        agent = agent,
+        session = session,
+        runConfig = null,
+      )
+
+    val result = agent.testPrepareOutboundEvent(context)
+    assertEquals(userResponse.content, result.content)
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+  }
+
+  @Test
   fun prepareOutboundEvent_noUserCall_returnsFlattenedParts() {
     val agent = TestRemoteAgent("my-agent")
     val event1 =

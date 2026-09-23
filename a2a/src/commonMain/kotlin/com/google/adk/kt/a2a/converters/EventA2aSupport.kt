@@ -73,15 +73,24 @@ internal val Event.taskId: String
 internal val Event.contextId: String
   get() = metadataValue(ADK_METADATA_CONTEXT_ID)
 
+/**
+ * Whether this user event has no content and is therefore not a turn. A message-less resume appends
+ * one to carry its state delta; rewind markers and compactions have the same shape.
+ */
+private fun Event.isStateOnlyUserEvent(): Boolean = author == Role.USER && content == null
+
+/** Returns the last turn event, skipping trailing state-only user events. */
+internal fun List<Event>.lastTurnEvent(): Event? = lastOrNull { !it.isStateOnlyUserEvent() }
+
 /** Returns the last user function call event from the list of events. */
 internal fun List<Event>.findUserFunctionCall(): Event? {
-  val candidate = lastOrNull() ?: return null
+  val candidate = lastTurnEvent() ?: return null
   if (candidate.author != Role.USER) return null
 
   val functionId =
     candidate.functionResponses().firstOrNull()?.id?.takeIf { it.isNotEmpty() } ?: return null
 
-  return dropLast(1).findLast { it.isUserFunctionCall(functionId) }
+  return take(lastIndexOf(candidate)).findLast { it.isUserFunctionCall(functionId) }
 }
 
 /** Returns the preprocessed events that should be sent to the agent. */

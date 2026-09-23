@@ -49,6 +49,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -325,6 +326,61 @@ class FunctionToolHitlIntegrationTest {
           ?.singleOrNull()
           ?.text
       assertEquals("done", resumeFinalText)
+    }
+
+  /**
+   * A resume with only a state delta must leave a pending confirmation intact: the agent stays
+   * open, and a later approval still runs the tool.
+   */
+  @Test
+  fun runAsync_resumableConfirmation_resumeWithOnlyStateDelta_keepsConfirmationPending() =
+    runBlocking<Unit> {
+      var executions = 0
+      val secureTool = countingSecureTool { executions++ }
+      val agent = singleCallThenFinalAgent(secureTool, onModelInvoke = {})
+      val runner = resumableRunner(agent)
+
+      val firstTurnEvents =
+        runner
+          .runAsync(
+            userId = USER_ID,
+            sessionId = SESSION_ID,
+            newMessage = userMessage("transfer 100 dollars"),
+          )
+          .toList()
+      val deltaEvents =
+        runner
+          .runAsync(
+            userId = USER_ID,
+            sessionId = SESSION_ID,
+            invocationId = firstTurnEvents.first().invocationId,
+            stateDelta = mapOf("note" to "approved by phone"),
+          )
+          .toList()
+
+      assertTrue(deltaEvents.isEmpty())
+      val resumeEvents =
+        runner
+          .runAsync(
+            userId = USER_ID,
+            sessionId = SESSION_ID,
+            newMessage =
+              userFunctionResponse(
+                name = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                id = synthCallId(firstTurnEvents),
+                response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
+              ),
+          )
+          .toList()
+      assertEquals(1, executions)
+      assertEquals(
+        listOf(
+          AGENT_NAME to secureToolResponsePart(),
+          AGENT_NAME to "done",
+          AGENT_NAME to END_OF_AGENT,
+        ),
+        simplifyResumableEvents(resumeEvents),
+      )
     }
 
   /**
