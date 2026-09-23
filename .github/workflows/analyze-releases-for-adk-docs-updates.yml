@@ -21,6 +21,9 @@ on:
         default: true
         type: boolean
 
+# No workflow-wide scopes; the job grants only what it needs.
+permissions: {}
+
 jobs:
   analyze-new-release-for-adk-docs-updates:
     runs-on: ubuntu-latest

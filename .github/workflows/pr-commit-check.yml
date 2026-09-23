@@ -6,6 +6,10 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+# Read-only: the job only counts commits locally.
+permissions:
+  contents: read
+
 jobs:
   check-commit-count:
     runs-on: ubuntu-latest

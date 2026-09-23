@@ -10,6 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+# Read-only: no step in this workflow writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   build-modules:
     runs-on: ubuntu-latest
@@ -78,7 +82,7 @@ jobs:
         # invocation from `build` so the two never run concurrently, capping
         # peak memory at max(build, dokka) on the runner. Docs output is
         # JDK-independent, so generate once. Keep the pinned JDK below in sync
-        # with the matrix's lowest entry (line 19) so the step keeps running if
+        # with the matrix's lowest entry so the step keeps running if
         # the matrix changes. No FIREBASE_* env: dokkaGenerate reads none of it
         # (the Firebase config is only consumed by tests and by assemble/install).
         if: matrix.java-version == '17'
