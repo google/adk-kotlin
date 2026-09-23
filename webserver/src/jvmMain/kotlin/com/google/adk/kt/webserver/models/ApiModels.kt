@@ -56,6 +56,13 @@ data class AgentRunRequest(
 
 @Serializable internal data class RunResponse(val output: String, val sessionId: String)
 
+/**
+ * Terminal frame for `/run_sse` when a run fails after the stream has opened.
+ *
+ * Carries the `error` key, valued `"<Type>: <message>"`.
+ */
+@Serializable internal data class SseError(val error: String)
+
 @Serializable
 data class SessionDto(
   val id: String?,

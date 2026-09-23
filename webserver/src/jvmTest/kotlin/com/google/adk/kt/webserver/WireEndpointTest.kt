@@ -37,13 +37,16 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -183,6 +186,46 @@ class WireEndpointTest {
     val response = client.post("/apps/a/users/u/sessions/s/artifacts") { jsonBody("") }
 
     assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun runSse_failureAfterTheStreamOpens_endsWithAnErrorFrame() = testApplication {
+    application { adkApiModule(testConfig(agentLoader = FailingAgentLoader())) }
+
+    val body = client.post("/run_sse") { jsonBody(camelCaseRun) }.bodyAsText()
+
+    val frames = body.lineSequence().filter { it.startsWith(SSE_PREFIX) }.toList()
+    assertThat(frames).hasSize(2)
+    val error = Json.parseToJsonElement(frames.last().removePrefix(SSE_PREFIX)) as JsonObject
+    assertThat(error.keys).containsExactly("error")
+    assertThat(error["error"]!!.jsonPrimitive.content)
+      .isEqualTo("IllegalStateException: agent failed mid-run")
+  }
+
+  @Test
+  fun runSse_eventThatCannotBeEncoded_endsWithAnErrorFrame() = testApplication {
+    // Encoding happens on the way out, downstream of the run, so it needs the same treatment.
+    application { adkApiModule(testConfig(agentLoader = UnencodableAgentLoader())) }
+
+    val body = client.post("/run_sse") { jsonBody(camelCaseRun) }.bodyAsText()
+
+    val frames = body.lineSequence().filter { it.startsWith(SSE_PREFIX) }.toList()
+    assertThat(frames).hasSize(1)
+    val error = Json.parseToJsonElement(frames.last().removePrefix(SSE_PREFIX)) as JsonObject
+    assertThat(error["error"]!!.jsonPrimitive.content).contains("AnySerializer")
+  }
+
+  @Test
+  fun runSse_agentRaisesItsOwnCancellation_endsWithAnErrorFrame() = testApplication {
+    // A timeout the agent raises is a CancellationException too, but not the caller leaving.
+    application { adkApiModule(testConfig(agentLoader = TimingOutAgentLoader())) }
+
+    val body = client.post("/run_sse") { jsonBody(camelCaseRun) }.bodyAsText()
+
+    val frames = body.lineSequence().filter { it.startsWith(SSE_PREFIX) }.toList()
+    assertThat(frames).hasSize(1)
+    val error = Json.parseToJsonElement(frames.last().removePrefix(SSE_PREFIX)) as JsonObject
+    assertThat(error["error"]!!.jsonPrimitive.content).contains("TimeoutCancellationException")
   }
 
   @Test
@@ -417,6 +460,57 @@ private class EchoAgentLoader : AgentLoader {
   override fun listAgents() = listOf("echo-agent")
 
   override fun loadAgent(agentName: String) = if (agentName == "echo-agent") EchoAgent() else null
+}
+
+/** Fails after one frame has already gone out, so the failure lands mid-stream. */
+private class FailingAgent : BaseAgent(name = "echo-agent", description = "Fails mid-stream") {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+    emit(Event(invocationId = context.invocationId, author = "echo-agent", turnComplete = false))
+    throw IllegalStateException("agent failed mid-run")
+  }
+}
+
+/** Times out inside the run, so the failure arrives as a CancellationException. */
+private class TimingOutAgent : BaseAgent(name = "echo-agent", description = "Times out mid-run") {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+    withTimeout(50) { delay(10_000) }
+  }
+}
+
+/** Emits an event the serializer rejects, so the failure lands on the way out, not in the run. */
+private class UnencodableAgent :
+  BaseAgent(name = "echo-agent", description = "Emits an unencodable event") {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+    emit(
+      Event(
+        invocationId = context.invocationId,
+        author = "echo-agent",
+        actions = EventActions(stateDelta = mutableMapOf<String, Any>("bad" to Any())),
+        turnComplete = true,
+      )
+    )
+  }
+}
+
+private class UnencodableAgentLoader : AgentLoader {
+  override fun listAgents() = listOf("echo-agent")
+
+  override fun loadAgent(agentName: String) =
+    if (agentName == "echo-agent") UnencodableAgent() else null
+}
+
+private class TimingOutAgentLoader : AgentLoader {
+  override fun listAgents() = listOf("echo-agent")
+
+  override fun loadAgent(agentName: String) =
+    if (agentName == "echo-agent") TimingOutAgent() else null
+}
+
+private class FailingAgentLoader : AgentLoader {
+  override fun listAgents() = listOf("echo-agent")
+
+  override fun loadAgent(agentName: String) =
+    if (agentName == "echo-agent") FailingAgent() else null
 }
 
 /** Emits one event whose free-form maps hold the spellings and nulls the rule does not govern. */

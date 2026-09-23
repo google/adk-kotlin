@@ -21,6 +21,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.models.SessionDto
+import com.google.adk.kt.webserver.models.SseError
 import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.common.truth.Truth.assertThat
 import java.util.Collections
@@ -60,6 +61,7 @@ class WireEmissionCoverageTest {
       "SessionDto" to SessionDto.serializer(),
       "Part" to Part.serializer(),
       "Event" to ListSerializer(Event.serializer()),
+      "SseError" to SseError.serializer(),
     )
 
   @Test

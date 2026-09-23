@@ -27,6 +27,7 @@ import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.models.AgentRunRequest
+import com.google.adk.kt.webserver.models.SseError
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -36,10 +37,16 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.utils.io.writeStringUtf8
+import java.lang.invoke.MethodHandles
 import java.util.UUID
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.encodeToString
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass())
 
 @OptIn(FrameworkInternalApi::class)
 internal fun Route.runRoutes(
@@ -103,8 +110,19 @@ internal fun Route.runRoutes(
           request.stateDelta,
           runConfig,
         )
-        .collect { event ->
-          val data = adkJson.encodeToString(event)
+        // An event that cannot be encoded is reported rather than ending the stream in silence.
+        .map { event -> adkJson.encodeToString(event) }
+        // Upstream only, so a failed write below is not reported as a failed run.
+        .catch { failure ->
+          val type = failure::class.simpleName ?: failure::class.java.name
+          // Type only: the message can carry caller or model content, which a log must not.
+          logger.warn("Run failed after the stream opened: {}", type)
+          // The status line left with the headers, so the caller hears about this in the stream.
+          val error = SseError("$type: ${failure.message.orEmpty()}")
+          writeStringUtf8("data: ${adkJson.encodeToString(error)}\n\n")
+          flush()
+        }
+        .collect { data ->
           writeStringUtf8("data: $data\n\n")
           flush()
         }
