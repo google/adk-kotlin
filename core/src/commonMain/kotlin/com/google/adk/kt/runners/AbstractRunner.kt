@@ -59,7 +59,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
@@ -524,12 +523,14 @@ abstract class AbstractRunner : Runner {
         is CallbackChoice.Break -> {
           context.isEndOfInvocation = true
           val earlyExitEvent =
-            Event(
+            processEventWithPluginCallbacks(
+              context,
+              Event(
                 invocationId = context.invocationId,
                 author = Role.MODEL,
                 content = beforeResult.value,
-              )
-              .let { applyRunConfigCustomMetadata(it, context.runConfig) }
+              ),
+            )
           val shouldAppendEvent = true
           if (shouldAppendEvent) {
             val unused = sessionService.appendEvent(context.session, earlyExitEvent)
@@ -540,23 +541,18 @@ abstract class AbstractRunner : Runner {
           // 2. Dispatch to the resolved root rather than the runner's root `agent`: on a follow-up
           // user turn, `findAgentToRun` may have selected a sub-agent based on the prior turn's
           // history (see `findAgentToRun` below for the selection rules).
-          runRoot(context)
-            .map { applyRunConfigCustomMetadata(it, context.runConfig) }
-            .collect { event ->
-              val isLiveCall = false
-              // Persist the post-callback event so the session matches what the caller received.
-              val finalEvent =
-                runOnEventCallbacksPipeline(pluginManager.onEventCallbacks, context, event).let {
-                  applyRunConfigCustomMetadata(it, context.runConfig)
-                }
-              if (!isLiveCall) {
-                if (event.partial == false) {
-                  val unused = sessionService.appendEvent(context.session, finalEvent)
-                }
+          runRoot(context).collect { event ->
+            val isLiveCall = false
+            // Persist the post-callback event so the session matches what the caller received.
+            val finalEvent = processEventWithPluginCallbacks(context, event)
+            if (!isLiveCall) {
+              if (event.partial == false) {
+                val unused = sessionService.appendEvent(context.session, finalEvent)
               }
-
-              emit(finalEvent)
             }
+
+            emit(finalEvent)
+          }
         }
       }
       // 4. Run afterRun callback
@@ -898,6 +894,19 @@ abstract class AbstractRunner : Runner {
         )
       }
     }
+  }
+
+  /**
+   * Runs the onEvent callbacks on [event]. The run config's custom metadata is applied before them,
+   * so callbacks see it, and again after, in case a callback returned an event without it.
+   */
+  private suspend fun processEventWithPluginCallbacks(
+    context: InvocationContext,
+    event: Event,
+  ): Event {
+    val enriched = applyRunConfigCustomMetadata(event, context.runConfig)
+    val processed = runOnEventCallbacksPipeline(pluginManager.onEventCallbacks, context, enriched)
+    return applyRunConfigCustomMetadata(processed, context.runConfig)
   }
 
   private fun applyRunConfigCustomMetadata(event: Event, runConfig: RunConfig?): Event {

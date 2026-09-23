@@ -23,6 +23,7 @@ import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
@@ -1556,6 +1557,56 @@ class AbstractRunnerTest {
     // The persisted event is the mutated final one; before the fix it was the raw "original".
     assertEquals("mutated", persistedModelEvent.content?.parts?.firstOrNull()?.text)
     assertEquals(streamedFinalEvent.id, persistedModelEvent.id)
+  }
+
+  @Test
+  fun runAsync_beforeRunBreakEarlyExitEventPassesThroughOnEventBeforePersistence() = runBlocking {
+    // Arrange: mirrors Python test_runner_processes_before_run_early_exit_with_event_callback.
+    val haltedContent = modelMessage("halted by beforeRun")
+    val metadataSeenByOnEvent = mutableListOf<Map<String, Any?>?>()
+    val plugin =
+      object : Plugin {
+        override val name: String = "halt_and_tag"
+
+        override suspend fun beforeRun(
+          invocationContext: InvocationContext
+        ): CallbackChoice<Unit, Content> = CallbackChoice.Break(haltedContent)
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+          metadataSeenByOnEvent.add(event.customMetadata)
+          return event.copy(customMetadata = mapOf("tagged_by" to "onEvent"))
+        }
+      }
+    val runner =
+      InMemoryRunner(
+        App(appName = "early_exit_app", rootAgent = echoAgent(), plugins = listOf(plugin))
+      )
+
+    // Act
+    val streamed =
+      runner
+        .runAsync(
+          userId = "user",
+          sessionId = "session",
+          newMessage = userMessage("hi"),
+          runConfig = RunConfig(customMetadata = mapOf("run_key" to "run_val")),
+        )
+        .toList()
+    val persisted =
+      assertNotNull(
+          runner.sessionService.getSession(SessionKey("early_exit_app", "user", "session"))
+        )
+        .events
+
+    // Assert: onEvent saw the run metadata, and the run metadata survives its replacement.
+    val streamedEarlyExit = streamed.single()
+    assertEquals(listOf<Map<String, Any?>?>(mapOf("run_key" to "run_val")), metadataSeenByOnEvent)
+    assertEquals(haltedContent, streamedEarlyExit.content)
+    assertEquals(
+      mapOf("run_key" to "run_val", "tagged_by" to "onEvent"),
+      streamedEarlyExit.customMetadata,
+    )
+    assertEquals(streamedEarlyExit, persisted.single { it.author == Role.MODEL })
   }
 }
 
