@@ -68,7 +68,8 @@ fun modelEventWithPromptTokens(
   )
 
 /**
- * A `model`-authored [Event] carrying a single [FunctionCall].
+ * A `model`-authored [Event] carrying a single [FunctionCall], with an optional [args] payload
+ * (defaults to an empty map).
  *
  * Set [longRunning] to mark [callId] as a long-running call via [Event.longRunningToolIds].
  */
@@ -78,6 +79,7 @@ fun eventWithFunctionCall(
   callName: String,
   callId: String,
   longRunning: Boolean = false,
+  args: Map<String, Any?> = emptyMap(),
 ): Event =
   Event(
     author = Role.MODEL,
@@ -85,7 +87,7 @@ fun eventWithFunctionCall(
     content =
       Content(
         role = Role.MODEL,
-        parts = listOf(Part(functionCall = FunctionCall(name = callName, id = callId))),
+        parts = listOf(Part(functionCall = FunctionCall(name = callName, id = callId, args = args))),
       ),
     longRunningToolIds = if (longRunning) setOf(callId) else emptySet(),
     timestamp = timestamp,

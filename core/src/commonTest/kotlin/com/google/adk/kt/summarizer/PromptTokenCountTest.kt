@@ -16,6 +16,8 @@
 package com.google.adk.kt.summarizer
 
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.eventWithFunctionCall
+import com.google.adk.kt.testing.eventWithFunctionResponse
 import com.google.adk.kt.testing.modelEvent
 import com.google.adk.kt.testing.modelEventWithPromptTokens
 import com.google.adk.kt.testing.rewindEvent
@@ -208,6 +210,72 @@ class PromptTokenCountTest {
   }
 
   @Test
+  fun latestPromptTokenCount_estimateCountsToolTraffic() {
+    val events =
+      listOf(
+        eventWithFunctionCall(
+          invocationId = "inv_1",
+          timestamp = 100L,
+          callName = "search",
+          callId = "call_1",
+          args = mapOf("query" to "a".repeat(100)),
+        ),
+        eventWithFunctionResponse(
+          invocationId = "inv_1",
+          timestamp = 110L,
+          name = "search",
+          callId = "call_1",
+          response = mapOf("result" to "b".repeat(100)),
+        ),
+      )
+    // Call: "search" (6) + {"query":"a*100"} (112).
+    // Response: "search" (6) + {"result":"b*100"} (113).
+    // Total: 237 / 4 = 59.
+    assertEquals(59, latestPromptTokenCount(events, agentName = "model", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_estimateWithEmptyToolPayloads_countsOnlyToolNames() {
+    // An empty payload contributes 0 chars (rather than 2 for "{}"), matching Python and Go.
+    // Call name "search" (6) + response name "search" (6) = 12 chars, and 12 / 4 = 3.
+    val events =
+      listOf(
+        eventWithFunctionCall(
+          invocationId = "inv_1",
+          timestamp = 100L,
+          callName = "search",
+          callId = "call_1",
+        ),
+        eventWithFunctionResponse(
+          invocationId = "inv_1",
+          timestamp = 110L,
+          name = "search",
+          callId = "call_1",
+        ),
+      )
+
+    assertEquals(3, latestPromptTokenCount(events, agentName = "model", branch = null))
+  }
+
+  @Test
+  fun latestPromptTokenCount_estimateFallsBackWhenPayloadIsNotJsonNative() {
+    // The estimate runs before a model call, so a payload the JSON encoder rejects must not fail
+    // the turn. Name "t" (1) + the map's toString "{x=XXXX}" (8) = 9, and 9 / 4 = 2.
+    val events =
+      listOf(
+        eventWithFunctionCall(
+          invocationId = "inv_1",
+          timestamp = 100L,
+          callName = "t",
+          callId = "call_1",
+          args = mapOf("x" to Unserializable()),
+        )
+      )
+
+    assertEquals(2, latestPromptTokenCount(events, agentName = "model", branch = null))
+  }
+
+  @Test
   fun latestPromptTokenCount_estimateReflectsCompactedRange() {
     // A large raw event covered by a compaction with a short summary. The estimate is built from
     // the rewritten prompt (the summary replaces the covered event), not the raw characters --
@@ -235,5 +303,10 @@ class PromptTokenCountTest {
 
     // Only the 40-char kept event survives -> 10 tokens; counting all raw chars would give 110.
     assertEquals(10, latestPromptTokenCount(events, agentName = "agent", branch = null))
+  }
+
+  /** A payload value the JSON encoder rejects, with a stable rendering for the fallback count. */
+  private class Unserializable {
+    override fun toString(): String = "XXXX"
   }
 }

@@ -16,8 +16,10 @@
 package com.google.adk.kt.summarizer
 
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.processors.HistoryRewriterProcessor
+import com.google.adk.kt.serialization.anyToJsonElement
 
 /** Approximate number of characters per token used by [estimatePromptTokenCount]. */
 private const val CHARS_PER_TOKEN = 4
@@ -50,12 +52,12 @@ internal fun latestPromptTokenCount(events: List<Event>, agentName: String, bran
 }
 
 /**
- * Returns an approximate prompt token count from session events, or `null` when the prompt has no
- * text.
+ * Returns an approximate prompt token count from session events, or `null` when the prompt is
+ * empty.
  *
  * Builds the same contents the [HistoryRewriterProcessor] would produce for the model (so compacted
- * ranges and rewinds are reflected), sums the characters across all text parts, and divides by
- * [CHARS_PER_TOKEN].
+ * ranges and rewinds are reflected), sums the characters across text and tool payloads, and divides
+ * by [CHARS_PER_TOKEN].
  */
 private fun estimatePromptTokenCount(
   events: List<Event>,
@@ -74,8 +76,27 @@ private fun estimatePromptTokenCount(
   for (content in contents) {
     for (part in content.parts) {
       totalChars += part.text?.length ?: 0
+      part.functionCall?.let { totalChars += it.name.length + payloadChars(it.args) }
+      part.functionResponse?.let { totalChars += it.name.length + payloadChars(it.response) }
     }
   }
   if (totalChars <= 0) return null
   return totalChars / CHARS_PER_TOKEN
 }
+
+/**
+ * Returns the serialized JSON character length of [payload], falling back to `toString().length` if
+ * [payload] contains a type not supported by [anyToJsonElement] so token estimation never crashes
+ * the turn.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun payloadChars(payload: Map<String, Any?>): Int =
+  if (payload.isEmpty()) {
+    0
+  } else {
+    try {
+      anyToJsonElement(payload).toString().length
+    } catch (e: IllegalArgumentException) {
+      payload.toString().length
+    }
+  }
