@@ -105,7 +105,7 @@ internal object AppFunctionSchemaConverter {
    * would otherwise be shown a contract it cannot satisfy.
    */
   fun toFunctionDeclaration(metadata: AppFunctionMetadata, name: String): FunctionDeclaration? {
-    val scope = RefScope(methodNameOf(metadata.id), metadata.components)
+    val scope = RefScope(methodNameOf(metadata.id), metadata.packageMetadata.components)
     val properties = mutableMapOf<String, Schema>()
     // The library resolves a repeated name to its first declaration, so every later one is dropped
     // before anything is decided from it.
