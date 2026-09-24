@@ -52,6 +52,10 @@ under [semantic versioning](https://semver.org/).
     hybrid system. See
     [On-device and Cloud Agents on Android](#-on-device-and-cloud-agents-on-android).
 
+-   **First-Class Java Interop**: Build the same agents from plain Java, not just
+    Kotlin, with a familiar, idiomatic API and no coroutines to learn. See
+    [Using ADK from Java](#-using-adk-from-java).
+
 ## 🚀 Installation
 
 If you're using Maven, add the following to your dependencies:
@@ -79,31 +83,17 @@ implementation("com.google.adk:google-adk-kotlin-core:1.1.0")
 Every module is published under the `com.google.adk` group and shares the
 version shown above.
 
-| Module                | Artifact                                | What it is for                            |
-| --------------------- | --------------------------------------- | ----------------------------------------- |
-| `core`                | `google-adk-kotlin-core`                | Agents, models, tools, sessions, memory,  |
-:                       :                                         : artifacts and runners. The only           :
-:                       :                                         : dependency most projects need.            :
-| `processor`           | `google-adk-kotlin-processor`           | KSP processor that generates tools from   |
-:                       :                                         : `@Tool`-annotated functions. Add it with  :
-:                       :                                         : `ksp(...)`.                               :
-| `webserver`           | `google-adk-kotlin-webserver`           | HTTP serving for your agents, headless or |
-:                       :                                         : with the Development UI.                  :
-| `integrations`        | `google-adk-kotlin-integrations`        | Plugins and integrations with external    |
-:                       :                                         : services (e.g. BigQuery agent analytics). :
-| `integrations/spring` | `google-adk-kotlin-integrations-spring` | Use any Spring AI `ChatModel` (OpenAI,    |
-:                       :                                         : Anthropic, Vertex, ...) to drive an ADK   :
-:                       :                                         : agent. JVM only.                          :
-| `a2a`                 | `google-adk-kotlin-a2a`                 | Agent2Agent (A2A) support for talking to  |
-:                       :                                         : remote agents.                            :
-| `litertlm`            | `google-adk-kotlin-litertlm`            | On-device models through LiteRT-LM.       |
-:                       :                                         : Requires JDK 21+; see                     :
-:                       :                                         : [litertlm/README.md](litertlm/README.md). :
-| `firebase`            | `google-adk-kotlin-firebase-android`    | Android-only model backed by Firebase AI  |
-:                       :                                         : Logic.                                    :
-| `mlkit`               | `google-adk-kotlin-mlkit-android`       | Android-only on-device Gemini Nano        |
-:                       :                                         : through the ML Kit GenAI Prompt API.      :
-:                       :                                         : Published as a `-beta` pre-release.       :
+| Module                | Artifact                                | What it is for                                                                                            |
+| --------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `core`                | `google-adk-kotlin-core`                | Agents, models, tools, sessions, memory, artifacts and runners. The only dependency most projects need.  |
+| `processor`           | `google-adk-kotlin-processor`           | KSP processor that generates tools from `@Tool`-annotated functions. Add it with `ksp(...)`.             |
+| `webserver`           | `google-adk-kotlin-webserver`           | HTTP serving for your agents, headless or with the Development UI.                                        |
+| `integrations`        | `google-adk-kotlin-integrations`        | Plugins and integrations with external services (e.g. BigQuery agent analytics).                         |
+| `integrations/spring` | `google-adk-kotlin-integrations-spring` | Use any Spring AI `ChatModel` (OpenAI, Anthropic, Vertex, ...) to drive an ADK agent. JVM only.          |
+| `a2a`                 | `google-adk-kotlin-a2a`                 | Agent2Agent (A2A) support for talking to remote agents.                                                   |
+| `litertlm`            | `google-adk-kotlin-litertlm`            | On-device models through LiteRT-LM. Requires JDK 21+; see [litertlm/README.md](litertlm/README.md).      |
+| `firebase`            | `google-adk-kotlin-firebase-android`    | Android-only model backed by Firebase AI Logic.                                                          |
+| `mlkit`               | `google-adk-kotlin-mlkit-android`       | Android-only on-device Gemini Nano through the ML Kit GenAI Prompt API. Published as a `-beta` pre-release. |
 
 ## 📚 Documentation
 
@@ -134,6 +124,49 @@ val rootAgent = LlmAgent(
 
 GenAI SDK based `Gemini` currently prevents usage of `API_KEY` and
 `GoogleCredentials` on Android. Use Firebase AI instead.
+
+### ☕ Using ADK from Java
+
+ADK Kotlin is built to be called from plain Java too, not only from Kotlin. Every
+builder-style API mirrors the Kotlin one, so the search agent above is the same
+agent in Java:
+
+```java
+import com.google.adk.kt.agents.BaseAgent;
+import com.google.adk.kt.agents.LlmAgent;
+import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.tools.GoogleSearchTool;
+
+BaseAgent rootAgent =
+    LlmAgent.builder()
+        .name("search_assistant")
+        .description("An assistant that can search the web.")
+        .model(new Gemini("gemini-3.1-flash-lite-preview"))
+        .instruction(
+            "You are a helpful assistant. Answer user questions using Google Search when needed.")
+        .tools(GoogleSearchTool.builder().build())
+        .build();
+```
+
+Coroutines stay out of the way. The `com.google.adk.kt.interop` package exposes
+Java-facing base types that replace the engine's `suspend` functions and `Flow`
+with `CompletableFuture` and Reactive Streams `Publisher`:
+
+-   **`PublisherRunner`** wraps a runner and streams events as a
+    `Publisher<Event>`, which adapts in one line to RxJava
+    (`Flowable.fromPublisher(...)`), Reactor (`Flux.from(...)`), or Spring
+    WebFlux.
+-   **`BaseFutureTool`, `BaseFutureToolset`, `BaseFuturePlugin`,
+    `BasePublisherModel`**, and the `BaseFuture*` session, memory, and artifact
+    services let you implement ADK extension points in Java by overriding
+    `CompletableFuture`-returning methods.
+-   **`@Tool` / `@Param`** annotations work from Java:
+    `ReflectiveTools.fromMethod(...)` turns an annotated plain method into a tool
+    for `javac`-only modules, or KSP can process `@Tool` directly when you build
+    with the Kotlin toolchain.
+
+See [`examples/java/`](examples/java) for runnable ports of this repository's
+agents written entirely in Java.
 
 ### 📱 On-device and Cloud Agents on Android
 
@@ -262,6 +295,10 @@ The agent snippet above is the short version. Every runnable example lives under
 the `examples` directory of this repository.
 
 *   [`examples/`](examples) — JVM examples.
+
+*   [`examples/java/`](examples/java) — the same agents written in plain Java,
+    compiled against the published JVM artifacts to exercise the Java-facing
+    surface.
 
 *   [`examples/android/`](examples/android) — a Compose app showing the Android
     side, including the on-device (LiteRT-LM, ML Kit) and cloud (Firebase AI)
