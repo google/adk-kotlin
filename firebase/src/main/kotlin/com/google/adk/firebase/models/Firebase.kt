@@ -51,8 +51,7 @@ class Firebase private constructor(override val name: String, val firebaseAI: Fi
       firebaseAI: FirebaseAI,
     ) = Firebase(name, firebaseAI)
 
-    // TODO: b/514250362 - tracing requests and responses while making sure no sensitive information
-    // is leaked
+    // TODO: Log redacted requests and responses at trace level, as `GenaiPrompt` does.
     private fun trace(response: GenerateContentResponse) {}
 
     private fun trace(request: List<Content>) {}

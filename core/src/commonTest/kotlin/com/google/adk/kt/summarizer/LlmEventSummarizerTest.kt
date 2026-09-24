@@ -23,10 +23,10 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelEvent
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userEvent
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -148,30 +148,19 @@ class LlmEventSummarizerTest {
         // Event with no content — silently skipped.
         Event(author = "user", content = null, timestamp = 5L),
         // Event with an empty-text part — silently skipped by the isNotEmpty filter.
-        Event(author = "model", content = Content.fromText(Role.MODEL, ""), timestamp = 6L),
+        Event(author = "model", content = modelMessage(""), timestamp = 6L),
         // Event with a function call — rendered as a tool-call line.
         Event(
           author = "model",
-          content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(Part(functionCall = FunctionCall(name = "tool", args = mapOf("k" to "v")))),
-            ),
+          content = modelFunctionCall(name = "tool", args = mapOf("k" to "v")),
           timestamp = 7L,
         ),
         // Event with a function response — rendered as a tool-response line.
         Event(
           author = "model",
           content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(
-                  Part(
-                    functionResponse = FunctionResponse(name = "tool", response = mapOf("a" to "b"))
-                  )
-                ),
+            modelMessage(
+              Part(functionResponse = FunctionResponse(name = "tool", response = mapOf("a" to "b")))
             ),
           timestamp = 8L,
         ),
@@ -257,13 +246,9 @@ class LlmEventSummarizerTest {
         Event(
           author = "model",
           content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(
-                  Part(text = "Let me check the tool output.", thought = true),
-                  Part(text = "It is sunny."),
-                ),
+            modelMessage(
+              Part(text = "Let me check the tool output.", thought = true),
+              Part(text = "It is sunny."),
             ),
           timestamp = 2L,
         ),
@@ -299,13 +284,9 @@ class LlmEventSummarizerTest {
         Event(
           author = "model",
           content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(
-                  Part(text = "Stale summarizer reasoning.", thought = true),
-                  Part(text = "Prior summary."),
-                ),
+            modelMessage(
+              Part(text = "Stale summarizer reasoning.", thought = true),
+              Part(text = "Prior summary."),
             ),
           actions =
             EventActions(
@@ -348,15 +329,11 @@ class LlmEventSummarizerTest {
         Event(
           author = "model",
           content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(
-                  Part(
-                    functionResponse =
-                      FunctionResponse(name = "search", response = mapOf("data" to largeValue))
-                  )
-                ),
+            modelMessage(
+              Part(
+                functionResponse =
+                  FunctionResponse(name = "search", response = mapOf("data" to largeValue))
+              )
             ),
           timestamp = 1L,
         )
