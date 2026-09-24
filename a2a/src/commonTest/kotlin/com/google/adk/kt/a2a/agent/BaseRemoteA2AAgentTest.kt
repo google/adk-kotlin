@@ -19,9 +19,11 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userFunctionResponse
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
@@ -55,15 +57,11 @@ class BaseRemoteA2AAgentTest {
     val userCall =
       Event(
         author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(functionCall = fc))),
+        content = userMessage(Part(functionCall = fc)),
         customMetadata = mapOf("adk_task_id" to "task-123", "adk_context_id" to "ctx-456"),
       )
-    val fr = FunctionResponse(name = "my-func", id = "fc-id")
     val userResponse =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(functionResponse = fr))),
-      )
+      Event(author = Role.USER, content = userFunctionResponse(name = "my-func", id = "fc-id"))
 
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
     session.events.addAll(listOf(userCall, userResponse))
@@ -86,11 +84,7 @@ class BaseRemoteA2AAgentTest {
   @Test
   fun prepareOutboundEvent_noUserCall_returnsFlattenedParts() {
     val agent = TestRemoteAgent("my-agent")
-    val event1 =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "hi"))),
-      )
+    val event1 = Event(author = Role.USER, content = userMessage("hi"))
 
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
     session.events.add(event1)
@@ -115,14 +109,10 @@ class BaseRemoteA2AAgentTest {
     val lastAgentResponse =
       Event(
         author = "my-agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "reply"))),
+        content = modelMessage("reply"),
         customMetadata = mapOf("adk_context_id" to "parent-context-123"),
       )
-    val nextUserEvent =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "how are you?"))),
-      )
+    val nextUserEvent = Event(author = Role.USER, content = userMessage("how are you?"))
 
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
     session.events.addAll(listOf(lastAgentResponse, nextUserEvent))
@@ -160,11 +150,7 @@ class BaseRemoteA2AAgentTest {
   @Test
   fun prepareOutboundEvent_whenLastEventNotUser_returnsEmptyParts() {
     val agent = TestRemoteAgent("my-agent")
-    val event =
-      Event(
-        author = "my-agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "reply"))),
-      )
+    val event = Event(author = "my-agent", content = modelMessage("reply"))
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
     session.events.add(event)
     val context =

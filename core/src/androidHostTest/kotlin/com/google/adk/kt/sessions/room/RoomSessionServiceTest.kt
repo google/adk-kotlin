@@ -33,9 +33,9 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.SessionServiceAssertions
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertFailsWith
 import kotlin.time.Instant
@@ -560,20 +560,8 @@ class RoomSessionServiceTest {
       DummyModel.createSequential(
         "model",
         listOf(
-          LlmResponse(
-            content =
-              Content(
-                role = "model",
-                parts =
-                  listOf(
-                    Part(
-                      functionCall =
-                        FunctionCall(name = "get_weather", args = emptyMap(), id = "call-1")
-                    )
-                  ),
-              )
-          ),
-          LlmResponse(content = Content(role = "model", parts = listOf(Part(text = "done")))),
+          modelFunctionCallResponse("get_weather", id = "call-1"),
+          LlmResponse(content = modelMessage("done")),
         ),
       )
     val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
@@ -585,7 +573,7 @@ class RoomSessionServiceTest {
         .runAsync(
           userId = "user",
           sessionId = "session-weather",
-          newMessage = Content(role = "user", parts = listOf(Part(text = "weather?"))),
+          newMessage = userMessage("weather?"),
         )
         .toList()
     assertThat(events).isNotEmpty()

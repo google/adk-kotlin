@@ -40,7 +40,6 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -306,17 +305,14 @@ class ResumeInvocationTest {
           invocationId = invId,
           branch = leafBranch,
           content =
-            Content(
-              Role.MODEL,
-              listOf(
-                Part(
-                  functionCall =
-                    FunctionCall(name = "tool_one", args = emptyMap(), id = "tool_one_id")
-                ),
-                Part(
-                  functionCall =
-                    FunctionCall(name = "tool_two", args = emptyMap(), id = "tool_two_id")
-                ),
+            modelMessage(
+              Part(
+                functionCall =
+                  FunctionCall(name = "tool_one", args = emptyMap(), id = "tool_one_id")
+              ),
+              Part(
+                functionCall =
+                  FunctionCall(name = "tool_two", args = emptyMap(), id = "tool_two_id")
               ),
             ),
           longRunningToolIds = setOf("tool_one_id", "tool_two_id"),

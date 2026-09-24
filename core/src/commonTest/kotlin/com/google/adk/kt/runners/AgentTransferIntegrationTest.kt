@@ -30,15 +30,14 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionResponse
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -699,25 +698,7 @@ class AgentTransferIntegrationTest {
           DummyModel("loop-child-model") {
             loopChildTurn++
             if (loopChildTurn >= 2) {
-              flowOf(
-                LlmResponse(
-                  content =
-                    com.google.adk.kt.types.Content(
-                      role = Role.MODEL,
-                      parts =
-                        listOf(
-                          Part(
-                            functionCall =
-                              com.google.adk.kt.types.FunctionCall(
-                                name = "exit_loop",
-                                args = emptyMap(),
-                                id = "exit-1",
-                              )
-                          )
-                        ),
-                    )
-                )
-              )
+              flowOf(modelFunctionCallResponse("exit_loop", id = "exit-1"))
             } else {
               flowOf(LlmResponse(content = modelMessage("iter-$loopChildTurn")))
             }
@@ -810,17 +791,7 @@ class AgentTransferIntegrationTest {
             Event(
               author = name,
               invocationId = context.invocationId,
-              content =
-                Content(
-                  role = Role.USER,
-                  parts =
-                    listOf(
-                      Part(
-                        functionResponse =
-                          FunctionResponse(name = "escalate", id = "esc-1", response = emptyMap())
-                      )
-                    ),
-                ),
+              content = userFunctionResponse(name = "escalate", id = "esc-1"),
               actions = EventActions(escalate = true),
             )
           )

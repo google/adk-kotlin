@@ -33,9 +33,11 @@ import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -169,14 +171,7 @@ class InvocationContextTest {
         invocationId = "inv-1",
         author = "test-agent",
         branch = "branch1",
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(functionCall = FunctionCall(name = "test_func", args = emptyMap(), id = "123"))
-              ),
-          ),
+        content = modelFunctionCall(name = "test_func", id = "123"),
       )
     session.events.add(functionCallEvent)
     session.events.add(
@@ -188,17 +183,7 @@ class InvocationContextTest {
         Event(
           invocationId = "inv-1",
           author = "user",
-          content =
-            Content(
-              role = Role.USER,
-              parts =
-                listOf(
-                  Part(
-                    functionResponse =
-                      FunctionResponse(name = "test_func", response = emptyMap(), id = "123")
-                  )
-                ),
-            ),
+          content = userFunctionResponse(name = "test_func", id = "123"),
         )
       )
 
@@ -216,14 +201,7 @@ class InvocationContextTest {
         invocationId = "inv-1",
         author = "test-agent",
         branch = "branch1",
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(functionCall = FunctionCall(name = "test_func", args = emptyMap(), id = "456"))
-              ),
-          ),
+        content = modelFunctionCall(name = "test_func", id = "456"),
       )
     )
 
@@ -232,17 +210,7 @@ class InvocationContextTest {
         Event(
           invocationId = "inv-1",
           author = "user",
-          content =
-            Content(
-              role = Role.USER,
-              parts =
-                listOf(
-                  Part(
-                    functionResponse =
-                      FunctionResponse(name = "test_func", response = emptyMap(), id = "123")
-                  )
-                ),
-            ),
+          content = userFunctionResponse(name = "test_func", id = "123"),
         )
       )
 
@@ -609,16 +577,7 @@ class InvocationContextTest {
       Event(
         invocationId = "inv-1",
         author = "agent-A",
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(
-                  functionCall = FunctionCall(name = "regular_tool", args = emptyMap(), id = "c")
-                )
-              ),
-          ),
+        content = modelFunctionCall(name = "regular_tool", id = "c"),
       )
 
     assertFalse(context.shouldPauseInvocation(event))
@@ -642,17 +601,7 @@ class InvocationContextTest {
       Event(
         invocationId = "inv-1",
         author = "agent-A",
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(
-                  functionCall =
-                    FunctionCall(name = "regular_tool", args = emptyMap(), id = "other_id")
-                )
-              ),
-          ),
+        content = modelFunctionCall(name = "regular_tool", id = "other_id"),
         longRunningToolIds = setOf("tool_call_id_1"),
       )
 
@@ -669,17 +618,7 @@ class InvocationContextTest {
     Event(
       invocationId = "inv-1",
       author = "agent-A",
-      content =
-        Content(
-          role = Role.MODEL,
-          parts =
-            listOf(
-              Part(
-                functionCall =
-                  FunctionCall(name = "long_running_tool", args = emptyMap(), id = "tool_call_id_1")
-              )
-            ),
-        ),
+      content = modelFunctionCall(name = "long_running_tool", id = "tool_call_id_1"),
       longRunningToolIds = setOf("tool_call_id_1"),
     )
 

@@ -18,13 +18,13 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyArtifactService
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Type
@@ -131,30 +131,13 @@ class LoadArtifactsToolTest {
       )
 
     var request = LlmRequest()
+    request = request.appendContent(modelFunctionCall(name = "some_other_function"))
     request =
       request.appendContent(
-        Content(
-          role = Role.MODEL,
-          parts =
-            listOf(
-              Part(functionCall = FunctionCall(name = "some_other_function", args = emptyMap()))
-            ),
-        )
-      )
-    request =
-      request.appendContent(
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(
-                    name = "load_artifacts",
-                    response = mapOf("artifact_names" to listOf("file1.txt")),
-                  )
-              )
-            ),
+        userFunctionResponse(
+          name = "load_artifacts",
+          id = null,
+          response = mapOf("artifact_names" to listOf("file1.txt")),
         )
       )
 
@@ -190,26 +173,10 @@ class LoadArtifactsToolTest {
       )
     var request = LlmRequest()
 
+    request = request.appendContent(modelFunctionCall(name = "other_function"))
     request =
       request.appendContent(
-        Content(
-          role = Role.MODEL,
-          parts =
-            listOf(Part(functionCall = FunctionCall(name = "other_function", args = emptyMap()))),
-        )
-      )
-    request =
-      request.appendContent(
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(name = "other_function", response = mapOf("foo" to "bar"))
-              )
-            ),
-        )
+        userFunctionResponse(name = "other_function", id = null, response = mapOf("foo" to "bar"))
       )
 
     request = tool.processLlmRequest(context, request)
@@ -235,34 +202,17 @@ class LoadArtifactsToolTest {
     var request = LlmRequest()
     request =
       request.appendContent(
-        Content(
-          role = Role.MODEL,
-          parts =
-            listOf(
-              Part(
-                functionCall =
-                  FunctionCall(
-                    name = "load_artifacts",
-                    args = mapOf("artifact_names" to listOf("file1.txt")),
-                  )
-              )
-            ),
+        modelFunctionCall(
+          name = "load_artifacts",
+          args = mapOf("artifact_names" to listOf("file1.txt")),
         )
       )
     request =
       request.appendContent(
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(
-                    name = "load_artifacts",
-                    response = mapOf("artifact_names" to listOf("file1.txt")),
-                  )
-              )
-            ),
+        userFunctionResponse(
+          name = "load_artifacts",
+          id = null,
+          response = mapOf("artifact_names" to listOf("file1.txt")),
         )
       )
 
@@ -294,34 +244,17 @@ class LoadArtifactsToolTest {
     var request = LlmRequest()
     request =
       request.appendContent(
-        Content(
-          role = Role.MODEL,
-          parts =
-            listOf(
-              Part(
-                functionCall =
-                  FunctionCall(
-                    name = "load_artifacts",
-                    args = mapOf("artifact_names" to listOf(artifactName)),
-                  )
-              )
-            ),
+        modelFunctionCall(
+          name = "load_artifacts",
+          args = mapOf("artifact_names" to listOf(artifactName)),
         )
       )
     request =
       request.appendContent(
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(
-                    name = "load_artifacts",
-                    response = mapOf("artifact_names" to listOf(artifactName)),
-                  )
-              )
-            ),
+        userFunctionResponse(
+          name = "load_artifacts",
+          id = null,
+          response = mapOf("artifact_names" to listOf(artifactName)),
         )
       )
 
@@ -406,16 +339,7 @@ class LoadArtifactsToolTest {
     var request = LlmRequest()
     request =
       request.appendContent(
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(name = "other_function", response = mapOf("foo" to "bar"))
-              )
-            ),
-        )
+        userFunctionResponse(name = "other_function", id = null, response = mapOf("foo" to "bar"))
       )
 
     request = tool.processLlmRequest(context, request)
@@ -436,30 +360,13 @@ class LoadArtifactsToolTest {
       )
 
     var request = LlmRequest()
+    request = request.appendContent(modelFunctionCall(name = "some_other_function"))
     request =
       request.appendContent(
-        Content(
-          role = Role.MODEL,
-          parts =
-            listOf(
-              Part(functionCall = FunctionCall(name = "some_other_function", args = emptyMap()))
-            ),
-        )
-      )
-    request =
-      request.appendContent(
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(
-                    name = "load_artifacts",
-                    response = mapOf("artifact_names" to listOf("file1.txt")),
-                  )
-              )
-            ),
+        userFunctionResponse(
+          name = "load_artifacts",
+          id = null,
+          response = mapOf("artifact_names" to listOf("file1.txt")),
         )
       )
 
