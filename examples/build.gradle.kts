@@ -43,6 +43,7 @@ dependencies {
   implementation(project(":google-adk-kotlin-webserver"))
   implementation(libs.clikt)
   implementation(libs.google.ai.edge.litertlm.jvm)
+  implementation(libs.google.auth.oauth2.http)
   implementation(libs.google.cloud.storage)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.opentelemetry.sdk)
