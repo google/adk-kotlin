@@ -26,9 +26,9 @@ import com.google.adk.kt.memory.dto.RetrieveMemoriesResponseDto
 import com.google.adk.kt.memory.dto.RetrievedMemoryDto
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.VideoMetadata
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
@@ -305,7 +305,7 @@ class VertexAiMemoryBankServiceTest {
   @Test
   fun addMemory_nonTextMemory_throws() = runTest {
     val service = VertexAiMemoryBankService(FakeMemoryBankClient())
-    val blank = MemoryEntry(content = Content(role = Role.USER, parts = listOf(Part(text = "   "))))
+    val blank = MemoryEntry(content = userMessage("   "))
     assertFailsWith<IllegalArgumentException> { service.addMemory("app", "user", listOf(blank)) }
   }
 
@@ -445,15 +445,9 @@ class VertexAiMemoryBankServiceTest {
 
   private companion object {
     fun textEvent(author: String, text: String, id: String = "e1", timestamp: Long = 0L): Event =
-      Event(
-        id = id,
-        author = author,
-        timestamp = timestamp,
-        content = Content(role = Role.USER, parts = listOf(Part(text = text))),
-      )
+      Event(id = id, author = author, timestamp = timestamp, content = userMessage(text))
 
-    fun memoryEntry(text: String): MemoryEntry =
-      MemoryEntry(content = Content(role = Role.USER, parts = listOf(Part(text = text))))
+    fun memoryEntry(text: String): MemoryEntry = MemoryEntry(content = userMessage(text))
 
     fun fakeCredentials(): GoogleCredentials =
       GoogleCredentials.newBuilder()

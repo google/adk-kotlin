@@ -17,13 +17,13 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
-import com.google.adk.kt.types.Part
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
@@ -282,13 +282,7 @@ class GeminiJvmTest {
     finishReason: FinishReason? = null,
   ): GenerateContentResponse {
     return GenerateContentResponse(
-      candidates =
-        listOf(
-          Candidate(
-            content = Content(role = "model", parts = listOf(Part(text = text))),
-            finishReason = finishReason,
-          )
-        )
+      candidates = listOf(Candidate(content = modelMessage(text), finishReason = finishReason))
     )
   }
 

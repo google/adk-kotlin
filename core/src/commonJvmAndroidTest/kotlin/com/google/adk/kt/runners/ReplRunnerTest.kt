@@ -19,12 +19,12 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
+import com.google.adk.kt.testing.modelFunctionCall
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.tools.FunctionTool
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -71,16 +71,7 @@ class ReplRunnerTest {
 
   @Test
   fun resolvePendingConfirmations_eventWithNoRequestedConfirmations_returnsEmpty() {
-    val plainEvent =
-      Event(
-        author = AGENT,
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(Part(functionCall = FunctionCall(name = "scan_planet", args = emptyMap()))),
-          ),
-      )
+    val plainEvent = Event(author = AGENT, content = modelFunctionCall(name = "scan_planet"))
 
     val resolved = ReplRunner.resolvePendingConfirmations(plainEvent)
 
@@ -95,11 +86,7 @@ class ReplRunnerTest {
     val synthEvent =
       Event(
         author = AGENT,
-        content =
-          Content(
-            role = Role.MODEL,
-            parts = listOf(syntheticConfirmationCallPart("orig-1", "synth-1")),
-          ),
+        content = modelMessage(syntheticConfirmationCallPart("orig-1", "synth-1")),
         actions =
           EventActions(requestedToolConfirmations = mutableMapOf("orig-OTHER" to confirmation)),
       )
@@ -158,14 +145,7 @@ class ReplRunnerTest {
   fun resolvePendingInputRequest_callNotLongRunning_returnsNull() {
     // A function call whose id is absent from longRunningToolIds is not a pause.
     val event =
-      Event(
-        author = AGENT,
-        content =
-          Content(
-            role = Role.MODEL,
-            parts = listOf(Part(functionCall = FunctionCall(name = "get_user_choice", id = "c1"))),
-          ),
-      )
+      Event(author = AGENT, content = modelFunctionCall(name = "get_user_choice", id = "c1"))
 
     assertThat(ReplRunner.resolvePendingInputRequest(event)).isNull()
   }
@@ -203,11 +183,7 @@ class ReplRunnerTest {
   private fun longRunningCallEvent(name: String, callId: String, args: Map<String, Any>): Event =
     Event(
       author = AGENT,
-      content =
-        Content(
-          role = Role.MODEL,
-          parts = listOf(Part(functionCall = FunctionCall(name = name, id = callId, args = args))),
-        ),
+      content = modelFunctionCall(name = name, id = callId, args = args),
       longRunningToolIds = setOf(callId),
     )
 
@@ -218,11 +194,7 @@ class ReplRunnerTest {
   ): Event =
     Event(
       author = AGENT,
-      content =
-        Content(
-          role = Role.MODEL,
-          parts = listOf(syntheticConfirmationCallPart(originalCallId, synthCallId)),
-        ),
+      content = modelMessage(syntheticConfirmationCallPart(originalCallId, synthCallId)),
       actions =
         EventActions(requestedToolConfirmations = mutableMapOf(originalCallId to confirmation)),
     )
@@ -249,22 +221,11 @@ class ReplRunnerTest {
     Event(
       author = AGENT,
       content =
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(
-                    name = toolName,
-                    id = callId,
-                    response =
-                      mapOf(
-                        "error" to "This tool call requires confirmation, please approve or reject."
-                      ),
-                  )
-              )
-            ),
+        userFunctionResponse(
+          name = toolName,
+          id = callId,
+          response =
+            mapOf("error" to "This tool call requires confirmation, please approve or reject."),
         ),
       actions = actions,
     )

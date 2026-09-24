@@ -19,6 +19,7 @@ package com.google.adk.kt.events
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.workflow.Route
@@ -73,13 +74,13 @@ class EventActionsTest {
       EventCompaction(
         startTimestamp = 1L,
         endTimestamp = 10L,
-        compactedContent = Content.fromText("model", "first summary"),
+        compactedContent = modelMessage("first summary"),
       )
     val compaction2 =
       EventCompaction(
         startTimestamp = 11L,
         endTimestamp = 20L,
-        compactedContent = Content.fromText("model", "second summary"),
+        compactedContent = modelMessage("second summary"),
       )
 
     val ea1 =
@@ -150,7 +151,7 @@ class EventActionsTest {
       EventCompaction(
         startTimestamp = 100L,
         endTimestamp = 200L,
-        compactedContent = Content.fromText("model", "summary"),
+        compactedContent = modelMessage("summary"),
       )
     val ea1 = EventActions()
     val ea2 = EventActions(compaction = compaction)
@@ -166,7 +167,7 @@ class EventActionsTest {
       EventCompaction(
         startTimestamp = 100L,
         endTimestamp = 200L,
-        compactedContent = Content.fromText("model", "summary"),
+        compactedContent = modelMessage("summary"),
       )
     val ea1 = EventActions(compaction = compaction)
     val ea2 = EventActions()
