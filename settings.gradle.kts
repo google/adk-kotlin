@@ -50,6 +50,10 @@ include(":google-adk-kotlin-integrations-spring")
 
 project(":google-adk-kotlin-integrations-spring").projectDir = file("integrations/spring")
 
+include(":google-adk-kotlin-integrations-anthropic")
+
+project(":google-adk-kotlin-integrations-anthropic").projectDir = file("integrations/anthropic")
+
 include(":google-adk-kotlin-a2a")
 
 project(":google-adk-kotlin-a2a").projectDir = file("a2a")
