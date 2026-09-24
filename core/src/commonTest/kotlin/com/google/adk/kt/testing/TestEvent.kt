@@ -145,9 +145,11 @@ fun compactionEvent(
   summary: String = "summary",
   author: String = Role.USER,
   promptTokenCount: Int? = null,
+  invocationId: String? = null,
 ): Event =
   Event(
     author = author,
+    invocationId = invocationId,
     actions =
       EventActions(
         compaction =

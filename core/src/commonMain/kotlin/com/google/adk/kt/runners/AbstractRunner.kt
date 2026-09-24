@@ -45,6 +45,7 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.summarizer.LlmEventSummarizer
 import com.google.adk.kt.summarizer.SlidingWindowEventCompactor
+import com.google.adk.kt.summarizer.isCompactionEvent
 import com.google.adk.kt.telemetry.currentTelemetryContext
 import com.google.adk.kt.telemetry.trace
 import com.google.adk.kt.tools.BaseTool
@@ -689,7 +690,9 @@ abstract class AbstractRunner : Runner {
 
     val effectiveInvocationId =
       invocationId
-        ?: session.events.lastOrNull { it.invocationId != null }?.invocationId
+        ?: session.events
+          .lastOrNull { it.invocationId != null && !it.isCompactionEvent() }
+          ?.invocationId
         ?: throw IllegalArgumentException("No invocation ID found to resume.")
 
     val userMessage =

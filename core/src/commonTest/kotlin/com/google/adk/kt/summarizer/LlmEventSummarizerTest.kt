@@ -98,6 +98,7 @@ class LlmEventSummarizerTest {
       )
 
     assertNotNull(result)
+    assertNotNull(result.invocationId)
     assertEquals(Role.USER, result.author)
     assertEquals(usage, result.usageMetadata)
     val compaction = result.actions.compaction

@@ -30,11 +30,13 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.ResumableEvents.END_OF_AGENT
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
+import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyResumableEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
+import com.google.adk.kt.testing.userEvent
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
@@ -46,6 +48,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -356,7 +359,24 @@ class ResumeInvocationTest {
     )
   }
 
-  /** Exposes the protected [setupContextForResumedInvocation] hook for the branch-seed test. */
+  @Test
+  fun resume_withoutIdAfterTrailingCompactionEvent_resumesLastInvocation() = runBlocking {
+    val runner = ResumeBranchTestRunner(LlmAgent(name = "root_agent", model = DummyModel("root")))
+    val session = runner.sessionService.createSession(SessionKey(APP_NAME, USER_ID, SESSION_ID))
+    val unusedUserEvent =
+      runner.sessionService.appendEvent(session, userEvent("hello", invocationId = "e-inv"))
+    val unusedCompactionEvent =
+      runner.sessionService.appendEvent(
+        session,
+        compactionEvent(startTs = 0L, endTs = 1L, invocationId = "compaction-id"),
+      )
+
+    val resumedContext = runner.resumeContext(session, newMessage = null, invocationId = null)
+
+    assertEquals("e-inv", resumedContext.invocationId)
+  }
+
+  /** Exposes the protected [setupContextForResumedInvocation] hook to tests. */
   private class ResumeBranchTestRunner(agent: BaseAgent) :
     InMemoryRunner(
       App(
@@ -367,8 +387,8 @@ class ResumeInvocationTest {
     ) {
     suspend fun resumeContext(
       session: Session,
-      newMessage: Content,
-      invocationId: String,
+      newMessage: Content?,
+      invocationId: String?,
     ): InvocationContext =
       setupContextForResumedInvocation(
         session = session,

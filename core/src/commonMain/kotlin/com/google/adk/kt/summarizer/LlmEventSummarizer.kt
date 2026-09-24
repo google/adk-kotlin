@@ -19,6 +19,7 @@ package com.google.adk.kt.summarizer
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
+import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
@@ -107,6 +108,7 @@ class LlmEventSummarizer(val model: Model, val promptTemplate: String = DEFAULT_
       )
 
     return Event(
+      invocationId = Uuid.random(),
       author = Role.USER,
       actions = EventActions(compaction = compaction),
       usageMetadata = response.usageMetadata,
