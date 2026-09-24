@@ -30,7 +30,9 @@ import androidx.appfunctions.metadata.AppFunctionFloatTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionIntTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionLongTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionMetadata
+import androidx.appfunctions.metadata.AppFunctionName
 import androidx.appfunctions.metadata.AppFunctionObjectTypeMetadata
+import androidx.appfunctions.metadata.AppFunctionPackageMetadata
 import androidx.appfunctions.metadata.AppFunctionParameterMetadata
 import androidx.appfunctions.metadata.AppFunctionParcelableTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionReferenceTypeMetadata
@@ -792,7 +794,7 @@ class AppFunctionDataConverterTest {
     val declaredAsNumber = metadata(response = AppFunctionIntTypeMetadata(isNullable = false))
     val actuallyText = metadata(response = string())
     val mismatched =
-      AppFunctionData.Builder(actuallyText.response, actuallyText.components)
+      AppFunctionData.Builder(actuallyText.response, actuallyText.packageMetadata.components)
         .setString(RETURN_KEY, "topsecret")
         .build()
 
@@ -1022,13 +1024,16 @@ class AppFunctionDataConverterTest {
       components: AppFunctionComponentsMetadata = AppFunctionComponentsMetadata(),
     ) =
       AppFunctionMetadata(
-        id = "com.example.notes.NotesFunctions#createNote",
-        packageName = "com.example.notes",
-        isEnabled = true,
+        name =
+          AppFunctionName(
+            packageName = "com.example.notes",
+            functionIdentifier = "com.example.notes.NotesFunctions#createNote",
+          ),
         schema = null,
         parameters = params.toList(),
         response = AppFunctionResponseMetadata(valueType = response),
-        components = components,
+        packageMetadata =
+          AppFunctionPackageMetadata(packageName = "com.example.notes", components = components),
       )
 
     /** Builds the response wrapper the platform hands back, holding the app's return value. */
@@ -1036,6 +1041,8 @@ class AppFunctionDataConverterTest {
       metadata: AppFunctionMetadata,
       set: AppFunctionData.Builder.() -> Unit,
     ): AppFunctionData =
-      AppFunctionData.Builder(metadata.response, metadata.components).apply(set).build()
+      AppFunctionData.Builder(metadata.response, metadata.packageMetadata.components)
+        .apply(set)
+        .build()
   }
 }
