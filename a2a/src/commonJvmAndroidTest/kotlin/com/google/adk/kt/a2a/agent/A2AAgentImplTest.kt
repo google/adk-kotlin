@@ -28,10 +28,8 @@ import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionResponse
-import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import java.util.function.BiConsumer
 import java.util.function.Consumer
@@ -548,20 +546,7 @@ class A2AAgentImplTest {
               invocationId = "invocation-1",
               author = "user",
               content =
-                Content(
-                  role = "user",
-                  parts =
-                    listOf(
-                      Part(
-                        functionResponse =
-                          FunctionResponse(
-                            name = "fn",
-                            id = "call-1",
-                            response = mapOf("status" to "ok"),
-                          )
-                      )
-                    ),
-                ),
+                userFunctionResponse(name = "fn", id = "call-1", response = mapOf("status" to "ok")),
             )
           ),
       )

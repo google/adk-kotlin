@@ -16,7 +16,7 @@
 
 package com.google.adk.kt.events
 
-import com.google.adk.kt.types.Content
+import com.google.adk.kt.testing.modelMessage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -26,7 +26,7 @@ class EventCompactionTest {
 
   @Test
   fun construct_validRange_exposesProperties() {
-    val content = Content.fromText("model", "summary")
+    val content = modelMessage("summary")
 
     val compaction =
       EventCompaction(startTimestamp = 100L, endTimestamp = 200L, compactedContent = content)
@@ -42,7 +42,7 @@ class EventCompactionTest {
       EventCompaction(
         startTimestamp = 50L,
         endTimestamp = 50L,
-        compactedContent = Content.fromText("model", "single-event summary"),
+        compactedContent = modelMessage("single-event summary"),
       )
 
     assertEquals(50L, compaction.startTimestamp)
@@ -55,7 +55,7 @@ class EventCompactionTest {
       EventCompaction(
         startTimestamp = 200L,
         endTimestamp = 100L,
-        compactedContent = Content.fromText("model", "summary"),
+        compactedContent = modelMessage("summary"),
       )
     }
   }

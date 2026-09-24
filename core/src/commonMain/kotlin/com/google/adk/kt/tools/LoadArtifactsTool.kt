@@ -113,7 +113,7 @@ class LoadArtifactsTool :
       if (artifact == null) {
         continue
       }
-
+      // TODO: Convert artifacts with unsupported MIME types to text, as Python ADK does.
       newRequest =
         newRequest.appendContent(
           Content(

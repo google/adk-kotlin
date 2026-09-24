@@ -25,7 +25,6 @@ import org.junit.runner.RunWith
 /**
  * Android-specific telemetry tests verifying the OpenTelemetry-backed tracer is the default on
  * Android (it was previously a No-Op) and that the Android-compiled span path executes end-to-end.
- * See b/524162719.
  *
  * The full span-export round-trip is verified on the JVM (see `OtelTracerTest`) because the
  * OpenTelemetry SDK is JVM-only here; the production tracer code is shared (commonJvmAndroidMain),

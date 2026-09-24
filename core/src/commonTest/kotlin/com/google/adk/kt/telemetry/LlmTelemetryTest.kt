@@ -26,8 +26,8 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
@@ -286,13 +286,9 @@ class LlmTelemetryTest {
       LlmRequest(
         contents =
           listOf(
-            Content(
-              role = "user",
-              parts =
-                listOf(
-                  Part(text = "hello"),
-                  Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
-                ),
+            userMessage(
+              Part(text = "hello"),
+              Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
             )
           ),
         config =

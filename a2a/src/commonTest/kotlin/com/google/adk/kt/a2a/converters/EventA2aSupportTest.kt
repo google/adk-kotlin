@@ -21,8 +21,10 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userFunctionResponse
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.CitationMetadata
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -63,7 +65,7 @@ class EventA2aSupportTest {
 
   @Test
   fun toEvent_mapsAllFields() {
-    val fakeContent = Content(role = Role.MODEL, parts = listOf(Part(text = "hello")))
+    val fakeContent = modelMessage("hello")
     val fakeUsage =
       UsageMetadata(promptTokenCount = 10, candidatesTokenCount = 20, totalTokenCount = 30)
     val fakeGrounding = GroundingMetadata()
@@ -110,17 +112,10 @@ class EventA2aSupportTest {
   fun findUserFunctionCall_matchingCallExists_returnsCall() {
     val fc = FunctionCall(name = "my-func", id = "fc-id")
     val userEventWithCall =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(functionCall = fc))),
-      )
+      Event(author = Role.USER, content = userMessage(Part(functionCall = fc)))
 
-    val fr = FunctionResponse(name = "my-func", id = "fc-id")
     val userEventWithResponse =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(functionResponse = fr))),
-      )
+      Event(author = Role.USER, content = userFunctionResponse(name = "my-func", id = "fc-id"))
 
     val events = listOf(userEventWithCall, userEventWithResponse)
     assertEquals(userEventWithCall, events.findUserFunctionCall())
@@ -130,17 +125,10 @@ class EventA2aSupportTest {
   fun findUserFunctionCall_noMatchingCall_returnsNull() {
     val fc = FunctionCall(name = "my-func", id = "other-id")
     val userEventWithCall =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(functionCall = fc))),
-      )
+      Event(author = Role.USER, content = userMessage(Part(functionCall = fc)))
 
-    val fr = FunctionResponse(name = "my-func", id = "fc-id")
     val userEventWithResponse =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(functionResponse = fr))),
-      )
+      Event(author = Role.USER, content = userFunctionResponse(name = "my-func", id = "fc-id"))
 
     val events = listOf(userEventWithCall, userEventWithResponse)
     assertNull(events.findUserFunctionCall())
@@ -150,17 +138,11 @@ class EventA2aSupportTest {
   fun findUserFunctionCall_lastEventNotUser_returnsNull() {
     val fc = FunctionCall(name = "my-func", id = "fc-id")
     val userEventWithCall =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(functionCall = fc))),
-      )
+      Event(author = Role.USER, content = userMessage(Part(functionCall = fc)))
 
     val fr = FunctionResponse(name = "my-func", id = "fc-id")
     val agentEventWithResponse =
-      Event(
-        author = "agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(functionResponse = fr))),
-      )
+      Event(author = "agent", content = modelMessage(Part(functionResponse = fr)))
 
     val events = listOf(userEventWithCall, agentEventWithResponse)
     assertNull(events.findUserFunctionCall())
@@ -244,11 +226,7 @@ class EventA2aSupportTest {
 
   @Test
   fun presentAsUserMessage_withContent_returnsFormattedUserEvent() {
-    val event =
-      Event(
-        author = "agent1",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "hello"))),
-      )
+    val event = Event(author = "agent1", content = modelMessage("hello"))
     val result = presentAsUserMessage(event, "ctx-123", "inv-123")
     assertEquals("user", result.author)
     assertEquals("inv-123", result.invocationId)
@@ -321,21 +299,9 @@ class EventA2aSupportTest {
   @Test
   fun extractPreprocessedEvents_dropsEventsBeforeLastAgentResponse() {
     val agent = DummyAgent(name = "my-agent")
-    val event1 =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "hi"))),
-      )
-    val event2 =
-      Event(
-        author = "my-agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "hello"))),
-      )
-    val event3 =
-      Event(
-        author = Role.USER,
-        content = Content(role = Role.USER, parts = listOf(Part(text = "how are you?"))),
-      )
+    val event1 = Event(author = Role.USER, content = userMessage("hi"))
+    val event2 = Event(author = "my-agent", content = modelMessage("hello"))
+    val event3 = Event(author = Role.USER, content = userMessage("how are you?"))
 
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
     session.events.addAll(listOf(event1, event2, event3))
@@ -356,11 +322,7 @@ class EventA2aSupportTest {
   @Test
   fun extractPreprocessedEvents_rephrasesOtherAgentMessages() {
     val agent = DummyAgent(name = "my-agent")
-    val event1 =
-      Event(
-        author = "other-agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "data"))),
-      )
+    val event1 = Event(author = "other-agent", content = modelMessage("data"))
 
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
     session.events.add(event1)
@@ -384,11 +346,7 @@ class EventA2aSupportTest {
     val agent = DummyAgent(name = "my-agent")
     val lastAgentResponse =
       Event(author = "my-agent", customMetadata = mapOf("adk_context_id" to "parent-context-id"))
-    val otherAgentCall =
-      Event(
-        author = "other-agent",
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = "work done"))),
-      )
+    val otherAgentCall = Event(author = "other-agent", content = modelMessage("work done"))
 
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
     session.events.addAll(listOf(lastAgentResponse, otherAgentCall))
