@@ -20,8 +20,8 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.logging.LoggerFactory
 
 /**
- * A workflow graph, assembled but not yet validated. Nodes are derived from the edges, deduplicated
- * by identity and kept in the order they first appear, so scheduling is deterministic.
+ * A validated workflow graph. Nodes are derived from the edges, deduplicated by identity and kept
+ * in the order they first appear, so scheduling is deterministic.
  */
 @ExperimentalWorkflowApi
 internal class Graph private constructor(val nodes: List<Node>, val edges: List<Edge>) {
@@ -80,7 +80,10 @@ internal class Graph private constructor(val nodes: List<Node>, val edges: List<
   companion object {
     private val logger = LoggerFactory.getLogger(Graph::class)
 
-    /** Builds a graph from [edges]. */
+    /**
+     * Builds a graph from [edges] and validates it, throwing [GraphValidationException] if the
+     * graph is invalid.
+     */
     fun of(edges: List<Edge>): Graph {
       val nodes = mutableListOf<Node>()
       for (edge in edges) {
@@ -92,9 +95,8 @@ internal class Graph private constructor(val nodes: List<Node>, val edges: List<
       // built. An agent name is looser than a node name, so an agent whose name a graph cannot
       // carry is rejected here rather than part way through a run.
       for (node in nodes) validateNodeName(node.name)
-      val graph = Graph(nodes.toList(), edges)
-      // TODO: the rest of graph validation is added in a later change; until then a malformed
-      // graph fails at run time rather than being rejected here.
+      val graph = Graph(nodes.toList(), edges.toList())
+      validateGraph(graph.nodes, graph.edges)
       return graph
     }
   }

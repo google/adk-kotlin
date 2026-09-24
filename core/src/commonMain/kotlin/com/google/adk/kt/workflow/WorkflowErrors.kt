@@ -38,10 +38,7 @@ internal data class NodeExecutionFailure(val cause: Throwable, val nodePath: Str
 class NodeTimeoutException(val nodeName: String, val timeout: Duration, cause: Throwable? = null) :
   NodeExecutionException("NodeTimeoutError", "Node '$nodeName' timed out after $timeout.", cause)
 
-/**
- * A workflow graph failed validation. Raised when the graph is built, not when it runs. Graph
- * validation lands in a later change, so nothing raises this yet.
- */
+/** A workflow graph failed validation. Raised when the graph is built, not when it runs. */
 @ExperimentalWorkflowApi
 class GraphValidationException(message: String) : IllegalArgumentException(message)
 

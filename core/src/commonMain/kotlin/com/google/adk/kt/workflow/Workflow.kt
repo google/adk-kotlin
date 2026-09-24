@@ -31,8 +31,8 @@ import kotlinx.coroutines.flow.flow
  * wherever an ordinary node goes.
  *
  * Running it schedules nodes as their predecessors complete, so independent branches run
- * concurrently and a chain runs in order. The graph is assembled when the workflow is constructed;
- * a malformed graph currently surfaces at run time rather than being rejected at construction.
+ * concurrently and a chain runs in order. The graph is assembled and validated when the workflow is
+ * constructed, so a malformed graph throws [GraphValidationException] here rather than at run time.
  *
  * @property edges The graph. A workflow with no edges runs nothing and produces nothing.
  * @property maxConcurrency The most nodes to run at once. Null does not limit.
