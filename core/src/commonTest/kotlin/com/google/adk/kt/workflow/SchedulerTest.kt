@@ -407,6 +407,39 @@ class SchedulerTest {
     assertEquals(0, events.count { it.nodeInfo?.path == "wf@1/skipped@1" })
   }
 
+  /**
+   * Pins adk-python
+   * `test_workflow_routes.py::test_routing_map_default_route_fan_out_runs_both_targets`.
+   */
+  @Test
+  fun anUnmatchedRouteRunsEveryDefaultTarget() {
+    // Arrange: two default edges fan the fallback out into a join.
+    val router = Router("router", Route.Tag("unmatched"))
+    val b = Emitter("b", "B")
+    val c = Emitter("c", "C")
+    val join = JoinAll("join")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, router),
+            Edge(router, b, Route.Default),
+            Edge(router, c, Route.Default),
+            Edge(b, join),
+            Edge(c, join),
+          ),
+      )
+
+    // Act
+    val events = schedule(workflow, branch = "root")
+
+    // Assert
+    assertEquals(1, events.count { it.nodeInfo?.path == "wf@1/b@1" })
+    assertEquals(1, events.count { it.nodeInfo?.path == "wf@1/c@1" })
+    assertEquals(mapOf("b" to "B", "c" to "C"), events.outputOf("wf@1/join@1"))
+  }
+
   @Test
   fun aStateChangeRidesOnExactlyOneEmittedEvent() {
     // Arrange: a successor follows the writer, so a delta repeated on later events would show up.

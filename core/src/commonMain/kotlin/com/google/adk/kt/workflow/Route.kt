@@ -53,8 +53,9 @@ sealed interface Route {
   data class Flag(val value: Boolean) : Route
 
   /**
-   * The fallback edge, followed when a node emits a route that no other outgoing edge matches. A
-   * node may declare at most one, and it cannot share an edge with a concrete route.
+   * The fallback edge, followed when no other routed edge of the node matches what it emitted,
+   * including when it emitted no route. A node may declare several, which all fire together, but a
+   * default cannot share an edge with a concrete route.
    */
   data object Default : Route
 

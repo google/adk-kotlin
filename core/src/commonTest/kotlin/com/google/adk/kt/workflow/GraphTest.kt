@@ -84,6 +84,33 @@ class GraphTest {
     assertEquals(listOf("fallback"), successors)
   }
 
+  /** Pins adk-python `test_graph.py::test_get_next_pending_nodes_with_default_route_fan_out`. */
+  @Test
+  fun anUnmatchedRouteTriggersEveryDefaultEdge() {
+    // Arrange
+    val router = StubNode("router")
+    val named = StubNode("named")
+    val first = StubNode("first")
+    val second = StubNode("second")
+    val graph =
+      Graph.of(
+        listOf(
+          Edge(Start, router),
+          Edge(router, named, Route.Tag("route1")),
+          Edge(router, first, Route.Default),
+          Edge(router, second, Route.Default),
+        )
+      )
+
+    // Act
+    val onFallback = graph.nodesTriggeredBy("router", listOf(Route.Tag("unknown_route")))
+    val onNamed = graph.nodesTriggeredBy("router", listOf(Route.Tag("route1")))
+
+    // Assert: a matched route still suppresses every default target.
+    assertEquals(listOf("first", "second"), onFallback)
+    assertEquals(listOf("named"), onNamed)
+  }
+
   @Test
   fun anUnconditionalEdgeFiresWhateverTheRoute() {
     // Arrange

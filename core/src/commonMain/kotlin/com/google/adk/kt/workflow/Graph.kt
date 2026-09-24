@@ -47,20 +47,21 @@ internal class Graph private constructor(val nodes: List<Node>, val edges: List<
     val outgoing = edges.filter { it.from.name == nodeName }
     val triggered = mutableListOf<String>()
     var matchedSpecificRoute = false
-    var defaultTarget: String? = null
+    val defaultTargets = mutableListOf<String>()
 
     for (edge in outgoing) {
       if (edge.isUnconditional) {
         triggered.add(edge.to.name)
       } else if (edge.routes.contains(Route.Default)) {
-        defaultTarget = edge.to.name
+        defaultTargets.add(edge.to.name)
       } else if (emittedRoutes != null && edge.routes.any { it in emittedRoutes }) {
         triggered.add(edge.to.name)
         matchedSpecificRoute = true
       }
     }
 
-    if (!matchedSpecificRoute && defaultTarget != null) triggered.add(defaultTarget)
+    // Every default edge fires together, so a fallback can fan out like any other route.
+    if (!matchedSpecificRoute) triggered.addAll(defaultTargets)
 
     if (triggered.isEmpty() && outgoing.any { !it.isUnconditional }) {
       // Routing edges exist but nothing matched: warn so a route typo is distinguishable from a
