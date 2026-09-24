@@ -41,8 +41,6 @@ import kotlin.jvm.JvmStatic
  *
  * @property appName The application name.
  * @property rootAgent The root agent of the application's agent tree.
- * @property rootNode The application's entry point, set for a graph app. The go-forward field; once
- *   [rootAgent] is removed it holds the running unit for every app.
  * @property plugins Application-wide [Plugin]s providing shared callbacks and services to the
  *   entire system. Defaults to an empty list.
  * @property resumabilityConfig Optional resumability configuration applied to the application's
@@ -51,15 +49,18 @@ import kotlin.jvm.JvmStatic
  *   for sessions of this application. When `null`, no compaction runs.
  * @property contextCacheConfig Optional context cache configuration that applies to all LLM agents
  *   in the app. When `null`, context caching is disabled.
+ * @property rootNode The application's entry point, set for a graph app. The go-forward field; once
+ *   [rootAgent] is removed it holds the running unit for every app.
  */
 data class App(
   val appName: String,
   val rootAgent: BaseAgent,
-  val rootNode: Node? = null,
   val plugins: List<Plugin> = emptyList(),
   val resumabilityConfig: ResumabilityConfig? = null,
   val eventsCompactionConfig: EventsCompactionConfig? = null,
   val contextCacheConfig: ContextCacheConfig? = null,
+  // Last, so positional calls and `componentN` keep their 1.1.0 order.
+  val rootNode: Node? = null,
 ) {
   init {
     // A node-view root agent must carry its node so `rootNode` exposes the running unit.
@@ -74,6 +75,27 @@ data class App(
       "App name cannot be '$RESERVED_NAME'; reserved for end-user input."
     }
   }
+
+  /**
+   * The 1.1.0 constructor, which had no [rootNode]. Stays visible because javac skips hidden
+   * constructors, so Java code written against 1.1.0 would otherwise bind to the node-rooted one.
+   */
+  constructor(
+    appName: String,
+    rootAgent: BaseAgent,
+    plugins: List<Plugin> = emptyList(),
+    resumabilityConfig: ResumabilityConfig? = null,
+    eventsCompactionConfig: EventsCompactionConfig? = null,
+    contextCacheConfig: ContextCacheConfig? = null,
+  ) : this(
+    appName = appName,
+    rootAgent = rootAgent,
+    plugins = plugins,
+    resumabilityConfig = resumabilityConfig,
+    eventsCompactionConfig = eventsCompactionConfig,
+    contextCacheConfig = contextCacheConfig,
+    rootNode = null,
+  )
 
   /**
    * Creates an app rooted on a node graph rather than an agent tree. Wraps [rootNode] in a

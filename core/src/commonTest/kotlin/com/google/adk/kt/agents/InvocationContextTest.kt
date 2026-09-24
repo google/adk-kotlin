@@ -1556,4 +1556,27 @@ class InvocationContextTest {
             )
         ),
     )
+
+  @Test
+  fun construct_positionalArguments_keepTheReleasedParameterOrder() {
+    // Arrange
+    val session = testSession()
+    val agent = DummyAgent(name = "root")
+    val runConfig = RunConfig(maxLlmCalls = 3)
+
+    // Act: positional calls written against the released API, where `branch` is fourth.
+    val context = InvocationContext(session, runConfig, agent, "root.child", "inv-1")
+    val (contextSession, contextRunConfig, contextAgent, branch, invocationId) = context
+    val copied = context.copy(session, runConfig, agent, "root.other")
+
+    // Assert
+    assertEquals(session, contextSession)
+    assertEquals(runConfig, contextRunConfig)
+    assertEquals(agent, contextAgent)
+    assertEquals("root.child", branch)
+    assertEquals("inv-1", invocationId)
+    assertNull(context.node)
+    assertEquals("root.other", copied.branch)
+    assertEquals("inv-1", copied.invocationId)
+  }
 }

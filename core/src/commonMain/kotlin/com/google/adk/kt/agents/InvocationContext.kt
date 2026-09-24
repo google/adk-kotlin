@@ -106,12 +106,6 @@ data class InvocationContext(
    */
   val agent: BaseAgent,
   /**
-   * The node this invocation runs, set when rooted on a node graph rather than an agent tree. The
-   * go-forward field; once [agent] is removed it holds the running unit for every invocation.
-   * Readonly.
-   */
-  val node: Node? = null,
-  /**
    * The branch of the invocation context.
    *
    * The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of agent_2, and agent_2
@@ -180,7 +174,62 @@ data class InvocationContext(
    * built from the constructor starts fresh.
    */
   private val invocationCostManager: InvocationCostManager = InvocationCostManager(),
+
+  /**
+   * The node this invocation runs, set when rooted on a node graph rather than an agent tree. The
+   * go-forward field; once [agent] is removed it holds the running unit for every invocation.
+   * Readonly.
+   */
+  // Last, so positional calls and `componentN` keep their 1.1.0 order.
+  val node: Node? = null,
 ) {
+
+  /**
+   * The 1.1.0 constructor, which had no [node]. Stays visible because javac skips hidden
+   * constructors, so Java code written against 1.1.0 would otherwise fail to compile.
+   */
+  constructor(
+    session: Session,
+    runConfig: RunConfig? = null,
+    agent: BaseAgent,
+    branch: String? = null,
+    invocationId: String = "e-" + Uuid.random(),
+    artifactService: ArtifactService? = null,
+    memoryService: MemoryService? = null,
+    sessionService: SessionService? = null,
+    resumabilityConfig: ResumabilityConfig? = null,
+    eventsCompactionConfig: EventsCompactionConfig? = null,
+    contextCacheConfig: ContextCacheConfig? = null,
+    userContent: Content? = null,
+    agentStates: MutableMap<String, TypedData> = concurrentMutableMapOf(),
+    endOfAgents: MutableMap<String, Boolean> = concurrentMutableMapOf(),
+    extraTools: MutableMap<String, BaseTool> = concurrentMutableMapOf(),
+    frameworkData: ContextFrameworkData = ContextFrameworkData(),
+    isEndOfInvocation: Boolean = false,
+    pluginManager: PluginManager = PluginManager(),
+    invocationCostManager: InvocationCostManager = InvocationCostManager(),
+  ) : this(
+    session = session,
+    runConfig = runConfig,
+    agent = agent,
+    branch = branch,
+    invocationId = invocationId,
+    artifactService = artifactService,
+    memoryService = memoryService,
+    sessionService = sessionService,
+    resumabilityConfig = resumabilityConfig,
+    eventsCompactionConfig = eventsCompactionConfig,
+    contextCacheConfig = contextCacheConfig,
+    userContent = userContent,
+    agentStates = agentStates,
+    endOfAgents = endOfAgents,
+    extraTools = extraTools,
+    frameworkData = frameworkData,
+    isEndOfInvocation = isEndOfInvocation,
+    pluginManager = pluginManager,
+    invocationCostManager = invocationCostManager,
+    node = null,
+  )
 
   init {
     // A node-view agent must carry its node so `node` exposes the running unit.

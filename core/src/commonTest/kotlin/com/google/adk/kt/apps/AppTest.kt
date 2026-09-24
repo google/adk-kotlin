@@ -139,4 +139,30 @@ class AppTest {
     assertEquals(listOf(plugin), app.plugins)
     assertSame(resumability, app.resumabilityConfig)
   }
+
+  @Test
+  fun construct_positionalArguments_keepTheReleasedParameterOrder() {
+    // Arrange
+    val agent = DummyAgent(name = "root")
+    val plugin =
+      object : Plugin {
+        override val name = "positional-plugin"
+      }
+    val resumability = ResumabilityConfig(isResumable = true)
+
+    // Act: positional calls written against the released API, where `plugins` is third.
+    val app = App("my_app", agent, listOf(plugin), resumability)
+    val (appName, rootAgent, plugins, resumabilityConfig) = app
+    val copied = app.copy("other_app", agent, emptyList())
+
+    // Assert
+    assertEquals("my_app", appName)
+    assertSame(agent, rootAgent)
+    assertEquals(listOf(plugin), plugins)
+    assertSame(resumability, resumabilityConfig)
+    assertNull(app.rootNode)
+    assertEquals("other_app", copied.appName)
+    assertEquals(emptyList(), copied.plugins)
+    assertSame(resumability, copied.resumabilityConfig)
+  }
 }
