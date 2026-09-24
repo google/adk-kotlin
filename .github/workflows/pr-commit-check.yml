@@ -18,16 +18,21 @@ jobs:
 
       - name: Count Commits
         id: count_commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          count=$(git rev-list --count ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          count=$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")
           echo "commit_count=$count" >> $GITHUB_OUTPUT
 
       - name: Check Commit Count
         if: steps.count_commits.outputs.commit_count > 1
+        env:
+          COMMIT_COUNT: ${{ steps.count_commits.outputs.commit_count }}
         run: |
-          echo "This pull request has ${{ steps.count_commits.outputs.commit_count }} commits."
+          echo "This pull request has ${COMMIT_COUNT} commits."
           echo "Please squash them into a single commit before merging:"
-          echo "  git rebase -i HEAD~${{ steps.count_commits.outputs.commit_count }} && git push --force"
+          echo "  git rebase -i HEAD~${COMMIT_COUNT} && git push --force"
           exit 1
 
       - name: Success

@@ -56,6 +56,7 @@ jobs:
 
       - name: Build and test (Java ${{ matrix.java-version }})
         env:
+          JDK_VERSION: ${{ matrix.java-version }}
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
           FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
@@ -63,7 +64,7 @@ jobs:
           FIREBASE_MODEL_NAME: ${{ vars.FIREBASE_MODEL_NAME }}
         run: |
           ./gradlew \
-            -PjdkVersion=${{ matrix.java-version }} \
+            "-PjdkVersion=${JDK_VERSION}" \
             "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=2g" \
             --no-daemon \
             --stacktrace \
@@ -78,9 +79,11 @@ jobs:
         # the matrix changes. No FIREBASE_* env: dokkaGenerate reads none of it
         # (the Firebase config is only consumed by tests and by assemble/install).
         if: matrix.java-version == '17'
+        env:
+          JDK_VERSION: ${{ matrix.java-version }}
         run: |
           ./gradlew \
-            -PjdkVersion=${{ matrix.java-version }} \
+            "-PjdkVersion=${JDK_VERSION}" \
             "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=2g" \
             --no-daemon \
             --stacktrace \
