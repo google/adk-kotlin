@@ -19,6 +19,8 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -26,6 +28,7 @@ import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
@@ -223,5 +226,27 @@ class LlmRequestTest {
     assertEquals(config, request.cacheConfig)
     assertEquals(metadata, request.cacheMetadata)
     assertEquals(5000, request.cacheableContentsTokenCount)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val request =
+      LlmRequest(
+        model = DummyModel("model"),
+        contents = listOf(userMessage("Hello")),
+        config = GenerateContentConfig(temperature = 0.5f),
+        // No public builder setter, so only toBuilder carries it over.
+        toolsDict = listOf(TestTool("tool1")),
+        cacheConfig = ContextCacheConfig(),
+        cacheMetadata = CacheMetadata(fingerprint = "abc", contentsCount = 1),
+        cacheableContentsTokenCount = 5000,
+      )
+
+    assertEquals(request.copy(), request.toBuilder().build())
+    assertEquals(
+      request.copy(contents = emptyList()),
+      request.toBuilder().contents(emptyList()).build(),
+    )
   }
 }

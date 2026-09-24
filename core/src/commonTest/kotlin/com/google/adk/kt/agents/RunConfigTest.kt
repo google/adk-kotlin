@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -45,5 +46,19 @@ class RunConfigTest {
     // Non-positive values are valid (a warning is logged) and disable the cap.
     assertEquals(0, RunConfig(maxLlmCalls = 0).maxLlmCalls)
     assertEquals(-1, RunConfig(maxLlmCalls = -1).maxLlmCalls)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val config =
+      RunConfig(
+        streamingMode = StreamingMode.SSE,
+        maxLlmCalls = 42,
+        customMetadata = mapOf("key" to "value"),
+      )
+
+    assertEquals(config.copy(), config.toBuilder().build())
+    assertEquals(config.copy(maxLlmCalls = 7), config.toBuilder().maxLlmCalls(7).build())
   }
 }

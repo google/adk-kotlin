@@ -149,6 +149,29 @@ class Part(
   }
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .text(text)
+      .inlineData(inlineData)
+      .fileData(fileData)
+      .functionCall(functionCall)
+      .functionResponse(functionResponse)
+      .thought(thought)
+      .thoughtSignature(thoughtSignature)
+      .videoMetadata(videoMetadata)
+      .toolCall(toolCall)
+      .toolResponse(toolResponse)
+      .partMetadata(partMetadata)
+      .executableCode(executableCode)
+      .codeExecutionResult(codeExecutionResult)
+      .mediaResolution(mediaResolution)
+
+  /**
    * Fluent builder for [Part], provided primarily for Java callers. Any property left unset falls
    * back to the same default as the constructor.
    */

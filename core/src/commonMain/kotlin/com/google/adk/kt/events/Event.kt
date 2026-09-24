@@ -172,6 +172,38 @@ data class Event(
   }
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .id(id)
+      .invocationId(invocationId)
+      .author(author)
+      .content(content)
+      .actions(actions)
+      .longRunningToolIds(longRunningToolIds)
+      .partial(partial)
+      .turnComplete(turnComplete)
+      .errorCode(errorCode)
+      .errorMessage(errorMessage)
+      .finishReason(finishReason)
+      .usageMetadata(usageMetadata)
+      .avgLogProbs(avgLogProbs)
+      .interrupted(interrupted)
+      .branch(branch)
+      .groundingMetadata(groundingMetadata)
+      .modelVersion(modelVersion)
+      .citationMetadata(citationMetadata)
+      .cacheMetadata(cacheMetadata)
+      .customMetadata(customMetadata)
+      .output(output)
+      .nodeInfo(nodeInfo)
+      .timestamp(timestamp)
+
+  /**
    * Fluent builder for [Event], provided primarily for Java callers. Any property left unset falls
    * back to the same default as the constructor.
    */
@@ -196,7 +228,7 @@ data class Event(
     private var modelVersion: String? = null
     private var citationMetadata: CitationMetadata? = null
     private var cacheMetadata: CacheMetadata? = null
-    private var customMetadata: Map<String, @Contextual Any>? = null
+    private var customMetadata: Map<String, @Contextual Any?>? = null
     private var output: @Contextual Any? = null
     private var nodeInfo: NodeInfo? = null
     private var timestamp: Long = Clock.System.now().toEpochMilliseconds()
@@ -251,7 +283,7 @@ data class Event(
       this.cacheMetadata = cacheMetadata
     }
 
-    fun customMetadata(customMetadata: Map<String, @Contextual Any>?): Builder = apply {
+    fun customMetadata(customMetadata: Map<String, @Contextual Any?>?): Builder = apply {
       this.customMetadata = customMetadata
     }
 

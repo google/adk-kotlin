@@ -43,6 +43,15 @@ data class HttpOptions(
   fun timeoutMillis(): Long? = timeout?.inWholeMilliseconds
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder().baseUrl(baseUrl).apiVersion(apiVersion).headers(headers).timeout(timeout)
+
+  /**
    * Fluent builder for [HttpOptions], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */
@@ -59,9 +68,20 @@ data class HttpOptions(
 
     fun headers(headers: Map<String, String>?): Builder = apply { this.headers = headers }
 
+    // Lets toBuilder copy the timeout exactly; timeoutMillis would truncate it.
+    internal fun timeout(timeout: Duration?): Builder = apply { this.timeout = timeout }
+
     /** Sets [timeout] in milliseconds; the [Duration] constructor param is mangled for Java. */
     fun timeoutMillis(timeoutMillis: Long): Builder = apply {
       this.timeout = timeoutMillis.milliseconds
+    }
+
+    /**
+     * Sets [timeout] in milliseconds, or clears it when `null`. The non-null overload remains for
+     * binary compatibility and so Java `int` literals still compile.
+     */
+    fun timeoutMillis(timeoutMillis: Long?): Builder = apply {
+      this.timeout = timeoutMillis?.milliseconds
     }
 
     fun build(): HttpOptions =

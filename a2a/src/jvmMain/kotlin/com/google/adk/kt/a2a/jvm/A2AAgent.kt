@@ -127,12 +127,27 @@ data class A2AAgentConfig(
   val afterAgentCallbacks: List<AfterAgentCallback> = emptyList(),
 ) {
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .httpClient(httpClient)
+      .description(description)
+      .subAgents(subAgents)
+      .beforeAgentCallbacks(beforeAgentCallbacks)
+      .afterAgentCallbacks(afterAgentCallbacks)
+
+  /**
    * Fluent builder for [A2AAgentConfig], provided primarily for Java callers. Any property left
    * unset falls back to the same default as the constructor.
    */
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
-    private var httpClient: A2AHttpClient = JdkA2AHttpClient()
+    // Created in build() only if unset: constructing JdkA2AHttpClient starts a thread.
+    private var httpClient: A2AHttpClient? = null
     private var description: String? = null
     private var subAgents: List<BaseAgent> = emptyList()
     private var beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList()
@@ -154,7 +169,7 @@ data class A2AAgentConfig(
 
     fun build(): A2AAgentConfig =
       A2AAgentConfig(
-        httpClient = httpClient,
+        httpClient = httpClient ?: JdkA2AHttpClient(),
         description = description,
         subAgents = subAgents,
         beforeAgentCallbacks = beforeAgentCallbacks,

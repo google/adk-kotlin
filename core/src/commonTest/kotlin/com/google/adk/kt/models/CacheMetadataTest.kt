@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.models
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -119,5 +120,25 @@ class CacheMetadataTest {
 
     assertEquals(2, updated.invocationsUsed)
     assertEquals(1, metadata.invocationsUsed)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val metadata =
+      CacheMetadata(
+        fingerprint = "abc",
+        contentsCount = 2,
+        cacheName = "projects/123/locations/us-central1/cachedContents/456",
+        expireTime = 5_000L,
+        invocationsUsed = 3,
+        createdAt = 1_000L,
+      )
+
+    assertEquals(metadata.copy(), metadata.toBuilder().build())
+    assertEquals(
+      metadata.copy(invocationsUsed = 4),
+      metadata.toBuilder().invocationsUsed(4).build(),
+    )
   }
 }

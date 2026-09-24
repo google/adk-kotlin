@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.events
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -48,5 +49,15 @@ class ToolConfirmationTest {
     val copied = toolConfirmation.copy()
 
     assertThat(copied).isEqualTo(toolConfirmation)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val toolConfirmation = ToolConfirmation(confirmed = true, payload = "payload", hint = "hint")
+
+    assertThat(toolConfirmation.toBuilder().build()).isEqualTo(toolConfirmation.copy())
+    assertThat(toolConfirmation.toBuilder().confirmed(false).build())
+      .isEqualTo(toolConfirmation.copy(confirmed = false))
   }
 }

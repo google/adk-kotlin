@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
 import com.google.genai.kotlin.types.Schema as GenAiSchema
@@ -191,5 +192,36 @@ class SchemaTest {
     assertEquals(Type.INTEGER, decoded.type)
     assertEquals("Count", decoded.title)
     assertEquals(7L, (decoded.default as Number).toLong())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("name" to Schema(type = Type.STRING)),
+        items = Schema(type = Type.INTEGER),
+        required = listOf("name"),
+        description = "A person.",
+        enum = listOf("a", "b"),
+        format = "date-time",
+        nullable = true,
+        default = "a",
+        anyOf = listOf(Schema(type = Type.NUMBER)),
+        title = "Person",
+        pattern = "^[a-z]+$",
+        minimum = 1.0,
+        maximum = 9.0,
+        minLength = 1,
+        maxLength = 10,
+        minItems = 2,
+        maxItems = 20,
+        minProperties = 3,
+        maxProperties = 30,
+      )
+
+    assertEquals(schema.copy(), schema.toBuilder().build())
+    assertEquals(schema.copy(title = "Other"), schema.toBuilder().title("Other").build())
   }
 }

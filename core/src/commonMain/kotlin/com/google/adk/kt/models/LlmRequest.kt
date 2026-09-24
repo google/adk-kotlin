@@ -202,9 +202,26 @@ data class LlmRequest(
   }
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .model(model)
+      .contents(contents)
+      .config(config)
+      .cacheConfig(cacheConfig)
+      .cacheMetadata(cacheMetadata)
+      .cacheableContentsTokenCount(cacheableContentsTokenCount)
+      .toolsDict(toolsDict)
+
+  /**
    * Fluent builder for [LlmRequest], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor. The internal `toolsDict` is
-   * request-processing state populated by [appendTools], not a caller input, so it is not exposed.
+   * request-processing state populated by [appendTools], not a caller input, so it has no public
+   * setter; [LlmRequest.toBuilder] carries it over.
    */
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
@@ -214,6 +231,7 @@ data class LlmRequest(
     private var cacheConfig: ContextCacheConfig? = null
     private var cacheMetadata: CacheMetadata? = null
     private var cacheableContentsTokenCount: Int? = null
+    private var toolsDict: List<BaseTool> = emptyList()
 
     fun model(model: Model?): Builder = apply { this.model = model }
 
@@ -233,11 +251,16 @@ data class LlmRequest(
       this.cacheableContentsTokenCount = cacheableContentsTokenCount
     }
 
+    internal fun toolsDict(toolsDict: List<BaseTool>): Builder = apply {
+      this.toolsDict = toolsDict
+    }
+
     fun build(): LlmRequest =
       LlmRequest(
         model = model,
         contents = contents,
         config = config,
+        toolsDict = toolsDict,
         cacheConfig = cacheConfig,
         cacheMetadata = cacheMetadata,
         cacheableContentsTokenCount = cacheableContentsTokenCount,

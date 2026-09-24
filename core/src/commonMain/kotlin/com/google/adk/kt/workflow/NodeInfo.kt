@@ -45,6 +45,15 @@ data class NodeInfo(
   val messageAsOutput: Boolean = false,
 ) {
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder().path(path).outputFor(outputFor).messageAsOutput(messageAsOutput)
+
+  /**
    * Fluent builder for [NodeInfo], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */

@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -134,5 +135,30 @@ class PartTest {
     assertEquals(part.executableCode, part.copy(text = "bye").executableCode)
     assertEquals(part.codeExecutionResult, part.copy(text = "bye").codeExecutionResult)
     assertEquals(part.mediaResolution, part.copy(text = "bye").mediaResolution)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val part =
+      Part(
+        text = "hi",
+        inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1)),
+        fileData = FileData(fileUri = "gs://bucket/file"),
+        functionCall = FunctionCall(name = "fn"),
+        functionResponse = FunctionResponse(name = "fn"),
+        thought = true,
+        thoughtSignature = byteArrayOf(1, 2, 3),
+        videoMetadata = VideoMetadata(fps = 1.0),
+        toolCall = ToolCall(id = "tc1"),
+        toolResponse = ToolResponse(id = "tc1"),
+        partMetadata = mapOf("key" to "value"),
+        executableCode = ExecutableCode(code = "print(1)"),
+        codeExecutionResult = CodeExecutionResult(output = "1"),
+        mediaResolution = PartMediaResolution(numTokens = 64),
+      )
+
+    assertEquals(part.copy(), part.toBuilder().build())
+    assertEquals(part.copy(text = "bye"), part.toBuilder().text("bye").build())
   }
 }

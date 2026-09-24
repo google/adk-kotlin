@@ -17,9 +17,11 @@
 package com.google.adk.kt.tools.mcp
 
 import com.google.adk.kt.agents.ReadonlyContext
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.tools.ToolFilter
 import com.google.adk.kt.tools.mcp.McpToolException.McpToolLoadingException
 import io.modelcontextprotocol.client.McpAsyncClient
+import io.modelcontextprotocol.client.transport.ServerParameters
 import io.modelcontextprotocol.spec.McpSchema
 import java.util.Collections
 import java.util.logging.Handler
@@ -739,6 +741,29 @@ class McpToolsetTest {
 
     val tools = toolset.getTools()
     assertEquals(0, tools.size)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun mcpToolsetConfig_toBuilder_matchesCopy() {
+    // toToolset rejects more than one transport, but the config itself holds any combination.
+    val config =
+      McpToolset.McpToolsetConfig(
+        stdioConnectionParams =
+          McpConnectionParameters.Stdio(ServerParameters.builder("cmd").build()),
+        sseConnectionParams = McpConnectionParameters.Sse(url = "http://localhost:1234"),
+        streamableHttpConnectionParams =
+          McpConnectionParameters.StreamableHttp(url = "http://localhost:5678"),
+        toolFilter = ToolFilter.AllowList(setOf("tool1")),
+        useMcpResources = true,
+        maxMcpResourceLength = 42,
+      )
+
+    assertEquals(config.copy(), config.toBuilder().build())
+    assertEquals(
+      config.copy(useMcpResources = false),
+      config.toBuilder().useMcpResources(false).build(),
+    )
   }
 }
 

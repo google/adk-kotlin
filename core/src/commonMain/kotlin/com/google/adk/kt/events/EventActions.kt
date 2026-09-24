@@ -141,6 +141,28 @@ data class EventActions(
     )
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added. The mutable maps are copied, not shared.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder {
+    val snapshot = snapshot()
+    return Builder()
+      .skipSummarization(snapshot.skipSummarization)
+      .stateDelta(snapshot.stateDelta)
+      .artifactDelta(snapshot.artifactDelta)
+      .transferToAgent(snapshot.transferToAgent)
+      .escalate(snapshot.escalate)
+      .endOfAgent(snapshot.endOfAgent)
+      .requestedToolConfirmations(snapshot.requestedToolConfirmations)
+      .rewindBeforeInvocationId(snapshot.rewindBeforeInvocationId)
+      .route(snapshot.route)
+      .agentState(snapshot.agentState)
+      .compaction(snapshot.compaction)
+  }
+
+  /**
    * Fluent builder for [EventActions], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */

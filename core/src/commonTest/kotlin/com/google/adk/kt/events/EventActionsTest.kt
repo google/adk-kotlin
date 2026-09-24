@@ -17,8 +17,11 @@
 package com.google.adk.kt.events
 
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.workflow.Route
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -203,5 +206,47 @@ class EventActionsTest {
     assertNull(snapshot.stateDelta["k2"])
     assertNull(snapshot.artifactDelta["f2"])
     assertNull(snapshot.requestedToolConfirmations["c2"])
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val actions =
+      EventActions(
+        skipSummarization = true,
+        stateDelta = mutableMapOf("k" to "v"),
+        artifactDelta = mutableMapOf("f" to 1),
+        transferToAgent = "other_agent",
+        escalate = true,
+        endOfAgent = true,
+        requestedToolConfirmations = mutableMapOf("c" to ToolConfirmation(confirmed = true)),
+        rewindBeforeInvocationId = "inv_1",
+        route = listOf(Route.Tag("next")),
+        agentState = TypedData.StringValue("state"),
+        compaction =
+          EventCompaction(
+            startTimestamp = 1,
+            endTimestamp = 2,
+            compactedContent = Content(parts = listOf(Part(text = "summary"))),
+          ),
+      )
+
+    assertEquals(actions.copy(), actions.toBuilder().build())
+    assertEquals(actions.copy(escalate = false), actions.toBuilder().escalate(false).build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_doesNotShareMutableMaps() {
+    val original = EventActions(stateDelta = mutableMapOf("k" to "v"))
+
+    val rebuilt = original.toBuilder().build()
+    rebuilt.stateDelta["k2"] = "v2"
+    rebuilt.artifactDelta["f"] = 1
+    rebuilt.requestedToolConfirmations["c"] = ToolConfirmation(confirmed = true)
+
+    assertEquals(mapOf<String, Any>("k" to "v"), original.stateDelta)
+    assertTrue(original.artifactDelta.isEmpty())
+    assertTrue(original.requestedToolConfirmations.isEmpty())
   }
 }

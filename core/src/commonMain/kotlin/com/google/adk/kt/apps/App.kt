@@ -120,6 +120,22 @@ data class App(
   )
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .appName(appName)
+      .rootAgent(rootAgent)
+      .rootNode(rootNode)
+      .plugins(plugins)
+      .resumabilityConfig(resumabilityConfig)
+      .eventsCompactionConfig(eventsCompactionConfig)
+      .contextCacheConfig(contextCacheConfig)
+
+  /**
    * Fluent builder for [App], provided primarily for Java callers. Any property left unset falls
    * back to the same default as the constructor.
    */
@@ -135,9 +151,14 @@ data class App(
 
     fun appName(appName: String): Builder = apply { this.appName = appName }
 
-    fun rootAgent(rootAgent: BaseAgent): Builder = apply { this.rootAgent = rootAgent }
+    /** Sets the root agent; `null` derives it from the root node, as the node constructor does. */
+    fun rootAgent(rootAgent: BaseAgent?): Builder = apply { this.rootAgent = rootAgent }
 
-    fun rootNode(rootNode: Node): Builder = apply { this.rootNode = rootNode }
+    /**
+     * Sets the root node. Like `copy`, this keeps the root agent already set; to re-root on another
+     * node, also call `rootAgent(null)` to derive the root agent from this node.
+     */
+    fun rootNode(rootNode: Node?): Builder = apply { this.rootNode = rootNode }
 
     fun plugins(plugins: List<Plugin>): Builder = apply { this.plugins = plugins }
 

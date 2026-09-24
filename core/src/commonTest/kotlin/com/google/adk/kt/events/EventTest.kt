@@ -17,13 +17,20 @@
 package com.google.adk.kt.events
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.workflow.NodeInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -146,5 +153,39 @@ class EventTest {
 
     assertEquals("hi", event.contentText(" "))
     assertEquals("hi hmm", event.contentText(" ", includeThoughts = true))
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val event =
+      Event(
+        id = "event_1",
+        invocationId = "inv_1",
+        author = "model",
+        content = Content(parts = listOf(Part(text = "hi"))),
+        actions = EventActions(escalate = true),
+        longRunningToolIds = setOf("call_1"),
+        partial = true,
+        turnComplete = true,
+        errorCode = "ERROR",
+        errorMessage = "failed",
+        finishReason = FinishReason.STOP,
+        usageMetadata = UsageMetadata(totalTokenCount = 3),
+        avgLogProbs = -0.5,
+        interrupted = true,
+        branch = "root.child",
+        groundingMetadata = GroundingMetadata(webSearchQueries = listOf("query")),
+        modelVersion = "v1",
+        citationMetadata = CitationMetadata(),
+        cacheMetadata = CacheMetadata(fingerprint = "abc", contentsCount = 1),
+        customMetadata = mapOf("key" to null),
+        output = "result",
+        nodeInfo = NodeInfo(path = "wf@1"),
+        timestamp = 1234L,
+      )
+
+    assertEquals(event.copy(), event.toBuilder().build())
+    assertEquals(event.copy(partial = false), event.toBuilder().partial(false).build())
   }
 }

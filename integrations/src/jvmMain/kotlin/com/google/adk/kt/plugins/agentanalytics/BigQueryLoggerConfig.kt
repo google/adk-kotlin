@@ -31,6 +31,21 @@ data class BigQueryLoggerConfig(
 ) {
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .projectId(projectId)
+      .datasetId(datasetId)
+      .enabled(enabled)
+      .location(location)
+      .tableName(tableName)
+      .credentials(credentials)
+
+  /**
    * Fluent builder for [BigQueryLoggerConfig], provided primarily for Java callers. Any property
    * left unset falls back to the same default as the constructor.
    */

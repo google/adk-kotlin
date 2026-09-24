@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.types.HttpOptions
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -82,5 +83,20 @@ class ContextCacheConfigTest {
   @Test
   fun construct_negativeMinTokens_throwsIllegalArgumentException() {
     assertFailsWith<IllegalArgumentException> { ContextCacheConfig(minTokens = -1) }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val config =
+      ContextCacheConfig(
+        cacheIntervals = 5,
+        ttl = 90.seconds,
+        minTokens = 4096,
+        createHttpOptions = HttpOptions(timeout = 10.seconds),
+      )
+
+    assertEquals(config.copy(), config.toBuilder().build())
+    assertEquals(config.copy(minTokens = 8192), config.toBuilder().minTokens(8192).build())
   }
 }

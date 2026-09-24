@@ -45,6 +45,14 @@ data class VideoMetadata(
   fun endOffsetMillis(): Long? = endOffset?.inWholeMilliseconds
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder = Builder().startOffset(startOffset).endOffset(endOffset).fps(fps)
+
+  /**
    * Fluent builder for [VideoMetadata], provided primarily for Java callers. Any property left
    * unset falls back to the same default as the constructor.
    */
@@ -54,14 +62,37 @@ data class VideoMetadata(
     private var endOffset: Duration? = null
     private var fps: Double? = null
 
+    // Let toBuilder copy the offsets exactly; the millisecond setters would truncate them.
+    internal fun startOffset(startOffset: Duration?): Builder = apply {
+      this.startOffset = startOffset
+    }
+
+    internal fun endOffset(endOffset: Duration?): Builder = apply { this.endOffset = endOffset }
+
     /** Sets [startOffset] in milliseconds; the [Duration] constructor param is mangled for Java. */
     fun startOffsetMillis(startOffsetMillis: Long): Builder = apply {
       this.startOffset = startOffsetMillis.milliseconds
     }
 
+    /**
+     * Sets [startOffset] in milliseconds, or clears it when `null`. The non-null overload remains
+     * for binary compatibility and so Java `int` literals still compile.
+     */
+    fun startOffsetMillis(startOffsetMillis: Long?): Builder = apply {
+      this.startOffset = startOffsetMillis?.milliseconds
+    }
+
     /** Sets [endOffset] in milliseconds; the [Duration] constructor param is mangled for Java. */
     fun endOffsetMillis(endOffsetMillis: Long): Builder = apply {
       this.endOffset = endOffsetMillis.milliseconds
+    }
+
+    /**
+     * Sets [endOffset] in milliseconds, or clears it when `null`. The non-null overload remains for
+     * binary compatibility and so Java `int` literals still compile.
+     */
+    fun endOffsetMillis(endOffsetMillis: Long?): Builder = apply {
+      this.endOffset = endOffsetMillis?.milliseconds
     }
 
     fun fps(fps: Double?): Builder = apply { this.fps = fps }

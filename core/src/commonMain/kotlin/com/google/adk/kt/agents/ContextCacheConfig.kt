@@ -71,6 +71,20 @@ constructor(
     get() = "${ttl.inWholeSeconds}s"
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @ExperimentalContextCachingFeature
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .cacheIntervals(cacheIntervals)
+      .ttl(ttl)
+      .minTokens(minTokens)
+      .createHttpOptions(createHttpOptions)
+
+  /**
    * Fluent builder for [ContextCacheConfig], provided primarily for Java callers. Any property left
    * unset falls back to the same default as the constructor.
    */

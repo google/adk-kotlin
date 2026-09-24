@@ -62,6 +62,25 @@ data class AdkServerConfig(
   val camelCaseEnforced: Boolean? = null,
 ) {
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .agentLoader(agentLoader)
+      .sessionService(sessionService)
+      .artifactService(artifactService)
+      .port(port)
+      .host(host)
+      .apiServerSpanExporter(apiServerSpanExporter)
+      .captureMessageContent(captureMessageContent)
+      .plugins(plugins)
+      .webUiEnabled(webUiEnabled)
+      .camelCaseEnforced(camelCaseEnforced)
+
+  /**
    * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
    * unset falls back to the same default as the constructor.
    */

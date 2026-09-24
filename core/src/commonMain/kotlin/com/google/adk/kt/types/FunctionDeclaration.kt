@@ -33,6 +33,15 @@ data class FunctionDeclaration(
   val response: Schema? = null,
 ) {
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder().name(name).description(description).parameters(parameters).response(response)
+
+  /**
    * Fluent builder for [FunctionDeclaration], provided primarily for Java callers. Any property
    * left unset falls back to the same default as the constructor.
    */
@@ -41,12 +50,15 @@ data class FunctionDeclaration(
     private var name: String? = null
     private var description: String? = null
     private var parameters: Schema? = null
+    private var response: Schema? = null
 
     fun name(name: String): Builder = apply { this.name = name }
 
     fun description(description: String): Builder = apply { this.description = description }
 
     fun parameters(parameters: Schema?): Builder = apply { this.parameters = parameters }
+
+    fun response(response: Schema?): Builder = apply { this.response = response }
 
     fun build(): FunctionDeclaration =
       FunctionDeclaration(
@@ -56,6 +68,7 @@ data class FunctionDeclaration(
             "FunctionDeclaration.Builder requires description to be set."
           },
         parameters = parameters,
+        response = response,
       )
   }
 

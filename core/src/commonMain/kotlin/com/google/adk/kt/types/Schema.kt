@@ -85,6 +85,35 @@ data class Schema(
   val maxProperties: Long? = null,
 ) {
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .type(type)
+      .properties(properties)
+      .items(items)
+      .required(required)
+      .description(description)
+      .enum(enum)
+      .format(format)
+      .nullable(nullable)
+      .defaultValue(default)
+      .anyOf(anyOf)
+      .title(title)
+      .pattern(pattern)
+      .minimum(minimum)
+      .maximum(maximum)
+      .minLength(minLength)
+      .maxLength(maxLength)
+      .minItems(minItems)
+      .maxItems(maxItems)
+      .minProperties(minProperties)
+      .maxProperties(maxProperties)
+
+  /**
    * Fluent builder for [Schema], provided primarily for Java callers. Any property left unset falls
    * back to the same default as the constructor.
    */

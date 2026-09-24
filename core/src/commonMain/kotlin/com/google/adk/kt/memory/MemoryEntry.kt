@@ -49,6 +49,20 @@ data class MemoryEntry(
   @SerialName("custom_metadata") val customMetadata: Map<String, @Contextual Any> = emptyMap(),
 ) {
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .content(content)
+      .id(id)
+      .author(author)
+      .timestamp(timestamp)
+      .customMetadata(customMetadata)
+
+  /**
    * Fluent builder for [MemoryEntry], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */

@@ -432,6 +432,21 @@ internal constructor(
       McpToolset(sessionManager, toolFilter, headerProvider, useMcpResources, maxMcpResourceLength)
 
     /**
+     * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+     * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+     * changes whenever a property is added.
+     */
+    @AdkJavaInteropApi
+    fun toBuilder(): Builder =
+      Builder()
+        .stdioConnectionParams(stdioConnectionParams)
+        .sseConnectionParams(sseConnectionParams)
+        .streamableHttpConnectionParams(streamableHttpConnectionParams)
+        .toolFilter(toolFilter)
+        .useMcpResources(useMcpResources)
+        .maxMcpResourceLength(maxMcpResourceLength)
+
+    /**
      * Fluent builder for [McpToolsetConfig], provided primarily for Java callers. Any property left
      * unset falls back to the same default as the constructor.
      */

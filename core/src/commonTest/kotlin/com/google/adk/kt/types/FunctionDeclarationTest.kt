@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.genai.kotlin.types.FunctionDeclaration as GenAiFunctionDeclaration
 import com.google.genai.kotlin.types.Schema as GenAiSchema
 import com.google.genai.kotlin.types.Type as GenAiType
@@ -59,5 +60,20 @@ class FunctionDeclarationTest {
     val parameters = functionDeclaration.parameters
     assertNotNull(parameters)
     assertEquals(Type.STRING, parameters.type)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val declaration =
+      FunctionDeclaration(
+        name = "getWeather",
+        description = "Gets the weather.",
+        parameters = Schema(type = Type.OBJECT),
+        response = Schema(type = Type.STRING),
+      )
+
+    assertEquals(declaration.copy(), declaration.toBuilder().build())
+    assertEquals(declaration.copy(response = null), declaration.toBuilder().response(null).build())
   }
 }

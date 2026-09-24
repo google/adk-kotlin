@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.events.Event
 import com.google.common.truth.Truth.assertThat
 import kotlin.time.Clock
@@ -57,5 +58,32 @@ class SessionTest {
     assertThat(session.state).isEmpty()
     assertThat(session.events).isEmpty()
     assertThat(session.lastUpdateTime).isEqualTo(Instant.fromEpochMilliseconds(0))
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val session =
+      Session(
+        key = SessionKey("test-app", "user-456", "session-123"),
+        state = State(mapOf("key" to "value")),
+        events = mutableListOf(Event(author = "user")),
+        lastUpdateTime = Instant.fromEpochMilliseconds(1_000),
+      )
+    val later = Instant.fromEpochMilliseconds(2_000)
+
+    assertThat(session.toBuilder().build()).isEqualTo(session.copy())
+    assertThat(session.toBuilder().lastUpdateTime(later).build())
+      .isEqualTo(session.copy(lastUpdateTime = later))
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_copiesEventList() {
+    val session = Session(SessionKey("test-app", "user-456", "session-123"))
+
+    session.toBuilder().build().events.add(Event(author = "user"))
+
+    assertThat(session.events).isEmpty()
   }
 }

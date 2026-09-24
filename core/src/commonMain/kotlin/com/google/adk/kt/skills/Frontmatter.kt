@@ -63,6 +63,21 @@ data class Frontmatter(
   }
 
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .name(name)
+      .description(description)
+      .license(license)
+      .compatibility(compatibility)
+      .allowedTools(allowedTools)
+      .metadata(metadata)
+
+  /**
    * Fluent builder for [Frontmatter], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */

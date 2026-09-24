@@ -16,14 +16,19 @@
 
 package com.google.adk.kt.models
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.types.BlockedReason
 import com.google.adk.kt.types.Candidate
+import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.LogprobsResult
 import com.google.adk.kt.types.PromptFeedback
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -204,5 +209,30 @@ class LlmResponseTest {
     val llmResponse = LlmResponse(cacheMetadata = metadata)
 
     assertEquals(metadata, llmResponse.cacheMetadata)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val response =
+      LlmResponse(
+        content = modelMessage("hi"),
+        usageMetadata = UsageMetadata(totalTokenCount = 3),
+        finishReason = FinishReason.MAX_TOKENS,
+        errorMessage = "truncated",
+        partial = true,
+        interrupted = true,
+        modelVersion = "v1",
+        citationMetadata = CitationMetadata(),
+        groundingMetadata = GroundingMetadata(webSearchQueries = listOf("query")),
+        errorCode = "MAX_TOKENS",
+        customMetadata = mapOf("key" to null),
+        avgLogprobs = -0.5,
+        logprobsResult = LogprobsResult(logProbabilitySum = -1.5),
+        cacheMetadata = CacheMetadata(fingerprint = "abc", contentsCount = 2),
+      )
+
+    assertEquals(response.copy(), response.toBuilder().build())
+    assertEquals(response.copy(partial = false), response.toBuilder().partial(false).build())
   }
 }

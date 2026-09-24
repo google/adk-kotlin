@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.skills
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.common.truth.Truth.assertThat
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -155,5 +156,23 @@ class FrontmatterTest {
       }
 
     assertThat(e).hasMessageThat().contains("compatibility must not exceed 500 characters")
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val frontmatter =
+      Frontmatter(
+        name = "my-skill",
+        description = "Does things.",
+        license = "Apache-2.0",
+        compatibility = "Requires Python 3",
+        allowedTools = "Bash Read",
+        metadata = mapOf("author" to "adk"),
+      )
+
+    assertThat(frontmatter.toBuilder().build()).isEqualTo(frontmatter.copy())
+    assertThat(frontmatter.toBuilder().license(null).build())
+      .isEqualTo(frontmatter.copy(license = null))
   }
 }

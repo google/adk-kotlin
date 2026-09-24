@@ -19,6 +19,7 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.InMemoryArtifactService
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.FileData
@@ -159,5 +160,30 @@ class AdkServerConfigTest {
   @Test
   fun builder_requiresAgentLoaderSessionAndArtifactServices() {
     assertThrows(IllegalStateException::class.java) { AdkServerConfig.builder().build() }
+  }
+
+  @Test
+  fun toBuilder_matchesCopy() {
+    val config =
+      AdkServerConfig(
+        agentLoader = FakeAgentLoader(),
+        sessionService = InMemorySessionService(),
+        artifactService = InMemoryArtifactService(),
+        port = 9123,
+        host = "0.0.0.0",
+        apiServerSpanExporter = ApiServerSpanExporter(),
+        captureMessageContent = true,
+        plugins =
+          listOf(
+            object : Plugin {
+              override val name = "test-plugin"
+            }
+          ),
+        webUiEnabled = true,
+        camelCaseEnforced = true,
+      )
+
+    assertThat(config.toBuilder().build()).isEqualTo(config.copy())
+    assertThat(config.toBuilder().port(9124).build()).isEqualTo(config.copy(port = 9124))
   }
 }

@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.summarizer
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.events.Event
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -153,6 +154,22 @@ class EventsCompactionConfigTest {
     assertFailsWith<IllegalArgumentException> {
       EventsCompactionConfig(tokenThreshold = null, eventRetentionSize = 5)
     }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val config =
+      EventsCompactionConfig(
+        compactionInterval = 2,
+        overlapSize = 1,
+        summarizer = NoopSummarizer,
+        tokenThreshold = 100,
+        eventRetentionSize = 3,
+      )
+
+    assertEquals(config.copy(), config.toBuilder().build())
+    assertEquals(config.copy(overlapSize = 0), config.toBuilder().overlapSize(0).build())
   }
 
   private object NoopSummarizer : EventSummarizer {

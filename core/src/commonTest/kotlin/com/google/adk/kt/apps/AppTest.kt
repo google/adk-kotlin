@@ -20,6 +20,7 @@ package com.google.adk.kt.apps
 
 import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyAgent
@@ -164,5 +165,87 @@ class AppTest {
     assertEquals("other_app", copied.appName)
     assertEquals(emptyList(), copied.plugins)
     assertSame(resumability, copied.resumabilityConfig)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    val app =
+      App(
+        appName = "my_app",
+        rootAgent = DummyAgent(name = "root"),
+        rootNode = DummyAgent(name = "node"),
+        plugins =
+          listOf(
+            object : Plugin {
+              override val name = "test-plugin"
+            }
+          ),
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+        eventsCompactionConfig = EventsCompactionConfig(compactionInterval = 2, overlapSize = 1),
+        contextCacheConfig = ContextCacheConfig(cacheIntervals = 5),
+      )
+
+    assertEquals(app.copy(), app.toBuilder().build())
+    assertEquals(app.copy(appName = "other_app"), app.toBuilder().appName("other_app").build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_nodeRootedApp_matchesCopy() {
+    val app = App(appName = "my_app", rootNode = DummyAgent(name = "node"))
+
+    assertEquals(app.copy(), app.toBuilder().build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_switchingNodeRootToAgent_matchesCopy() {
+    val app = App(appName = "my_app", rootNode = DummyAgent(name = "node"))
+    val agent = DummyAgent(name = "agent")
+
+    val rebuilt = app.toBuilder().rootNode(null).rootAgent(agent).build()
+
+    assertEquals(app.copy(rootAgent = agent, rootNode = null), rebuilt)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_switchingToAnotherNode_matchesCopy() {
+    val app = App(appName = "my_app", rootNode = DummyAgent(name = "first"))
+    val second = DummyAgent(name = "second")
+
+    assertEquals(app.copy(rootNode = second), app.toBuilder().rootNode(second).build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_rootAgentFromPreviousNode_matchesCopy() {
+    val app =
+      App(appName = "my_app", rootNode = DummyAgent(name = "first"))
+        .copy(rootNode = DummyAgent(name = "second"))
+
+    assertEquals(app.copy(), app.toBuilder().build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_reRootingOnAnotherNode_derivesItsRootAgent() {
+    val app = App(appName = "my_app", rootNode = DummyAgent(name = "first"))
+    val second = DummyAgent(name = "second")
+
+    val rebuilt = app.toBuilder().rootAgent(null).rootNode(second).build()
+
+    assertSame(second, rebuilt.rootNode)
+    assertEquals("second", rebuilt.rootAgent.name)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_clearingNodeRootWithoutAgent_throwsLikeCopy() {
+    val app = App(appName = "my_app", rootNode = DummyAgent(name = "node"))
+
+    assertFailsWith<IllegalArgumentException> { app.copy(rootNode = null) }
+    assertFailsWith<IllegalArgumentException> { app.toBuilder().rootNode(null).build() }
   }
 }

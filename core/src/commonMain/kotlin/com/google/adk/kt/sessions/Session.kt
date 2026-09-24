@@ -42,6 +42,16 @@ data class Session(
   var lastUpdateTime: Instant = Instant.fromEpochMilliseconds(0),
 ) {
   /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added. The event list is copied, but [state] is shared with this
+   * instance.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder().key(key).state(state).events(events).lastUpdateTime(lastUpdateTime)
+
+  /**
    * Fluent builder for [Session], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */
