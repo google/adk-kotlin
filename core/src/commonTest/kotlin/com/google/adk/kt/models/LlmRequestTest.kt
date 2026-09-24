@@ -19,6 +19,7 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -26,6 +27,7 @@ import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.LiveConnectConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
@@ -223,5 +225,20 @@ class LlmRequestTest {
     assertEquals(config, request.cacheConfig)
     assertEquals(metadata, request.cacheMetadata)
     assertEquals(5000, request.cacheableContentsTokenCount)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_liveConnectConfigSet_carriesItToTheRequest() {
+    val request =
+      LlmRequest.builder().liveConnectConfig(LiveConnectConfig(temperature = 0.5f)).build()
+
+    assertEquals(0.5f, request.liveConnectConfig.temperature)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_liveConnectConfigUnset_defaultsToEmptyConfig() {
+    assertEquals(LiveConnectConfig(), LlmRequest.builder().build().liveConnectConfig)
   }
 }
