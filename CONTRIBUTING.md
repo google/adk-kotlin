@@ -72,3 +72,27 @@ adk-python for validation.
 ### KDocs
 
 We want our KDocs to be concise and meaningful.
+
+## Agent skills
+
+Instructions for coding agents live in [AGENTS.md](AGENTS.md), which points at
+the skills under `.agents/skills/`.
+
+To keep them accurate without re-editing them for every commit:
+
+-   Describe concepts and failure modes, and point at the file that defines a
+    detail (`the ordered list is systemBeforeTurnProcessors in LlmAgent.kt`)
+    rather than copying signatures, field lists, counts or orderings.
+-   Leave out anything likely to change soon: internals, experimental APIs,
+    version numbers, and lists of built-ins.
+-   A change that alters a concept a skill states as fact (a renamed public
+    type, a new orchestration model, a changed test command) updates that skill
+    in the same PR and bumps its "Checked against" line.
+
+How each tool loads them:
+
+-   **Gemini CLI** reads `AGENTS.md` via `context.fileName` in
+    `.gemini/settings.json`.
+-   **Claude Code** reads `CLAUDE.md`, which links to `AGENTS.md`.
+-   **Anything else** should be pointed at `AGENTS.md` and `.agents/skills/`
+    directly rather than given a duplicate copy of the content.
