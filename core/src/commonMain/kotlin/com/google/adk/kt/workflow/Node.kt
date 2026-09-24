@@ -25,6 +25,10 @@ import kotlinx.coroutines.flow.Flow
  *
  * Node names must be unique within a graph, since the scheduler keys on them.
  *
+ * Every member except [name] and [description] requires opting in to [ExperimentalWorkflowApi], so
+ * implementing a node does too; those two need no opt-in because `App`, `Runner` and
+ * `InvocationContext` expose a node as stable API.
+ *
  * @property name Identifies the node within its graph.
  * @property description What the node does, for humans and for a model that may call it.
  * @property rerunOnResume On resume, whether to run the node again from scratch rather than
@@ -38,9 +42,11 @@ interface Node {
   val description: String
     get() = ""
 
+  @ExperimentalWorkflowApi
   val rerunOnResume: Boolean
     get() = false
 
+  @ExperimentalWorkflowApi
   val waitForOutput: Boolean
     get() = false
 
@@ -52,6 +58,7 @@ interface Node {
    * Whether the node runs only once every predecessor has completed, receiving all their outputs
    * keyed by node name. A fan-in node overrides this to true.
    */
+  @ExperimentalWorkflowApi
   val requiresAllPredecessors: Boolean
     get() = false
 
