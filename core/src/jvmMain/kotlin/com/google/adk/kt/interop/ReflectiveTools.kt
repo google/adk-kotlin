@@ -192,7 +192,7 @@ object ReflectiveTools {
         actual[b.index] = coerce(raw, b.type)
       }
       return try {
-        method.invoke(instance, *actual) ?: emptyMap<String, Any>()
+        method.invoke(instance, *actual) ?: Unit
       } catch (e: InvocationTargetException) {
         val cause = e.targetException ?: e
         throw when (cause) {

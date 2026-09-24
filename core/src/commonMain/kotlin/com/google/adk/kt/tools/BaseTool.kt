@@ -48,10 +48,11 @@ abstract class BaseTool(
    * Executes the tool and returns its result.
    *
    * The result must be JSON-native: a [Map], [List], [String], number, [Boolean], or `null`; a
-   * non-[Map] result is wrapped under [RESULT_KEY]. Returning a non-JSON type such as a Kotlin data
-   * class throws when the resulting event is persisted. To return structured data, return a [Map],
-   * or expose the function via [com.google.adk.kt.annotations.Tool], which converts data classes
-   * (and enums, lists, and nested structures) into Maps automatically.
+   * non-[Map] result is wrapped under [RESULT_KEY], with a regular tool's `Unit` (no result) sent
+   * as `null`. Returning a non-JSON type such as a Kotlin data class throws when the resulting
+   * event is persisted. To return structured data, return a [Map], or expose the function via
+   * [com.google.adk.kt.annotations.Tool], which converts data classes (and enums, lists, and nested
+   * structures) into Maps automatically.
    */
   abstract suspend fun run(context: ToolContext, args: Map<String, Any?>): Any
 

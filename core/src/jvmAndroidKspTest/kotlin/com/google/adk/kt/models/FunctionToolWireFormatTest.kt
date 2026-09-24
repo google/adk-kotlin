@@ -22,10 +22,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.tools.FunctionTool
-import com.google.adk.kt.tools.ToolContext
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionResponse
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.toGenaiSdk
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -38,8 +35,8 @@ import kotlinx.serialization.json.JsonObject
 /**
  * Verifies the JSON wire format of the `functionResponse` Gemini receives for a [FunctionTool]'s
  * return value, using real `@Tool` functions whose `FunctionTool` subclasses are KSP-generated.
- * Each runs `execute`, wraps the result, converts via [Content.toGenaiSdk], and asserts the
- * payload.
+ * Each calls the tool through the runtime's function-call path, converts the response via
+ * `toGenaiSdk`, and asserts the payload.
  *
  * The checked payload is the converted `response` map (`Map<String, JsonElement>`) -- exactly what
  * the SDK puts on the wire -- so primitives keep their JSON type and `null` entries survive as JSON
@@ -110,10 +107,10 @@ class FunctionToolWireFormatTest {
   }
 
   @Test
-  fun toolReturningUnit_emitsEmptyResponseMap() = runTest {
-    // The generated tool returns the `Unit` singleton; for non-long-running tools the framework
-    // coerces it to an empty function-response payload.
-    assertWireResponse(ReturnsUnitTool(), expected = """{}""")
+  fun toolReturningUnit_emitsNullResult() = runTest {
+    // The generated tool returns the `Unit` singleton; the runtime answers a regular tool's `Unit`
+    // with a `null` result, as Python does for a tool returning `None`.
+    assertWireResponse(ReturnsUnitTool(), expected = """{"result":null}""")
   }
 
   @Test
@@ -204,35 +201,24 @@ class FunctionToolWireFormatTest {
   // -- Helpers -----------------------------------------------------------------------------------
 
   /**
-   * Runs [tool] with [args], converts the resulting function response through the real ADK -> GenAI
-   * SDK converter, and asserts the converted `functionResponse` (name, id, and the `JsonElement`
-   * response map) matches [expected].
+   * Calls [tool] with [args] through the runtime's function-call path, converts the resulting
+   * function response through the real ADK -> GenAI SDK converter, and asserts the converted
+   * `functionResponse` (name, id, and the `JsonElement` response map) matches [expected].
    */
   private suspend fun assertWireResponse(
     tool: FunctionTool,
     args: Map<String, Any> = emptyMap(),
     expected: String,
   ) {
-    @Suppress("UNCHECKED_CAST")
-    val responseMap: Map<String, Any?> =
-      (tool.execute(dummyToolContext(), args) as? Map<String, Any?>) ?: emptyMap()
-
-    val genaiContent =
-      Content(
-          role = "user",
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(
-                    name = tool.name,
-                    response = responseMap,
-                    id = "${tool.name}-call",
-                  )
-              )
-            ),
-        )
-        .toGenaiSdk()
+    val event =
+      checkNotNull(
+        dummyInvocationContext()
+          .executeSingleFunctionCall(
+            FunctionCall(name = tool.name, args = args, id = "${tool.name}-call"),
+            mapOf(tool.name to tool),
+          )
+      )
+    val genaiContent = checkNotNull(event.content).toGenaiSdk()
 
     val functionResponse = genaiContent.parts!!.single().functionResponse!!
     assertEquals(tool.name, functionResponse.name)
@@ -243,14 +229,11 @@ class FunctionToolWireFormatTest {
     )
   }
 
-  private fun dummyToolContext(): ToolContext =
-    ToolContext(
-      invocationContext =
-        InvocationContext(
-          session = Session(key = SessionKey("app", "user", "session")),
-          runConfig = null,
-          agent = NoOpAgent(),
-        )
+  private fun dummyInvocationContext(): InvocationContext =
+    InvocationContext(
+      session = Session(key = SessionKey("app", "user", "session")),
+      runConfig = null,
+      agent = NoOpAgent(),
     )
 
   private class NoOpAgent : BaseAgent(name = "wire-format-test-agent") {

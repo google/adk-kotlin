@@ -299,10 +299,10 @@ class ReflectiveToolsTest {
   }
 
   @Test
-  fun run_nullReturn_becomesEmptyMap() = runBlocking {
+  fun run_nullReturn_becomesUnit() = runBlocking {
     val tool = ReflectiveTools.fromMethod(fixture, "returnsNull")
 
-    assertEquals(emptyMap<String, Any>(), tool.run(testToolContext(), emptyMap()))
+    assertEquals(Unit, tool.run(testToolContext(), emptyMap()))
   }
 
   @Test

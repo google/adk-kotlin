@@ -773,29 +773,29 @@ class InvocationContextTest {
   }
 
   @Test
-  fun executeSingleFunctionCall_longRunningToolReturnsNull_emitsEmptyResponseEvent() = runTest {
-    // A Java-implemented tool can break the non-null `run(): Any` contract and return `null`.
-    // Unlike
-    // `Unit` (which defers/suppresses), `null` is coerced to `{}` and emitted, matching Java.
-    val tool = DummyTool(name = "test_tool", isLongRunning = true) { _, _ -> forceNull() }
+  fun executeSingleFunctionCall_longRunningToolReturnsNull_emitsNullResultResponseEvent() =
+    runTest {
+      // A Java-implemented tool can break the non-null `run(): Any` contract and return `null`.
+      // Unlike `Unit` (which defers), `null` is emitted, wrapped as `{"result": null}`.
+      val tool = DummyTool(name = "test_tool", isLongRunning = true) { _, _ -> forceNull() }
 
-    val context =
-      testInvocationContext(
-        agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
-        invocationId = "inv",
-      )
+      val context =
+        testInvocationContext(
+          agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
+          invocationId = "inv",
+        )
 
-    val result =
-      context.executeSingleFunctionCall(
-        FunctionCall(name = "test_tool", args = emptyMap(), id = "call_id"),
-        mapOf("test_tool" to tool),
-      )
+      val result =
+        context.executeSingleFunctionCall(
+          FunctionCall(name = "test_tool", args = emptyMap(), id = "call_id"),
+          mapOf("test_tool" to tool),
+        )
 
-    assertNotNull(result)
-    val functionResponse = result!!.content?.parts?.get(0)?.functionResponse
-    assertNotNull(functionResponse)
-    assertEquals(emptyMap<String, Any>(), functionResponse!!.response)
-  }
+      assertNotNull(result)
+      val functionResponse = result!!.content?.parts?.get(0)?.functionResponse
+      assertNotNull(functionResponse)
+      assertEquals(mapOf(BaseTool.RESULT_KEY to null), functionResponse!!.response)
+    }
 
   /**
    * Produces a `null` typed as a non-null [T] (via erasure), simulating a Java platform-type leak.
@@ -853,12 +853,10 @@ class InvocationContextTest {
   }
 
   @Test
-  fun executeSingleFunctionCall_regularToolReturnsUnit_buildsEmptyResponseEvent() = runTest {
-    // The `Unit`-suppression is gated on `tool.isLongRunning`. A regular tool returning `Unit`
-    // (e.g. a hand-rolled `BaseTool` whose `run` ends with a statement, or a KSP-generated
-    // `@Tool fun(): Unit`) yields a function-response event with an empty payload so the agent
-    // loop continues normally. The framework coerces the `Unit` singleton to `emptyMap()` to
-    // avoid leaking the Kotlin sentinel as `{result: kotlin.Unit}` on the wire.
+  fun executeSingleFunctionCall_regularToolReturnsUnit_buildsNullResultResponseEvent() = runTest {
+    // A regular tool returning `Unit` (e.g. a `BaseTool` whose `run` ends with a statement, or a
+    // KSP-generated `@Tool fun(): Unit`) answers like a Python tool returning `None`:
+    // `{"result": null}`, never the Kotlin sentinel as `{result: kotlin.Unit}`.
     val tool = DummyTool(name = "test_tool", isLongRunning = false) { _, _ -> Unit }
 
     val context =
@@ -876,7 +874,38 @@ class InvocationContextTest {
     assertNotNull(result)
     val functionResponse = result!!.content?.parts?.get(0)?.functionResponse
     assertNotNull(functionResponse)
-    assertEquals(emptyMap<String, Any>(), functionResponse!!.response)
+    assertEquals(mapOf(BaseTool.RESULT_KEY to null), functionResponse!!.response)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_regularToolReturnsUnit_afterToolCallbackSeesNullResult() = runTest {
+    // Arrange: the after-tool callback observes the same payload the model would receive.
+    val tool = DummyTool(name = "test_tool", isLongRunning = false) { _, _ -> Unit }
+    var observed: Map<String, Any?>? = null
+    val callback = AfterToolCallback { _, _, _, response ->
+      observed = response
+      response
+    }
+    val context =
+      testInvocationContext(
+        agent =
+          LlmAgent(
+            name = "test_llm_agent",
+            model = DummyModel("mock_model"),
+            afterToolCallbacks = listOf(callback),
+          ),
+        invocationId = "inv",
+      )
+
+    // Act
+    val unused =
+      context.executeSingleFunctionCall(
+        FunctionCall(name = "test_tool", args = emptyMap(), id = "call_id"),
+        mapOf("test_tool" to tool),
+      )
+
+    // Assert
+    assertEquals(mapOf(BaseTool.RESULT_KEY to null), observed)
   }
 
   @Test

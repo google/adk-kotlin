@@ -622,11 +622,11 @@ data class InvocationContext(
       if (tool.isLongRunning && toolResult === Unit) {
         return@withSpan null
       }
-      // Coerce `Unit` (regular tools) and a `null` leaked by a Java tool that breaks the non-null
-      // `run` contract to `{}` -- an emitted empty response, matching Java. Only a long-running
-      // tool's `Unit` defers (handled above).
+      // A regular tool's `Unit`, or a `null` leaked by a Java tool that breaks the non-null `run`
+      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires the
+      // response to be a map. Only a long-running tool's `Unit` defers (handled above).
       if (toolResult === Unit || (toolResult as Any?) == null) {
-        toolResult = emptyMap<String, Any>()
+        toolResult = mapOf(BaseTool.RESULT_KEY to null)
       }
 
       // 3. Run after tool callbacks

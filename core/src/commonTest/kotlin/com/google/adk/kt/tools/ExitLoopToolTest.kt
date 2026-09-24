@@ -42,7 +42,7 @@ class ExitLoopToolTest {
 
     val result = tool.run(toolContext, emptyMap())
 
-    assertEquals(emptyMap<String, Any>(), result)
+    assertEquals(Unit, result)
     assertTrue(toolContext.actions.escalate)
     assertTrue(toolContext.actions.skipSummarization)
   }

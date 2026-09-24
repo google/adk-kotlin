@@ -828,7 +828,7 @@ internal class FunctionToolGenerator(
       executeFun.addStatement(callStatement)
       // For `Unit`-returning functions, return the `Unit` singleton directly. The framework
       // recognises `Unit` as the "no response yet" signal for long-running tools (suppressing
-      // the function-response event) and coerces it to an empty payload for regular tools. See
+      // the function-response event) and answers it as `{"result": null}` for regular tools. See
       // `BaseTool.isLongRunning`.
       executeFun.addStatement("return Unit")
     } else {

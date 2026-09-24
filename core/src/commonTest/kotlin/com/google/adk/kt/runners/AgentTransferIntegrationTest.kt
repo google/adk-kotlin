@@ -27,6 +27,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
 import com.google.adk.kt.testing.modelMessage
@@ -372,7 +373,9 @@ class AgentTransferIntegrationTest {
         "For context:" +
         "[root] called tool `transfer_to_agent` with parameters: {\"agent_name\":\"sub\"}" +
         "For context:" +
-        "[root] `transfer_to_agent` tool returned result: {}" +
+        // How the transfer's null result renders depends on the platform JSON serializer.
+        "[root] `transfer_to_agent` tool returned result: " +
+        Json.toJsonString(TRANSFER_TO_AGENT_RESPONSE_PART.functionResponse?.response) +
         "sub-reply-1" +
         "again"
     assertEquals(expectedPrompt, turn2Prompt)

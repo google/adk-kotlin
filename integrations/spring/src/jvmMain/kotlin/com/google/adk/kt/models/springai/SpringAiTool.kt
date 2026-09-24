@@ -69,7 +69,8 @@ class SpringAiTool(private val toolCallback: ToolCallback) :
     // Bridge the ADK ToolContext to Spring AI under a documented key; unaware tools ignore it.
     val springContext = SpringToolContext(mapOf(ADK_TOOL_CONTEXT_KEY to context))
     val result = withContext(Dispatchers.IO) { toolCallback.call(toolInput, springContext) }
-    val decoded = decodeToolResult(result) ?: emptyMap<String, Any?>()
+    // A JSON null is no result, which the runtime answers with a `null` result, as for `Unit`.
+    val decoded = decodeToolResult(result) ?: Unit
     // returnDirect maps to ADK skipSummarization; a failing tool throws from call() above, so this
     // is reached only on success.
     if (toolCallback.toolMetadata.returnDirect()) {

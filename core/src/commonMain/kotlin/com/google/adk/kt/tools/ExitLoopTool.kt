@@ -43,6 +43,6 @@ class ExitLoopTool :
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     context.actions.escalate = true
     context.actions.skipSummarization = true
-    return emptyMap<String, Any>()
+    return Unit
   }
 }

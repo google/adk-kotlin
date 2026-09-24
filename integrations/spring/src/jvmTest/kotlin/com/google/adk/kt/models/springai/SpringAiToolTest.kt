@@ -234,11 +234,11 @@ class SpringAiToolTest {
     }
 
   @Test
-  fun run_nullResult_becomesEmptyMap() =
+  fun run_nullResult_becomesUnit() =
     runBlocking<Unit> {
       val result = SpringAiTool(callback { "null" }).run(mock<ToolContext>(), mapOf("msg" to "x"))
 
-      assertThat(result).isEqualTo(emptyMap<String, Any?>())
+      assertThat(result).isEqualTo(Unit)
     }
 
   @Test

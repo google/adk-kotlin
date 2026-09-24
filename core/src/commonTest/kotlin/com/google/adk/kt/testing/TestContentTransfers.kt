@@ -16,6 +16,7 @@
 package com.google.adk.kt.testing
 
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -47,9 +48,13 @@ fun transferToAgentCallPart(agentName: String): Part =
 
 /**
  * The [Part] form of the framework-emitted response to a `transfer_to_agent` call (without an id).
- * The transfer tool returns an empty map.
+ * The transfer tool returns nothing, which the framework answers as `{"result": null}`.
  */
 val TRANSFER_TO_AGENT_RESPONSE_PART: Part =
   Part(
-    functionResponse = FunctionResponse(name = TRANSFER_TO_AGENT_TOOL_NAME, response = emptyMap())
+    functionResponse =
+      FunctionResponse(
+        name = TRANSFER_TO_AGENT_TOOL_NAME,
+        response = mapOf(BaseTool.RESULT_KEY to null),
+      )
   )
