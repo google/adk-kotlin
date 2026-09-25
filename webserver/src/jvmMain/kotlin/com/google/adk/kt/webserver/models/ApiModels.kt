@@ -17,7 +17,10 @@
 package com.google.adk.kt.webserver.models
 
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Tool
 import kotlinx.serialization.Contextual
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonNames
@@ -71,4 +74,37 @@ data class SessionDto(
   val state: Map<String, @Contextual Any>?,
   val events: List<com.google.adk.kt.events.Event>?,
   val lastUpdateTime: Long?,
+)
+
+/**
+ * Response for the `/apps/{appName}/app-info` endpoint.
+ *
+ * [agents] holds every LLM agent reachable from the root agent, indexed by agent name, so a caller
+ * grading a run can look up the instruction and tools behind any agent that produced an event.
+ * [rootAgentName] names the app's entry point, which is absent from [agents] when it is not itself
+ * an LLM agent.
+ */
+@Serializable
+internal data class AppInfo(
+  val name: String,
+  val rootAgentName: String,
+  val description: String,
+  val language: String,
+  val agents: Map<String, AgentInfo>,
+)
+
+/**
+ * One LLM agent's metadata within an [AppInfo].
+ *
+ * [tools] and [subAgents] are always emitted, empty included: `adkJson` drops defaulted properties,
+ * and a caller reading a required field should not have to tell "no tools" from "absent".
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+internal data class AgentInfo(
+  val name: String,
+  val description: String,
+  val instruction: String,
+  @EncodeDefault(EncodeDefault.Mode.ALWAYS) val tools: List<Tool> = emptyList(),
+  @EncodeDefault(EncodeDefault.Mode.ALWAYS) val subAgents: List<String> = emptyList(),
 )

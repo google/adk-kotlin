@@ -17,14 +17,23 @@
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.models.AppInfo
 import com.google.adk.kt.webserver.models.SessionDto
 import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
@@ -444,6 +453,20 @@ class WireEndpointTest {
   }
 
   @Test
+  fun appInfo_emitsCamelCaseWithoutNullFields() = testApplication {
+    application {
+      adkApiModule(testConfig(agentLoader = AppInfoAgentLoader()).copy(includeAppInfo = true))
+    }
+
+    val response = client.get("/apps/info-agent/app-info")
+    val body = response.bodyAsText()
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    // Every key the fixture produces, so dropping an agent or a tool fails here.
+    assertEmissionRule(body, AppInfo.serializer().descriptor, "AppInfo", minKeys = 18)
+  }
+
+  @Test
   fun health_emitsOk() = testApplication {
     application { adkApiModule(testConfig()) }
 
@@ -622,6 +645,40 @@ private class EchoAgentLoader : AgentLoader {
   override fun listAgents() = listOf("echo-agent")
 
   override fun loadAgent(agentName: String) = if (agentName == "echo-agent") EchoAgent() else null
+}
+
+/**
+ * Serves an agent with an instruction, a tool and a sub-agent, so `app-info` has a body to emit.
+ */
+private class AppInfoAgentLoader : AgentLoader {
+  override fun listAgents() = listOf("info-agent")
+
+  override fun loadAgent(agentName: String) =
+    if (agentName == "info-agent") {
+      LlmAgent(
+        name = "info-agent",
+        model = NeverCalledModel,
+        description = "Reports itself",
+        instruction = Instruction.Text("Say hello"),
+        tools = listOf(StubTool()),
+        subAgents = listOf(LlmAgent(name = "child", model = NeverCalledModel)),
+      )
+    } else {
+      null
+    }
+}
+
+private object NeverCalledModel : Model {
+  override val name = "never-called"
+
+  override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+    error("app-info must not call the model")
+}
+
+private class StubTool : BaseTool(name = "stub", description = "A stub") {
+  override fun declaration() = FunctionDeclaration(name = "stub", description = "A stub")
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = Unit
 }
 
 /** Fails after one frame has already gone out, so the failure lands mid-stream. */

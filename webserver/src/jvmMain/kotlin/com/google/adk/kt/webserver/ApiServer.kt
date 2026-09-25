@@ -23,6 +23,7 @@ import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.webserver.dev.AdkDevServer
 import com.google.adk.kt.webserver.dev.adkDevModule
 import com.google.adk.kt.webserver.models.VersionInfo
+import com.google.adk.kt.webserver.routes.appInfoRoutes
 import com.google.adk.kt.webserver.routes.appRoutes
 import com.google.adk.kt.webserver.routes.artifactRoutes
 import com.google.adk.kt.webserver.routes.isWebUiEnabled
@@ -117,8 +118,9 @@ private class StatusAwareLogger(private val delegate: Logger) : Logger by delega
 }
 
 /**
- * Installs the ADK agent runtime: health, version, app discovery, sessions, artifacts and the run
- * endpoints.
+ * Installs the ADK agent runtime: health, version, app discovery, sessions, artifacts, the run
+ * endpoints, and app-info when [AdkServerConfig.includeAppInfo] or the `adk.app.info.enabled`
+ * property asks for it.
  *
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
@@ -162,6 +164,7 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
   }
 
   val camelCase = resolveCamelCase(config)
+  val appInfoEnabled = resolveAppInfoEnabled(config)
   routing {
     get("/health") { call.respond(mapOf("status" to "ok")) }
     if (!camelCase) {
@@ -186,6 +189,9 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
     artifactRoutes(config.artifactService)
     runRoutes(config.agentLoader, config.sessionService, config.artifactService, config.plugins)
     sessionRoutes(config.sessionService)
+    if (appInfoEnabled) {
+      appInfoRoutes(config.agentLoader)
+    }
     if (webUiEnabled) {
       staticRoutes(this@adkApiModule)
     }
@@ -207,19 +213,40 @@ internal const val CAMEL_CASE_ENFORCED_PROPERTY = "adk.wire.camelcase.enforced"
  * rebuild. Moving the default is a one-line change here.
  */
 internal fun Application.resolveCamelCase(config: AdkServerConfig): Boolean =
-  camelCaseSettingOrNull(System.getProperty(CAMEL_CASE_ENFORCED_PROPERTY))
-    ?: camelCaseSettingOrNull(
-      environment.config.propertyOrNull(CAMEL_CASE_ENFORCED_PROPERTY)?.getString()
+  settingOrNull(CAMEL_CASE_ENFORCED_PROPERTY, System.getProperty(CAMEL_CASE_ENFORCED_PROPERTY))
+    ?: settingOrNull(
+      CAMEL_CASE_ENFORCED_PROPERTY,
+      environment.config.propertyOrNull(CAMEL_CASE_ENFORCED_PROPERTY)?.getString(),
     )
     ?: config.camelCaseEnforced
     ?: false
 
-/** Parses one configured value; null when absent or not a boolean, warning in the latter case. */
-private fun camelCaseSettingOrNull(raw: String?): Boolean? {
+/** Parses one configured value of [property]; null when absent or not a boolean, warning then. */
+private fun settingOrNull(property: String, raw: String?): Boolean? {
   if (raw == null) return null
   return raw.trim().lowercase().toBooleanStrictOrNull().also {
     if (it == null) {
-      logger.warn("Ignoring a non-boolean {}: \"{}\"", CAMEL_CASE_ENFORCED_PROPERTY, raw.trim())
+      logger.warn("Ignoring a non-boolean {}: \"{}\"", property, raw.trim())
     }
   }
 }
+
+/** Property that mounts `/apps/{appName}/app-info`. */
+internal const val APP_INFO_ENABLED_PROPERTY = "adk.app.info.enabled"
+
+/**
+ * Whether `/apps/{appName}/app-info` is mounted: the property first, then the Ktor config, then
+ * [AdkServerConfig], else off.
+ *
+ * The property beats an explicit setting, as it does for the Development UI and the camelCase
+ * spelling: the endpoint reports every agent's instruction and tools, so a deployment that needs it
+ * off needs a lever that does not require a rebuild.
+ */
+internal fun Application.resolveAppInfoEnabled(config: AdkServerConfig): Boolean =
+  settingOrNull(APP_INFO_ENABLED_PROPERTY, System.getProperty(APP_INFO_ENABLED_PROPERTY))
+    ?: settingOrNull(
+      APP_INFO_ENABLED_PROPERTY,
+      environment.config.propertyOrNull(APP_INFO_ENABLED_PROPERTY)?.getString(),
+    )
+    ?: config.includeAppInfo
+    ?: false
