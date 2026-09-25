@@ -21,6 +21,8 @@ import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTranspor
 import io.modelcontextprotocol.client.transport.StdioClientTransport
 import io.modelcontextprotocol.json.McpJsonDefaults
 import io.modelcontextprotocol.spec.McpClientTransport
+import java.net.URI
+import java.net.URISyntaxException
 
 /**
  * The default builder for creating MCP client transports. Supports StdioClientTransport based on
@@ -44,7 +46,9 @@ internal class DefaultMcpTransportBuilder : McpTransportBuilder {
           .build()
       }
       is McpConnectionParameters.StreamableHttp -> {
-        HttpClientStreamableHttpTransport.builder(connectionParams.url)
+        val url = connectionParams.url
+        HttpClientStreamableHttpTransport.builder(url)
+          .apply { streamableHttpEndpoint(url)?.let { endpoint(it) } }
           .connectTimeout(connectionParams.timeout)
           .jsonMapper(jsonMapper)
           .httpRequestCustomizer { builder, _, _, _, _ ->
@@ -57,4 +61,24 @@ internal class DefaultMcpTransportBuilder : McpTransportBuilder {
   companion object {
     private val jsonMapper = McpJsonDefaults.getMapper()
   }
+}
+
+/**
+ * The endpoint to give the Streamable HTTP transport for [url], or `null` to keep its default
+ * `/mcp`. Returns [url] itself (used as both base and endpoint, which the SDK's `URI.resolve`
+ * leaves unchanged so the host is preserved verbatim) when it carries a path to honor. A URL is
+ * honored when it has a scheme, an authority (an authority-less base NPEs the SDK's endpoint
+ * check), and a path other than empty or `/`; an unparseable URL returns `null`.
+ */
+internal fun streamableHttpEndpoint(url: String): String? {
+  val uri =
+    try {
+      URI(url)
+    } catch (_: URISyntaxException) {
+      return null
+    }
+  val path = uri.rawPath
+  val hasPath =
+    uri.scheme != null && uri.rawAuthority != null && !path.isNullOrEmpty() && path != "/"
+  return url.takeIf { hasPath }
 }
