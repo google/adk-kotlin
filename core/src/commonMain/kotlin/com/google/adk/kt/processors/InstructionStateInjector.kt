@@ -61,9 +61,11 @@ internal object InstructionStateInjector {
     val (result, notFoundMessage) =
       when {
         varName.startsWith("artifact.") -> {
+          val artifactService =
+            checkNotNull(context.artifactService) { "Artifact service is not initialized." }
           val artifactName = varName.substringAfter("artifact.")
           val artifactJson =
-            context.artifactService?.loadArtifact(context.session.key, artifactName)?.let {
+            artifactService.loadArtifact(context.session.key, artifactName)?.let {
               Json.toJsonString(it)
             }
           artifactJson to "Artifact $artifactName not found."

@@ -263,6 +263,20 @@ class InstructionStateInjectorTest {
   }
 
   @Test
+  fun injectSessionState_withArtifactAndUninitializedArtifactService_throwsException() =
+    runBlocking {
+      val context = createFakeContext(session = testSession(), artifactService = null)
+      val template = "Read {artifact.my_doc?}"
+
+      val exception =
+        assertFailsWith<IllegalStateException> {
+          InstructionStateInjector.injectSessionState(context = context, template = template)
+        }
+
+      assertEquals("Artifact service is not initialized.", exception.message)
+    }
+
+  @Test
   fun injectSessionState_withNullStateValue_replacesWithEmptyString() = runBlocking {
     // State values are non-null in Kotlin, but a map built in Java can still hold a null.
     @Suppress("UNCHECKED_CAST")
