@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalAppInfoFeature::class)
+
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
@@ -51,7 +53,8 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  * @property includeAppInfo Whether to mount `/apps/{appName}/app-info`, which reports every agent's
  *   instruction and tool declarations; off when unset, since that is more than a deployment needs
  *   to publish. `adk.app.info.enabled` overrides it either way, as the Development UI property
- *   does, so a deployment that cannot change code can still turn the endpoint off.
+ *   does, so a deployment that cannot change code can still turn the endpoint off. Experimental:
+ *   setting it requires `@OptIn(ExperimentalAppInfoFeature::class)`.
  */
 data class AdkServerConfig(
   val agentLoader: AgentLoader,
@@ -64,7 +67,7 @@ data class AdkServerConfig(
   val plugins: List<Plugin> = emptyList(),
   val webUiEnabled: Boolean? = null,
   val camelCaseEnforced: Boolean? = null,
-  val includeAppInfo: Boolean? = null,
+  @property:ExperimentalAppInfoFeature val includeAppInfo: Boolean? = null,
 ) {
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
@@ -135,6 +138,7 @@ data class AdkServerConfig(
       this.camelCaseEnforced = camelCaseEnforced
     }
 
+    @ExperimentalAppInfoFeature
     fun includeAppInfo(includeAppInfo: Boolean?): Builder = apply {
       this.includeAppInfo = includeAppInfo
     }

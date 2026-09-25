@@ -24,6 +24,7 @@ import com.google.adk.kt.examples.transfer.AgentTransferDemoAgentJava;
 import com.google.adk.kt.sessions.InMemorySessionService;
 import com.google.adk.kt.webserver.AdkApiServer;
 import com.google.adk.kt.webserver.AdkServerConfig;
+import com.google.adk.kt.webserver.ExperimentalAppInfoFeature;
 import com.google.adk.kt.webserver.dev.AdkDevServer;
 import com.google.adk.kt.webserver.loaders.MultiAgentLoader;
 
@@ -37,6 +38,7 @@ import com.google.adk.kt.webserver.loaders.MultiAgentLoader;
  */
 public final class ExampleServerJava {
 
+  @ExperimentalAppInfoFeature
   public static void main(String[] args) {
     int port = AdkServerConfig.DEFAULT_PORT;
     boolean dev = false;

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalAppInfoFeature::class)
+
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
