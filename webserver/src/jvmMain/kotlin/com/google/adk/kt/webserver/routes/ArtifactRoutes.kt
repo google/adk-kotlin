@@ -104,12 +104,16 @@ internal fun Route.artifactRoutes(artifactService: ArtifactService) {
       val userId = params.userId
       val sessionId = params.sessionId
 
-      val part = call.receiveRequiredBody<Part>()
+      val part = call.receiveRequiredBodyOrRespond<Part>() ?: return@post
       val artifactName =
         part.fileData?.displayName
           ?: part.inlineData?.displayName
           ?: part.fileData?.fileUri?.substringAfterLast('/')
-          ?: return@post call.respond(HttpStatusCode.BadRequest, "Artifact name not found in part")
+      if (artifactName == null) {
+        // The part decoded, but doesn't pass the validation, hence 422 instead of 400.
+        call.respond(HttpStatusCode.UnprocessableEntity, "Artifact name not found in part")
+        return@post
+      }
 
       val savedPart =
         artifactService.saveAndReloadArtifact(

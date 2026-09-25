@@ -57,7 +57,7 @@ internal fun Route.runRoutes(
 ) {
   route("/run") {
     post {
-      val request = call.receiveRequiredBody<AgentRunRequest>()
+      val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
       val agent = agentLoader.loadAgent(request.appName)
       if (agent == null) {
         return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
@@ -86,7 +86,7 @@ internal fun Route.runRoutes(
   }
 
   post("/run_sse") {
-    val request = call.receiveRequiredBody<AgentRunRequest>()
+    val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
     val agent = agentLoader.loadAgent(request.appName)
     if (agent == null) {
       return@post call.respond(HttpStatusCode.NotFound, "Agent not found")

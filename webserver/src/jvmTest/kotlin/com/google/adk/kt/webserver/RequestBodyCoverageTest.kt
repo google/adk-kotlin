@@ -42,8 +42,9 @@ import org.junit.runners.JUnit4
  * Holds the rule on reading a body to every POST route, not only the three that read one today.
  *
  * A route added later with a plain `receive` compiles and passes its own test while quietly
- * bringing back both defects these rules exist to prevent: the wrong status for an empty body, and
- * the rejected body quoted in a failure the engine logs. Surveying the route tree is what notices.
+ * bringing back the defects these rules exist to prevent: the wrong status for an empty body, the
+ * wrong status for one that parses but does not fit, and the rejected body quoted in a failure the
+ * engine logs. Surveying the route tree is what notices.
  */
 @RunWith(JUnit4::class)
 class RequestBodyCoverageTest {
@@ -59,6 +60,25 @@ class RequestBodyCoverageTest {
 
     // A survey that stops reaching the routes it exists for would otherwise pass on an empty list.
     assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
+    assertThat(offenders).isEmpty()
+  }
+
+  @Test
+  fun noPostRoute_answersBadRequestOrFails_toABodyThatParses() = testApplication {
+    val app = startedApplication()
+    val paths = app.postRoutePaths()
+
+    assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
+    val statusByPath = paths.associateWith { client.post(it) { jsonBody("[1, 2, 3]") }.status }
+
+    // A parseable body that fits no type must reach the decoder and be refused as 422.
+    for (route in BODY_READING_ROUTES) {
+      assertThat(statusByPath[route]).isEqualTo(HttpStatusCode.UnprocessableEntity)
+    }
+
+    // 400 means it never reached the decoder and 5xx that a serializer threw; both are wrong.
+    val offenders =
+      statusByPath.filterValues { it == HttpStatusCode.BadRequest || it.value >= 500 }.keys
     assertThat(offenders).isEmpty()
   }
 

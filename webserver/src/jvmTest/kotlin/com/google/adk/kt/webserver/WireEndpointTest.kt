@@ -57,7 +57,8 @@ import org.junit.runners.JUnit4
 /**
  * Covers the wire rules the ADK agent runtime puts on every endpoint, against real responses: read
  * `snake_case` or `camelCase`, ignore unrecognized keys, emit `camelCase` without null fields, and
- * answer 400 for a missing body but 415 for a content type it cannot read.
+ * answer 400 for a missing body, 422 for one that parses but does not fit, and 415 for a content
+ * type it cannot read.
  */
 @RunWith(JUnit4::class)
 class WireEndpointTest {
@@ -214,6 +215,95 @@ class WireEndpointTest {
     val response = client.post("/apps/a/users/u/sessions/s/artifacts") { jsonBody("") }
 
     assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_bodyMissingARequiredField_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("{}") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun run_bodyWithAFieldOfTheWrongType_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("""{"appName": 7, "userId": "testUser"}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun runSse_bodyMissingARequiredField_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run_sse") { jsonBody("""{"userId": "testUser"}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun uploadArtifact_partWithAFieldOfTheWrongType_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/apps/a/users/u/sessions/s/artifacts") { jsonBody("""{"text": 7}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun run_bodyNestedDeepEnoughToExhaustTheStack_isRejected() = testApplication {
+    // The converter walks free-form values recursively, so the caller picks the depth; the
+    // resulting Error is not a decoding failure and would otherwise escape as a 500.
+    application { adkApiModule(testConfig()) }
+    val deep = buildString {
+      repeat(DEEP_NESTING) { append("""{"a":""") }
+      append("1")
+      repeat(DEEP_NESTING) { append("}") }
+    }
+
+    val response =
+      client.post("/run") { jsonBody("""{"appName":"a","userId":"u","stateDelta":{"k":$deep}}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_bodyThatIsAJsonNull_isRejectedAsMissing() = testApplication {
+    // Content negotiation reports a literal null as no body, so it is missing rather than unfit.
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("null") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_stateDeltaHoldingANullValue_isUnprocessable() = testApplication {
+    // AnySerializer raises IllegalStateException, which a SerializationException catch would miss.
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/run") {
+        jsonBody("""{"appName": "echo-agent", "userId": "u", "stateDelta": {"k": null}}""")
+      }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun run_unprocessableBody_answersWithNoBodyOfItsOwn() = testApplication {
+    // The decoder's message quotes the rejected input, so the 422 must carry no body.
+    val canary = "do-not-echo-this-value"
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("""{"appName": {"k": "$canary"}}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+    assertThat(response.bodyAsText()).isEmpty()
   }
 
   @Test
@@ -448,6 +538,9 @@ class WireEndpointTest {
 
   private companion object {
     const val SSE_PREFIX = "data: "
+
+    /** Deeper than a default JVM stack survives with a frame per level. */
+    const val DEEP_NESTING = 5000
 
     val EVENT_LIST_DESCRIPTOR: SerialDescriptor = ListSerializer(Event.serializer()).descriptor
   }
