@@ -1,5 +1,80 @@
 # Changelog
 
+## [1.2.0](https://github.com/google/adk-kotlin/compare/v1.1.0...v1.2.0) (2026-09-25)
+
+
+### Features
+
+* accept a session initialization body when creating a session ([79d07e0](https://github.com/google/adk-kotlin/commit/79d07e07cb15b070a1cf39bfb6b07aa694ab9be1))
+* accept Context as a @Tool injected parameter ([07f3d04](https://github.com/google/adk-kotlin/commit/07f3d046e35c5ee6c06483e8fb1b8c9f020a7507))
+* accept snake_case and camelCase in web server request bodies ([94dcdd1](https://github.com/google/adk-kotlin/commit/94dcdd1353028b5a95aaf05dcbaafe9002cd7dd4))
+* accept snake_case names and fractional-second timestamps when decoding events ([8500c42](https://github.com/google/adk-kotlin/commit/8500c428f10dfca3c4856d2cfa7259b60c2615e0))
+* add a client-side Vertex AI RAG retrieval tool ([2ac2835](https://github.com/google/adk-kotlin/commit/2ac2835c40da3e611d65b70e7273638bfd74af68))
+* add a setting for enforcing camelCase spelling for webserver ([0e9de9d](https://github.com/google/adk-kotlin/commit/0e9de9df494eea668bc1f7bdd540e21a0dec0e4b))
+* add an identity processor that tells the model the agent's name ([894e56f](https://github.com/google/adk-kotlin/commit/894e56f7c6d532f88b8ea02ef0810b781431166a))
+* add input, output, and state schemas to workflow nodes ([bdf576c](https://github.com/google/adk-kotlin/commit/bdf576c67d155889fdea33a0d41333a3cf22c135))
+* add JoinNode to join parallel workflow branches ([86b1a73](https://github.com/google/adk-kotlin/commit/86b1a73745b485a820d29d4d2abb06c4c3330bdc))
+* add node retry policies and timeouts to the workflow engine ([084e102](https://github.com/google/adk-kotlin/commit/084e102db5a659ff677bbc3a5ce70cb64fc04ce8))
+* add Spring AI ChatModel adapter (SpringAiModel) ([393919e](https://github.com/google/adk-kotlin/commit/393919ee362331cd55920d5d9ed8acb5542248d0))
+* add Spring AI tool bridge (SpringAiTool) ([7834dd0](https://github.com/google/adk-kotlin/commit/7834dd0b1924f4a52f2b43a54c36e73b4f377c8e))
+* add the experimental workflow graph structure ([5c3d97d](https://github.com/google/adk-kotlin/commit/5c3d97d55d0626bede38a6001e2a326ad6d068f3))
+* add the experimental workflow scheduler and runtime ([3ee51c3](https://github.com/google/adk-kotlin/commit/3ee51c3be53333b412645feeb25440a214e10528))
+* add the workflow single-node runner and node execution context ([c71629e](https://github.com/google/adk-kotlin/commit/c71629e55a336fa69310fe5cbe24b7be542bd5cf))
+* add toBuilder() to data classes with Java builders ([db703e7](https://github.com/google/adk-kotlin/commit/db703e748247a01a3a1739f615cf9952c97fa36a))
+* added agents.md and useful skill ([77623f7](https://github.com/google/adk-kotlin/commit/77623f75cbf96c884815ec961ac7f2c5b71dc33e))
+* allow a Node to be an application root, deprecating the agent field ([8bf96f0](https://github.com/google/adk-kotlin/commit/8bf96f0bb9a9f524fe24e33369f8c2686ab311fe))
+* expose MCP tool annotations as an SDK-agnostic data class ([e0b109a](https://github.com/google/adk-kotlin/commit/e0b109a273fa138f1bfb7ae3c19479c9089c4d1d))
+* introduce experimental workflow event seams ([183a212](https://github.com/google/adk-kotlin/commit/183a2128243ad3b336dedb07629ee5786020ed83))
+* introduce the experimental Node and BaseNode workflow abstractions ([146b779](https://github.com/google/adk-kotlin/commit/146b779ddf5679771c6e68d1c2cd26441b3f6857))
+* **live:** add the live conversation types and their Gen AI SDK converters ([a5900c6](https://github.com/google/adk-kotlin/commit/a5900c60abed07894f7147a7b36127cb2296efe6))
+* mark the app-info endpoint experimental ([eca8b55](https://github.com/google/adk-kotlin/commit/eca8b55f85d311992c1fb0981d840ddf08974274))
+* record a @Tool's source class and method in its generated metadata ([ce6bc85](https://github.com/google/adk-kotlin/commit/ce6bc85a7eaf49c026521d0ec6546d1b66ebd8c2))
+* report every LLM agent from the app-info endpoint ([5ab36b4](https://github.com/google/adk-kotlin/commit/5ab36b47456e666233600720e92aa1c3cf17ab84))
+* run any workflow Node as an invocation root ([84b234c](https://github.com/google/adk-kotlin/commit/84b234caf6b538048a86dd00072661ed106af2af))
+* upgrade the GenAI SDK to 1.1 and map additional SDK fields in ADK Kotlin and Firebase ([c15bc0c](https://github.com/google/adk-kotlin/commit/c15bc0c930c58a4420352016125c14590a969bcd))
+* validate workflow graphs at construction time ([9d585be](https://github.com/google/adk-kotlin/commit/9d585be39360b8f2f935f79e560140ada572eb9b))
+
+
+### Bug Fixes
+
+* align getEvents(currentBranch) with the reference branch-scoping rule ([1f83223](https://github.com/google/adk-kotlin/commit/1f83223c73937a412804f94d98a7b3dcc988f8f1))
+* allow a text instruction together with staticInstruction ([1d03c68](https://github.com/google/adk-kotlin/commit/1d03c68aa61b335ef224b4217daec6443cf3d138))
+* answer 400 rather than 415 for an empty request body ([a43fe9e](https://github.com/google/adk-kotlin/commit/a43fe9e82246e4e632d0d5509fb70edb8ff87fb2))
+* answer 400 when a request sends no body and no Content-Type ([4284355](https://github.com/google/adk-kotlin/commit/42843556a632760e22af0f8530566f0e622616d7))
+* answer 422 when a request body parses but does not match the endpoint ([61838c1](https://github.com/google/adk-kotlin/commit/61838c10f5cd73271833de2a66cc062982419c9e))
+* apply temp-prefixed session state to the live session without persisting it ([254d05b](https://github.com/google/adk-kotlin/commit/254d05b98e5763a9ed16497753dc558ae4c5425f))
+* apply Vertex session state only after the remote append succeeds ([1bc97e4](https://github.com/google/adk-kotlin/commit/1bc97e46ed1bf639c8e7e76466415cd9aeb5f6ca))
+* count tool call and response payloads in the prompt token estimate ([498a938](https://github.com/google/adk-kotlin/commit/498a9385930b2f312afbd4d63a2bd646874960df))
+* emit an SSE error frame when a run fails after the stream opens ([4cd9aea](https://github.com/google/adk-kotlin/commit/4cd9aea5cecbd7396e345258042100fae3cbeb7e))
+* fire every default route edge of a workflow node ([a1061ae](https://github.com/google/adk-kotlin/commit/a1061ae374b1d4b2101ca6160edd14c57b407e3d))
+* give each streamed model event its own EventActions snapshot ([56b5ced](https://github.com/google/adk-kotlin/commit/56b5ced73c2abdd462c9f9913d817b1a989a1525))
+* honor the `StreamableHttp` url path instead of always sending requests to `<host>/mcp` ([a0f51a0](https://github.com/google/adk-kotlin/commit/a0f51a047574894e9cc709762bf1c2cf57d3ec37))
+* keep one generated id for a function call streamed over several chunks ([e1aa212](https://github.com/google/adk-kotlin/commit/e1aa212bda344899a60eef5c109175d300942255))
+* key the LiteRT-LM conversation cache on system instruction and tools ([5cea50f](https://github.com/google/adk-kotlin/commit/5cea50f577a18f5747e23c62fc2d04813c0138f2))
+* measure the compaction token threshold against the agent's own prompt ([772b2e5](https://github.com/google/adk-kotlin/commit/772b2e58c933212d0db958af202604bbd45beed9))
+* render null state values as empty strings in instruction placeholders ([e73dd23](https://github.com/google/adk-kotlin/commit/e73dd23a51efaf1e82155468423112d41d59d16b))
+* require an artifact service for artifact placeholders in instructions ([ebd4e4b](https://github.com/google/adk-kotlin/commit/ebd4e4b2660ad951020b0ecccc5f228491ba8fab))
+* require opt-in for every workflow member of Node ([21c967f](https://github.com/google/adk-kotlin/commit/21c967f5ec4d7d9009cee19ab4835396ecae526e))
+* restore the 1.1.0 constructor parameter order of App and InvocationContext ([4750540](https://github.com/google/adk-kotlin/commit/4750540a8fd704e5832a5d565785aabd159dc122))
+* rethrow CancellationException instead of swallowing it in error recovery ([af252f9](https://github.com/google/adk-kotlin/commit/af252f9f3de441de92083c0de8b1c019f69376e5))
+* route beforeRun early-exit events through onEvent plugin callbacks ([12564f8](https://github.com/google/adk-kotlin/commit/12564f89124aa931ee3b5cac39102687060d242b))
+* scope app, user and temp prefixes in a Room session's initial state ([efdf8f6](https://github.com/google/adk-kotlin/commit/efdf8f639d3f17a14f44d8e0ea8c6462c9ff8607))
+* scope app, user and temp prefixes in an InMemory session's initial state ([c95b5c0](https://github.com/google/adk-kotlin/commit/c95b5c0375cdfa5e2fadd1bb9ca07fa3c255a2a4))
+* send `{"result": null}` for tools that return nothing ([159087d](https://github.com/google/adk-kotlin/commit/159087d4f70c7a4c8e825ea7a689b8e72196f096))
+* **sessions:** reject a duplicate session id instead of overwriting the session ([22b0584](https://github.com/google/adk-kotlin/commit/22b058429db005aa18fc4bd69d9d5211f07474ae))
+* set an invocation id on compaction events created by LlmEventSummarizer ([8209deb](https://github.com/google/adk-kotlin/commit/8209debd6c83922307422ab2b912035251324951))
+* skip compaction when summarization fails instead of failing the turn ([b15c7da](https://github.com/google/adk-kotlin/commit/b15c7da8d5f1bf3c829acc5d3771d0c1468f52ad))
+* skip persisting partial events in InMemorySessionService ([a613325](https://github.com/google/adk-kotlin/commit/a613325056cd8d51ff769082e1c7c06b5d71a1cd))
+* stop a rejected request body appearing in the resulting error ([591f487](https://github.com/google/adk-kotlin/commit/591f487fcab57c48108342f25a1a7bab9f3dbb23))
+* stop the LlmAgent turn loop when a model stream ends on a partial event ([1b5157f](https://github.com/google/adk-kotlin/commit/1b5157fdff8037bb9d744bcc194d009164f84d27))
+* stop the prompt token count scan at a compaction event ([a303484](https://github.com/google/adk-kotlin/commit/a3034840b42d231ea157ef99d7e62e436622fb9b))
+
+
+### Documentation
+
+* add placeholder AGENTS.md, CLAUDE.md, and .gemini styleguide ([ebb8b44](https://github.com/google/adk-kotlin/commit/ebb8b4421eee4974f364faa6aad130fa17a2f0b6))
+* fix modules table and document Java interop in `README.md` ([2fa08e4](https://github.com/google/adk-kotlin/commit/2fa08e4f6a3196737e8d8e650965e1a6b87b9372))
+
 ## [1.1.0](https://github.com/google/adk-kotlin/compare/v1.0.0...v1.1.0) (2026-09-14)
 
 
