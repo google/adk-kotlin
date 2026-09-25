@@ -67,7 +67,7 @@ val docsReactiveStreamsVersion = libs.versions.reactive.streams.get()
 
 allprojects {
   group = "com.google.adk"
-  version = "1.1.1-SNAPSHOT" // x-release-please-version
+  version = "1.2.0" // x-release-please-version
 
   repositories {
     mavenCentral()
