@@ -31,6 +31,7 @@ import com.google.adk.kt.types.ToolType
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
@@ -105,6 +106,100 @@ class StreamingResponseAggregatorTest {
     assertNotNull(fc)
     assertEquals("get_weather", fc.name)
     assertEquals("San Francisco", fc.args["location"])
+  }
+
+  @Test
+  fun testStreamingFunctionCall_partialAndFinalResponseShareGeneratedId() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val partial1 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("my_tool", "$.x", "hello", willContinue = true))
+      )
+    val unused =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.x", " world", willContinue = false))
+      )
+    val finalResp = aggregator.aggregate()
+
+    val finalFc = finalResp?.content?.parts?.single()?.functionCall
+    assertNotNull(finalFc)
+    assertEquals(mapOf("x" to "hello world"), finalFc.args)
+    val finalId = assertNotNull(finalFc.id)
+    assertTrue(finalId.startsWith(FunctionCall.ADK_FUNCTION_CALL_ID_PREFIX))
+    assertEquals(finalId, partial1.content?.parts?.single()?.functionCall?.id)
+  }
+
+  @Test
+  fun testStreamedCall_continuationChunkWithEmptyId_keepsFirstChunkId() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val partial1 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("my_tool", "$.x", "hello", willContinue = true))
+      )
+    val unused =
+      aggregator.processResponse(
+        createFcResp(createPartialFc(null, "$.x", " world", willContinue = false).copy(id = ""))
+      )
+    val finalResp = aggregator.aggregate()
+
+    val firstId = assertNotNull(partial1.content?.parts?.single()?.functionCall?.id)
+    assertEquals(firstId, finalResp?.content?.parts?.single()?.functionCall?.id)
+  }
+
+  @Test
+  fun testStreamingFunctionCalls_inSeparateChunks_getDifferentIds() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val unused1 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("tool_a", "$.a", "val_a", willContinue = false))
+      )
+    val unused2 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("tool_b", "$.b", "val_b", willContinue = false))
+      )
+    val finalResp = aggregator.aggregate()
+
+    val ids = finalResp?.content?.parts?.map { it.functionCall?.id }
+    assertNotNull(ids)
+    assertEquals(2, ids.size)
+    assertTrue(ids.all { it != null && it.startsWith(FunctionCall.ADK_FUNCTION_CALL_ID_PREFIX) })
+    assertNotEquals(ids[0], ids[1])
+  }
+
+  @Test
+  fun testStreamedCallEndAndNewSameNameCall_inOneChunk_getDifferentIds() = runBlocking {
+    val aggregator = StreamingResponseAggregator()
+
+    val partial1 =
+      aggregator.processResponse(
+        createFcResp(createPartialFc("get_weather", "$.city", "SF", willContinue = true))
+      )
+    val unused =
+      aggregator.processResponse(
+        LlmResponse(
+          content =
+            Content(
+              parts =
+                listOf(
+                  Part(functionCall = FunctionCall(willContinue = false)),
+                  Part(
+                    functionCall = FunctionCall(name = "get_weather", args = mapOf("city" to "NY"))
+                  ),
+                )
+            )
+        )
+      )
+    val finalResp = aggregator.aggregate()
+
+    val calls = finalResp?.content?.parts?.mapNotNull { it.functionCall }
+    assertNotNull(calls)
+    assertEquals(listOf("SF", "NY"), calls.map { it.args["city"] })
+    assertEquals(partial1.content?.parts?.single()?.functionCall?.id, calls[0].id)
+    assertNotNull(calls[1].id)
+    assertNotEquals(calls[0].id, calls[1].id)
   }
 
   @Test
