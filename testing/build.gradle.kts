@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-// Source-only KMP test fixtures shared by core and a2a tests. Not published; consumed only by other
-// modules' test source sets (see b/532049194).
+// Source-only KMP test fixtures shared by core and a2a tests. Not published; consumed only by
+// other modules' test source sets.
 
 plugins {
   kotlin("multiplatform")

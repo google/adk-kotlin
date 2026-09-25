@@ -807,7 +807,7 @@ class RequestConfirmationProcessorTest {
     // Locks the ADK client/API wire-format compatibility: the client may send the
     // ToolConfirmation as a JSON string under a single "response" key (mirroring the
     // Java/Python decoders). The processor must unwrap it; otherwise the confirmation is
-    // dropped and the gated tool is never resumed (b/522629309).
+    // dropped and the gated tool is never resumed.
     val toolName = "risky_tool"
     var toolRuns = 0
     val (session, context) =

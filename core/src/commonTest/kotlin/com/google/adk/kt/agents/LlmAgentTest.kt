@@ -870,7 +870,7 @@ class LlmAgentTest {
    * Tool sets `toolContext.actions.endOfAgent = true` mid-invocation: the per-step loop in
    * [LlmAgent.executeTurns] must honor it and stop after the current step, mirroring Java ADK's
    * `BaseLlmFlow.run` loop that breaks on `getLast(eventList).actions().endInvocation()`. This
-   * exercises the Java-tool path described in b/522621203 (a Java tool calling
+   * exercises the Java-tool path (a Java tool calling
    * `toolContext.actions().setEndInvocation(true)`, which sets `EventActions.endOfAgent` in the
    * common data model).
    */
@@ -964,7 +964,7 @@ class LlmAgentTest {
    * A model/agent callback ends the invocation via the new `CallbackContext.endInvocation()`
    * helper. Without this helper, callbacks defined outside the `com.google.adk.kt` module cannot
    * reach `CallbackContext.invocationContext` (it is `internal`) and therefore cannot terminate the
-   * invocation -- the gap called out in b/522621203.
+   * invocation.
    */
   @Test
   fun runAsync_beforeModelCallback_endsInvocation_stopsLoop() = runTest {
