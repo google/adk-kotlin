@@ -24,6 +24,7 @@ import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.LiveConnectConfig
 import com.google.adk.kt.types.LlmConstants
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -47,6 +48,8 @@ import kotlinx.serialization.json.encodeToJsonElement
  *   reuse an existing cache.
  * @property cacheableContentsTokenCount Prompt token count from the previous request, used to gate
  *   cache creation on a minimum size.
+ * @property liveConnectConfig The configuration used when opening a live connection. Ignored by
+ *   [Model.generateContent]; it applies only to [Model.connect].
  */
 data class LlmRequest(
   val model: Model? = null,
@@ -56,6 +59,7 @@ data class LlmRequest(
   val cacheConfig: ContextCacheConfig? = null,
   val cacheMetadata: CacheMetadata? = null,
   val cacheableContentsTokenCount: Int? = null,
+  val liveConnectConfig: LiveConnectConfig = LiveConnectConfig(),
 ) {
   /**
    * Appends tools to the request and merges any new function declarations.
@@ -212,6 +216,7 @@ data class LlmRequest(
       .model(model)
       .contents(contents)
       .config(config)
+      .liveConnectConfig(liveConnectConfig)
       .cacheConfig(cacheConfig)
       .cacheMetadata(cacheMetadata)
       .cacheableContentsTokenCount(cacheableContentsTokenCount)
@@ -228,6 +233,7 @@ data class LlmRequest(
     private var model: Model? = null
     private var contents: List<Content> = emptyList()
     private var config: GenerateContentConfig = GenerateContentConfig()
+    private var liveConnectConfig: LiveConnectConfig = LiveConnectConfig()
     private var cacheConfig: ContextCacheConfig? = null
     private var cacheMetadata: CacheMetadata? = null
     private var cacheableContentsTokenCount: Int? = null
@@ -238,6 +244,10 @@ data class LlmRequest(
     fun contents(contents: List<Content>): Builder = apply { this.contents = contents }
 
     fun config(config: GenerateContentConfig): Builder = apply { this.config = config }
+
+    fun liveConnectConfig(liveConnectConfig: LiveConnectConfig): Builder = apply {
+      this.liveConnectConfig = liveConnectConfig
+    }
 
     fun cacheConfig(cacheConfig: ContextCacheConfig?): Builder = apply {
       this.cacheConfig = cacheConfig
@@ -261,6 +271,7 @@ data class LlmRequest(
         contents = contents,
         config = config,
         toolsDict = toolsDict,
+        liveConnectConfig = liveConnectConfig,
         cacheConfig = cacheConfig,
         cacheMetadata = cacheMetadata,
         cacheableContentsTokenCount = cacheableContentsTokenCount,

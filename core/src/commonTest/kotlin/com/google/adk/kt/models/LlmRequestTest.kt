@@ -29,6 +29,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.LiveConnectConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
@@ -238,6 +239,7 @@ class LlmRequestTest {
         config = GenerateContentConfig(temperature = 0.5f),
         // No public builder setter, so only toBuilder carries it over.
         toolsDict = listOf(TestTool("tool1")),
+        liveConnectConfig = LiveConnectConfig(temperature = 0.5f),
         cacheConfig = ContextCacheConfig(),
         cacheMetadata = CacheMetadata(fingerprint = "abc", contentsCount = 1),
         cacheableContentsTokenCount = 5000,
@@ -248,5 +250,17 @@ class LlmRequestTest {
       request.copy(contents = emptyList()),
       request.toBuilder().contents(emptyList()).build(),
     )
+  }
+
+  @Test
+  fun liveConnectConfig_set_carriesItToTheRequest() {
+    val request = LlmRequest(liveConnectConfig = LiveConnectConfig(temperature = 0.5f))
+
+    assertEquals(0.5f, request.liveConnectConfig.temperature)
+  }
+
+  @Test
+  fun liveConnectConfig_unset_defaultsToEmptyConfig() {
+    assertEquals(LiveConnectConfig(), LlmRequest().liveConnectConfig)
   }
 }

@@ -29,6 +29,19 @@ interface Model {
    * @param stream Whether to enable streaming mode. If true, partial responses will be emitted.
    */
   fun generateContent(request: LlmRequest, stream: Boolean = false): Flow<LlmResponse>
+
+  /**
+   * Opens a live (bidirectional streaming) connection, configured by
+   * [LlmRequest.liveConnectConfig].
+   *
+   * The returned connection is open but not yet primed; send history or content to start the
+   * conversation, and close it when it ends.
+   *
+   * @param request The request whose live config, model name, system instruction and tools
+   *   configure the session.
+   * @throws UnsupportedOperationException if this model does not support live connections.
+   */
+  suspend fun connect(request: LlmRequest): LiveConnection = throw liveConnectionsUnsupported()
 }
 
 private val PATH_PATTERNS =
@@ -62,3 +75,7 @@ private val GEMINI_2_PATTERN = Regex("^gemini-2\\..*")
  */
 internal val Model.canUseOutputSchemaWithTools: Boolean
   get() = !GEMINI_2_PATTERN.matches(shortName)
+
+/** What a model without live support throws from [Model.connect]. */
+internal fun Model.liveConnectionsUnsupported() =
+  UnsupportedOperationException("live connections are not supported for $name")

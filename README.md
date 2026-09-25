@@ -159,7 +159,10 @@ with `CompletableFuture` and Reactive Streams `Publisher`:
 -   **`BaseFutureTool`, `BaseFutureToolset`, `BaseFuturePlugin`,
     `BasePublisherModel`**, and the `BaseFuture*` session, memory, and artifact
     services let you implement ADK extension points in Java by overriding
-    `CompletableFuture`-returning methods.
+    `CompletableFuture`- or `Publisher`-returning methods.
+-   **`BaseFutureLiveConnection`** lets a Java model support live connections:
+    return a future of one from `BasePublisherModel.connectAsync`. Its sends and
+    close return `CompletableFuture`s, and each model turn is a `Publisher`.
 -   **`@Tool` / `@Param`** annotations work from Java:
     `ReflectiveTools.fromMethod(...)` turns an annotated plain method into a tool
     for `javac`-only modules, or KSP can process `@Tool` directly when you build
