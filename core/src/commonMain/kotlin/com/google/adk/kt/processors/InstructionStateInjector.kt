@@ -72,7 +72,8 @@ internal object InstructionStateInjector {
         else -> {
           val stateValue =
             if (context.session.state.containsKey(varName)) {
-              context.session.state[varName].toString()
+              // Vertex AI sessions return a stored null as State.REMOVED.
+              context.session.state[varName]?.takeUnless { it === State.REMOVED }?.toString() ?: ""
             } else {
               null
             }
