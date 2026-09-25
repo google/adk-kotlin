@@ -78,6 +78,28 @@ class Workflow(
     require(maxConcurrency == null || maxConcurrency >= 1) {
       "maxConcurrency must be at least 1, or null for no limit."
     }
+    validateStateSchema()
+  }
+
+  /**
+   * Rejects a function node that binds a state key the workflow's schema does not declare, so the
+   * mismatch surfaces when the graph is built rather than as a missing value at run time.
+   */
+  private fun validateStateSchema() {
+    val nodes = graph?.nodes ?: return
+    for (node in nodes) {
+      // A node-input-bound parameter is read from the predecessor's output, not from state, so
+      // only state-bound function nodes are validated against the state schema.
+      if (node !is FunctionNode || node.parameterBinding != ParameterBinding.STATE) continue
+      val declared = (node.stateSchema ?: stateSchema)?.properties?.keys ?: continue
+      for (param in node.params) {
+        if (param.name == FunctionNode.NODE_INPUT_PARAM || param.name in declared) continue
+        throw IllegalArgumentException(
+          "FunctionNode '${node.name}' parameter '${param.name}' is not declared in state_schema." +
+            " Declared fields: ${declared.sorted()}"
+        )
+      }
+    }
   }
 
   /**
