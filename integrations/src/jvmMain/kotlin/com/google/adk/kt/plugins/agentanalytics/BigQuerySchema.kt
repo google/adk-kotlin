@@ -24,8 +24,25 @@ import com.google.cloud.bigquery.StandardSQLTypeName
 /** Utility for defining the BigQuery events table schema. */
 object BigQuerySchema {
 
-  const val SCHEMA_VERSION = "1"
+  const val SCHEMA_VERSION = "2"
   const val SCHEMA_VERSION_LABEL_KEY = "adk_schema_version"
+
+  /**
+   * Key under `attributes` carrying the ADK envelope, mirroring Python's `attributes.adk`.
+   *
+   * This is the row-level marker that distinguishes ADK-produced rows from anything else sharing
+   * the table, and is the documented fallback when the table label is absent.
+   */
+  const val ADK_ATTRIBUTE_KEY = "adk"
+
+  /**
+   * ADK envelope version stamped onto every row as `attributes.adk.schema_version`.
+   *
+   * Independent of [SCHEMA_VERSION]: this names the producer's ADK attribute contract (so
+   * downstream consumers can gate on it), not the BigQuery row shape. Matches Python's
+   * `_ADK_ENVELOPE_SCHEMA_VERSION`.
+   */
+  const val ADK_ENVELOPE_SCHEMA_VERSION = "1"
 
   /** Returns names of fields to cluster by default. */
   fun getDefaultClusteringFields(): List<String> = listOf("event_type", "agent", "user_id")
@@ -40,6 +57,13 @@ object BigQuerySchema {
       Field.newBuilder("timestamp", StandardSQLTypeName.TIMESTAMP)
         .setMode(Field.Mode.REQUIRED)
         .setDescription("The UTC timestamp when the event occurred.")
+        .build(),
+      Field.newBuilder("event_id", StandardSQLTypeName.STRING)
+        .setMode(Field.Mode.NULLABLE)
+        .setDescription(
+          "A unique identifier assigned before the row is written. Writes are at-least-once, so" +
+            " this is the key used to identify duplicate rows at read time."
+        )
         .build(),
       Field.newBuilder("event_type", StandardSQLTypeName.STRING)
         .setMode(Field.Mode.NULLABLE)
