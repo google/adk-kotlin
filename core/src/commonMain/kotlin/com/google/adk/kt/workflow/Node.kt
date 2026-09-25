@@ -16,8 +16,10 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.types.Schema
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -36,6 +38,11 @@ import kotlinx.coroutines.flow.Flow
  * @property waitForOutput Whether the node stays re-triggerable until it produces an output or a
  *   route, instead of completing when its run completes.
  * @property config The node's retry policy and execution timeout.
+ * @property inputSchema Validates the node's input before it runs.
+ * @property outputSchema Validates the output value the node emits. A value assigned to
+ *   `Context.output` and a message-as-output event's content are not checked.
+ * @property stateSchema Declares the state keys the node uses. Child nodes inherit it unless they
+ *   declare their own.
  */
 interface Node {
   val name: String
@@ -53,6 +60,18 @@ interface Node {
   @ExperimentalWorkflowApi
   val config: NodeConfig
     get() = NodeConfig()
+
+  @ExperimentalWorkflowApi
+  val inputSchema: Schema?
+    get() = null
+
+  @ExperimentalWorkflowApi
+  val outputSchema: Schema?
+    get() = null
+
+  @ExperimentalWorkflowApi
+  val stateSchema: Schema?
+    get() = null
 
   /**
    * Whether the node runs only once every predecessor has completed, receiving all their outputs
@@ -75,6 +94,23 @@ interface Node {
    *   explicit absence of an output.
    */
   @ExperimentalWorkflowApi fun runNode(context: Context, nodeInput: Any?): Flow<Any?>
+}
+
+/**
+ * Checks [nodeInput] against this node's [Node.inputSchema] with [SchemaUtils.validateValue] and
+ * returns it. A fan-in node receives its predecessors' outputs keyed by name, so the schema applies
+ * to each output rather than to the joined map.
+ */
+@OptIn(ExperimentalWorkflowApi::class)
+internal fun Node.validateInput(nodeInput: Any?): Any? {
+  val schema = inputSchema ?: return nodeInput
+  if (requiresAllPredecessors && nodeInput is Map<*, *>) {
+    return nodeInput.entries.associate { (predecessor, output) ->
+      val side = "output of '$predecessor' into node '$name'"
+      predecessor.toString() to SchemaUtils.validateValue(output, schema, side).getOrThrow()
+    }
+  }
+  return SchemaUtils.validateValue(nodeInput, schema, "input of node '$name'").getOrThrow()
 }
 
 /** Validates that [name] is non-empty and contains no '/', '@', or '.' characters. */

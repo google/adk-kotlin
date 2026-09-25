@@ -16,9 +16,21 @@
 
 package com.google.adk.kt
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.Json
+import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.jsonElementToAny
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 
 /**
  * Utility class for validating schemas.
@@ -307,5 +319,78 @@ object SchemaUtils {
       val parsed = Json.fromJsonToMap(output)
       validateMapOnSchema(parsed, schema, "Output").getOrThrow()
       parsed
+    }
+
+  /**
+   * Checks any [value] against [schema] with the rules [validateMapOnSchema] applies to an
+   * argument, and returns it; a null [value] passes. A [Content] becomes its text, read as JSON
+   * unless [schema] takes a string or the text is not JSON. A failure names [argsName] and, for a
+   * map, a reason that names only parts of the schema, but never the value.
+   */
+  internal fun validateValue(
+    value: Any?,
+    schema: Schema,
+    argsName: String = "value",
+  ): Result<Any?> {
+    if (value == null) return Result.success(null)
+    val data =
+      if (value !is Content) value
+      else value.text().let { if (acceptsString(schema)) it else readJson(it).getOrDefault(it) }
+    val detail: String?
+    if (data is Map<*, *>) {
+      val args = data.entries.associate { (k, v) -> k.toString() to v }
+      val failure = validateMapOnSchema(args, schema, "Value").exceptionOrNull()
+      if (failure == null) return Result.success(data)
+      val properties = schema.properties
+      // An undeclared key is data, so it goes unnamed; other messages name only the schema's parts.
+      detail =
+        if (properties != null && args.keys.any { it !in properties }) {
+          "it has a key the schema does not declare"
+        } else {
+          failure.message
+        }
+    } else {
+      val failure = matchType(data, schema, "Value", UnionBudget()).exceptionOrNull()
+      if (failure == null) return Result.success(data)
+      // A type mismatch message quotes the value; only running out of budget does not.
+      detail = (failure as? SchemaTooComplexException)?.message
+    }
+    val suffix = detail?.let { ": $it" } ?: "."
+    return Result.failure(
+      IllegalArgumentException("validation error: $argsName does not match its schema$suffix")
+    )
+  }
+
+  /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
+  internal fun acceptsString(schema: Schema): Boolean =
+    schema.type == Type.STRING || schema.anyOf.orEmpty().any { acceptsString(it) }
+
+  /**
+   * Reads [text] as JSON into plain Kotlin values. Text that is not JSON fails, including an
+   * unquoted word, which the JSON parser alone takes as a literal, and the failure never quotes it.
+   */
+  @OptIn(FrameworkInternalApi::class)
+  internal fun readJson(text: String): Result<Any?> {
+    val element =
+      try {
+        adkJson.parseToJsonElement(text)
+      } catch (e: SerializationException) {
+        null
+      }
+    if (element == null || !isStrictJson(element)) {
+      return Result.failure(IllegalArgumentException("validation error: value is not valid JSON."))
+    }
+    return Result.success(jsonElementToAny(element))
+  }
+
+  private fun isStrictJson(element: JsonElement): Boolean =
+    when (element) {
+      is JsonObject -> element.values.all { isStrictJson(it) }
+      is JsonArray -> element.all { isStrictJson(it) }
+      is JsonPrimitive ->
+        element is JsonNull ||
+          element.isString ||
+          element.booleanOrNull != null ||
+          element.doubleOrNull?.isFinite() == true
     }
 }

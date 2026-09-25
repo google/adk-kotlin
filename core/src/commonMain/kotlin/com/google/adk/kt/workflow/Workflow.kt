@@ -23,6 +23,7 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.types.Schema
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -40,6 +41,10 @@ import kotlinx.coroutines.flow.flow
  *   as the root of an invocation or nested inside another graph. A workflow reports a child's
  *   failure rather than raising, so its retry policy re-runs the whole graph on a child failure;
  *   each retry runs the graph fresh, since replaying already-produced children is a later change.
+ * @property inputSchema Validates the workflow's input before it runs.
+ * @property outputSchema Validates the terminal node's output as the workflow's own output, which
+ *   an enclosing workflow reads as this node's result.
+ * @property stateSchema Declares the state keys the workflow and its nodes use.
  */
 @ExperimentalWorkflowApi
 class Workflow(
@@ -50,6 +55,9 @@ class Workflow(
   rerunOnResume: Boolean = true,
   waitForOutput: Boolean = false,
   config: NodeConfig = NodeConfig(),
+  inputSchema: Schema? = null,
+  outputSchema: Schema? = null,
+  stateSchema: Schema? = null,
 ) :
   BaseNode(
     name = name,
@@ -57,6 +65,9 @@ class Workflow(
     rerunOnResume = rerunOnResume,
     waitForOutput = waitForOutput,
     config = config,
+    inputSchema = inputSchema,
+    outputSchema = outputSchema,
+    stateSchema = stateSchema,
   ) {
 
   /** The assembled graph, or null when the workflow has no edges. */

@@ -205,6 +205,7 @@ private constructor(
         // A final message-as-output event has no separate output; its content is the node's output.
         event.isMessageAsOutput -> context.output = event.content
       }
+      context.validateStateDelta(event.actions.stateDelta)
       if (event.longRunningToolIds.isNotEmpty()) nodeState.addInterruptIds(event.longRunningToolIds)
       // Only apply routing from this node's own events; events from nested nodes were already
       // handled at their own level.
@@ -396,6 +397,9 @@ private fun asBaseNode(node: Node): BaseNode =
         rerunOnResume = node.rerunOnResume,
         waitForOutput = node.waitForOutput,
         config = node.config,
+        inputSchema = node.inputSchema,
+        outputSchema = node.outputSchema,
+        stateSchema = node.stateSchema,
       ) {
       override val requiresAllPredecessors: Boolean
         get() = node.requiresAllPredecessors

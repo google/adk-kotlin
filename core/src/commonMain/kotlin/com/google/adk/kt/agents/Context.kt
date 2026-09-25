@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
@@ -29,6 +30,7 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.tools.ReadonlyToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Schema
 import com.google.adk.kt.workflow.BranchPath
 import com.google.adk.kt.workflow.EventSink
 import com.google.adk.kt.workflow.Node
@@ -209,12 +211,13 @@ open class Context(
    * Records a state change so it shows up in [state] and, on a callback or tool context, flushes on
    * the next event as a delta.
    *
-   * On a node activation, a [State.TEMP_PREFIX] key is held on this activation alone: it shows up
-   * in [state] but reaches no event and no successor node. Every other key writes into [actions]
-   * `stateDelta` via copy-on-write, so a holder of the previous [actions] instance does not see the
-   * write.
+   * On a node activation, a [State.TEMP_PREFIX] key is held on this activation alone, reaching no
+   * event and no successor node; every other key writes into [actions] `stateDelta` via
+   * copy-on-write, so a holder of the previous [actions] instance does not see the write. Under a
+   * node's state schema the write must match its declared key, or it fails.
    */
   fun updateState(key: String, value: Any) {
+    effectiveStateSchema?.let { validateStateEntry(it, key, value) }
     val ns = nodeState
     if (ns != null && key.startsWith(State.TEMP_PREFIX)) {
       ns.transientState[key] = value
@@ -223,12 +226,48 @@ open class Context(
     }
   }
 
+  /** Validates every entry of [delta] against the state schema in force here, if there is one. */
+  internal fun validateStateDelta(delta: Map<String, Any>) {
+    val schema = effectiveStateSchema ?: return
+    for ((key, value) in delta) validateStateEntry(schema, key, value)
+  }
+
+  /**
+   * Validates one state write against [schema] without changing the value. A scoped key (`app:`,
+   * `user:`, or `temp:`) passes unchecked, as does the removal sentinel, which stands for the key's
+   * absence rather than a value of its type.
+   */
+  private fun validateStateEntry(schema: Schema, key: String, value: Any) {
+    val scoped =
+      key.startsWith(State.APP_PREFIX) ||
+        key.startsWith(State.USER_PREFIX) ||
+        key.startsWith(State.TEMP_PREFIX)
+    if (scoped || value === State.REMOVED) return
+    val propertySchema =
+      requireNotNull(schema.properties?.get(key)) {
+        "validation error: state key '$key' is not declared in the state schema."
+      }
+    SchemaUtils.validateValue(value, propertySchema, argsName = "state key '$key'").getOrThrow()
+  }
+
+  /**
+   * The state schema in force here: this node's own [Node.stateSchema], or the nearest ancestor's.
+   * Null off-graph, so a callback or tool context validates nothing.
+   */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private val effectiveStateSchema: Schema?
+    get() {
+      val ns = nodeState ?: return null
+      return ns.node.stateSchema ?: parent?.effectiveStateSchema
+    }
+
   /**
    * Merges the given event actions into the current event actions, replacing [actions] with the
-   * merged result. Any reference to [actions] taken before the merge will not receive subsequent
-   * writes.
+   * merged result, after checking their state delta against the state schema in force here. Any
+   * reference to [actions] taken before the merge will not receive subsequent writes.
    */
   fun mergeEventActions(actions: EventActions) {
+    validateStateDelta(actions.stateDelta)
     this.actions = this.actions.mergeWith(actions)
   }
 

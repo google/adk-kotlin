@@ -18,6 +18,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.AfterModelCallback
 import com.google.adk.kt.callbacks.AfterToolCallback
@@ -147,8 +148,8 @@ class LlmAgent(
   val afterModelCallbacks: List<AfterModelCallback> = emptyList(),
   val beforeToolCallbacks: List<BeforeToolCallback> = emptyList(),
   val afterToolCallbacks: List<AfterToolCallback> = emptyList(),
-  val inputSchema: Schema? = null,
-  val outputSchema: Schema? = null,
+  @OptIn(ExperimentalWorkflowApi::class) override val inputSchema: Schema? = null,
+  @OptIn(ExperimentalWorkflowApi::class) override val outputSchema: Schema? = null,
   val outputKey: String? = null,
   val onModelErrorCallbacks: List<OnModelErrorCallback> = emptyList(),
   val onToolErrorCallbacks: List<OnToolErrorCallback> = emptyList(),
