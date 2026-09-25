@@ -276,7 +276,7 @@ class ArtifactRoutesTest {
   }
 
   @Test
-  fun saveArtifact_missingFilename_returnsBadRequest() = testApplication {
+  fun saveArtifact_missingFilename_returnsUnprocessableEntity() = testApplication {
     val testPart = Part(text = "no filename")
     val dummyService = FakeArtifactService()
     application {
@@ -290,6 +290,6 @@ class ArtifactRoutesTest {
         setBody(adkJson.encodeToString(testPart))
       }
 
-    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
   }
 }

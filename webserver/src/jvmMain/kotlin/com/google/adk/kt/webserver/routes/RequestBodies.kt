@@ -16,27 +16,48 @@
 
 package com.google.adk.kt.webserver.routes
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.serialization.adkJson
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.request.receiveNullable
+import io.ktor.server.response.respond
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.decodeFromJsonElement
 
 /**
- * Reads a body the endpoint requires, reporting a failure without quoting what was sent.
+ * Reads a body the endpoint requires, answering `422` itself and returning `null` when the body
+ * parses but does not fit [T], so a caller must stop on `null` rather than carry on.
  *
  * The receive has to be nullable: content negotiation reports an empty body as no body only for a
  * nullable type, and a non-nullable one leaves the body untransformed, which the engine answers
  * with `415`.
  *
- * @throws BadRequestException if the body is missing, or could not be read; Ktor answers `400`
+ * @throws BadRequestException if the body is missing, or is not JSON the server can take; Ktor
+ *   answers `400`
  */
-internal suspend inline fun <reified T : Any> ApplicationCall.receiveRequiredBody(): T {
-  val body =
+@OptIn(FrameworkInternalApi::class)
+internal suspend inline fun <reified T : Any> ApplicationCall.receiveRequiredBodyOrRespond(): T? {
+  val json =
     try {
-      receiveNullable<T?>()
+      receiveNullable<JsonElement?>()
     } catch (cause: BadRequestException) {
       // Ktor's message quotes the input it rejected, and the engine logs it with the cause, so
       // only the underlying failure's type survives - enough to tell a parse error from a fault.
       throw BadRequestException("Unreadable request: ${cause.cause?.let { it::class.simpleName }}")
+    } ?: throw BadRequestException("Missing request body")
+  val body =
+    try {
+      adkJson.decodeFromJsonElement<T>(json)
+    } catch (_: IllegalArgumentException) {
+      null
+    } catch (_: IllegalStateException) {
+      null
+    } catch (cause: StackOverflowError) {
+      // Nesting deep enough to exhaust the stack arrives as an Error, not a decoding failure.
+      throw BadRequestException("Unreadable request: ${cause::class.simpleName}")
     }
-  return body ?: throw BadRequestException("Missing request body")
+  if (body == null) respond(HttpStatusCode.UnprocessableEntity)
+  return body
 }
