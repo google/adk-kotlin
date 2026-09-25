@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Represents a citation to a source. */
 @Serializable
@@ -26,7 +27,7 @@ data class Citation(
   /** The URI of the cited source. */
   val uri: String? = null,
   /** The start index (in bytes) of the cited span within the response content. */
-  val startIndex: Int? = null,
+  @JsonNames("start_index") val startIndex: Int? = null,
   /** The end index (in bytes, exclusive) of the cited span within the response content. */
-  val endIndex: Int? = null,
+  @JsonNames("end_index") val endIndex: Int? = null,
 )

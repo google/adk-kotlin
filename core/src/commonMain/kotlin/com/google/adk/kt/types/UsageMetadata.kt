@@ -17,28 +17,31 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Usage metadata for a generate content request. */
 @Serializable
 data class UsageMetadata(
   /** The number of tokens in the prompt. */
-  val promptTokenCount: Int? = null,
+  @JsonNames("prompt_token_count") val promptTokenCount: Int? = null,
   /** The number of tokens in the candidates. */
-  val candidatesTokenCount: Int? = null,
+  @JsonNames("candidates_token_count") val candidatesTokenCount: Int? = null,
   /** The total number of tokens. */
-  val totalTokenCount: Int? = null,
+  @JsonNames("total_token_count") val totalTokenCount: Int? = null,
   /** The number of tokens that were part of the model's "thoughts" output, for thinking models. */
-  val thoughtsTokenCount: Int? = null,
+  @JsonNames("thoughts_token_count") val thoughtsTokenCount: Int? = null,
   /** The number of tokens in tool-execution results provided back to the model as input. */
-  val toolUsePromptTokenCount: Int? = null,
+  @JsonNames("tool_use_prompt_token_count") val toolUsePromptTokenCount: Int? = null,
   /** The number of tokens served from the cached content (cache read). */
-  val cachedContentTokenCount: Int? = null,
+  @JsonNames("cached_content_token_count") val cachedContentTokenCount: Int? = null,
   /** A per-modality breakdown of the prompt token count. */
-  val promptTokensDetails: List<ModalityTokenCount>? = null,
+  @JsonNames("prompt_tokens_details") val promptTokensDetails: List<ModalityTokenCount>? = null,
   /** A per-modality breakdown of the candidates token count. */
+  @JsonNames("candidates_tokens_details")
   val candidatesTokensDetails: List<ModalityTokenCount>? = null,
   /** A per-modality breakdown of the tool-use prompt token count. */
+  @JsonNames("tool_use_prompt_tokens_details")
   val toolUsePromptTokensDetails: List<ModalityTokenCount>? = null,
   /** The traffic type for the request (e.g. "ON_DEMAND", "PROVISIONED_THROUGHPUT"). */
-  val trafficType: String? = null,
+  @JsonNames("traffic_type") val trafficType: String? = null,
 )

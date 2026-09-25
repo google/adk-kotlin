@@ -25,6 +25,7 @@ import com.google.adk.kt.workflow.RouteListSerializer
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * Represents the actions attached to an event.
@@ -60,11 +61,14 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class EventActions(
   var skipSummarization: Boolean = false,
+  @JsonNames("state_delta")
   val stateDelta: MutableMap<String, @Contextual Any> = concurrentMutableMapOf(),
+  @JsonNames("artifact_delta")
   val artifactDelta: MutableMap<String, Int> = concurrentMutableMapOf(),
   var transferToAgent: String? = null,
   var escalate: Boolean = false,
   var endOfAgent: Boolean = false,
+  @JsonNames("requested_tool_confirmations")
   val requestedToolConfirmations: MutableMap<String, ToolConfirmation> = concurrentMutableMapOf(),
   var rewindBeforeInvocationId: String? = null,
   @Serializable(with = RouteListSerializer::class) var route: List<Route>? = null,

@@ -16,8 +16,10 @@
 
 package com.google.adk.kt.events
 
+import com.google.adk.kt.serialization.LenientEpochMillisSerializer
 import com.google.adk.kt.types.Content
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * A record that a continuous range of session [Event]s has been replaced by a single piece of
@@ -27,16 +29,21 @@ import kotlinx.serialization.Serializable
  * events are left untouched. When the next LLM prompt is built, the contents processor uses the
  * range to skip the covered events and inserts [compactedContent] in their place.
  *
- * @property startTimestamp Epoch milliseconds of the earliest covered event (inclusive).
+ * @property startTimestamp Epoch milliseconds of the earliest covered event (inclusive). Also reads
+ *   ADK Python's fractional epoch seconds.
  * @property endTimestamp Epoch milliseconds of the latest covered event (inclusive). Must be
- *   greater than or equal to [startTimestamp].
+ *   greater than or equal to [startTimestamp]. Also reads ADK Python's fractional epoch seconds.
  * @property compactedContent The content that replaces the covered events in the prompt.
  */
 @Serializable
 data class EventCompaction(
+  @Serializable(with = LenientEpochMillisSerializer::class)
+  @JsonNames("start_timestamp")
   val startTimestamp: Long,
+  @Serializable(with = LenientEpochMillisSerializer::class)
+  @JsonNames("end_timestamp")
   val endTimestamp: Long,
-  val compactedContent: Content,
+  @JsonNames("compacted_content") val compactedContent: Content,
 ) {
   init {
     require(endTimestamp >= startTimestamp) {

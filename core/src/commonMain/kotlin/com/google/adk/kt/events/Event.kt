@@ -19,6 +19,7 @@ package com.google.adk.kt.events
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.CacheMetadata
+import com.google.adk.kt.serialization.LenientEpochMillisSerializer
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
@@ -36,6 +37,7 @@ import kotlinx.serialization.Contextual
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * Represents an event in a session.
@@ -72,29 +74,32 @@ import kotlinx.serialization.Serializable
 data class Event(
   // Always emit: an omitted default is regenerated at decode time (a fresh random), losing the id.
   @EncodeDefault(EncodeDefault.Mode.ALWAYS) val id: String = Uuid.random(),
-  val invocationId: String? = null,
+  @JsonNames("invocation_id") val invocationId: String? = null,
   val author: String,
   val content: Content? = null,
   val actions: EventActions = EventActions(),
-  val longRunningToolIds: Set<String> = emptySet(),
+  @JsonNames("long_running_tool_ids") val longRunningToolIds: Set<String> = emptySet(),
   val partial: Boolean = false,
-  val turnComplete: Boolean = false,
-  val errorCode: String? = null,
-  val errorMessage: String? = null,
-  val finishReason: FinishReason? = null,
-  val usageMetadata: UsageMetadata? = null,
-  @SerialName("avgLogprobs") val avgLogProbs: Double? = null,
+  @JsonNames("turn_complete") val turnComplete: Boolean = false,
+  @JsonNames("error_code") val errorCode: String? = null,
+  @JsonNames("error_message") val errorMessage: String? = null,
+  @JsonNames("finish_reason") val finishReason: FinishReason? = null,
+  @JsonNames("usage_metadata") val usageMetadata: UsageMetadata? = null,
+  @SerialName("avgLogprobs") @JsonNames("avg_logprobs") val avgLogProbs: Double? = null,
   val interrupted: Boolean = false,
   val branch: String? = null,
-  val groundingMetadata: GroundingMetadata? = null,
-  val modelVersion: String? = null,
-  val citationMetadata: CitationMetadata? = null,
-  val cacheMetadata: CacheMetadata? = null,
-  val customMetadata: Map<String, @Contextual Any?>? = null,
+  @JsonNames("grounding_metadata") val groundingMetadata: GroundingMetadata? = null,
+  @JsonNames("model_version") val modelVersion: String? = null,
+  @JsonNames("citation_metadata") val citationMetadata: CitationMetadata? = null,
+  @JsonNames("cache_metadata") val cacheMetadata: CacheMetadata? = null,
+  @JsonNames("custom_metadata") val customMetadata: Map<String, @Contextual Any?>? = null,
   val output: @Contextual Any? = null,
-  @Serializable(with = NodeInfoNullIfEmptySerializer::class) val nodeInfo: NodeInfo? = null,
+  @Serializable(with = NodeInfoNullIfEmptySerializer::class)
+  @JsonNames("node_info")
+  val nodeInfo: NodeInfo? = null,
   // Always emit: an omitted default is regenerated at decode time, changing timestamp on reload.
   @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+  @Serializable(with = LenientEpochMillisSerializer::class)
   val timestamp: Long = Clock.System.now().toEpochMilliseconds(),
 ) {
 

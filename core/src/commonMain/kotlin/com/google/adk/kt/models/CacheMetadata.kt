@@ -16,11 +16,13 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.serialization.LenientEpochMillisSerializer
 import kotlin.jvm.JvmStatic
 import kotlin.math.round
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * Metadata for the context cache associated with LLM responses.
@@ -43,19 +45,23 @@ import kotlinx.serialization.Serializable
  * @property cacheName Full resource name of the cached content (e.g.
  *   `projects/123/locations/us-central1/cachedContents/456`). `null` when no active cache exists.
  * @property expireTime Epoch milliseconds when the cache expires. `null` when no active cache
- *   exists.
+ *   exists. Also reads ADK Python's fractional epoch seconds.
  * @property invocationsUsed Number of invocations this cache has been used for. `null` when no
  *   active cache exists. Must be non-negative when set.
  * @property createdAt Epoch milliseconds when the cache was created. `null` when no active cache
- *   exists.
+ *   exists. Also reads ADK Python's fractional epoch seconds.
  */
 @Serializable
 data class CacheMetadata(
   val fingerprint: String,
-  val contentsCount: Int,
-  val cacheName: String? = null,
+  @JsonNames("contents_count") val contentsCount: Int,
+  @JsonNames("cache_name") val cacheName: String? = null,
+  @Serializable(with = LenientEpochMillisSerializer::class)
+  @JsonNames("expire_time")
   val expireTime: Long? = null,
-  val invocationsUsed: Int? = null,
+  @JsonNames("invocations_used") val invocationsUsed: Int? = null,
+  @Serializable(with = LenientEpochMillisSerializer::class)
+  @JsonNames("created_at")
   val createdAt: Long? = null,
 ) {
   init {

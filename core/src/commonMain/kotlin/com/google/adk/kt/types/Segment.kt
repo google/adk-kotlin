@@ -17,16 +17,17 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** A contiguous segment of the response content that a [GroundingSupport] refers to. */
 @Serializable
 data class Segment(
   /** The start index (in bytes) of the segment within the part. */
-  val startIndex: Int? = null,
+  @JsonNames("start_index") val startIndex: Int? = null,
   /** The end index (in bytes, exclusive) of the segment within the part. */
-  val endIndex: Int? = null,
+  @JsonNames("end_index") val endIndex: Int? = null,
   /** The index of the part the segment belongs to. */
-  val partIndex: Int? = null,
+  @JsonNames("part_index") val partIndex: Int? = null,
   /** The text of the segment. */
   val text: String? = null,
 )

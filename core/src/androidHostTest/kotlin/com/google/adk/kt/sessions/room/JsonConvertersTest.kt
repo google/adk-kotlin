@@ -85,12 +85,12 @@ class JsonConvertersTest {
       Event(
         author = "agent",
         actions = EventActions(stateDelta = mutableMapOf<String, Any>("k" to State.REMOVED)),
-        timestamp = 12345L,
+        timestamp = 1730874845934L,
       )
 
     val decoded = JsonConverters.eventFromJson(JsonConverters.eventToJson(event))
 
     assertThat(decoded.actions.stateDelta["k"]).isSameInstanceAs(State.REMOVED)
-    assertThat(decoded.timestamp).isEqualTo(12345L)
+    assertThat(decoded.timestamp).isEqualTo(1730874845934L)
   }
 }

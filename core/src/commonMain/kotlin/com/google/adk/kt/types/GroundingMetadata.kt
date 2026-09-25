@@ -17,22 +17,23 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Metadata returned to client when grounding is enabled. */
 @Serializable
 data class GroundingMetadata(
   /** The image search queries used to retrieve grounding sources. */
-  val imageSearchQueries: List<String>? = null,
+  @JsonNames("image_search_queries") val imageSearchQueries: List<String>? = null,
   /** The cited source chunks that ground the response. */
-  val groundingChunks: List<GroundingChunk>? = null,
+  @JsonNames("grounding_chunks") val groundingChunks: List<GroundingChunk>? = null,
   /** Maps response segments to the grounding chunks that support them. */
-  val groundingSupports: List<GroundingSupport>? = null,
+  @JsonNames("grounding_supports") val groundingSupports: List<GroundingSupport>? = null,
   /** The web search queries used to retrieve grounding sources. */
-  val webSearchQueries: List<String>? = null,
+  @JsonNames("web_search_queries") val webSearchQueries: List<String>? = null,
   /** The retrieval queries used to retrieve grounding sources. */
-  val retrievalQueries: List<String>? = null,
+  @JsonNames("retrieval_queries") val retrievalQueries: List<String>? = null,
   /** The Google Search entry point for rendering search suggestions. */
-  val searchEntryPoint: SearchEntryPoint? = null,
+  @JsonNames("search_entry_point") val searchEntryPoint: SearchEntryPoint? = null,
   /** Metadata about the retrieval step. */
-  val retrievalMetadata: RetrievalMetadata? = null,
+  @JsonNames("retrieval_metadata") val retrievalMetadata: RetrievalMetadata? = null,
 )

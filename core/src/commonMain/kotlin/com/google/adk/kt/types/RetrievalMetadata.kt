@@ -17,10 +17,12 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Metadata about the retrieval step performed for a grounded response. */
 @Serializable
 data class RetrievalMetadata(
   /** Score in [0, 1] indicating how likely Google Search could help answer the prompt. */
-  val googleSearchDynamicRetrievalScore: Float? = null,
+  @JsonNames("google_search_dynamic_retrieval_score")
+  val googleSearchDynamicRetrievalScore: Float? = null
 )
