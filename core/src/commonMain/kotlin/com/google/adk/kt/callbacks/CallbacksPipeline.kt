@@ -287,20 +287,30 @@ internal suspend fun runOnEventCallbacksPipeline(
     PipelineStep.Continue(callback.call(context, currentState))
   }
 
+/**
+ * Result of the [BeforeToolCallback] pipeline: the args as the callbacks left them, and the tool
+ * result a callback returned in place of running the tool, if any.
+ */
+internal class BeforeToolCallbacksResult(
+  val args: Map<String, Any?>,
+  val replacement: Map<String, Any?>?,
+)
+
 /** Executes the [BeforeToolCallback] pipeline. */
 internal suspend fun runBeforeToolCallbacksPipeline(
   callbacks: Iterable<BeforeToolCallback>,
   context: ToolContext,
   tool: BaseTool,
   args: Map<String, Any?>,
-): CallbackChoice<Map<String, Any?>, Map<String, Any?>> =
+): BeforeToolCallbacksResult =
   runCallbacksPipeline(
     callbacks = callbacks,
     initialState = args,
-    onComplete = { CallbackChoice.Continue(it) },
+    onComplete = { BeforeToolCallbacksResult(args = it, replacement = null) },
   ) { callback, currentState ->
     when (val res = callback.call(context, tool, currentState)) {
-      is CallbackChoice.Break -> PipelineStep.ShortCircuit(res)
+      is CallbackChoice.Break ->
+        PipelineStep.ShortCircuit(BeforeToolCallbacksResult(currentState, res.value))
       is CallbackChoice.Continue -> PipelineStep.Continue(res.value)
     }
   }

@@ -94,6 +94,114 @@ class RunnerToolCallbacksIntegrationTest {
     assertEquals("from-callback", response.response["result"])
   }
 
+  /** A `Break` from `beforeToolCallback` replaces only the tool run; after-tool callbacks run. */
+  @Test
+  fun runAsync_beforeToolCallbackReturnsBreak_stillRunsAfterToolCallback() = runBlocking {
+    var toolWasInvoked = false
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = twoTurnFunctionCallModel("real_tool"),
+        tools =
+          listOf(
+            DummyTool(
+              name = "real_tool",
+              onRun = { _, _ ->
+                toolWasInvoked = true
+                mapOf("result" to "from-real-tool")
+              },
+            )
+          ),
+        beforeToolCallbacks =
+          listOf(
+            BeforeToolCallback { _, _, _ -> CallbackChoice.Break(mapOf("result" to "from-before")) }
+          ),
+        afterToolCallbacks =
+          listOf(
+            AfterToolCallback { _, _, _, response ->
+              mapOf("result" to "${response["result"]}-and-after")
+            }
+          ),
+      )
+
+    val events =
+      InMemoryRunner(agent = agent)
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    assertFalse(toolWasInvoked)
+    val response =
+      events.firstOrNull { it.functionResponses().isNotEmpty() }?.functionResponses()?.single()
+        ?: fail("expected a function-response event")
+    assertEquals("from-before-and-after", response.response["result"])
+  }
+
+  /**
+   * Args changed by an earlier before-tool callback reach the after-tool callback after a Break.
+   */
+  @Test
+  fun runAsync_beforeToolCallbackChangesArgsThenAnotherBreaks_afterToolSeesChangedArgs() =
+    runBlocking {
+      var argsSeenAfterTool: Map<String, Any?>? = null
+      val agent =
+        LlmAgent(
+          name = "test-agent",
+          model = twoTurnFunctionCallModel("real_tool", args = mapOf("city" to "SF")),
+          tools = listOf(DummyTool(name = "real_tool", onRun = { _, _ -> mapOf("result" to "x") })),
+          beforeToolCallbacks =
+            listOf(
+              BeforeToolCallback { _, _, args -> CallbackChoice.Continue(args + ("city" to "NY")) },
+              BeforeToolCallback { _, _, _ -> CallbackChoice.Break(mapOf("result" to "cached")) },
+            ),
+          afterToolCallbacks =
+            listOf(
+              AfterToolCallback { _, _, args, response ->
+                argsSeenAfterTool = args
+                response
+              }
+            ),
+        )
+
+      val unused =
+        InMemoryRunner(agent = agent)
+          .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+          .toList()
+
+      assertEquals(mapOf("city" to "NY"), argsSeenAfterTool)
+    }
+
+  /**
+   * For a tool name that resolves to nothing, a `Break` answer is final: no after-tool callback.
+   */
+  @Test
+  fun runAsync_beforeToolCallbackBreaksForUnregisteredTool_skipsAfterToolCallback() = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = twoTurnFunctionCallModel("missing_tool"),
+        beforeToolCallbacks =
+          listOf(
+            BeforeToolCallback { _, _, _ -> CallbackChoice.Break(mapOf("result" to "from-before")) }
+          ),
+        afterToolCallbacks =
+          listOf(
+            AfterToolCallback { _, _, _, response ->
+              mapOf("result" to "${response["result"]}-and-after")
+            }
+          ),
+      )
+
+    val events =
+      InMemoryRunner(agent = agent)
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    val response =
+      events.firstOrNull { it.functionResponses().isNotEmpty() }?.functionResponses()?.single()
+        ?: fail("expected a function-response event")
+    assertEquals("from-before", response.response["result"])
+  }
+
   /**
    * `Continue` with mutated args must hand the (modified) args back to the regular execution path
    * so the tool observes the mutation.
