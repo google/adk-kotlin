@@ -17,10 +17,11 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Metadata about citations associated with the candidate. */
 @Serializable
 data class CitationMetadata(
   /** A list of citations. */
-  val citationSources: List<Citation> = emptyList()
+  @JsonNames("citation_sources") val citationSources: List<Citation> = emptyList()
 )

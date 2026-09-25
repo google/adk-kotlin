@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** A single cited source chunk that grounds part of the model's response. */
 @Serializable
@@ -24,7 +25,7 @@ data class GroundingChunk(
   /** A chunk sourced from the open web. */
   val web: GroundingChunkWeb? = null,
   /** A chunk sourced from a retrieval (RAG) context. */
-  val retrievedContext: GroundingChunkRetrievedContext? = null,
+  @JsonNames("retrieved_context") val retrievedContext: GroundingChunkRetrievedContext? = null,
   /** A chunk sourced from Google Maps grounding. */
   val maps: GroundingChunkMaps? = null,
 )

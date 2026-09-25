@@ -17,10 +17,11 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** The Google Search entry point used to render search suggestions for grounded responses. */
 @Serializable
 data class SearchEntryPoint(
   /** The rendered HTML/CSS content for the search suggestions UI. */
-  val renderedContent: String? = null,
+  @JsonNames("rendered_content") val renderedContent: String? = null
 )

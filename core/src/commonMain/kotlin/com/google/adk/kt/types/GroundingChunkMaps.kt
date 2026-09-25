@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** A grounding chunk sourced from Google Maps. */
 @Serializable
@@ -26,7 +27,7 @@ data class GroundingChunkMaps(
   /** The title (name) of the place. */
   val title: String? = null,
   /** The Google Maps place id (e.g. `places/ChIJ...`). */
-  val placeId: String? = null,
+  @JsonNames("place_id") val placeId: String? = null,
   /** The text of the place answer. */
   val text: String? = null,
 )

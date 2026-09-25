@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** Maps a [Segment] of the response to the grounding chunks that support it. */
 @Serializable
@@ -24,7 +25,7 @@ data class GroundingSupport(
   /** The segment of content this support applies to. */
   val segment: Segment? = null,
   /** Indices into [GroundingMetadata.groundingChunks] for the chunks supporting this segment. */
-  val groundingChunkIndices: List<Int>? = null,
+  @JsonNames("grounding_chunk_indices") val groundingChunkIndices: List<Int>? = null,
   /** Confidence scores (0-1) for the supporting chunks, parallel to [groundingChunkIndices]. */
-  val confidenceScores: List<Float>? = null,
+  @JsonNames("confidence_scores") val confidenceScores: List<Float>? = null,
 )

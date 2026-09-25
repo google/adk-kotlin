@@ -20,9 +20,12 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.sessions.State
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import com.google.genai.kotlin.types.DurationStringSerializer
+import kotlin.math.roundToLong
 import kotlin.time.Duration
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
@@ -243,17 +246,63 @@ internal object LenientDurationStringSerializer : KSerializer<Duration> {
     }
 }
 
+/**
+ * Reads an epoch timestamp as milliseconds (this library's own output) or as ADK Python's
+ * fractional seconds, normalizing both to milliseconds; always writes milliseconds. The unit is
+ * chosen by magnitude and a value outside the calendar rejected (see the constants below), matching
+ * Go's `session.Event.UnmarshalJSON`. A non-numeric timestamp is reported as a
+ * [SerializationException] whose message omits the caller-supplied value, not a bare
+ * `NumberFormatException` a decoding `catch (SerializationException)` would miss.
+ */
+internal object LenientEpochMillisSerializer : KSerializer<Long> {
+  override val descriptor: SerialDescriptor =
+    PrimitiveSerialDescriptor("com.google.adk.kt.serialization.EpochMillis", PrimitiveKind.LONG)
+
+  override fun serialize(encoder: Encoder, value: Long) {
+    encoder.encodeLong(value)
+  }
+
+  override fun deserialize(decoder: Decoder): Long =
+    asSerializationError(MALFORMED_TIMESTAMP) {
+      // A non-JSON format carries a plain Long already in the right unit; nothing to normalize.
+      val jsonDecoder = decoder as? JsonDecoder ?: return@asSerializationError decoder.decodeLong()
+      val primitive = jsonDecoder.decodeJsonElement() as? JsonPrimitive
+      // isString rejects a quoted number too, and doubleOrNull rejects a boolean or null.
+      val number =
+        (if (primitive == null || primitive.isString) null else primitive.doubleOrNull)
+          ?: throw SerializationException(MALFORMED_TIMESTAMP)
+      val millis = if (number < SECONDS_MILLIS_BOUNDARY) number * 1000.0 else number
+      if (!millis.isFinite() || millis < MIN_MILLIS || millis > MAX_MILLIS) {
+        throw SerializationException(MALFORMED_TIMESTAMP)
+      }
+      millis.roundToLong()
+    }
+}
+
 private const val MALFORMED_BYTES = "Malformed byte array."
 private const val MALFORMED_DURATION = "Malformed duration string."
+private const val MALFORMED_TIMESTAMP = "Malformed epoch timestamp."
+
+// A numeric timestamp below this is seconds and is scaled to milliseconds; at or above it is
+// already milliseconds. The value sits in the gap between any real seconds value (year 2100 is
+// ~4.1e9) and any real milliseconds value (year 2000 is ~9.5e11).
+private const val SECONDS_MILLIS_BOUNDARY = 1e11
+
+// Calendar bounds on a resolved timestamp, in milliseconds: years 1 and 9999, matching Go's
+// session.Event. Wide enough for any real event time, narrow enough that a wrong-unit value falls
+// outside.
+private const val MIN_MILLIS = -62_135_596_800_000.0
+private const val MAX_MILLIS = 253_402_300_799_000.0
 
 /**
  * Runs [parse], reporting a malformed value as a [SerializationException] carrying [message].
  *
- * Both serializers above delegate to the Gen AI SDK, and the SDK lets a bare
+ * The two Lenient serializers above delegate to the Gen AI SDK, and the SDK lets a bare
  * [IllegalArgumentException] out on malformed input: `DurationStringSerializer` parses the seconds
  * with `String.toDouble()`, and `ByteArrayAsBase64Serializer` retries an undecodable string against
  * the URL-safe alphabet without catching the second failure. The legacy number-array branch does
- * the same for an element that is not an integer.
+ * the same for an element that is not an integer. [LenientEpochMillisSerializer] throws
+ * [SerializationException] directly and so uses this only as a backstop.
  *
  * [SerializationException] *extends* [IllegalArgumentException], so those escapes are its siblings
  * rather than instances of it, and the `catch (SerializationException)` sites around decoding do

@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /** A breakdown of token usage by modality. */
 @Serializable
@@ -24,5 +25,5 @@ data class ModalityTokenCount(
   /** The modality this token count applies to. */
   val modality: MediaModality? = null,
   /** The number of tokens counted for this modality. */
-  val tokenCount: Int? = null,
+  @JsonNames("token_count") val tokenCount: Int? = null,
 )

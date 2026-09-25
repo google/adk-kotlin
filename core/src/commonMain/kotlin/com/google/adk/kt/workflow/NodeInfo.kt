@@ -24,6 +24,7 @@ import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonNames
 
 /**
  * Identifies the workflow-node activation that emitted an [com.google.adk.kt.events.Event]; `null`
@@ -41,8 +42,8 @@ import kotlinx.serialization.encoding.Encoder
 @Serializable
 data class NodeInfo(
   val path: String = "",
-  val outputFor: List<String>? = null,
-  val messageAsOutput: Boolean = false,
+  @JsonNames("output_for") val outputFor: List<String>? = null,
+  @JsonNames("message_as_output") val messageAsOutput: Boolean = false,
 ) {
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
