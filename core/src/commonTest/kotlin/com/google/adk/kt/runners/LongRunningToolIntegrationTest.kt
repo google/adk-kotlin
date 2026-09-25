@@ -893,15 +893,9 @@ class LongRunningToolIntegrationTest {
         timestamp = 2L,
         longRunningToolIds = setOf("lr-1"),
         content =
-          Content(
-            role = "model",
-            parts =
-              listOf(
-                Part(functionCall = FunctionCall(name = "lr_tool", id = "lr-1", args = emptyMap())),
-                Part(
-                  functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())
-                ),
-              ),
+          modelMessage(
+            Part(functionCall = FunctionCall(name = "lr_tool", id = "lr-1", args = emptyMap())),
+            Part(functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())),
           ),
       )
     val placeholderLr =
@@ -983,20 +977,10 @@ class LongRunningToolIntegrationTest {
         timestamp = 2L,
         longRunningToolIds = setOf("lr-1", "lr-2"),
         content =
-          Content(
-            role = "model",
-            parts =
-              listOf(
-                Part(
-                  functionCall = FunctionCall(name = "lr_tool_1", id = "lr-1", args = emptyMap())
-                ),
-                Part(
-                  functionCall = FunctionCall(name = "lr_tool_2", id = "lr-2", args = emptyMap())
-                ),
-                Part(
-                  functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())
-                ),
-              ),
+          modelMessage(
+            Part(functionCall = FunctionCall(name = "lr_tool_1", id = "lr-1", args = emptyMap())),
+            Part(functionCall = FunctionCall(name = "lr_tool_2", id = "lr-2", args = emptyMap())),
+            Part(functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())),
           ),
       )
     val placeholderLr1 =
@@ -1094,17 +1078,9 @@ class LongRunningToolIntegrationTest {
         timestamp = 1L,
         longRunningToolIds = setOf("lr-1"),
         content =
-          Content(
-            role = "model",
-            parts =
-              listOf(
-                Part(
-                  functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())
-                ),
-                Part(
-                  functionCall = FunctionCall(name = "lr_tool_1", id = "lr-1", args = emptyMap())
-                ),
-              ),
+          modelMessage(
+            Part(functionCall = FunctionCall(name = "reg_tool", id = "reg-1", args = emptyMap())),
+            Part(functionCall = FunctionCall(name = "lr_tool_1", id = "lr-1", args = emptyMap())),
           ),
       )
     val placeholderLr1 =

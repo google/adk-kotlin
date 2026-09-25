@@ -26,8 +26,10 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -177,14 +179,10 @@ class ContentsProcessorTest {
         Event(
           author = "other_agent",
           content =
-            Content(
-              role = "model",
-              parts =
-                listOf(
-                  Part(text = "Public message", thought = false),
-                  Part(text = "Private thought", thought = true),
-                  Part(text = "Another public message"),
-                ),
+            modelMessage(
+              Part(text = "Public message", thought = false),
+              Part(text = "Private thought", thought = true),
+              Part(text = "Another public message"),
             ),
         ),
         agentName = "current_agent",
@@ -205,11 +203,7 @@ class ContentsProcessorTest {
   fun run_anotherAgentEventWithFunctionCall_formatsWithForContextAndAgentPrefix() = runTest {
     val processor = ContentsProcessor()
     var request = LlmRequest()
-    val content =
-      Content(
-        role = "model",
-        parts = listOf(Part(functionCall = FunctionCall(name = "test", args = mapOf("a" to "b")))),
-      )
+    val content = modelFunctionCall(name = "test", args = mapOf("a" to "b"))
     val context =
       createTestContext(
         Event(author = "anotherAgent", content = content),
@@ -231,12 +225,8 @@ class ContentsProcessorTest {
     val processor = ContentsProcessor()
     var request = LlmRequest()
     val content =
-      Content(
-        role = "model",
-        parts =
-          listOf(
-            Part(functionResponse = FunctionResponse(name = "test", response = mapOf("c" to "d")))
-          ),
+      modelMessage(
+        Part(functionResponse = FunctionResponse(name = "test", response = mapOf("c" to "d")))
       )
     val context =
       createTestContext(
@@ -472,11 +462,10 @@ class ContentsProcessorTest {
         userEvent("Hello"),
         Event(author = "testAgent", content = null),
         Event(author = "testAgent", content = Content(role = "model", parts = emptyList())),
-        Event(author = "user", content = Content(role = "user", parts = listOf(Part(text = "")))),
+        Event(author = "user", content = userMessage("")),
         Event(
           author = "user",
-          content =
-            Content(role = "user", parts = listOf(Part(text = ""), Part(text = "Mixed content"))),
+          content = userMessage(Part(text = ""), Part(text = "Mixed content")),
         ),
         userEvent("How are you?"),
       )
@@ -499,18 +488,13 @@ class ContentsProcessorTest {
         Event(
           author = "testAgent",
           content =
-            Content(
-              role = "model",
-              parts =
-                listOf(
-                  Part(text = "Let me think", thought = true),
-                  Part(
-                    functionCall =
-                      FunctionCall(name = "test_tool", args = emptyMap(), id = "fc_123"),
-                    thought = true,
-                  ),
-                  Part(text = "Planning next steps", thought = true),
-                ),
+            modelMessage(
+              Part(text = "Let me think", thought = true),
+              Part(
+                functionCall = FunctionCall(name = "test_tool", args = emptyMap(), id = "fc_123"),
+                thought = true,
+              ),
+              Part(text = "Planning next steps", thought = true),
             ),
         ),
       )
@@ -529,20 +513,7 @@ class ContentsProcessorTest {
     val context =
       createTestContext(
         userEvent("Call the tool"),
-        Event(
-          author = "testAgent",
-          content =
-            Content(
-              role = "model",
-              parts =
-                listOf(
-                  Part(
-                    functionCall =
-                      FunctionCall(name = "test_tool", args = emptyMap(), id = "fc_123")
-                  )
-                ),
-            ),
-        ),
+        Event(author = "testAgent", content = modelFunctionCall(name = "test_tool", id = "fc_123")),
         Event(
           author = "testAgent",
           content =
@@ -681,27 +652,15 @@ class ContentsProcessorTest {
           Event(
             author = "testAgent",
             content =
-              Content(
-                role = "model",
-                parts =
-                  listOf(
-                    Part(
-                      functionCall =
-                        FunctionCall(
-                          name = "long_running_tool",
-                          args = emptyMap(),
-                          id = "lro_call_456",
-                        )
-                    ),
-                    Part(
-                      functionCall =
-                        FunctionCall(
-                          name = "search_tool",
-                          args = emptyMap(),
-                          id = "normal_call_789",
-                        )
-                    ),
-                  ),
+              modelMessage(
+                Part(
+                  functionCall =
+                    FunctionCall(name = "long_running_tool", args = emptyMap(), id = "lro_call_456")
+                ),
+                Part(
+                  functionCall =
+                    FunctionCall(name = "search_tool", args = emptyMap(), id = "normal_call_789")
+                ),
               ),
           ),
           Event(
@@ -793,27 +752,19 @@ class ContentsProcessorTest {
           Event(
             author = "testAgent",
             content =
-              Content(
-                role = "model",
-                parts =
-                  listOf(
-                    Part(
-                      functionCall =
-                        FunctionCall(
-                          name = "long_running_tool",
-                          args = emptyMap(),
-                          id = "history_lro_123",
-                        )
-                    ),
-                    Part(
-                      functionCall =
-                        FunctionCall(
-                          name = "search_tool",
-                          args = emptyMap(),
-                          id = "history_normal_456",
-                        )
-                    ),
-                  ),
+              modelMessage(
+                Part(
+                  functionCall =
+                    FunctionCall(
+                      name = "long_running_tool",
+                      args = emptyMap(),
+                      id = "history_lro_123",
+                    )
+                ),
+                Part(
+                  functionCall =
+                    FunctionCall(name = "search_tool", args = emptyMap(), id = "history_normal_456")
+                ),
               ),
           ),
           Event(
@@ -985,19 +936,10 @@ class ContentsProcessorTest {
       Event(
         author = "user",
         content =
-          Content(
-            role = "user",
-            parts =
-              listOf(
-                Part(
-                  functionResponse =
-                    FunctionResponse(
-                      name = "adk_request_credential",
-                      id = "auth1",
-                      response = mapOf("token" to "x"),
-                    )
-                )
-              ),
+          userFunctionResponse(
+            name = "adk_request_credential",
+            id = "auth1",
+            response = mapOf("token" to "x"),
           ),
       )
     val context =

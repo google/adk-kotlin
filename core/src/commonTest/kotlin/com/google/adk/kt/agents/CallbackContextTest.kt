@@ -27,6 +27,7 @@ import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyMemoryService
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import kotlinx.coroutines.runBlocking
@@ -205,8 +206,7 @@ class CallbackContextTest {
     assertEquals(mapOf("enable_consolidation" to true), call.customMetadata)
   }
 
-  private fun testMemoryEntry(text: String): MemoryEntry =
-    MemoryEntry(content = Content(role = "user", parts = listOf(Part(text = text))))
+  private fun testMemoryEntry(text: String): MemoryEntry = MemoryEntry(content = userMessage(text))
 
   @Test
   fun endInvocation_setsIsEndOfInvocationOnContext() = runBlocking {

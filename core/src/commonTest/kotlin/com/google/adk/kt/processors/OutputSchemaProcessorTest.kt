@@ -24,10 +24,8 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.tools.SetModelResponseTool
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionResponse
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
@@ -157,16 +155,7 @@ class OutputSchemaProcessorTest {
       Event(
         author = "test-agent",
         content =
-          Content(
-            role = Role.USER,
-            parts =
-              listOf(
-                Part(
-                  functionResponse =
-                    FunctionResponse(name = SetModelResponseTool.NAME, response = response)
-                )
-              ),
-          ),
+          userFunctionResponse(name = SetModelResponseTool.NAME, id = null, response = response),
       )
 
     val json = getStructuredModelResponse(event)
@@ -180,16 +169,7 @@ class OutputSchemaProcessorTest {
       Event(
         author = "test-agent",
         content =
-          Content(
-            role = Role.USER,
-            parts =
-              listOf(
-                Part(
-                  functionResponse =
-                    FunctionResponse(name = "my_tool", response = mapOf("result" to "ok"))
-                )
-              ),
-          ),
+          userFunctionResponse(name = "my_tool", id = null, response = mapOf("result" to "ok")),
       )
 
     assertNull(getStructuredModelResponse(event))

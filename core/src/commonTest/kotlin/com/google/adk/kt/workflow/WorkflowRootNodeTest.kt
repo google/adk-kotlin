@@ -30,8 +30,9 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Role
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -84,7 +85,7 @@ private class SessionStateReader(override val name: String, private val key: Str
 /** Emits one non-partial content event and no output, so several can run as parallel branches. */
 private class ContentEmitter(override val name: String) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    emit(Event(author = "", content = Content.fromText(Role.MODEL, name)))
+    emit(Event(author = "", content = modelMessage(name)))
   }
 }
 
@@ -94,7 +95,7 @@ private class PersistenceProbeNode(override val name: String) : Node {
     private set
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val content = Content.fromText(Role.MODEL, "probe")
+    val content = modelMessage("probe")
     emit(Event(author = "", content = content))
     sawOwnEventPersisted = context.invocationContext.session.events.any { it.content == content }
   }
@@ -163,9 +164,7 @@ class WorkflowRootNodeTest {
 
     // Act
     val events = runBlocking {
-      runner
-        .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-        .toList()
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
     }
 
     // Assert: the graph ran under the runner, and its node is stamped on the event.
@@ -188,15 +187,15 @@ class WorkflowRootNodeTest {
     // Arrange
     val node = StandaloneRootNode("solo")
     val runner = InMemoryRunner(app = App(appName = "node_app", rootNode = node))
-    val userMessage = Content.fromText(Role.USER, "hello")
+    val greeting = userMessage("hello")
 
     // Act
-    val events = runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage).toList()
+    val events = runner.runAsync(userId = "u", sessionId = "s", newMessage = greeting).toList()
     val session = assertNotNull(runner.sessionService.getSession(SessionKey("node_app", "u", "s")))
 
     // Assert: the node ran at the root with no parent, and its temp: key was not persisted.
     assertSame(node, runner.node)
-    assertEquals(userMessage, node.receivedInput)
+    assertEquals(greeting, node.receivedInput)
     assertNull(node.observedParent)
     val event = events.single()
     assertEquals("solo", event.author)
@@ -216,9 +215,7 @@ class WorkflowRootNodeTest {
     // Act
     val error =
       assertFailsWith<IllegalArgumentException> {
-        runner
-          .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-          .toList()
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
       }
 
     // Assert
@@ -236,9 +233,7 @@ class WorkflowRootNodeTest {
     // Act
     val error =
       assertFailsWith<IllegalStateException> {
-        runner
-          .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-          .toList()
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
       }
     val session = assertNotNull(runner.sessionService.getSession(SessionKey("node_app", "u", "s")))
 
@@ -272,9 +267,7 @@ class WorkflowRootNodeTest {
     // Act
     val error =
       assertFailsWith<NodeExecutionException> {
-        runner
-          .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-          .toList()
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
       }
     val session = assertNotNull(runner.sessionService.getSession(SessionKey("graph_app", "u", "s")))
 
@@ -299,9 +292,7 @@ class WorkflowRootNodeTest {
     // Act
     val error =
       assertFailsWith<IllegalStateException> {
-        runner
-          .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-          .toList()
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
       }
     val session = assertNotNull(runner.sessionService.getSession(SessionKey("node_app", "u", "s")))
 
@@ -327,9 +318,7 @@ class WorkflowRootNodeTest {
 
     // Act
     val events =
-      runner
-        .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-        .toList()
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
 
     // Assert: the writer's event was persisted before the scheduler started the reader.
     assertEquals("v", reader.observedValue)
@@ -345,9 +334,7 @@ class WorkflowRootNodeTest {
 
     // Act
     val events =
-      runner
-        .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-        .toList()
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
 
     // Assert: the nested node's emit returned only after the runner appended the event.
     assertEquals(true, probe.sawOwnEventPersisted)
@@ -358,7 +345,7 @@ class WorkflowRootNodeTest {
   fun onUserMessageCallbackUpdatesNodeInputPassedToARootNode() = runBlocking {
     // Arrange: mirrors Python test_node_runner_passes_modified_user_message_as_node_input.
     val node = StandaloneRootNode("recorder")
-    val rewritten = Content.fromText(Role.USER, "modified text")
+    val rewritten = userMessage("modified text")
     val plugin =
       object : Plugin {
         override val name: String = "rewrite_user_message"
@@ -372,9 +359,7 @@ class WorkflowRootNodeTest {
       InMemoryRunner(app = App(appName = "node_app", rootNode = node, plugins = listOf(plugin)))
 
     // Act
-    runner
-      .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "original"))
-      .toList()
+    runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("original")).toList()
 
     // Assert: the root node received the rewritten Content as its nodeInput.
     assertEquals(rewritten, node.receivedInput)
@@ -393,7 +378,7 @@ class WorkflowRootNodeTest {
           emit("unreachable")
         }
       }
-    val haltedContent = Content.fromText(Role.MODEL, "halted by plugin")
+    val haltedContent = modelMessage("halted by plugin")
     var afterRunCalled = false
     val plugin =
       object : Plugin {
@@ -412,9 +397,7 @@ class WorkflowRootNodeTest {
 
     // Act
     val events =
-      runner
-        .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-        .toList()
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
 
     // Assert: the node never ran, the early-exit event was emitted, and afterRun still executed.
     assertFalse(nodeRan)
@@ -445,9 +428,7 @@ class WorkflowRootNodeTest {
 
     // Act
     val events =
-      runner
-        .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-        .toList()
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
     val session = assertNotNull(runner.sessionService.getSession(SessionKey("graph_app", "u", "s")))
 
     // Assert: the streamed and the persisted event both carry the onEvent change.
@@ -466,21 +447,20 @@ class WorkflowRootNodeTest {
         override val name: String = "streamer"
 
         override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-          emit(Event(author = "", content = Content.fromText(Role.MODEL, "part"), partial = true))
+          emit(Event(author = "", content = modelMessage("part"), partial = true))
           advancedPastPartial = true
-          emit(Event(author = "", content = Content.fromText(Role.MODEL, "final"), partial = false))
+          emit(Event(author = "", content = modelMessage("final"), partial = false))
         }
       }
     val runner = InMemoryRunner(app = App(appName = "stream_app", rootNode = node))
 
     // Act
     val collected = mutableListOf<Event>()
-    runner
-      .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
-      .collect { event ->
-        if (event.partial) observedAdvancedWhenPartialCollected = advancedPastPartial
-        collected.add(event)
-      }
+    runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).collect { event
+      ->
+      if (event.partial) observedAdvancedWhenPartialCollected = advancedPastPartial
+      collected.add(event)
+    }
     val session =
       assertNotNull(runner.sessionService.getSession(SessionKey("stream_app", "u", "s")))
 
@@ -509,7 +489,7 @@ class WorkflowRootNodeTest {
     val taken =
       withTimeout(10.seconds) {
         runner
-          .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go"))
           .take(1)
           .toList()
       }

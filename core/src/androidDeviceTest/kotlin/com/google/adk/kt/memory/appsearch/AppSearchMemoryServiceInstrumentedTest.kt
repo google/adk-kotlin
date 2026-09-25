@@ -25,8 +25,7 @@ import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import kotlin.time.Clock
@@ -78,7 +77,7 @@ class AppSearchMemoryServiceInstrumentedTest {
     memoryService.addMemory(
       appName,
       "user-1",
-      listOf(MemoryEntry(content = contentOf("Remember the API key rotation"), id = "m-1")),
+      listOf(MemoryEntry(content = userMessage("Remember the API key rotation"), id = "m-1")),
     )
 
     // Reopen the on-disk index with a fresh service instance to prove durability.
@@ -100,14 +99,12 @@ class AppSearchMemoryServiceInstrumentedTest {
     assertThat(memoryService.searchMemory(appName, "user-2", "berlin").memories).isEmpty()
   }
 
-  private fun contentOf(text: String): Content =
-    Content(role = Role.USER, parts = listOf(Part(text = text)))
-
   private fun sessionWith(userId: String, text: String): Session =
     Session(
       key = SessionKey(appName, userId, "session-1"),
       state = State(),
-      events = mutableListOf(Event(author = Role.USER, content = contentOf(text), timestamp = 0L)),
+      events =
+        mutableListOf(Event(author = Role.USER, content = userMessage(text), timestamp = 0L)),
       lastUpdateTime = Clock.System.now(),
     )
 

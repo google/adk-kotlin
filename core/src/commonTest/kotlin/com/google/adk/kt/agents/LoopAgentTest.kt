@@ -20,11 +20,10 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.toList
@@ -131,16 +130,7 @@ class LoopAgentTest {
     val pauseEvent =
       Event(
         author = "agent2",
-        content =
-          Content(
-            role = Role.MODEL,
-            parts =
-              listOf(
-                Part(
-                  functionCall = FunctionCall(name = "long_tool", args = emptyMap(), id = "tool1")
-                )
-              ),
-          ),
+        content = modelFunctionCall(name = "long_tool", id = "tool1"),
         longRunningToolIds = setOf("tool1"),
       )
     val agent2 =

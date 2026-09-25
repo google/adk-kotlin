@@ -21,8 +21,9 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.toTracePayload
 import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
@@ -46,7 +47,7 @@ class TracePayloadSerializationTest {
   fun llmResponse_serializesStructuredJson_excludingNulls() {
     val response =
       LlmResponse(
-        content = Content(role = "model", parts = listOf(Part(text = "Hi"))),
+        content = modelMessage("Hi"),
         usageMetadata = UsageMetadata(promptTokenCount = 5, candidatesTokenCount = 7),
         finishReason = FinishReason.STOP,
         modelVersion = "gemini",
@@ -62,10 +63,7 @@ class TracePayloadSerializationTest {
 
   @Test
   fun llmResponse_doesNotDegradeDomainObjectsToToString() {
-    val json =
-      LlmResponse(content = Content(role = "model", parts = listOf(Part(text = "Hi"))))
-        .toTracePayload()
-        .toString()
+    val json = LlmResponse(content = modelMessage("Hi")).toTracePayload().toString()
 
     // The old Android formatter wrapped non-primitive values as {"value": obj.toString()}; verify
     // the domain graph is real JSON instead.
@@ -79,13 +77,9 @@ class TracePayloadSerializationTest {
       LlmRequest(
         contents =
           listOf(
-            Content(
-              role = "user",
-              parts =
-                listOf(
-                  Part(text = "hello"),
-                  Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
-                ),
+            userMessage(
+              Part(text = "hello"),
+              Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
             )
           ),
         config =

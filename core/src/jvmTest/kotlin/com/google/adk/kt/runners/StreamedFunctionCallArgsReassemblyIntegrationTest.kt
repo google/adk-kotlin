@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
@@ -149,7 +150,7 @@ class StreamedFunctionCallArgsReassemblyIntegrationTest {
       candidates =
         listOf(
           Candidate(
-            content = Content(role = "model", parts = listOf(Part(functionCall = functionCall))),
+            content = modelMessage(Part(functionCall = functionCall)),
             finishReason = finishReason,
           )
         )
@@ -157,12 +158,6 @@ class StreamedFunctionCallArgsReassemblyIntegrationTest {
 
   private fun textChunk(text: String): GenerateContentResponse =
     GenerateContentResponse(
-      candidates =
-        listOf(
-          Candidate(
-            content = Content(role = "model", parts = listOf(Part(text = text))),
-            finishReason = FinishReason.STOP,
-          )
-        )
+      candidates = listOf(Candidate(content = modelMessage(text), finishReason = FinishReason.STOP))
     )
 }

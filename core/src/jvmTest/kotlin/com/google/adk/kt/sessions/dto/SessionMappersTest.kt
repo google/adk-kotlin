@@ -19,8 +19,9 @@ package com.google.adk.kt.sessions.dto
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
@@ -116,7 +117,7 @@ class SessionMappersTest {
         author = "user",
         invocationId = "inv-rt",
         timestamp = 1000L,
-        content = Content(role = "user", parts = listOf(Part(text = "round-trip"))),
+        content = userMessage("round-trip"),
       )
 
     val restored = original.toDto().toAdk()
@@ -165,16 +166,12 @@ class SessionMappersTest {
     // repeating, cannot start list."), which silently dropped every model (thinking) event.
     val signature = byteArrayOf(1, -113, 61, 107)
     val content =
-      Content(
-        role = "model",
-        parts =
-          listOf(
-            Part(
-              functionCall = FunctionCall(name = "get_weather", args = mapOf("city" to "SF")),
-              thoughtSignature = signature,
-            ),
-            Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
-          ),
+      modelMessage(
+        Part(
+          functionCall = FunctionCall(name = "get_weather", args = mapOf("city" to "SF")),
+          thoughtSignature = signature,
+        ),
+        Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
       )
     val event = Event(author = "model", timestamp = 1000L, content = content)
 
@@ -211,8 +208,7 @@ class SessionMappersTest {
   fun eventToDto_stripsPartMetadataFromWire() {
     // partMetadata is an ADK-only Part field with no counterpart in the Vertex Content proto; the
     // service rejects it (400 INVALID_ARGUMENT), so it must not be sent on the wire.
-    val content =
-      Content(role = "user", parts = listOf(Part(text = "hi", partMetadata = mapOf("k" to "v"))))
+    val content = userMessage(Part(text = "hi", partMetadata = mapOf("k" to "v")))
     val event = Event(author = "user", timestamp = 1000L, content = content)
 
     val part = event.toDto().content!!.jsonObject["parts"]!!.jsonArray.single().jsonObject

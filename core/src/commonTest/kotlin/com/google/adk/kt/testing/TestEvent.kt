@@ -19,9 +19,6 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
 import com.google.adk.kt.events.ToolConfirmation
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
 
@@ -68,7 +65,7 @@ fun modelEventWithPromptTokens(
   )
 
 /**
- * A `model`-authored [Event] carrying a single [FunctionCall], with an optional [args] payload
+ * A `model`-authored [Event] carrying a single `FunctionCall`, with an optional [args] payload
  * (defaults to an empty map).
  *
  * Set [longRunning] to mark [callId] as a long-running call via [Event.longRunningToolIds].
@@ -84,11 +81,7 @@ fun eventWithFunctionCall(
   Event(
     author = Role.MODEL,
     invocationId = invocationId,
-    content =
-      Content(
-        role = Role.MODEL,
-        parts = listOf(Part(functionCall = FunctionCall(name = callName, id = callId, args = args))),
-      ),
+    content = modelFunctionCall(name = callName, id = callId, args = args),
     longRunningToolIds = if (longRunning) setOf(callId) else emptySet(),
     timestamp = timestamp,
   )

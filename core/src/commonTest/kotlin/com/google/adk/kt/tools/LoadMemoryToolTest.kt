@@ -25,10 +25,10 @@ import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.testing.DummyMemoryService
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -240,7 +240,7 @@ class LoadMemoryToolTest {
      */
     val FULL_ENTRY =
       MemoryEntry(
-        content = Content(role = Role.USER, parts = listOf(Part(text = "Paris."))),
+        content = userMessage("Paris."),
         id = "memory-1",
         author = "user",
         timestamp = "2026-01-02T03:04:05Z",

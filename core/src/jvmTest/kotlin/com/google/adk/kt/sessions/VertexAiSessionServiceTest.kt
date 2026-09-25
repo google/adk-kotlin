@@ -24,8 +24,7 @@ import com.google.adk.kt.sessions.dto.SessionDto
 import com.google.adk.kt.sessions.dto.SessionEventDto
 import com.google.adk.kt.sessions.dto.TimestampDto
 import com.google.adk.kt.testing.SessionServiceAssertions
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.testing.userMessage
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
 import kotlin.test.assertFailsWith
@@ -782,7 +781,7 @@ class VertexAiSessionServiceTest {
       Event(
         author = "user",
         timestamp = 1000L,
-        content = Content(role = "user", parts = listOf(Part(text = "hi"))),
+        content = userMessage("hi"),
         actions = EventActions(stateDelta = mutableMapOf<String, Any>("k" to "v")),
       )
 

@@ -36,7 +36,6 @@ import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.Flow
@@ -294,10 +293,7 @@ class MemoryInstrumentedTest {
   }
 
   private fun memoryEntry(text: String): MemoryEntry =
-    MemoryEntry(
-      content = Content(role = Role.USER, parts = listOf(Part(text = text))),
-      author = Role.USER,
-    )
+    MemoryEntry(content = userMessage(text), author = Role.USER)
 
   private companion object {
     const val TEST_DB_NAME = "adk_load_memory_e2e_instrumented_test"

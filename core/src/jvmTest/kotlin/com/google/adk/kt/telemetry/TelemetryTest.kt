@@ -21,8 +21,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.telemetry.noop.NoOpTracer
 import com.google.adk.kt.telemetry.otel.OtelTracer
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
+import com.google.adk.kt.testing.userMessage
 import com.google.common.truth.Truth.assertThat
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.SdkTracerProvider
@@ -168,7 +167,7 @@ class TelemetryTest {
       // capture keeps the invocation span nested under the caller's span.
       val flow =
         hostSpan.makeCurrent().use {
-          runner.runAsync(userId = "u", sessionId = "s", newMessage = hi())
+          runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi"))
         }
       runBlocking { flow.collect {} }
       hostSpan.end()
@@ -180,8 +179,6 @@ class TelemetryTest {
       provider.close()
     }
   }
-
-  private fun hi(): Content = Content(role = "user", parts = listOf(Part(text = "hi")))
 
   private fun tracerProvider(sink: MutableList<SpanData>): SdkTracerProvider =
     SdkTracerProvider.builder()

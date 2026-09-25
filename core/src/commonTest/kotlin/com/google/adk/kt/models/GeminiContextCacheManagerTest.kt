@@ -18,8 +18,10 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.testing.modelFunctionCall
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.HttpOptions
 import com.google.adk.kt.types.Part
@@ -66,7 +68,7 @@ class GeminiContextCacheManagerTest {
   // user content to send.
   private fun baseRequest(cacheMetadata: CacheMetadata? = null, tokenCount: Int? = null) =
     LlmRequest(
-      contents = listOf(textContent(Role.MODEL, "cached"), textContent(Role.USER, "latest")),
+      contents = listOf(modelMessage("cached"), userMessage("latest")),
       config = GenerateContentConfig(systemInstruction = textContent(Role.MODEL, "be helpful")),
       cacheConfig = cacheConfig,
       cacheMetadata = cacheMetadata,
@@ -83,7 +85,7 @@ class GeminiContextCacheManagerTest {
   // ~3000 tokens: above Gemini 2.5's 2048 floor but below Gemini 3's 4096 floor.
   private fun floorRequest() =
     LlmRequest(
-      contents = listOf(textContent(Role.USER, "hi")),
+      contents = listOf(userMessage("hi")),
       config =
         GenerateContentConfig(systemInstruction = textContent(Role.MODEL, "x".repeat(12_000))),
       cacheConfig = cacheConfig,
@@ -172,12 +174,7 @@ class GeminiContextCacheManagerTest {
     val fingerprintAtCountOne = fingerprintFor(manager, shortRequest)
     val grownRequest =
       shortRequest.copy(
-        contents =
-          listOf(
-            textContent(Role.MODEL, "cached"),
-            textContent(Role.MODEL, "more"),
-            textContent(Role.USER, "latest"),
-          )
+        contents = listOf(modelMessage("cached"), modelMessage("more"), userMessage("latest"))
       )
     val expiredMetadata =
       CacheMetadata(
@@ -363,8 +360,7 @@ class GeminiContextCacheManagerTest {
     // created.
     val request =
       LlmRequest(
-        contents =
-          listOf(textContent(Role.MODEL, "cached"), textContent(Role.USER, "y".repeat(100_000))),
+        contents = listOf(modelMessage("cached"), userMessage("y".repeat(100_000))),
         config = GenerateContentConfig(systemInstruction = textContent(Role.MODEL, "be helpful")),
         cacheConfig = cacheConfig,
         cacheableContentsTokenCount = 5000,
@@ -415,14 +411,7 @@ class GeminiContextCacheManagerTest {
 
     fun requestWithArgs(args: Map<String, Any?>) =
       LlmRequest(
-        contents =
-          listOf(
-            Content(
-              role = Role.MODEL,
-              parts = listOf(Part(functionCall = FunctionCall(name = "lookup", args = args))),
-            ),
-            textContent(Role.USER, "latest"),
-          ),
+        contents = listOf(modelFunctionCall(name = "lookup", args = args), userMessage("latest")),
         config = GenerateContentConfig(systemInstruction = textContent(Role.MODEL, "be helpful")),
         cacheConfig = cacheConfig,
       )

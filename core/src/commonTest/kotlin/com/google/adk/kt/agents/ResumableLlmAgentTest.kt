@@ -29,7 +29,8 @@ import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyResumableEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
-import com.google.adk.kt.types.Content
+import com.google.adk.kt.testing.userFunctionResponse
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
@@ -83,7 +84,7 @@ class ResumableLlmAgentTest {
           Event(
             author = "root_agent",
             invocationId = INVOCATION_ID,
-            content = Content(Role.MODEL, listOf(TRANSFER_TO_AGENT_RESPONSE_PART)),
+            content = modelMessage(TRANSFER_TO_AGENT_RESPONSE_PART),
             actions = EventActions(transferToAgent = "sub_agent_1"),
           )
         ),
@@ -121,7 +122,7 @@ class ResumableLlmAgentTest {
           Event(
             author = "agent_a",
             invocationId = INVOCATION_ID,
-            content = Content(Role.MODEL, listOf(TRANSFER_TO_AGENT_RESPONSE_PART)),
+            content = modelMessage(TRANSFER_TO_AGENT_RESPONSE_PART),
             actions = EventActions(transferToAgent = "agent_b"),
           )
         ),
@@ -228,7 +229,7 @@ class ResumableLlmAgentTest {
           Event(
             author = "root_agent",
             invocationId = INVOCATION_ID,
-            content = Content(Role.MODEL, listOf(TRANSFER_TO_AGENT_RESPONSE_PART)),
+            content = modelMessage(TRANSFER_TO_AGENT_RESPONSE_PART),
             actions = EventActions(transferToAgent = "sub_agent_1"),
           ),
           modelEvent("root_agent", toolCallPart("some_tool")),
@@ -236,7 +237,7 @@ class ResumableLlmAgentTest {
           Event(
             author = Role.USER,
             invocationId = INVOCATION_ID,
-            content = Content(Role.USER, listOf(toolResponsePartWithId("some_tool"))),
+            content = userMessage(toolResponsePartWithId("some_tool")),
           ),
         ),
       )
@@ -276,14 +277,14 @@ class ResumableLlmAgentTest {
           Event(
             author = "root_agent",
             invocationId = INVOCATION_ID,
-            content = Content(Role.MODEL, listOf(TRANSFER_TO_AGENT_RESPONSE_PART)),
+            content = modelMessage(TRANSFER_TO_AGENT_RESPONSE_PART),
             actions = EventActions(transferToAgent = "sub_agent_1"),
           ),
           modelEvent("sub_agent_1", toolCallPart("sub_agent_tool")),
           Event(
             author = Role.USER,
             invocationId = INVOCATION_ID,
-            content = Content(Role.USER, listOf(toolResponsePartWithId("sub_agent_tool"))),
+            content = userMessage(toolResponsePartWithId("sub_agent_tool")),
           ),
         ),
       )
@@ -322,7 +323,7 @@ class ResumableLlmAgentTest {
           Event(
             author = "root_agent",
             invocationId = INVOCATION_ID,
-            content = Content(Role.MODEL, listOf(TRANSFER_TO_AGENT_RESPONSE_PART)),
+            content = modelMessage(TRANSFER_TO_AGENT_RESPONSE_PART),
             actions = EventActions(transferToAgent = "sub_agent_1"),
           )
         ),
@@ -362,17 +363,14 @@ class ResumableLlmAgentTest {
             author = "root_agent",
             invocationId = INVOCATION_ID,
             content =
-              Content(
-                Role.MODEL,
-                listOf(
-                  Part(
-                    functionCall =
-                      FunctionCall(name = "tool_one", args = emptyMap(), id = "tool_one_id")
-                  ),
-                  Part(
-                    functionCall =
-                      FunctionCall(name = "tool_two", args = emptyMap(), id = "tool_two_id")
-                  ),
+              modelMessage(
+                Part(
+                  functionCall =
+                    FunctionCall(name = "tool_one", args = emptyMap(), id = "tool_one_id")
+                ),
+                Part(
+                  functionCall =
+                    FunctionCall(name = "tool_two", args = emptyMap(), id = "tool_two_id")
                 ),
               ),
             longRunningToolIds = setOf("tool_one_id", "tool_two_id"),
@@ -382,18 +380,10 @@ class ResumableLlmAgentTest {
             author = "root_agent",
             invocationId = INVOCATION_ID,
             content =
-              Content(
-                Role.USER,
-                listOf(
-                  Part(
-                    functionResponse =
-                      FunctionResponse(
-                        name = "tool_one",
-                        id = "tool_one_id",
-                        response = mapOf("status" to "pending"),
-                      )
-                  )
-                ),
+              userFunctionResponse(
+                name = "tool_one",
+                id = "tool_one_id",
+                response = mapOf("status" to "pending"),
               ),
           ),
           // The resume answers tool_one only; tool_two remains unanswered.
@@ -401,18 +391,10 @@ class ResumableLlmAgentTest {
             author = Role.USER,
             invocationId = INVOCATION_ID,
             content =
-              Content(
-                Role.USER,
-                listOf(
-                  Part(
-                    functionResponse =
-                      FunctionResponse(
-                        name = "tool_one",
-                        id = "tool_one_id",
-                        response = mapOf("result" to "ok"),
-                      )
-                  )
-                ),
+              userFunctionResponse(
+                name = "tool_one",
+                id = "tool_one_id",
+                response = mapOf("result" to "ok"),
               ),
           ),
         ),
@@ -460,11 +442,7 @@ class ResumableLlmAgentTest {
     fun baseAgentState(): TypedData.MapValue = TypedData.MapValue(emptyMap())
 
     fun modelEvent(author: String, part: Part): Event =
-      Event(
-        author = author,
-        invocationId = INVOCATION_ID,
-        content = Content(Role.MODEL, listOf(part)),
-      )
+      Event(author = author, invocationId = INVOCATION_ID, content = modelMessage(part))
 
     /** A function call part with the conventional `<tool>_id` id. */
     fun toolCallPart(toolName: String): Part =

@@ -71,27 +71,19 @@ class GeminiTest {
   fun sanitizeRequestForGeminiApi_withDisplayName_removesDisplayName() {
     val reqContents =
       mutableListOf(
-        Content(
-          role = "user",
-          parts =
-            listOf(
-              Part(
-                inlineData =
-                  Blob(
-                    mimeType = "image/png",
-                    data = "123".toByteArray(),
-                    displayName = "my-image.png",
-                  )
-              ),
-              Part(
-                fileData =
-                  FileData(
-                    mimeType = "application/pdf",
-                    fileUri = "gs://bucket/file",
-                    displayName = "document.pdf",
-                  )
-              ),
-            ),
+        userMessage(
+          Part(
+            inlineData =
+              Blob(mimeType = "image/png", data = "123".toByteArray(), displayName = "my-image.png")
+          ),
+          Part(
+            fileData =
+              FileData(
+                mimeType = "application/pdf",
+                fileUri = "gs://bucket/file",
+                displayName = "document.pdf",
+              )
+          ),
         )
       )
 
@@ -136,16 +128,12 @@ class GeminiTest {
   fun prepareGenerateContentRequest_default_appliesLogicCorrectly() {
     val reqContents =
       mutableListOf(
-        Content(
-          role = "model",
-          parts =
-            listOf(
-              Part(text = "Thought", thought = true),
-              Part(
-                inlineData = Blob(mimeType = "img", data = "1".toByteArray(), displayName = "name"),
-                thought = false,
-              ),
-            ),
+        modelMessage(
+          Part(text = "Thought", thought = true),
+          Part(
+            inlineData = Blob(mimeType = "img", data = "1".toByteArray(), displayName = "name"),
+            thought = false,
+          ),
         )
       )
     val request = LlmRequest(model = null, contents = reqContents, config = GenerateContentConfig())

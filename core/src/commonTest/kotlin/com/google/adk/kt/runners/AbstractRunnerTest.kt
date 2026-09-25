@@ -42,12 +42,12 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.MonotonicTimestampSessionService
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
@@ -92,11 +92,7 @@ class AbstractRunnerTest {
     val callEvent =
       Event(
         author = "sub",
-        content =
-          Content(
-            Role.MODEL,
-            listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
-          ),
+        content = modelFunctionCall("tool", id = callId),
         invocationId = "inv-1",
       )
     val responseEvent =
@@ -139,11 +135,7 @@ class AbstractRunnerTest {
     val callEvent =
       Event(
         author = "specialist",
-        content =
-          Content(
-            Role.MODEL,
-            listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
-          ),
+        content = modelFunctionCall("tool", id = callId),
         invocationId = "inv-1",
       )
     val responseEvent =
@@ -401,11 +393,7 @@ class AbstractRunnerTest {
     val callEvent =
       Event(
         author = Role.USER,
-        content =
-          Content(
-            Role.MODEL,
-            listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
-          ),
+        content = modelFunctionCall("tool", id = callId),
         invocationId = "inv-1",
       )
     val responseEvent =
@@ -448,11 +436,7 @@ class AbstractRunnerTest {
     val callEvent =
       Event(
         author = "agent_from_a_previous_session",
-        content =
-          Content(
-            Role.MODEL,
-            listOf(Part(functionCall = FunctionCall("tool", emptyMap(), callId))),
-          ),
+        content = modelFunctionCall("tool", id = callId),
         invocationId = "inv-1",
       )
     val responseEvent =
@@ -1433,12 +1417,7 @@ class AbstractRunnerTest {
           2 ->
             flowOf(
               LlmResponse(
-                content =
-                  Content(
-                    role = Role.MODEL,
-                    parts =
-                      listOf(Part(functionCall = FunctionCall(name = "dummy_tool", id = "call_1"))),
-                  ),
+                content = modelFunctionCall("dummy_tool", id = "call_1"),
                 usageMetadata = UsageMetadata(promptTokenCount = 200),
               )
             )

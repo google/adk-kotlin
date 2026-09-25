@@ -18,10 +18,9 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userEvent
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
 import com.google.adk.kt.types.ToolType
@@ -197,15 +196,11 @@ class HistoryRewriterProcessorTest {
         Event(
           author = "other_agent",
           content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(
-                  // The text keeps the event past the visibility filter, so the assertions below
-                  // are about the narration refusing the call, not about the event vanishing.
-                  Part(text = "Here is the summary."),
-                  Part(toolCall = ToolCall(id = "tc1", toolType = ToolType.URL_CONTEXT)),
-                ),
+            // The text keeps the event past the visibility filter, so the assertions below are
+            // about the narration refusing the call, not about the event vanishing.
+            modelMessage(
+              Part(text = "Here is the summary."),
+              Part(toolCall = ToolCall(id = "tc1", toolType = ToolType.URL_CONTEXT)),
             ),
         ),
       )
@@ -288,10 +283,9 @@ class HistoryRewriterProcessorTest {
         Event(
           author = "other_agent",
           content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(Part(text = "Let me check the map.", thought = true), Part(text = "Paris.")),
+            modelMessage(
+              Part(text = "Let me check the map.", thought = true),
+              Part(text = "Paris."),
             ),
         ),
       )
@@ -307,5 +301,5 @@ class HistoryRewriterProcessorTest {
   }
 
   private fun modelPartEvent(part: Part, author: String = "agent"): Event =
-    Event(author = author, content = Content(role = Role.MODEL, parts = listOf(part)))
+    Event(author = author, content = modelMessage(part))
 }

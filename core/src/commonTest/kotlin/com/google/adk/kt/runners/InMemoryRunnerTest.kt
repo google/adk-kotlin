@@ -39,17 +39,17 @@ import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.MonotonicTimestampSessionService
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyEvents
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
-import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
-import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
@@ -489,17 +489,7 @@ class InMemoryRunnerTest {
           invocationId = "test-inv",
           author = dummyAgent.name,
           branch = "my_special_branch",
-          content =
-            Content(
-              role = Role.MODEL,
-              parts =
-                listOf(
-                  Part(
-                    functionCall =
-                      FunctionCall(name = "test_func", args = emptyMap(), id = "call_abc")
-                  )
-                ),
-            ),
+          content = modelFunctionCall(name = "test_func", id = "call_abc"),
         ),
       )
 
@@ -509,19 +499,10 @@ class InMemoryRunnerTest {
         sessionId = "session1",
         invocationId = "test-inv",
         newMessage =
-          Content(
-            role = Role.USER,
-            parts =
-              listOf(
-                Part(
-                  functionResponse =
-                    FunctionResponse(
-                      name = "test_func",
-                      response = mapOf("result" to "ok"),
-                      id = "call_abc",
-                    )
-                )
-              ),
+          userFunctionResponse(
+            name = "test_func",
+            id = "call_abc",
+            response = mapOf("result" to "ok"),
           ),
       )
       .toList()
