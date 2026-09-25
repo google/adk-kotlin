@@ -218,6 +218,47 @@ class WireEndpointTest {
   }
 
   @Test
+  fun run_noBodyAndNoContentType_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun runSse_noBodyAndNoContentType_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run_sse")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun uploadArtifact_noBodyAndNoContentType_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/apps/a/users/u/sessions/s/artifacts")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_bodyWithAWildcardContentType_isRejectedAsUnsupported() = testApplication {
+    // `*/*` is a type the server cannot read, and a body arrived, so this stays the type's fault.
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/run") {
+        setBody(camelCaseRun)
+        contentType(ContentType.Any)
+      }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnsupportedMediaType)
+  }
+
+  @Test
   fun run_bodyMissingARequiredField_isUnprocessable() = testApplication {
     application { adkApiModule(testConfig()) }
 

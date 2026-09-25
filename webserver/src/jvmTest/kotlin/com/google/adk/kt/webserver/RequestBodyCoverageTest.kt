@@ -38,6 +38,18 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
+/** Substituted for each path parameter, so a route's path is one fixed string to request. */
+internal const val PROBE = "probe"
+
+/**
+ * The routes that read a body today, in the form [PROBE] gives them.
+ *
+ * Shared so a route added later is declared once: the survey below checks it reached these, and
+ * `RequestFramingTest` drives the same three over a socket.
+ */
+internal val BODY_READING_ROUTES =
+  listOf("/run", "/run_sse", "/apps/$PROBE/users/$PROBE/sessions/$PROBE/artifacts")
+
 /**
  * Holds the rule on reading a body to every POST route, not only the three that read one today.
  *
@@ -59,6 +71,21 @@ class RequestBodyCoverageTest {
     }
 
     // A survey that stops reaching the routes it exists for would otherwise pass on an empty list.
+    assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
+    assertThat(offenders).isEmpty()
+  }
+
+  @Test
+  fun noPostRoute_answersUnsupportedMediaType_toNoBodyAtAll() = testApplication {
+    val app = startedApplication()
+    val paths = app.postRoutePaths()
+
+    // Nothing was sent, so nothing has a media type to be unsupported; 415 names the wrong fault
+    // and leaves the caller adding a header when the body is what is missing.
+    val offenders = paths.filter { path ->
+      client.post(path).status == HttpStatusCode.UnsupportedMediaType
+    }
+
     assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
     assertThat(offenders).isEmpty()
   }
@@ -141,13 +168,8 @@ class RequestBodyCoverageTest {
   }
 
   private companion object {
-    const val PROBE = "probe"
     const val CANARY = "do-not-log-this-value"
 
     val PATH_PARAMETER = Regex("\\{[^}]*}")
-
-    /** The routes that read a body today, so a survey that stops reaching them fails here. */
-    val BODY_READING_ROUTES =
-      listOf("/run", "/run_sse", "/apps/$PROBE/users/$PROBE/sessions/$PROBE/artifacts")
   }
 }
