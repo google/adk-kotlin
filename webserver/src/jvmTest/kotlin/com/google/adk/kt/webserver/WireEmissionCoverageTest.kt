@@ -20,6 +20,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.webserver.models.AppInfo
 import com.google.adk.kt.webserver.models.SessionDto
 import com.google.adk.kt.webserver.models.SseError
 import com.google.adk.kt.webserver.models.VersionInfo
@@ -53,7 +54,8 @@ class WireEmissionCoverageTest {
 
   /**
    * The types the ADK agent runtime endpoints emit: `/version`, the session routes, the artifact
-   * routes, and `/run` and `/run_sse`. `/health` and `/list-apps` emit no schema of their own.
+   * routes, `/run` and `/run_sse`, and `app-info`. `/health` and `/list-apps` emit no schema of
+   * their own.
    */
   private val responseRoots: Map<String, KSerializer<*>> =
     mapOf(
@@ -62,6 +64,7 @@ class WireEmissionCoverageTest {
       "Part" to Part.serializer(),
       "Event" to ListSerializer(Event.serializer()),
       "SseError" to SseError.serializer(),
+      "AppInfo" to AppInfo.serializer(),
     )
 
   @Test
@@ -83,6 +86,8 @@ class WireEmissionCoverageTest {
         "Event[].content.parts[].functionCall.name",
         "Event[].actions.requestedToolConfirmations{}.hint",
         "Event[].content.parts[].functionCall.partialArgs[].value.value",
+        "AppInfo.agents{}.subAgents",
+        "AppInfo.agents{}.tools[].functionDeclarations[].parameters.properties{}.type",
       )
   }
 

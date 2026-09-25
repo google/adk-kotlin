@@ -62,6 +62,15 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
       )
       .flag()
 
+  private val includeAppInfo: Boolean by
+    option(
+        "--include-app-info",
+        help =
+          "Mount /apps/{appName}/app-info, which reports every agent's instruction and tools. " +
+            "Off by default, since a deployment has no reason to publish them.",
+      )
+      .flag()
+
   override fun run() {
     // Built here so --help needs no API key: constructing a Gemini agent requires one.
     val config =
@@ -78,6 +87,7 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
         artifactService = InMemoryArtifactService(),
         port = port,
         camelCaseEnforced = camelCase,
+        includeAppInfo = includeAppInfo,
       )
 
     val server = if (dev) AdkDevServer(config) else AdkApiServer(config)

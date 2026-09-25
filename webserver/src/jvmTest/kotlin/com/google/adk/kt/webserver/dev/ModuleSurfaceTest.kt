@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.webserver.dev
 
+import com.google.adk.kt.webserver.APP_INFO_ENABLED_PROPERTY
 import com.google.adk.kt.webserver.AdkServerConfig
 import com.google.adk.kt.webserver.FakeAgentLoader
 import com.google.adk.kt.webserver.FakeArtifactService
@@ -75,6 +76,16 @@ class ModuleSurfaceTest {
   }
 
   @Test
+  fun appInfo_joinsTheContractSurfaceOfBothVariantsWhenAsked() {
+    assertThat(routesOf { adkApiModule(testConfig().copy(includeAppInfo = true)) })
+      .containsExactlyElementsIn(CONTRACT_ROUTES + APP_INFO_ROUTES)
+    assertThat(routesOf { adkDevModule(testConfig().copy(includeAppInfo = true)) })
+      .containsExactlyElementsIn(
+        CONTRACT_ROUTES + APP_INFO_ROUTES + WEB_UI_ROUTES + DEVELOPMENT_ONLY_ROUTES
+      )
+  }
+
+  @Test
   fun webUiProperty_overridesAnExplicitConfigValue() {
     assertThat(
         routesOf(webUiProperty = "true") { adkApiModule(testConfig().copy(webUiEnabled = false)) }
@@ -105,6 +116,9 @@ class ModuleSurfaceTest {
     } else {
       System.setProperty(WEB_UI_ENABLED_PROPERTY, webUiProperty)
     }
+    // Only the config decides app-info here, so an ambient property cannot alter the surface.
+    val previousAppInfo: String? = System.getProperty(APP_INFO_ENABLED_PROPERTY)
+    System.clearProperty(APP_INFO_ENABLED_PROPERTY)
     val routes = mutableSetOf<String>()
     try {
       testApplication {
@@ -120,6 +134,9 @@ class ModuleSurfaceTest {
         System.clearProperty(WEB_UI_ENABLED_PROPERTY)
       } else {
         System.setProperty(WEB_UI_ENABLED_PROPERTY, previous)
+      }
+      if (previousAppInfo != null) {
+        System.setProperty(APP_INFO_ENABLED_PROPERTY, previousAppInfo)
       }
     }
     return routes
@@ -147,6 +164,9 @@ class ModuleSurfaceTest {
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/(method:GET)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/(method:DELETE)",
       )
+
+    /** Opt-in, and on the contract side rather than the development one. */
+    val APP_INFO_ROUTES = setOf("/apps/{appName}/app-info/(method:GET)")
 
     /** The Development UI mount, which Python also serves from the API server. */
     val WEB_UI_ROUTES = setOf("/(method:GET)", "/dev-ui/(method:GET)", "/dev-ui/{...}/(method:GET)")

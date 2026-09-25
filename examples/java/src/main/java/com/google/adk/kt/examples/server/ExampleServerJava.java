@@ -31,17 +31,20 @@ import com.google.adk.kt.webserver.loaders.MultiAgentLoader;
  * Serves several example agents over HTTP, so the Development UI can drive them.
  *
  * <p>The endpoints have no authentication, so this binds loopback and is meant for a local run.
- * Pass {@code --port} to change the port and {@code --dev} to also serve the Development UI (an
- * {@link AdkDevServer} instead of a plain {@link AdkApiServer}).
+ * Pass {@code --port} to change the port, {@code --dev} to also serve the Development UI (an {@link
+ * AdkDevServer} instead of a plain {@link AdkApiServer}), and {@code --include-app-info} to mount
+ * the endpoint reporting each agent's instruction and tools.
  */
 public final class ExampleServerJava {
 
   public static void main(String[] args) {
     int port = AdkServerConfig.DEFAULT_PORT;
     boolean dev = false;
+    boolean includeAppInfo = false;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--dev" -> dev = true;
+        case "--include-app-info" -> includeAppInfo = true;
         case "--port" -> {
           if (i + 1 >= args.length) {
             throw new IllegalArgumentException("--port requires a value.");
@@ -63,6 +66,7 @@ public final class ExampleServerJava {
             .sessionService(new InMemorySessionService())
             .artifactService(new InMemoryArtifactService())
             .port(port)
+            .includeAppInfo(includeAppInfo)
             .build();
 
     AdkApiServer server = dev ? new AdkDevServer(config) : new AdkApiServer(config);
