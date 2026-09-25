@@ -31,8 +31,11 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCall
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyEvents
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -83,12 +86,9 @@ class LlmAgentTest {
   @Test
   fun runAsync_withFunctionCall_emitsCorrectEvents() = runTest {
     val firstContent =
-      Content(
-        "model",
-        listOf(
-          Part(text = "LLM response with function call"),
-          Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
-        ),
+      modelMessage(
+        Part(text = "LLM response with function call"),
+        Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
       )
     val secondText = "LLM response after function response"
 
@@ -129,12 +129,9 @@ class LlmAgentTest {
   @Test
   fun runAsync_withMaxSteps_stopsAfterMaxSteps() = runTest {
     val contentWithFunctionCall =
-      Content(
-        "model",
-        listOf(
-          Part(text = "LLM response with function call"),
-          Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
-        ),
+      modelMessage(
+        Part(text = "LLM response with function call"),
+        Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
       )
 
     // The model always asks to call the tool again; only the maxSteps cap stops the loop. The third
@@ -181,12 +178,9 @@ class LlmAgentTest {
   @Test
   fun runAsync_withMaxStepsNotReached_runsToFinalResponse() = runTest {
     val contentWithFunctionCall =
-      Content(
-        "model",
-        listOf(
-          Part(text = "LLM response with function call"),
-          Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
-        ),
+      modelMessage(
+        Part(text = "LLM response with function call"),
+        Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
       )
     val finalText = "LLM response after function response"
 
@@ -229,12 +223,9 @@ class LlmAgentTest {
   @Test
   fun runAsync_longRunningFunctionCall_returnsToolIds() = runTest {
     val firstContent =
-      Content(
-        "model",
-        listOf(
-          Part(text = "LLM response with function call"),
-          Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
-        ),
+      modelMessage(
+        Part(text = "LLM response with function call"),
+        Part(functionCall = FunctionCall("my_function", mapOf("arg1" to "value1"), id = "call_1")),
       )
     val secondText = "LLM response after function response"
 
@@ -484,11 +475,7 @@ class LlmAgentTest {
         invocationId = invocationId,
         author = "test-agent",
         branch = context.branch,
-        content =
-          Content(
-            role = Role.MODEL,
-            parts = listOf(Part(functionCall = FunctionCall(name = "do_work", id = callId))),
-          ),
+        content = modelFunctionCall(name = "do_work", id = callId),
         longRunningToolIds = setOf(callId),
       )
     )
@@ -498,17 +485,7 @@ class LlmAgentTest {
         invocationId = invocationId,
         author = "test-agent",
         branch = context.branch,
-        content =
-          Content(
-            role = Role.USER,
-            parts =
-              listOf(
-                Part(
-                  functionResponse =
-                    FunctionResponse(name = "do_work", id = callId, response = emptyMap())
-                )
-              ),
-          ),
+        content = userFunctionResponse(name = "do_work", id = callId),
       )
     )
 
@@ -541,8 +518,7 @@ class LlmAgentTest {
 
   @Test
   fun runAsync_withOutputKey_concatenatesMultipleTextParts() = runTest {
-    val multiPartContent =
-      Content(role = Role.MODEL, parts = listOf(Part(text = "Part 1."), Part(text = " Part 2.")))
+    val multiPartContent = modelMessage(Part(text = "Part 1."), Part(text = " Part 2."))
     val model =
       DummyModel.createSequential("test-model", listOf(LlmResponse(content = multiPartContent)))
     val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myMultiPartOutput")
@@ -559,10 +535,7 @@ class LlmAgentTest {
   @Test
   fun runAsync_withOutputKey_ignoresThoughtParts() = runTest {
     val mixedContent =
-      Content(
-        role = Role.MODEL,
-        parts = listOf(Part(text = "Saved output"), Part(text = "Ignored thought", thought = true)),
-      )
+      modelMessage(Part(text = "Saved output"), Part(text = "Ignored thought", thought = true))
     val model =
       DummyModel.createSequential("test-model", listOf(LlmResponse(content = mixedContent)))
     val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
@@ -596,8 +569,7 @@ class LlmAgentTest {
 
   @Test
   fun runAsync_withOutputKey_doesNotOverwriteStateWhenOnlyThoughtPartsPresent() = runTest {
-    val thoughtOnlyContent =
-      Content(role = Role.MODEL, parts = listOf(Part(text = "thinking out loud", thought = true)))
+    val thoughtOnlyContent = modelMessage(Part(text = "thinking out loud", thought = true))
     val model =
       DummyModel.createSequential("test-model", listOf(LlmResponse(content = thoughtOnlyContent)))
     val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
@@ -829,16 +801,7 @@ class LlmAgentTest {
     // The model returns its final answer by calling the set_model_response tool (the workaround for
     // Gemini 2.x, which cannot use a response schema together with tools).
     val setResponseCall =
-      Content(
-        role = Role.MODEL,
-        parts =
-          listOf(
-            Part(
-              functionCall =
-                FunctionCall("set_model_response", mapOf("answer" to "42"), id = "call_1")
-            )
-          ),
-      )
+      modelFunctionCall("set_model_response", mapOf("answer" to "42"), id = "call_1")
     val model =
       DummyModel.createSequential(
         "gemini-2.0-flash",
@@ -882,16 +845,7 @@ class LlmAgentTest {
       // of
       // the invocation rather than being saved as raw text.
       val setResponseCall =
-        Content(
-          role = Role.MODEL,
-          parts =
-            listOf(
-              Part(
-                functionCall =
-                  FunctionCall("set_model_response", mapOf("wrong" to "value"), id = "call_1")
-              )
-            ),
-        )
+        modelFunctionCall("set_model_response", mapOf("wrong" to "value"), id = "call_1")
       val model =
         DummyModel.createSequential(
           "gemini-2.0-flash",
@@ -923,12 +877,9 @@ class LlmAgentTest {
   @Test
   fun runAsync_toolSetsEndOfAgent_stopsLoopAfterStep() = runTest {
     val contentWithFunctionCall =
-      Content(
-        "model",
-        listOf(
-          Part(text = "calling tool"),
-          Part(functionCall = FunctionCall("stop_tool", mapOf("arg1" to "v"), id = "call_1")),
-        ),
+      modelMessage(
+        Part(text = "calling tool"),
+        Part(functionCall = FunctionCall("stop_tool", mapOf("arg1" to "v"), id = "call_1")),
       )
 
     // Second LLM response must never be requested: the tool ends the invocation after step 1.
@@ -975,11 +926,7 @@ class LlmAgentTest {
    */
   @Test
   fun runAsync_toolCallsEndInvocation_stopsLoopAfterStep() = runTest {
-    val contentWithFunctionCall =
-      Content(
-        "model",
-        listOf(Part(functionCall = FunctionCall("stop_tool", emptyMap(), id = "call_1"))),
-      )
+    val contentWithFunctionCall = modelFunctionCall("stop_tool", id = "call_1")
 
     val testModel =
       DummyModel.createSequential(
@@ -1027,13 +974,7 @@ class LlmAgentTest {
       DummyModel.createSequential(
         "test-model",
         listOf(
-          LlmResponse(
-            content =
-              Content(
-                "model",
-                listOf(Part(functionCall = FunctionCall("noop_tool", emptyMap(), id = "call_1"))),
-              )
-          ),
+          modelFunctionCallResponse("noop_tool", id = "call_1"),
           LlmResponse(content = modelMessage("This should never be returned.")),
         ),
       )
@@ -1072,11 +1013,7 @@ class LlmAgentTest {
    */
   @Test
   fun runAsync_afterToolCallback_endsInvocation_stopsLoop() = runTest {
-    val contentWithFunctionCall =
-      Content(
-        "model",
-        listOf(Part(functionCall = FunctionCall("my_function", emptyMap(), id = "call_1"))),
-      )
+    val contentWithFunctionCall = modelFunctionCall("my_function", id = "call_1")
 
     val testModel =
       DummyModel.createSequential(
@@ -1129,11 +1066,7 @@ class LlmAgentTest {
    */
   @Test
   fun runAsync_resumableContext_toolSetsEndOfAgent_marksAgentEndedOnResume() = runTest {
-    val contentWithFunctionCall =
-      Content(
-        "model",
-        listOf(Part(functionCall = FunctionCall("stop_tool", emptyMap(), id = "call_1"))),
-      )
+    val contentWithFunctionCall = modelFunctionCall("stop_tool", id = "call_1")
     val testModel =
       DummyModel.createSequential(
         "test-model",

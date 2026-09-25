@@ -27,7 +27,6 @@ import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -307,11 +306,7 @@ class PreloadMemoryToolTest {
           return SearchMemoryResponse(emptyList())
         }
       }
-    val userContent =
-      Content(
-        role = Role.USER,
-        parts = listOf(Part(text = "What is"), Part(text = "my favorite color?")),
-      )
+    val userContent = userMessage(Part(text = "What is"), Part(text = "my favorite color?"))
     val context =
       testToolContext(
         testInvocationContext(memoryService = recordingService, userContent = userContent)
