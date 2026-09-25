@@ -18,9 +18,12 @@ package com.google.adk.kt.webserver.routes
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.plugins.BadRequestException
+import io.ktor.server.request.contentLength
+import io.ktor.server.request.header
 import io.ktor.server.request.receiveNullable
 import io.ktor.server.response.respond
 import kotlinx.serialization.json.JsonElement
@@ -39,6 +42,12 @@ import kotlinx.serialization.json.decodeFromJsonElement
  */
 @OptIn(FrameworkInternalApi::class)
 internal suspend inline fun <reified T : Any> ApplicationCall.receiveRequiredBodyOrRespond(): T? {
+  // Read, not parsed: parsing a malformed type throws here, outside the catch, and logs its value.
+  val framesNoBody =
+    request.header(HttpHeaders.TransferEncoding) == null && (request.contentLength() ?: 0L) == 0L
+  if (request.header(HttpHeaders.ContentType).isNullOrBlank() && framesNoBody) {
+    throw BadRequestException("Missing request body")
+  }
   val json =
     try {
       receiveNullable<JsonElement?>()
