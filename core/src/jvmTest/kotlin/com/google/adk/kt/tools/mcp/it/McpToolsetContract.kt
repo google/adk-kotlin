@@ -17,7 +17,6 @@
 package com.google.adk.kt.tools.mcp.it
 
 import com.google.adk.kt.testing.testToolContext
-import com.google.adk.kt.tools.mcp.McpResourceContent
 import com.google.adk.kt.tools.mcp.McpToolset
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
@@ -66,22 +65,27 @@ class McpToolsetContract(private val harness: McpToolsetHarness) {
         .containsExactly(*ADVERTISED_TOOLS, *RESOURCE_TOOLS)
     }
 
-  suspend fun readResource_returnsServerContentEmbeddingTheInjectedToken() =
-    harness.withToolset(useMcpResources = false) { toolset ->
-      val contents = toolset.readResource(FakeMcpServer.RESOURCE_GREETING_URI)
-      val text = (contents.single() as McpResourceContent.Text).text
-      // Proves the token-injection channel and a real resources/read round-trip.
-      assertThat(text).contains(INJECTED_TOKEN)
+  suspend fun loadResource_returnsServerContentEmbeddingTheInjectedToken() =
+    harness.withToolset(useMcpResources = true) { toolset ->
+      val load = toolset.getTools().single { it.name == LOAD_MCP_RESOURCE }
+      val text = load.run(testToolContext(), mapOf("uri" to FakeMcpServer.RESOURCE_GREETING_URI))
+      // Proves the token-injection channel and a real resources/read round-trip through the
+      // common ADK resource tool, rather than JVM-only helper methods.
+      assertThat(text.toString()).contains(INJECTED_TOKEN)
     }
 
   suspend fun listResources_returnsEntryCarryingNameAndUri() =
-    harness.withToolset(useMcpResources = false) { toolset ->
+    harness.withToolset(useMcpResources = true) { toolset ->
       // A real resources/list round-trip: the typed entry carries both the programmatic name (per
       // the spec `title` is the display name, not this) and the canonical uri, and that uri is
       // exactly the identifier readResource takes.
+      val list = toolset.getTools().single { it.name == "list_mcp_resources" }
+      val response = list.run(testToolContext(), emptyMap()) as Map<*, *>
       val entry =
-        toolset.listResources().resources.single { it.uri == FakeMcpServer.RESOURCE_GREETING_URI }
-      assertThat(entry.name).isEqualTo(FakeMcpServer.RESOURCE_GREETING_NAME)
+        (response["resources"] as List<*>)
+          .map { it as Map<*, *> }
+          .single { it["uri"] == FakeMcpServer.RESOURCE_GREETING_URI }
+      assertThat(entry["name"]).isEqualTo(FakeMcpServer.RESOURCE_GREETING_NAME)
     }
 
   suspend fun run_loadMcpResource_byName_readsTheResourceOverTheWire() =
@@ -149,9 +153,11 @@ class McpToolsetContract(private val harness: McpToolsetHarness) {
     }
 
   suspend fun listResources_doesNotEnumerateTemplateMembers() =
-    harness.withToolset(useMcpResources = false) { toolset ->
+    harness.withToolset(useMcpResources = true) { toolset ->
       // Why the template tool is not redundant: its members are not in the listing.
-      val uris = toolset.listResources().resources.map { it.uri }
+      val list = toolset.getTools().single { it.name == "list_mcp_resources" }
+      val response = list.run(testToolContext(), emptyMap()) as Map<*, *>
+      val uris = (response["resources"] as List<*>).map { (it as Map<*, *>)["uri"] }
       assertThat(uris).doesNotContain("mem://doc/onboarding")
       assertThat(uris).contains(FakeMcpServer.RESOURCE_GREETING_URI)
     }
