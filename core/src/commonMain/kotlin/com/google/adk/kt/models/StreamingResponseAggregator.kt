@@ -83,23 +83,22 @@ class StreamingResponseAggregator {
     response.finishReason?.let { finishReason = it }
     response.errorMessage?.let { errorMessage = it }
 
-    // Assign a client id to any function call missing one up front, so the partial chunk and the
-    // final response share it.
-    val parts = (response.content?.parts ?: emptyList()).map { it.ensureFunctionCallId() }
-    for (part in parts) {
-      when {
-        !part.text.isNullOrEmpty() -> processTextPart(part)
-        part.functionCall != null -> processFunctionCallPart(part)
-        // An empty text part that carries something else falls through to survive on its own; one
-        // carrying nothing at all just ends a Gemini 3 stream and is dropped.
-        part.isStreamTerminator() -> {}
-        else -> {
-          // Other non-text parts (blobs, etc.)
-          flushTextBufferToSequence()
-          partsSequence.add(part)
+    val parts =
+      response.content?.parts.orEmpty().map { part ->
+        when {
+          !part.text.isNullOrEmpty() -> part.also { processTextPart(it) }
+          part.functionCall != null -> processFunctionCallPart(part)
+          // An empty text part that carries something else falls through to survive on its own;
+          // one carrying nothing at all just ends a Gemini 3 stream and is dropped.
+          part.isStreamTerminator() -> part
+          else -> {
+            // Other non-text parts (blobs, etc.)
+            flushTextBufferToSequence()
+            partsSequence.add(part)
+            part
+          }
         }
       }
-    }
 
     // In Progressive SSE mode, all intermediate chunks are partial (with any generated ids).
     response.copy(content = response.content?.copy(parts = parts), partial = true)
@@ -174,14 +173,15 @@ class StreamingResponseAggregator {
     currentTextBuffer.append(part.text)
   }
 
-  /** Returns a copy with a generated client id if this is a function call missing one. */
-  private fun Part.ensureFunctionCallId(): Part {
-    val fc = functionCall ?: return this
-    if (!fc.id.isNullOrEmpty()) return this
-    return copy(functionCall = fc.copy(id = FunctionCall.generateId()))
-  }
+  /** Returns this call, or a copy with a generated client id if it has none. */
+  private fun FunctionCall.ensureId(): FunctionCall =
+    if (id.isNullOrEmpty()) copy(id = FunctionCall.generateId()) else this
 
-  private fun processFunctionCallPart(part: Part) {
+  /**
+   * Aggregates a function call part and returns it with any generated id. A streamed call gets its
+   * id on its first chunk, so that chunk and the final response share it.
+   */
+  private fun processFunctionCallPart(part: Part): Part {
     val fc =
       part.functionCall
         ?: throw IllegalStateException(
@@ -197,25 +197,30 @@ class StreamingResponseAggregator {
         fc.willContinue == true ||
         (currentFcName != null && !hasName)
     if (streamedPart) {
+      val call = if (currentFcId == null) fc.ensureId() else fc
       if (part.thoughtSignature?.isNotEmpty() == true && currentThoughtSignature == null) {
         currentThoughtSignature = part.thoughtSignature
       }
-      processStreamingFunctionCall(fc)
+      processStreamingFunctionCall(call)
+      return part.copy(functionCall = call)
     } else if (hasName) {
+      val withId = part.copy(functionCall = fc.ensureId())
       // Non-streaming call. Safety guard: the model should terminate a streamed call with
       // willContinue=false before starting a new one; flush any still-in-progress call so it is
       // neither dropped nor merged.
       flushTextBufferToSequence()
       flushFunctionCallToSequence()
-      partsSequence.add(part)
+      partsSequence.add(withId)
+      return withId
     }
+    return part
   }
 
   private fun processStreamingFunctionCall(fc: FunctionCall) {
     if (fc.name.isNotEmpty()) {
       currentFcName = fc.name
     }
-    if (fc.id != null) {
+    if (!fc.id.isNullOrEmpty()) {
       currentFcId = fc.id
     }
 
