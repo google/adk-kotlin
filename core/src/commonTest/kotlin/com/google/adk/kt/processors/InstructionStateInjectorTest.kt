@@ -28,6 +28,7 @@ import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -259,5 +260,50 @@ class InstructionStateInjectorTest {
 
     val expectedJson = Json.toJsonString(mockArtifactPart)
     assertEquals("Hello Bob, running v2.0. Here is the report: $expectedJson", result)
+  }
+
+  @Test
+  fun injectSessionState_withNullStateValue_replacesWithEmptyString() = runBlocking {
+    // State values are non-null in Kotlin, but a map built in Java can still hold a null.
+    @Suppress("UNCHECKED_CAST")
+    val stateWithNull =
+      State(initialState = mapOf<String, Any?>("nullable_key" to null) as Map<String, Any>)
+    val context =
+      createFakeContext(
+        session =
+          Session(
+            key = SessionKey(appName = "app", userId = "user", id = "sess"),
+            state = stateWithNull,
+          )
+      )
+
+    val result =
+      InstructionStateInjector.injectSessionState(
+        context = context,
+        template = "Value: {nullable_key}",
+      )
+
+    assertEquals("Value: ", result)
+  }
+
+  @Test
+  fun injectSessionState_withRemovedSentinelStateValue_replacesWithEmptyString() = runBlocking {
+    // Vertex AI sessions map a stored JSON null to State.REMOVED.
+    val context =
+      createFakeContext(
+        session =
+          Session(
+            key = SessionKey(appName = "app", userId = "user", id = "sess"),
+            state = State(initialState = mapOf("stored_null" to State.REMOVED)),
+          )
+      )
+
+    val result =
+      InstructionStateInjector.injectSessionState(
+        context = context,
+        template = "Value: {stored_null}",
+      )
+
+    assertEquals("Value: ", result)
   }
 }
