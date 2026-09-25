@@ -69,8 +69,11 @@ internal class InstructionsProcessor : LlmRequestProcessor {
       // No static instruction, so add the resolved instruction to system instruction.
       withStatic.appendInstructions(instruction)
     } else {
-      require(instruction.role == Role.USER) { "Instruction content must have role '${Role.USER}'" }
-      withStatic.appendContent(instruction)
+      // Text instructions resolve without a role; as user content they need one.
+      require(instruction.role == null || instruction.role == Role.USER) {
+        "Instruction content must have role '${Role.USER}'"
+      }
+      withStatic.appendContent(instruction.copy(role = Role.USER))
     }
   }
 }

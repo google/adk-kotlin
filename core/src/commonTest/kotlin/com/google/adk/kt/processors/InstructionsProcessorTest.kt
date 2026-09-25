@@ -27,7 +27,9 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -129,4 +131,40 @@ class InstructionsProcessorTest {
     assertEquals(1, request.contents.size)
     assertEquals("dynamic", request.contents.first().parts.firstOrNull()?.text)
   }
+
+  @Test
+  fun run_withTextInstructionAndStaticInstruction_addsUserContent() = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "test",
+        model = DummyModel("gemini"),
+        staticInstruction = Content.fromText(Role.SYSTEM, "static"),
+        instruction = Instruction("dynamic text"),
+      )
+    val context = InvocationContext(session = testSession(), runConfig = null, agent = agent)
+
+    val request = InstructionsProcessor().process(context, LlmRequest())
+
+    assertEquals("static", request.config.systemInstruction?.parts?.firstOrNull()?.text)
+    assertEquals(1, request.contents.size)
+    assertEquals(Role.USER, request.contents.first().role)
+    assertEquals("dynamic text", request.contents.first().parts.firstOrNull()?.text)
+  }
+
+  @Test
+  fun run_withModelRoleInstructionAndStaticInstruction_throws() =
+    runBlocking<Unit> {
+      val agent =
+        LlmAgent(
+          name = "test",
+          model = DummyModel("gemini"),
+          staticInstruction = Content.fromText(Role.SYSTEM, "static"),
+          instruction = Instruction(Content.fromText(Role.MODEL, "dynamic")),
+        )
+      val context = InvocationContext(session = testSession(), runConfig = null, agent = agent)
+
+      assertFailsWith<IllegalArgumentException> {
+        InstructionsProcessor().process(context, LlmRequest())
+      }
+    }
 }
