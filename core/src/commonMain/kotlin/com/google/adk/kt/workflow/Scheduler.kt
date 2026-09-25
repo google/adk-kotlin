@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -324,7 +325,11 @@ internal class Scheduler(
       )
     }
     if (terminalOutputs.size == 1) {
-      context.output = nodeOutputs[terminalOutputs.single()]
+      val output = nodeOutputs[terminalOutputs.single()]
+      val schema = workflow.outputSchema
+      val side = "output of workflow '${workflow.name}'"
+      context.output =
+        if (schema == null) output else SchemaUtils.validateValue(output, schema, side).getOrThrow()
       context.requireNodeState().markOutputEmitted()
     }
     emitEndOfAgent()
