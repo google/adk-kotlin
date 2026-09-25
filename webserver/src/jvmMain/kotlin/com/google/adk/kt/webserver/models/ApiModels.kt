@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.webserver.models
 
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Tool
 import kotlinx.serialization.Contextual
@@ -57,6 +58,19 @@ data class AgentRunRequest(
   @JsonNames("invocation_id") val invocationId: String? = null,
 )
 
+/**
+ * Body of the session-creation routes; every field is optional, and a request carrying no body at
+ * all is valid. The `{sessionId}` route takes its id from the path, so [sessionId] is read only by
+ * `POST /apps/{app}/users/{uid}/sessions`; top-level null values in [state] are dropped, because
+ * session state cannot hold them.
+ */
+@Serializable
+internal data class CreateSessionRequest(
+  @JsonNames("session_id") val sessionId: String? = null,
+  val state: Map<String, @Contextual Any?>? = null,
+  val events: List<Event>? = null,
+)
+
 @Serializable internal data class RunResponse(val output: String, val sessionId: String)
 
 /**
@@ -72,7 +86,7 @@ data class SessionDto(
   val appName: String,
   val userId: String,
   val state: Map<String, @Contextual Any>?,
-  val events: List<com.google.adk.kt.events.Event>?,
+  val events: List<Event>?,
   val lastUpdateTime: Long?,
 )
 

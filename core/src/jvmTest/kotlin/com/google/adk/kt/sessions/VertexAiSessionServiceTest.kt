@@ -42,6 +42,7 @@ import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -143,6 +144,43 @@ class VertexAiSessionServiceTest {
       service(mock<VertexAiSessionsClient>())
         .appendEvent(session, Event(author = "user", timestamp = 1000L))
     }
+  }
+
+  @Test
+  fun appendEvent_seedEventWithoutInvocationId_isForwardedVerbatim(): Unit = runBlocking {
+    // Guards the invariant: the store neither mints nor rewrites invocation_id; it forwards
+    // whatever the event carries (see the route's withSeededInvocationId for where a seed is
+    // stamped).
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { appendEvent(any(), any(), any()) } doReturn Result.success(Unit)
+      }
+    val session = Session(SessionKey("123", "user", "s1"))
+
+    val unused =
+      service(client)
+        .appendEvent(session, Event(author = "user", invocationId = null, timestamp = 1000L))
+
+    val captor = argumentCaptor<SessionEventDto>()
+    verifyBlocking(client) { appendEvent(eq(ENGINE), eq("s1"), captor.capture()) }
+    assertThat(captor.firstValue.invocationId.isNullOrBlank()).isTrue()
+  }
+
+  @Test
+  fun appendEvent_eventWithInvocationId_isPreserved(): Unit = runBlocking {
+    val client =
+      mock<VertexAiSessionsClient> {
+        onBlocking { appendEvent(any(), any(), any()) } doReturn Result.success(Unit)
+      }
+    val session = Session(SessionKey("123", "user", "s1"))
+
+    val unused =
+      service(client)
+        .appendEvent(session, Event(author = "user", invocationId = "inv-1", timestamp = 1000L))
+
+    val captor = argumentCaptor<SessionEventDto>()
+    verifyBlocking(client) { appendEvent(eq(ENGINE), eq("s1"), captor.capture()) }
+    assertThat(captor.firstValue.invocationId).isEqualTo("inv-1")
   }
 
   @Test

@@ -203,6 +203,8 @@ internal constructor(
     // persist non-temp state and append the event via super only after it succeeds (retry-safe).
     session.state.applyTempDelta(event.actions.stateDelta)
     event.actions.removeTempKeys()
+    // A non-empty invocationId is guaranteed upstream (the runtime authors one; a seeded event is
+    // stamped at the webserver boundary), so the event is forwarded to Agent Engine as-is.
     client.appendEvent(engine, sessionId, event.toDto()).getOrThrow()
     return super.appendEvent(session, event)
   }
@@ -286,8 +288,9 @@ internal constructor(
 
     /** Rejects session ids that could escape the URL path segment. */
     internal fun validateSessionId(sessionId: String) {
+      // The id is caller-supplied, so the message describes the rule rather than quoting it.
       require(SESSION_ID_PATTERN.matches(sessionId)) {
-        "Invalid session id: $sessionId. It must match ${SESSION_ID_PATTERN.pattern}."
+        "Invalid session id. It must match ${SESSION_ID_PATTERN.pattern}."
       }
     }
 

@@ -20,11 +20,8 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.plugin
@@ -51,7 +48,7 @@ internal val BODY_READING_ROUTES =
   listOf("/run", "/run_sse", "/apps/$PROBE/users/$PROBE/sessions/$PROBE/artifacts")
 
 /**
- * Holds the rule on reading a body to every POST route, not only the three that read one today.
+ * Holds the rule on reading a body to every POST route, not only the ones that read one today.
  *
  * A route added later with a plain `receive` compiles and passes its own test while quietly
  * bringing back the defects these rules exist to prevent: the wrong status for an empty body, the
@@ -160,11 +157,6 @@ class RequestBodyCoverageTest {
     }
     client.get("/health")
     return started
-  }
-
-  private fun io.ktor.client.request.HttpRequestBuilder.jsonBody(body: String) {
-    contentType(ContentType.Application.Json)
-    setBody(body)
   }
 
   private companion object {

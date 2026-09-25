@@ -150,9 +150,7 @@ internal open class VertexAiSessionsClient(
         ?: return Result.failure(IOException("createSession operation is missing a name."))
     val parts = operationName.split("/")
     if (parts.size < 3) {
-      return Result.failure(
-        IOException("createSession operation name is malformed: $operationName")
-      )
+      return Result.failure(IOException("createSession operation name is malformed."))
     }
     // The backend is authoritative and mints its own id when the caller supplied none.
     val createdSessionId = parts[parts.size - 3]
@@ -162,7 +160,7 @@ internal open class VertexAiSessionsClient(
       return Result.failure(it)
     }
     return getSession(engine, createdSessionId).mapCatching {
-      it ?: throw IOException("Session $createdSessionId was not found after creation.")
+      it ?: throw IOException("Session was not found after creation.")
     }
   }
 
@@ -223,7 +221,7 @@ internal open class VertexAiSessionsClient(
     return if (response.status.isSuccess() || response.status.value == 404) {
       Result.success(Unit)
     } else {
-      Result.failure(httpError("deleteSession", response, url, body))
+      Result.failure(httpError("deleteSession", response, body))
     }
   }
 
@@ -240,7 +238,7 @@ internal open class VertexAiSessionsClient(
     return if (response.status.isSuccess()) {
       Result.success(Unit)
     } else {
-      Result.failure(httpError("appendEvent", response, url, responseBody, request = body))
+      Result.failure(httpError("appendEvent", response, responseBody, request = body))
     }
   }
 
@@ -265,14 +263,14 @@ internal open class VertexAiSessionsClient(
     url: String,
     deserializer: DeserializationStrategy<T>,
     opName: String,
-  ): Result<T?> = decodeResponse(get(url), deserializer, opName, url)
+  ): Result<T?> = decodeResponse(get(url), deserializer, opName)
 
   private suspend fun <T> postAndDecode(
     url: String,
     body: String,
     deserializer: DeserializationStrategy<T>,
     opName: String,
-  ): Result<T?> = decodeResponse(post(url, body), deserializer, opName, url)
+  ): Result<T?> = decodeResponse(post(url, body), deserializer, opName)
 
   /**
    * Reads and decodes an API response into [T].
@@ -280,43 +278,45 @@ internal open class VertexAiSessionsClient(
    * - `2xx` with a non-empty body -> [Result.success] with the decoded value (or a failure if the
    *   body cannot be decoded).
    * - `2xx` with an empty body, or `404` -> [Result.success] with `null` ("not found").
-   * - Any other status -> [Result.failure] carrying the HTTP status and response body.
+   * - Any other status -> [Result.failure] carrying the HTTP status and the payload sizes.
    */
   private suspend fun <T> decodeResponse(
     response: HttpResponse,
     deserializer: DeserializationStrategy<T>,
     opName: String,
-    url: String,
   ): Result<T?> {
     val bodyString = response.bodyAsText()
     if (!response.status.isSuccess()) {
       return if (response.status.value == 404) {
         Result.success(null)
       } else {
-        Result.failure(httpError(opName, response, url, bodyString))
+        Result.failure(httpError(opName, response, bodyString))
       }
     }
     if (bodyString.isEmpty()) return Result.success(null)
+    // A 2xx body we cannot decode is an internal failure: kotlinx's SerializationException is an
+    // IllegalArgumentException a route maps to 400, so surface an IOException with no body text.
     return runCatching { adkJson.decodeFromString(deserializer, bodyString) }
+      .recoverCatching {
+        throw IOException(
+          "$opName: could not decode the response body (${bodyString.length} bytes)."
+        )
+      }
   }
 
   private fun httpError(
     opName: String,
     response: HttpResponse,
-    url: String,
     body: String,
     request: String? = null,
   ): IOException {
-    val requestPart = if (request != null) " request=${truncate(request)}" else ""
+    // The url carries a caller-supplied session id and the bodies carry session content, so the
+    // message reports their shape rather than their text.
+    val requestPart = if (request != null) " requestBytes=${request.length}" else ""
     return IOException(
-      "$opName failed: HTTP ${response.status.value} ${response.status.description} url=$url" +
-        "$requestPart response=${truncate(body)}"
+      "$opName failed: HTTP ${response.status.value} ${response.status.description}" +
+        "$requestPart responseBytes=${body.length}"
     )
-  }
-
-  private fun truncate(s: String?, max: Int = 2000): String {
-    if (s == null) return "<empty>"
-    return if (s.length <= max) s else s.take(max) + "...(${s.length - max} more chars truncated)"
   }
 
   /**

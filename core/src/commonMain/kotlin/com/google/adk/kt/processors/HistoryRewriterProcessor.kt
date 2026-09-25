@@ -449,7 +449,7 @@ internal class HistoryRewriterProcessor {
 
   /** Checks if the event is an authentication event. */
   private fun isAuthEvent(event: Event): Boolean =
-    isFunctionCallEvent(event, REQUEST_EUC_FUNCTION_CALL_NAME)
+    isFunctionCallEvent(event, FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME)
 
   /** Checks if the event is a request confirmation event. */
   private fun isRequestConfirmationEvent(event: Event): Boolean =
@@ -722,6 +722,5 @@ internal class HistoryRewriterProcessor {
 
   companion object {
     private const val AF_FUNCTION_CALL_ID_PREFIX = "adk-"
-    private const val REQUEST_EUC_FUNCTION_CALL_NAME = "adk_request_credential"
   }
 }

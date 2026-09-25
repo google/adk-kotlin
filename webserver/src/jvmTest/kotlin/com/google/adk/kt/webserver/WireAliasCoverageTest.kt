@@ -18,6 +18,7 @@ package com.google.adk.kt.webserver
 
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.models.AgentRunRequest
+import com.google.adk.kt.webserver.models.CreateSessionRequest
 import com.google.common.truth.Truth.assertThat
 import java.util.Collections
 import java.util.IdentityHashMap
@@ -46,20 +47,51 @@ import org.junit.runners.JUnit4
 class WireAliasCoverageTest {
 
   /**
-   * The request bodies the routes decode: `/run` and `/run_sse` take the first, uploads the second.
+   * The request bodies the routes decode: `/run` and `/run_sse` take the first, uploads the second,
+   * and session creation the third.
    *
    * The survey shares one `seen` set across roots, so a type an earlier root already reaches is
    * surveyed under that root's path - `Part` today, via `AgentRunRequest.newMessage.parts[]`. It
    * stays listed so coverage holds if `AgentRunRequest` ever stops referencing it.
    */
   private val wireRoots: Map<String, KSerializer<*>> =
-    mapOf("AgentRunRequest" to AgentRunRequest.serializer(), "Part" to Part.serializer())
+    mapOf(
+      "AgentRunRequest" to AgentRunRequest.serializer(),
+      "Part" to Part.serializer(),
+      "CreateSessionRequest" to CreateSessionRequest.serializer(),
+    )
+
+  /**
+   * Properties that cannot carry their alias yet: static analysis rejects `@JsonNames` on a `var`,
+   * and narrowing these to `val` would break callers. The missing aliases change nothing a caller
+   * can observe: the seed-event actions check keys on the raw JSON, so any of these carrying a real
+   * value earns a 400 whatever its spelling, and an empty value decodes to the default whether or
+   * not the alias exists.
+   */
+  private val aliasRejectedByLint =
+    setOf(
+      "CreateSessionRequest.events[].actions.skipSummarization",
+      "CreateSessionRequest.events[].actions.transferToAgent",
+      "CreateSessionRequest.events[].actions.endOfAgent",
+      "CreateSessionRequest.events[].actions.rewindBeforeInvocationId",
+      "CreateSessionRequest.events[].actions.agentState",
+    )
 
   @Test
   fun everyMultiWordWireProperty_declaresItsSnakeCaseSpelling() {
     val survey = survey()
 
-    assertThat(survey.missing).isEmpty()
+    assertThat(survey.missing.filterNot { it.substringBefore(" (needs") in aliasRejectedByLint })
+      .isEmpty()
+  }
+
+  @Test
+  fun everyPropertyLintRejects_isStillMissingItsAlias() {
+    // Guards the exemption list itself: an entry that stops being reported is stale and should go,
+    // otherwise the list quietly grows into a place where real gaps can hide.
+    val reported = survey().missing.map { it.substringBefore(" (needs") }
+
+    assertThat(reported).containsAtLeastElementsIn(aliasRejectedByLint)
   }
 
   @Test
@@ -105,6 +137,10 @@ class WireAliasCoverageTest {
       .containsExactly(
         "kotlinx.serialization.ContextualSerializer<Any>",
         "com.google.adk.kt.types.PartialArgValue",
+        // EventActions.route serializes through RouteListSerializer, whose descriptor is
+        // JsonElement's; EventActions.agentState is a sealed hierarchy.
+        "kotlinx.serialization.json.JsonElement",
+        "com.google.adk.kt.agents.TypedData",
       )
   }
 
