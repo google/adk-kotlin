@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.ids.Uuid
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
@@ -92,6 +93,24 @@ data class FunctionCall(
 
     /** Function name for requesting user confirmation for a tool execution. */
     const val REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = "adk_request_confirmation"
+
+    /** Function name for asking the user a question and waiting for their answer. */
+    internal const val REQUEST_INPUT_FUNCTION_CALL_NAME = "adk_request_input"
+
+    /** Function name for requesting end-user credentials. */
+    internal const val REQUEST_EUC_FUNCTION_CALL_NAME = "adk_request_credential"
+
+    /**
+     * Function names the ADK generates itself to drive human-in-the-loop flows, as opposed to ones
+     * a tool declares. A client may not claim to have produced them.
+     */
+    @FrameworkInternalApi
+    val ADK_RESERVED_FUNCTION_NAMES: Set<String> =
+      setOf(
+        REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+        REQUEST_INPUT_FUNCTION_CALL_NAME,
+        REQUEST_EUC_FUNCTION_CALL_NAME,
+      )
 
     /** Key used in the arguments map to store the original function call being confirmed. */
     internal const val ORIGINAL_FUNCTION_CALL_KEY = "originalFunctionCall"

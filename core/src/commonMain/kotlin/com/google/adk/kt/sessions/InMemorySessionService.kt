@@ -113,8 +113,8 @@ class InMemorySessionService : SessionService {
     if (event.partial) return event
 
     return mutex.withLock {
-      val storedSession =
-        sessions[session.key] ?: throw IllegalStateException("Session not found: ${session.key.id}")
+      // The id is caller-supplied, so it stays out of the message.
+      val storedSession = sessions[session.key] ?: throw IllegalStateException("Session not found")
 
       // super first applies `temp:` to the live session and trims the event, so we persist without
       // it.
