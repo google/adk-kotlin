@@ -29,6 +29,20 @@ interface Model {
    * @param stream Whether to enable streaming mode. If true, partial responses will be emitted.
    */
   fun generateContent(request: LlmRequest, stream: Boolean = false): Flow<LlmResponse>
+
+  /**
+   * Opens a live (bidirectional streaming) connection, configured by
+   * [LlmRequest.liveConnectConfig].
+   *
+   * The returned connection is open but not yet primed; send history or content to start the
+   * conversation, and close it when it ends.
+   *
+   * @param request The request whose live config, model name, system instruction and tools
+   *   configure the session.
+   * @throws UnsupportedOperationException if this model does not support live connections.
+   */
+  suspend fun connect(request: LlmRequest): LiveConnection =
+    throw UnsupportedOperationException("live connections are not supported for $name")
 }
 
 private val PATH_PATTERNS =
