@@ -249,6 +249,25 @@ class InMemorySessionServiceTest {
   }
 
   @Test
+  fun createSession_prefixedInitialState_isScoped(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionScopesPrefixedInitialState(InMemorySessionService())
+  }
+
+  @Test
+  fun createSession_removalSentinelInInitialState_isDropped(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionDropsRemovalSentinelInInitialState(
+      InMemorySessionService()
+    )
+  }
+
+  @Test
+  fun createSession_scopedSeed_mergesOntoExistingState(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionMergesScopedSeedOntoExistingState(
+      InMemorySessionService()
+    )
+  }
+
+  @Test
   fun appendEvent_partial_isNotPersisted(): Unit = runBlocking {
     SessionServiceAssertions.appendPartialNotPersisted(InMemorySessionService())
   }

@@ -304,6 +304,105 @@ object SessionServiceAssertions {
     assertThat(otherUserReloaded!!.state.containsKey("user:pref")).isFalse()
   }
 
+  /** Initial state is scoped by prefix at creation, the way a state delta is on append. */
+  suspend fun createSessionScopesPrefixedInitialState(service: SessionService) {
+    val seeded =
+      service.createSession(
+        SessionKey(APP_NAME, "user-a", id = null),
+        mapOf("plain" to "v", "app:shared" to "a", "user:pref" to "u", "temp:scratch" to "t"),
+      )
+
+    // `temp:` lives for one invocation, so a seeded one could never be read back: it is dropped
+    // outright here, unlike a `temp:` delta on append, which the live session sees first.
+    assertThat(seeded.state.containsKey("temp:scratch")).isFalse()
+    val reloaded = service.getSession(seeded.key)
+    assertThat(reloaded).isNotNull()
+    assertThat(reloaded!!.state["plain"]).isEqualTo("v")
+    assertThat(reloaded.state["app:shared"]).isEqualTo("a")
+    assertThat(reloaded.state["user:pref"]).isEqualTo("u")
+    assertThat(reloaded.state.containsKey("temp:scratch")).isFalse()
+
+    // The scoped halves went to their own scopes, not into this one session's state.
+    val sameApp = service.createSession(SessionKey(APP_NAME, "user-b", id = null))
+    assertThat(sameApp.state["app:shared"]).isEqualTo("a")
+    assertThat(sameApp.state.containsKey("user:pref")).isFalse()
+    val sameUser = service.createSession(SessionKey(APP_NAME, "user-a", id = null))
+    assertThat(sameUser.state["user:pref"]).isEqualTo("u")
+
+    // Prove the scoped keys live only in their shared scopes, not also in the session row: removing
+    // them from the scopes clears them on reload. A backend that kept a copy in the row would still
+    // return the stale value here, since a scope drop cannot reach it.
+    val unused =
+      service.appendEvent(
+        sameUser,
+        sameUser.nextAgentEvent(mapOf("app:shared" to State.REMOVED, "user:pref" to State.REMOVED)),
+      )
+    val afterRemove = service.getSession(seeded.key)
+    assertThat(afterRemove).isNotNull()
+    assertThat(afterRemove!!.state.containsKey("app:shared")).isFalse()
+    assertThat(afterRemove.state.containsKey("user:pref")).isFalse()
+  }
+
+  /**
+   * A removal sentinel in an initial state is dropped, not honored: creating a session must not be
+   * a way to erase a key a scope already holds.
+   */
+  suspend fun createSessionDropsRemovalSentinelInInitialState(service: SessionService) {
+    // Seed both scopes, then a later session seeds a removal sentinel for each of those keys and a
+    // plain one. Every sentinel is dropped: honoring a scoped one would erase a key another session
+    // owns, and a plain one stored verbatim would render its marker string into a prompt.
+    val unused =
+      service.createSession(
+        SessionKey(APP_NAME, "user-a", id = null),
+        mapOf("app:shared" to "a", "user:pref" to "u"),
+      )
+
+    val remover =
+      service.createSession(
+        SessionKey(APP_NAME, "user-a", id = null),
+        mapOf("app:shared" to State.REMOVED, "user:pref" to State.REMOVED, "plain" to State.REMOVED),
+      )
+    assertThat(remover.state["app:shared"]).isEqualTo("a")
+    assertThat(remover.state["user:pref"]).isEqualTo("u")
+    assertThat(remover.state.containsKey("plain")).isFalse()
+    val reloaded = service.getSession(remover.key)
+    assertThat(reloaded).isNotNull()
+    assertThat(reloaded!!.state.containsKey("plain")).isFalse()
+  }
+
+  /**
+   * A scoped seed at creation merges onto what the scope already holds, for `app:` and `user:`
+   * both. [createSessionScopesPrefixedInitialState] only ever seeds an empty scope, so it would
+   * still pass if a seed replaced the scope outright; this is the case that needs the read-merge.
+   */
+  suspend fun createSessionMergesScopedSeedOntoExistingState(service: SessionService) {
+    // Populate both scopes first, via an append on one session.
+    val writer = service.createSession(SessionKey(APP_NAME, "user-a", id = null))
+    val unused =
+      service.appendEvent(
+        writer,
+        writer.nextAgentEvent(mapOf("app:first" to "1", "user:first" to "1")),
+      )
+
+    // A second session seeds the other key in each scope; the existing keys must survive.
+    val seeded =
+      service.createSession(
+        SessionKey(APP_NAME, "user-a", id = null),
+        mapOf("app:second" to "2", "user:second" to "2"),
+      )
+    assertThat(seeded.state["app:first"]).isEqualTo("1")
+    assertThat(seeded.state["app:second"]).isEqualTo("2")
+    assertThat(seeded.state["user:first"]).isEqualTo("1")
+    assertThat(seeded.state["user:second"]).isEqualTo("2")
+
+    val reloaded = service.getSession(seeded.key)
+    assertThat(reloaded).isNotNull()
+    assertThat(reloaded!!.state["app:first"]).isEqualTo("1")
+    assertThat(reloaded.state["app:second"]).isEqualTo("2")
+    assertThat(reloaded.state["user:first"]).isEqualTo("1")
+    assertThat(reloaded.state["user:second"]).isEqualTo("2")
+  }
+
   // --- partial events (all backends: base, InMemory, Room, Vertex) ---
 
   /** A partial event is a no-op passthrough: returned unchanged, and never persisted. */
