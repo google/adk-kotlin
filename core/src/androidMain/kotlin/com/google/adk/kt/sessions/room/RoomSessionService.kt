@@ -31,6 +31,7 @@ import com.google.adk.kt.sessions.SessionException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.sessions.splitInitialStateByScope
 import kotlin.time.Clock
 import kotlin.time.Instant
 
@@ -68,16 +69,22 @@ class RoomSessionService internal constructor(private val database: AdkSessionsD
     val resolvedId = key.id ?: Uuid.random()
     val now = Clock.System.now().toEpochMilliseconds()
 
-    // Wrap the session insert and the app/user state seeds in a single transaction so a partial
-    // failure (e.g. process death) cannot leave a session row without its required state seeds.
-    try {
+    // Route the initial state by prefix via the shared splitInitialStateByScope, as
+    // InMemorySessionService.createSession does. Create pre-filters the REMOVED sentinel (append
+    // honors it); see the helper for how each scope is routed.
+    val scoped = splitInitialStateByScope(state.orEmpty().filterValues { it !== State.REMOVED })
+
+    // The insert, the scoped seeds and the read-back all share one transaction, so a partial
+    // failure cannot leave a session row without its state seeds, and a concurrent appendEvent
+    // cannot tear the session this returns.
+    return try {
       database.withTransaction {
         dao.insertSession(
           StorageSession(
             appName = key.appName,
             userId = key.userId,
             id = resolvedId,
-            state = state ?: emptyMap(),
+            state = scoped.sessionState,
             createTime = now,
             updateTime = now,
           )
@@ -93,19 +100,20 @@ class RoomSessionService internal constructor(private val database: AdkSessionsD
             updateTime = now,
           )
         )
+        // Merged after the if-absent inserts, so a seed lands on whatever the scope already holds
+        // rather than replacing it.
+        dao.mergeScopedState(key.appName, key.userId, scoped.appState, scoped.userState, now)
+        buildSession(
+          key = SessionKey(key.appName, key.userId, resolvedId),
+          sessionState = scoped.sessionState,
+          events = mutableListOf(),
+          lastUpdateMs = now,
+        )
       }
     } catch (e: SQLiteConstraintException) {
       // The session row is the only abort-on-conflict insert here, so the id is already taken.
       throw SessionException(SessionException.SESSION_ALREADY_EXISTS, e)
     }
-
-    val resolvedKey = SessionKey(key.appName, key.userId, resolvedId)
-    return buildSession(
-      key = resolvedKey,
-      sessionState = state ?: emptyMap(),
-      events = mutableListOf(),
-      lastUpdateMs = now,
-    )
   }
 
   override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {

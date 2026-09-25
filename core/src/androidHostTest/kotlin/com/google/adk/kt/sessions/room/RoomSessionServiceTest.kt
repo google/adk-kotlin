@@ -313,6 +313,37 @@ class RoomSessionServiceTest {
   }
 
   @Test
+  fun createSession_prefixedInitialState_isScoped(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionScopesPrefixedInitialState(service)
+  }
+
+  @Test
+  fun createSession_removalSentinelInInitialState_isDropped(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionDropsRemovalSentinelInInitialState(service)
+  }
+
+  @Test
+  fun createSession_scopedSeed_mergesOntoExistingState(): Unit = runBlocking {
+    SessionServiceAssertions.createSessionMergesScopedSeedOntoExistingState(service)
+  }
+
+  @Test
+  fun createSession_prefixedInitialState_staysOutOfRawSessionRow(): Unit = runBlocking {
+    val seeded =
+      service.createSession(
+        SessionKey("app-name", "user-id", id = null),
+        mapOf("plain" to "v", "app:shared" to "a", "user:pref" to "u", "temp:scratch" to "t"),
+      )
+
+    // Inspect the stored row directly, bypassing the read-time scope overlay buildSession applies:
+    // only the unprefixed key belongs in the session's own row (app:/user: live in their own scopes
+    // and temp: is dropped), so a scoped copy left behind here would be a real leak.
+    val row = database.sessionsDao().getSession("app-name", "user-id", seeded.key.id!!)
+    assertThat(row).isNotNull()
+    assertThat(row!!.state).containsExactly("plain", "v")
+  }
+
+  @Test
   fun appendEvent_partial_isNotPersisted(): Unit = runBlocking {
     SessionServiceAssertions.appendPartialNotPersisted(service)
   }
