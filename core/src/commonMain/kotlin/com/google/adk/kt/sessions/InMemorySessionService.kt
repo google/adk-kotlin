@@ -53,7 +53,7 @@ class InMemorySessionService : SessionService {
       val newSession =
         Session(
           key = sessionKey,
-          state = State(initialState = state ?: emptyMap()),
+          state = State(initialState = routeInitialState(key, state)),
           events = mutableListOf(),
           lastUpdateTime = Clock.System.now(),
         )
@@ -160,6 +160,24 @@ class InMemorySessionService : SessionService {
 
       event
     }
+  }
+
+  /**
+   * Routes an initial state map by key prefix and returns the session-scoped remainder, promoting
+   * `app:` and `user:` entries into the global maps and discarding `temp:` ones. The prefix split
+   * is factored into [splitInitialStateByScope]; only the promotion into these in-memory maps is
+   * InMemory-specific. A removal sentinel is dropped, not honored: creating one session must not
+   * erase a key another owns (an append delta still honors it).
+   */
+  private fun routeInitialState(key: SessionKey, state: Map<String, Any>?): Map<String, Any> {
+    val scoped = splitInitialStateByScope(state.orEmpty().filterValues { it !== State.REMOVED })
+    for ((name, value) in scoped.appState) {
+      appState.getOrPut(key.appName) { mutableMapOf() }[name] = value
+    }
+    for ((name, value) in scoped.userState) {
+      userState.getOrPut(UserKey(key.appName, key.userId)) { mutableMapOf() }[name] = value
+    }
+    return scoped.sessionState
   }
 
   private fun copySession(original: Session, events: List<Event> = original.events): Session {
