@@ -270,6 +270,8 @@ internal class LlmAgentTurn(
             lastResponse = currentResponse
 
             modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
+            // Each chunk gets a new event id, so the span must follow it to name the last one.
+            span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = modelResponseEvent.id
             processModelResponse(currentRequest, currentResponse, modelResponseEvent) { event ->
               modelResponseEvent =
                 modelResponseEvent.copy(
@@ -304,6 +306,7 @@ internal class LlmAgentTurn(
         if (recoveredResponse != null) {
           span.recordException(e)
           modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
+          span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = modelResponseEvent.id
           processModelResponse(currentRequest, recoveredResponse, modelResponseEvent) { emit(it) }
         } else {
           throw e

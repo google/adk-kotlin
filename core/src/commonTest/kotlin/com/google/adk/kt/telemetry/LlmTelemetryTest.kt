@@ -18,6 +18,8 @@ package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.callbacks.OnModelErrorCallback
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.toTracePayload
@@ -42,8 +44,10 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -112,6 +116,47 @@ class LlmTelemetryTest {
     assertEquals(2, events.size)
     assertEquals("chunk_received", events[0])
     assertEquals("chunk_received", events[1])
+  }
+
+  @Test
+  fun runAsync_streamingChunks_callLlmSpanEventIdMatchesFinalEventId() = runBlocking {
+    val testModel =
+      DummyModel("test-model") {
+        flowOf(
+          LlmResponse(content = modelMessage("Part 1"), partial = true),
+          LlmResponse(content = modelMessage("Part 1 Part 2"), partial = false),
+        )
+      }
+    val agent = LlmAgent(name = "test-agent", model = testModel)
+
+    val emittedEvents = agent.runAsync(newContext(agent)).toList()
+
+    val finalEvent = emittedEvents.last { !it.partial && it.content != null }
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals(finalEvent.id, span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID])
+  }
+
+  @Test
+  fun runAsync_errorRecoveredAfterPartialChunk_spanEventIdMatchesRecoveredEvent() = runBlocking {
+    val testModel =
+      DummyModel("test-model") {
+        flow {
+          emit(LlmResponse(content = modelMessage("Part 1"), partial = true))
+          throw IllegalStateException("stream broke")
+        }
+      }
+    val recover = OnModelErrorCallback { _, _, _ ->
+      CallbackChoice.Break(LlmResponse(content = modelMessage("Recovered")))
+    }
+    val agent =
+      LlmAgent(name = "test-agent", model = testModel, onModelErrorCallbacks = listOf(recover))
+
+    val emittedEvents = agent.runAsync(newContext(agent)).toList()
+
+    val recoveredEvent = emittedEvents.last()
+    assertEquals("Recovered", recoveredEvent.content?.parts?.single()?.text)
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals(recoveredEvent.id, span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID])
   }
 
   // ---------------------------------------------------------------------------

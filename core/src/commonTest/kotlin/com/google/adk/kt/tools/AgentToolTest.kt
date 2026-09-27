@@ -38,6 +38,8 @@ import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Blob
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
@@ -51,6 +53,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class AgentToolTest {
@@ -741,5 +744,69 @@ class AgentToolTest {
     val unused = tool.run(context, mapOf("request" to "Hello"))
 
     assertEquals(null, context.actions.stateDelta["temp:_adk_grounding_metadata"])
+  }
+
+  @Test
+  fun run_trailingEventWithoutContent_keepsAnswerAndForwardsEveryStateDelta() = runBlocking {
+    val grounding = GroundingMetadata()
+    val agent =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = {
+          emit(
+            Event(
+              author = "inner-agent",
+              content = modelMessage("Actual answer"),
+              groundingMetadata = grounding,
+              actions = EventActions(stateDelta = mutableMapOf("step1Key" to "step1Val")),
+            )
+          )
+          emit(
+            Event(
+              author = "inner-agent",
+              actions = EventActions(stateDelta = mutableMapOf("step2Key" to "step2Val")),
+            )
+          )
+        },
+      )
+    val context = testToolContext(testInvocationContext(agent = agent))
+
+    val result =
+      AgentTool(agent, propagateGroundingMetadata = true).run(context, mapOf("request" to "Hello"))
+
+    assertEquals("Actual answer", result)
+    assertEquals("step1Val", context.actions.stateDelta["step1Key"])
+    assertEquals("step2Val", context.actions.stateDelta["step2Key"])
+    assertEquals(grounding, context.actions.stateDelta["temp:_adk_grounding_metadata"])
+  }
+
+  @Test
+  fun run_contentWithNonTextPart_joinsOnlyTextParts() = runBlocking {
+    val agent =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = {
+          emit(
+            Event(
+              author = "inner-agent",
+              content =
+                Content(
+                  role = Role.MODEL,
+                  parts =
+                    listOf(
+                      Part(text = "first"),
+                      Part(inlineData = Blob(data = byteArrayOf(1), mimeType = "image/png")),
+                      Part(text = "second"),
+                    ),
+                ),
+            )
+          )
+        },
+      )
+    val context = testToolContext(testInvocationContext(agent = agent))
+
+    val result = AgentTool(agent).run(context, mapOf("request" to "Hello"))
+
+    assertEquals("first\nsecond", result)
   }
 }
