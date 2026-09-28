@@ -56,7 +56,8 @@ sealed class McpConnectionParameters {
   /**
    * Parameters for establishing a MCP Streamable HTTP connection.
    *
-   * @property url The URL of the HTTP server.
+   * @property url The full URL of the MCP endpoint; its path is used as-is (e.g.
+   *   `https://host/tenant/service/mcp`). A URL with no path falls back to the `/mcp` endpoint.
    * @property headers The headers to include in the request.
    * @property timeout The connection timeout.
    * @property readTimeout The read timeout.

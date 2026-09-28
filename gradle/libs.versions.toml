@@ -1,7 +1,7 @@
 [versions]
 # go/keep-sorted start
 
-a2a = "1.3.0.Final"
+a2a = "1.3.2.Final"
 androidx-activity-compose = "1.9.3"
 androidx-appfunctions = "1.0.0-alpha11"
 androidx-appsearch = "1.1.0"

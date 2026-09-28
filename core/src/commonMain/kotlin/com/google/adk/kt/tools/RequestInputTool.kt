@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
@@ -30,7 +31,7 @@ import com.google.adk.kt.types.Type
  */
 class RequestInputTool :
   BaseTool(
-    name = REQUEST_INPUT_FUNCTION_CALL_NAME,
+    name = FunctionCall.REQUEST_INPUT_FUNCTION_CALL_NAME,
     description = DESCRIPTION,
     isLongRunning = true,
   ) {
@@ -74,7 +75,6 @@ class RequestInputTool :
   }
 
   private companion object {
-    const val REQUEST_INPUT_FUNCTION_CALL_NAME = "adk_request_input"
     const val MESSAGE_ARG = "message"
     const val RESPONSE_SCHEMA_ARG = "response_schema"
     const val DESCRIPTION =

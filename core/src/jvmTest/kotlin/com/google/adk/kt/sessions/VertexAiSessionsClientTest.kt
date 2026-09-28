@@ -210,6 +210,18 @@ class VertexAiSessionsClientTest {
   }
 
   @Test
+  fun createSession_httpFailure_reportsSizesRatherThanTheUrlOrTheBody() {
+    // The url carries a caller-supplied session id and the body carries session content.
+    server.enqueue(MockResponse(code = 500, body = "secret-session-content"))
+
+    val result = runBlocking { client.createSession(ENGINE, "user", null, sessionId = "secretid") }
+
+    assertThat(result.exceptionOrNull()).hasMessageThat().doesNotContain("secret-session-content")
+    assertThat(result.exceptionOrNull()).hasMessageThat().doesNotContain("secretid")
+    assertThat(result.exceptionOrNull()).hasMessageThat().contains("responseBytes=")
+  }
+
+  @Test
   fun getSession_notFound_returnsNullSuccess() = runBlocking {
     server.enqueue(MockResponse(code = 404))
 
@@ -235,6 +247,19 @@ class VertexAiSessionsClientTest {
 
     assertThat(result.isFailure).isTrue()
     assertThat(result.exceptionOrNull()).isInstanceOf(IOException::class.java)
+  }
+
+  @Test
+  fun getSession_undecodable2xxBody_failsWithIoExceptionAndNoBodyText() {
+    // A 2xx body we cannot decode is an internal failure, not a client error. kotlinx's
+    // SerializationException is an IllegalArgumentException a route would map to 400, so the client
+    // must surface an IOException (5xx) instead, and keep the body out of the message.
+    server.enqueue(jsonResponse("this-is-not-valid-session-json"))
+
+    val result = runBlocking { client.getSession(ENGINE, "s1") }
+
+    assertThat(result.exceptionOrNull()).isInstanceOf(IOException::class.java)
+    assertThat(result.exceptionOrNull()).hasMessageThat().doesNotContain("session-json")
   }
 
   @Test

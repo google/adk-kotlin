@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalAppInfoFeature::class)
+
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
@@ -126,6 +128,7 @@ class AdkServerConfigTest {
     assertThat(config.captureMessageContent).isFalse()
     assertThat(config.plugins).isEmpty()
     assertThat(config.webUiEnabled).isNull()
+    assertThat(config.includeAppInfo).isNull()
   }
 
   @Test
@@ -145,6 +148,7 @@ class AdkServerConfigTest {
         .apiServerSpanExporter(exporter)
         .captureMessageContent(true)
         .webUiEnabled(true)
+        .includeAppInfo(true)
         .build()
 
     assertThat(config.agentLoader).isSameInstanceAs(loader)
@@ -155,6 +159,7 @@ class AdkServerConfigTest {
     assertThat(config.apiServerSpanExporter).isSameInstanceAs(exporter)
     assertThat(config.captureMessageContent).isTrue()
     assertThat(config.webUiEnabled).isTrue()
+    assertThat(config.includeAppInfo).isTrue()
   }
 
   @Test
@@ -181,6 +186,7 @@ class AdkServerConfigTest {
           ),
         webUiEnabled = true,
         camelCaseEnforced = true,
+        includeAppInfo = true,
       )
 
     assertThat(config.toBuilder().build()).isEqualTo(config.copy())

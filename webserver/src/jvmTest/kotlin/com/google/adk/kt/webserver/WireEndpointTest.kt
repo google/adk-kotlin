@@ -17,14 +17,23 @@
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.models.AppInfo
 import com.google.adk.kt.webserver.models.SessionDto
 import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
@@ -57,7 +66,8 @@ import org.junit.runners.JUnit4
 /**
  * Covers the wire rules the ADK agent runtime puts on every endpoint, against real responses: read
  * `snake_case` or `camelCase`, ignore unrecognized keys, emit `camelCase` without null fields, and
- * answer 400 for a missing body but 415 for a content type it cannot read.
+ * answer 400 for a missing body, 422 for one that parses but does not fit, and 415 for a content
+ * type it cannot read.
  */
 @RunWith(JUnit4::class)
 class WireEndpointTest {
@@ -217,6 +227,136 @@ class WireEndpointTest {
   }
 
   @Test
+  fun run_noBodyAndNoContentType_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun runSse_noBodyAndNoContentType_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run_sse")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun uploadArtifact_noBodyAndNoContentType_isRejected() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/apps/a/users/u/sessions/s/artifacts")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_bodyWithAWildcardContentType_isRejectedAsUnsupported() = testApplication {
+    // `*/*` is a type the server cannot read, and a body arrived, so this stays the type's fault.
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/run") {
+        setBody(camelCaseRun)
+        contentType(ContentType.Any)
+      }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnsupportedMediaType)
+  }
+
+  @Test
+  fun run_bodyMissingARequiredField_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("{}") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun run_bodyWithAFieldOfTheWrongType_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("""{"appName": 7, "userId": "testUser"}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun runSse_bodyMissingARequiredField_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run_sse") { jsonBody("""{"userId": "testUser"}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun uploadArtifact_partWithAFieldOfTheWrongType_isUnprocessable() = testApplication {
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/apps/a/users/u/sessions/s/artifacts") { jsonBody("""{"text": 7}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun run_bodyNestedDeepEnoughToExhaustTheStack_isRejected() = testApplication {
+    // The converter walks free-form values recursively, so the caller picks the depth; the
+    // resulting Error is not a decoding failure and would otherwise escape as a 500.
+    application { adkApiModule(testConfig()) }
+    val deep = buildString {
+      repeat(DEEP_NESTING) { append("""{"a":""") }
+      append("1")
+      repeat(DEEP_NESTING) { append("}") }
+    }
+
+    val response =
+      client.post("/run") { jsonBody("""{"appName":"a","userId":"u","stateDelta":{"k":$deep}}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_bodyThatIsAJsonNull_isRejectedAsMissing() = testApplication {
+    // Content negotiation reports a literal null as no body, so it is missing rather than unfit.
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("null") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+  }
+
+  @Test
+  fun run_stateDeltaHoldingANullValue_isUnprocessable() = testApplication {
+    // AnySerializer raises IllegalStateException, which a SerializationException catch would miss.
+    application { adkApiModule(testConfig()) }
+
+    val response =
+      client.post("/run") {
+        jsonBody("""{"appName": "echo-agent", "userId": "u", "stateDelta": {"k": null}}""")
+      }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+  }
+
+  @Test
+  fun run_unprocessableBody_answersWithNoBodyOfItsOwn() = testApplication {
+    // The decoder's message quotes the rejected input, so the 422 must carry no body.
+    val canary = "do-not-echo-this-value"
+    application { adkApiModule(testConfig()) }
+
+    val response = client.post("/run") { jsonBody("""{"appName": {"k": "$canary"}}""") }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+    assertThat(response.bodyAsText()).isEmpty()
+  }
+
+  @Test
   fun runSse_failureAfterTheStreamOpens_endsWithAnErrorFrame() = testApplication {
     application { adkApiModule(testConfig(agentLoader = FailingAgentLoader())) }
 
@@ -310,6 +450,20 @@ class WireEndpointTest {
       assertThat((Json.parseToJsonElement(body) as JsonObject).keys)
         .doesNotContain(LEGACY_VERSION_KEY)
     }
+  }
+
+  @Test
+  fun appInfo_emitsCamelCaseWithoutNullFields() = testApplication {
+    application {
+      adkApiModule(testConfig(agentLoader = AppInfoAgentLoader()).copy(includeAppInfo = true))
+    }
+
+    val response = client.get("/apps/info-agent/app-info")
+    val body = response.bodyAsText()
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    // Every key the fixture produces, so dropping an agent or a tool fails here.
+    assertEmissionRule(body, AppInfo.serializer().descriptor, "AppInfo", minKeys = 18)
   }
 
   @Test
@@ -449,6 +603,9 @@ class WireEndpointTest {
   private companion object {
     const val SSE_PREFIX = "data: "
 
+    /** Deeper than a default JVM stack survives with a frame per level. */
+    const val DEEP_NESTING = 5000
+
     val EVENT_LIST_DESCRIPTOR: SerialDescriptor = ListSerializer(Event.serializer()).descriptor
   }
 }
@@ -488,6 +645,40 @@ private class EchoAgentLoader : AgentLoader {
   override fun listAgents() = listOf("echo-agent")
 
   override fun loadAgent(agentName: String) = if (agentName == "echo-agent") EchoAgent() else null
+}
+
+/**
+ * Serves an agent with an instruction, a tool and a sub-agent, so `app-info` has a body to emit.
+ */
+private class AppInfoAgentLoader : AgentLoader {
+  override fun listAgents() = listOf("info-agent")
+
+  override fun loadAgent(agentName: String) =
+    if (agentName == "info-agent") {
+      LlmAgent(
+        name = "info-agent",
+        model = NeverCalledModel,
+        description = "Reports itself",
+        instruction = Instruction.Text("Say hello"),
+        tools = listOf(StubTool()),
+        subAgents = listOf(LlmAgent(name = "child", model = NeverCalledModel)),
+      )
+    } else {
+      null
+    }
+}
+
+private object NeverCalledModel : Model {
+  override val name = "never-called"
+
+  override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+    error("app-info must not call the model")
+}
+
+private class StubTool : BaseTool(name = "stub", description = "A stub") {
+  override fun declaration() = FunctionDeclaration(name = "stub", description = "A stub")
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = Unit
 }
 
 /** Fails after one frame has already gone out, so the failure lands mid-stream. */

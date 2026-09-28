@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalAppInfoFeature::class)
+
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
@@ -48,6 +50,11 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  *   move to true in a later release without overriding a deployment that pinned it;
  *   `adk.wire.camelcase.enforced` overrides it either way, so a deployment that cannot change code
  *   can still choose.
+ * @property includeAppInfo Whether to mount `/apps/{appName}/app-info`, which reports every agent's
+ *   instruction and tool declarations; off when unset, since that is more than a deployment needs
+ *   to publish. `adk.app.info.enabled` overrides it either way, as the Development UI property
+ *   does, so a deployment that cannot change code can still turn the endpoint off. Experimental:
+ *   setting it requires `@OptIn(ExperimentalAppInfoFeature::class)`.
  */
 data class AdkServerConfig(
   val agentLoader: AgentLoader,
@@ -60,6 +67,7 @@ data class AdkServerConfig(
   val plugins: List<Plugin> = emptyList(),
   val webUiEnabled: Boolean? = null,
   val camelCaseEnforced: Boolean? = null,
+  @property:ExperimentalAppInfoFeature val includeAppInfo: Boolean? = null,
 ) {
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
@@ -79,6 +87,7 @@ data class AdkServerConfig(
       .plugins(plugins)
       .webUiEnabled(webUiEnabled)
       .camelCaseEnforced(camelCaseEnforced)
+      .includeAppInfo(includeAppInfo)
 
   /**
    * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
@@ -97,6 +106,7 @@ data class AdkServerConfig(
     private var plugins: List<Plugin> = emptyList()
     private var webUiEnabled: Boolean? = null
     private var camelCaseEnforced: Boolean? = null
+    private var includeAppInfo: Boolean? = null
 
     fun agentLoader(agentLoader: AgentLoader): Builder = apply { this.agentLoader = agentLoader }
 
@@ -128,6 +138,11 @@ data class AdkServerConfig(
       this.camelCaseEnforced = camelCaseEnforced
     }
 
+    @ExperimentalAppInfoFeature
+    fun includeAppInfo(includeAppInfo: Boolean?): Builder = apply {
+      this.includeAppInfo = includeAppInfo
+    }
+
     fun build(): AdkServerConfig =
       AdkServerConfig(
         agentLoader = checkNotNull(agentLoader) { "agentLoader must be set." },
@@ -140,6 +155,7 @@ data class AdkServerConfig(
         plugins = plugins,
         webUiEnabled = webUiEnabled,
         camelCaseEnforced = camelCaseEnforced,
+        includeAppInfo = includeAppInfo,
       )
   }
 

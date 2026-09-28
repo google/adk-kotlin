@@ -144,3 +144,36 @@ class State(
     val REMOVED: Any = RemovedSentinel
   }
 }
+
+/**
+ * The three prefix scopes an initial-state map splits into: the shared `app:` and `user:` maps
+ * (with their prefixes stripped) and this session's own state. `temp:` entries are dropped, since
+ * they live for one invocation and could never be read back.
+ */
+internal data class ScopedInitialState(
+  val appState: Map<String, Any>,
+  val userState: Map<String, Any>,
+  val sessionState: Map<String, Any>,
+)
+
+/**
+ * Splits an initial-state map by [State] prefix into its `app:`, `user:` and session scopes - the
+ * classification half of `createSession` scoping, factored out from the promotion into storage,
+ * which differs per backend. Mirrors Python's `extract_state_delta`. Drop any [State.REMOVED]
+ * sentinel before calling: creating a session must not erase a key another session owns, whereas an
+ * append delta still honors it.
+ */
+internal fun splitInitialStateByScope(state: Map<String, Any>): ScopedInitialState {
+  val appState = mutableMapOf<String, Any>()
+  val userState = mutableMapOf<String, Any>()
+  val sessionState = mutableMapOf<String, Any>()
+  for ((key, value) in state) {
+    when {
+      key.startsWith(State.APP_PREFIX) -> appState[key.removePrefix(State.APP_PREFIX)] = value
+      key.startsWith(State.USER_PREFIX) -> userState[key.removePrefix(State.USER_PREFIX)] = value
+      key.startsWith(State.TEMP_PREFIX) -> {}
+      else -> sessionState[key] = value
+    }
+  }
+  return ScopedInitialState(appState, userState, sessionState)
+}

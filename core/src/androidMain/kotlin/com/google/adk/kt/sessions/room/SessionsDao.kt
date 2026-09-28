@@ -226,27 +226,8 @@ internal interface SessionsDao {
     }
 
     val eventTs = eventRow.timestamp
-    if (appDelta.isNotEmpty()) {
-      val existing = getAppState(appName)?.state ?: emptyMap()
-      upsertAppState(
-        StorageAppState(
-          appName = appName,
-          state = mergeStateDelta(existing, appDelta),
-          updateTime = eventTs,
-        )
-      )
-    }
-    if (userDelta.isNotEmpty()) {
-      val existing = getUserState(appName, userId)?.state ?: emptyMap()
-      upsertUserState(
-        StorageUserState(
-          appName = appName,
-          userId = userId,
-          state = mergeStateDelta(existing, userDelta),
-          updateTime = eventTs,
-        )
-      )
-    }
+    // App/user scopes use the same read-merge-write as createSession's seeding.
+    mergeScopedState(appName, userId, appDelta, userDelta, eventTs)
     if (sessionDelta.isNotEmpty()) {
       updateSessionState(
         appName,
@@ -260,6 +241,42 @@ internal interface SessionsDao {
     }
 
     insertEvent(eventRow)
+  }
+
+  /**
+   * Applies app- and user-scoped deltas onto whatever those scopes already hold, honoring
+   * [State.REMOVED]. Shared by `createSession` (seeding prefixed initial state) and
+   * [appendEventAtomic] (an event's state delta), so the read-merge-write lives in one place.
+   */
+  @Transaction
+  suspend fun mergeScopedState(
+    appName: String,
+    userId: String,
+    appDelta: Map<String, Any>,
+    userDelta: Map<String, Any>,
+    updateTime: Long,
+  ) {
+    if (appDelta.isNotEmpty()) {
+      val existing = getAppState(appName)?.state ?: emptyMap()
+      upsertAppState(
+        StorageAppState(
+          appName = appName,
+          state = mergeStateDelta(existing, appDelta),
+          updateTime = updateTime,
+        )
+      )
+    }
+    if (userDelta.isNotEmpty()) {
+      val existing = getUserState(appName, userId)?.state ?: emptyMap()
+      upsertUserState(
+        StorageUserState(
+          appName = appName,
+          userId = userId,
+          state = mergeStateDelta(existing, userDelta),
+          updateTime = updateTime,
+        )
+      )
+    }
   }
 }
 

@@ -20,11 +20,8 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.plugin
@@ -38,12 +35,25 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
+/** Substituted for each path parameter, so a route's path is one fixed string to request. */
+internal const val PROBE = "probe"
+
 /**
- * Holds the rule on reading a body to every POST route, not only the three that read one today.
+ * The routes that read a body today, in the form [PROBE] gives them.
+ *
+ * Shared so a route added later is declared once: the survey below checks it reached these, and
+ * `RequestFramingTest` drives the same three over a socket.
+ */
+internal val BODY_READING_ROUTES =
+  listOf("/run", "/run_sse", "/apps/$PROBE/users/$PROBE/sessions/$PROBE/artifacts")
+
+/**
+ * Holds the rule on reading a body to every POST route, not only the ones that read one today.
  *
  * A route added later with a plain `receive` compiles and passes its own test while quietly
- * bringing back both defects these rules exist to prevent: the wrong status for an empty body, and
- * the rejected body quoted in a failure the engine logs. Surveying the route tree is what notices.
+ * bringing back the defects these rules exist to prevent: the wrong status for an empty body, the
+ * wrong status for one that parses but does not fit, and the rejected body quoted in a failure the
+ * engine logs. Surveying the route tree is what notices.
  */
 @RunWith(JUnit4::class)
 class RequestBodyCoverageTest {
@@ -59,6 +69,40 @@ class RequestBodyCoverageTest {
 
     // A survey that stops reaching the routes it exists for would otherwise pass on an empty list.
     assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
+    assertThat(offenders).isEmpty()
+  }
+
+  @Test
+  fun noPostRoute_answersUnsupportedMediaType_toNoBodyAtAll() = testApplication {
+    val app = startedApplication()
+    val paths = app.postRoutePaths()
+
+    // Nothing was sent, so nothing has a media type to be unsupported; 415 names the wrong fault
+    // and leaves the caller adding a header when the body is what is missing.
+    val offenders = paths.filter { path ->
+      client.post(path).status == HttpStatusCode.UnsupportedMediaType
+    }
+
+    assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
+    assertThat(offenders).isEmpty()
+  }
+
+  @Test
+  fun noPostRoute_answersBadRequestOrFails_toABodyThatParses() = testApplication {
+    val app = startedApplication()
+    val paths = app.postRoutePaths()
+
+    assertThat(paths).containsAtLeastElementsIn(BODY_READING_ROUTES)
+    val statusByPath = paths.associateWith { client.post(it) { jsonBody("[1, 2, 3]") }.status }
+
+    // A parseable body that fits no type must reach the decoder and be refused as 422.
+    for (route in BODY_READING_ROUTES) {
+      assertThat(statusByPath[route]).isEqualTo(HttpStatusCode.UnprocessableEntity)
+    }
+
+    // 400 means it never reached the decoder and 5xx that a serializer threw; both are wrong.
+    val offenders =
+      statusByPath.filterValues { it == HttpStatusCode.BadRequest || it.value >= 500 }.keys
     assertThat(offenders).isEmpty()
   }
 
@@ -115,19 +159,9 @@ class RequestBodyCoverageTest {
     return started
   }
 
-  private fun io.ktor.client.request.HttpRequestBuilder.jsonBody(body: String) {
-    contentType(ContentType.Application.Json)
-    setBody(body)
-  }
-
   private companion object {
-    const val PROBE = "probe"
     const val CANARY = "do-not-log-this-value"
 
     val PATH_PARAMETER = Regex("\\{[^}]*}")
-
-    /** The routes that read a body today, so a survey that stops reaching them fails here. */
-    val BODY_READING_ROUTES =
-      listOf("/run", "/run_sse", "/apps/$PROBE/users/$PROBE/sessions/$PROBE/artifacts")
   }
 }

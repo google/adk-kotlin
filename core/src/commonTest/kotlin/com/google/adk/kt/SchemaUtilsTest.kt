@@ -16,14 +16,26 @@
 
 package com.google.adk.kt
 
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class SchemaUtilsTest {
+
+  private val countSchema =
+    Schema(type = Type.OBJECT, properties = mapOf("count" to Schema(type = Type.INTEGER)))
+
+  private fun text(value: String) = Content(parts = listOf(Part(text = value)))
+
+  /** A value no failure message may quote. */
+  private val secret = "SENTINEL-4711"
 
   @Test
   fun validateMapOnSchema_validInput_returnsSuccess() {
@@ -697,5 +709,139 @@ class SchemaUtilsTest {
 
     assertTrue(result.isFailure)
     assertIs<IllegalArgumentException>(result.exceptionOrNull())
+  }
+
+  @Test
+  fun validateValue_mapIsCheckedAndReturnedUnchanged() {
+    assertEquals(
+      mapOf("count" to 1),
+      SchemaUtils.validateValue(mapOf("count" to 1), countSchema).getOrThrow(),
+    )
+    assertTrue(SchemaUtils.validateValue(mapOf("count" to "1"), countSchema).isFailure)
+    assertTrue(SchemaUtils.validateValue(mapOf("count" to 1, "extra" to 2), countSchema).isFailure)
+    assertTrue(
+      SchemaUtils.validateValue(mapOf("count" to 1), Schema(type = Type.INTEGER)).isFailure
+    )
+  }
+
+  @Test
+  fun validateValue_valueThatIsNotAMap_isCheckedWithTheSameRules() {
+    val integer = Schema(type = Type.INTEGER)
+    val integers = Schema(type = Type.ARRAY, items = integer)
+    val color = Schema(type = Type.STRING, enum = listOf("red"))
+
+    assertEquals(42, SchemaUtils.validateValue(42, integer).getOrThrow())
+    assertEquals(listOf(1), SchemaUtils.validateValue(listOf(1), integers).getOrThrow())
+    assertEquals("blue", SchemaUtils.validateValue("blue", color).getOrThrow())
+    assertTrue(SchemaUtils.validateValue("abc", integer).isFailure)
+    assertTrue(SchemaUtils.validateValue(42.0, integer).isFailure)
+    assertTrue(SchemaUtils.validateValue(listOf("a"), integers).isFailure)
+    assertTrue(SchemaUtils.validateValue("""{"count": 1}""", countSchema).isFailure)
+  }
+
+  @Test
+  fun validateValue_nullPasses() {
+    assertEquals(null, SchemaUtils.validateValue(null, Schema(type = Type.INTEGER)).getOrThrow())
+  }
+
+  @Test
+  fun validateValue_readsAContentAsJsonUnlessTheSchemaTakesAString() {
+    val json = """{"count": 42}"""
+    val eitherIntOrString =
+      Schema(anyOf = listOf(Schema(type = Type.INTEGER), Schema(type = Type.STRING)))
+
+    assertEquals(
+      mapOf("count" to 42L),
+      SchemaUtils.validateValue(text(json), countSchema).getOrThrow(),
+    )
+    assertEquals(
+      json,
+      SchemaUtils.validateValue(text(json), Schema(type = Type.STRING)).getOrThrow(),
+    )
+    assertEquals("42", SchemaUtils.validateValue(text("42"), eitherIntOrString).getOrThrow())
+    assertEquals("hello", SchemaUtils.validateValue(text("hello"), Schema()).getOrThrow())
+    assertTrue(SchemaUtils.validateValue(text("""{"count": "42"}"""), countSchema).isFailure)
+    assertTrue(SchemaUtils.validateValue(text("hello"), countSchema).isFailure)
+  }
+
+  /** Returns the failure message for [value], checking that it never quotes [secret]. */
+  private fun failureMessage(value: Any?, schema: Schema): String {
+    val error = SchemaUtils.validateValue(value, schema, "input of node 'n'").exceptionOrNull()
+    assertIs<IllegalArgumentException>(error)
+    assertEquals(null, error.cause)
+    val message = error.message.orEmpty()
+    assertFalse(secret in message)
+    return message
+  }
+
+  @Test
+  fun validateValue_mapFailure_namesTheDeclaredKeyOrTheSchemaButNeverTheValue() {
+    val person =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("name" to Schema(type = Type.STRING)),
+        required = listOf("name"),
+      )
+    val prefix = "validation error: input of node 'n' does not match its schema: "
+
+    assertEquals(
+      prefix +
+        "Value arg: count type does not match value schema: Schema(type=OBJECT, properties=[count])",
+      failureMessage(mapOf("count" to secret), countSchema),
+    )
+    assertEquals(
+      prefix + "Value args does not contain required name",
+      failureMessage(mapOf<String, Any?>(), person),
+    )
+    assertEquals(
+      prefix + "Value schema does not describe an object: Schema(type=INTEGER)",
+      failureMessage(mapOf("count" to secret), Schema(type = Type.INTEGER)),
+    )
+  }
+
+  @Test
+  fun validateValue_undeclaredKey_isReportedWithoutItsName() {
+    assertEquals(
+      "validation error: input of node 'n' does not match its schema: " +
+        "it has a key the schema does not declare",
+      failureMessage(mapOf("count" to 1, secret to 2), countSchema),
+    )
+  }
+
+  @Test
+  fun validateValue_scalarFailure_isGenericUnlessTheSchemaIsTooComplex() {
+    // Each level reuses its child on both branches, so 12 levels describe 4096 combinations.
+    var nested = Schema(type = Type.STRING)
+    repeat(12) { nested = Schema(anyOf = listOf(nested, nested)) }
+
+    assertEquals(
+      "validation error: input of node 'n' does not match its schema.",
+      failureMessage(secret, Schema(type = Type.INTEGER)),
+    )
+    assertContains(failureMessage(listOf(secret), nested), "schema is too complex to validate")
+  }
+
+  @Test
+  fun readJson_readsAnyJsonAndRejectsTextThatIsNotJsonWithoutQuotingIt() {
+    assertEquals(
+      mapOf("a" to listOf(1L, true)),
+      SchemaUtils.readJson("""{"a": [1, true]}""").getOrThrow(),
+    )
+    assertEquals("x", SchemaUtils.readJson("\"x\"").getOrThrow())
+    assertEquals(null, SchemaUtils.readJson("null").getOrThrow())
+    // The JSON parser alone takes an unquoted word as a literal.
+    for (notJson in listOf("hello world", "hello", """{"a": hello}""", "NaN")) {
+      assertEquals(
+        "validation error: value is not valid JSON.",
+        SchemaUtils.readJson(notJson).exceptionOrNull()?.message,
+      )
+    }
+  }
+
+  @Test
+  fun acceptsString_seesAStringTypeDirectlyOrInAnAlternative() {
+    assertTrue(SchemaUtils.acceptsString(Schema(type = Type.STRING)))
+    assertTrue(SchemaUtils.acceptsString(Schema(anyOf = listOf(Schema(type = Type.STRING)))))
+    assertFalse(SchemaUtils.acceptsString(Schema(type = Type.INTEGER)))
   }
 }
