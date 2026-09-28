@@ -18,6 +18,7 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelMessage
@@ -37,15 +38,16 @@ import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.Client
 import kotlin.test.Test
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
 /**
- * Runner-level regression for streamed function-call arguments driven through the real [Gemini]
- * aggregator: the model streams two calls whose arguments arrive as `partialArgs` with
- * `willContinue`, each terminated by a separate empty marker chunk. The aggregator must reassemble
- * both calls (no drop, no arg bleed) and the runner must execute both tools.
+ * Runner-level regressions for streamed function calls driven through the real [Gemini] aggregator.
+ * Arguments streamed as `partialArgs` with `willContinue` must be reassembled per call (no drop, no
+ * arg bleed) and each tool executed, and the executed call and its response must keep the id the
+ * call got on its first chunk.
  *
  * Complements [StreamingPartialFunctionCallsIntegrationTest], which covers the post-aggregator
  * parallel-partial-event contract; this one exercises the aggregator itself end-to-end.
@@ -135,11 +137,128 @@ class StreamedFunctionCallArgsReassemblyIntegrationTest {
     assertThat(executedTools).containsExactly("getTemperature", "getCondition")
   }
 
-  private fun partialArg(jsonPath: String, value: String): FunctionCall =
+  @Test
+  fun runAsync_streamedFunctionCallWithoutId_callAndResponseKeepFirstChunkId(): Unit = runBlocking {
+    // Arrange: one call streamed over three chunks; only the first names it, none carries an id.
+    val models =
+      RecordingGeminiModels(
+        listOf(
+          fcChunk(partialArg("\$.city", "Kra", name = "getTemperature")),
+          fcChunk(partialArg("\$.city", "k")),
+          fcChunk(
+            partialArg("\$.city", "ow", willContinue = false),
+            finishReason = FinishReason.STOP,
+          ),
+        )
+      )
+
+    // Act
+    val events = runStreamingAgent(models)
+
+    // Assert: the executed call and its response carry the first chunk's id, not a later one's.
+    val partialCallIds = events.filter { it.partial }.flatMap { it.functionCalls() }.map { it.id }
+    val finalCall = events.filterNot { it.partial }.flatMap { it.functionCalls() }.single()
+    val response = events.flatMap { it.functionResponses() }.single()
+    assertThat(partialCallIds).hasSize(3)
+    val firstChunkId = partialCallIds.first()
+    assertThat(firstChunkId).startsWith(FunctionCall.ADK_FUNCTION_CALL_ID_PREFIX)
+    assertThat(partialCallIds.drop(1)).doesNotContain(firstChunkId)
+    assertThat(finalCall.id).isEqualTo(firstChunkId)
+    assertThat(response.id).isEqualTo(firstChunkId)
+  }
+
+  @Test
+  fun runAsync_streamedFunctionCallWithModelId_idKeptThroughResponseAndNextRequest(): Unit =
+    runBlocking {
+      // Arrange: the model sends its own id on the first chunk only.
+      val models =
+        RecordingGeminiModels(
+          listOf(
+            fcChunk(partialArg("\$.city", "Krak", name = "getTemperature", id = "model-id")),
+            fcChunk(
+              partialArg("\$.city", "ow", willContinue = false),
+              finishReason = FinishReason.STOP,
+            ),
+          )
+        )
+
+      // Act
+      val events = runStreamingAgent(models)
+
+      // Assert: the model's id survives on the executed call, its response and the next request.
+      val finalCall = events.filterNot { it.partial }.flatMap { it.functionCalls() }.single()
+      val response = events.flatMap { it.functionResponses() }.single()
+      assertThat(finalCall.id).isEqualTo("model-id")
+      assertThat(response.id).isEqualTo("model-id")
+      assertThat(models.requests).hasSize(2)
+      val nextRequestParts = models.requests[1].flatMap { it.parts }
+      assertThat(nextRequestParts.mapNotNull { it.functionCall?.id }).containsExactly("model-id")
+      assertThat(nextRequestParts.mapNotNull { it.functionResponse?.id })
+        .containsExactly("model-id")
+    }
+
+  /** Streams [firstTurn] on the first model call and a final text after it, recording requests. */
+  private inner class RecordingGeminiModels(private val firstTurn: List<GenerateContentResponse>) :
+    Gemini.GeminiModels {
+    val requests = mutableListOf<List<Content>>()
+
+    override fun generateContentStream(
+      model: String,
+      contents: List<Content>,
+      config: GenerateContentConfig,
+    ): Flow<GenerateContentResponse> {
+      requests += contents
+      return if (requests.size == 1) firstTurn.asFlow() else flowOf(textChunk("Done."))
+    }
+
+    override suspend fun generateContent(
+      model: String,
+      contents: List<Content>,
+      config: GenerateContentConfig,
+    ): GenerateContentResponse = throw UnsupportedOperationException("stream only")
+  }
+
+  /** Runs an agent with a `getTemperature` tool on the real [Gemini] over [models], via SSE. */
+  private suspend fun runStreamingAgent(models: Gemini.GeminiModels): List<Event> {
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = Gemini(Client(apiKey = "fake"), "gemini-3.1-flash-preview", models = models),
+        tools =
+          listOf(
+            DummyTool(name = "getTemperature", onRun = { _, _ -> mapOf("temperature" to "21C") })
+          ),
+        generateContentConfig =
+          GenerateContentConfig(
+            toolConfig =
+              ToolConfig(
+                functionCallingConfig = FunctionCallingConfig(streamFunctionCallArguments = true)
+              )
+          ),
+      )
+    return InMemoryRunner(agent = agent)
+      .runAsync(
+        userId = "user1",
+        sessionId = "session1",
+        newMessage = userMessage("Weather in Krakow?"),
+        runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+      )
+      .toList()
+  }
+
+  private fun partialArg(
+    jsonPath: String,
+    value: String,
+    name: String = "",
+    id: String? = null,
+    willContinue: Boolean = true,
+  ): FunctionCall =
     FunctionCall(
+      name = name,
+      id = id,
       partialArgs =
         listOf(PartialArg(value = PartialArgValue.StringValue(value), jsonPath = jsonPath)),
-      willContinue = true,
+      willContinue = willContinue,
     )
 
   private fun fcChunk(
