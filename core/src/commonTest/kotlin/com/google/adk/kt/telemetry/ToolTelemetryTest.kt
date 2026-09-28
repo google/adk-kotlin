@@ -31,9 +31,11 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class ToolTelemetryTest {
@@ -131,6 +133,41 @@ class ToolTelemetryTest {
     val span = recordSingleToolSpan()
 
     assertEquals("call_1", span.attributes[TelemetryAttributes.GEN_AI_TOOL_CALL_ID])
+  }
+
+  @Test
+  fun executeSingleFunctionCall_emittedEventIdMatchesSpanEventId() = runBlocking {
+    val event =
+      createInvocationContext()
+        .executeSingleFunctionCall(
+          FunctionCall(name = "test_tool", args = mapOf("param" to "value"), id = "call_1"),
+          mapOf("test_tool" to TestFunctionTool()),
+        )
+
+    assertNotNull(event)
+    val span = fakeTracer.recordedSpans.single { it.name == "execute_tool test_tool" }
+    assertEquals(event.id, span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID])
+  }
+
+  @Test
+  fun handleFunctionCalls_parallelCalls_mergedEventIdDiffersFromToolSpanEventIds() = runBlocking {
+    val merged =
+      createInvocationContext()
+        .handleFunctionCalls(
+          listOf(
+            FunctionCall(name = "tool_a", args = emptyMap(), id = "call_a"),
+            FunctionCall(name = "tool_b", args = emptyMap(), id = "call_b"),
+          ),
+          mapOf("tool_a" to NamedFunctionTool("tool_a"), "tool_b" to NamedFunctionTool("tool_b")),
+        )
+
+    assertNotNull(merged)
+    val toolSpanEventIds =
+      fakeTracer.recordedSpans
+        .filter { it.name == "execute_tool tool_a" || it.name == "execute_tool tool_b" }
+        .map { it.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] }
+    assertEquals(2, toolSpanEventIds.toSet().size)
+    assertFalse(merged.id in toolSpanEventIds)
   }
 
   @Test
