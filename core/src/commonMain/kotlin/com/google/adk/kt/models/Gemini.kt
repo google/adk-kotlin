@@ -349,7 +349,7 @@ internal fun List<Content>.ensureModelResponse(): List<Content> {
       )
     )
   }
-  return if (last().role?.equals(Role.USER, ignoreCase = true) == true) {
+  return if (last().hasUserRole()) {
     this
   } else {
     this +

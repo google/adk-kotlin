@@ -21,7 +21,6 @@ import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.HttpOptions
-import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.ToolConfig
 import kotlin.time.Clock
@@ -143,7 +142,7 @@ internal class GeminiContextCacheManager(
     if (contents.isEmpty()) return 0
     var lastUserBatchStart = contents.size
     for (i in contents.indices.reversed()) {
-      if (contents[i].role == Role.USER) {
+      if (contents[i].hasUserRole()) {
         lastUserBatchStart = i
       } else {
         break
