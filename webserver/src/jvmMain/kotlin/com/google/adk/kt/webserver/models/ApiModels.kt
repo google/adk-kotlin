@@ -21,7 +21,6 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Tool
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.EncodeDefault
-import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonNames
@@ -113,7 +112,6 @@ internal data class AppInfo(
  * [tools] and [subAgents] are always emitted, empty included: `adkJson` drops defaulted properties,
  * and a caller reading a required field should not have to tell "no tools" from "absent".
  */
-@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 internal data class AgentInfo(
   val name: String,
