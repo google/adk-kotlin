@@ -16,11 +16,14 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import kotlin.jvm.JvmStatic
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -96,7 +99,99 @@ data class RetryConfig(
     return minOf(delay, ceiling)
   }
 
+  /** Returns [initialDelay] in whole milliseconds, or `null`. Java cannot read it (mangled). */
+  fun initialDelayMillis(): Long? = initialDelay?.inWholeMilliseconds
+
+  /** Returns [maxDelay] in whole milliseconds, or `null`. Java cannot read it (mangled). */
+  fun maxDelayMillis(): Long? = maxDelay?.inWholeMilliseconds
+
+  /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .maxAttempts(maxAttempts)
+      .initialDelay(initialDelay)
+      .maxDelay(maxDelay)
+      .backoffFactor(backoffFactor)
+      .jitter(jitter)
+      .exceptions(exceptions)
+
+  /**
+   * Fluent builder for [RetryConfig], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var maxAttempts: Int? = null
+    private var initialDelay: Duration? = null
+    private var maxDelay: Duration? = null
+    private var backoffFactor: Double? = null
+    private var jitter: Double? = null
+    private var exceptions: List<String>? = null
+
+    fun maxAttempts(maxAttempts: Int?): Builder = apply { this.maxAttempts = maxAttempts }
+
+    // Let toBuilder copy the delays exactly; the millisecond setters would truncate them.
+    internal fun initialDelay(initialDelay: Duration?): Builder = apply {
+      this.initialDelay = initialDelay
+    }
+
+    internal fun maxDelay(maxDelay: Duration?): Builder = apply { this.maxDelay = maxDelay }
+
+    /**
+     * Sets [initialDelay] in milliseconds; the [Duration] constructor param is mangled for Java.
+     */
+    fun initialDelayMillis(initialDelayMillis: Long): Builder = apply {
+      this.initialDelay = initialDelayMillis.milliseconds
+    }
+
+    /**
+     * Sets [initialDelay] in milliseconds, or clears it when `null`. The non-null overload lets
+     * Java `int` literals compile.
+     */
+    fun initialDelayMillis(initialDelayMillis: Long?): Builder = apply {
+      this.initialDelay = initialDelayMillis?.milliseconds
+    }
+
+    /** Sets [maxDelay] in milliseconds; the [Duration] constructor param is mangled for Java. */
+    fun maxDelayMillis(maxDelayMillis: Long): Builder = apply {
+      this.maxDelay = maxDelayMillis.milliseconds
+    }
+
+    /**
+     * Sets [maxDelay] in milliseconds, or clears it when `null`. The non-null overload lets Java
+     * `int` literals compile.
+     */
+    fun maxDelayMillis(maxDelayMillis: Long?): Builder = apply {
+      this.maxDelay = maxDelayMillis?.milliseconds
+    }
+
+    fun backoffFactor(backoffFactor: Double?): Builder = apply {
+      this.backoffFactor = backoffFactor
+    }
+
+    fun jitter(jitter: Double?): Builder = apply { this.jitter = jitter }
+
+    fun exceptions(exceptions: List<String>?): Builder = apply { this.exceptions = exceptions }
+
+    fun build(): RetryConfig =
+      RetryConfig(
+        maxAttempts = maxAttempts,
+        initialDelay = initialDelay,
+        maxDelay = maxDelay,
+        backoffFactor = backoffFactor,
+        jitter = jitter,
+        exceptions = exceptions,
+      )
+  }
+
   companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
+
     const val DEFAULT_MAX_ATTEMPTS: Int = 5
     const val DEFAULT_BACKOFF_FACTOR: Double = 2.0
     const val DEFAULT_JITTER: Double = 1.0

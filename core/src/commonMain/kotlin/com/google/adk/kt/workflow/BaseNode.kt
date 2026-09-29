@@ -29,8 +29,9 @@ import kotlinx.coroutines.flow.flow
  * The base class for units of work in a workflow graph. A `Workflow` is itself a node, so graphs
  * nest, and every agent is one too.
  *
- * Public only so that `BaseAgent` and `Workflow`, which are public, can extend it. It is framework
- * plumbing: write a node by implementing [Node], not by extending this.
+ * Public only so that `BaseAgent`, `Workflow`, `JoinNode` and the Java interop base
+ * `BasePublisherNode` can extend it. It is framework plumbing: write a node by implementing [Node],
+ * or from Java by extending `BasePublisherNode`.
  *
  * Subclasses implement [runNode] and emit raw values; [run] normalizes each into an [Event]. Node
  * names must be unique within a graph, since the scheduler keys on them.
