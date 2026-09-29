@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.sessions
 
+import kotlin.jvm.JvmStatic
+
 /**
  * A thread-safe state map that maintains the current value and tracks modifications.
  *
@@ -141,7 +143,7 @@ class State(
     const val TEMP_PREFIX = "temp:"
 
     /** Sentinel object to mark removed entries in the delta map. */
-    val REMOVED: Any = RemovedSentinel
+    @JvmStatic val REMOVED: Any = RemovedSentinel
   }
 }
 
