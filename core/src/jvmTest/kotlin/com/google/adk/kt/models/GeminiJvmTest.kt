@@ -30,6 +30,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.Client
 import com.google.genai.kotlin.ClientException
 import com.google.genai.kotlin.GenAiApiException
+import com.google.genai.kotlin.types.HttpOptions
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Date
@@ -38,6 +39,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.time.Duration.Companion.minutes
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -258,6 +260,53 @@ class GeminiJvmTest {
 
     assertThat(thrown).isSameInstanceAs(badRequest)
   }
+
+  @Test
+  fun genaiCacheClient_createWithServerExpireTime_returnsServerExpiry() = runBlocking {
+    mockServer.enqueue(
+      MockResponse(
+        headers = Headers.headersOf("Content-Type", "application/json"),
+        body = """{"name":"cachedContents/abc","expireTime":"2033-05-18T03:33:20.123Z"}""",
+      )
+    )
+
+    val created = createCache()
+
+    assertThat(created.name).isEqualTo("cachedContents/abc")
+    assertThat(created.expireTime?.toEpochMilliseconds()).isEqualTo(2_000_000_000_123L)
+  }
+
+  @Test
+  fun genaiCacheClient_createWithoutExpireTime_returnsNullExpiry() = runBlocking {
+    mockServer.enqueue(
+      MockResponse(
+        headers = Headers.headersOf("Content-Type", "application/json"),
+        body = """{"name":"cachedContents/abc"}""",
+      )
+    )
+
+    val created = createCache()
+
+    assertThat(created.expireTime).isNull()
+  }
+
+  /** Creates a cache through [GenaiCacheClient] with an SDK client routed to the mock server. */
+  private suspend fun createCache(): GeminiContextCacheManager.CreatedCache =
+    Client(apiKey = "fake-key", httpOptions = HttpOptions(baseUrl = mockServer.url("/").toString()))
+      .use { client ->
+        GenaiCacheClient(client.caches)
+          .create(
+            GeminiContextCacheManager.CacheCreateRequest(
+              model = "gemini-2.0-flash",
+              contents = null,
+              systemInstruction = null,
+              tools = null,
+              toolConfig = null,
+              ttl = 30.minutes,
+              displayName = "test",
+            )
+          )
+      }
 
   /**
    * Drives a [Gemini.generateContent] flow against the mock server so the GenAI SDK issues exactly

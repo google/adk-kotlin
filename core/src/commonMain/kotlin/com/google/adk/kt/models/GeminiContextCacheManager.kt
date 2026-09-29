@@ -26,6 +26,7 @@ import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.ToolConfig
 import kotlin.time.Clock
 import kotlin.time.Duration
+import kotlin.time.Instant
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -276,7 +277,7 @@ internal class GeminiContextCacheManager(
     val cacheConfig = requireNotNull(request.cacheConfig) { "cacheConfig must be set." }
     val displayName = "adk-cache-${Clock.System.now().epochSeconds}-${cacheContentsCount}contents"
 
-    val cacheName =
+    val createdCache =
       cacheClient.create(
         CacheCreateRequest(
           model = modelName,
@@ -290,13 +291,16 @@ internal class GeminiContextCacheManager(
         )
       )
     val createdAt = Clock.System.now().toEpochMilliseconds()
-    logger.info { "Cache created successfully: $cacheName" }
+    logger.info { "Cache created successfully: ${createdCache.name}" }
 
     return CacheMetadata(
       fingerprint = generateFingerprint(request, cacheContentsCount),
       contentsCount = cacheContentsCount,
-      cacheName = cacheName,
-      expireTime = createdAt + cacheConfig.ttl.inWholeMilliseconds,
+      cacheName = createdCache.name,
+      // Prefer the server-reported expiry, since a locally computed one can drift from it.
+      expireTime =
+        createdCache.expireTime?.toEpochMilliseconds()
+          ?: (createdAt + cacheConfig.ttl.inWholeMilliseconds),
       invocationsUsed = 1,
       createdAt = createdAt,
     )
@@ -348,14 +352,17 @@ internal class GeminiContextCacheManager(
     val httpOptions: HttpOptions? = null,
   )
 
+  /** A newly created Gemini cache, as reported by the cache backend. */
+  data class CreatedCache(val name: String, val expireTime: Instant?)
+
   /**
    * Abstraction over the cache backend so the manager can be faked in tests; the SDK's cache types
    * are final with internal constructors and cannot be faked directly. The SDK-backed
    * implementation is [GenaiCacheClient].
    */
   interface CacheClient {
-    /** Creates a cache and returns its resource name. */
-    suspend fun create(request: CacheCreateRequest): String
+    /** Creates a cache and returns its resource name and server-reported expiry, if any. */
+    suspend fun create(request: CacheCreateRequest): CreatedCache
 
     suspend fun delete(name: String)
   }
