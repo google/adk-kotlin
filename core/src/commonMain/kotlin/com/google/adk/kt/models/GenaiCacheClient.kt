@@ -18,6 +18,7 @@ package com.google.adk.kt.models
 import com.google.adk.kt.types.toGenaiSdk
 import com.google.genai.kotlin.Caches
 import com.google.genai.kotlin.types.CreateCachedContentConfig
+import kotlin.time.Instant
 
 /**
  * [GeminiContextCacheManager.CacheClient] backed by the GenAI SDK's `client.caches`.
@@ -28,7 +29,9 @@ import com.google.genai.kotlin.types.CreateCachedContentConfig
 internal class GenaiCacheClient(private val caches: Caches) :
   GeminiContextCacheManager.CacheClient {
 
-  override suspend fun create(request: GeminiContextCacheManager.CacheCreateRequest): String {
+  override suspend fun create(
+    request: GeminiContextCacheManager.CacheCreateRequest
+  ): GeminiContextCacheManager.CreatedCache {
     val config =
       CreateCachedContentConfig(
         contents = request.contents?.map { it.toGenaiSdk() },
@@ -40,7 +43,10 @@ internal class GenaiCacheClient(private val caches: Caches) :
         httpOptions = request.httpOptions?.toGenaiSdk(),
       )
     val cachedContent = caches.create(request.model, config)
-    return cachedContent.name ?: throw IllegalStateException("Created cache has no resource name.")
+    val name = checkNotNull(cachedContent.name) { "Created cache has no resource name." }
+    // The SDK's Instant exposes only its ISO-8601 text in common code.
+    val expireTime = cachedContent.expireTime?.let { Instant.parse(it.toString()) }
+    return GeminiContextCacheManager.CreatedCache(name, expireTime)
   }
 
   override suspend fun delete(name: String) {

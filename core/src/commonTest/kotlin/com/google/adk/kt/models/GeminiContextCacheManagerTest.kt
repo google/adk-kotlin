@@ -32,6 +32,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class GeminiContextCacheManagerTest {
@@ -40,17 +42,20 @@ class GeminiContextCacheManagerTest {
   private class FakeCacheClient(
     private val createdName: String = "cache/new",
     private val createException: Exception? = null,
+    private val createdExpireTime: Instant? = null,
   ) : GeminiContextCacheManager.CacheClient {
     var createCount = 0
     var deleteCount = 0
     var lastDeletedName: String? = null
     var lastCreateRequest: GeminiContextCacheManager.CacheCreateRequest? = null
 
-    override suspend fun create(request: GeminiContextCacheManager.CacheCreateRequest): String {
+    override suspend fun create(
+      request: GeminiContextCacheManager.CacheCreateRequest
+    ): GeminiContextCacheManager.CreatedCache {
       createCount++
       lastCreateRequest = request
       createException?.let { throw it }
-      return createdName
+      return GeminiContextCacheManager.CreatedCache(createdName, createdExpireTime)
     }
 
     override suspend fun delete(name: String) {
@@ -131,6 +136,35 @@ class GeminiContextCacheManagerTest {
     assertEquals(activeMetadata, result.cacheMetadata)
     assertEquals(0, fake.createCount)
     assertEquals(0, fake.deleteCount)
+  }
+
+  @Test
+  fun handleContextCaching_serverReportsExpireTime_usesServerExpiry() = runBlocking {
+    val serverExpireTime = Instant.parse("2033-05-18T03:33:20Z")
+    val manager =
+      GeminiContextCacheManager(
+        "gemini-2.0-flash",
+        FakeCacheClient(createdExpireTime = serverExpireTime),
+      )
+    val request = baseRequest(tokenCount = 8000)
+    val metadata = CacheMetadata(fingerprint = fingerprintFor(manager, request), contentsCount = 1)
+
+    val result = manager.handleContextCaching(request.copy(cacheMetadata = metadata))
+
+    assertEquals(serverExpireTime.toEpochMilliseconds(), result.cacheMetadata?.expireTime)
+  }
+
+  @Test
+  fun handleContextCaching_serverOmitsExpireTime_fallsBackToLocalTtl() = runBlocking {
+    val manager = GeminiContextCacheManager("gemini-2.0-flash", FakeCacheClient())
+    val request =
+      baseRequest(tokenCount = 8000).copy(cacheConfig = ContextCacheConfig(ttl = 600.seconds))
+    val metadata = CacheMetadata(fingerprint = fingerprintFor(manager, request), contentsCount = 1)
+
+    val created =
+      manager.handleContextCaching(request.copy(cacheMetadata = metadata)).cacheMetadata!!
+
+    assertEquals(600_000L, created.expireTime!! - created.createdAt!!)
   }
 
   @Test
