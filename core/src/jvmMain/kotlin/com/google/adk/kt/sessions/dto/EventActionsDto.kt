@@ -35,5 +35,4 @@ internal data class EventActionsDto(
   val transferAgent: String? = null,
   val transferToAgent: String? = null,
   val escalate: Boolean? = null,
-  val endOfAgent: Boolean? = null,
 )

@@ -16,8 +16,10 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.sessions.dto.ListEventsResponseDto
 import com.google.adk.kt.sessions.dto.ListSessionsResponseDto
 import com.google.adk.kt.sessions.dto.SessionDto
@@ -25,6 +27,7 @@ import com.google.adk.kt.sessions.dto.SessionEventDto
 import com.google.adk.kt.sessions.dto.TimestampDto
 import com.google.adk.kt.testing.SessionServiceAssertions
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.UsageMetadata
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
 import kotlin.test.assertFailsWith
@@ -806,6 +809,34 @@ class VertexAiSessionServiceTest {
     assertThat(reloaded).isNotNull()
     assertThat(reloaded!!.state.containsKey("app:shared")).isFalse()
     assertThat(reloaded.state.containsKey("user:pref")).isFalse()
+  }
+
+  @Test
+  fun appendEvent_thenGetSession_keepsFieldsTheApiDrops(): Unit = runBlocking {
+    val service = service(FakeVertexAiSessionsClient())
+    val session = service.createSession(SessionKey("123", "user", id = null))
+    val event =
+      Event(
+        id = "client-event-id",
+        invocationId = "inv-1",
+        author = "agent",
+        timestamp = 1_700_000_000_123L,
+        usageMetadata = UsageMetadata(totalTokenCount = 12),
+        customMetadata = mapOf("k" to "v"),
+        actions =
+          EventActions(
+            transferToAgent = "other",
+            endOfAgent = true,
+            requestedToolConfirmations =
+              mutableMapOf("call-1" to ToolConfirmation(confirmed = false, hint = "ok?")),
+            agentState = TypedData.MapValue(mapOf("step" to TypedData.IntValue(2))),
+          ),
+      )
+
+    val unused = service.appendEvent(session, event)
+    val reloaded = service.getSession(session.key)!!.events.single()
+
+    assertThat(reloaded).isEqualTo(event)
   }
 
   @Test
