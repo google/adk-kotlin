@@ -481,6 +481,8 @@ class GeminiContextCacheManagerTest {
     // Cache everything before the trailing contiguous user batch.
     assertEquals(2, countFor(Role.USER, Role.MODEL, Role.USER))
     assertEquals(4, countFor(Role.USER, Role.MODEL, Role.USER, Role.MODEL, Role.USER))
+    // A user turn in another case, like USER, still counts as part of the trailing batch.
+    assertEquals(2, countFor(Role.USER, Role.MODEL, "USER"))
     // A model turn last means no trailing user batch: the degenerate "cache everything" count.
     assertEquals(6, countFor(Role.USER, Role.MODEL, Role.USER, Role.MODEL, Role.USER, Role.MODEL))
   }

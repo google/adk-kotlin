@@ -68,6 +68,14 @@ class GeminiTest {
   }
 
   @Test
+  fun ensureModelResponse_lastRoleDifferentlyCasedUser_doesNothing() {
+    val reqContents = listOf(Content.fromText("USER", "Prompt"))
+
+    val ensured = reqContents.ensureModelResponse()
+    assertThat(ensured).isEqualTo(reqContents)
+  }
+
+  @Test
   fun sanitizeRequestForGeminiApi_withDisplayName_removesDisplayName() {
     val reqContents =
       mutableListOf(

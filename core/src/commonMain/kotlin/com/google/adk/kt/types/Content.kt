@@ -38,6 +38,13 @@ data class Content(
       .mapNotNull { it.text }
       .joinToString(separator)
 
+  /**
+   * Returns whether [role] is [Role.USER], ignoring case because callers may mark a user turn as
+   * `USER`. Recognizing a trailing `USER` turn keeps the Gemini model from appending an extra user
+   * turn or caching that trailing turn.
+   */
+  internal fun hasUserRole(): Boolean = role.equals(Role.USER, ignoreCase = true)
+
   companion object {
     /** Creates a [Content] with the given [role] containing a single text [Part] of [text]. */
     @JvmStatic
