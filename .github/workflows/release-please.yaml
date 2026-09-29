@@ -1,13 +1,14 @@
+name: release-please
+
 on:
   push:
     branches:
       - main
   workflow_dispatch: {}
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-name: release-please
+
+# The action authenticates with RELEASE_PLEASE_TOKEN, not GITHUB_TOKEN.
+permissions: {}
+
 jobs:
   release-please:
     runs-on: ubuntu-24.04
