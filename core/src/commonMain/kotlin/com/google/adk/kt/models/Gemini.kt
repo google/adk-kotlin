@@ -158,8 +158,7 @@ internal constructor(
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
     val preparedRequest = request.prepareGenerateContentRequest(!client.enterprise)
 
-    // Handle context caching when configured. The manager may rewrite the request to reference an
-    // existing cache (dropping the cached prefix) and returns the metadata to attach to responses.
+    // The manager may rewrite the request to use a cache and returns metadata for the responses.
     val cacheManager =
       preparedRequest.cacheConfig?.let {
         GeminiContextCacheManager(name, GenaiCacheClient(client.caches), cacheScopeOf(client))

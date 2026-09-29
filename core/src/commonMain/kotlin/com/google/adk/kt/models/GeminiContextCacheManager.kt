@@ -40,7 +40,7 @@ import kotlinx.serialization.json.encodeToJsonElement
  * caching. It uses content hashing (a fingerprint) to determine cache compatibility and applies an
  * existing cache to the request by referencing it via
  * [GenerateContentConfig.cachedContent][com.google.adk.kt.types.GenerateContentConfig.cachedContent]
- * and dropping the cached prefix from the request.
+ * and dropping the cached prefix while always keeping the final content.
  *
  * The cache backend is delegated to a [CacheClient] interface so the manager stays decoupled from
  * the GenAI SDK's cache API and can be faked in tests: the SDK's cache types are final with
@@ -68,7 +68,8 @@ internal class GeminiContextCacheManager(
 
   /**
    * Validates an existing cache or creates a new one if needed, then applies the cache to the
-   * request by setting `cachedContent` and dropping the cached prefix.
+   * request by setting `cachedContent` and dropping the cached prefix while always keeping the
+   * final content.
    *
    * @param request The request that may carry cache config and metadata.
    * @return The (possibly rewritten) request plus the cache metadata to include in the response.
@@ -136,11 +137,7 @@ internal class GeminiContextCacheManager(
 
   /**
    * Finds the number of leading contents to cache: everything before the last contiguous batch of
-   * user contents. This always leaves at least the latest user turn to send to the API.
-   *
-   * Callers run `ensureModelResponse` (via `prepareGenerateContentRequest`) before caching, so the
-   * last content is always a user turn; the `contents.size` fallback for a non-user or empty tail
-   * is therefore unreachable in the real flow.
+   * user contents, or every content when the last content is not a user turn.
    */
   private fun findCountOfContentsToCache(contents: List<Content>): Int {
     if (contents.isEmpty()) return 0
@@ -318,7 +315,8 @@ internal class GeminiContextCacheManager(
 
   /**
    * Rewrites the request to use the cache: references it via `cachedContent`, drops the cached
-   * system instruction and tools, and removes the cached content prefix.
+   * system instruction and tools, and removes the cached content prefix. Always keeps the final
+   * content, even when the cache covers it, because the API can reject a request with no contents.
    */
   private fun applyCacheToRequest(
     request: LlmRequest,
@@ -333,7 +331,7 @@ internal class GeminiContextCacheManager(
           toolConfig = null,
           cachedContent = cacheName,
         ),
-      contents = request.contents.drop(cacheContentsCount),
+      contents = request.contents.drop(cacheContentsCount).ifEmpty { request.contents.takeLast(1) },
     )
 
   /** The inputs needed to create a Gemini cache, expressed in ADK common types. */
