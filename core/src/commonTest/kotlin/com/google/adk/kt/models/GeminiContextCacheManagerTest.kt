@@ -386,6 +386,52 @@ class GeminiContextCacheManagerTest {
   }
 
   @Test
+  fun handleContextCaching_validCacheCoversWholeRequest_keepsFinalContent() = runBlocking {
+    val manager = GeminiContextCacheManager("gemini-2.0-flash", FakeCacheClient())
+    // No trailing user turn, so the cacheable prefix covers every content.
+    val request =
+      LlmRequest(
+        contents = listOf(userMessage("question"), modelMessage("answer")),
+        cacheConfig = cacheConfig,
+      )
+    val activeMetadata =
+      CacheMetadata(
+        fingerprint = fingerprintFor(manager, request),
+        contentsCount = 2,
+        cacheName = "cache/existing",
+        expireTime = Clock.System.now().toEpochMilliseconds() + 100_000,
+        invocationsUsed = 1,
+      )
+
+    val result = manager.handleContextCaching(request.copy(cacheMetadata = activeMetadata))
+
+    assertEquals("cache/existing", result.request.config.cachedContent)
+    assertEquals(listOf(modelMessage("answer")), result.request.contents)
+  }
+
+  @Test
+  fun handleContextCaching_newCacheCoversWholeRequest_keepsFinalContent() = runBlocking {
+    val fake = FakeCacheClient(createdName = "cache/full-prefix")
+    val manager = GeminiContextCacheManager("gemini-2.0-flash", fake)
+    val firstRequest =
+      LlmRequest(contents = listOf(userMessage("question")), cacheConfig = cacheConfig)
+    val nextRequest =
+      LlmRequest(
+        contents = listOf(userMessage("question"), modelMessage("answer")),
+        cacheConfig = cacheConfig,
+        cacheMetadata = manager.handleContextCaching(firstRequest).cacheMetadata,
+        cacheableContentsTokenCount = 30_000,
+      )
+
+    val result = manager.handleContextCaching(nextRequest)
+
+    assertEquals(1, fake.createCount)
+    assertEquals(2, result.cacheMetadata?.contentsCount)
+    assertEquals("cache/full-prefix", result.request.config.cachedContent)
+    assertEquals(listOf(modelMessage("answer")), result.request.contents)
+  }
+
+  @Test
   fun handleContextCaching_prefixBelowMinimumEvenWhenFullClears_doesNotCreate() = runTest {
     val fake = FakeCacheClient()
     val manager = GeminiContextCacheManager("gemini-2.5-flash", fake)
