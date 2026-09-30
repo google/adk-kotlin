@@ -14,18 +14,34 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalLiveApi::class)
+
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.callbacks.AfterAgentCallback
+import com.google.adk.kt.callbacks.BeforeAgentCallback
+import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.telemetry.Telemetry
+import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.testing.DummyTracer
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.types.Content
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 
-/** Tests for [BaseAgent] name validation and its resumability state helpers. */
+/**
+ * Tests for [BaseAgent] name validation, its resumability state helpers and its live entry point.
+ */
 class BaseAgentTest {
 
   @Test
@@ -121,6 +137,57 @@ class BaseAgentTest {
 
     assertEquals("User", agent.name)
   }
+
+  @Test
+  fun runLiveImpl_agentWithoutLiveSupport_throwsWhenCollectedNotWhenCalled(): Unit = runBlocking {
+    val agent = StateTestAgent()
+    val work = agent.liveWork(testInvocationContext(agent = agent))
+
+    assertFailsWith<UnsupportedOperationException> { work.toList() }
+  }
+
+  @Test
+  fun runLive_beforeAgentCallbackBreaks_skipsTheLiveWork() = runBlocking {
+    val skipped = modelMessage("skipped")
+    val agent =
+      LiveTestAgent(
+        beforeAgentCallbacks = listOf(BeforeAgentCallback { CallbackChoice.Break(skipped) })
+      )
+
+    val events = agent.runLive(testInvocationContext(agent = agent)).toList()
+
+    assertEquals(listOf<Content?>(skipped), events.map { it.content })
+    assertEquals(0, agent.liveRuns)
+  }
+
+  @Test
+  fun runLive_afterAgentCallbackBreaks_appendsItsContentAfterTheLiveEvents() = runBlocking {
+    val after = modelMessage("after")
+    val agent =
+      LiveTestAgent(
+        afterAgentCallbacks = listOf(AfterAgentCallback { CallbackChoice.Break(after) })
+      )
+
+    val events = agent.runLive(testInvocationContext(agent = agent)).toList()
+
+    assertEquals(listOf<Content?>(LiveTestAgent.SPOKEN, after), events.map { it.content })
+  }
+
+  @Test
+  fun runLive_tracesAnInvokeAgentSpan() = runBlocking {
+    val tracer = DummyTracer()
+    Telemetry.setTracerForTest(tracer)
+    try {
+      val agent = LiveTestAgent()
+
+      agent.runLive(testInvocationContext(agent = agent)).toList()
+
+      val span = tracer.recordedSpans.single { it.name == "invoke_agent live_agent" }
+      assertEquals("invoke_agent", span.attributes[TelemetryAttributes.GEN_AI_OPERATION_NAME])
+    } finally {
+      Telemetry.resetTracer()
+    }
+  }
 }
 
 /** A minimal [AgentState] with a single string field, mirroring Python's `_TestAgentState`. */
@@ -147,4 +214,30 @@ private class StateTestAgent(name: String = "test_agent") : BaseAgent(name = nam
 
   fun createState(context: InvocationContext, state: AgentState): Event =
     createStateEvent(context, state)
+
+  fun liveWork(context: InvocationContext): Flow<Event> = runLiveImpl(context)
+}
+
+/** A [BaseAgent] whose live work emits one event and counts its runs. */
+private class LiveTestAgent(
+  beforeAgentCallbacks: List<BeforeAgentCallback> = emptyList(),
+  afterAgentCallbacks: List<AfterAgentCallback> = emptyList(),
+) :
+  BaseAgent(
+    name = "live_agent",
+    beforeAgentCallbacks = beforeAgentCallbacks,
+    afterAgentCallbacks = afterAgentCallbacks,
+  ) {
+  var liveRuns = 0
+
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = emptyFlow()
+
+  override fun runLiveImpl(context: InvocationContext): Flow<Event> = flow {
+    liveRuns++
+    emit(Event(author = name, content = SPOKEN))
+  }
+
+  companion object {
+    val SPOKEN = modelMessage("spoken")
+  }
 }

@@ -27,6 +27,7 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Instant
 import kotlinx.serialization.json.JsonArray
@@ -49,6 +50,8 @@ internal fun Event.toDto(): SessionEventDto {
       groundingMetadata = groundingMetadata?.let { adkJson.encodeToJsonElement(it) },
       usageMetadata = usageMetadata?.let { adkJson.encodeToJsonElement(it) },
       customMetadata = customMetadata?.let { customMetadataToDto(it) },
+      inputTranscription = inputTranscription?.toWire(),
+      outputTranscription = outputTranscription?.toWire(),
     )
   val actionsDto =
     EventActionsDto(
@@ -93,9 +96,21 @@ internal fun SessionEventDto.toAdk(): Event {
     usageMetadata =
       metadata?.usageMetadata?.let { adkJson.decodeFromJsonElement<UsageMetadata>(it) },
     customMetadata = metadata?.customMetadata?.let { customMetadataFromDto(it) },
+    inputTranscription =
+      metadata?.inputTranscription?.let { adkJson.decodeFromJsonElement<Transcription>(it) },
+    outputTranscription =
+      metadata?.outputTranscription?.let { adkJson.decodeFromJsonElement<Transcription>(it) },
     timestamp = timestamp?.toEpochMillis() ?: 0L,
   )
 }
+
+/**
+ * `session.proto`'s `Transcription` has only `text` and `finished`, and Agent Engine rejects a
+ * request carrying any other key, so the rest of a [Transcription] is not sent.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun Transcription.toWire(): JsonElement =
+  adkJson.encodeToJsonElement(Transcription(text = text, finished = finished))
 
 /**
  * Serializes [content] to the Vertex wire JSON. The wire is proto3-JSON, where a `bytes` field is a

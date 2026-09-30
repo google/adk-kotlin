@@ -27,6 +27,7 @@ import com.google.genai.kotlin.types.AudioTranscriptionConfig as GenAiAudioTrans
 import com.google.genai.kotlin.types.AutomaticActivityDetection as GenAiAutomaticActivityDetection
 import com.google.genai.kotlin.types.ContextWindowCompressionConfig as GenAiContextWindowCompressionConfig
 import com.google.genai.kotlin.types.EndSensitivity as GenAiEndSensitivity
+import com.google.genai.kotlin.types.InteractionStatus as GenAiInteractionStatus
 import com.google.genai.kotlin.types.LiveConnectConfig as GenAiLiveConnectConfig
 import com.google.genai.kotlin.types.LiveServerGoAway as GenAiLiveServerGoAway
 import com.google.genai.kotlin.types.LiveServerSessionResumptionUpdate as GenAiLiveServerSessionResumptionUpdate
@@ -42,6 +43,7 @@ import com.google.genai.kotlin.types.SpeakerVoiceConfig as GenAiSpeakerVoiceConf
 import com.google.genai.kotlin.types.SpeechConfig as GenAiSpeechConfig
 import com.google.genai.kotlin.types.StartSensitivity as GenAiStartSensitivity
 import com.google.genai.kotlin.types.Transcription as GenAiTranscription
+import com.google.genai.kotlin.types.TranslationConfig as GenAiTranslationConfig
 import com.google.genai.kotlin.types.TurnCompleteReason as GenAiTurnCompleteReason
 import com.google.genai.kotlin.types.TurnCoverage as GenAiTurnCoverage
 import com.google.genai.kotlin.types.UsageMetadata as GenAiLiveUsageMetadata
@@ -325,11 +327,25 @@ internal fun GenAiProactivityConfig.fromGenaiSdk(): ProactivityConfig =
 internal fun ProactivityConfig.toGenaiSdk(): GenAiProactivityConfig =
   GenAiProactivityConfig(proactiveAudio = proactiveAudio)
 
+// --- TranslationConfig ---
+/** Converts a [GenAiTranslationConfig] from the GenAI SDK to an ADK [TranslationConfig]. */
+internal fun GenAiTranslationConfig.fromGenaiSdk(): TranslationConfig =
+  TranslationConfig(
+    targetLanguageCode = targetLanguageCode,
+    echoTargetLanguage = echoTargetLanguage,
+  )
+
+/** Converts an ADK [TranslationConfig] to a [GenAiTranslationConfig] for the GenAI SDK. */
+internal fun TranslationConfig.toGenaiSdk(): GenAiTranslationConfig =
+  GenAiTranslationConfig(
+    targetLanguageCode = targetLanguageCode,
+    echoTargetLanguage = echoTargetLanguage,
+  )
+
 // --- LiveConnectConfig ---
 /**
  * Converts a [GenAiLiveConnectConfig] from the GenAI SDK to an ADK [LiveConnectConfig]. The SDK
- * fields ADK does not mirror -- `httpOptions`, `avatarConfig`, `explicitVadSignal` and
- * `translationConfig` -- are dropped.
+ * fields ADK does not mirror, `httpOptions` and `avatarConfig`, are dropped.
  *
  * Three numbers also narrow on the way in: `temperature` and `topP` cross from the SDK's `Double?`
  * to `Float?`, and `topK` to `Int?`, which truncates toward zero rather than rounding.
@@ -355,6 +371,8 @@ internal fun GenAiLiveConnectConfig.fromGenaiSdk(): LiveConnectConfig =
     contextWindowCompression = contextWindowCompression?.fromGenaiSdk(),
     proactivity = proactivity?.fromGenaiSdk(),
     safetySettings = safetySettings?.map { it.fromGenaiSdk() },
+    explicitVadSignal = explicitVadSignal,
+    translationConfig = translationConfig?.fromGenaiSdk(),
   )
 
 /**
@@ -385,6 +403,8 @@ internal fun LiveConnectConfig.toGenaiSdk(): GenAiLiveConnectConfig =
     contextWindowCompression = contextWindowCompression?.toGenaiSdk(),
     proactivity = proactivity?.toGenaiSdk(),
     safetySettings = safetySettings?.map { it.toGenaiSdk() },
+    explicitVadSignal = explicitVadSignal,
+    translationConfig = translationConfig?.toGenaiSdk(),
   )
 
 // --- Server message types ---
@@ -399,6 +419,14 @@ internal fun GenAiVoiceActivityType.toKt(): VoiceActivityType =
 /** Converts an ADK [VoiceActivityType] to a [GenAiVoiceActivityType] for the GenAI SDK. */
 internal fun VoiceActivityType.toGenaiSdk(): GenAiVoiceActivityType =
   GenAiVoiceActivityType(this.name)
+
+/**
+ * Converts a [GenAiInteractionStatus] from the GenAI SDK to an ADK [InteractionStatus]. Unknown
+ * values map to [InteractionStatus.INTERACTION_STATUS_UNSPECIFIED].
+ */
+internal fun GenAiInteractionStatus.toKt(): InteractionStatus =
+  runCatching { InteractionStatus.valueOf(this.value) }
+    .getOrDefault(InteractionStatus.INTERACTION_STATUS_UNSPECIFIED)
 
 /**
  * Converts a [GenAiTurnCompleteReason] from the GenAI SDK to an ADK [TurnCompleteReason]. Unknown
@@ -487,9 +515,8 @@ internal fun LiveServerSessionResumptionUpdate.toGenaiSdk():
  * The two wire shapes disagree on names: the live type calls the model's own output
  * `responseTokenCount` / `responseTokensDetails` where the unary type calls it
  * `candidatesTokenCount` / `candidatesTokensDetails`. Copying by matching name would leave every
- * live token count unset, so the crossing here is deliberate, and three SDK fields are dropped:
- * `serviceTier` and `cacheTokensDetails` have no counterpart on the ADK type, and `trafficType` has
- * one that neither this converter nor the unary path populates.
+ * live token count unset, so the crossing here is deliberate, and two SDK fields are dropped:
+ * `serviceTier` and `cacheTokensDetails` have no counterpart on the ADK type.
  */
 internal fun GenAiLiveUsageMetadata.fromGenaiSdk(): UsageMetadata =
   UsageMetadata(
@@ -502,4 +529,5 @@ internal fun GenAiLiveUsageMetadata.fromGenaiSdk(): UsageMetadata =
     promptTokensDetails = promptTokensDetails?.map { it.fromGenaiSdk() },
     candidatesTokensDetails = responseTokensDetails?.map { it.fromGenaiSdk() },
     toolUsePromptTokensDetails = toolUsePromptTokensDetails?.map { it.fromGenaiSdk() },
+    trafficType = trafficType?.value,
   )

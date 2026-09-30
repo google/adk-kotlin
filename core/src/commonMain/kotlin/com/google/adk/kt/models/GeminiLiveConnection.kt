@@ -1,0 +1,551 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+@file:OptIn(ExperimentalLiveApi::class)
+
+package com.google.adk.kt.models
+
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.fromGenaiSdk
+import com.google.adk.kt.types.toGenaiSdk
+import com.google.genai.kotlin.LiveSession
+import com.google.genai.kotlin.types.ActivityEnd as GenAiActivityEnd
+import com.google.genai.kotlin.types.ActivityStart as GenAiActivityStart
+import com.google.genai.kotlin.types.Blob as GenAiBlob
+import com.google.genai.kotlin.types.Content as GenAiContent
+import com.google.genai.kotlin.types.FunctionResponse as GenAiFunctionResponse
+import com.google.genai.kotlin.types.LiveServerMessage as GenAiLiveServerMessage
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.transformWhile
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * The operations [GeminiLiveConnection] needs from an open live session.
+ *
+ * The SDK's `LiveSession` is final and can only be obtained by opening a real websocket, so the
+ * connection talks to this instead and tests supply their own implementation. It mirrors
+ * [Gemini.GeminiModels], which exists for the same reason on the unary path.
+ */
+internal interface LiveSessionHandle {
+  fun receive(): Flow<GenAiLiveServerMessage>
+
+  suspend fun sendClientContent(turns: List<GenAiContent>, turnComplete: Boolean)
+
+  suspend fun sendRealtimeInput(
+    audio: GenAiBlob? = null,
+    video: GenAiBlob? = null,
+    audioStreamEnd: Boolean? = null,
+    text: String? = null,
+    activityStart: GenAiActivityStart? = null,
+    activityEnd: GenAiActivityEnd? = null,
+  )
+
+  suspend fun sendToolResponse(functionResponses: List<GenAiFunctionResponse>)
+
+  suspend fun closeSession()
+
+  /**
+   * Drops the transport without a close frame, for when [closeSession] cannot send one.
+   *
+   * Defaults to doing nothing, which is right for a handle that owns no socket.
+   */
+  fun cancelSession() {}
+}
+
+/** The real [LiveSessionHandle], delegating to an open SDK session. */
+internal class SdkLiveSessionHandle(private val session: LiveSession) : LiveSessionHandle {
+  override fun receive(): Flow<GenAiLiveServerMessage> = session.receive()
+
+  override fun cancelSession() {
+    session.close()
+  }
+
+  override suspend fun sendClientContent(turns: List<GenAiContent>, turnComplete: Boolean) {
+    session.sendClientContent(turns = turns, turnComplete = turnComplete)
+  }
+
+  override suspend fun sendRealtimeInput(
+    audio: GenAiBlob?,
+    video: GenAiBlob?,
+    audioStreamEnd: Boolean?,
+    text: String?,
+    activityStart: GenAiActivityStart?,
+    activityEnd: GenAiActivityEnd?,
+  ) {
+    session.sendRealtimeInput(
+      audio = audio,
+      video = video,
+      audioStreamEnd = audioStreamEnd,
+      text = text,
+      activityStart = activityStart,
+      activityEnd = activityEnd,
+    )
+  }
+
+  override suspend fun sendToolResponse(functionResponses: List<GenAiFunctionResponse>) {
+    session.sendToolResponse(functionResponses)
+  }
+
+  override suspend fun closeSession() {
+    session.closeSession()
+  }
+}
+
+/**
+ * A [LiveConnection] over an open Gemini live session.
+ *
+ * Frames are mapped one at a time by [toLlmResponses]; only transcriptions, grounding and tool
+ * calls carry across frames, so streamed text arrives in the pieces the model sent.
+ *
+ * A normal close ends [receive] quietly; a socket failure throws out of it unwrapped, and a
+ * cancellation not caused by [closeSession] throws [IllegalStateException].
+ */
+@OptIn(ExperimentalAtomicApi::class)
+internal class GeminiLiveConnection(
+  private val session: LiveSessionHandle,
+  private val modelVersion: String?,
+  private val closeTimeout: Duration = CLOSE_SESSION_TIMEOUT,
+  // The collector's context; only its dispatcher is taken, so the pump keeps its own lifecycle.
+  pumpDispatcher: CoroutineContext = EmptyCoroutineContext,
+) : SingleCollectorLiveConnection() {
+
+  /** Whether this session's model is a Gemini 3.x live model; its send and flush rules differ. */
+  private val gemini3XLive = isGemini3XLive(modelVersion)
+
+  /**
+   * The id the server assigns this session, learned from the first setup-complete frame.
+   *
+   * It is stamped on every response so a consumer can attribute one to a session. It is
+   * deliberately read from the stream rather than from the session object: the SDK does not retain
+   * it.
+   */
+  private val liveSessionId = AtomicReference<String?>(null)
+
+  /** Makes [closeSession] run its teardown once. */
+  private val closed = AtomicBoolean(false)
+
+  /**
+   * Frames read off the session, buffered so a turn boundary never touches the socket.
+   *
+   * The session is read exactly once for as long as it is open, while a turn ends by this
+   * connection stopping its read of [frames]. Older genai-kotlin versions could not stop their own
+   * flow early: it caught the abort and waited for a close reason an open socket never sends, so
+   * the first completed turn would park forever.
+   */
+  // The default buffer absorbs consumer jitter; `send` suspends when full, so no frame is dropped.
+  private val frames = Channel<GenAiLiveServerMessage>(Channel.BUFFERED)
+
+  /** Scope for [pump], tied to this connection and so to the one session it wraps. */
+  private val pumpScope =
+    CoroutineScope(
+      SupervisorJob() + (pumpDispatcher[ContinuationInterceptor] ?: Dispatchers.Default)
+    )
+
+  /**
+   * Reads the session into [frames] for the lifetime of the connection.
+   *
+   * Started eagerly, so frames arriving before the first collection are buffered rather than
+   * missed, as they would be on a real socket.
+   */
+  // The lint cannot see the one-reader/serialized-writes guarantee this transport gives.
+  @Suppress("UnsafeCoroutineCrossing")
+  private val pump = pumpScope.launch {
+    try {
+      session.receive().collect { frames.send(it) }
+      frames.close()
+    } catch (e: CancellationException) {
+      if (closed.load() || !isActive) {
+        // A cancellation we asked for: close quietly so the collector sees a normal end.
+        frames.close()
+      } else {
+        // The SDK's own job was cancelled under us; the collector must not mistake it for a close.
+        frames.close(IllegalStateException("The live session ended unexpectedly.", e))
+      }
+      throw e
+    } catch (e: Throwable) {
+      // Closed WITH the cause, so the collector re-throws a real socket failure.
+      frames.close(e)
+    }
+  }
+
+  /**
+   * Input transcription chunks seen since the last flush; [outputTranscript] is its output twin.
+   *
+   * The server sends a transcription in pieces and does not reliably mark the last one, so the
+   * aggregate is rebuilt here and flushed on a signal that the turn is over. Touched only from the
+   * receive path, which the single-collector contract keeps to one coroutine at a time.
+   */
+  private var inputTranscript = StringBuilder()
+  private var outputTranscript = StringBuilder()
+
+  /**
+   * Grounding accumulated across one collection's frames, reset when the collection ends.
+   *
+   * The frame that completes a turn usually carries none of its own, so citations are carried
+   * forward to the tool-call or turn-complete response. Lives for one collection, as ADK Python
+   * keeps it local to `receive`. Touched only from the receive path, like the transcripts above.
+   */
+  private var turnGrounding: GroundingMetadata? = null
+
+  /**
+   * Before Gemini 3.x: the collection's grounding when a call first arrived, sent with the calls.
+   */
+  private var heldCallGrounding: GroundingMetadata? = null
+
+  /**
+   * Tool calls seen since the last flush, for models that expect them merged at the end of a turn.
+   * Lives for one collection, as ADK Python keeps it local to `receive`; touched only from the
+   * receive path, like the transcript aggregates above.
+   */
+  private val toolCallParts = mutableListOf<Part>()
+
+  /**
+   * Whether the server has acknowledged the session setup on this connection.
+   *
+   * Tracked separately from [liveSessionId] because a setup acknowledgement need not carry an id,
+   * so the id is not a reliable witness that the session was established.
+   */
+  private var setupAcknowledged = false
+
+  /**
+   * Ends the collection once the model completes a turn, so a caller reads one turn per collection
+   * and the connection stays open for the next one. Mirrors ADK Python's
+   * `GeminiLlmConnection.receive` (`models/gemini_llm_connection.py`), which breaks out of its
+   * receive loop immediately after yielding turn-complete.
+   *
+   * The whole frame is emitted before stopping, because a frame can carry both the turn boundary
+   * and something else - a session resumption handle, for instance - and stopping the instant
+   * turn-complete is seen would drop whatever shared it.
+   */
+  override fun responses(): Flow<LlmResponse> =
+    // Flush held calls only when the stream ends cleanly, as ADK Python does.
+    turnResponses().onCompletion { cause ->
+      // Reset per collection even if the emit throws; ADK Python keeps these local to `receive`.
+      try {
+        if (cause == null) flushToolCalls(grounding = null) { emit(it) }
+      } finally {
+        toolCallParts.clear()
+        turnGrounding = null
+        heldCallGrounding = null
+      }
+    }
+
+  /** One turn's responses: every frame up to and including the turn boundary, then the end. */
+  private fun turnResponses(): Flow<LlmResponse> =
+    frames.receiveAsFlow().transformWhile { message ->
+      message.setupComplete?.let { setup ->
+        if (!setupAcknowledged) {
+          setupAcknowledged = true
+          // Info, not debug: once per connection, and the only evidence setup happened.
+          logger.info { "Live session established on $modelVersion." }
+        }
+        setup.sessionId?.let { liveSessionId.store(it) }
+      }
+      val content = message.serverContent
+      // Any of these three ends transcription; the server does not mark the final chunk.
+      val endOfSpeech =
+        content?.interrupted == true ||
+          content?.turnComplete == true ||
+          content?.generationComplete == true
+
+      // Merged first, so whichever response carries the turn's grounding has this frame's.
+      val frameGrounding = content?.groundingMetadata?.fromGenaiSdk()
+      frameGrounding?.let { turnGrounding = mergeGroundingMetadata(turnGrounding, it) }
+
+      // Pre-3.x: hold the first call's grounding to send with the merged calls at turn end.
+      message.toolCall?.functionCalls?.let { calls ->
+        toolCallParts.addAll(calls.map { Part(functionCall = it.fromGenaiSdk()) })
+        if (!gemini3XLive) heldCallGrounding = heldCallGrounding ?: turnGrounding
+      }
+
+      var flushed = false
+      var heldInterrupted: LlmResponse? = null
+      for (response in
+        message.toLlmResponses(modelVersion = modelVersion, liveSessionId = liveSessionId.load())) {
+        // The aggregate must reach the caller before turn-complete ends the collection.
+        if (response.turnComplete == true && !flushed) {
+          flushTranscripts { emit(it) }
+          if (toolCallParts.isNotEmpty()) {
+            flushToolCalls(heldCallGrounding) { emit(it) }
+            if (heldCallGrounding != null) turnGrounding = null
+          }
+          flushed = true
+        }
+        when {
+          response.inputTranscription != null && gemini3XLive -> {
+            // A 3.x live model sends one final input transcription, never chunks to accumulate.
+            if (!response.inputTranscription.text.isNullOrEmpty())
+              emit(
+                response.copy(
+                  inputTranscription = response.inputTranscription.copy(finished = true),
+                  partial = false,
+                )
+              )
+          }
+          response.inputTranscription != null -> {
+            inputTranscript.append(response.inputTranscription.text.orEmpty())
+            // Python guards its chunk yield on text; an end marker alone is not a chunk.
+            if (!response.inputTranscription.text.isNullOrEmpty()) {
+              emit(
+                response.copy(
+                  inputTranscription = response.inputTranscription.copy(finished = false),
+                  partial = true,
+                )
+              )
+            }
+            if (response.inputTranscription.finished == true) {
+              emit(inputTranscriptResponse())
+            }
+          }
+          response.outputTranscription != null -> {
+            outputTranscript.append(response.outputTranscription.text.orEmpty())
+            if (!response.outputTranscription.text.isNullOrEmpty()) {
+              emit(
+                response.copy(
+                  outputTranscription = response.outputTranscription.copy(finished = false),
+                  partial = true,
+                )
+              )
+            }
+            if (response.outputTranscription.finished == true) {
+              emit(outputTranscriptResponse())
+            }
+          }
+          response.turnComplete == true -> {
+            // This frame's grounding, else what the turn collected; 3.x sends an empty one if none.
+            val grounding =
+              frameGrounding ?: turnGrounding ?: if (gemini3XLive) GroundingMetadata() else null
+            // Python warns when a final grounding has queries but no chunks to cite.
+            if (
+              grounding?.retrievalQueries?.isNotEmpty() == true &&
+                grounding.groundingChunks.isNullOrEmpty()
+            ) {
+              logger.warn {
+                "Grounding metadata has ${grounding.retrievalQueries.size} retrieval queries " +
+                  "but no grounding chunks."
+              }
+            }
+            emit(response.copy(groundingMetadata = grounding))
+            turnGrounding = null
+          }
+          response.interrupted == true &&
+            response.content == null &&
+            response.groundingMetadata == null &&
+            response.turnComplete != true -> {
+            // Hold only the bare interruption marker, handing it the turn's grounding; a content or
+            // grounding response carrying `interrupted` is emitted in place below.
+            heldInterrupted = response.copy(groundingMetadata = turnGrounding)
+            turnGrounding = null
+          }
+          else -> emit(response)
+        }
+      }
+      // A frame that only signals the end still has to flush.
+      if (endOfSpeech && !flushed) {
+        flushTranscripts { emit(it) }
+      }
+      // Python flushes transcripts before the interrupted response, so emit it after the flush.
+      heldInterrupted?.let { emit(it) }
+      // 3.x holds turn-complete until the call is answered: send it now, after this frame's usage.
+      if (gemini3XLive && toolCallParts.isNotEmpty()) {
+        flushToolCalls(turnGrounding) { emit(it) }
+        turnGrounding = null
+      }
+
+      content?.turnComplete != true
+    }
+
+  /**
+   * Emits the tool calls collected since the last flush as one response carrying [grounding], and
+   * clears them.
+   */
+  private suspend fun flushToolCalls(
+    grounding: GroundingMetadata?,
+    emit: suspend (LlmResponse) -> Unit,
+  ) {
+    if (toolCallParts.isEmpty()) return
+    emit(
+      LlmResponse(
+        content = Content(role = Role.MODEL, parts = toolCallParts.toList()),
+        groundingMetadata = grounding,
+        modelVersion = modelVersion,
+        liveSessionId = liveSessionId.load(),
+      )
+    )
+    toolCallParts.clear()
+  }
+
+  /** Emits the aggregated transcriptions built up since the last flush, and clears them. */
+  private suspend fun flushTranscripts(emit: suspend (LlmResponse) -> Unit) {
+    if (inputTranscript.isNotEmpty()) emit(inputTranscriptResponse())
+    if (outputTranscript.isNotEmpty()) emit(outputTranscriptResponse())
+  }
+
+  private fun inputTranscriptResponse(): LlmResponse {
+    val aggregated = inputTranscript.toString()
+    inputTranscript = StringBuilder()
+    return LlmResponse(
+      inputTranscription = Transcription(text = aggregated, finished = true),
+      partial = false,
+      modelVersion = modelVersion,
+      liveSessionId = liveSessionId.load(),
+    )
+  }
+
+  private fun outputTranscriptResponse(): LlmResponse {
+    val aggregated = outputTranscript.toString()
+    outputTranscript = StringBuilder()
+    return LlmResponse(
+      outputTranscription = Transcription(text = aggregated, finished = true),
+      partial = false,
+      modelVersion = modelVersion,
+      liveSessionId = liveSessionId.load(),
+    )
+  }
+
+  override suspend fun sendHistory(history: List<Content>) {
+    // Audio is dropped: already transcribed, and replaying it corrupts the session.
+    val contents = history.map { it.withoutAudioParts() }.filter { it.parts.isNotEmpty() }
+    if (contents.isEmpty()) {
+      logger.debug { "No history to send after dropping audio parts." }
+      return
+    }
+    // Answered only if history ends with a user-role turn (function responses are user-role too).
+    val turnComplete = contents.last().role?.equals(Role.USER, ignoreCase = true) == true
+    // No initial_history_in_client_content, so turn-complete starts the reply; a "." starts a
+    // second.
+    session.sendClientContent(contents.map { it.toGenaiSdk() }, turnComplete)
+  }
+
+  override suspend fun sendContent(content: Content, partial: Boolean) {
+    // Enforces the LiveConnection contract: invalid content throws before anything is sent.
+    val input = ContentInput(content, partial)
+    val functionResponses = input.content.parts.mapNotNull { it.functionResponse }
+    if (functionResponses.isNotEmpty()) {
+      // A content made entirely of function responses is a tool response, which has its own frame.
+      session.sendToolResponse(functionResponses.map { it.toGenaiSdk() })
+      return
+    }
+    // A partial turn must stay client content: realtime text always completes the turn.
+    val loneText = input.content.parts.singleOrNull()?.text
+    if (!input.partial && !loneText.isNullOrEmpty() && gemini3XLive) {
+      session.sendRealtimeInput(text = loneText)
+      return
+    }
+    session.sendClientContent(listOf(input.content.toGenaiSdk()), turnComplete = !input.partial)
+  }
+
+  override suspend fun sendRealtime(input: RealtimeInput) {
+    when (input) {
+      is RealtimeInput.Audio -> session.sendRealtimeInput(audio = input.blob.toGenaiSdk())
+      is RealtimeInput.Video -> session.sendRealtimeInput(video = input.blob.toGenaiSdk())
+      RealtimeInput.AudioStreamEnd -> session.sendRealtimeInput(audioStreamEnd = true)
+      RealtimeInput.ActivityStart -> session.sendRealtimeInput(activityStart = GenAiActivityStart())
+      RealtimeInput.ActivityEnd -> session.sendRealtimeInput(activityEnd = GenAiActivityEnd())
+    }
+  }
+
+  /** The observable close: the caller ended the conversation, or the run handed the agent over. */
+  // Suspends in a finally, but inside NonCancellable and with both waits bounded.
+  @Suppress("SuspendInFinally")
+  override suspend fun closeSession() {
+    // Idempotent per the LiveConnection contract: a second call is expected.
+    if (!closed.compareAndSet(false, true)) return
+    // NonCancellable: closeSession often runs while the caller is being cancelled.
+    withContext(NonCancellable) {
+      try {
+        // Bounded here rather than by the caller: this block is uninterruptible.
+        closeOrDrop(session, closeTimeout)
+      } finally {
+        // Cancelled after the session close, or the SDK reports a clean shutdown as an error.
+        pumpScope.cancel()
+        // Joined, so the postcondition is that the reader has stopped, not been asked to.
+        withTimeoutOrNull(PUMP_JOIN_TIMEOUT) { pump.join() }
+        frames.close()
+      }
+    }
+  }
+
+  internal companion object {
+    /**
+     * How long the graceful close waits for the SDK to queue and flush the close frame before the
+     * socket is dropped anyway.
+     *
+     * Generous, because flushing the close frame takes milliseconds; the peer does not acknowledge
+     * it, and the bound exists only so a stuck flush cannot make the enclosing run uncancellable.
+     */
+    private val CLOSE_SESSION_TIMEOUT = 10.seconds
+
+    /** Closes [session] within [timeout], and drops its socket if the close did not complete. */
+    internal suspend fun closeOrDrop(
+      session: LiveSessionHandle,
+      timeout: Duration = CLOSE_SESSION_TIMEOUT,
+    ) {
+      var closedGracefully = false
+      try {
+        closedGracefully =
+          withTimeoutOrNull(timeout) {
+            session.closeSession()
+            true
+          } == true
+      } finally {
+        if (!closedGracefully) {
+          // The close frame was not flushed in time, so drop the SDK's socket or it stays open.
+          logger.info { "Live session did not close cleanly; dropping the socket." }
+          session.cancelSession()
+        }
+      }
+    }
+
+    /** How long teardown waits for the reader to unwind after it has been cancelled. */
+    private val PUMP_JOIN_TIMEOUT = 5.seconds
+
+    private val logger = LoggerFactory.getLogger(GeminiLiveConnection::class)
+  }
+}
+
+/** Drops audio parts, which must not be replayed to a live session. */
+private fun Content.withoutAudioParts(): Content = copy(parts = parts.filterNot { it.isAudio() })
+
+/** Matches Python's `is_audio_part`: an `audio/` mime type on either binary field. */
+private fun Part.isAudio(): Boolean =
+  inlineData?.mimeType?.startsWith("audio/") == true ||
+    fileData?.mimeType?.startsWith("audio/") == true

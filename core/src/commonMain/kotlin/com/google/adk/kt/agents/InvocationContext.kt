@@ -236,6 +236,10 @@ data class InvocationContext(
     require(agent !is NodeViewAgent || node != null) { "A node-view agent requires its node." }
   }
 
+  /** The user's input on a live run, or `null` on a turn-based one; see [ContextFrameworkData]. */
+  internal val liveRequestQueue: LiveRequestQueue?
+    get() = frameworkData.liveRequestQueue
+
   /** Returns whether the current invocation is resumable. */
   val isResumable: Boolean
     get() = resumabilityConfig?.isResumable == true
@@ -890,7 +894,7 @@ private fun buildToolNotFoundResponse(
 /**
  * Framework-internal per-invocation data holder. Groups scratch state used by ADK's own machinery
  * and the ADK Java interop so it stays off [InvocationContext]'s public constructor. The type
- * itself needs no opt-in; its members are marked [FrameworkInternalApi].
+ * itself needs no opt-in; its public members are marked [FrameworkInternalApi].
  */
 data class ContextFrameworkData(
   /**
@@ -898,7 +902,15 @@ data class ContextFrameworkData(
    * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
    */
   @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
-)
+) {
+  /**
+   * The user's input on a live run, set by whatever opens it, and `null` on a turn-based one.
+   *
+   * A body property, so it stays off every public signature; contexts derived with
+   * [InvocationContext.copy] share this holder and so the same queue.
+   */
+  @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
+}
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

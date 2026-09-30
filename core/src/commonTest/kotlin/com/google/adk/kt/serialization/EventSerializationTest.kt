@@ -29,6 +29,8 @@ import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.PartialArg
 import com.google.adk.kt.types.PartialArgValue
@@ -36,7 +38,11 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
 import com.google.adk.kt.types.ToolType
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.TurnCompleteReason
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VoiceActivity
+import com.google.adk.kt.types.VoiceActivityType
 import com.google.adk.kt.workflow.NodeInfo
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -295,6 +301,32 @@ class EventSerializationTest {
   }
 
   @Test
+  fun event_liveSignals_roundTripLosslessly() {
+    // Room sessions keep the whole event as JSON, so the live signals must round-trip.
+    val event =
+      Event(
+        id = "evt-live",
+        invocationId = "inv-1",
+        author = "agent",
+        partial = true,
+        turnCompleteReason = TurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = InteractionStatus.IN_PROGRESS,
+        inputTranscription = Transcription(text = "hello", finished = false),
+        outputTranscription = Transcription(text = "hi there", finished = true),
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate =
+          LiveServerSessionResumptionUpdate(
+            newHandle = "handle-1",
+            resumable = true,
+            lastConsumedClientMessageIndex = 7L,
+          ),
+        voiceActivity = VoiceActivity(voiceActivityType = VoiceActivityType.ACTIVITY_START),
+      )
+
+    assertEquals(event, roundTrip(event))
+  }
+
+  @Test
   fun blobData_encodedToJson_isBase64StringNotNumberArray() {
     // A number array round-trips through this decoder just as happily as base64 does, so the wire
     // shape is the only thing that tells them apart. "AQID" is base64 for the bytes 1, 2, 3.
@@ -436,6 +468,37 @@ class EventSerializationTest {
 
     assertEquals(1730874845500L, decoded.expireTime)
     assertEquals(1730874840250L, decoded.createdAt)
+  }
+
+  @Test
+  fun event_liveSignalsInSnakeCase_decodeLikeCamelCase() {
+    // The live fields, and the types nested under them, take snake_case aliases like Event.
+    val json =
+      """{"id":"e1","author":"model","timestamp":1730874845000,""" +
+        """"input_transcription":{"text":"in","language_code":"en-US","speaker_label":"s1",""" +
+        """"words":[{"word":"in","start_offset":"0.1s","end_offset":"0.2s"}]},""" +
+        """"output_transcription":{"text":"out"},""" +
+        """"live_session_resumption_update":{"new_handle":"h","resumable":true,""" +
+        """"last_consumed_client_message_index":7},""" +
+        """"voice_activity":{"voice_activity_type":"ACTIVITY_START","audio_offset":"1.5s"},""" +
+        """"turn_complete_reason":"NEED_MORE_INPUT","interaction_status":"IN_PROGRESS",""" +
+        """"live_session_id":"live-1"}"""
+
+    val event = adkJson.decodeFromString(Event.serializer(), json)
+
+    assertEquals("in", event.inputTranscription?.text)
+    assertEquals("en-US", event.inputTranscription?.languageCode)
+    assertEquals("s1", event.inputTranscription?.speakerLabel)
+    assertEquals("0.1s", event.inputTranscription?.words?.single()?.startOffset)
+    assertEquals("0.2s", event.inputTranscription?.words?.single()?.endOffset)
+    assertEquals("out", event.outputTranscription?.text)
+    assertEquals("h", event.liveSessionResumptionUpdate?.newHandle)
+    assertEquals(7L, event.liveSessionResumptionUpdate?.lastConsumedClientMessageIndex)
+    assertEquals(VoiceActivityType.ACTIVITY_START, event.voiceActivity?.voiceActivityType)
+    assertEquals(1500L, event.voiceActivity?.audioOffset?.inWholeMilliseconds)
+    assertEquals(TurnCompleteReason.NEED_MORE_INPUT, event.turnCompleteReason)
+    assertEquals(InteractionStatus.IN_PROGRESS, event.interactionStatus)
+    assertEquals("live-1", event.liveSessionId)
   }
 
   @Test

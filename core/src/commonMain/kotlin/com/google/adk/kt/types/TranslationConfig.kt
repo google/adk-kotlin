@@ -17,21 +17,16 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonNames
 
 /**
- * A single transcribed word and where it falls in the audio.
+ * Configuration for real-time speech-to-speech translation.
  *
- * Populated only when word-level timestamps are requested via
- * [AudioTranscriptionConfig.wordTimestamp].
- *
- * @property word The transcribed word.
- * @property startOffset Offset of the word's start from the beginning of the audio.
- * @property endOffset Offset of the word's end from the beginning of the audio.
+ * @property targetLanguageCode The BCP-47 code of the language to translate into, such as `es`.
+ * @property echoTargetLanguage Whether the model still speaks when the input is already in the
+ *   target language, repeating it.
  */
 @Serializable
-data class WordInfo(
-  val word: String? = null,
-  @JsonNames("start_offset") val startOffset: String? = null,
-  @JsonNames("end_offset") val endOffset: String? = null,
+data class TranslationConfig(
+  val targetLanguageCode: String? = null,
+  val echoTargetLanguage: Boolean? = null,
 )
