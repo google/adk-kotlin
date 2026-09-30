@@ -51,7 +51,7 @@ class Firebase private constructor(override val name: String, val firebaseAI: Fi
       firebaseAI: FirebaseAI,
     ) = Firebase(name, firebaseAI)
 
-    // No-op until tracing can avoid recording sensitive request and response data.
+    // TODO: Log redacted requests and responses at trace level, as `GenaiPrompt` does.
     private fun trace(response: GenerateContentResponse) {}
 
     private fun trace(request: List<Content>) {}
