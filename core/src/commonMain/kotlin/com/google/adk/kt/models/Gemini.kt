@@ -16,12 +16,14 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.LiveConnectConfig
 import com.google.adk.kt.types.LlmConstants
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -32,10 +34,18 @@ import com.google.genai.kotlin.ClientException
 import com.google.genai.kotlin.GenAiApiException
 import com.google.genai.kotlin.types.HttpOptions
 import com.google.genai.kotlin.types.HttpRetryOptions
+import com.google.genai.kotlin.types.LiveConnectConfig as GenAiLiveConnectConfig
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.jvm.JvmOverloads
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * Implementation of [Model] that interacts with Google Gemini models using the GenAI SDK.
@@ -53,6 +63,28 @@ internal constructor(
   override val name: String,
   private val models: GeminiModels,
 ) : Model {
+
+  /**
+   * How live sessions are opened. A settable property, not a constructor parameter, because tests
+   * construct [Gemini] through its public constructors and swap this afterward. See [GeminiLive].
+   */
+  internal var live: GeminiLive = RealGeminiLive(client.live)
+
+  /**
+   * Wrapper around the GenAI SDK's live client, serving the same purpose as [GeminiModels]: the
+   * SDK's `LiveSession` is final and only obtainable by opening a real websocket, so a test that
+   * wants to see what a connect was configured with needs a seam here. It is set after construction
+   * rather than injected like [GeminiModels], because the constructors callers use do not carry it.
+   */
+  internal interface GeminiLive {
+    suspend fun connect(model: String, config: GenAiLiveConnectConfig): LiveSessionHandle
+  }
+
+  /** The real [GeminiLive], opening an actual session. */
+  private class RealGeminiLive(private val delegate: com.google.genai.kotlin.Live) : GeminiLive {
+    override suspend fun connect(model: String, config: GenAiLiveConnectConfig): LiveSessionHandle =
+      SdkLiveSessionHandle(delegate.connect(model, config))
+  }
 
   /**
    * Creates a [Gemini] from a preconfigured GenAI SDK [Client], for callers that need a custom
@@ -151,6 +183,47 @@ internal constructor(
     apiKey: String?,
     baseUrl: String,
   ) : this(Client(apiKey = apiKey, httpOptions = adkHttpOptions(baseUrl)), name)
+
+  /**
+   * Opens a live session, configured by [LlmRequest.liveConnectConfig]; a caller cancelled while it
+   * opens is released at once, and the session is closed in the background once it has opened.
+   *
+   * The request's model, when set, is connected to instead of this instance's, as in ADK Python.
+   * Reconnection and session resumption are not handled here: a dropped connection surfaces as an
+   * error out of [LiveConnection.receive] for the caller to act on.
+   */
+  @ExperimentalLiveApi
+  override suspend fun connect(request: LlmRequest): LiveConnection {
+    // Rejected before the SDK converter, whose message names no remedy and no other backend.
+    require(request.liveConnectConfig.sessionResumption?.transparent != true || client.enterprise) {
+      TRANSPARENT_RESUMPTION_REFUSED
+    }
+    // The SDK rejects this too, but only after opening the websocket, which older versions leak.
+    require(request.liveConnectConfig.explicitVadSignal != true || client.enterprise) {
+      EXPLICIT_VAD_SIGNAL_REFUSED
+    }
+    val modelName = request.model?.name ?: name
+    logger.debug { "Opening live connection to $modelName." }
+    val config = request.liveConnectConfig.carryingAgentConfig(request.config).toGenaiSdk()
+    val collector = currentCoroutineContext()[ContinuationInterceptor] ?: EmptyCoroutineContext
+    val opener = live
+    // Outside the caller's cancellation: the SDK orphans a socket whose opening is cancelled.
+    @Suppress("UnsafeCoroutineCrossing") // Only locals the caller hands over cross the scope.
+    val opening = CoroutineScope(collector).async { opener.connect(modelName, config) }
+    val handle =
+      try {
+        opening.await()
+      } catch (e: CancellationException) {
+        // Closed once it opens; cancelling the open instead is what loses the socket.
+        @Suppress("UnsafeCoroutineCrossing") // Same reason as above.
+        val unusedCloser =
+          CoroutineScope(collector).launch {
+            runCatching { GeminiLiveConnection.closeOrDrop(opening.await()) }
+          }
+        throw e
+      }
+    return GeminiLiveConnection(handle, modelVersion = modelName, pumpDispatcher = collector)
+  }
 
   @OptIn(FrameworkInternalApi::class)
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
@@ -282,6 +355,17 @@ internal constructor(
   }
 }
 
+internal const val TRANSPARENT_RESUMPTION_REFUSED =
+  "Transparent session resumption is refused unless the client is configured for the " +
+    "Gemini Enterprise Agent Platform (Vertex AI) backend; this client is configured for the " +
+    "Gemini API. Set sessionResumption.transparent to null or false, or supply a client " +
+    "configured for that backend."
+
+internal const val EXPLICIT_VAD_SIGNAL_REFUSED =
+  "explicitVadSignal = true is refused unless the client is configured for the Gemini " +
+    "Enterprise Agent Platform (Vertex AI) backend; this client is configured for the Gemini " +
+    "API. Set explicitVadSignal to null or false, or supply a client configured for that backend."
+
 private val RESOURCE_EXHAUSTED_FIX =
   """
   On how to mitigate this issue, please refer to:
@@ -390,3 +474,26 @@ internal fun List<Content>.ensureModelResponse(): List<Content> {
       )
   }
 }
+
+/**
+ * Returns this live config with the agent's own configuration folded in.
+ *
+ * The two halves of a request are assembled in different places: `LlmRequest.liveConnectConfig`
+ * carries what the run config chose, while the agent's instruction and tools live on
+ * `LlmRequest.config`; without this fold a live agent has no persona and the model is never told
+ * the tools exist.
+ */
+internal fun LiveConnectConfig.carryingAgentConfig(
+  config: GenerateContentConfig
+): LiveConnectConfig =
+  copy(
+    // The agent's instruction wins; empty rather than omitted so the field is always present.
+    systemInstruction =
+      config.systemInstruction?.copy(role = Role.SYSTEM)
+        ?: systemInstruction
+        ?: Content(role = Role.SYSTEM, parts = listOf(Part(text = ""))),
+    // Agent's tools and thinking win; the live config's own safety wins over the agent's.
+    tools = config.tools ?: tools,
+    thinkingConfig = config.thinkingConfig ?: thinkingConfig,
+    safetySettings = safetySettings ?: config.safetySettings,
+  )

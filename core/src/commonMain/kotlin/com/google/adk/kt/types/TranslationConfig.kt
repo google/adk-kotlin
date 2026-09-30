@@ -19,16 +19,14 @@ package com.google.adk.kt.types
 import kotlinx.serialization.Serializable
 
 /**
- * Configures the session resumption mechanism.
+ * Configuration for real-time speech-to-speech translation.
  *
- * Setting this asks the server to send session resumption updates over the connection.
- *
- * @property handle Resumption handle of a previous session to restore. If absent, a new session is
- *   started.
- * @property transparent Whether the server should report the last consumed client message index, so
- *   a reconnect can resume without replaying. Only honored on the Vertex backend. Setting it on a
- *   Gemini API client makes [com.google.adk.kt.models.Gemini.connect] throw
- *   [IllegalArgumentException] before a connection is opened.
+ * @property targetLanguageCode The BCP-47 code of the language to translate into, such as `es`.
+ * @property echoTargetLanguage Whether the model still speaks when the input is already in the
+ *   target language, repeating it.
  */
 @Serializable
-data class SessionResumptionConfig(val handle: String? = null, val transparent: Boolean? = null)
+data class TranslationConfig(
+  val targetLanguageCode: String? = null,
+  val echoTargetLanguage: Boolean? = null,
+)

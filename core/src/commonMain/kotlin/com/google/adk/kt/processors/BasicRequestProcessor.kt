@@ -17,9 +17,14 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.isGemini3XLive
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.LiveConnectConfig
+import com.google.adk.kt.types.Modality
 
 /**
  * A processor that handles basic information to build the LLM request.
@@ -45,6 +50,76 @@ internal class BasicRequestProcessor : LlmRequestProcessor {
         ?.let { outputSchema ->
           baseConfig.copy(responseSchema = outputSchema, responseMimeType = "application/json")
         } ?: baseConfig
-    return request.copy(model = agent.model, config = config)
+    val liveConnectConfig =
+      (context.runConfig?.let { request.liveConnectConfig.applyRunConfig(it, agent.model.name) }
+          ?: request.liveConnectConfig)
+        .foldSamplingFrom(config)
+    return request.copy(model = agent.model, config = config, liveConnectConfig = liveConnectConfig)
   }
 }
+
+/**
+ * Folds the agent's sampling settings into this live config, as ADK Python's `basic.py` does.
+ *
+ * Applied for every request, live or not; the live config's own value wins, otherwise the agent's
+ * [config] value is used.
+ */
+private fun LiveConnectConfig.foldSamplingFrom(config: GenerateContentConfig): LiveConnectConfig =
+  copy(
+    temperature = temperature ?: config.temperature,
+    topP = topP ?: config.topP,
+    topK = topK ?: config.topK,
+    maxOutputTokens = maxOutputTokens ?: config.maxOutputTokens,
+    mediaResolution = mediaResolution ?: config.mediaResolution,
+    seed = seed ?: config.seed,
+  )
+
+/**
+ * Returns this config with the connect-time settings of [runConfig] applied.
+ *
+ * Applied for every request, live or not, as ADK Python does; a non-live request simply never reads
+ * the result.
+ */
+private fun LiveConnectConfig.applyRunConfig(
+  runConfig: RunConfig,
+  modelName: String,
+): LiveConnectConfig {
+  // Gemini 3.x live rejects non-audio output, affective dialog and proactivity, so they're dropped.
+  val gemini3XLive = isGemini3XLive(modelName)
+  return copy(
+    responseModalities =
+      if (gemini3XLive) answerableModalities(runConfig.responseModalities)
+      else runConfig.responseModalities,
+    speechConfig = runConfig.speechConfig,
+    outputAudioTranscription = runConfig.outputAudioTranscription,
+    inputAudioTranscription = runConfig.inputAudioTranscription,
+    realtimeInputConfig = runConfig.realtimeInputConfig,
+    explicitVadSignal = runConfig.explicitVadSignal,
+    translationConfig = runConfig.translationConfig,
+    enableAffectiveDialog = if (gemini3XLive) null else runConfig.enableAffectiveDialog,
+    proactivity = if (gemini3XLive) null else runConfig.proactivity,
+    sessionResumption = runConfig.sessionResumption,
+    contextWindowCompression = runConfig.contextWindowCompression,
+  )
+}
+
+/**
+ * Returns the [requested] response modalities a Gemini 3.x live model can actually answer in.
+ *
+ * Audio is the only one (it is a native-audio model), while video and text remain *input*
+ * modalities, so dropping them from the response side costs a caller nothing it could have had.
+ *
+ * A `null` list passes through as no preference, and a list left empty names audio explicitly so a
+ * caller who asked only for video still gets a connection that speaks.
+ */
+private fun answerableModalities(requested: List<Modality>?): List<Modality>? {
+  if (requested == null) return null
+  val (answerable, dropped) = requested.partition { it == Modality.AUDIO }
+  if (dropped.isNotEmpty()) {
+    // Logged so a caller who asked for text can see why the answer is audio.
+    logger.info { "Gemini 3.x live answers in audio only; dropped $dropped." }
+  }
+  return answerable.ifEmpty { listOf(Modality.AUDIO) }
+}
+
+private val logger = LoggerFactory.getLogger(BasicRequestProcessor::class)
