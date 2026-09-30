@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.RealtimeInput
@@ -27,7 +28,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
-/** Covers [LiveRequest]'s construction rule: a close request carries no input. */
+/** Covers [LiveRequest]'s rule that a close request carries no input, and its builder. */
 class LiveRequestTest {
 
   @Test
@@ -65,5 +66,57 @@ class LiveRequestTest {
 
     assertNull(request.input)
     assertEquals(false, request.close)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_nothingSet_matchesConstructorDefaults() {
+    // The builder repeats the constructor's defaults, so a change to one must reach the other.
+    assertEquals(LiveRequest(), LiveRequest.builder().build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_onePropertySet_leavesTheRestAtTheirDefaults() {
+    val input = ContentInput(userMessage("hello"), partial = true)
+    val stateDelta = mapOf("key" to "value")
+
+    assertEquals(LiveRequest(input = input), LiveRequest.builder().input(input).build())
+    assertEquals(LiveRequest(close = true), LiveRequest.builder().close(true).build())
+    assertEquals(
+      LiveRequest(stateDelta = stateDelta),
+      LiveRequest.builder().stateDelta(stateDelta).build(),
+    )
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun input_nullAfterAValue_clearsIt() {
+    val builder = LiveRequest.builder().input(ContentInput(userMessage("hello")))
+
+    assertEquals(LiveRequest(), builder.input(null).build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_closeWithInput_throwsIllegalArgumentException() {
+    assertFailsWith<IllegalArgumentException> {
+      LiveRequest.builder().input(ContentInput(userMessage("last words"))).close(true).build()
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun toBuilder_matchesCopy() {
+    // A close request cannot carry input, so two instances cover every property.
+    val withInput =
+      LiveRequest(
+        input = ContentInput(userMessage("hello"), partial = true),
+        stateDelta = mapOf("key" to "value"),
+      )
+    val withClose = LiveRequest(close = true, stateDelta = mapOf("key" to "value"))
+
+    assertEquals(withInput.copy(), withInput.toBuilder().build())
+    assertEquals(withClose.copy(), withClose.toBuilder().build())
   }
 }

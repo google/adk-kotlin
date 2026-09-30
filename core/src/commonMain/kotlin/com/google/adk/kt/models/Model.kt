@@ -43,8 +43,7 @@ interface Model {
    * @throws UnsupportedOperationException if this model does not support live connections.
    */
   @ExperimentalLiveApi
-  suspend fun connect(request: LlmRequest): LiveConnection =
-    throw UnsupportedOperationException("live connections are not supported for $name")
+  suspend fun connect(request: LlmRequest): LiveConnection = throw liveConnectionsUnsupported()
 }
 
 private val PATH_PATTERNS =
@@ -78,3 +77,7 @@ private val GEMINI_2_PATTERN = Regex("^gemini-2\\..*")
  */
 internal val Model.canUseOutputSchemaWithTools: Boolean
   get() = !GEMINI_2_PATTERN.matches(shortName)
+
+/** What a model without live support throws from [Model.connect]. */
+internal fun Model.liveConnectionsUnsupported() =
+  UnsupportedOperationException("live connections are not supported for $name")

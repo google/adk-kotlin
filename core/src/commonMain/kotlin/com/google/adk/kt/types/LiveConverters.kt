@@ -27,6 +27,7 @@ import com.google.genai.kotlin.types.AudioTranscriptionConfig as GenAiAudioTrans
 import com.google.genai.kotlin.types.AutomaticActivityDetection as GenAiAutomaticActivityDetection
 import com.google.genai.kotlin.types.ContextWindowCompressionConfig as GenAiContextWindowCompressionConfig
 import com.google.genai.kotlin.types.EndSensitivity as GenAiEndSensitivity
+import com.google.genai.kotlin.types.InteractionStatus as GenAiInteractionStatus
 import com.google.genai.kotlin.types.LiveConnectConfig as GenAiLiveConnectConfig
 import com.google.genai.kotlin.types.LiveServerGoAway as GenAiLiveServerGoAway
 import com.google.genai.kotlin.types.LiveServerSessionResumptionUpdate as GenAiLiveServerSessionResumptionUpdate
@@ -401,6 +402,14 @@ internal fun VoiceActivityType.toGenaiSdk(): GenAiVoiceActivityType =
   GenAiVoiceActivityType(this.name)
 
 /**
+ * Converts a [GenAiInteractionStatus] from the GenAI SDK to an ADK [InteractionStatus]. Unknown
+ * values map to [InteractionStatus.INTERACTION_STATUS_UNSPECIFIED].
+ */
+internal fun GenAiInteractionStatus.toKt(): InteractionStatus =
+  runCatching { InteractionStatus.valueOf(this.value) }
+    .getOrDefault(InteractionStatus.INTERACTION_STATUS_UNSPECIFIED)
+
+/**
  * Converts a [GenAiTurnCompleteReason] from the GenAI SDK to an ADK [TurnCompleteReason]. Unknown
  * values map to [TurnCompleteReason.TURN_COMPLETE_REASON_UNSPECIFIED], so a reason added to the
  * wire protocol later does not fail the conversion.
@@ -487,9 +496,8 @@ internal fun LiveServerSessionResumptionUpdate.toGenaiSdk():
  * The two wire shapes disagree on names: the live type calls the model's own output
  * `responseTokenCount` / `responseTokensDetails` where the unary type calls it
  * `candidatesTokenCount` / `candidatesTokensDetails`. Copying by matching name would leave every
- * live token count unset, so the crossing here is deliberate, and three SDK fields are dropped:
- * `serviceTier` and `cacheTokensDetails` have no counterpart on the ADK type, and `trafficType` has
- * one that neither this converter nor the unary path populates.
+ * live token count unset, so the crossing here is deliberate, and two SDK fields are dropped:
+ * `serviceTier` and `cacheTokensDetails` have no counterpart on the ADK type.
  */
 internal fun GenAiLiveUsageMetadata.fromGenaiSdk(): UsageMetadata =
   UsageMetadata(
@@ -502,4 +510,5 @@ internal fun GenAiLiveUsageMetadata.fromGenaiSdk(): UsageMetadata =
     promptTokensDetails = promptTokensDetails?.map { it.fromGenaiSdk() },
     candidatesTokensDetails = responseTokensDetails?.map { it.fromGenaiSdk() },
     toolUsePromptTokensDetails = toolUsePromptTokensDetails?.map { it.fromGenaiSdk() },
+    trafficType = trafficType?.value,
   )
