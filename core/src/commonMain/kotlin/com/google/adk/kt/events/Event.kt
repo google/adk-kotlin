@@ -44,7 +44,9 @@ import kotlinx.serialization.json.JsonNames
  *
  * @property id The event id.
  * @property invocationId Id of the invocation that this event belongs to.
- * @property author The author of the event, it could be the name of the agent or "user" literal.
+ * @property author The author of the event, such as the name of the agent or node or "user";
+ *   defaults to `""` and is stamped with the workflow or node name when emitted from a workflow
+ *   node.
  * @property content The content of the event.
  * @property actions Optional actions associated with this event.
  * @property longRunningToolIds Set of ids of the long running function calls. Agent client will
@@ -75,7 +77,7 @@ data class Event(
   // Always emit: an omitted default is regenerated at decode time (a fresh random), losing the id.
   @EncodeDefault(EncodeDefault.Mode.ALWAYS) val id: String = Uuid.random(),
   @JsonNames("invocation_id") val invocationId: String? = null,
-  val author: String,
+  @EncodeDefault(EncodeDefault.Mode.ALWAYS) val author: String = "",
   val content: Content? = null,
   val actions: EventActions = EventActions(),
   @JsonNames("long_running_tool_ids") val longRunningToolIds: Set<String> = emptySet(),
@@ -216,7 +218,7 @@ data class Event(
   class Builder {
     private var id: String = Uuid.random()
     private var invocationId: String? = null
-    private var author: String? = null
+    private var author: String = ""
     private var content: Content? = null
     private var actions: EventActions = EventActions()
     private var longRunningToolIds: Set<String> = emptySet()
@@ -302,7 +304,7 @@ data class Event(
       Event(
         id = id,
         invocationId = invocationId,
-        author = checkNotNull(author) { "Event.Builder requires author to be set." },
+        author = author,
         content = content,
         actions = actions,
         longRunningToolIds = longRunningToolIds,

@@ -29,6 +29,7 @@ import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.workflow.NodeInfo
 import kotlin.test.Test
@@ -187,5 +188,21 @@ class EventTest {
 
     assertEquals(event.copy(), event.toBuilder().build())
     assertEquals(event.copy(partial = false), event.toBuilder().partial(false).build())
+  }
+
+  @Test
+  fun constructorAndBuilder_withoutAuthor_defaultsAuthorToEmptyString() {
+    // Arrange
+    val content = Content.fromText(Role.MODEL, "hi")
+
+    // Act
+    val fromConstructor = Event(content = content)
+    val fromBuilder = Event.Builder().content(content).build()
+
+    // Assert
+    assertEquals("", fromConstructor.author)
+    assertEquals(content, fromConstructor.content)
+    assertEquals("", fromBuilder.author)
+    assertEquals(content, fromBuilder.content)
   }
 }
