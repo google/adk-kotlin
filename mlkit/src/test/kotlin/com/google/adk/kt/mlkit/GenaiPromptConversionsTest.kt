@@ -37,6 +37,8 @@ import com.google.adk.kt.types.ThinkingLevel
 import com.google.common.truth.Truth.assertThat
 import com.google.mlkit.common.sdkinternal.MlKitContext
 import com.google.mlkit.genai.prompt.Candidate.FinishReason as MlKitFinishReason
+import com.google.mlkit.genai.prompt.GenerateContentRequest
+import com.google.mlkit.genai.prompt.ImagePart
 import com.google.mlkit.genai.prompt.TextPart
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -84,8 +86,9 @@ class GenaiPromptConversionsTest {
       )
 
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString).isEqualTo("Hello World\n\nAnother text")
-    assertThat(generateContentRequest.image).isNull()
+    assertThat(generateContentRequest.firstTextPart.textString)
+      .isEqualTo("Hello World\n\nAnother text")
+    assertThat(generateContentRequest.firstImagePart).isNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
@@ -124,8 +127,9 @@ class GenaiPromptConversionsTest {
           )
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString).isEqualTo("Hello World\n\nAnother text")
-    assertThat(generateContentRequest.image?.bitmap).isNotNull()
+    assertThat(generateContentRequest.firstTextPart.textString)
+      .isEqualTo("Hello World\n\nAnother text")
+    assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
@@ -147,8 +151,9 @@ class GenaiPromptConversionsTest {
           )
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString).isEqualTo("Hello World\n\nAnother text")
-    assertThat(generateContentRequest.image?.bitmap).isNotNull()
+    assertThat(generateContentRequest.firstTextPart.textString)
+      .isEqualTo("Hello World\n\nAnother text")
+    assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
@@ -165,8 +170,8 @@ class GenaiPromptConversionsTest {
           )
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString).isEmpty()
-    assertThat(generateContentRequest.image?.bitmap).isNotNull()
+    assertThat(generateContentRequest.firstTextPart.textString).isEmpty()
+    assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
@@ -186,8 +191,8 @@ class GenaiPromptConversionsTest {
           )
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString).isEmpty()
-    assertThat(generateContentRequest.image?.bitmap).isNotNull()
+    assertThat(generateContentRequest.firstTextPart.textString).isEmpty()
+    assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
@@ -208,10 +213,10 @@ class GenaiPromptConversionsTest {
           )
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.image?.bitmap).isNotNull()
-    // All images are sent; the deprecated `image` getter still returns the first one (1x1).
-    assertThat(generateContentRequest.image?.width).isEqualTo(1)
-    assertThat(generateContentRequest.image?.height).isEqualTo(1)
+    assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
+    // All images are sent; the first one is the 1x1 inline image.
+    assertThat(generateContentRequest.firstImagePart?.width).isEqualTo(1)
+    assertThat(generateContentRequest.firstImagePart?.height).isEqualTo(1)
   }
 
   @Test
@@ -232,8 +237,8 @@ class GenaiPromptConversionsTest {
           ),
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString).isEqualTo("Hello World")
-    assertThat(generateContentRequest.image).isNull()
+    assertThat(generateContentRequest.firstTextPart.textString).isEqualTo("Hello World")
+    assertThat(generateContentRequest.firstImagePart).isNull()
     assertThat(generateContentRequest.systemInstruction?.textString)
       .isEqualTo("Test system instruction\n\nAnother system instruction")
   }
@@ -267,9 +272,9 @@ class GenaiPromptConversionsTest {
           ),
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString)
+    assertThat(generateContentRequest.firstTextPart.textString)
       .isEqualTo("Test prompt prefix\n\nAnother system instruction\n\nHello World\n\nAnother text")
-    assertThat(generateContentRequest.image?.bitmap).isNotNull()
+    assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
@@ -551,8 +556,8 @@ class GenaiPromptConversionsTest {
           )
       )
     val generateContentRequest = request.toGenerateContentRequest()
-    assertThat(generateContentRequest.text.textString).isEqualTo("Hello World")
-    assertThat(generateContentRequest.image?.bitmap).isNotNull()
+    assertThat(generateContentRequest.firstTextPart.textString).isEqualTo("Hello World")
+    assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
     assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
@@ -756,3 +761,13 @@ class GenaiPromptConversionsTest {
     assertThat(systemInstruction).endsWith("\n\nBe concise.")
   }
 }
+
+/**
+ * The first text part, or an empty one; mirrors ML Kit's deprecated `GenerateContentRequest.text`.
+ */
+private val GenerateContentRequest.firstTextPart: TextPart
+  get() = contents.flatMap { it.parts }.filterIsInstance<TextPart>().firstOrNull() ?: TextPart("")
+
+/** The first image part, if any; mirrors ML Kit's deprecated `GenerateContentRequest.image`. */
+private val GenerateContentRequest.firstImagePart: ImagePart?
+  get() = contents.flatMap { it.parts }.filterIsInstance<ImagePart>().firstOrNull()
