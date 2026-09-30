@@ -18,10 +18,12 @@ package com.google.adk.firebase.models
 
 import com.google.adk.kt.types.FinishReason
 import com.google.common.truth.Truth.assertThat
+import com.google.firebase.ai.InferenceSource
 import com.google.firebase.ai.type.BlockReason
 import com.google.firebase.ai.type.GenerateContentResponse
 import com.google.firebase.ai.type.PromptFeedback
 import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.UsageMetadata
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -33,12 +35,30 @@ import org.junit.runners.JUnit4
 /**
  * Unit tests for [streamToLlmResponses], fed with canned chunk flows.
  *
- * The Firebase SDK's response and exception types can't be built or mocked here, so the error path
- * (the SDK throws mid-stream) is tested live in `FirebaseIntegrationTest`.
+ * The error path (when the SDK throws mid-stream) is tested live in `FirebaseIntegrationTest`.
  */
-@OptIn(PublicPreviewAPI::class)
 @RunWith(JUnit4::class)
 class FirebaseStreamingTest {
+
+  // The SDK keeps these constructors internal, so the tests call them reflectively.
+  @OptIn(PublicPreviewAPI::class)
+  private fun firebaseResponse(promptFeedback: PromptFeedback? = null): GenerateContentResponse =
+    GenerateContentResponse::class
+      .java
+      .getConstructor(
+        List::class.java,
+        InferenceSource::class.java,
+        PromptFeedback::class.java,
+        UsageMetadata::class.java,
+        String::class.java,
+      )
+      .newInstance(emptyList<Any>(), InferenceSource.IN_CLOUD, promptFeedback, null, null)
+
+  private fun blockedPromptFeedback(message: String): PromptFeedback =
+    PromptFeedback::class
+      .java
+      .getConstructor(BlockReason::class.java, List::class.java, String::class.java)
+      .newInstance(BlockReason.SAFETY, emptyList<Any>(), message)
 
   /** An empty chunk stream yields no responses. */
   @Test
@@ -53,12 +73,7 @@ class FirebaseStreamingTest {
    */
   @Test
   fun blockFeedbackChunk_emitsPartialThenErrorTerminal() {
-    val blocked =
-      GenerateContentResponse(
-        emptyList(),
-        PromptFeedback(BlockReason.SAFETY, emptyList(), "blocked"),
-        null,
-      )
+    val blocked = firebaseResponse(promptFeedback = blockedPromptFeedback("blocked"))
 
     val responses = runBlocking { streamToLlmResponses(flowOf(blocked)).toList() }
 
@@ -79,7 +94,7 @@ class FirebaseStreamingTest {
   /** An empty chunk yields an empty partial, then an empty, error-free final response. */
   @Test
   fun contentlessChunk_emitsPartialThenEmptyTerminal() {
-    val empty = GenerateContentResponse(emptyList(), null, null)
+    val empty = firebaseResponse()
 
     val responses = runBlocking { streamToLlmResponses(flowOf(empty)).toList() }
 

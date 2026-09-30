@@ -16,6 +16,7 @@
 
 package com.google.adk.firebase.utils
 
+import com.google.adk.kt.VERSION
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
@@ -66,6 +67,7 @@ import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.Part as FirebasePart
 import com.google.firebase.ai.type.PublicPreviewAPI
 import com.google.firebase.ai.type.RequestOptions
+import com.google.firebase.ai.type.RequestOptionsFactory
 import com.google.firebase.ai.type.ResponseModality
 import com.google.firebase.ai.type.SafetySetting as FirebaseSafetySetting
 import com.google.firebase.ai.type.Schema as FirebaseSchema
@@ -897,6 +899,11 @@ internal class Conversions {
     fun systemInstruction(): FirebaseContent? =
       request.config.systemInstruction?.let { toFirebaseContent(it) }
 
-    fun requestOptions(): RequestOptions = RequestOptions()
+    /**
+     * Tags requests with ADK's `google-adk/<version>` usage label, as Gemini does. Firebase appends
+     * it to its own `x-goog-api-client` header value.
+     */
+    fun requestOptions(): RequestOptions =
+      RequestOptionsFactory.createWithCustomHeader(RequestOptions(), "google-adk/$VERSION")
   }
 }
