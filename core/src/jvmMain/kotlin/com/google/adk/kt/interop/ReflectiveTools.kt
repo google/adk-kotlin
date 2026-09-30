@@ -191,15 +191,22 @@ object ReflectiveTools {
         }
         actual[b.index] = coerce(raw, b.type)
       }
-      return try {
-        method.invoke(instance, *actual) ?: Unit
-      } catch (e: InvocationTargetException) {
-        val cause = e.targetException ?: e
-        throw when (cause) {
-          is RuntimeException -> cause
-          is Error -> cause
-          else -> RuntimeException(cause)
+      val result =
+        try {
+          method.invoke(instance, *actual)
+        } catch (e: InvocationTargetException) {
+          val cause = e.targetException ?: e
+          throw when (cause) {
+            is RuntimeException -> cause
+            is Error -> cause
+            else -> RuntimeException(cause)
+          }
         }
+      // Match KSP @Tool: a Kotlin `Unit?` method has JVM return type Unit, not void.
+      return if (method.returnType == Void.TYPE || method.returnType == Unit::class.java) {
+        Unit
+      } else {
+        mapOf(BaseTool.RESULT_KEY to result)
       }
     }
 
