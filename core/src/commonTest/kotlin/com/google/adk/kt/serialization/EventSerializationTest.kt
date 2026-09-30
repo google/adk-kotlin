@@ -502,6 +502,24 @@ class EventSerializationTest {
     assertEquals(expected, adkJson.decodeFromJsonElement(Event.serializer(), snake))
   }
 
+  @Test
+  fun event_defaultEmptyAuthor_encodesAndRoundTripsAuthorField() {
+    // Arrange
+    val event = Event(id = "evt-default-author", content = Content.fromText(Role.MODEL, "hi"))
+    val jsonWithoutAuthor = """{"id":"evt-no-author","timestamp":1730874845934}"""
+
+    // Act
+    val encoded = adkJson.encodeToString(Event.serializer(), event)
+    val decoded = adkJson.decodeFromString(Event.serializer(), encoded)
+    val decodedWithoutAuthor = adkJson.decodeFromString(Event.serializer(), jsonWithoutAuthor)
+
+    // Assert
+    assertTrue(encoded.contains("\"author\":\"\""))
+    assertEquals("", decoded.author)
+    assertEquals(event, decoded)
+    assertEquals("", decodedWithoutAuthor.author)
+  }
+
   /** Recursively rewrites every JSON object key from camelCase to snake_case. */
   private fun camelKeysToSnakeCase(element: JsonElement): JsonElement =
     when (element) {
