@@ -409,7 +409,7 @@ class SessionRoutesTest {
   }
 
   @Test
-  fun createSession_eventWithSnakeCaseActions_isRejected() = testApplication {
+  fun createSession_eventWithUnknownActionsKey_isRejected() = testApplication {
     // Unrecognized keys are dropped on decode, so judging `actions` by the decoded value alone
     // would let this through as a 200 with the field silently discarded.
     val fakeService = FakeSessionService()
@@ -418,7 +418,7 @@ class SessionRoutesTest {
     val response =
       client.post("/apps/testApp/users/testUser/sessions") {
         jsonBody(
-          """{"events":[{"id":"e1","author":"user","actions":{"transfer_to_agent":"other"}}]}"""
+          """{"events":[{"id":"e1","author":"user","actions":{"aKeyFromANewerClient":"x"}}]}"""
         )
       }
 

@@ -60,19 +60,19 @@ import kotlinx.serialization.json.JsonNames
  */
 @Serializable
 data class EventActions(
-  var skipSummarization: Boolean = false,
+  @JsonNames("skip_summarization") var skipSummarization: Boolean = false,
   @JsonNames("state_delta")
   val stateDelta: MutableMap<String, @Contextual Any> = concurrentMutableMapOf(),
   @JsonNames("artifact_delta")
   val artifactDelta: MutableMap<String, Int> = concurrentMutableMapOf(),
-  var transferToAgent: String? = null,
+  @JsonNames("transfer_to_agent") var transferToAgent: String? = null,
   var escalate: Boolean = false,
-  var endOfAgent: Boolean = false,
+  @JsonNames("end_of_agent") var endOfAgent: Boolean = false,
   @JsonNames("requested_tool_confirmations")
   val requestedToolConfirmations: MutableMap<String, ToolConfirmation> = concurrentMutableMapOf(),
-  var rewindBeforeInvocationId: String? = null,
+  @JsonNames("rewind_before_invocation_id") var rewindBeforeInvocationId: String? = null,
   @Serializable(with = RouteListSerializer::class) var route: List<Route>? = null,
-  var agentState: TypedData? = null,
+  @JsonNames("agent_state") var agentState: TypedData? = null,
   var compaction: EventCompaction? = null,
 ) {
   /**

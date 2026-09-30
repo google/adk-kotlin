@@ -163,8 +163,8 @@ private fun Event.claimsAnAdkFunction(): Boolean =
 /**
  * Whether a raw `actions` object carries a value the server would honor. The reference servers
  * write empty `stateDelta`/`artifactDelta` maps on every event, so a `null`, `{}` or `[]` entry
- * does not count - only a real value does. Judged on the raw JSON because an unknown or
- * not-yet-aliased key would otherwise decode to the default and pass unnoticed.
+ * does not count - only a real value does. Judged on the raw JSON because an unknown key would
+ * otherwise decode to the default and pass unnoticed.
  */
 private fun JsonObject?.hasHonoredAction(): Boolean =
   this != null &&
