@@ -46,8 +46,8 @@ data class Point(val x: Int, val y: Int)
 /**
  * Stands in for a Java caller. [ReflectiveTools] reads only the [Tool]/[Param] annotations, never
  * Kotlin parameter names, so the reflection path it exercises is the same one a `.java` source
- * hits. The methods return `String` because this source is also KSP-processed under Gradle's
- * `jvmTest`.
+ * hits. The methods use return types supported by the KSP path because this source is also
+ * KSP-processed under Gradle's `jvmTest`.
  */
 class Fixture {
   var lastContext: ToolContext? = null
@@ -61,8 +61,8 @@ class Fixture {
     @Param(name = "b") b: Int,
   ): String = (a + b).toString()
 
-  @Tool(description = "Echoes the text back.")
-  fun echo(@Param(name = "text") text: String): String = text
+  @Tool(description = "Echoes the text back in a map.")
+  fun echo(@Param(name = "text") text: String): Map<String, String> = mapOf("text" to text)
 
   @Tool(description = "Reads session state.")
   fun readState(context: ToolContext): String {
@@ -102,6 +102,10 @@ class Fixture {
   @Tool(description = "Always fails.") fun boom(): String = throw IllegalStateException("boom")
 
   @Tool(description = "Returns null.") fun returnsNull(): String? = null
+
+  @Tool(description = "Returns nothing.") fun returnsVoid() {}
+
+  @Tool(description = "Returns a nullable Unit.") fun returnsNullableUnit(): Unit? = null
 
   @Tool(description = "Has an unmapped parameter type.")
   fun unmapped(@Param(name = "p") p: Point): String = p.toString()
@@ -215,14 +219,17 @@ class ReflectiveToolsTest {
   fun run_invokesMethodAndReturnsResult() = runBlocking {
     val tool = ReflectiveTools.fromMethod(fixture, "currentTime")
 
-    assertEquals("noon", tool.run(testToolContext(), emptyMap()))
+    assertEquals(mapOf("result" to "noon"), tool.run(testToolContext(), emptyMap()))
   }
 
   @Test
-  fun run_returnsValueUnwrapped() = runBlocking {
+  fun run_mapReturn_isWrappedUnderResultKey() = runBlocking {
     val tool = ReflectiveTools.fromMethod(fixture, "echo")
 
-    assertEquals("hi", tool.run(testToolContext(), mapOf("text" to "hi")))
+    assertEquals(
+      mapOf("result" to mapOf("text" to "hi")),
+      tool.run(testToolContext(), mapOf("text" to "hi")),
+    )
   }
 
   @Test
@@ -230,14 +237,17 @@ class ReflectiveToolsTest {
     val tool = ReflectiveTools.fromMethod(fixture, "addNumbers")
 
     // JSON numbers arrive as Double; the Int params must be coerced before the reflective call.
-    assertEquals("5", tool.run(testToolContext(), mapOf("a" to 2.0, "b" to 3.0)))
+    assertEquals(mapOf("result" to "5"), tool.run(testToolContext(), mapOf("a" to 2.0, "b" to 3.0)))
   }
 
   @Test
   fun run_coercesEnumFromName() = runBlocking {
     val tool = ReflectiveTools.fromMethod(fixture, "greet")
 
-    assertEquals("CASUAL", tool.run(testToolContext(), mapOf("style" to "CASUAL")))
+    assertEquals(
+      mapOf("result" to "CASUAL"),
+      tool.run(testToolContext(), mapOf("style" to "CASUAL")),
+    )
   }
 
   @Test
@@ -266,7 +276,7 @@ class ReflectiveToolsTest {
 
     val result = tool.run(context, mapOf("key" to "k"))
 
-    assertEquals("value:k", result)
+    assertEquals(mapOf("result" to "value:k"), result)
     assertSame(context, fixture.lastContext)
   }
 
@@ -279,7 +289,7 @@ class ReflectiveToolsTest {
 
     val result = tool.run(context, mapOf("key" to "k"))
 
-    assertEquals("base:k", result)
+    assertEquals(mapOf("result" to "base:k"), result)
     assertSame(context, fixture.lastContext)
   }
 
@@ -288,19 +298,36 @@ class ReflectiveToolsTest {
     val tool = ReflectiveTools.fromMethod(fixture, "scale")
 
     // JSON numbers arrive as Int/Double; Double and Float params must be coerced.
-    assertEquals("2.0:3.0", tool.run(testToolContext(), mapOf("factor" to 2, "ratio" to 3)))
+    assertEquals(
+      mapOf("result" to "2.0:3.0"),
+      tool.run(testToolContext(), mapOf("factor" to 2, "ratio" to 3)),
+    )
   }
 
   @Test
   fun run_omittedOptionalArgument_usesMethodDefault() = runBlocking {
     val tool = ReflectiveTools.fromMethod(fixture, "withOptional")
 
-    assertEquals("none", tool.run(testToolContext(), emptyMap()))
+    assertEquals(mapOf("result" to "none"), tool.run(testToolContext(), emptyMap()))
   }
 
   @Test
-  fun run_nullReturn_becomesUnit() = runBlocking {
+  fun run_nullReturn_isWrappedAsNullResult() = runBlocking {
     val tool = ReflectiveTools.fromMethod(fixture, "returnsNull")
+
+    assertEquals(mapOf("result" to null), tool.run(testToolContext(), emptyMap()))
+  }
+
+  @Test
+  fun run_voidMethod_returnsUnit() = runBlocking {
+    val tool = ReflectiveTools.fromMethod(fixture, "returnsVoid")
+
+    assertEquals(Unit, tool.run(testToolContext(), emptyMap()))
+  }
+
+  @Test
+  fun run_nullableUnitMethod_returnsUnit() = runBlocking {
+    val tool = ReflectiveTools.fromMethod(fixture, "returnsNullableUnit")
 
     assertEquals(Unit, tool.run(testToolContext(), emptyMap()))
   }
