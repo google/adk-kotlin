@@ -16,6 +16,7 @@
 
 package com.google.adk.firebase.utils
 
+import com.google.adk.kt.VERSION
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -42,6 +43,7 @@ import com.google.adk.kt.types.ToolConfig
 import com.google.adk.kt.types.ToolType
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
+import com.google.firebase.ai.InferenceSource
 import com.google.firebase.ai.type.BlockReason
 import com.google.firebase.ai.type.Content as FirebaseContent
 import com.google.firebase.ai.type.FileDataPart
@@ -56,9 +58,11 @@ import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.Part as FirebasePart
 import com.google.firebase.ai.type.PromptFeedback
 import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.ResponseModality
 import com.google.firebase.ai.type.TextPart
 import com.google.firebase.ai.type.ThinkingLevel as FirebaseThinkingLevel
+import com.google.firebase.ai.type.UsageMetadata
 import kotlin.test.assertFailsWith
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -355,13 +359,31 @@ class ConversionsTest {
       .isEqualTo("boom")
   }
 
-  /** An empty response (no candidate) is not flagged as an error. */
+  // The SDK keeps these constructors internal, so the tests call them reflectively.
   @OptIn(PublicPreviewAPI::class)
+  private fun firebaseResponse(promptFeedback: PromptFeedback? = null): GenerateContentResponse =
+    GenerateContentResponse::class
+      .java
+      .getConstructor(
+        List::class.java,
+        InferenceSource::class.java,
+        PromptFeedback::class.java,
+        UsageMetadata::class.java,
+        String::class.java,
+      )
+      .newInstance(emptyList<Any>(), InferenceSource.IN_CLOUD, promptFeedback, null, null)
+
+  private fun blockedPromptFeedback(message: String): PromptFeedback =
+    PromptFeedback::class
+      .java
+      .getConstructor(BlockReason::class.java, List::class.java, String::class.java)
+      .newInstance(BlockReason.SAFETY, emptyList<Any>(), message)
+
+  /** An empty response (no candidate) is not flagged as an error. */
   @Test
   fun convertResponse_noCandidate_hasNoError() {
     val conversions = Conversions()
-    val response =
-      GenerateContentResponse(candidates = emptyList(), promptFeedback = null, usageMetadata = null)
+    val response = firebaseResponse()
 
     val llmResponse = conversions.convertResponse(response)
 
@@ -372,16 +394,10 @@ class ConversionsTest {
   /**
    * A blocked response with no candidate derives a finish reason and error from the block reason.
    */
-  @OptIn(PublicPreviewAPI::class)
   @Test
   fun convertResponse_blockedNoCandidate_hasError() {
     val conversions = Conversions()
-    val response =
-      GenerateContentResponse(
-        candidates = emptyList(),
-        promptFeedback = PromptFeedback(BlockReason.SAFETY, emptyList(), "blocked"),
-        usageMetadata = null,
-      )
+    val response = firebaseResponse(promptFeedback = blockedPromptFeedback("blocked"))
 
     val llmResponse = conversions.convertResponse(response)
 
@@ -868,6 +884,19 @@ class ConversionsTest {
     val request = LlmRequest(config = GenerateContentConfig())
 
     assertThat(Conversions().forRequest(request).toolConfig()).isNull()
+  }
+
+  @Test
+  fun requestConverter_requestOptions_addsAdkApiClientHeader() {
+    val options = Conversions().forRequest(LlmRequest()).requestOptions()
+
+    // Read the backing field because RequestOptions keeps the custom header internal.
+    val header =
+      RequestOptions::class.java.getDeclaredField("customApiClientHeader").run {
+        isAccessible = true
+        get(options)
+      }
+    assertThat(header).isEqualTo("google-adk/$VERSION")
   }
 
   // Firebase's FunctionCallingConfig exposes no public fields to assert on, so the supported modes
