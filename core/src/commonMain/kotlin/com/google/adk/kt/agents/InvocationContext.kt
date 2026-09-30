@@ -304,7 +304,6 @@ data class InvocationContext(
   }
 
   /** Resets the state of all sub-agents of the given agent recursively. */
-  @Suppress("DEPRECATION")
   fun resetSubAgentStates(agentName: String) {
     val targetAgent = agent.findAgent(agentName) ?: return
     for (subAgent in targetAgent.subAgents) {
@@ -704,7 +703,6 @@ data class InvocationContext(
     this[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = capturedJson { toTraceJson(args) }
   }
 
-  @Suppress("DEPRECATION")
   private fun buildResponseEvent(
     tool: BaseTool,
     toolResult: Any?,
