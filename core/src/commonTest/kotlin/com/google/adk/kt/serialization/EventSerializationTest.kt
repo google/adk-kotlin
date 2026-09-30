@@ -440,9 +440,7 @@ class EventSerializationTest {
 
   @Test
   fun event_fullySnakeCase_decodesEqualToCamelCaseDecode() {
-    // Decodes a fully snake_case event across every aliased surface (event fields, actions'
-    // state/artifact deltas + compaction, usage/grounding metadata, cache_metadata, node_info) and
-    // compares to the camelCase decode; reverting the aliases drops these fields and fails this.
+    // Reverting the alias of any field set below makes the snake_case decode fail.
     val expected =
       Event(
         id = "evt-1",
@@ -451,8 +449,13 @@ class EventSerializationTest {
         content = Content(role = Role.MODEL, parts = listOf(Part(text = "hi"))),
         actions =
           EventActions(
+            skipSummarization = true,
             stateDelta = mutableMapOf("k" to "v"),
             artifactDelta = mutableMapOf("f" to 3),
+            transferToAgent = "other",
+            endOfAgent = true,
+            rewindBeforeInvocationId = "inv-0",
+            agentState = TypedData.StringValue("s"),
             compaction =
               EventCompaction(
                 startTimestamp = 1730874845000L,

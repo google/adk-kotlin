@@ -61,37 +61,9 @@ class WireAliasCoverageTest {
       "CreateSessionRequest" to CreateSessionRequest.serializer(),
     )
 
-  /**
-   * Properties that cannot carry their alias yet: static analysis rejects `@JsonNames` on a `var`,
-   * and narrowing these to `val` would break callers. The missing aliases change nothing a caller
-   * can observe: the seed-event actions check keys on the raw JSON, so any of these carrying a real
-   * value earns a 400 whatever its spelling, and an empty value decodes to the default whether or
-   * not the alias exists.
-   */
-  private val aliasRejectedByLint =
-    setOf(
-      "CreateSessionRequest.events[].actions.skipSummarization",
-      "CreateSessionRequest.events[].actions.transferToAgent",
-      "CreateSessionRequest.events[].actions.endOfAgent",
-      "CreateSessionRequest.events[].actions.rewindBeforeInvocationId",
-      "CreateSessionRequest.events[].actions.agentState",
-    )
-
   @Test
   fun everyMultiWordWireProperty_declaresItsSnakeCaseSpelling() {
-    val survey = survey()
-
-    assertThat(survey.missing.filterNot { it.substringBefore(" (needs") in aliasRejectedByLint })
-      .isEmpty()
-  }
-
-  @Test
-  fun everyPropertyLintRejects_isStillMissingItsAlias() {
-    // Guards the exemption list itself: an entry that stops being reported is stale and should go,
-    // otherwise the list quietly grows into a place where real gaps can hide.
-    val reported = survey().missing.map { it.substringBefore(" (needs") }
-
-    assertThat(reported).containsAtLeastElementsIn(aliasRejectedByLint)
+    assertThat(survey().missing).isEmpty()
   }
 
   @Test
@@ -132,7 +104,9 @@ class WireAliasCoverageTest {
 
   @Test
   fun typesTheSurveyDoesNotEnter_areTheKnownOnes() {
-    // These carry caller data or dispatch polymorphically, so they name no fields to alias.
+    // These carry caller data or dispatch polymorphically, so they name no fields to alias. Two of
+    // them are reachable only through EventActions, so this also pins that the survey gets there -
+    // the coverage assertion above would pass vacuously if it stopped.
     assertThat(survey().notEntered)
       .containsExactly(
         "kotlinx.serialization.ContextualSerializer<Any>",
