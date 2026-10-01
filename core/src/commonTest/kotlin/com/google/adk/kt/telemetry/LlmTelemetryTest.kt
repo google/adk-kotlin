@@ -33,6 +33,7 @@ import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.ThinkingConfig
+import com.google.adk.kt.types.ThinkingLevel
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -44,6 +45,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -221,6 +223,29 @@ class LlmTelemetryTest {
 
     val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
     assertEquals(2048L, span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT])
+    assertNull(span.attributes[TelemetryAttributes.GEN_AI_REQUEST_REASONING_LEVEL])
+  }
+
+  @Test
+  fun runAsync_callLlm_setsReasoningLevelFromThinkingLevel() = runBlocking {
+    val testModel =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("Hello"))),
+      )
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = testModel,
+        generateContentConfig =
+          GenerateContentConfig(thinkingConfig = ThinkingConfig(thinkingLevel = ThinkingLevel.HIGH)),
+      )
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals("HIGH", span.attributes[TelemetryAttributes.GEN_AI_REQUEST_REASONING_LEVEL])
+    assertNull(span.attributes[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT])
   }
 
   @Test

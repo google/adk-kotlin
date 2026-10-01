@@ -31,6 +31,7 @@ internal object TelemetryAttributes {
   const val GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
   const val GEN_AI_REQUEST_MAX_TOKENS = "gen_ai.request.max_tokens"
   const val GEN_AI_REQUEST_TOP_P = "gen_ai.request.top_p"
+  const val GEN_AI_REQUEST_REASONING_LEVEL = "gen_ai.request.reasoning.level"
   const val GEN_AI_RESPONSE_FINISH_REASONS = "gen_ai.response.finish_reasons"
   const val GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
   const val GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
