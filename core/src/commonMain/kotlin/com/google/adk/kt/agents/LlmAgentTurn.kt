@@ -231,7 +231,7 @@ internal class LlmAgentTurn(
           is CallbackChoice.Continue -> result.value
           is CallbackChoice.Break -> {
             modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
-            processModelResponse(request, result.value, modelResponseEvent) { emit(it) }
+            processModelResponse(request, result.value, modelResponseEvent, span) { emit(it) }
             return@tracedFlow
           }
         }
@@ -242,6 +242,7 @@ internal class LlmAgentTurn(
       // doesn't consume the budget (parity with Python ADK base_llm_flow); throwing aborts the run.
       context.incrementLlmCallsCount()
 
+      // Present even if the call emits nothing: trace consumers drop call_llm spans without it.
       span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = modelResponseEvent.id
       // Tracks the last response seen so response-derived span attributes (usage, finish reasons,
       // serialized response) reflect the final value, matching Python's single `trace_call_llm`.
@@ -270,13 +271,13 @@ internal class LlmAgentTurn(
             lastResponse = currentResponse
 
             modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
-            processModelResponse(currentRequest, currentResponse, modelResponseEvent) { event ->
+            processModelResponse(currentRequest, currentResponse, modelResponseEvent, span) {
               modelResponseEvent =
                 modelResponseEvent.copy(
                   id = Uuid.random(),
                   timestamp = Clock.System.now().toEpochMilliseconds(),
                 )
-              emit(event)
+              emit(it)
             }
           }
 
@@ -304,7 +305,9 @@ internal class LlmAgentTurn(
         if (recoveredResponse != null) {
           span.recordException(e)
           modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
-          processModelResponse(currentRequest, recoveredResponse, modelResponseEvent) { emit(it) }
+          processModelResponse(currentRequest, recoveredResponse, modelResponseEvent, span) {
+            emit(it)
+          }
         } else {
           throw e
         }
@@ -401,6 +404,7 @@ internal class LlmAgentTurn(
     request: LlmRequest,
     response: LlmResponse,
     baseEvent: Event,
+    span: Span,
     emitEvent: suspend (Event) -> Unit,
   ) {
     val callbackContext = CallbackContext(context)
@@ -413,6 +417,8 @@ internal class LlmAgentTurn(
 
     val toolsDict = getToolMap(request)
     val finalizedEvent = baseEvent.finalizeModelResponseEvent(processedResponse, toolsDict)
+    // Each emitted chunk has its own id, so the call_llm span names the last one emitted.
+    span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = finalizedEvent.id
     emitEvent(finalizedEvent)
 
     // Skip partial function call events - they should not trigger execution since partial events
