@@ -113,6 +113,27 @@ class GeminiJvmTest {
   }
 
   @Test
+  fun generateContent_transientFailure_isRetried() {
+    mockServer.enqueue(
+      MockResponse(
+        code = 503,
+        headers = Headers.headersOf("Content-Type", "application/json"),
+        body = """{"error":{"code":503,"message":"fake","status":"UNAVAILABLE"}}""",
+      )
+    )
+    mockServer.enqueue(
+      MockResponse(
+        headers = Headers.headersOf("Content-Type", "application/json"),
+        body = GENERATE_CONTENT_RESPONSE,
+      )
+    )
+
+    runBlocking { collectGenerateContent(stream = false) }
+
+    assertThat(mockServer.requestCount).isEqualTo(2)
+  }
+
+  @Test
   fun generateContent_streaming_attachesAdkTrackingHeaders() {
     // The streaming endpoint returns server-sent events ("data: <json>" terminated by a blank
     // line).
@@ -309,9 +330,8 @@ class GeminiJvmTest {
       }
 
   /**
-   * Drives a [Gemini.generateContent] flow against the mock server so the GenAI SDK issues exactly
-   * one HTTP request. Routes the API-key client at the mock server via the test-only `baseUrl`
-   * constructor, which still applies the production tracking headers.
+   * Drives a [Gemini.generateContent] flow against the mock server through the test-only `baseUrl`
+   * constructor, which applies the production HTTP options (tracking headers and retries).
    */
   private suspend fun collectGenerateContent(stream: Boolean) {
     Gemini(

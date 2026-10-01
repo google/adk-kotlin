@@ -31,6 +31,7 @@ import com.google.genai.kotlin.Client
 import com.google.genai.kotlin.ClientException
 import com.google.genai.kotlin.GenAiApiException
 import com.google.genai.kotlin.types.HttpOptions
+import com.google.genai.kotlin.types.HttpRetryOptions
 import kotlin.jvm.JvmOverloads
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -103,7 +104,9 @@ internal constructor(
   }
 
   /**
-   * Creates a [Gemini] instance using a Google AI API key for authentication.
+   * Creates a [Gemini] instance using a Google AI API key for authentication. Its client retries
+   * transient failures with the GenAI SDK's default retry options; pass your own [Client] for other
+   * retry settings.
    *
    * @param name The name of the specific Gemini model to use (e.g.,
    *   "gemini-3.1-flash-lite-preview").
@@ -114,10 +117,12 @@ internal constructor(
   constructor(
     name: String,
     apiKey: String? = null,
-  ) : this(Client(apiKey = apiKey, httpOptions = HttpOptions(headers = TRACKING_HEADERS)), name)
+  ) : this(Client(apiKey = apiKey, httpOptions = adkHttpOptions()), name)
 
   /**
-   * Creates a [Gemini] instance using Vertex AI credentials for authentication.
+   * Creates a [Gemini] instance using Vertex AI credentials for authentication. Its client retries
+   * transient failures with the GenAI SDK's default retry options; pass your own [Client] for other
+   * retry settings.
    *
    * @param name The name of the specific Gemini model to use (e.g.,
    *   "gemini-3.1-flash-lite-preview").
@@ -132,27 +137,20 @@ internal constructor(
       location = vertexCredentials.location,
       credentials = vertexCredentials.credentials?.toGenaiSdk(),
       enterprise = true,
-      httpOptions = HttpOptions(headers = TRACKING_HEADERS),
+      httpOptions = adkHttpOptions(),
     ),
     name,
   )
 
   /**
-   * Test-only constructor that targets [baseUrl] (e.g. a local server) while still applying the
-   * same ADK tracking headers the public [apiKey] constructor sets, so tests can assert those
-   * headers reach the wire.
+   * Test-only constructor that targets [baseUrl] (e.g. a local server) with the same HTTP options
+   * as the public [apiKey] constructor, so tests can check the headers and retries on the wire.
    */
   internal constructor(
     name: String,
     apiKey: String?,
     baseUrl: String,
-  ) : this(
-    Client(
-      apiKey = apiKey,
-      httpOptions = HttpOptions(baseUrl = baseUrl, headers = TRACKING_HEADERS),
-    ),
-    name,
-  )
+  ) : this(Client(apiKey = apiKey, httpOptions = adkHttpOptions(baseUrl)), name)
 
   @OptIn(FrameworkInternalApi::class)
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
@@ -252,6 +250,10 @@ internal constructor(
       val versionHeaderValue = "$frameworkLabel $languageLabel"
       mapOf("x-goog-api-client" to versionHeaderValue, "user-agent" to versionHeaderValue)
     }
+
+    // The SDK makes one attempt unless retryOptions is set; HttpRetryOptions() uses its defaults.
+    private fun adkHttpOptions(baseUrl: String? = null) =
+      HttpOptions(baseUrl = baseUrl, headers = TRACKING_HEADERS, retryOptions = HttpRetryOptions())
 
     private val logger = LoggerFactory.getLogger(Gemini::class)
   }
