@@ -320,6 +320,10 @@ internal class LlmAgentTurn(
     request.config.thinkingConfig?.thinkingBudget?.let {
       this[TelemetryAttributes.GEN_AI_USAGE_REASONING_TOKENS_LIMIT] = it.toLong()
     }
+    // OTel wants the exact string sent to the provider, which is the enum name (e.g. "HIGH").
+    request.config.thinkingConfig?.thinkingLevel?.let {
+      this[TelemetryAttributes.GEN_AI_REQUEST_REASONING_LEVEL] = it.name
+    }
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = capturedJson {
       request.toTracePayload()
     }
