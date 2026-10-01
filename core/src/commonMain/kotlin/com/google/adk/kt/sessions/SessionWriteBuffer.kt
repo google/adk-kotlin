@@ -35,17 +35,19 @@ import kotlinx.coroutines.withContext
  * Buffers the writes of many sessions until they are persisted, keeping an [OrderedEventWriter] per
  * session with writes in flight, and one lock and one coroutine scope in [context]. It orders
  * writes to shared scopes across sessions, waits for the writes a read can see, and reports failed
- * writes to flushes and to the session's next append.
+ * writes to flushes and to the session's next append. Given a [cache], it serves reads from copies
+ * it keeps in step with the writes under the same lock.
  */
 internal class SessionWriteBuffer(
   context: CoroutineContext,
   private val persist: suspend (OrderedEventWriter.Write) -> Unit,
   private val maxUnreportedFailures: Int = MAX_UNREPORTED_FAILURES,
+  private val cache: SessionCache? = null,
 ) {
   // A plain Job, so a failure a write rethrows, such as an Error, stops every write.
   private val coroutineScope = CoroutineScope(context + Job(context[Job]))
 
-  // Guards everything below, including each writer; never held while waiting for a write.
+  // Guards the cache, each writer and everything below; never held while waiting for a write.
   private val lock = Mutex()
   private var isClosed = false
   private val writerBySession = mutableMapOf<SessionKey, OrderedEventWriter>()
@@ -79,6 +81,7 @@ internal class SessionWriteBuffer(
     val previousSharedStateWrites = changedScopes.mapNotNull { lastWriteByScope[it] }
     val write = writer.write(expectedUpdateTime, snapshot, after = previousSharedStateWrites)
     for (scope in changedScopes) lastWriteByScope[scope] = write
+    cache?.append(session.key, appended, changedScopes)
     appended
   }
 
@@ -101,6 +104,36 @@ internal class SessionWriteBuffer(
         .filter { it.key.appName == appName && it.key.userId == userId }
         .mapNotNull { it.lastWrite } + lastWritesSeenBy(appName, userId)
     }
+  }
+
+  /**
+   * Returns a copy of the cached session [key], or else waits for the writes a read of it sees and
+   * reads it with [read], caching the result unless the session changed meanwhile.
+   */
+  suspend fun getOrRead(key: SessionKey, read: suspend () -> Session?): Session? {
+    if (cache == null) {
+      awaitWritesSeenBy(key)
+      return read()
+    }
+    val storeRead = lock.withLock {
+      val hit = cache.get(key)
+      if (hit != null) return hit
+      cache.startRead(key)
+    }
+    awaitWritesSeenBy(key)
+    val session = read()
+    // A read that fails or is canceled leaves its start for a later read, or for eviction.
+    lock.withLock { cache.finishRead(key, storeRead, session) }
+    return session
+  }
+
+  /**
+   * Drops the cached copies of the session [key] and of the sessions that see the [changed] scopes,
+   * whose stored copies changed in a way the cache cannot follow.
+   */
+  suspend fun dropCached(key: SessionKey, changed: Set<SharedStateScope> = emptySet()) {
+    if (cache == null) return
+    lock.withLock { cache.drop(key, changed) }
   }
 
   /**
@@ -169,7 +202,9 @@ internal class SessionWriteBuffer(
       if (writerBySession[writer.key] !== writer) return
       when (result) {
         WriteResult.Persisted -> if (writer.lastWrite === write) writerBySession.remove(writer.key)
-        is WriteResult.Failed ->
+        is WriteResult.Failed -> {
+          // Before the waiters, so none reads an event the store may lack from a copy.
+          cache?.drop(write.key)
           if (writer.key !in failureBySession) {
             failureBySession[writer.key] = result.cause
             // Once stopped, keeps every failure, so the one that stopped the buffer is reported.
@@ -177,6 +212,7 @@ internal class SessionWriteBuffer(
               forgetOldestFailure()
             }
           }
+        }
       }
     }
   }

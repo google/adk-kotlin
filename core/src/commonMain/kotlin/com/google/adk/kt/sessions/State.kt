@@ -190,6 +190,13 @@ internal sealed interface SharedStateScope {
   /** The `app:` state of [appName]. */
   data class App(val appName: String) : SharedStateScope
 
+  /** Whether the session [key] sees this scope's state. */
+  fun isSeenBy(key: SessionKey): Boolean =
+    when (this) {
+      is User -> appName == key.appName && userId == key.userId
+      is App -> appName == key.appName
+    }
+
   companion object {
     /** Returns the shared scopes that a change to [stateKeys] in the session [key] writes to. */
     fun changedBy(key: SessionKey, stateKeys: Iterable<String>): Set<SharedStateScope> = buildSet {

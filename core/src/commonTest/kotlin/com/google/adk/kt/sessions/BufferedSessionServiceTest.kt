@@ -18,7 +18,6 @@ package com.google.adk.kt.sessions
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.events.Event
-import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.retry.ExponentialBackoff
 import com.google.adk.kt.retry.RetryPolicy
 import com.google.adk.kt.runners.InMemoryRunner
@@ -26,6 +25,7 @@ import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.SessionServiceAssertions
 import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.nextEvent
 import com.google.adk.kt.testing.userMessage
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -848,9 +848,14 @@ class BufferedSessionServiceTest {
   @OptIn(AdkJavaInteropApi::class)
   @Test
   fun configToBuilder_matchesCopy() {
-    val config = BufferedSessionServiceConfig(retryPolicy = ExponentialBackoff(maxAttempts = 2))
+    val config =
+      BufferedSessionServiceConfig(
+        retryPolicy = ExponentialBackoff(maxAttempts = 2),
+        cacheConfig = SessionCacheConfig(maxSessions = 7),
+      )
 
     assertEquals(config.copy(), config.toBuilder().build())
+    assertEquals(config.copy(cacheConfig = null), config.toBuilder().cacheConfig(null).build())
   }
 
   @OptIn(AdkJavaInteropApi::class)
@@ -999,15 +1004,6 @@ class BufferedSessionServiceTest {
 
     // How many unreported failures the service keeps, as its KDoc states.
     const val KEPT_FAILURES = 1024
-
-    /** An event one millisecond after the session's last update, with [stateDelta]. */
-    fun Session.nextEvent(stateDelta: Map<String, Any> = emptyMap()): Event =
-      Event(
-        author = "agent",
-        invocationId = "inv",
-        actions = EventActions(stateDelta = stateDelta.toMutableMap()),
-        timestamp = lastUpdateTime.toEpochMilliseconds() + 1,
-      )
   }
 
   /**

@@ -97,3 +97,16 @@ data class Session(
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
 }
+
+/**
+ * Returns a copy of this session with its own state and a list of [events], which defaults to this
+ * session's; the events themselves are shared. The list is concurrent, like the default one, so a
+ * reader iterating it while an append runs does not hit a `ConcurrentModificationException`.
+ */
+internal fun Session.detachedCopy(events: List<Event> = this.events): Session =
+  Session(
+    key = key,
+    state = State(initialState = state),
+    events = concurrentMutableListOf<Event>().apply { addAll(events) },
+    lastUpdateTime = lastUpdateTime,
+  )

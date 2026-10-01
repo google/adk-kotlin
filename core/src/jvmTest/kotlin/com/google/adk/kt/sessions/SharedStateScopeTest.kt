@@ -18,6 +18,7 @@ package com.google.adk.kt.sessions
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SharedStateScopeTest {
@@ -55,6 +56,42 @@ class SharedStateScopeTest {
     val seen = SharedStateScope.seenBy(APP, USER)
 
     assertEquals(setOf(SharedStateScope.User(APP, USER), SharedStateScope.App(APP)), seen)
+  }
+
+  @Test
+  fun isSeenBy_userScope_onlyByThatUsersSessions() {
+    val scope = SharedStateScope.User(APP, USER)
+
+    assertTrue(scope.isSeenBy(KEY))
+    assertTrue(scope.isSeenBy(KEY.copy(id = "other")))
+    assertFalse(scope.isSeenBy(SessionKey(APP, "other-user", SESSION)))
+    assertFalse(scope.isSeenBy(SessionKey("other-app", USER, SESSION)))
+  }
+
+  @Test
+  fun isSeenBy_appScope_byEverySessionOfThatApp() {
+    val scope = SharedStateScope.App(APP)
+
+    assertTrue(scope.isSeenBy(KEY))
+    assertTrue(scope.isSeenBy(SessionKey(APP, "other-user", SESSION)))
+    assertFalse(scope.isSeenBy(SessionKey("other-app", USER, SESSION)))
+  }
+
+  @Test
+  fun isSeenBy_agreesWithSeenBy() {
+    val keys =
+      listOf(KEY, SessionKey(APP, "other-user", SESSION), SessionKey("other-app", USER, SESSION))
+    val scopes = keys.flatMap { SharedStateScope.seenBy(it.appName, it.userId) }.toSet()
+
+    for (key in keys) {
+      for (scope in scopes) {
+        assertEquals(
+          scope in SharedStateScope.seenBy(key.appName, key.userId),
+          scope.isSeenBy(key),
+          "$scope seen by $key",
+        )
+      }
+    }
   }
 
   private companion object {
