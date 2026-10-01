@@ -475,8 +475,18 @@ internal class LlmAgentTurn(
     return finalModelResponseEvent.copy(longRunningToolIds = longRunningIds)
   }
 
+  /**
+   * Whether this response carries nothing worth emitting as an event.
+   *
+   * An error code or grounding metadata alone still counts, as in ADK Python and Java.
+   */
   private fun LlmResponse.isEmpty(): Boolean {
-    return content == null && errorMessage == null && finishReason == null && !interrupted
+    return content == null &&
+      errorMessage == null &&
+      errorCode == null &&
+      finishReason == null &&
+      !interrupted &&
+      groundingMetadata == null
   }
 
   private fun handleActions(actionEvent: Event, tools: Map<String, BaseTool>): Flow<Event> = flow {

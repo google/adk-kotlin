@@ -23,8 +23,15 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerGoAway
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.LogprobsResult
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.TurnCompleteReason
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VoiceActivity
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
@@ -40,8 +47,8 @@ import kotlinx.serialization.json.encodeToJsonElement
  * @property usageMetadata The usage metadata of the LlmResponse.
  * @property finishReason The finish reason of the response.
  * @property errorMessage Error message if the response is an error.
- * @property partial Indicates whether the text content is part of an unfinished text stream. Only
- *   used for streaming mode and when the content is plain text.
+ * @property partial Whether this response is an incomplete fragment of a streamed response, such as
+ *   a text chunk or an unfinished transcription. Only used in streaming mode.
  * @property interrupted Flag indicating that LLM was interrupted when generating the content.
  *   Usually it's due to user interruption during a bidi streaming.
  * @property modelVersion The model version used to generate the response.
@@ -52,9 +59,24 @@ import kotlinx.serialization.json.encodeToJsonElement
  *   JSON serializable.
  * @property cacheMetadata Context cache metadata for this response, populated when context caching
  *   is enabled. `null` when caching is disabled or no cache information is available.
+ * @property turnComplete Whether the model has finished its turn. Live only.
+ * @property turnCompleteReason Why the turn ended, when it ended for a reason other than ordinary
+ *   completion. Live only.
+ * @property interactionStatus Whether the model is still working on the prompt, reported only with
+ *   [turnComplete]; see [InteractionStatus]. On a completed turn, `null` means the model does not
+ *   report it and is done. Live only.
+ * @property inputTranscription Transcription of the audio the user sent. Live only.
+ * @property outputTranscription Transcription of the audio the model returned. Live only.
+ * @property liveSessionId Identifier of the live session this response came from. Live only.
+ * @property liveSessionResumptionUpdate A handle for resuming this session on a later connection.
+ *   Live only.
+ * @property goAway Warning that the server will stop serving this connection shortly. Live only.
+ * @property voiceActivity A server-detected change in whether the user is speaking. Live only.
  */
 @Serializable
-data class LlmResponse(
+data class LlmResponse
+@JvmOverloads
+constructor(
   val content: Content? = null,
   val usageMetadata: UsageMetadata? = null,
   val finishReason: FinishReason? = null,
@@ -69,6 +91,15 @@ data class LlmResponse(
   val avgLogprobs: Double? = null,
   val logprobsResult: LogprobsResult? = null,
   val cacheMetadata: CacheMetadata? = null,
+  val turnComplete: Boolean? = null,
+  val turnCompleteReason: TurnCompleteReason? = null,
+  val interactionStatus: InteractionStatus? = null,
+  val inputTranscription: Transcription? = null,
+  val outputTranscription: Transcription? = null,
+  val liveSessionId: String? = null,
+  val liveSessionResumptionUpdate: LiveServerSessionResumptionUpdate? = null,
+  val goAway: LiveServerGoAway? = null,
+  val voiceActivity: VoiceActivity? = null,
 ) {
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
@@ -92,11 +123,21 @@ data class LlmResponse(
       .avgLogprobs(avgLogprobs)
       .logprobsResult(logprobsResult)
       .cacheMetadata(cacheMetadata)
+      .turnComplete(turnComplete)
+      .turnCompleteReason(turnCompleteReason)
+      .interactionStatus(interactionStatus)
+      .inputTranscription(inputTranscription)
+      .outputTranscription(outputTranscription)
+      .liveSessionId(liveSessionId)
+      .liveSessionResumptionUpdate(liveSessionResumptionUpdate)
+      .goAway(goAway)
+      .voiceActivity(voiceActivity)
 
   /**
    * Fluent builder for [LlmResponse], provided primarily for Java callers. Any property left unset
    * falls back to the same default as the constructor.
    */
+  @AdkJavaInteropApi
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
     private var content: Content? = null
@@ -113,6 +154,15 @@ data class LlmResponse(
     private var avgLogprobs: Double? = null
     private var logprobsResult: LogprobsResult? = null
     private var cacheMetadata: CacheMetadata? = null
+    private var turnComplete: Boolean? = null
+    private var turnCompleteReason: TurnCompleteReason? = null
+    private var interactionStatus: InteractionStatus? = null
+    private var inputTranscription: Transcription? = null
+    private var outputTranscription: Transcription? = null
+    private var liveSessionId: String? = null
+    private var liveSessionResumptionUpdate: LiveServerSessionResumptionUpdate? = null
+    private var goAway: LiveServerGoAway? = null
+    private var voiceActivity: VoiceActivity? = null
 
     fun content(content: Content?): Builder = apply { this.content = content }
 
@@ -156,6 +206,38 @@ data class LlmResponse(
       this.cacheMetadata = cacheMetadata
     }
 
+    fun turnComplete(turnComplete: Boolean?): Builder = apply { this.turnComplete = turnComplete }
+
+    fun turnCompleteReason(turnCompleteReason: TurnCompleteReason?): Builder = apply {
+      this.turnCompleteReason = turnCompleteReason
+    }
+
+    fun interactionStatus(interactionStatus: InteractionStatus?): Builder = apply {
+      this.interactionStatus = interactionStatus
+    }
+
+    fun inputTranscription(inputTranscription: Transcription?): Builder = apply {
+      this.inputTranscription = inputTranscription
+    }
+
+    fun outputTranscription(outputTranscription: Transcription?): Builder = apply {
+      this.outputTranscription = outputTranscription
+    }
+
+    fun liveSessionId(liveSessionId: String?): Builder = apply {
+      this.liveSessionId = liveSessionId
+    }
+
+    fun liveSessionResumptionUpdate(
+      liveSessionResumptionUpdate: LiveServerSessionResumptionUpdate?
+    ): Builder = apply { this.liveSessionResumptionUpdate = liveSessionResumptionUpdate }
+
+    fun goAway(goAway: LiveServerGoAway?): Builder = apply { this.goAway = goAway }
+
+    fun voiceActivity(voiceActivity: VoiceActivity?): Builder = apply {
+      this.voiceActivity = voiceActivity
+    }
+
     fun build(): LlmResponse =
       LlmResponse(
         content = content,
@@ -172,6 +254,15 @@ data class LlmResponse(
         avgLogprobs = avgLogprobs,
         logprobsResult = logprobsResult,
         cacheMetadata = cacheMetadata,
+        turnComplete = turnComplete,
+        turnCompleteReason = turnCompleteReason,
+        interactionStatus = interactionStatus,
+        inputTranscription = inputTranscription,
+        outputTranscription = outputTranscription,
+        liveSessionId = liveSessionId,
+        liveSessionResumptionUpdate = liveSessionResumptionUpdate,
+        goAway = goAway,
+        voiceActivity = voiceActivity,
       )
   }
 

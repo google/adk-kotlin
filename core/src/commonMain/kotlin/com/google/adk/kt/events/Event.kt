@@ -214,6 +214,7 @@ data class Event(
    * Fluent builder for [Event], provided primarily for Java callers. Any property left unset falls
    * back to the same default as the constructor.
    */
+  @AdkJavaInteropApi
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
     private var id: String = Uuid.random()
