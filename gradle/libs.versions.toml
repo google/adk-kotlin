@@ -16,7 +16,6 @@ clikt = "5.1.0"
 compose-compiler = "2.2.10"
 dokka = "2.2.0"
 flogger = "0.9"
-github-api = "1.330"
 google-auth = "1.48.0"
 google-cloud-bigquery = "2.68.0"
 google-cloud-storage = "2.61.0"
@@ -78,7 +77,6 @@ androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core",
 androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidx-test-ext-junit" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test-core" }
 clikt = { module = "com.github.ajalt.clikt:clikt", version.ref = "clikt" }
-github-api = { module = "org.kohsuke:github-api", version.ref = "github-api" }
 google-ai-edge-litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertlm" }
 google-ai-edge-litertlm-jvm = { module = "com.google.ai.edge.litertlm:litertlm-jvm", version.ref = "litertlm" }
 google-auth-oauth2-http = { module = "com.google.auth:google-auth-library-oauth2-http", version.ref = "google-auth" }
