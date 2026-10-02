@@ -16,18 +16,18 @@
 
 package com.google.adk.kt.tools.mcp
 
-/** Base exception for MCP tools. */
+/** Base exception for MCP tools on JVM and Android. */
 sealed class McpToolException(message: String, cause: Throwable? = null) :
   RuntimeException(message, cause) {
-  /** Exception thrown when there's an error during MCP tool declaration generated. */
+  /** Exception thrown when an MCP tool declaration cannot be generated. */
   class McpToolDeclarationException(message: String, cause: Throwable? = null) :
     McpToolException(message, cause)
 
-  /** Exception thrown when there's an error during MCP tools loading/initialization. */
+  /** Exception thrown when MCP tool discovery or initialization fails. */
   class McpToolLoadingException(message: String, cause: Throwable? = null) :
     McpToolException(message, cause)
 
-  /** Exception thrown when there's an error executing a built-in MCP tool. */
+  /** Exception thrown when an MCP tool or resource operation fails. */
   class McpToolExecutionException(message: String, cause: Throwable? = null) :
     McpToolException(message, cause)
 }
