@@ -18,6 +18,7 @@ package com.google.adk.kt.types
 
 import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
@@ -671,6 +672,37 @@ class GenaiConvertersTest {
     val convertedBack = genaiCandidate.fromGenaiSdk()
     assertEquals(adkCandidate.avgLogprobs, convertedBack.avgLogprobs)
     assertEquals(adkCandidate.logprobsResult, convertedBack.logprobsResult)
+  }
+
+  @Test
+  fun candidate_continuationToken_convertsCorrectly() {
+    val adkCandidate =
+      Candidate(
+        content = Content(role = Role.MODEL),
+        finishReason = FinishReason.CONTINUATION,
+        continuationToken = byteArrayOf(1, 2, 3),
+      )
+
+    val genaiCandidate = adkCandidate.toGenaiSdk()
+    assertEquals(
+      com.google.genai.kotlin.types.FinishReason.CONTINUATION,
+      genaiCandidate.finishReason,
+    )
+    assertContentEquals(byteArrayOf(1, 2, 3), genaiCandidate.continuationToken)
+
+    val convertedBack = genaiCandidate.fromGenaiSdk()
+    assertEquals(FinishReason.CONTINUATION, convertedBack.finishReason)
+    assertContentEquals(byteArrayOf(1, 2, 3), convertedBack.continuationToken)
+  }
+
+  @Test
+  fun generateContentConfig_continuationToken_convertsCorrectly() {
+    val adkConfig = GenerateContentConfig(continuationToken = byteArrayOf(1, 2, 3))
+
+    val genaiConfig = adkConfig.toGenaiSdk()
+    assertContentEquals(byteArrayOf(1, 2, 3), genaiConfig.continuationToken)
+
+    assertContentEquals(byteArrayOf(1, 2, 3), genaiConfig.fromGenaiSdk().continuationToken)
   }
 
   @Test

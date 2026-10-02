@@ -168,28 +168,51 @@ internal constructor(
     logger.debug { "LLM Request:\n${Json.toJsonString(buildLoggingRequestMap(finalRequest))}" }
 
     try {
+      // Loops so ADK can resume a long generation when the model pauses and returns a token.
+      val continuation = Continuation(finalRequest.contents)
+      var contents = finalRequest.contents
+      var config = finalRequest.config
       if (stream) {
         val aggregator = StreamingResponseAggregator()
 
-        models.generateContentStream(name, finalRequest.contents, finalRequest.config).collect {
-          response ->
-          logger.debug {
-            "LLM Streaming Response chunk: ${response.candidates.size} candidates, " +
-              "finishReason=${response.candidates.firstOrNull()?.finishReason}"
+        while (true) {
+          val output = StreamedOutput(continuation)
+          models.generateContentStream(name, contents, config).collect { response ->
+            logger.debug {
+              "LLM Streaming Response chunk: ${response.candidates.size} candidates, " +
+                "finishReason=${response.candidates.firstOrNull()?.finishReason}"
+            }
+            val chunk = output.record(response)
+            emit(aggregator.processResponse(LlmResponse.from(chunk)))
           }
-          emit(aggregator.processResponse(LlmResponse.from(response)))
+          val next = continuation.advance(output.token, output.parts, output.usage) ?: break
+          contents = next.contents
+          config = finalRequest.config.copy(continuationToken = next.token)
         }
 
-        // After stream loop ends, emit final aggregated response with any cache metadata attached
-        aggregator.aggregate()?.let { emit(it.copy(cacheMetadata = cacheMetadata)) }
-      } else {
-        val response = models.generateContent(name, finalRequest.contents, finalRequest.config)
-        logger.debug {
-          "LLM Response: ${response.candidates.size} candidates, " +
-            "finishReason=${response.candidates.firstOrNull()?.finishReason}"
+        // Emit the aggregated response, with usage summed over all requests and any cache metadata.
+        aggregator.aggregate()?.let {
+          emit(it.copy(usageMetadata = continuation.usage, cacheMetadata = cacheMetadata))
         }
-        val llmResponse = LlmResponse.from(response)
-        emit(llmResponse.copy(cacheMetadata = cacheMetadata))
+      } else {
+        var llmResponse: LlmResponse
+        while (true) {
+          val response = models.generateContent(name, contents, config)
+          logger.debug {
+            "LLM Response: ${response.candidates.size} candidates, " +
+              "finishReason=${response.candidates.firstOrNull()?.finishReason}"
+          }
+          llmResponse = LlmResponse.from(response)
+          val next =
+            continuation.advance(
+              response.resumeToken(),
+              llmResponse.content?.parts.orEmpty(),
+              llmResponse.usageMetadata,
+            ) ?: break
+          contents = next.contents
+          config = finalRequest.config.copy(continuationToken = next.token)
+        }
+        emit(continuation.complete(llmResponse).copy(cacheMetadata = cacheMetadata))
       }
     } catch (e: ClientException) {
       // Enhance a quota error with a pointer to the mitigation guidance, matching Python ADK.
