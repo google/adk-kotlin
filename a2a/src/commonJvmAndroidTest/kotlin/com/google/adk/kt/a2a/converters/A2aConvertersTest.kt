@@ -233,8 +233,154 @@ class A2aConvertersTest {
 
   @Test
   fun toAdk_withFilePartBytes_handlesInvalidBase64() {
-    val filePart = FilePart(FileWithBytes("text/plain", "file.txt", "invalid-base64!"))
-    assertFailsWith<IllegalArgumentException> { filePart.toAdk() }
+    assertFailsWith<IllegalArgumentException> { invalidBase64Part().toAdk() }
+  }
+
+  @Test
+  fun toAdk_withUnlabelledDataPart_returnsInlineJson() {
+    val result = DataPart(mapOf("temperature" to 25.5)).toAdk()
+
+    assertThat(result.inlineData?.mimeType).isEqualTo("text/plain")
+    assertThat(result.inlineData?.data?.decodeToString())
+      .isEqualTo("<a2a_datapart_json>{\"temperature\":25.5}</a2a_datapart_json>")
+  }
+
+  @Test
+  fun toAdk_withNonObjectData_returnsInlineJson() {
+    val result = DataPart(listOf("a", "b")).toAdk()
+
+    assertThat(result.inlineData?.data?.decodeToString())
+      .isEqualTo("<a2a_datapart_json>[\"a\",\"b\"]</a2a_datapart_json>")
+  }
+
+  @Test
+  fun messageToEvent_withUnconvertiblePart_skipsOnlyThatPart() {
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(TextPart("before"), invalidBase64Part(), TextPart("after")))
+        .build()
+
+    val result = a2aMessage.toAdkEvent(invocationContext)
+
+    assertThat(result?.content?.parts?.map { it.text }).containsExactly("before", "after").inOrder()
+  }
+
+  @Test
+  fun messageToEvent_withFunctionCallPartWithNonObjectData_skipsOnlyThatPart() {
+    val malformedCall = DataPart("not an object", mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_CALL))
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(TextPart("before"), malformedCall))
+        .build()
+
+    val result = a2aMessage.toAdkEvent(invocationContext)
+
+    assertThat(result?.content?.parts?.map { it.text }).containsExactly("before")
+  }
+
+  @Test
+  fun messageToEvent_withOnlyUnconvertibleParts_returnsNull() {
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(invalidBase64Part()))
+        .build()
+
+    assertThat(a2aMessage.toAdkEvent(invocationContext)).isNull()
+  }
+
+  @Test
+  fun clientEventToEvent_withUnconvertiblePartInStatusUpdate_skipsOnlyThatPart() {
+    val statusMessage =
+      Message.builder()
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(TextPart("thought-1"), invalidBase64Part()))
+        .build()
+    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
+    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
+
+    val result = TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)
+
+    assertThat(result?.content?.parts?.map { it.text }).containsExactly("thought-1")
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertiblePartsInWorkingStatusUpdate_returnsNull() {
+    val statusMessage =
+      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(invalidBase64Part())).build()
+    val status = TaskStatus(TaskState.TASK_STATE_WORKING, statusMessage, null)
+    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
+
+    assertThat(TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)).isNull()
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertiblePartsInFinalStatusUpdate_returnsTurnComplete() {
+    val statusMessage =
+      Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(invalidBase64Part())).build()
+    val status = TaskStatus(TaskState.TASK_STATE_COMPLETED, statusMessage, null)
+    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", null)
+
+    val result = TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)
+
+    assertThat(result?.turnComplete).isTrue()
+    assertThat(result?.partial).isFalse()
+    assertThat(result?.content).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withUnconvertiblePartBeforeLongRunningCall_keepsLongRunningId() {
+    val longRunningPart =
+      DataPart(
+        mapOf("name" to "lrTool", "id" to "call_lr", "args" to mapOf<String, Any>()),
+        mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_CALL, MetadataKeys.IS_LONG_RUNNING to true),
+      )
+    val statusMessage =
+      Message.builder()
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(invalidBase64Part(), longRunningPart))
+        .build()
+    val task =
+      Task.builder()
+        .id("task-1")
+        .contextId("context-1")
+        .status(TaskStatus(TaskState.TASK_STATE_INPUT_REQUIRED, statusMessage, null))
+        .build()
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.longRunningToolIds).containsExactly("call_lr")
+    assertThat(result.content?.parts).hasSize(1)
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertibleArtifactPart_returnsNull() {
+    val artifact =
+      Artifact.builder().artifactId("artifact-1").parts(listOf(invalidBase64Part())).build()
+    val task =
+      Task.builder()
+        .id("task-1")
+        .contextId("context-1")
+        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .build()
+    val updateEvent =
+      TaskArtifactUpdateEvent.builder()
+        .append(true)
+        .lastChunk(false)
+        .contextId("context-1")
+        .artifact(artifact)
+        .taskId("task-1")
+        .build()
+
+    assertThat(TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)).isNull()
   }
 
   @Test
@@ -264,7 +410,7 @@ class A2aConvertersTest {
 
     val result = a2aMessage.toAdkEvent(invocationContext)
     assertThat(result).isNotNull()
-    assertThat(result.author).isEqualTo("test_agent")
+    assertThat(result!!.author).isEqualTo("test_agent")
     assertThat(result.content?.role).isEqualTo("model")
     assertThat(result.content?.parts?.get(0)?.text).isEqualTo("test-message")
   }
@@ -1145,4 +1291,7 @@ class A2aConvertersTest {
   fun serializerFor_unknownType_returnsNull() {
     assertThat(serializerFor(String::class)).isNull()
   }
+
+  /** A file part whose bytes are not valid base64, so it cannot be converted. */
+  private fun invalidBase64Part() = FilePart(FileWithBytes("text/plain", "bad.txt", "!!!"))
 }
