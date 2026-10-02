@@ -283,12 +283,12 @@ class StreamingResponseAggregator {
     }
     current[pathKeys.last()] = value
   }
-
-  /**
-   * Returns whether this is the empty-text terminator Gemini 3 ends a stream with: empty text and
-   * nothing else worth keeping. Rebuilt rather than compared to a single constant, so a terminator
-   * that also carries an explicit `thought = false` is still recognised.
-   */
-  private fun Part.isStreamTerminator(): Boolean =
-    text?.isEmpty() == true && this == Part(text = "", thought = thought)
 }
+
+/**
+ * Returns whether this is the empty-text terminator Gemini 3 ends a stream with: empty text and
+ * nothing else worth keeping. Rebuilt rather than compared to a single constant, so a terminator
+ * that also carries an explicit `thought = false` is still recognised.
+ */
+internal fun Part.isStreamTerminator(): Boolean =
+  text?.isEmpty() == true && this == Part(text = "", thought = thought)

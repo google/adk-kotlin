@@ -156,6 +156,7 @@ internal fun GenAiCandidate.fromGenaiSdk(): Candidate =
     groundingMetadata = groundingMetadata?.fromGenaiSdk(),
     avgLogprobs = avgLogprobs,
     logprobsResult = logprobsResult?.fromGenaiSdk(),
+    continuationToken = continuationToken,
   )
 
 /** Converts an ADK [Candidate] to a [GenAiCandidate] for the GenAI SDK. */
@@ -168,6 +169,7 @@ internal fun Candidate.toGenaiSdk(): GenAiCandidate =
     groundingMetadata = groundingMetadata?.toGenaiSdk(),
     avgLogprobs = avgLogprobs,
     logprobsResult = logprobsResult?.toGenaiSdk(),
+    continuationToken = continuationToken,
   )
 
 // --- LogprobsResult ---
@@ -335,6 +337,7 @@ internal fun GenAiGenerateContentConfig.fromGenaiSdk(): GenerateContentConfig =
     serviceTier = serviceTier?.toKt(),
     routingConfig = routingConfig?.fromGenaiSdk(),
     cachedContent = cachedContent,
+    continuationToken = continuationToken,
   )
 
 /** Converts an ADK [GenerateContentConfig] to a [GenAiGenerateContentConfig] for the GenAI SDK. */
@@ -363,6 +366,7 @@ internal fun GenerateContentConfig.toGenaiSdk(): GenAiGenerateContentConfig =
     serviceTier = serviceTier?.toGenaiSdk(),
     routingConfig = routingConfig?.toGenaiSdk(),
     cachedContent = cachedContent,
+    continuationToken = continuationToken,
   )
 
 // --- GenerationConfigRoutingConfig ---

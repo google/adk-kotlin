@@ -83,6 +83,12 @@ enum class FinishReason {
 
   /** Image generation stopped for a reason not otherwise specified. */
   IMAGE_OTHER,
+
+  /**
+   * Token generation reached the per-request token limit before generation was complete. The
+   * candidate's continuation token resumes it; ADK's Gemini model does so automatically.
+   */
+  CONTINUATION,
 }
 
 /** Serializes [FinishReason] by name, decoding unknown values to [FinishReason.OTHER]. */
