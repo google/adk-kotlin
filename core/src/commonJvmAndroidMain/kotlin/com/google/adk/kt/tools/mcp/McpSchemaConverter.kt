@@ -18,10 +18,8 @@ package com.google.adk.kt.tools.mcp
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
-import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
-import io.modelcontextprotocol.spec.McpSchema
 
 /**
  * Converts a decoded JSON Schema map to an ADK [Schema], resolving `$ref`/`$defs`, splitting type
@@ -32,6 +30,13 @@ import io.modelcontextprotocol.spec.McpSchema
 @FrameworkInternalApi
 fun jsonSchemaToAdkSchema(schema: Map<String, Any>): Schema =
   with(McpSchemaConverter) { schema.toAdkSchema() }
+
+/**
+ * Converts a tool output JSON Schema, or `null` when it cannot be sent to Vertex (unknown types or
+ * `anyOf`).
+ */
+internal fun jsonSchemaToAdkResponseSchema(schema: Map<String, Any>): Schema? =
+  with(McpSchemaConverter) { toResponseSchema(schema) }
 
 /**
  * Converts between MCP schema types and ADK types.
@@ -85,17 +90,6 @@ internal object McpSchemaConverter {
     fun following(ref: String) = RefScope(definitions, visited + ref, remaining)
   }
 
-  /** Converts an [McpSchema.Tool] to an [FunctionDeclaration]. */
-  fun McpSchema.Tool.toAdkFunctionDeclaration(): FunctionDeclaration =
-    FunctionDeclaration(
-      name = name(),
-      description = description() ?: "",
-      parameters = inputSchema()?.toAdkSchema(),
-      // Unlike inputSchema, outputSchema reaches us as a raw JSON map, so nothing is lost before
-      // conversion.
-      response = outputSchema().safeCastToMapStringAny()?.let { toResponseSchema(it) },
-    )
-
   /**
    * Converts a tool's output schema, yielding `null` when it cannot be converted.
    *
@@ -104,7 +98,7 @@ internal object McpSchemaConverter {
    * treated this way: a parameter contract nothing could convert would leave the model calling the
    * tool against a description that was never validated.
    */
-  private fun toResponseSchema(map: Map<String, Any>): Schema? {
+  internal fun toResponseSchema(map: Map<String, Any>): Schema? {
     val converted =
       try {
         parsePropertyMap(map, 0, RefScope(map.declaredDefinitions()))

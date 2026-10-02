@@ -72,8 +72,8 @@ class McpToolsetIntegrationTest {
   }
 
   @Test
-  fun readResource_returnsServerContentEmbeddingTheInjectedToken(): Unit = runBlocking {
-    contract.readResource_returnsServerContentEmbeddingTheInjectedToken()
+  fun loadResource_returnsServerContentEmbeddingTheInjectedToken(): Unit = runBlocking {
+    contract.loadResource_returnsServerContentEmbeddingTheInjectedToken()
   }
 
   @Test
@@ -300,7 +300,9 @@ class McpToolsetIntegrationTest {
     } finally {
       // Belt-and-suspenders: never leave orphans behind, even if the guard regresses.
       toolset.close()
-      liveRecordedProcesses(pidDir).forEach { it.destroyForcibly() }
+      for (process in liveRecordedProcesses(pidDir)) {
+        process.destroyForcibly()
+      }
       pidDir.toFile().deleteRecursively()
     }
   }
