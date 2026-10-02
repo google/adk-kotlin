@@ -99,6 +99,10 @@ internal const val TYPE_FUNCTION_CALL = "function_call"
 internal const val TYPE_FUNCTION_RESPONSE = "function_response"
 internal const val DEFAULT_ERROR_MESSAGE = "A2A task failed"
 
+// Wrap a DataPart carried as an inline text blob; the other ADK ports use the same tags.
+private const val DATA_PART_START_TAG = "<a2a_datapart_json>"
+private const val DATA_PART_END_TAG = "</a2a_datapart_json>"
+
 /** Converts a A2A [ClientEvent] to an ADK [Event]. */
 internal fun ClientEvent.toAdkEvent(invocationContext: InvocationContext): Event? {
   return when (this) {
@@ -156,25 +160,30 @@ internal fun ClientEvent.isCompleted(): Boolean {
 
 /** Converts an artifact to an ADK event. */
 internal fun Artifact.toAdkEvent(invocationContext: InvocationContext): Event {
-  val adkParts = parts().toAdk()
+  val converted = parts().convertParts()
   return remoteAgentEvent(invocationContext)
     .copy(
-      content = Content(role = Role.MODEL, parts = adkParts),
-      longRunningToolIds = longRunningToolIds(parts(), adkParts),
+      content = Content(role = Role.MODEL, parts = converted.parts),
+      longRunningToolIds = converted.longRunningToolIds,
     )
 }
 
-/** Converts an A2A message back to ADK events. */
-internal fun Message.toAdkEvent(invocationContext: InvocationContext): Event {
+/** Converts an A2A message to an ADK event, or returns null if none of its parts converted. */
+internal fun Message.toAdkEvent(invocationContext: InvocationContext): Event? {
   val adkParts = parts.toAdk()
+  if (adkParts.isEmpty()) return null
   val event =
     remoteAgentEvent(invocationContext).copy(content = Content(role = Role.MODEL, parts = adkParts))
   return event.updateEventMetadata(metadata, taskId, contextId, metadataParser)
 }
 
-/** Converts an A2A message back to ADK events with thought marking. */
-internal fun Message.toAdkEvent(invocationContext: InvocationContext, isPending: Boolean): Event {
+/**
+ * Converts an A2A message to an ADK event with thought marking, or returns null if none of its
+ * parts converted.
+ */
+internal fun Message.toAdkEvent(invocationContext: InvocationContext, isPending: Boolean): Event? {
   val adkParts = parts.toAdk().map { it.copy(thought = isPending) }
+  if (adkParts.isEmpty()) return null
   return remoteAgentEvent(invocationContext)
     .copy(content = Content(role = Role.MODEL, parts = adkParts))
 }
@@ -185,15 +194,16 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
   val longRunningToolIds = mutableSetOf<String>()
 
   for (artifact in artifacts.orEmpty()) {
-    val converted = artifact.parts().toAdk()
-    longRunningToolIds.addAll(longRunningToolIds(artifact.parts(), converted))
-    adkParts.addAll(converted)
+    val converted = artifact.parts().convertParts()
+    longRunningToolIds.addAll(converted.longRunningToolIds)
+    adkParts.addAll(converted.parts)
   }
 
   var errorMessage: String? = null
   status.message()?.let { msg ->
-    val msgParts = msg.parts.toAdk()
-    longRunningToolIds.addAll(longRunningToolIds(msg.parts, msgParts))
+    val converted = msg.parts.convertParts()
+    val msgParts = converted.parts
+    longRunningToolIds.addAll(converted.longRunningToolIds)
     if (
       status.state() == TaskState.TASK_STATE_FAILED &&
         msgParts.size == 1 &&
@@ -218,8 +228,7 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
       .copy(
         content = if (adkParts.isNotEmpty()) Content(role = Role.MODEL, parts = adkParts) else null,
         longRunningToolIds =
-          if (status.state().isInterruptedState()) longRunningToolIds
-          else emptySet(),
+          if (status.state().isInterruptedState()) longRunningToolIds else emptySet(),
         turnComplete = isFinal,
         errorMessage = errorMessage,
       )
@@ -252,8 +261,38 @@ internal fun A2APart<*>.toAdk(): Part {
   }
 }
 
-/** Converts a list of A2A Parts to a list of ADK Parts. */
-internal fun List<A2APart<*>>.toAdk(): List<Part> = map { it.toAdk() }
+/** Converts a list of A2A Parts to a list of ADK Parts, skipping any that cannot be converted. */
+internal fun List<A2APart<*>>.toAdk(): List<Part> = convertParts().parts
+
+/** ADK parts converted from A2A parts, and the ids of the long-running calls among them. */
+private data class ConvertedParts(val parts: List<Part>, val longRunningToolIds: Set<String>)
+
+/**
+ * Converts peer-supplied parts, skipping any part that cannot be converted so that one malformed
+ * part does not fail the whole event.
+ */
+private fun List<A2APart<*>>.convertParts(): ConvertedParts {
+  val parts = mutableListOf<Part>()
+  val longRunningToolIds = mutableSetOf<String>()
+  for (a2aPart in this) {
+    val part =
+      try {
+        a2aPart.toAdk()
+      } catch (e: Exception) {
+        // The exception message can quote the peer's bytes, so log only the types.
+        logger.warn(
+          "Skipping A2A part that could not be converted: " +
+            "${a2aPart::class.simpleName} (${e::class.simpleName})"
+        )
+        continue
+      }
+    parts += part
+    if (a2aPart is DataPart && a2aPart.metadata?.get(MetadataKeys.IS_LONG_RUNNING) == true) {
+      part.functionCall?.id?.let { longRunningToolIds += it }
+    }
+  }
+  return ConvertedParts(parts, longRunningToolIds)
+}
 
 private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
   return when (val update = updateEvent) {
@@ -312,29 +351,14 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
   }
 }
 
-private fun longRunningToolIds(
-  a2aParts: List<org.a2aproject.sdk.spec.Part<*>>,
-  adkParts: List<Part>,
-): Set<String> {
-  return a2aParts
-    .zip(adkParts)
-    .filter { (a2aPart, _) ->
-      a2aPart is DataPart && a2aPart.metadata?.get(MetadataKeys.IS_LONG_RUNNING) == true
-    }
-    .mapNotNull { (_, adkPart) -> adkPart.functionCall?.id }
-    .toSet()
-}
-
 // Converts a DataPart to an ADK Part.
 // Note: We use coerceToMap for arguments and response to handle cases where the data
 // is received as a string or non-map type, matching Java behavior.
 private fun DataPart.toAdk(): Part {
   val type = metadata?.get(MetadataKeys.TYPE) as? String
-  // In A2A v1.0, DataPart.data is typed as Object (it may hold any JSON value). For ADK function
-  // call/response parts the payload is always a JSON object, so coerce it to a map here.
-  @Suppress("UNCHECKED_CAST") val dataMap = data as Map<String, Any?>
   return when (type) {
     TYPE_FUNCTION_CALL -> {
+      val dataMap = dataAsMap()
       val coercedData = dataMap.toMutableMap()
       coercedData["args"] = coerceToMap(dataMap["args"])
       val fc =
@@ -342,14 +366,35 @@ private fun DataPart.toAdk(): Part {
       Part(functionCall = fc)
     }
     TYPE_FUNCTION_RESPONSE -> {
+      val dataMap = dataAsMap()
       val coercedData = dataMap.toMutableMap()
       coercedData["response"] = coerceToMap(dataMap["response"])
       val fr =
         adkJson.decodeFromJsonElement(FunctionResponse.serializer(), anyToJsonElement(coercedData))
       Part(functionResponse = fr)
     }
-    else -> throw IllegalArgumentException("Unsupported A2A DataPart type: $type")
+    else -> toInlineJsonPart()
   }
+}
+
+// In A2A v1.0, DataPart.data may hold any JSON value; ADK function call and response payloads are
+// JSON objects, so any other value fails this cast.
+@Suppress("UNCHECKED_CAST")
+private fun DataPart.dataAsMap(): Map<String, Any?> = data as Map<String, Any?>
+
+/**
+ * Carries a DataPart with no matching ADK part type as inline JSON of its data, as ADK Python and
+ * Go do for A2A 1.x.
+ */
+private fun DataPart.toInlineJsonPart(): Part {
+  val json = adkJson.encodeToString(JsonElement.serializer(), anyToJsonElement(data))
+  return Part(
+    inlineData =
+      Blob(
+        mimeType = "text/plain",
+        data = "$DATA_PART_START_TAG$json$DATA_PART_END_TAG".encodeToByteArray(),
+      )
+  )
 }
 
 private fun Map<String, Any?>?.isPartial() = this?.get(MetadataKeys.PARTIAL) == true
