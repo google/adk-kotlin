@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.3.0](https://github.com/google/adk-kotlin/compare/v1.2.0...v1.3.0) (2026-10-02)
+
+
+### Features
+
+* **core:** add @ExperimentalLiveApi opt-in marker ([bd44d44](https://github.com/google/adk-kotlin/commit/bd44d44dcc54f86de7b1380314d57b8d5e1935c5))
+* default Event.author to an empty string ([c6dfd80](https://github.com/google/adk-kotlin/commit/c6dfd808c1b2ad58596c175bae9a369ac657ad49))
+* resume Gemini generations paused with a continuation token ([4247201](https://github.com/google/adk-kotlin/commit/424720157dbc61aa58e35d97d27c55cb35db3db9))
+* retry transient failures in the clients Gemini builds ([d1146cc](https://github.com/google/adk-kotlin/commit/d1146cc99c407500a5c9aeebe9c174d1dd2f8ce7))
+
+
+### Bug Fixes
+
+* accept snake_case spellings for every EventActions property ([296ac5c](https://github.com/google/adk-kotlin/commit/296ac5c9f90400b9c9ed86f31b11a8ee664c32b4))
+* **core:** keep one event id across the chunks of a streamed reply ([a320392](https://github.com/google/adk-kotlin/commit/a32039273cd6313c436509027f67833ed6e9df2f))
+* keep a differently cased user turn out of the context cache ([4322839](https://github.com/google/adk-kotlin/commit/4322839cbd9cd835d8f77f1d1df0fde1a5e6cfbe))
+* never send empty contents after applying a context cache ([5fb949c](https://github.com/google/adk-kotlin/commit/5fb949c35357e9582bacbe217635fdec10becb47))
+* record the last emitted model event id on the call_llm span ([efd571b](https://github.com/google/adk-kotlin/commit/efd571b4700cf23ea82de78e5d0d4fc4f2a8b670))
+* record the thinking level on the call_llm telemetry span ([9206972](https://github.com/google/adk-kotlin/commit/92069722a950b60a964179f12bdb23850aa9fe7e))
+* use the server-reported context cache expiry ([6d9a622](https://github.com/google/adk-kotlin/commit/6d9a6223d6a8209e394c6ba68eba475f38503fb1))
+* wrap ReflectiveTools results under "result" to match KSP @Tool tools ([87e1030](https://github.com/google/adk-kotlin/commit/87e10302055fd2a3f9de32bc542d97ab4bf7fd42))
+
+
+### Reverts
+
+* keep one generated id per streamed function call ([75b6298](https://github.com/google/adk-kotlin/commit/75b6298a9a6f748dba5de09482d902c987047a9f))
+
 ## [1.2.0](https://github.com/google/adk-kotlin/compare/v1.1.0...v1.2.0) (2026-09-28)
 
 
