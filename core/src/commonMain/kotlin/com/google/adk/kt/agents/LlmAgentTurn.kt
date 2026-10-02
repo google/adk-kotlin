@@ -274,7 +274,8 @@ internal class LlmAgentTurn(
             processModelResponse(currentRequest, currentResponse, modelResponseEvent, span) {
               modelResponseEvent =
                 modelResponseEvent.copy(
-                  id = Uuid.random(),
+                  // A streamed reply keeps one id until its complete event, as in ADK Python.
+                  id = if (it.partial) modelResponseEvent.id else Uuid.random(),
                   timestamp = Clock.System.now().toEpochMilliseconds(),
                 )
               emit(it)
@@ -417,7 +418,7 @@ internal class LlmAgentTurn(
 
     val toolsDict = getToolMap(request)
     val finalizedEvent = baseEvent.finalizeModelResponseEvent(processedResponse, toolsDict)
-    // Each emitted chunk has its own id, so the call_llm span names the last one emitted.
+    // Last write wins, so a trace lookup by the last saved event's id finds this span.
     span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = finalizedEvent.id
     emitEvent(finalizedEvent)
 

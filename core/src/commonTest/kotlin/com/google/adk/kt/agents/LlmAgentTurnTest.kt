@@ -27,6 +27,7 @@ import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
@@ -37,6 +38,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -196,5 +198,92 @@ class LlmAgentTurnTest {
     assertEquals("ab", modelEvents[2].actions.stateDelta["output"])
     assertNull(modelEvents[0].actions.stateDelta["output"])
     assertNull(modelEvents[1].actions.stateDelta["output"])
+  }
+
+  @Test
+  fun runAsync_streamingSteps_shareOneEventIdPerModelResponse() = runBlocking {
+    // Clients such as the Dev UI replace a reply's streamed rows with its complete event by id.
+    val call = FunctionCall(name = "lookup", id = "call_1")
+    val streamingModel =
+      DummyModel(
+        "streaming-model",
+        listOf(
+          flowOf(
+            LlmResponse(
+              content = Content(Role.MODEL, listOf(Part(functionCall = call))),
+              partial = true,
+            ),
+            LlmResponse(content = Content(Role.MODEL, listOf(Part(functionCall = call)))),
+          ),
+          flowOf(
+            LlmResponse(content = modelMessage("a"), partial = true),
+            LlmResponse(content = modelMessage("b"), partial = true),
+            LlmResponse(content = modelMessage("ab")),
+          ),
+        ),
+      )
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = streamingModel,
+        tools = listOf(DummyTool(name = "lookup")),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    val events =
+      runner
+        .runAsync(
+          userId = "user1",
+          sessionId = "session1",
+          newMessage = userMessage("hi"),
+          runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+        )
+        .toList()
+        .filter { it.author == "test-agent" }
+
+    val callIds = events.filter { it.functionCalls().isNotEmpty() }.map { it.id }
+    val responseIds = events.filter { it.functionResponses().isNotEmpty() }.map { it.id }
+    val textIds =
+      events.filter { it.content?.parts.orEmpty().any { p -> p.text != null } }.map { it.id }
+    assertEquals(2, callIds.size)
+    assertEquals(1, callIds.toSet().size)
+    assertEquals(3, textIds.size)
+    assertEquals(1, textIds.toSet().size)
+    // The tool response and the second model response each start a new id.
+    assertEquals(3, (callIds + responseIds + textIds).toSet().size)
+  }
+
+  @Test
+  fun runAsync_oneCallWithTwoCompleteResponses_givesEachItsOwnId() = runBlocking {
+    // Both complete events are saved, and RoomSessionService keys rows by event id.
+    val streamingModel =
+      DummyModel(
+        "streaming-model",
+        listOf(
+          flowOf(
+            LlmResponse(content = modelMessage("a"), partial = true),
+            LlmResponse(content = modelMessage("a")),
+            LlmResponse(content = modelMessage("b"), partial = true),
+            LlmResponse(content = modelMessage("b")),
+          )
+        ),
+      )
+    val runner = InMemoryRunner(agent = LlmAgent(name = "test-agent", model = streamingModel))
+
+    val events =
+      runner
+        .runAsync(
+          userId = "user1",
+          sessionId = "session1",
+          newMessage = userMessage("hi"),
+          runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+        )
+        .toList()
+        .filter { it.author == "test-agent" }
+
+    assertEquals(listOf(true, false, true, false), events.map { it.partial })
+    assertEquals(events[0].id, events[1].id)
+    assertEquals(events[2].id, events[3].id)
+    assertNotEquals(events[1].id, events[3].id)
   }
 }
