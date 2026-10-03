@@ -34,4 +34,4 @@ An agent instance can have only one parent; build a new instance for each place 
 
 ## Graph workflows (experimental)
 
-The `workflow` package has an experimental graph engine behind `@OptIn(ExperimentalWorkflowApi::class)`. It is expected to change without notice. Use it only when asked to, and learn it from the KDoc starting at `Workflow.kt` and from the tests. Otherwise use the containers above, and for custom orchestration read `BaseAgent` and the existing containers first, since the agent base classes are changing along with the graph engine.
+The `workflow` package has an experimental graph engine behind `@OptIn(ExperimentalWorkflowApi::class)`. It is expected to change without notice. Use it only when asked to, and learn it from the KDoc starting at `Workflow.kt` and from the tests. `examples/.../workflow/` contains runnable graphs built with `workflow { }`, including ports of adk-python's workflow samples and of a graph example from the ADK docs. Otherwise use the containers above, and for custom orchestration read `BaseAgent` and the existing containers first, since the agent base classes are changing along with the graph engine.
