@@ -411,7 +411,7 @@ internal class LlmAgentTurn(
     val callbackContext = CallbackContext(context)
     val processedResponse =
       responseProcessors.fold(response) { res, processor ->
-        processor.process(callbackContext, res) { event -> emitEvent(event) }
+        processor.process(callbackContext, request, res) { event -> emitEvent(event) }
       }
 
     if (processedResponse.isEmpty()) return
