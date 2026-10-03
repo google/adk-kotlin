@@ -139,7 +139,10 @@ internal class AppFunctionTool(
     // and the screens alongside it are dropped like any other unrepresentable property.
     if (
       value.isEmpty() &&
-        AppFunctionTypes.carriesUndeliverablePendingIntent(declared, metadata.components)
+        AppFunctionTypes.carriesUndeliverablePendingIntent(
+          declared,
+          metadata.packageMetadata.components,
+        )
     ) {
       logger.warn {
         "App function $methodName returned only screens, which are not values to read."

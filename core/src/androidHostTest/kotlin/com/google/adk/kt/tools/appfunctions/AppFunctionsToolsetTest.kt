@@ -323,7 +323,7 @@ class AppFunctionsToolsetTest {
       val client =
         FakeAppFunctionClient(listOf(metadata)) {
           ExecuteAppFunctionResponse.Success(
-            AppFunctionData.Builder(metadata.response, metadata.components)
+            AppFunctionData.Builder(metadata.response, metadata.packageMetadata.components)
               .setString(ExecuteAppFunctionResponse.Success.PROPERTY_RETURN_VALUE, "note-1")
               .build()
           )
@@ -408,7 +408,7 @@ class AppFunctionsToolsetTest {
       val client =
         FakeAppFunctionClient(listOf(declaredAsObject)) {
           ExecuteAppFunctionResponse.Success(
-            AppFunctionData.Builder(actuallyText.response, actuallyText.components)
+            AppFunctionData.Builder(actuallyText.response, actuallyText.packageMetadata.components)
               .setString(ExecuteAppFunctionResponse.Success.PROPERTY_RETURN_VALUE, "topsecret")
               .build()
           )
@@ -430,7 +430,7 @@ class AppFunctionsToolsetTest {
       val client =
         FakeAppFunctionClient(listOf(declaredAsNumber)) {
           ExecuteAppFunctionResponse.Success(
-            AppFunctionData.Builder(actuallyText.response, actuallyText.components)
+            AppFunctionData.Builder(actuallyText.response, actuallyText.packageMetadata.components)
               .setString(ExecuteAppFunctionResponse.Success.PROPERTY_RETURN_VALUE, "topsecret")
               .build()
           )
@@ -762,7 +762,7 @@ class AppFunctionsToolsetTest {
       val client =
         FakeAppFunctionClient(listOf(metadata)) {
           ExecuteAppFunctionResponse.Success(
-            AppFunctionData.Builder(metadata.response, metadata.components)
+            AppFunctionData.Builder(metadata.response, metadata.packageMetadata.components)
               .setParcelableList(
                 ExecuteAppFunctionResponse.Success.PROPERTY_RETURN_VALUE,
                 listOf(testPendingIntent()),
@@ -791,7 +791,7 @@ class AppFunctionsToolsetTest {
       val client =
         FakeAppFunctionClient(listOf(metadata)) {
           ExecuteAppFunctionResponse.Success(
-            AppFunctionData.Builder(metadata.response, metadata.components)
+            AppFunctionData.Builder(metadata.response, metadata.packageMetadata.components)
               .setAppFunctionData(
                 ExecuteAppFunctionResponse.Success.PROPERTY_RETURN_VALUE,
                 AppFunctionData.Builder(holder, AppFunctionComponentsMetadata())
@@ -828,7 +828,7 @@ class AppFunctionsToolsetTest {
       val client =
         FakeAppFunctionClient(listOf(metadata)) {
           ExecuteAppFunctionResponse.Success(
-            AppFunctionData.Builder(metadata.response, metadata.components)
+            AppFunctionData.Builder(metadata.response, metadata.packageMetadata.components)
               .setAppFunctionData(
                 ExecuteAppFunctionResponse.Success.PROPERTY_RETURN_VALUE,
                 AppFunctionData.Builder(holder, AppFunctionComponentsMetadata())
@@ -1537,15 +1537,15 @@ class AppFunctionsToolsetTest {
       description: String = "Creates a note",
     ) =
       AppFunctionMetadata(
-        id = id,
-        packageName = packageName,
-        // Never read: discovery takes runtime state from `states()`, and the SDK hardcodes this
-        // to false whatever is passed.
-        isEnabled = true,
+        name = AppFunctionName(packageName = packageName, functionIdentifier = id),
         schema = null,
         parameters = params,
         response = AppFunctionResponseMetadata(valueType = response),
-        components = AppFunctionComponentsMetadata(),
+        packageMetadata =
+          AppFunctionPackageMetadata(
+            packageName = packageName,
+            components = AppFunctionComponentsMetadata(),
+          ),
         description = description,
       )
   }

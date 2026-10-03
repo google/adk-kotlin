@@ -239,7 +239,12 @@ internal constructor(
         continue
       }
       // A screen is for the app to open, not a value the model can read.
-      if (AppFunctionTypes.isPendingIntent(metadata.response.valueType, metadata.components)) {
+      if (
+        AppFunctionTypes.isPendingIntent(
+          metadata.response.valueType,
+          metadata.packageMetadata.components,
+        )
+      ) {
         screenOnlyCount++
         continue
       }
