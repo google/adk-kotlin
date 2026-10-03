@@ -28,9 +28,15 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.TurnCompleteReason
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VoiceActivity
+import com.google.adk.kt.types.VoiceActivityType
 import com.google.adk.kt.workflow.NodeInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -183,6 +189,14 @@ class EventTest {
         customMetadata = mapOf("key" to null),
         output = "result",
         nodeInfo = NodeInfo(path = "wf@1"),
+        turnCompleteReason = TurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = InteractionStatus.IN_PROGRESS,
+        inputTranscription = Transcription(text = "in", finished = true),
+        outputTranscription = Transcription(text = "out", finished = true),
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate =
+          LiveServerSessionResumptionUpdate(newHandle = "handle-1", resumable = true),
+        voiceActivity = VoiceActivity(voiceActivityType = VoiceActivityType.ACTIVITY_START),
         timestamp = 1234L,
       )
 
@@ -190,6 +204,7 @@ class EventTest {
     assertEquals(event.copy(partial = false), event.toBuilder().partial(false).build())
   }
 
+  @OptIn(AdkJavaInteropApi::class)
   @Test
   fun constructorAndBuilder_withoutAuthor_defaultsAuthorToEmptyString() {
     // Arrange

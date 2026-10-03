@@ -14,17 +14,25 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalLiveApi::class)
+
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnModelErrorCallbacksPipeline
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.getLongRunningFunctionIds
 import com.google.adk.kt.ids.Uuid
+import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.models.toTracePayload
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
@@ -35,6 +43,7 @@ import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.capturedJson
+import com.google.adk.kt.telemetry.noop.NoOpSpan
 import com.google.adk.kt.telemetry.tracedFlow
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.GoogleSearchAgentTool
@@ -44,13 +53,28 @@ import com.google.adk.kt.tools.VertexAiSearchAgentTool
 import com.google.adk.kt.tools.VertexAiSearchTool
 import com.google.adk.kt.tools.createGoogleSearchAgent
 import com.google.adk.kt.tools.createVertexAiSearchAgent
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Encapsulates the logic for a single turn of an [LlmAgent].
@@ -195,6 +219,357 @@ internal class LlmAgentTurn(
       }
     }
   }
+
+  /**
+   * Runs the whole live conversation on one connection, instead of one generate-content call.
+   *
+   * The request is prepared as [execute] prepares it. A send loop then drains the context's
+   * [LiveRequestQueue] onto the connection while a receive loop reads one model turn at a time, and
+   * the model callbacks screen what passes between them where ADK Python's live flow does.
+   */
+  // closeQuietly runs under NonCancellable itself, so the finally's close survives cancellation.
+  @Suppress("SuspendInFinally")
+  fun executeLive(): Flow<Event> = flow {
+    if (context.isEndOfInvocation) return@flow
+
+    val queue =
+      checkNotNull(context.liveRequestQueue) {
+        "a live run needs a live request queue on its context"
+      }
+    val request = (prepareRequest { emit(it) } as RequestOrResponse.Request).request
+    // A request processor can end the invocation, as in ADK Python.
+    if (context.isEndOfInvocation) return@flow
+
+    // A model without live support throws here, from `Model.connect`'s default.
+    val connection = agent.model.connect(request)
+    // Written by collectLiveTurns before its flow completes, so read only after emitAll returns.
+    var blocked = false
+    try {
+      // The server already holds the history of a session the caller resumes, as in ADK Python.
+      val resuming = request.liveConnectConfig.sessionResumption?.handle != null
+      // Seed the assembled history; the model replies only if it ends with the user's turn.
+      if (request.contents.isNotEmpty() && !resuming) {
+        connection.sendHistory(request.contents)
+      }
+      emitAll(collectLiveTurns(request, connection, queue) { blocked = true })
+    } finally {
+      closeQuietly(connection)
+    }
+    // The caller has handled the blocked turn by now, so the restarted turn's history holds it.
+    if (blocked) emitAll(restartedTurn().executeLive())
+  }
+
+  /**
+   * Pumps the caller's queue into [connection] while reading turns back out of it, until the caller
+   * closes the queue, the connection ends, or a callback blocks the model's output or spoken input,
+   * which calls [onBlocked] once the sender has stopped.
+   */
+  // Only the sender writes the connection, and the session service serializes its appends.
+  @Suppress("UnsafeCoroutineCrossing")
+  private fun collectLiveTurns(
+    request: LlmRequest,
+    connection: LiveConnection,
+    queue: LiveRequestQueue,
+    onBlocked: () -> Unit,
+  ): Flow<Event> =
+    channelFlow {
+        val sender = launch {
+          while (true) {
+            val liveRequest = queue.receiveRequest() ?: break
+            persistStateDeltaOnly(liveRequest)
+            when (val input = liveRequest.input) {
+              is RealtimeInput -> connection.sendRealtime(input)
+              is ContentInput -> sendUserContent(request, connection, input) { send(it) }
+              null -> {}
+            }
+          }
+          // receiveRequest returns null only once the caller has closed the queue.
+          closeQuietly(connection)
+        }
+
+        val blocked = receiveTurns(request, connection, queue) { send(it) }
+        // Joined so the sender has stopped before onBlocked signals a restart.
+        sender.cancelAndJoin()
+        if (blocked) onBlocked()
+      }
+      // Hands over one event at a time, so neither loop runs ahead of the caller.
+      .buffer(Channel.RENDEZVOUS)
+
+  /**
+   * Reads the model's turns off [connection] and emits their events, answering tool calls through
+   * [queue] as ADK Python does.
+   *
+   * @return whether a callback blocked the model's output or spoken input, which calls for
+   *   [restartedTurn].
+   */
+  private suspend fun receiveTurns(
+    request: LlmRequest,
+    connection: LiveConnection,
+    queue: LiveRequestQueue,
+    emitEvent: suspend (Event) -> Unit,
+  ): Boolean {
+    // The model's output transcription so far in this turn, which the after-model callbacks screen.
+    var spoken = ""
+    while (true) {
+      var sawResponse = false
+      var blocked = false
+      connection
+        .receive()
+        .takeWhile { response ->
+          sawResponse = true
+          spoken = spokenSoFar(spoken, response)
+          blocked = handleLiveResponse(request, response, spoken, queue, emitEvent)
+          !blocked
+        }
+        .collect()
+      if (blocked) return true
+      // An empty collection is the connection's end, per `LiveConnection.receive`.
+      if (!sawResponse) return false
+    }
+  }
+
+  /** The turn's output transcription so far, [spoken], updated with [response]. */
+  private fun spokenSoFar(spoken: String, response: LlmResponse): String {
+    val turnSoFar = if (response.turnComplete == true || response.interrupted) "" else spoken
+    val heard = response.outputTranscription ?: return turnSoFar
+    return if (heard.finished == true) "" else turnSoFar + heard.text.orEmpty()
+  }
+
+  /**
+   * Screens and emits one live [response], answering its tool calls through [queue].
+   *
+   * @return whether a callback blocked the model's output or the user's spoken input.
+   */
+  private suspend fun handleLiveResponse(
+    request: LlmRequest,
+    response: LlmResponse,
+    spoken: String,
+    queue: LiveRequestQueue,
+    emitEvent: suspend (Event) -> Unit,
+  ): Boolean {
+    val callbackContext = CallbackContext(context)
+    if (response.outputTranscription != null && spoken.isNotEmpty()) {
+      val blockedOutput = screenModelOutput(request, response, spoken, callbackContext)
+      if (blockedOutput != null) {
+        emitEvent(blockedOutput)
+        return true
+      }
+    }
+    emitLiveResponse(request, response, callbackContext) { event ->
+      emitEvent(event)
+      sendToolResponse(queue, event)
+    }
+    val heard = response.inputTranscription
+    if (heard?.finished == true && !heard.text.isNullOrEmpty()) {
+      // Screened after its own event is emitted, so the user's words still reach the caller.
+      val spokenInput = Content(Role.USER, listOf(Part(text = heard.text)))
+      val screened = screenUserContent(request, spokenInput)
+      if (screened is CallbackChoice.Break) {
+        emitEvent(screened.value)
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * The turn that replaces this one's live session after a callback blocked the model's output or
+   * spoken input, as ADK Python's restart does, so the model's remaining output is dropped.
+   *
+   * It runs with the resumption handle cleared and reads the same queue, which redelivers a request
+   * whose receive was cancelled; one the sender was already writing is lost, as in ADK Python.
+   */
+  private fun restartedTurn(): LlmAgentTurn {
+    val runConfig = context.runConfig
+    val restartContext =
+      context.copy(
+        runConfig =
+          runConfig?.copy(sessionResumption = runConfig.sessionResumption?.copy(handle = null))
+      )
+    return LlmAgentTurn(agent, restartContext, requestProcessors, responseProcessors)
+  }
+
+  /**
+   * Closes [connection], logging rather than throwing a failure, which would replace an exception
+   * already unwinding the run.
+   *
+   * Runs under [NonCancellable] so a cancelled run still frees the connection, bounded by
+   * [CONNECTION_TEARDOWN_TIMEOUT].
+   */
+  private suspend fun closeQuietly(connection: LiveConnection) {
+    withContext(NonCancellable) {
+      val finished =
+        withTimeoutOrNull(CONNECTION_TEARDOWN_TIMEOUT) {
+          try {
+            connection.closeSession()
+          } catch (e: CancellationException) {
+            throw e
+          } catch (e: Exception) {
+            logger.warn { "Closing the live connection failed (${e::class.simpleName})." }
+          }
+        }
+      if (finished == null) {
+        logger.warn { "Closing the live connection timed out after $CONNECTION_TEARDOWN_TIMEOUT." }
+      }
+    }
+  }
+
+  /** Records the request's state change on an event of its own. */
+  private suspend fun persistStateDeltaOnly(liveRequest: LiveRequest) {
+    val delta = liveRequest.stateDelta
+    if (delta.isEmpty()) return
+    val sessionService = context.sessionService
+    if (sessionService == null) {
+      logger.warn { "A live state change was dropped: the context has no session service." }
+      return
+    }
+    val unused =
+      sessionService.appendEvent(
+        context.session,
+        Event(
+          invocationId = context.invocationId,
+          author = Role.USER,
+          actions = EventActions(stateDelta = delta.toMutableMap()),
+          branch = context.branch,
+        ),
+      )
+  }
+
+  /**
+   * Sends the caller's [input] to the model, screening it first with the before-model callbacks
+   * unless it only answers tool calls, as ADK Python does.
+   *
+   * A blocked input is not sent; the callback's response is emitted as a completed turn instead.
+   */
+  private suspend fun sendUserContent(
+    request: LlmRequest,
+    connection: LiveConnection,
+    input: ContentInput,
+    emitEvent: suspend (Event) -> Unit,
+  ) {
+    // A ContentInput holds only tool answers or none, so its first part tells which.
+    val answersTools = input.content.parts.first().functionResponse != null
+    // Content without a role is the user's, as in ADK Python; tool answers keep theirs unset.
+    val content =
+      if (answersTools || input.content.role != null) input.content
+      else input.content.copy(role = Role.USER)
+    val toSend =
+      if (answersTools) content
+      else
+        when (val screened = screenUserContent(request, content)) {
+          // A callback that rewrites the request rewrites what the model receives, as turn-based.
+          is CallbackChoice.Continue -> screened.value
+          is CallbackChoice.Break -> {
+            emitEvent(screened.value)
+            return
+          }
+        }
+    connection.sendContent(toSend, input.partial)
+  }
+
+  /**
+   * Answers a tool call by queuing its response like the caller's input, as ADK Python does.
+   *
+   * Gemini 3.x live withholds turn completion until the answer arrives. Once the caller has closed
+   * the queue the answer is dropped, as it is in ADK Python.
+   */
+  private fun sendToolResponse(queue: LiveRequestQueue, event: Event) {
+    val content = event.content ?: return
+    if (content.parts.none { it.functionResponse != null }) return
+    queue.sendContent(content)
+  }
+
+  /**
+   * Runs one live response through the response processors and tool calls, as ADK Python's live
+   * postprocessing does; the model callbacks run only where [receiveTurns] calls them.
+   */
+  private suspend fun emitLiveResponse(
+    request: LlmRequest,
+    response: LlmResponse,
+    callbackContext: CallbackContext,
+    emitEvent: suspend (Event) -> Unit,
+  ) {
+    val baseEvent =
+      createModelResponseEvent()
+        .copy(author = liveAuthorFor(response))
+        .withActionsFrom(callbackContext)
+    // Live runs record no call_llm span, as in ADK Python.
+    processModelResponse(request, response, baseEvent, span = NoOpSpan, emitEvent = emitEvent)
+  }
+
+  /**
+   * Runs the before-model callbacks over [request] carrying only [content], as ADK Python screens
+   * each live user input.
+   *
+   * @return the completed turn to emit when a callback returns [CallbackChoice.Break], else the
+   *   content to send: the returned request's content when it holds exactly one, else [content].
+   */
+  private suspend fun screenUserContent(
+    request: LlmRequest,
+    content: Content,
+  ): CallbackChoice<Content, Event> {
+    val screened = request.copy(contents = listOf(content))
+    val callbackContext = CallbackContext(context)
+    val result =
+      runBeforeModelCallbacksPipeline(
+        callbacks = context.pluginManager.beforeModelCallbacks + agent.beforeModelCallbacks,
+        context = callbackContext,
+        request = screened,
+      )
+    return when (result) {
+      is CallbackChoice.Continue ->
+        CallbackChoice.Continue(result.value.contents.singleOrNull() ?: content)
+      is CallbackChoice.Break ->
+        CallbackChoice.Break(blockedTurnEvent(screened, result.value, callbackContext))
+    }
+  }
+
+  /**
+   * Runs the after-model callbacks over [response] carrying the turn's output transcription so far,
+   * [spoken], as ADK Python does.
+   *
+   * @return the completed turn to emit when a callback returns a different response, else null.
+   */
+  private suspend fun screenModelOutput(
+    request: LlmRequest,
+    response: LlmResponse,
+    spoken: String,
+    callbackContext: CallbackContext,
+  ): Event? {
+    val screened =
+      response.copy(outputTranscription = Transcription(text = spoken, finished = false))
+    val processed =
+      runAfterModelCallbacksPipeline(
+        callbacks = context.pluginManager.afterModelCallbacks + agent.afterModelCallbacks,
+        context = callbackContext,
+        response = screened,
+      )
+    // A Kotlin callback cannot return "nothing", so passing means returning an equal response.
+    if (processed == screened) return null
+    // The accumulated transcription is ours: drop it unless the callback replaced it.
+    val transcription = processed.outputTranscription.takeIf { it != screened.outputTranscription }
+    return blockedTurnEvent(
+      request,
+      processed.copy(outputTranscription = transcription),
+      callbackContext,
+    )
+  }
+
+  /**
+   * The completed model turn that stands in for input or output a callback blocked; it is final
+   * even when the callback copied a partial chunk, so the caller stores it.
+   */
+  private suspend fun blockedTurnEvent(
+    request: LlmRequest,
+    response: LlmResponse,
+    callbackContext: CallbackContext,
+  ): Event =
+    createModelResponseEvent()
+      .withActionsFrom(callbackContext)
+      .finalizeModelResponseEvent(
+        response.copy(partial = false, turnComplete = true),
+        getToolMap(request),
+      )
 
   private fun invokeAndProcessModel(request: LlmRequest): Flow<Event> =
     tracedFlow<Event>(
@@ -374,6 +749,18 @@ internal class LlmAgentTurn(
   private fun aggregateTokens(first: Int?, second: Int?): Int? =
     if (first == null && second == null) null else (first ?: 0) + (second ?: 0)
 
+  /**
+   * Who a live response is from, which is not always this agent.
+   *
+   * A live model reports what it heard as well as what it said. An input transcription is the
+   * user's own words coming back, and content the server marks with a user role is the user's too,
+   * so attributing either to the agent makes the stored conversation read as though the agent said
+   * everything, including the parts it was listening to.
+   */
+  private fun liveAuthorFor(response: LlmResponse): String =
+    if (response.inputTranscription != null || response.content?.role == Role.USER) Role.USER
+    else agent.name
+
   private fun createModelResponseEvent() =
     Event(
       id = Uuid.random(),
@@ -461,6 +848,14 @@ internal class LlmAgentTurn(
           citationMetadata = response.citationMetadata,
           errorCode = response.errorCode,
           customMetadata = response.customMetadata,
+          turnComplete = response.turnComplete ?: false,
+          turnCompleteReason = response.turnCompleteReason,
+          interactionStatus = response.interactionStatus,
+          inputTranscription = response.inputTranscription,
+          outputTranscription = response.outputTranscription,
+          liveSessionId = response.liveSessionId,
+          liveSessionResumptionUpdate = response.liveSessionResumptionUpdate,
+          voiceActivity = response.voiceActivity,
         )
         .populateClientFunctionCallId()
 
@@ -475,8 +870,26 @@ internal class LlmAgentTurn(
     return finalModelResponseEvent.copy(longRunningToolIds = longRunningIds)
   }
 
+  /**
+   * Whether this response carries nothing worth emitting as an event.
+   *
+   * An error code, grounding metadata or any live signal alone still counts, as in ADK Python and
+   * Java; a go-away has no [Event] field, so it does not. Usage metadata counts only on a live run,
+   * as in both: a streamed turn-based reply can end with a usage-only chunk.
+   */
   private fun LlmResponse.isEmpty(): Boolean {
-    return content == null && errorMessage == null && finishReason == null && !interrupted
+    return content == null &&
+      errorMessage == null &&
+      errorCode == null &&
+      finishReason == null &&
+      !interrupted &&
+      groundingMetadata == null &&
+      turnComplete != true &&
+      inputTranscription == null &&
+      outputTranscription == null &&
+      liveSessionResumptionUpdate == null &&
+      voiceActivity == null &&
+      (context.liveRequestQueue == null || usageMetadata == null)
   }
 
   private fun handleActions(actionEvent: Event, tools: Map<String, BaseTool>): Flow<Event> = flow {
@@ -503,6 +916,8 @@ internal class LlmAgentTurn(
 
     // If a tool requested a transfer to another agent, execute that agent's loop.
     functionResponseEvent?.actions?.transferToAgent?.let { agentName ->
+      // Live transfer is not supported on this path; a live run must not run the target turn-based.
+      if (context.liveRequestQueue != null) return@let
       val targetAgent =
         agent.rootAgent.findAgent(agentName)
           ?: throw IllegalArgumentException("Agent '$agentName' not found in the agent tree.")
@@ -517,7 +932,11 @@ internal class LlmAgentTurn(
   ): Event? {
     val functionCalls = actionEvent.functionCalls()
     val functionResponseEvent =
-      functionCalls.takeIf { it.isNotEmpty() }?.let { context.handleFunctionCalls(it, tools) }
+      functionCalls
+        .takeIf { it.isNotEmpty() }
+        ?.let { context.handleFunctionCalls(it, tools) }
+        // A live answer names the session its call came from, as in ADK Python.
+        ?.copy(liveSessionId = actionEvent.liveSessionId)
 
     functionResponseEvent?.let { responseEvent ->
       generateRequestConfirmationEvent(context, actionEvent, responseEvent)?.let { emitEvent(it) }
@@ -535,6 +954,16 @@ internal class LlmAgentTurn(
   // Pauses while any long-running call remains unanswered, mirroring Python decide_resume.
   private suspend fun InvocationContext.shouldPause(): Boolean = hasUnansweredPausedCall()
 }
+
+private val logger = LoggerFactory.getLogger(LlmAgentTurn::class)
+
+/**
+ * How long closing the live connection may take before the run gives up on it.
+ *
+ * Generous, because a normal close finishes in milliseconds; the bound exists only so a server that
+ * never answers cannot hold the run open. A close that blocks its thread is not bounded.
+ */
+private val CONNECTION_TEARDOWN_TIMEOUT = 10.seconds
 
 /**
  * A sealed class representing either a [LlmRequest] or a [LlmResponse].

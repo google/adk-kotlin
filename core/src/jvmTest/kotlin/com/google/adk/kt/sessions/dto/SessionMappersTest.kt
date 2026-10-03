@@ -23,7 +23,14 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.TurnCompleteReason
+import com.google.adk.kt.types.VoiceActivity
+import com.google.adk.kt.types.VoiceActivityType
+import com.google.adk.kt.types.WordInfo
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -295,5 +302,52 @@ class SessionMappersTest {
     val event = dto.toAdk()
 
     assertThat(event.customMetadata).containsExactly("present", "v", "absent", null)
+  }
+
+  @Test
+  fun eventToDto_transcriptionsRoundTrip_otherLiveSignalsAreNotCarried() {
+    // Transcriptions are proto fields; the other live signals are not.
+    val event =
+      Event(
+        author = "agent",
+        turnCompleteReason = TurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = InteractionStatus.IN_PROGRESS,
+        inputTranscription = Transcription(text = "what is the weather", finished = true),
+        outputTranscription = Transcription(text = "it is sunny", finished = true),
+        liveSessionId = "live-1",
+        voiceActivity = VoiceActivity(voiceActivityType = VoiceActivityType.ACTIVITY_START),
+        liveSessionResumptionUpdate = LiveServerSessionResumptionUpdate(newHandle = "handle-1"),
+      )
+
+    val restored = event.toDto().toAdk()
+
+    assertThat(restored.inputTranscription).isEqualTo(event.inputTranscription)
+    assertThat(restored.outputTranscription).isEqualTo(event.outputTranscription)
+    assertThat(restored.voiceActivity).isNull()
+    assertThat(restored.liveSessionResumptionUpdate).isNull()
+    assertThat(restored.turnCompleteReason).isNull()
+    assertThat(restored.interactionStatus).isNull()
+    assertThat(restored.liveSessionId).isNull()
+  }
+
+  @Test
+  fun eventToDto_transcription_sendsOnlyTheKeysTheProtoHas() {
+    // `session.proto`'s Transcription has only text and finished; any other key is rejected.
+    val event =
+      Event(
+        author = "agent",
+        inputTranscription =
+          Transcription(
+            text = "hola",
+            finished = true,
+            languageCode = "es-ES",
+            speakerLabel = "spk_1",
+            words = listOf(WordInfo(word = "hola", startOffset = "0s", endOffset = "0.4s")),
+          ),
+      )
+
+    val keys = event.toDto().eventMetadata?.inputTranscription?.jsonObject?.keys
+
+    assertThat(keys).containsExactly("text", "finished")
   }
 }

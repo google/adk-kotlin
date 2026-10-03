@@ -19,6 +19,7 @@ package com.google.adk.kt.types
 import com.google.genai.kotlin.types.DurationStringSerializer
 import kotlin.time.Duration
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * A server-detected change in whether the user is speaking.
@@ -28,6 +29,8 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class VoiceActivity(
-  val voiceActivityType: VoiceActivityType? = null,
-  @Serializable(with = DurationStringSerializer::class) val audioOffset: Duration? = null,
+  @JsonNames("voice_activity_type") val voiceActivityType: VoiceActivityType? = null,
+  @Serializable(with = DurationStringSerializer::class)
+  @JsonNames("audio_offset")
+  val audioOffset: Duration? = null,
 )
