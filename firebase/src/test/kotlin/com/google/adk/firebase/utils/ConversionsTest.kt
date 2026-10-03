@@ -16,6 +16,7 @@
 
 package com.google.adk.firebase.utils
 
+import com.google.adk.kt.VERSION
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -56,6 +57,7 @@ import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.Part as FirebasePart
 import com.google.firebase.ai.type.PromptFeedback
 import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.ResponseModality
 import com.google.firebase.ai.type.TextPart
 import com.google.firebase.ai.type.ThinkingLevel as FirebaseThinkingLevel
@@ -868,6 +870,19 @@ class ConversionsTest {
     val request = LlmRequest(config = GenerateContentConfig())
 
     assertThat(Conversions().forRequest(request).toolConfig()).isNull()
+  }
+
+  @Test
+  fun requestConverter_requestOptions_addsAdkApiClientHeader() {
+    val options = Conversions().forRequest(LlmRequest()).requestOptions()
+
+    // Read the backing field because RequestOptions keeps the custom header internal.
+    val header =
+      RequestOptions::class.java.getDeclaredField("customApiClientHeader").run {
+        isAccessible = true
+        get(options)
+      }
+    assertThat(header).isEqualTo("google-adk/$VERSION")
   }
 
   // Firebase's FunctionCallingConfig exposes no public fields to assert on, so the supported modes
