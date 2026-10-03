@@ -18,8 +18,10 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.LiveInput
+import kotlin.jvm.JvmStatic
 
 /**
  * One item sent to a live agent through a [LiveRequestQueue].
@@ -43,5 +45,37 @@ data class LiveRequest(
     require(!close || input == null) {
       "A close request carries no input; send the input first, then close."
     }
+  }
+
+  /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder = Builder().input(input).close(close).stateDelta(stateDelta)
+
+  /**
+   * Fluent builder for [LiveRequest], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var input: LiveInput? = null
+    private var close: Boolean = false
+    private var stateDelta: Map<String, Any> = emptyMap()
+
+    fun input(input: LiveInput?): Builder = apply { this.input = input }
+
+    fun close(close: Boolean): Builder = apply { this.close = close }
+
+    fun stateDelta(stateDelta: Map<String, Any>): Builder = apply { this.stateDelta = stateDelta }
+
+    fun build(): LiveRequest = LiveRequest(input = input, close = close, stateDelta = stateDelta)
+  }
+
+  companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
 }
