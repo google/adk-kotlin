@@ -88,7 +88,7 @@ interface LiveConnection : AutoCloseable {
   override fun close() = runBlocking { closeSession() }
 }
 
-private const val CONCURRENT_COLLECTION_MESSAGE =
+internal const val CONCURRENT_COLLECTION_MESSAGE =
   "LiveConnection.receive() allows one collector at a time, because the underlying transport is " +
     "a single channel of frames: a second concurrent collector would take an arbitrary " +
     "subset of them from the first."
