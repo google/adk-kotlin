@@ -190,6 +190,7 @@ class EventTest {
     assertEquals(event.copy(partial = false), event.toBuilder().partial(false).build())
   }
 
+  @OptIn(AdkJavaInteropApi::class)
   @Test
   fun constructorAndBuilder_withoutAuthor_defaultsAuthorToEmptyString() {
     // Arrange

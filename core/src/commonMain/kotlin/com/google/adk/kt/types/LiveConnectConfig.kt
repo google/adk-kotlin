@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmOverloads
 import kotlinx.serialization.Serializable
 
 /**
@@ -48,9 +49,13 @@ import kotlinx.serialization.Serializable
  * @property contextWindowCompression Keeps the session's context below a given length.
  * @property proactivity Whether the model may decline to respond to a prompt.
  * @property safetySettings Safety settings to apply to the session.
+ * @property explicitVadSignal Whether the model sends its voice activity detection signals.
+ * @property translationConfig Real-time speech-to-speech translation, for translation models.
  */
 @Serializable
-data class LiveConnectConfig(
+data class LiveConnectConfig
+@JvmOverloads
+constructor(
   val responseModalities: List<Modality>? = null,
   val temperature: Float? = null,
   val topP: Float? = null,
@@ -70,4 +75,6 @@ data class LiveConnectConfig(
   val contextWindowCompression: ContextWindowCompressionConfig? = null,
   val proactivity: ProactivityConfig? = null,
   val safetySettings: List<SafetySetting>? = null,
+  val explicitVadSignal: Boolean? = null,
+  val translationConfig: TranslationConfig? = null,
 )
