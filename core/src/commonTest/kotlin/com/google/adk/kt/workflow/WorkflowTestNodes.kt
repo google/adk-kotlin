@@ -20,8 +20,13 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.testing.userMessage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -40,6 +45,17 @@ internal class Emitter(override val name: String, private val value: Any?) : Nod
 /** A bare node that emits a fixed value (null by default), for graph topology tests. */
 internal class StubNode(override val name: String, private val value: Any? = null) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { emit(value) }
+}
+
+/** Reports its output by assigning each of [values] in turn rather than by emitting an event. */
+internal class OutputAssigner(
+  override val name: String,
+  private vararg val values: Any?,
+  override val waitForOutput: Boolean = false,
+) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    for (value in values) context.output = value
+  }
 }
 
 /** Throws whatever [error] builds, so a runner's failure path can be observed. */
@@ -76,4 +92,13 @@ internal fun no() = Route.Tag("no")
 /** Runs [workflow] as an invocation root and collects the events it emits. */
 internal fun runWorkflow(workflow: Workflow): List<Event> = runBlocking {
   workflow.runAsync(testInvocationContext()).toList()
+}
+
+/**
+ * Runs [workflow] as an app's root node through [InMemoryRunner] and returns the stored session.
+ */
+internal fun runWorkflowAsApp(workflow: Workflow): Session = runBlocking {
+  val runner = InMemoryRunner(app = App(appName = "workflow_app", rootNode = workflow))
+  runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("go")).toList()
+  checkNotNull(runner.sessionService.getSession(SessionKey("workflow_app", "user", "session")))
 }

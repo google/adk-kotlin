@@ -122,3 +122,14 @@ internal fun validateNodeName(name: String) {
       " characters, so an agent used as a graph node needs one a node path can carry."
   }
 }
+
+/**
+ * Validates an explicit [runId] for a child of [nodeName]. It forms the `name@runId` node-path
+ * segment and the `name@runId` branch segment, so the characters [validateNodeName] bans corrupt
+ * paths here too.
+ */
+internal fun validateRunId(runId: String, nodeName: String) {
+  require('/' !in runId && '@' !in runId && '.' !in runId) {
+    "runId \"$runId\" for node '$nodeName' must not contain '/', '@', or '.'."
+  }
+}

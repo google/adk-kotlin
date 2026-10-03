@@ -42,24 +42,19 @@ class NodeTimeoutException(val nodeName: String, val timeout: Duration, cause: T
 @ExperimentalWorkflowApi
 class GraphValidationException(message: String) : IllegalArgumentException(message)
 
-/**
- * A workflow is misconfigured in a way surfaced only at run time -- for example, more than one
- * terminal node producing an output. Matches Python's WorkflowConfigurationError.
- */
+/** Thrown when a workflow or node configuration is invalid. */
 @ExperimentalWorkflowApi
-class WorkflowConfigurationError(message: String) : IllegalStateException(message)
+class WorkflowConfigurationException(message: String) : IllegalArgumentException(message)
 
 /**
- * A dynamically dispatched child node interrupted, so the node that dispatched it cannot finish.
- * Thrown past user code and caught by the node runner, which reads the interrupt ids off the
- * context rather than from this exception. Dynamic dispatch lands in a later change, so nothing
- * raises this yet.
+ * Aborts a dispatching node when a child node pauses for input. Extends [Throwable] rather than
+ * [Exception] so `catch (Exception)` in user code does not swallow it.
  */
-internal class NodeInterruptedException : RuntimeException("Node interrupted.")
+internal class NodeInterruptedException : Throwable("Node interrupted.")
 
 /**
- * A dynamically dispatched child node failed; carries the failure to the dispatching node. Dynamic
- * dispatch lands in a later change, so nothing raises this yet.
+ * Propagates a dynamically dispatched child node's failure ([error] at [errorNodePath]) to the
+ * caller.
  */
 internal class DynamicNodeFailedException(val error: Throwable, val errorNodePath: String) :
   RuntimeException("Dynamic node failed.", error)
