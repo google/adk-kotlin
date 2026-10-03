@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.0](https://github.com/google/adk-kotlin/compare/v1.3.0...v1.4.0) (2026-10-03)
+
+
+### Features
+
+* **live:** add a Java-interop builder for LiveRequest ([aefdbba](https://github.com/google/adk-kotlin/commit/aefdbba3afc0eea3a92165783156388d7a63a4cf))
+* **live:** add the live connection interfaces and request queue ([6450f67](https://github.com/google/adk-kotlin/commit/6450f6756624e691e65e6b6ce7cf9945b13ccf5e))
+* **live:** let Java models implement live connections ([d6fbe1f](https://github.com/google/adk-kotlin/commit/d6fbe1fa55d46e1fa0cb13ea076f35426d01eac1))
+
+
+### Bug Fixes
+
+* **a2a:** skip an unconvertible remote A2A part instead of failing the turn ([377d21b](https://github.com/google/adk-kotlin/commit/377d21b8544e1856ef7a9c8b90d5ce3b069e23b0))
+
 ## [1.3.0](https://github.com/google/adk-kotlin/compare/v1.2.0...v1.3.0) (2026-10-02)
 
 
