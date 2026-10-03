@@ -38,17 +38,38 @@ import com.google.adk.kt.types.ToolResponse
 import com.google.adk.kt.types.ToolType
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.workflow.NodeInfo
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Test
+
+@Serializable private data class PersistedAddress(@SerialName("zip_code") val zipCode: String)
+
+@Serializable
+private enum class OrderStatus {
+  @SerialName("shipped") SHIPPED
+}
+
+private enum class PlainStatus {
+  ACTIVE
+}
+
+private enum class Speed {
+  FAST {
+    override fun toString() = "fast"
+  }
+}
 
 /** Round-trip tests for the kotlinx.serialization wiring of the [Event] graph. */
 @OptIn(FrameworkInternalApi::class)
@@ -542,5 +563,39 @@ class EventSerializationTest {
         append(char)
       }
     }
+  }
+
+  @Test
+  fun anyToJsonElement_collectionsAndEnums_encodeAsArraysAndNames() {
+    // Act
+    val set = anyToJsonElement(setOf(1, 2))
+    val serializableEnum = anyToJsonElement(OrderStatus.SHIPPED)
+    val plainEnum = anyToJsonElement(PlainStatus.ACTIVE)
+    val entryWithBody = anyToJsonElement(Speed.FAST)
+
+    // Assert
+    assertEquals(JsonArray(listOf(JsonPrimitive(1), JsonPrimitive(2))), set)
+    assertEquals(JsonPrimitive("shipped"), serializableEnum)
+    assertEquals(JsonPrimitive("ACTIVE"), plainEnum)
+    assertEquals(JsonPrimitive("FAST"), entryWithBody)
+  }
+
+  @Test
+  fun event_setEnumAndClassOutputs_persistAsJson() {
+    // Arrange
+    val events =
+      listOf(
+        Event(output = setOf(1, 2)),
+        Event(output = OrderStatus.SHIPPED),
+        Event(output = PersistedAddress("00-001")),
+      )
+
+    // Act
+    val json = events.map { adkJson.encodeToString(Event.serializer(), it) }
+
+    // Assert
+    assertContains(json[0], "\"output\":[1,2]")
+    assertContains(json[1], "\"output\":\"shipped\"")
+    assertContains(json[2], "\"zip_code\":\"00-001\"")
   }
 }

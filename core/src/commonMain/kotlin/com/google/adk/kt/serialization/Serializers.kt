@@ -22,6 +22,7 @@ import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import com.google.genai.kotlin.types.DurationStringSerializer
 import kotlin.math.roundToLong
 import kotlin.time.Duration
+import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -46,6 +47,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.serializerOrNull
 
 /**
  * JSON-object marker used to round-trip the [State.REMOVED] sentinel through the event log. The
@@ -87,6 +89,11 @@ internal object AnySerializer : KSerializer<Any> {
   }
 }
 
+/**
+ * Encodes [value] as JSON: a JSON-native value as is, any collection as an array, and any other
+ * value through the serializer of its runtime class, or by name for an enum without one. That
+ * lookup misses generic `@Serializable` classes, which need the serializer carried with the value.
+ */
 @FrameworkInternalApi
 fun anyToJsonElement(value: Any?): JsonElement =
   when (value) {
@@ -103,14 +110,24 @@ fun anyToJsonElement(value: Any?): JsonElement =
     is Short -> JsonPrimitive(value)
     is Map<*, *> ->
       JsonObject(value.entries.associate { (k, v) -> k.toString() to anyToJsonElement(v) })
-    is List<*> -> JsonArray(value.map { anyToJsonElement(it) })
+    is Collection<*> -> JsonArray(value.map { anyToJsonElement(it) })
+    else -> runtimeClassToJsonElement(value)
+  }
+
+@OptIn(InternalSerializationApi::class)
+private fun runtimeClassToJsonElement(value: Any): JsonElement {
+  @Suppress("UNCHECKED_CAST") val serializer = value::class.serializerOrNull() as KSerializer<Any>?
+  return when {
+    serializer != null -> adkJsonWithDefaults.encodeToJsonElement(serializer, value)
+    value is Enum<*> -> JsonPrimitive(value.name)
     else ->
       throw IllegalArgumentException(
-        "AnySerializer cannot serialize value of type ${value::class.simpleName}. Tool results " +
-          "must be JSON-native (Map/List/String/number/Boolean/null); return a Map or use @Tool " +
-          "to return a data class."
+        "AnySerializer cannot serialize value of type ${value::class.simpleName}. Use a " +
+          "JSON-native value (map, collection, string, number, boolean, null), an enum, or a " +
+          "@Serializable class."
       )
   }
+}
 
 @FrameworkInternalApi
 fun jsonElementToAny(element: JsonElement): Any? =
@@ -335,3 +352,11 @@ val adkJson: Json = Json {
   ignoreUnknownKeys = true
   serializersModule = SerializersModule { contextual(Any::class, AnySerializer) }
 }
+
+/** [adkJson] that also writes default and `null` values, so an encoded class keeps every field. */
+@OptIn(FrameworkInternalApi::class)
+internal val adkJsonWithDefaults: Json =
+  Json(adkJson) {
+    encodeDefaults = true
+    explicitNulls = true
+  }

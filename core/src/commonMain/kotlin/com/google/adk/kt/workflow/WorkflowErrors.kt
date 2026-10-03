@@ -38,6 +38,14 @@ internal data class NodeExecutionFailure(val cause: Throwable, val nodePath: Str
 class NodeTimeoutException(val nodeName: String, val timeout: Duration, cause: Throwable? = null) :
   NodeExecutionException("NodeTimeoutError", "Node '$nodeName' timed out after $timeout.", cause)
 
+/**
+ * Raised when a node's runtime input fails validation. Reports `typeName =
+ * "NodeInputValidationError"`.
+ */
+@ExperimentalWorkflowApi
+class NodeInputValidationException(message: String, cause: Throwable? = null) :
+  NodeExecutionException("NodeInputValidationError", message, cause)
+
 /** A workflow graph failed validation. Raised when the graph is built, not when it runs. */
 @ExperimentalWorkflowApi
 class GraphValidationException(message: String) : IllegalArgumentException(message)
