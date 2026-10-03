@@ -19,6 +19,7 @@ package com.google.adk.kt.types
 import com.google.genai.kotlin.types.ActivityHandling as SdkActivityHandling
 import com.google.genai.kotlin.types.AudioTranscriptionConfig as SdkAudioTranscriptionConfig
 import com.google.genai.kotlin.types.EndSensitivity as SdkEndSensitivity
+import com.google.genai.kotlin.types.InteractionStatus as SdkInteractionStatus
 import com.google.genai.kotlin.types.LanguageHints as SdkLanguageHints
 import com.google.genai.kotlin.types.LiveConnectConfig as SdkLiveConnectConfig
 import com.google.genai.kotlin.types.LiveServerGoAway as SdkLiveServerGoAway
@@ -101,6 +102,20 @@ class LiveConvertersTest {
   }
 
   @Test
+  fun interactionStatus_everySdkConstant_convertsToTheMatchingAdkMember() {
+    assertEquals(
+      InteractionStatus.entries.toList(),
+      listOf(
+          SdkInteractionStatus.INTERACTION_STATUS_UNSPECIFIED,
+          SdkInteractionStatus.IN_PROGRESS,
+          SdkInteractionStatus.REQUIRES_ACTION,
+          SdkInteractionStatus.IDLE,
+        )
+        .map { it.toKt() },
+    )
+  }
+
+  @Test
   fun enums_unknownSdkValue_fallBackToUnspecified() {
     assertEquals(Modality.MODALITY_UNSPECIFIED, SdkModality("NOT_A_MODALITY").toKt())
     assertEquals(
@@ -123,6 +138,10 @@ class LiveConvertersTest {
     assertEquals(
       TurnCompleteReason.TURN_COMPLETE_REASON_UNSPECIFIED,
       SdkTurnCompleteReason("NOT_A_TURN_COMPLETE_REASON").toKt(),
+    )
+    assertEquals(
+      InteractionStatus.INTERACTION_STATUS_UNSPECIFIED,
+      SdkInteractionStatus("NOT_AN_INTERACTION_STATUS").toKt(),
     )
   }
 
@@ -478,6 +497,7 @@ class LiveConvertersTest {
           listOf(SdkModalityTokenCount(modality = SdkMediaModality.AUDIO, tokenCount = 22)),
         toolUsePromptTokensDetails =
           listOf(SdkModalityTokenCount(modality = SdkMediaModality.TEXT, tokenCount = 55)),
+        trafficType = SdkTrafficType.ON_DEMAND,
       )
 
     val adk = sdk.fromGenaiSdk()
@@ -501,6 +521,7 @@ class LiveConvertersTest {
       listOf(ModalityTokenCount(modality = MediaModality.TEXT, tokenCount = 55)),
       adk.toolUsePromptTokensDetails,
     )
+    assertEquals(SdkTrafficType.ON_DEMAND.value, adk.trafficType)
   }
 
   @Test
@@ -509,16 +530,14 @@ class LiveConvertersTest {
       SdkLiveUsageMetadata(
         responseTokenCount = 1,
         serviceTier = SdkServiceTier.STANDARD,
-        trafficType = SdkTrafficType("ON_DEMAND"),
         cacheTokensDetails =
           listOf(SdkModalityTokenCount(modality = SdkMediaModality.TEXT, tokenCount = 9)),
       )
 
     val adk = sdk.fromGenaiSdk()
 
-    assertEquals(1, adk.candidatesTokenCount)
-    // The converter's KDoc pins all three drops; only `trafficType` has an ADK counterpart at all.
-    assertNull(adk.trafficType)
+    // Neither dropped field may land on another ADK field.
+    assertEquals(UsageMetadata(candidatesTokenCount = 1), adk)
   }
 
   @Test

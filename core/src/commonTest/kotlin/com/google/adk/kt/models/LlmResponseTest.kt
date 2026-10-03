@@ -25,13 +25,21 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerGoAway
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.LogprobsResult
 import com.google.adk.kt.types.PromptFeedback
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.TurnCompleteReason
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VoiceActivity
+import com.google.adk.kt.types.VoiceActivityType
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.time.Duration.Companion.seconds
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -230,6 +238,15 @@ class LlmResponseTest {
         avgLogprobs = -0.5,
         logprobsResult = LogprobsResult(logProbabilitySum = -1.5),
         cacheMetadata = CacheMetadata(fingerprint = "abc", contentsCount = 2),
+        turnComplete = true,
+        turnCompleteReason = TurnCompleteReason.RESPONSE_REJECTED,
+        interactionStatus = InteractionStatus.IN_PROGRESS,
+        inputTranscription = Transcription(text = "heard", finished = true),
+        outputTranscription = Transcription(text = "said", finished = false),
+        liveSessionId = "session-1",
+        liveSessionResumptionUpdate = LiveServerSessionResumptionUpdate(newHandle = "handle-1"),
+        goAway = LiveServerGoAway(timeLeft = 5.seconds),
+        voiceActivity = VoiceActivity(voiceActivityType = VoiceActivityType.ACTIVITY_START),
       )
 
     assertEquals(response.copy(), response.toBuilder().build())
