@@ -19,6 +19,8 @@ package com.google.adk.kt.types
 import com.google.genai.kotlin.types.ActivityHandling as SdkActivityHandling
 import com.google.genai.kotlin.types.AudioTranscriptionConfig as SdkAudioTranscriptionConfig
 import com.google.genai.kotlin.types.EndSensitivity as SdkEndSensitivity
+import com.google.genai.kotlin.types.HttpOptions as SdkHttpOptions
+import com.google.genai.kotlin.types.InteractionStatus as SdkInteractionStatus
 import com.google.genai.kotlin.types.LanguageHints as SdkLanguageHints
 import com.google.genai.kotlin.types.LiveConnectConfig as SdkLiveConnectConfig
 import com.google.genai.kotlin.types.LiveServerGoAway as SdkLiveServerGoAway
@@ -101,6 +103,20 @@ class LiveConvertersTest {
   }
 
   @Test
+  fun interactionStatus_everySdkConstant_convertsToTheMatchingAdkMember() {
+    assertEquals(
+      InteractionStatus.entries.toList(),
+      listOf(
+          SdkInteractionStatus.INTERACTION_STATUS_UNSPECIFIED,
+          SdkInteractionStatus.IN_PROGRESS,
+          SdkInteractionStatus.REQUIRES_ACTION,
+          SdkInteractionStatus.IDLE,
+        )
+        .map { it.toKt() },
+    )
+  }
+
+  @Test
   fun enums_unknownSdkValue_fallBackToUnspecified() {
     assertEquals(Modality.MODALITY_UNSPECIFIED, SdkModality("NOT_A_MODALITY").toKt())
     assertEquals(
@@ -123,6 +139,10 @@ class LiveConvertersTest {
     assertEquals(
       TurnCompleteReason.TURN_COMPLETE_REASON_UNSPECIFIED,
       SdkTurnCompleteReason("NOT_A_TURN_COMPLETE_REASON").toKt(),
+    )
+    assertEquals(
+      InteractionStatus.INTERACTION_STATUS_UNSPECIFIED,
+      SdkInteractionStatus("NOT_AN_INTERACTION_STATUS").toKt(),
     )
   }
 
@@ -287,6 +307,13 @@ class LiveConvertersTest {
   }
 
   @Test
+  fun translationConfig_everyFieldSet_roundTripsThroughSdk() {
+    val config = TranslationConfig(targetLanguageCode = "es", echoTargetLanguage = true)
+
+    assertEquals(config, config.toGenaiSdk().fromGenaiSdk())
+  }
+
+  @Test
   fun liveConnectConfig_everyFieldSet_roundTripsThroughSdk() {
     val config = fullyPopulatedLiveConnectConfig()
 
@@ -315,6 +342,8 @@ class LiveConvertersTest {
     assertEquals(16_000L, sdk.contextWindowCompression?.triggerTokens)
     assertEquals(true, sdk.proactivity?.proactiveAudio)
     assertEquals(1, sdk.safetySettings?.size)
+    assertEquals(true, sdk.explicitVadSignal)
+    assertEquals("es", sdk.translationConfig?.targetLanguageCode)
   }
 
   @Test
@@ -336,15 +365,12 @@ class LiveConvertersTest {
     // The converter must not invent these; `toGenaiSdk`'s KDoc says which are permanent.
     assertNull(sdk.httpOptions)
     assertNull(sdk.avatarConfig)
-    assertNull(sdk.explicitVadSignal)
-    assertNull(sdk.translationConfig)
   }
 
   @Test
   fun liveConnectConfig_mirrorsEverySdkFieldItDoesNotDeliberatelyDrop() {
     // Names only: the round trip above catches wrong targets; this catches an undecided field.
-    val deliberatelyDropped =
-      setOf("avatarConfig", "explicitVadSignal", "httpOptions", "translationConfig")
+    val deliberatelyDropped = setOf("avatarConfig", "httpOptions")
     val sdkDescriptor = SdkLiveConnectConfig.serializer().descriptor
     val adkDescriptor = LiveConnectConfig.serializer().descriptor
     val sdkDeclared =
@@ -357,13 +383,13 @@ class LiveConvertersTest {
 
   @Test
   fun liveConnectConfig_fromGenaiSdk_ignoresUnmirroredSdkFields() {
-    val sdk = SdkLiveConnectConfig(explicitVadSignal = true, temperature = 0.25)
+    val sdk = SdkLiveConnectConfig(httpOptions = SdkHttpOptions(timeout = 5), temperature = 0.25)
 
     val adk = sdk.fromGenaiSdk()
 
     assertEquals(0.25f, adk.temperature)
     // Converting back does not resurrect the unmirrored field.
-    assertNull(adk.toGenaiSdk().explicitVadSignal)
+    assertNull(adk.toGenaiSdk().httpOptions)
   }
 
   @Test
@@ -478,6 +504,7 @@ class LiveConvertersTest {
           listOf(SdkModalityTokenCount(modality = SdkMediaModality.AUDIO, tokenCount = 22)),
         toolUsePromptTokensDetails =
           listOf(SdkModalityTokenCount(modality = SdkMediaModality.TEXT, tokenCount = 55)),
+        trafficType = SdkTrafficType.ON_DEMAND,
       )
 
     val adk = sdk.fromGenaiSdk()
@@ -501,6 +528,7 @@ class LiveConvertersTest {
       listOf(ModalityTokenCount(modality = MediaModality.TEXT, tokenCount = 55)),
       adk.toolUsePromptTokensDetails,
     )
+    assertEquals(SdkTrafficType.ON_DEMAND.value, adk.trafficType)
   }
 
   @Test
@@ -509,16 +537,14 @@ class LiveConvertersTest {
       SdkLiveUsageMetadata(
         responseTokenCount = 1,
         serviceTier = SdkServiceTier.STANDARD,
-        trafficType = SdkTrafficType("ON_DEMAND"),
         cacheTokensDetails =
           listOf(SdkModalityTokenCount(modality = SdkMediaModality.TEXT, tokenCount = 9)),
       )
 
     val adk = sdk.fromGenaiSdk()
 
-    assertEquals(1, adk.candidatesTokenCount)
-    // The converter's KDoc pins all three drops; only `trafficType` has an ADK counterpart at all.
-    assertNull(adk.trafficType)
+    // Neither dropped field may land on another ADK field.
+    assertEquals(UsageMetadata(candidatesTokenCount = 1), adk)
   }
 
   @Test
@@ -582,5 +608,7 @@ class LiveConvertersTest {
             threshold = HarmBlockThreshold.BLOCK_ONLY_HIGH,
           )
         ),
+      explicitVadSignal = true,
+      translationConfig = TranslationConfig(targetLanguageCode = "es", echoTargetLanguage = true),
     )
 }
