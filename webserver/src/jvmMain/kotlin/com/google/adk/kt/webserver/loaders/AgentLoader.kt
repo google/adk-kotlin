@@ -21,7 +21,8 @@ import com.google.adk.kt.agents.BaseAgent
 /**
  * Interface for loading agents to the ADK Web Server.
  *
- * Users implement this interface to register their agents with ADK Web Server.
+ * Users implement this interface to register their agents with ADK Web Server. To serve a root that
+ * is not an agent, such as a workflow, implement [NodeLoader] instead.
  */
 interface AgentLoader {
 
