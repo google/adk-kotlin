@@ -14,10 +14,14 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalWorkflowApi::class)
+
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.plugins.Plugin
@@ -30,8 +34,13 @@ import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.SingleAgentLoader
 import com.google.adk.kt.webserver.models.RunResponse
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -47,6 +56,7 @@ import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -186,6 +196,90 @@ class ApiServerTest {
   }
 
   @Test
+  fun runRoute_workflowRoot_runsTheGraph() = testApplication {
+    // Arrange
+    application { adkApiModule(testConfig(agentLoader = SingleAgentLoader(greetingWorkflow()))) }
+
+    // Act
+    val response =
+      client.post("/run") {
+        contentType(ContentType.Application.Json)
+        setBody(
+          "{\"appName\":\"greeter\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hi\"}]}}"
+        )
+      }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    val body = response.bodyAsText()
+    assertThat(body).contains("\"output\":\"hello\"")
+    assertThat(body).contains("\"path\":\"greeter@1/greet@1\"")
+  }
+
+  @Test
+  fun runRoute_workflowRoot_appliesServerPlugins() = testApplication {
+    // Arrange
+    application {
+      adkApiModule(
+        testConfig(
+          plugins = listOf(StampingPlugin()),
+          agentLoader = SingleAgentLoader(greetingWorkflow()),
+        )
+      )
+    }
+
+    // Act
+    val response =
+      client.post("/run") {
+        contentType(ContentType.Application.Json)
+        setBody(
+          "{\"appName\":\"greeter\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hi\"}]}}"
+        )
+      }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(response.bodyAsText()).contains("stamped by the plugin")
+  }
+
+  @Test
+  fun runSseRoute_workflowRoot_streamsGraphEvents() = testApplication {
+    // Arrange
+    application { adkApiModule(testConfig(agentLoader = SingleAgentLoader(greetingWorkflow()))) }
+
+    // Act
+    val response =
+      client.post("/run_sse") {
+        contentType(ContentType.Application.Json)
+        setBody(
+          "{\"appName\":\"greeter\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"streaming\":true,\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hi\"}]}}"
+        )
+      }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    val body = response.bodyAsText()
+    assertThat(body).contains("data: ")
+    assertThat(body).contains("\"path\":\"greeter@1/greet@1\"")
+  }
+
+  @Test
+  fun runRoute_unknownApp_returnsNotFound() = testApplication {
+    // Arrange
+    application { adkApiModule(testConfig(agentLoader = SingleAgentLoader(greetingWorkflow()))) }
+
+    // Act
+    val response =
+      client.post("/run") {
+        contentType(ContentType.Application.Json)
+        setBody("{\"appName\":\"missing\",\"userId\":\"testUser\",\"sessionId\":\"testSession\"}")
+      }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.NotFound)
+  }
+
+  @Test
   fun runSseRoute_returnsStream() = testApplication {
     application { adkApiModule(testConfig()) }
 
@@ -206,7 +300,27 @@ class ApiServerTest {
     assertThat(body).doesNotContain("\"interrupted\"")
   }
 
-  private fun testConfig(plugins: List<Plugin> = emptyList()) =
+  /** A workflow whose only node outputs "hello". */
+  private fun greetingWorkflow() =
+    Workflow(
+      name = "greeter",
+      edges =
+        listOf(
+          Edge(
+            Start,
+            object : Node {
+              override val name = "greet"
+
+              override fun runNode(context: Context, nodeInput: Any?) = flowOf("hello")
+            },
+          )
+        ),
+    )
+
+  private fun testConfig(
+    plugins: List<Plugin> = emptyList(),
+    agentLoader: AgentLoader = this.agentLoader,
+  ) =
     AdkServerConfig(
       agentLoader = agentLoader,
       sessionService = sessionService,
