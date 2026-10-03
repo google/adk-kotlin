@@ -35,6 +35,18 @@ class BigQueryLoggerConfigTest {
         location = "EU",
         tableName = "test-table",
         credentials = mock<Credentials>(),
+        eventAllowlist = setOf("LLM_REQUEST"),
+        eventDenylist = setOf("STATE_DELTA"),
+        maxContentLength = 1024,
+        clusteringFields = listOf("agent"),
+        logMultiModalContent = false,
+        logSessionMetadata = false,
+        customTags = mapOf("env" to "test"),
+        autoSchemaUpgrade = false,
+        createViews = true,
+        viewPrefix = "custom",
+        connectionId = "us.test-connection",
+        contentFormatter = { content, _ -> content },
       )
 
     assertEquals(config.copy(), config.toBuilder().build())
