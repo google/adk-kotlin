@@ -20,14 +20,18 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.AppLoader
+import com.google.adk.kt.webserver.loaders.loadRoot
 import com.google.adk.kt.webserver.models.AgentRunRequest
 import com.google.adk.kt.webserver.models.SseError
+import com.google.adk.kt.workflow.Node
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -58,11 +62,9 @@ internal fun Route.runRoutes(
   route("/run") {
     post {
       val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
-      val agent = agentLoader.loadAgent(request.appName)
-      if (agent == null) {
-        return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
-      }
-      val runner = buildRunner(agent, request.appName, sessionService, artifactService, plugins)
+      val runner =
+        agentLoader.runnerOrNull(request.appName, sessionService, artifactService, plugins)
+          ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
 
       // The /run endpoint always returns the full event list; SSE is handled by /run_sse.
       val runConfig = RunConfig(streamingMode = StreamingMode.NONE)
@@ -87,11 +89,9 @@ internal fun Route.runRoutes(
 
   post("/run_sse") {
     val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
-    val agent = agentLoader.loadAgent(request.appName)
-    if (agent == null) {
-      return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
-    }
-    val runner = buildRunner(agent, request.appName, sessionService, artifactService, plugins)
+    val runner =
+      agentLoader.runnerOrNull(request.appName, sessionService, artifactService, plugins)
+        ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
 
     val runConfig =
       RunConfig(streamingMode = if (request.streaming) StreamingMode.SSE else StreamingMode.NONE)
@@ -131,23 +131,50 @@ internal fun Route.runRoutes(
 }
 
 /**
- * Builds an [InMemoryRunner] from the root [agent].
- *
- * [appName] comes from the request and names an agent, so it is passed to the runner as given: an
- * `App` would additionally require it to be a valid app name, which is a narrower grammar than
- * agent names allow.
+ * Builds an [InMemoryRunner] for [appName], running a loaded [App] with its plugins ahead of
+ * [plugins], or returns null if not found.
+ */
+private fun AgentLoader.runnerOrNull(
+  appName: String,
+  sessionService: SessionService,
+  artifactService: ArtifactService,
+  plugins: List<Plugin>,
+): InMemoryRunner? {
+  if (this is AppLoader) {
+    val app = loadApp(appName) ?: return null
+    return InMemoryRunner(
+      app = app.copy(appName = appName, plugins = app.plugins + plugins),
+      sessionService = sessionService,
+      artifactService = artifactService,
+    )
+  }
+  val root = loadRoot(appName) ?: return null
+  return buildRunner(root, appName, sessionService, artifactService, plugins)
+}
+
+/**
+ * Builds an [InMemoryRunner] for [root], passing [appName] directly for an agent root or wrapping a
+ * non-agent node in an [App].
  */
 private fun buildRunner(
-  agent: BaseAgent,
+  root: Node,
   appName: String,
   sessionService: SessionService,
   artifactService: ArtifactService,
   plugins: List<Plugin>,
 ): InMemoryRunner =
-  InMemoryRunner(
-    agent = agent,
-    appName = appName,
-    sessionService = sessionService,
-    artifactService = artifactService,
-    plugins = plugins,
-  )
+  if (root is BaseAgent) {
+    InMemoryRunner(
+      agent = root,
+      appName = appName,
+      sessionService = sessionService,
+      artifactService = artifactService,
+      plugins = plugins,
+    )
+  } else {
+    InMemoryRunner(
+      app = App(appName = appName, rootNode = root, plugins = plugins),
+      sessionService = sessionService,
+      artifactService = artifactService,
+    )
+  }
