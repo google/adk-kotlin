@@ -49,6 +49,8 @@ dependencies {
   // The official Anthropic SDK. Exposed on the API surface because a constructor takes an
   // `AnthropicClient`, so callers can configure any backend the SDK supports.
   api(libs.anthropic.java)
+  // The SDK's Vertex AI backend, behind the `VertexCredentials` constructor.
+  implementation(libs.anthropic.java.vertex)
 
   testImplementation(kotlin("test"))
   testImplementation(libs.junit)

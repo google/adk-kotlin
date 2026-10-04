@@ -19,6 +19,7 @@ import com.anthropic.client.AnthropicClient
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
 import com.anthropic.errors.RateLimitException
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.CodeExecutionResult
 import com.google.adk.kt.types.Content
@@ -34,7 +35,12 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.Type
+import com.google.auth.oauth2.AccessToken
+import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
+import java.io.IOException
+import java.time.Instant
+import java.util.Date
 import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -57,6 +63,7 @@ class ClaudeTest {
   private lateinit var server: MockWebServer
   private lateinit var client: AnthropicClient
   private lateinit var claude: Claude
+  private val vertexClients = mutableListOf<AnthropicClient>()
 
   @Before
   fun setUp() {
@@ -74,6 +81,7 @@ class ClaudeTest {
   @After
   fun tearDown() {
     client.close()
+    vertexClients.forEach { it.close() }
     server.close()
   }
 
@@ -656,6 +664,169 @@ class ClaudeTest {
       assertThat(response.errorCode).isEqualTo("MAX_TOKENS")
     }
 
+  @Test
+  fun vertexClient_sendsRawPredictWithBearerTokenAndVertexBody() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"pong"}]""")))
+      val vertex = vertexClaude()
+
+      val response = vertex.generateContent(userRequest("Ping"), stream = false).toList().single()
+
+      assertThat(response.content!!.parts.single().text).isEqualTo("pong")
+      val recorded = server.takeRequest()
+      assertThat(recorded.target)
+        .isEqualTo(
+          "/v1/projects/test-project/locations/europe-west1/publishers/anthropic/models/" +
+            "claude-haiku-4-5:rawPredict"
+        )
+      assertThat(recorded.headers["Authorization"]).isEqualTo("Bearer fake-token")
+      assertThat(recorded.headers["x-goog-api-client"]).startsWith("google-adk/")
+      assertThat(recorded.headers["user-agent"]).startsWith("google-adk/")
+      val body = Json.parseToJsonElement(recorded.body!!.utf8()).jsonObject
+      assertThat(body["anthropic_version"]!!.jsonPrimitive.content).isEqualTo("vertex-2023-10-16")
+      // The model id travels in the URL, not the body.
+      assertThat(body).doesNotContainKey("model")
+    }
+
+  @Test
+  fun vertexClient_streamsThroughStreamRawPredict() =
+    runBlocking<Unit> {
+      server.enqueue(
+        MockResponse(
+          headers = Headers.headersOf("content-type", "text/event-stream"),
+          body =
+            sse(
+              "message_start" to
+                """{"type":"message_start","message":${message(content = "[]", stopReason = null)}}""",
+              "message_delta" to
+                """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}""",
+              "message_stop" to """{"type":"message_stop"}""",
+            ),
+        )
+      )
+      val vertex = vertexClaude()
+
+      vertex.generateContent(userRequest("Ping"), stream = true).toList()
+
+      assertThat(server.takeRequest().target).endsWith("/claude-haiku-4-5:streamRawPredict")
+    }
+
+  @Test
+  fun vertexClient_requiresProject() {
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        vertexClient(vertexCredentials().copy(project = null), env = { " " })
+      }
+
+    assertThat(error).hasMessageThat().contains("GOOGLE_CLOUD_PROJECT")
+  }
+
+  @Test
+  fun vertexClient_requiresLocation() {
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        vertexClient(vertexCredentials().copy(location = null), env = { " " })
+      }
+
+    assertThat(error).hasMessageThat().contains("GOOGLE_CLOUD_LOCATION")
+  }
+
+  @Test
+  fun vertexClient_fallsBackToEnvironmentForMissingOrBlankProjectAndLocation() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"pong"}]""")))
+      val env =
+        mapOf("GOOGLE_CLOUD_PROJECT" to "env-project", "GOOGLE_CLOUD_LOCATION" to "us-east5")
+      val credentials = vertexCredentials().copy(project = null, location = " ")
+      val vertex = vertexClaude(credentials, env::get)
+
+      vertex.generateContent(userRequest("Ping"), stream = false).toList()
+
+      assertThat(server.takeRequest().target)
+        .startsWith("/v1/projects/env-project/locations/us-east5/")
+    }
+
+  @Test
+  fun vertexClient_fallsBackToApplicationDefaultCredentials() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"pong"}]""")))
+      val vertex =
+        vertexClaude(
+          vertexCredentials().copy(credentials = null),
+          defaultCredentials = { accessTokenCredentials("adc-token") },
+        )
+
+      vertex.generateContent(userRequest("Ping"), stream = false).toList()
+
+      assertThat(server.takeRequest().headers["Authorization"]).isEqualTo("Bearer adc-token")
+    }
+
+  @Test
+  fun vertexClient_explainsMissingApplicationDefaultCredentials() {
+    val cause = IOException("no default credentials")
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        vertexClient(
+          vertexCredentials().copy(credentials = null),
+          defaultCredentials = { throw cause },
+        )
+      }
+
+    assertThat(error).hasMessageThat().contains("VertexCredentials.credentials")
+    assertThat(error).hasCauseThat().isSameInstanceAs(cause)
+  }
+
+  @Test
+  fun vertexConstructor_buildsAVertexClientFromTheGivenCredentials() {
+    val credentials = ScopeRequiringCredentials()
+
+    Claude("claude-haiku-4-5", vertexCredentials().copy(credentials = credentials))
+
+    // Only the Vertex AI client reads the Google credentials, scoping them as it is built.
+    assertThat(credentials.requestedScopes)
+      .containsExactly("https://www.googleapis.com/auth/cloud-platform")
+  }
+
+  @Test
+  fun vertexClient_scopesCredentialsThatRequireIt() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"pong"}]""")))
+      val credentials = ScopeRequiringCredentials()
+      val vertex = vertexClaude(vertexCredentials().copy(credentials = credentials))
+
+      vertex.generateContent(userRequest("Ping"), stream = false).toList()
+
+      assertThat(credentials.requestedScopes)
+        .containsExactly("https://www.googleapis.com/auth/cloud-platform")
+      assertThat(server.takeRequest().headers["Authorization"]).isEqualTo("Bearer scoped-token")
+    }
+
+  /** A Vertex AI [Claude] that targets the mock server; its client is closed in [tearDown]. */
+  private fun vertexClaude(
+    credentials: VertexCredentials = vertexCredentials(),
+    env: (String) -> String? = { null },
+    defaultCredentials: () -> GoogleCredentials = { error("Tests stub default credentials.") },
+  ): Claude =
+    Claude(
+      "claude-haiku-4-5",
+      vertexClient(credentials, server.url("/").toString(), env, defaultCredentials).also {
+        vertexClients += it
+      },
+    )
+
+  private fun vertexCredentials(): VertexCredentials =
+    VertexCredentials(
+      project = "test-project",
+      location = "europe-west1",
+      credentials = accessTokenCredentials("fake-token"),
+    )
+
+  private fun accessTokenCredentials(token: String): GoogleCredentials =
+    GoogleCredentials.newBuilder()
+      .setAccessToken(AccessToken(token, Date.from(Instant.now().plusSeconds(3600))))
+      .build()
+
   private fun recordedBody(): JsonObject =
     Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
 
@@ -699,4 +870,16 @@ class ClaudeTest {
 
   private fun sse(vararg events: Pair<String, String>): String =
     events.joinToString(separator = "") { (event, data) -> "event: $event\ndata: $data\n\n" }
+}
+
+/** Credentials that, like a service account, must be scoped before they can mint a token. */
+private class ScopeRequiringCredentials : GoogleCredentials() {
+  var requestedScopes: Collection<String>? = null
+
+  override fun createScopedRequired(): Boolean = true
+
+  override fun createScoped(scopes: Collection<String>): GoogleCredentials {
+    requestedScopes = scopes
+    return create(AccessToken("scoped-token", Date.from(Instant.now().plusSeconds(3600))))
+  }
 }
