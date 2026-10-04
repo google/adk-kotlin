@@ -22,12 +22,17 @@ import com.anthropic.helpers.MessageAccumulator
 import com.anthropic.models.messages.RawContentBlockDelta
 import com.anthropic.models.messages.RawContentBlockDeltaEvent
 import com.anthropic.models.messages.RawMessageStreamEvent
+import com.anthropic.vertex.backends.VertexBackend
+import com.google.adk.kt.VERSION
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
+import com.google.auth.oauth2.GoogleCredentials
+import java.io.IOException
 import java.util.Optional
 import java.util.concurrent.CompletionException
 import kotlin.jvm.optionals.getOrNull
@@ -37,6 +42,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.future.await
+
+private const val CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
+/** Lets Vertex AI attribute usage to ADK, in the format the other ADK SDKs send. */
+private val TRACKING_HEADER = "google-adk/$VERSION gl-kotlin/${KotlinVersion.CURRENT}"
 
 /**
  * A [Model] backed by Anthropic's Claude models through the official Anthropic Java SDK.
@@ -72,6 +82,26 @@ constructor(
     apiKey: String? = null,
     maxTokens: Int = DEFAULT_MAX_TOKENS,
   ) : this(name, anthropicApiClient(apiKey), maxTokens)
+
+  /**
+   * Creates a [Claude] model served through Vertex AI. The SDK client it creates is closed when the
+   * model is garbage collected; pass your own [AnthropicClient] to close it sooner.
+   *
+   * @param name The Claude model id as published on Vertex AI (e.g. `claude-haiku-4-5`).
+   * @param vertexCredentials The Vertex AI project, location, and credentials. Project and location
+   *   fall back to the `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` environment variables;
+   *   credentials default to Application Default Credentials.
+   * @param maxTokens The default `max_tokens` (8192), used when the request config sets none.
+   * @throws IllegalArgumentException If no project or location is set.
+   * @throws IllegalStateException If no credentials are set and Application Default Credentials are
+   *   unavailable.
+   */
+  @JvmOverloads
+  constructor(
+    name: String,
+    vertexCredentials: VertexCredentials,
+    maxTokens: Int = DEFAULT_MAX_TOKENS,
+  ) : this(name, vertexClient(vertexCredentials), maxTokens)
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
     val params = request.toMessageCreateParams(name, maxTokens)
@@ -114,6 +144,50 @@ private fun anthropicApiClient(apiKey: String?): AnthropicClient {
   val builder = AnthropicOkHttpClient.builder().fromEnv()
   if (apiKey != null) builder.apiKey(apiKey)
   return builder.build()
+}
+
+/**
+ * Builds an SDK client that reaches Claude through Vertex AI. Tests replace the host, the
+ * environment, and Application Default Credentials through [baseUrl], [env], and
+ * [defaultCredentials].
+ */
+internal fun vertexClient(
+  vertexCredentials: VertexCredentials,
+  baseUrl: String? = null,
+  env: (String) -> String? = System::getenv,
+  defaultCredentials: () -> GoogleCredentials = GoogleCredentials::getApplicationDefault,
+): AnthropicClient {
+  // A blank value counts as unset.
+  fun setting(value: String?, field: String, envName: String): String =
+    requireNotNull(value?.ifBlank { null } ?: env(envName)?.ifBlank { null }) {
+      "Claude on Vertex AI needs a $field: set VertexCredentials.$field or $envName."
+    }
+  val project = setting(vertexCredentials.project, "project", "GOOGLE_CLOUD_PROJECT")
+  val location = setting(vertexCredentials.location, "location", "GOOGLE_CLOUD_LOCATION")
+  var credentials =
+    vertexCredentials.credentials
+      ?: try {
+        defaultCredentials()
+      } catch (e: IOException) {
+        // Java cannot catch an undeclared checked exception by type, so rethrow it unchecked.
+        throw IllegalStateException(
+          "Claude on Vertex AI needs credentials: set VertexCredentials.credentials or configure" +
+            " Application Default Credentials.",
+          e,
+        )
+      }
+  // The backend does not scope credentials; service accounts need a scope, user credentials don't.
+  if (credentials.createScopedRequired()) {
+    credentials = credentials.createScoped(CLOUD_PLATFORM_SCOPE)
+  }
+  val backendBuilder =
+    VertexBackend.builder().googleCredentials(credentials).region(location).project(project)
+  if (baseUrl != null) backendBuilder.baseUrl(baseUrl)
+  return AnthropicOkHttpClient.builder()
+    .backend(backendBuilder.build())
+    .putHeader("x-goog-api-client", TRACKING_HEADER)
+    .putHeader("user-agent", TRACKING_HEADER)
+    .build()
 }
 
 private fun emptyInputJsonDelta(index: Long): RawMessageStreamEvent =
