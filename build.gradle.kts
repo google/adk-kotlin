@@ -97,13 +97,19 @@ subprojects {
         }
       }
 
-      // Three entries keep literal URLs: the kotlinlang.org ones carry no version, and
-      // error-prone uses javadoc.io's moving `latest/`. The rest read the catalog.
+      // Four entries keep literal URLs: the kotlinlang.org ones carry no version, and error-prone
+      // and anthropic-java-core use javadoc.io's moving `latest/` (javadoc.io lags anthropic's
+      // releases, so a versioned URL can 404). The rest read the catalog.
       link("kotlinx-coroutines", "https://kotlinlang.org/api/kotlinx.coroutines/")
       link("kotlinx-serialization", "https://kotlinlang.org/api/kotlinx.serialization/")
       link(
         "error-prone-annotations",
         "https://javadoc.io/doc/com.google.errorprone/error_prone_annotations/latest/",
+        "element-list",
+      )
+      link(
+        "anthropic-java-core",
+        "https://javadoc.io/doc/com.anthropic/anthropic-java-core/latest/",
         "element-list",
       )
       link(
