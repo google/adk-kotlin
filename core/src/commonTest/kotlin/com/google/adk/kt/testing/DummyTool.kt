@@ -46,16 +46,20 @@ import com.google.adk.kt.types.FunctionDeclaration
  * @param onRun The suspendable lambda that simulates the [run] method execution. It receives the
  *   [ToolContext] and arguments map, and must return the tool's result. Defaults to returning a
  *   successful "status" mapped to "done".
+ * @param declares Whether [declaration] returns a [FunctionDeclaration], so the model is offered
+ *   the tool. Defaults to `false`.
  */
 class DummyTool(
   name: String = "dummy_tool",
   description: String = "A dummy tool for testing.",
   isLongRunning: Boolean = false,
+  private val declares: Boolean = false,
   val onRun: suspend (context: ToolContext, args: Map<String, Any?>) -> Any = { _, _ ->
     mapOf("status" to "done")
   },
 ) : BaseTool(name, description, isLongRunning) {
-  override fun declaration(): FunctionDeclaration? = null
+  override fun declaration(): FunctionDeclaration? =
+    if (declares) FunctionDeclaration(name = name, description = description) else null
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     return onRun(context, args)
