@@ -17,7 +17,10 @@ package com.google.adk.kt.models.anthropic
 
 import com.anthropic.client.AnthropicClient
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
+import com.anthropic.errors.BadRequestException
 import com.anthropic.errors.RateLimitException
+import com.anthropic.models.messages.OutputConfig
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.types.Blob
@@ -55,10 +58,14 @@ import mockwebserver3.MockWebServer
 import okhttp3.Headers
 import org.junit.After
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /** Drives [Claude] through the real Anthropic SDK client against canned HTTP responses. */
 class ClaudeTest {
+
+  @get:Rule val temporaryFolder = TemporaryFolder()
 
   private lateinit var server: MockWebServer
   private lateinit var client: AnthropicClient
@@ -584,26 +591,30 @@ class ClaudeTest {
     }
 
   @Test
-  fun generateContent_rejectsUnsupportedPart() {
-    val image = Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3)))
-    val request = LlmRequest(contents = listOf(Content(role = Role.USER, parts = listOf(image))))
+  fun generateContent_rejectsUnsupportedParts() {
+    val audio = Part(inlineData = Blob(mimeType = "audio/wav", data = byteArrayOf(1, 2, 3)))
+    val file = Part(fileData = FileData(fileUri = "gs://bucket/cat.png", mimeType = "image/png"))
 
-    assertFailsWith<IllegalArgumentException> {
-      runBlocking { claude.generateContent(request, stream = false).toList() }
+    for (part in listOf(audio, file)) {
+      val request = LlmRequest(contents = listOf(Content(role = Role.USER, parts = listOf(part))))
+      assertFailsWith<IllegalArgumentException> {
+        runBlocking { claude.generateContent(request, stream = false).toList() }
+      }
     }
   }
 
   @Test
-  fun generateContent_dropsImagesFromModelTurns() =
+  fun generateContent_dropsImagesAndPdfsFromModelTurns() =
     runBlocking<Unit> {
       server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"ok"}]""")))
       val image = Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3)))
+      val pdf = Part(inlineData = Blob(mimeType = "application/PDF", data = byteArrayOf(4)))
       val request =
         LlmRequest(
           contents =
             listOf(
               userText("Draw a cat"),
-              Content(role = Role.MODEL, parts = listOf(image, Part(text = "Here it is"))),
+              Content(role = Role.MODEL, parts = listOf(image, pdf, Part(text = "Here it is"))),
             )
         )
 
@@ -615,6 +626,16 @@ class ClaudeTest {
         )
         .containsExactly("Here it is")
     }
+
+  @Test
+  fun generateContent_rejectsMediaWithoutInlineData() {
+    val image = Part(inlineData = Blob(mimeType = "image/png"))
+    val request = LlmRequest(contents = listOf(Content(role = Role.USER, parts = listOf(image))))
+
+    assertFailsWith<IllegalArgumentException> {
+      runBlocking { claude.generateContent(request, stream = false).toList() }
+    }
+  }
 
   @Test
   fun generateContent_pairsIdlessResultWithOldestCallWhenNoNameMatches() =
@@ -663,6 +684,266 @@ class ClaudeTest {
       assertThat(response.finishReason).isEqualTo(FinishReason.MAX_TOKENS)
       assertThat(response.errorCode).isEqualTo("MAX_TOKENS")
     }
+
+  @Test
+  fun generateContent_sendsImagesAndPdfsAsBase64Blocks() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"ok"}]""")))
+      val parts =
+        listOf(
+          Part(inlineData = Blob(mimeType = "image/PNG; charset=binary", data = byteArrayOf(1, 2))),
+          Part(inlineData = Blob(mimeType = "application/pdf", data = byteArrayOf(3, 4))),
+          Part(text = "Describe these"),
+        )
+
+      claude
+        .generateContent(
+          LlmRequest(contents = listOf(Content(role = Role.USER, parts = parts))),
+          stream = false,
+        )
+        .toList()
+
+      val blocks =
+        recordedBody()["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray.map {
+          it.jsonObject
+        }
+      val image = blocks[0]["source"]!!.jsonObject
+      assertThat(blocks[0]["type"]!!.jsonPrimitive.content).isEqualTo("image")
+      assertThat(image["type"]!!.jsonPrimitive.content).isEqualTo("base64")
+      assertThat(image["media_type"]!!.jsonPrimitive.content).isEqualTo("image/png")
+      assertThat(image["data"]!!.jsonPrimitive.content).isEqualTo("AQI=")
+      val pdf = blocks[1]["source"]!!.jsonObject
+      assertThat(blocks[1]["type"]!!.jsonPrimitive.content).isEqualTo("document")
+      assertThat(pdf["media_type"]!!.jsonPrimitive.content).isEqualTo("application/pdf")
+      assertThat(pdf["data"]!!.jsonPrimitive.content).isEqualTo("AwQ=")
+    }
+
+  @Test
+  fun generateContent_mapsThinkingBlocksToSignedThoughts() =
+    runBlocking<Unit> {
+      server.enqueue(
+        jsonResponse(
+          message(
+              content =
+                """[{"type":"thinking","thinking":"Let me think","signature":"sig-1"},""" +
+                  """{"type":"redacted_thinking","data":"encrypted"},{"type":"text","text":"42"}]"""
+            )
+            .replace(
+              """"output_tokens":2}""",
+              """"output_tokens":10,"output_tokens_details":{"thinking_tokens":6}}""",
+            )
+        )
+      )
+
+      val response = claude.generateContent(userRequest("Hi"), stream = false).toList().single()
+
+      assertThat(response.content!!.parts).hasSize(3)
+      val (thinking, redacted, answer) = response.content!!.parts
+      assertThat(thinking.thought).isTrue()
+      assertThat(thinking.text).isEqualTo("Let me think")
+      assertThat(thinking.thoughtSignature!!.decodeToString()).isEqualTo("sig-1")
+      assertThat(redacted.thought).isTrue()
+      assertThat(redacted.thoughtSignature!!.decodeToString()).isEqualTo("encrypted")
+      assertThat(answer.text).isEqualTo("42")
+      assertThat(response.usageMetadata!!.thoughtsTokenCount).isEqualTo(6)
+      assertThat(response.usageMetadata!!.candidatesTokenCount).isEqualTo(4)
+      assertThat(response.usageMetadata!!.totalTokenCount).isEqualTo(13)
+    }
+
+  @Test
+  fun generateContent_streaming_emitsThoughtPartialsAndSignedFinalThought() =
+    runBlocking<Unit> {
+      server.enqueue(
+        MockResponse(
+          headers = Headers.headersOf("content-type", "text/event-stream"),
+          body =
+            sse(
+              "message_start" to
+                """{"type":"message_start","message":${message(content = "[]", stopReason = null)}}""",
+              "content_block_start" to
+                """{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}""",
+              "content_block_delta" to
+                """{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Hmm"}}""",
+              "content_block_delta" to
+                """{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-2"}}""",
+              "content_block_stop" to """{"type":"content_block_stop","index":0}""",
+              "content_block_start" to
+                """{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}""",
+              "content_block_delta" to
+                """{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done"}}""",
+              "content_block_stop" to """{"type":"content_block_stop","index":1}""",
+              "message_delta" to
+                """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}""",
+              "message_stop" to """{"type":"message_stop"}""",
+            ),
+        )
+      )
+
+      val responses = claude.generateContent(userRequest("Hi"), stream = true).toList()
+
+      val partials = responses.filter { it.partial == true }.map { it.content!!.parts.single() }
+      assertThat(partials.map { it.text to it.thought })
+        .containsExactly("Hmm" to true, "Done" to null)
+        .inOrder()
+      assertThat(responses.last().content!!.parts).hasSize(2)
+      val (thought, text) = responses.last().content!!.parts
+      assertThat(thought.text).isEqualTo("Hmm")
+      assertThat(thought.thoughtSignature!!.decodeToString()).isEqualTo("sig-2")
+      assertThat(text.text).isEqualTo("Done")
+    }
+
+  @Test
+  fun hasAnthropicCredentialSource_isFalseWithoutAnySource() {
+    assertThat(hasAnthropicCredentialSource(env = { null }, property = linuxProperties()::get))
+      .isFalse()
+  }
+
+  @Test
+  fun hasAnthropicCredentialSource_findsKeysTokensAndProfiles() {
+    val properties = linuxProperties()
+    for (name in listOf("ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_PROFILE")) {
+      assertThat(
+          hasAnthropicCredentialSource(env = mapOf(name to "x")::get, property = properties::get)
+        )
+        .isTrue()
+    }
+    assertThat(
+        hasAnthropicCredentialSource(
+          env = { null },
+          property = (properties + ("anthropic.authToken" to "t"))::get,
+        )
+      )
+      .isTrue()
+  }
+
+  @Test
+  fun hasAnthropicCredentialSource_findsProfilesInTheConfigDirectory() {
+    val properties = linuxProperties()
+    temporaryFolder.newFolder(".config", "anthropic")
+    val customDir = temporaryFolder.newFolder("custom").path
+    val customEnv = mapOf("ANTHROPIC_CONFIG_DIR" to customDir)
+
+    // The SDK reads profiles only from the `configs` folder, so a bare directory has none.
+    assertThat(hasAnthropicCredentialSource(env = { null }, property = properties::get)).isFalse()
+    assertThat(hasAnthropicCredentialSource(env = customEnv::get, property = properties::get))
+      .isFalse()
+    temporaryFolder.newFolder(".config", "anthropic", "configs")
+    temporaryFolder.newFolder("custom", "configs")
+    assertThat(hasAnthropicCredentialSource(env = { null }, property = properties::get)).isTrue()
+    assertThat(hasAnthropicCredentialSource(env = customEnv::get, property = properties::get))
+      .isTrue()
+  }
+
+  @Test
+  fun anthropicApiClient_treatsABlankKeyAsMissing() {
+    assertFailsWith<IllegalStateException> {
+      anthropicApiClient(apiKey = " ", hasCredentialSource = { false })
+    }
+  }
+
+  @Test
+  fun generateContent_explainsAVertexPolicyThatBlocksStructuredOutput() {
+    val policyError =
+      MockResponse(
+        code = 400,
+        headers = Headers.headersOf("content-type", "application/json"),
+        body =
+          """{"error":{"code":400,"status":"FAILED_PRECONDITION","message":"Organization""" +
+            """ Policy constraint constraints/vertexai.allowedPartnerModelFeatures violated"}}""",
+      )
+    server.enqueue(policyError)
+    server.enqueue(policyError)
+    val vertex = vertexClaude()
+    val request =
+      LlmRequest(
+        contents = listOf(userText("Hi")),
+        config =
+          GenerateContentConfig(
+            responseSchema =
+              Schema(type = Type.OBJECT, properties = mapOf("a" to Schema(type = Type.STRING)))
+          ),
+      )
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        runBlocking { vertex.generateContent(request, stream = false).toList() }
+      }
+
+    assertThat(error).hasMessageThat().contains("constraints/vertexai.allowedPartnerModelFeatures")
+    assertThat(error).hasCauseThat().isInstanceOf(BadRequestException::class.java)
+    // Without an output schema, the SDK error propagates unchanged.
+    assertFailsWith<BadRequestException> {
+      runBlocking { vertex.generateContent(userRequest("Hi"), stream = false).toList() }
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_setsEveryConstructorParameter() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"ok"}]""")))
+
+      Claude.builder()
+        .name("claude-x")
+        .client(client)
+        .maxTokens(100)
+        .effort(OutputConfig.Effort.HIGH)
+        .build()
+        .generateContent(userRequest("Hi"), stream = false)
+        .toList()
+
+      val body = recordedBody()
+      assertThat(body["model"]!!.jsonPrimitive.content).isEqualTo("claude-x")
+      assertThat(body["max_tokens"]!!.jsonPrimitive.int).isEqualTo(100)
+      assertThat(body["output_config"]!!.jsonObject["effort"]!!.jsonPrimitive.content)
+        .isEqualTo("high")
+    }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_sendsApiKeyInApiKeyHeader() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"ok"}]""")))
+      System.setProperty("anthropic.baseUrl", server.url("/").toString())
+      try {
+        Claude.builder()
+          .name("claude-x")
+          .apiKey("builder-key")
+          .build()
+          .generateContent(userRequest("Hi"), stream = false)
+          .toList()
+      } finally {
+        System.clearProperty("anthropic.baseUrl")
+      }
+
+      assertThat(server.takeRequest().headers["x-api-key"]).isEqualTo("builder-key")
+    }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_needsANameAndAtMostOneCredential() {
+    assertFailsWith<IllegalStateException> { Claude.builder().client(client).build() }
+    assertFailsWith<IllegalStateException> {
+      Claude.builder().name("claude-x").client(client).apiKey("key").build()
+    }
+    assertThat(Claude.builder().name("claude-x").client(client).apiKey(" ").build().name)
+      .isEqualTo("claude-x")
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_takesTheVertexPathForVertexCredentials() {
+    val credentials = ScopeRequiringCredentials()
+
+    Claude.builder()
+      .name("claude-haiku-4-5")
+      .vertexCredentials(vertexCredentials().copy(credentials = credentials))
+      .build()
+
+    // Only the Vertex AI client reads the Google credentials, scoping them as it is built.
+    assertThat(credentials.requestedScopes)
+      .containsExactly("https://www.googleapis.com/auth/cloud-platform")
+  }
 
   @Test
   fun vertexClient_sendsRawPredictWithBearerTokenAndVertexBody() =
@@ -789,6 +1070,25 @@ class ClaudeTest {
   }
 
   @Test
+  fun vertexClient_takesProjectAndLocationFromResourceName() =
+    runBlocking<Unit> {
+      server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"pong"}]""")))
+      val resource = "projects/res-project/locations/us-east5/publishers/anthropic/models/claude-x"
+      val env = mapOf("GOOGLE_CLOUD_PROJECT" to "env-project", "GOOGLE_CLOUD_LOCATION" to "global")
+      val credentials = vertexCredentials().copy(project = null, location = null)
+      val client =
+        vertexClient(credentials, server.url("/").toString(), env::get, modelName = resource)
+      vertexClients += client
+
+      Claude(resource, client).generateContent(userRequest("Ping"), stream = false).toList()
+
+      assertThat(server.takeRequest().target)
+        .isEqualTo(
+          "/v1/projects/res-project/locations/us-east5/publishers/anthropic/models/claude-x:rawPredict"
+        )
+    }
+
+  @Test
   fun vertexClient_scopesCredentialsThatRequireIt() =
     runBlocking<Unit> {
       server.enqueue(jsonResponse(message(content = """[{"type":"text","text":"pong"}]""")))
@@ -810,9 +1110,13 @@ class ClaudeTest {
   ): Claude =
     Claude(
       "claude-haiku-4-5",
-      vertexClient(credentials, server.url("/").toString(), env, defaultCredentials).also {
-        vertexClients += it
-      },
+      vertexClient(
+          credentials,
+          server.url("/").toString(),
+          env,
+          defaultCredentials = defaultCredentials,
+        )
+        .also { vertexClients += it },
     )
 
   private fun vertexCredentials(): VertexCredentials =
@@ -826,6 +1130,9 @@ class ClaudeTest {
     GoogleCredentials.newBuilder()
       .setAccessToken(AccessToken(token, Date.from(Instant.now().plusSeconds(3600))))
       .build()
+
+  private fun linuxProperties() =
+    mapOf("user.home" to temporaryFolder.root.path, "os.name" to "Linux")
 
   private fun recordedBody(): JsonObject =
     Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
