@@ -89,6 +89,9 @@ enum class FinishReason {
    * candidate's continuation token resumes it; ADK's Gemini model does so automatically.
    */
   CONTINUATION,
+
+  /** The model called too many tools in a row, so the system stopped execution. */
+  TOO_MANY_TOOL_CALLS,
 }
 
 /** Serializes [FinishReason] by name, decoding unknown values to [FinishReason.OTHER]. */
