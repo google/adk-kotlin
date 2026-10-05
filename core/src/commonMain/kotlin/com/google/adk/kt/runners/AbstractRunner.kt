@@ -34,6 +34,7 @@ import com.google.adk.kt.callbacks.runOnRunErrorCallbacksPipeline
 import com.google.adk.kt.callbacks.runOnUserMessageCallbacksPipeline
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.events.applyRewinds
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.memory.MemoryService
@@ -662,9 +663,17 @@ abstract class AbstractRunner : Runner {
         // Run callbacks and append user message to session
         handleNewUserContent(it, newMessage, stateDelta)
       }
-      .let {
+      .let { context ->
         // Find the unit to run in this invocation
-        it.withRoot(selectAgentToRun(it))
+        val unitToRun = selectAgentToRun(context)
+        // A sub-agent continued from an earlier turn runs on the branch it last ran on.
+        val branch =
+          if (unitToRun is BaseAgent && unitToRun !== root) {
+            resumeBranch(applyRewinds(context.session.events), invocationId = null, unitToRun)
+          } else {
+            null
+          }
+        context.withRoot(unitToRun).copy(branch = branch)
       }
   }
 
@@ -747,20 +756,21 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Returns the branch [resumeAgent] ran under in this invocation, or null for the root branch.
-   * Restoring the branch allows an agent nested under a
-   * [ParallelAgent][com.google.adk.kt.agents.ParallelAgent] to see its branch-scoped paused calls.
+   * Returns the branch [resumeAgent] last ran on, or null for the root branch. Only events in
+   * [invocationId] count when it is given, and events without a branch are skipped. Restoring the
+   * branch lets an agent under a [ParallelAgent][com.google.adk.kt.agents.ParallelAgent] see its
+   * branch-scoped paused calls.
    */
   private fun resumeBranch(
     events: List<Event>,
-    invocationId: String,
+    invocationId: String?,
     resumeAgent: BaseAgent,
   ): String? {
     for (event in events.asReversed()) {
       if (
-        event.invocationId == invocationId &&
+        (invocationId == null || event.invocationId == invocationId) &&
           event.author == resumeAgent.name &&
-          event.branch != null
+          !event.branch.isNullOrEmpty()
       ) {
         return event.branch
       }
@@ -820,13 +830,18 @@ abstract class AbstractRunner : Runner {
     // remote a2a agent may surface a credential request as a long-running function call). Mirrors
     // Python ADK 1.x `runners.py:_find_agent_to_run`.
     if (lastEvent?.author == Role.USER && lastEvent.functionResponses().isNotEmpty()) {
-      val matchingCall = context.findMatchingFunctionCall(lastEvent)
+      val liveEvents = applyRewinds(context.session.events)
+      val matchingCall =
+        findCallAnsweredBy(liveEvents, lastEvent)
+          ?: context.findMatchingFunctionCall(lastEvent)?.takeIf { it in liveEvents }
       if (matchingCall != null && matchingCall.author != Role.USER) {
-        val agentToRun = rootAgent.findAgent(matchingCall.author) ?: rootAgent
+        // An author no longer in the agent tree falls through to the history scan, as in Python.
+        val agentToRun = rootAgent.findAgent(matchingCall.author)
+        if (agentToRun != null) {
+          validatePeerTransfer(agentToRun, matchingCall.actions.transferToAgent, rootAgent)
 
-        validatePeerTransfer(agentToRun, matchingCall.actions.transferToAgent, rootAgent)
-
-        return agentToRun
+          return agentToRun
+        }
       }
     }
 
@@ -861,6 +876,23 @@ abstract class AbstractRunner : Runner {
     }
 
     return rootAgent
+  }
+
+  /**
+   * Returns the latest event carrying the call that [responseEvent]'s first response answers,
+   * searching the whole session because a non-resumable runner receives it in a new invocation.
+   * Returns null when the responses answer calls from several agents, since no one agent can take
+   * them all; the caller then matches only within the current invocation.
+   */
+  private fun findCallAnsweredBy(events: List<Event>, responseEvent: Event): Event? {
+    val callEvents =
+      responseEvent.functionResponses().map { response ->
+        response.id?.let { id ->
+          events.lastOrNull { event -> event.functionCalls().any { it.id == id } }
+        }
+      }
+    val first = callEvents.firstOrNull() ?: return null
+    return first.takeIf { callEvents.all { it == null || it.author == first.author } }
   }
 
   /**

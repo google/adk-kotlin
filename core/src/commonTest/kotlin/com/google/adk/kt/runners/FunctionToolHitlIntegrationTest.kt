@@ -33,6 +33,7 @@ import com.google.adk.kt.testing.ResumableEvents.END_OF_AGENT
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
+import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.simplifyResumableEvents
 import com.google.adk.kt.testing.userFunctionResponse
@@ -49,6 +50,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -538,6 +540,310 @@ class FunctionToolHitlIntegrationTest {
     }
 
   /**
+   * A non-resumable runner given the original invocation id routes the approval straight to the
+   * sub-agent that asked, which must run on its parallel branch to see its own request.
+   */
+  @Test
+  fun runAsync_parallelAgent_approvalReusingInvocationId_runsToolOnSubAgentBranch() = runBlocking {
+    var executions = 0
+    val agent1 =
+      LlmAgent(
+        name = "agent1",
+        model = secureCallThenFinalModel(callId = "call_1", finalText = "agent1 done"),
+        tools = listOf(countingSecureTool { executions++ }),
+      )
+    val agent2 = LlmAgent(name = "agent2", model = DummyModel.createSequential("m2", listOf()))
+    val runner =
+      InMemoryRunner(agent = ParallelAgent(name = "root_agent", subAgents = listOf(agent1, agent2)))
+    val firstTurnEvents =
+      runner
+        .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+        .toList()
+
+    val resumeEvents =
+      approve(
+        runner,
+        synthCallIdForBranch(firstTurnEvents, "root_agent.agent1"),
+        invocationId = firstTurnEvents.first().invocationId,
+      )
+
+    assertEquals(1, executions)
+    assertEquals(
+      listOf("agent1" to secureToolResponsePart(), "agent1" to "agent1 done"),
+      simplifyEvents(resumeEvents),
+    )
+    assertEquals(listOf("root_agent.agent1"), resumeEvents.map { it.branch }.distinct())
+  }
+
+  /** A SequentialAgent between the ParallelAgent and the sub-agent keeps the parallel branch. */
+  @Test
+  fun runAsync_sequentialUnderParallel_approvalReusingInvocationId_runsToolOnSequentialBranch() =
+    runBlocking {
+      var executions = 0
+      val child =
+        LlmAgent(
+          name = "child",
+          model = secureCallThenFinalModel(callId = "call_1", finalText = "child done"),
+          tools = listOf(countingSecureTool { executions++ }),
+        )
+      val sequential = SequentialAgent(name = "sequential", subAgents = listOf(child))
+      val sibling = LlmAgent(name = "sibling", model = DummyModel.createSequential("m", listOf()))
+      val runner =
+        InMemoryRunner(
+          agent = ParallelAgent(name = "root_agent", subAgents = listOf(sequential, sibling))
+        )
+      val firstTurnEvents =
+        runner
+          .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+          .toList()
+
+      val resumeEvents =
+        approve(
+          runner,
+          synthCallIdForBranch(firstTurnEvents, "root_agent.sequential"),
+          invocationId = firstTurnEvents.first().invocationId,
+        )
+
+      assertEquals(1, executions)
+      assertEquals(listOf("root_agent.sequential"), resumeEvents.map { it.branch }.distinct())
+    }
+
+  /**
+   * An approval in a new invocation goes to the parallel sub-agent that asked for it, so its
+   * sibling is not re-run.
+   */
+  @Test
+  fun runAsync_parallelAgent_approvalInNewInvocation_runsOnlyTheRequestingSubAgent() = runBlocking {
+    var executions = 0
+    var siblingCalls = 0
+    val agent1 =
+      LlmAgent(
+        name = "agent1",
+        model = secureCallThenFinalModel(callId = "call_1", finalText = "agent1 done"),
+        tools = listOf(countingSecureTool { executions++ }),
+      )
+    val agent2 =
+      LlmAgent(
+        name = "agent2",
+        model =
+          DummyModel("m2") {
+            siblingCalls++
+            flowOf(LlmResponse(content = modelMessage("agent2 done")))
+          },
+      )
+    val runner =
+      InMemoryRunner(agent = ParallelAgent(name = "root_agent", subAgents = listOf(agent1, agent2)))
+    val firstTurnEvents =
+      runner
+        .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+        .toList()
+
+    val resumeEvents = approve(runner, synthCallIdForBranch(firstTurnEvents, "root_agent.agent1"))
+
+    assertEquals(1, executions)
+    assertEquals(1, siblingCalls)
+    assertEquals(
+      listOf("agent1" to secureToolResponsePart(), "agent1" to "agent1 done"),
+      simplifyEvents(resumeEvents),
+    )
+  }
+
+  /** One message approving both parallel sub-agents' requests runs both tools. */
+  @Test
+  fun runAsync_parallelAgent_twoApprovalsInOneMessage_runsBothTools() = runBlocking {
+    val executions = mutableMapOf<String, Int>()
+    val agents =
+      listOf("agent1", "agent2").map { name ->
+        LlmAgent(
+          name = name,
+          model = secureCallThenFinalModel(callId = "call_$name", finalText = "$name done"),
+          tools = listOf(countingSecureTool { executions[name] = (executions[name] ?: 0) + 1 }),
+        )
+      }
+    val runner = InMemoryRunner(agent = ParallelAgent(name = "root_agent", subAgents = agents))
+    val firstTurnEvents =
+      runner
+        .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+        .toList()
+
+    runner
+      .runAsync(
+        userId = USER_ID,
+        sessionId = SESSION_ID,
+        newMessage =
+          userMessage(
+            confirmationPart(synthCallIdForBranch(firstTurnEvents, "root_agent.agent1")),
+            confirmationPart(synthCallIdForBranch(firstTurnEvents, "root_agent.agent2")),
+          ),
+      )
+      .toList()
+
+    assertEquals(mapOf("agent1" to 1, "agent2" to 1), executions)
+  }
+
+  /**
+   * In a sequence, the approval runs the step that asked; later steps, which already ran, don't.
+   */
+  @Test
+  fun runAsync_sequentialAgent_approvalInNewInvocation_runsOnlyTheRequestingStep() = runBlocking {
+    var executions = 0
+    var nextStepCalls = 0
+    val step1 =
+      LlmAgent(
+        name = "step1",
+        model = secureCallThenFinalModel(callId = "call_1", finalText = "step1 done"),
+        tools = listOf(countingSecureTool { executions++ }),
+      )
+    val step2 =
+      LlmAgent(
+        name = "step2",
+        model =
+          DummyModel("m2") {
+            nextStepCalls++
+            flowOf(LlmResponse(content = modelMessage("step2 done")))
+          },
+      )
+    val runner =
+      InMemoryRunner(agent = SequentialAgent(name = "root_agent", subAgents = listOf(step1, step2)))
+    val firstTurnEvents =
+      runner
+        .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+        .toList()
+
+    val nextStepCallsBeforeApproval = nextStepCalls
+
+    val resumeEvents = approve(runner, synthCallId(firstTurnEvents))
+
+    assertEquals(1, executions)
+    assertEquals(nextStepCallsBeforeApproval, nextStepCalls)
+    assertEquals(listOf("step1"), resumeEvents.map { it.author }.distinct())
+  }
+
+  /**
+   * A root [LlmAgent] that transferred to a [ParallelAgent] must not take the approval turn itself:
+   * it cannot see the sub-agent's request, so the approval would be lost.
+   */
+  @Test
+  fun runAsync_rootAgentTransferredToParallel_approvalInNewInvocation_runsTool() = runBlocking {
+    var executions = 0
+    val agent1 =
+      LlmAgent(
+        name = "agent1",
+        model = secureCallThenFinalModel(callId = "call_1", finalText = "agent1 done"),
+        tools = listOf(countingSecureTool { executions++ }),
+      )
+    val parallel = ParallelAgent(name = "parallel", subAgents = listOf(agent1))
+    val root =
+      LlmAgent(
+        name = "root_agent",
+        model =
+          DummyModel.createSequential(
+            "root-model",
+            listOf(
+              modelTransferToAgentResponse("parallel"),
+              LlmResponse(content = modelMessage("root reply")),
+            ),
+          ),
+        subAgents = listOf(parallel),
+      )
+    val runner = InMemoryRunner(agent = root)
+    val firstTurnEvents =
+      runner
+        .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+        .toList()
+
+    val resumeEvents = approve(runner, synthCallIdForBranch(firstTurnEvents, "parallel.agent1"))
+
+    assertEquals(1, executions)
+    assertEquals(listOf("agent1"), resumeEvents.map { it.author }.distinct())
+  }
+
+  /**
+   * On a resumable runner the root closes itself on the transfer, so approvals for two parallel
+   * sub-agents in one message must still reach a sub-agent rather than the finished root. Only the
+   * first response's agent runs on this turn.
+   */
+  @Test
+  fun runAsync_resumableRootTransferredToParallel_twoApprovalsInOneMessage_runsATool() =
+    runBlocking {
+      val executions = mutableMapOf<String, Int>()
+      val agents =
+        listOf("agent1", "agent2").map { name ->
+          LlmAgent(
+            name = name,
+            model = secureCallThenFinalModel(callId = "call_$name", finalText = "$name done"),
+            tools = listOf(countingSecureTool { executions[name] = (executions[name] ?: 0) + 1 }),
+          )
+        }
+      val root =
+        LlmAgent(
+          name = "root_agent",
+          model =
+            DummyModel.createSequential(
+              "root-model",
+              listOf(modelTransferToAgentResponse("parallel")),
+            ),
+          subAgents = listOf(ParallelAgent(name = "parallel", subAgents = agents)),
+        )
+      val runner = resumableRunner(root)
+      val firstTurnEvents =
+        runner
+          .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+          .toList()
+
+      runner
+        .runAsync(
+          userId = USER_ID,
+          sessionId = SESSION_ID,
+          newMessage =
+            userMessage(
+              confirmationPart(synthCallIdForBranch(firstTurnEvents, "parallel.agent1")),
+              confirmationPart(synthCallIdForBranch(firstTurnEvents, "parallel.agent2")),
+            ),
+        )
+        .toList()
+
+      assertEquals(1, executions["agent1"])
+    }
+
+  /** A sub-agent that never takes follow-up turns still receives the response to its own call. */
+  @Test
+  fun runAsync_subAgentDisallowingTransferToParent_approvalInNewInvocation_runsTool() =
+    runBlocking {
+      var executions = 0
+      val agent1 =
+        LlmAgent(
+          name = "agent1",
+          model = secureCallThenFinalModel(callId = "call_1", finalText = "agent1 done"),
+          tools = listOf(countingSecureTool { executions++ }),
+          disallowTransferToParent = true,
+        )
+      val root =
+        LlmAgent(
+          name = "root_agent",
+          model =
+            DummyModel.createSequential(
+              "root-model",
+              listOf(
+                modelTransferToAgentResponse("agent1"),
+                LlmResponse(content = modelMessage("root reply")),
+              ),
+            ),
+          subAgents = listOf(agent1),
+        )
+      val runner = InMemoryRunner(agent = root)
+      val firstTurnEvents =
+        runner
+          .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+          .toList()
+
+      val resumeEvents = approve(runner, synthCallId(firstTurnEvents))
+
+      assertEquals(1, executions)
+      assertEquals(listOf("agent1"), resumeEvents.map { it.author }.distinct())
+    }
+
+  /**
    * Custom confirmation payload schema round-trip. Ported from Python ADK 1.x
    * `runners/test_run_tool_confirmation.py::TestHITLConfirmationFlowWithCustomPayloadSchema`.
    *
@@ -753,6 +1059,32 @@ class FunctionToolHitlIntegrationTest {
                       "with a FunctionResponse with an expected ToolConfirmation payload.",
                 ),
             ),
+        )
+    )
+
+  /** Approves the confirmation [synthCallId], in a new invocation unless [invocationId] is set. */
+  private suspend fun approve(
+    runner: Runner,
+    synthCallId: String,
+    invocationId: String? = null,
+  ): List<Event> =
+    runner
+      .runAsync(
+        userId = USER_ID,
+        sessionId = SESSION_ID,
+        invocationId = invocationId,
+        newMessage = userMessage(confirmationPart(synthCallId)),
+      )
+      .toList()
+
+  /** The user's approval of the confirmation request [synthCallId]. */
+  private fun confirmationPart(synthCallId: String): Part =
+    Part(
+      functionResponse =
+        FunctionResponse(
+          name = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+          id = synthCallId,
+          response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
         )
     )
 
