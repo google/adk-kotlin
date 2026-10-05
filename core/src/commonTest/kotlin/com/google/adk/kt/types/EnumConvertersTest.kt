@@ -48,6 +48,12 @@ class EnumConvertersTest {
   }
 
   @Test
+  fun finishReason_tooManyToolCalls_matchesSdkByName() {
+    assertEquals(FinishReason.TOO_MANY_TOOL_CALLS, SdkFinishReason.TOO_MANY_TOOL_CALLS.toKt())
+    assertEquals(SdkFinishReason.TOO_MANY_TOOL_CALLS, FinishReason.TOO_MANY_TOOL_CALLS.toGenaiSdk())
+  }
+
+  @Test
   fun thinkingLevel_roundTripsThroughSdk() {
     for (value in ThinkingLevel.entries) {
       assertEquals(value, value.toGenaiSdk().toKt())
