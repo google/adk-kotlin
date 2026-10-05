@@ -17,6 +17,7 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.ParallelAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
@@ -35,6 +36,7 @@ import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.simplifyContent
+import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
@@ -50,6 +52,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -1262,6 +1265,61 @@ class LongRunningToolIntegrationTest {
           )
       }
     assertTrue(error.message?.contains("ghost-1") == true, "unexpected message: ${error.message}")
+  }
+
+  /**
+   * A response in a new invocation goes to the parallel sub-agent that made the call, so the
+   * sibling, which never saw that call, is not re-run against it.
+   */
+  @Test
+  fun runAsync_parallelAgent_responseInNewInvocation_resumesOnlyTheCallingSubAgent() = runBlocking {
+    val callerRequests = mutableListOf<LlmRequest>()
+    var siblingCalls = 0
+    val caller =
+      singleCallThenAcknowledgeAgent(
+        callId = "lr_1",
+        toolPayload = Unit,
+        captureRequest = { callerRequests.add(it) },
+      )
+    val sibling =
+      LlmAgent(
+        name = "sibling",
+        model =
+          DummyModel("sibling-model") {
+            siblingCalls++
+            flowOf(LlmResponse(content = modelMessage("hi")))
+          },
+      )
+    val runner =
+      InMemoryRunner(agent = ParallelAgent(name = "par", subAgents = listOf(caller, sibling)))
+    runner
+      .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("go"))
+      .toList()
+
+    val resumeEvents =
+      runner
+        .runAsync(
+          userId = USER_ID,
+          sessionId = SESSION_ID,
+          newMessage =
+            userFunctionResponse(name = TOOL_NAME_1, id = "lr_1", response = mapOf("ok" to true)),
+        )
+        .toList()
+
+    assertEquals(listOf(AGENT_NAME to "acknowledged"), simplifyEvents(resumeEvents))
+    assertEquals(listOf("par.$AGENT_NAME"), resumeEvents.map { it.branch })
+    assertEquals(1, siblingCalls)
+    assertEquals(
+      listOf(
+        Role.USER to "go",
+        Role.MODEL to Part(functionCall = FunctionCall(name = TOOL_NAME_1)),
+        Role.USER to
+          Part(
+            functionResponse = FunctionResponse(name = TOOL_NAME_1, response = mapOf("ok" to true))
+          ),
+      ),
+      callerRequests.last().simplifiedContents(),
+    )
   }
 
   // -- Fixtures ----------------------------------------------------------------------------------

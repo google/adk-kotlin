@@ -466,6 +466,98 @@ class AbstractRunnerTest {
     assertEquals("root", result.name)
   }
 
+  /** A call author gone from the tree falls through to the history scan, as in Python. */
+  @Test
+  fun findAgentToRun_staleCallAuthorWithTransferableAgentInHistory_returnsThatAgent() =
+    runBlocking {
+      val subAgent = LlmAgent(name = "sub", model = DummyModel("model"))
+      val rootAgent =
+        LlmAgent(name = "root", model = DummyModel("model"), subAgents = listOf(subAgent))
+      val runner = TestRunner(rootAgent, resumable = false)
+      val events =
+        listOf(
+          Event(author = "sub", content = modelMessage("Hello"), invocationId = "inv-0"),
+          Event(
+            author = "renamed_agent",
+            content = modelFunctionCall("tool", id = "call-1"),
+            invocationId = "inv-1",
+          ),
+          Event(
+            author = Role.USER,
+            content = userFunctionResponse(name = "tool", id = "call-1"),
+            invocationId = "inv-2",
+          ),
+        )
+
+      val result =
+        runner.callFindAgentToRun(contextWith(runner, rootAgent, events, "inv-2"), rootAgent)
+
+      assertEquals("sub", result.name)
+    }
+
+  /** A response to a rewound call falls back to the history scan, which returns the root here. */
+  @Test
+  fun findAgentToRun_responseToRewoundCall_isNotRoutedToTheCallAuthor() = runBlocking {
+    val subAgent = DummyAgent("sub")
+    val rootAgent = DummyAgent("root", subAgents = listOf(subAgent))
+    val runner = TestRunner(rootAgent, resumable = false)
+    val events =
+      listOf(
+        Event(
+          author = "sub",
+          content = modelFunctionCall("tool", id = "call-1"),
+          invocationId = "inv-1",
+        ),
+        Event(
+          author = Role.USER,
+          actions = EventActions(rewindBeforeInvocationId = "inv-1"),
+          invocationId = "inv-2",
+        ),
+        Event(
+          author = Role.USER,
+          content = userFunctionResponse(name = "tool", id = "call-1"),
+          invocationId = "inv-3",
+        ),
+      )
+
+    val result =
+      runner.callFindAgentToRun(contextWith(runner, rootAgent, events, "inv-3"), rootAgent)
+
+    assertEquals("root", result.name)
+  }
+
+  /** The current-invocation fallback must not revive a rewound call either. */
+  @Test
+  fun findAgentToRun_responseToRewoundCallInCurrentInvocation_isNotRoutedToTheCallAuthor() =
+    runBlocking {
+      val subAgent = DummyAgent("sub")
+      val rootAgent = DummyAgent("root", subAgents = listOf(subAgent))
+      val runner = TestRunner(rootAgent, resumable = false)
+      val events =
+        listOf(
+          Event(
+            author = "sub",
+            content = modelFunctionCall("tool", id = "call-1"),
+            invocationId = "inv-1",
+          ),
+          Event(
+            author = Role.USER,
+            actions = EventActions(rewindBeforeInvocationId = "inv-1"),
+            invocationId = "inv-2",
+          ),
+          Event(
+            author = Role.USER,
+            content = userFunctionResponse(name = "tool", id = "call-1"),
+            invocationId = "inv-1",
+          ),
+        )
+
+      val result =
+        runner.callFindAgentToRun(contextWith(runner, rootAgent, events, "inv-1"), rootAgent)
+
+      assertEquals("root", result.name)
+    }
+
   @Test
   fun findAgentToRun_noFunctionResponse_returnsMostRecentTransferableAgent() = runTest {
     // isTransferableAcrossAgentTree requires every ancestor to be an LlmAgent (mirroring Python's
@@ -1651,4 +1743,25 @@ private class MissingVersionedArtifactService(
   }
 
   fun lastSavedArtifact(filename: String): Part? = lastSaved[filename]
+}
+
+/** A context for [rootAgent] over a fresh session holding [events]. */
+private suspend fun contextWith(
+  runner: AbstractRunnerTest.TestRunner,
+  rootAgent: BaseAgent,
+  events: List<Event>,
+  invocationId: String,
+): InvocationContext {
+  val key = SessionKey("InMemoryRunner", "user", "session")
+  val session = runner.sessionService.createSession(key)
+  for (event in events) {
+    val unused = runner.sessionService.appendEvent(session, event)
+  }
+  return InvocationContext(
+    session = runner.sessionService.getSession(key)!!,
+    runConfig = null,
+    agent = rootAgent,
+    invocationId = invocationId,
+    sessionService = runner.sessionService,
+  )
 }
