@@ -73,14 +73,21 @@ internal object AppFunctionDataConverter {
    *   value.
    */
   fun toAppFunctionData(metadata: AppFunctionMetadata, args: Map<String, Any?>): AppFunctionData {
-    val builder = AppFunctionData.Builder(metadata.parameters, metadata.components)
+    val builder = AppFunctionData.Builder(metadata.parameters, metadata.packageMetadata.components)
     // The library resolves a repeated name to its first declaration; setting a later one too would
     // fail every call to a function whose metadata declares one name twice.
     val declared = metadata.parameters.distinctBy { it.name }
     for (parameter in declared) {
       val value = args[parameter.name] ?: continue
       try {
-        set(builder, parameter.name, parameter.dataType, value, metadata.components, depth = 0)
+        set(
+          builder,
+          parameter.name,
+          parameter.dataType,
+          value,
+          metadata.packageMetadata.components,
+          depth = 0,
+        )
       } catch (e: RejectedArgument) {
         throw e
       } catch (_: IllegalArgumentException) {
@@ -124,7 +131,13 @@ internal object AppFunctionDataConverter {
   @Suppress("UnusedException")
   fun fromReturnValue(metadata: AppFunctionMetadata, returnValue: AppFunctionData): Any? =
     try {
-      read(returnValue, RETURN_VALUE_KEY, metadata.response.valueType, metadata.components, 0)
+      read(
+        returnValue,
+        RETURN_VALUE_KEY,
+        metadata.response.valueType,
+        metadata.packageMetadata.components,
+        0,
+      )
     } catch (_: IllegalArgumentException) {
       throw MalformedResponse("The app's response did not match the type its metadata declared")
     } catch (_: IllegalStateException) {
