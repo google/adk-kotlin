@@ -27,8 +27,10 @@ import androidx.appfunctions.metadata.AppFunctionDoubleTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionIntTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionLongTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionMetadata
+import androidx.appfunctions.metadata.AppFunctionName
 import androidx.appfunctions.metadata.AppFunctionObjectTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionOneOfTypeMetadata
+import androidx.appfunctions.metadata.AppFunctionPackageMetadata
 import androidx.appfunctions.metadata.AppFunctionParameterMetadata
 import androidx.appfunctions.metadata.AppFunctionParcelableTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionReferenceTypeMetadata
@@ -861,13 +863,13 @@ class AppFunctionSchemaConverterTest {
     ) =
       AppFunctionSchemaConverter.toFunctionDeclaration(
         AppFunctionMetadata(
-          id = FUNCTION_ID,
-          packageName = "com.example.notes",
-          isEnabled = true,
+          name =
+            AppFunctionName(packageName = "com.example.notes", functionIdentifier = FUNCTION_ID),
           schema = null,
           parameters = params,
           response = AppFunctionResponseMetadata(valueType = response),
-          components = components,
+          packageMetadata =
+            AppFunctionPackageMetadata(packageName = "com.example.notes", components = components),
           description = description,
           deprecation = deprecation?.let { AppFunctionDeprecationMetadata(it) },
         ),
