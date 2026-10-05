@@ -18,6 +18,9 @@ package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.callbacks.AfterToolCallback
+import com.google.adk.kt.callbacks.BeforeToolCallback
+import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummySpan
 import com.google.adk.kt.testing.DummyTracer
@@ -169,6 +172,75 @@ class ToolTelemetryTest {
     assertEquals(2, toolSpanEventIds.toSet().size)
     assertFalse(merged.id in toolSpanEventIds)
   }
+
+  @Test
+  fun executeSingleFunctionCall_beforeToolCallbackBreaks_stillRecordsToolSpan() = runBlocking {
+    TelemetryConfig.captureMessageContent = true
+    val agent =
+      LlmAgent(
+        name = "test_agent",
+        model = DummyModel("mock_model"),
+        beforeToolCallbacks =
+          listOf(
+            BeforeToolCallback { _, _, args ->
+              CallbackChoice.Continue(args + ("param" to "edited"))
+            },
+            BeforeToolCallback { _, _, _ -> CallbackChoice.Break(mapOf("output" to "cached")) },
+          ),
+        afterToolCallbacks =
+          listOf(AfterToolCallback { _, _, _, result -> result + ("after" to "yes") }),
+      )
+
+    val event =
+      testInvocationContext(agent = agent)
+        .executeSingleFunctionCall(
+          FunctionCall(name = "test_tool", args = mapOf("param" to "orig"), id = "call_1"),
+          mapOf("test_tool" to TestFunctionTool()),
+        )
+
+    assertNotNull(event)
+    val span = fakeTracer.recordedSpans.single { it.name == "execute_tool test_tool" }
+    assertEquals(event.id, span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID])
+    assertEquals(
+      "{\"param\":\"edited\"}",
+      span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS],
+    )
+    assertEquals(
+      "{\"output\":\"cached\",\"after\":\"yes\"}",
+      span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE],
+    )
+  }
+
+  @Test
+  fun executeSingleFunctionCall_beforeToolCallbackBreaksForUnregisteredTool_recordsToolSpan() =
+    runBlocking {
+      TelemetryConfig.captureMessageContent = true
+      val agent =
+        LlmAgent(
+          name = "test_agent",
+          model = DummyModel("mock_model"),
+          beforeToolCallbacks =
+            listOf(
+              BeforeToolCallback { _, _, _ -> CallbackChoice.Break(mapOf("output" to "cached")) }
+            ),
+        )
+
+      val event =
+        testInvocationContext(agent = agent)
+          .executeSingleFunctionCall(
+            FunctionCall(name = "missing_tool", args = emptyMap(), id = "call_1"),
+            emptyMap(),
+          )
+
+      assertNotNull(event)
+      val span = fakeTracer.recordedSpans.single { it.name == "execute_tool missing_tool" }
+      assertEquals(event.id, span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID])
+      assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+      assertEquals(
+        "{\"output\":\"cached\"}",
+        span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE],
+      )
+    }
 
   @Test
   fun executeSingleFunctionCall_capturesToolResponseWhenEnabled() = runTest {

@@ -19,17 +19,23 @@ package com.google.adk.kt.callbacks
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 
-/** Callback invoked immediately after a tool has finished execution. */
+/**
+ * Callback invoked after a tool runs, or after a before-tool callback answers the call in its
+ * place.
+ */
 interface AfterToolCallback : Callback {
   /**
-   * Callback executed after a tool has been called.
+   * Callback executed after a tool runs, or after a before-tool callback answers the call in its
+   * place.
    *
-   * This callback allows for inspecting, logging, or modifying the result returned by a tool.
+   * This callback allows for inspecting, logging, or modifying the tool result.
    *
    * @param context The context specific to the tool execution.
-   * @param tool The tool instance that has just been executed.
-   * @param args The original arguments that were passed to the tool.
-   * @param result The dictionary / map returned by the tool invocation. Values may be `null`.
+   * @param tool The tool for the call; for a name that matches no registered tool, a placeholder
+   *   carrying that name.
+   * @param args The arguments for the tool call, including any changes from before-tool callbacks.
+   * @param result The tool's result as a map, or the result a before-tool or on-tool-error callback
+   *   supplied instead. Values may be `null`.
    * @return The potentially updated or replaced dictionary / map to propagate downstream.
    */
   suspend fun call(

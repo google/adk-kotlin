@@ -18,6 +18,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.callbacks.BeforeToolCallbacksResult
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterToolCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeToolCallbacksPipeline
@@ -579,15 +580,11 @@ data class InvocationContext(
     val responseEventId = Uuid.random()
 
     // 1. Run before tool callbacks
-    val beforeResult = runBeforeToolCallbacks(llmAgent, tool, safeArgs, toolContext)
-    val currentArgs =
-      when (beforeResult) {
-        is CallbackChoice.Break ->
-          return buildResponseEvent(tool, beforeResult.value, toolContext, responseEventId)
-        is CallbackChoice.Continue -> beforeResult.value
-      }
+    val before = runBeforeToolCallbacks(llmAgent, tool, safeArgs, toolContext)
+    val currentArgs = before.args
+    val replacement = before.replacement
 
-    if (resolvedTool == null) {
+    if (resolvedTool == null && replacement == null) {
       return respondToolNotFound(llmAgent, tool, tools, currentArgs, toolContext, responseEventId)
     }
 
@@ -595,21 +592,23 @@ data class InvocationContext(
     return withSpan("execute_tool ${tool.name}") { span ->
       span.recordExecuteToolMeta(tool, toolContext, responseEventId, currentArgs)
 
+      // A before-tool replacement skips only the tool; the after-tool callbacks still run.
       var toolResult: Any =
-        try {
-          tool.run(toolContext, currentArgs)
-        } catch (e: CancellationException) {
-          // CancellationException is an Exception in Kotlin; rethrow so recovery can't swallow it.
-          throw e
-        } catch (e: Exception) {
-          val recoveredResult =
-            runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e)
-          if (recoveredResult == null) {
-            span[TelemetryAttributes.ERROR_TYPE] = e::class.simpleName ?: "Exception"
+        replacement
+          ?: try {
+            tool.run(toolContext, currentArgs)
+          } catch (e: CancellationException) {
+            // CancellationException is an Exception in Kotlin; rethrow before recovery sees it.
             throw e
+          } catch (e: Exception) {
+            val recoveredResult =
+              runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e)
+            if (recoveredResult == null) {
+              span[TelemetryAttributes.ERROR_TYPE] = e::class.simpleName ?: "Exception"
+              throw e
+            }
+            recoveredResult
           }
-          recoveredResult
-        }
 
       // A long-running tool returning `Unit` defers: suppress the FR event so the function-call
       // event (which carries `longRunningToolIds`, hence is the turn's final response) ends the
@@ -646,7 +645,7 @@ data class InvocationContext(
   /**
    * Answers a call to a tool name that resolves to nothing, giving the on-tool-error callbacks
    * first refusal and otherwise reporting the miss back to the model so it can retry. The
-   * after-tool callbacks are skipped, mirroring Python's `is_tool_lookup_failure`.
+   * after-tool callbacks are skipped, mirroring Python's tool-lookup-failure branch.
    */
   private suspend fun respondToolNotFound(
     llmAgent: LlmAgent?,
@@ -750,8 +749,8 @@ data class InvocationContext(
     tool: BaseTool,
     args: Map<String, Any?>,
     toolContext: ToolContext,
-  ): CallbackChoice<Map<String, Any?>, Map<String, Any?>> {
-    if (llmAgent == null) return CallbackChoice.Continue(args)
+  ): BeforeToolCallbacksResult {
+    if (llmAgent == null) return BeforeToolCallbacksResult(args, replacement = null)
     val allBeforeCallbacks = pluginManager.beforeToolCallbacks + llmAgent.beforeToolCallbacks
     return runBeforeToolCallbacksPipeline(allBeforeCallbacks, toolContext, tool, args)
   }
