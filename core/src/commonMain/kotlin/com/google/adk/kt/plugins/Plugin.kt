@@ -206,15 +206,18 @@ interface Plugin : AutoCloseable {
   ): CallbackChoice<Map<String, Any?>, Map<String, Any?>> = CallbackChoice.Continue(args)
 
   /**
-   * Callback executed after a tool finishes its execution.
+   * Callback executed after a tool runs, or after a before-tool callback answers the call in its
+   * place.
    *
-   * This callback allows for inspecting, logging, or modifying the result returned by a tool before
-   * it is returned to the agent.
+   * This callback allows for inspecting, logging, or modifying the tool result before it is
+   * returned to the agent.
    *
    * @param context The context specific to the tool execution.
-   * @param tool The tool instance that has just been executed.
-   * @param args The original arguments that were passed to the tool.
-   * @param result The dictionary / map returned by the tool invocation. Values may be `null`.
+   * @param tool The tool for the call; for a name that matches no registered tool, a placeholder
+   *   carrying that name.
+   * @param args The arguments for the tool call, including any changes from before-tool callbacks.
+   * @param result The tool's result as a map, or the result a before-tool or on-tool-error callback
+   *   supplied instead. Values may be `null`.
    * @return The potentially modified result map to propagate downstream.
    */
   suspend fun afterTool(
