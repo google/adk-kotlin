@@ -35,7 +35,8 @@ import kotlinx.coroutines.flow.flow
  * concurrently and a chain runs in order. The graph is assembled and validated when the workflow is
  * constructed, so a malformed graph throws [GraphValidationException] here rather than at run time.
  *
- * @property edges The graph. A workflow with no edges runs nothing and produces nothing.
+ * @property edges The edges of the graph, which [edges][com.google.adk.kt.workflow.edges] or the
+ *   [workflow] DSL can declare. A workflow with no edges runs nothing and produces nothing.
  * @property maxConcurrency The most nodes to run at once. Null does not limit.
  * @property config The workflow's own retry policy and execution timeout, applied whether it runs
  *   as the root of an invocation or nested inside another graph. A workflow reports a child's
