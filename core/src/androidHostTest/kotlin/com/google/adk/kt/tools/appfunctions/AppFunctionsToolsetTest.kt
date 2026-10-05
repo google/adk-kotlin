@@ -1520,7 +1520,7 @@ class AppFunctionsToolsetTest {
       )
 
     fun appMetadata(description: String = "", displayDescription: String = "") =
-      AppFunctionAppMetadata(description = description, displayDescription = displayDescription)
+      AppFunctionAppMetadata(description, displayDescription)
 
     fun stringParam(name: String) =
       AppFunctionParameterMetadata(
