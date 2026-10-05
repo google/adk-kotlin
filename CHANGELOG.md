@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/google/adk-kotlin/compare/v1.3.0...v1.3.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* add FinishReason.TOO_MANY_TOOL_CALLS ([47ede9a](https://github.com/google/adk-kotlin/commit/47ede9a9857b5ec2a218b77f953565403741a2f8))
+
 ## [1.3.0](https://github.com/google/adk-kotlin/compare/v1.2.0...v1.3.0) (2026-10-02)
 
 
