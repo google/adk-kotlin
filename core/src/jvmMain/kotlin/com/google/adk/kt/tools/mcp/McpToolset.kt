@@ -145,8 +145,10 @@ internal constructor(
    * @property toolFilter Optional filter selecting which of the tools advertised by the server are
    *   exposed to the agent. Use [ToolFilter.AllowList] (or the [ToolFilter.allowList] helper) to
    *   keep tools by name, or [ToolFilter.Predicate] for context-aware selection that can consult
-   *   the [ReadonlyContext]. When `null`, all tools advertised by the server are exposed. The
-   *   resource tools added by [useMcpResources] are ADK's own and are not filtered.
+   *   the [ReadonlyContext]. When `null`, all tools advertised by the server are exposed. A server
+   *   tool whose name ADK uses for its own tools, such as `transfer_to_agent`, is always skipped
+   *   with a warning. The resource tools added by [useMcpResources] are ADK's own and are not
+   *   filtered.
    * @property useMcpResources When `true`, resource-related tools (`list_mcp_resources`,
    *   `list_mcp_resource_templates`, `load_mcp_resource`) are added to the toolset, granting the
    *   agent access to MCP resources exposed by the server. They are added only if the server

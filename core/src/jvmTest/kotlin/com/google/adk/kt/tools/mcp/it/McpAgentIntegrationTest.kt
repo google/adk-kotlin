@@ -21,11 +21,14 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelTransferToAgentResponse
+import com.google.adk.kt.testing.textAgent
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.mcp.McpToolset
 import com.google.common.truth.Truth.assertThat
@@ -34,6 +37,8 @@ import java.nio.file.Files
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.fail
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume
@@ -125,6 +130,64 @@ class McpAgentIntegrationTest {
         Files.deleteIfExists(pidFile)
       }
     }
+
+  @Test
+  fun runAsync_serverAdvertisesTransferToAgent_adkStillTransfersToSubAgent(): Unit = runBlocking {
+    val pidFile = Files.createTempFile("adk-mcp-agent-it-reserved-pid", ".txt")
+    try {
+      newToolset(pidFile = pidFile).use { toolset ->
+        val rootRequests = mutableListOf<LlmRequest>()
+        val root =
+          LlmAgent(
+            name = AGENT_NAME,
+            model =
+              DummyModel("root-model") { request ->
+                rootRequests += request
+                if (rootRequests.size == 1) {
+                  flowOf(modelTransferToAgentResponse(HELPER_NAME, id = CALL_ID))
+                } else {
+                  emptyFlow()
+                }
+              },
+            subAgents = listOf(textAgent(HELPER_NAME, HELPER_TEXT)),
+            toolsets = listOf(toolset),
+          )
+
+        val events =
+          InMemoryRunner(agent = root)
+            .runAsync(
+              userId = "user1",
+              sessionId = "session1",
+              newMessage = userMessage("hand this to the helper"),
+            )
+            .toList()
+
+        // ADK's tool, not the server's, took the call: the transfer happened and the helper ran.
+        assertThat(events.mapNotNull { it.actions.transferToAgent }).containsExactly(HELPER_NAME)
+        assertThat(
+            events
+              .filter { it.author == HELPER_NAME }
+              .flatMap { it.content?.parts.orEmpty() }
+              .mapNotNull { it.text }
+          )
+          .containsExactly(HELPER_TEXT)
+        // The model is offered ADK's transfer tool alone, not a second one from the server.
+        val declaredNames =
+          rootRequests
+            .first()
+            .config
+            .tools
+            .orEmpty()
+            .flatMap { it.functionDeclarations.orEmpty() }
+            .map { it.name }
+        assertThat(declaredNames.filter { it == FakeMcpServer.TOOL_TRANSFER_TO_AGENT })
+          .containsExactly(FakeMcpServer.TOOL_TRANSFER_TO_AGENT)
+      }
+    } finally {
+      killIfRunning(pidFile)
+      Files.deleteIfExists(pidFile)
+    }
+  }
 
   // Live SUCCESS half of the get_record pair (shared setup in runGetRecordAgent): the model fetches
   // an existing record and relays it.
@@ -295,6 +358,12 @@ class McpAgentIntegrationTest {
 
     /** The model's turn-2 answer once it has seen the tool response. */
     private const val FINAL_TEXT = "Done."
+
+    /** The sub-agent the root agent transfers to. */
+    private const val HELPER_NAME = "helper"
+
+    /** The helper's only answer. */
+    private const val HELPER_TEXT = "The helper answered."
 
     /** An id `get_record` has a record for; the happy half of the pair (any id != poison). */
     private const val EXISTING_RECORD_ID = 7
