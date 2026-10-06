@@ -25,6 +25,8 @@ import com.google.adk.kt.types.Content
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmOverloads
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -57,6 +59,20 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
    * [redelivery] before the next call looks there.
    */
   private val receiving = Mutex()
+
+  /**
+   * Completed by [close], so the live flow can see the caller hang up directly rather than wait for
+   * a pending receive to drain, as ADK Python reads `live_request_queue.closed`.
+   */
+  private val _closed = CompletableDeferred<Unit>()
+
+  /** Whether the caller has closed the queue. */
+  internal val isClosed: Boolean
+    get() = _closed.isCompleted
+
+  /** Completes when the caller closes the queue. */
+  internal val closed: Deferred<Unit>
+    get() = _closed
 
   /**
    * Returns the next request in send order, or null after [close] once every request sent before it
@@ -97,7 +113,9 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
   /**
    * Sends content in turn-by-turn mode.
    *
-   * Throws [IllegalArgumentException] if [content] breaks a [ContentInput] rule.
+   * Throws [IllegalArgumentException] if [content] breaks a [ContentInput] rule. A complete turn is
+   * recorded in the session by the `LlmAgent` live flow; a partial one or a function response is
+   * not.
    *
    * @param partial Whether this update leaves the model's current turn open.
    */
@@ -143,5 +161,7 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
   override fun close() {
     // Returns false on a second close.
     val unused = channel.close()
+    // Idempotent: a second close completes nothing new.
+    _closed.complete(Unit)
   }
 }
