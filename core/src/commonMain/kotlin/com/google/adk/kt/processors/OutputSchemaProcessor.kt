@@ -72,10 +72,11 @@ internal class OutputSchemaProcessor : LlmRequestProcessor {
 /**
  * Whether the model will be offered any tools, for the purpose of [LlmAgent.outputSchema] gating.
  *
- * Besides the agent's own tools it counts the `transfer_to_agent` tool that
- * [AgentTransferProcessor] attaches whenever the request offers a transfer (see
- * [offeredTransferTargets]), since Gemini 2.x can't combine that tool with a response schema
- * either. This is stricter than ADK Python and Java, which inspect only the agent's declared tools.
+ * Besides [LlmAgent.tools] and [LlmAgent.toolsets], this counts the `transfer_to_agent` tool that
+ * [AgentTransferProcessor] attaches when the run has transfer targets ([liveTransferTargets] on a
+ * live run, [findTransferTargets] otherwise), since Gemini 2.x cannot combine that tool with a
+ * response schema either. This is stricter than ADK Python and Java, which inspect only the agent's
+ * declared tools.
  */
 internal fun LlmAgent.hasToolsForOutputSchemaGating(context: InvocationContext): Boolean =
   tools.isNotEmpty() || toolsets.isNotEmpty() || offeredTransferTargets(this, context).isNotEmpty()
