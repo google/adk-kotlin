@@ -14,10 +14,14 @@
  * limitations under the License.
  */
 
+@file:JvmName("EdgesDsl")
+
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import kotlin.jvm.JvmName
 import kotlin.jvm.JvmSynthetic
 
 /**
@@ -70,6 +74,7 @@ class EdgesBuilder internal constructor() {
 
   /** Connects this node to [node] and returns [node], so a chain continues from it. */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   infix fun Node.then(node: Node): Node {
     edges += Edge(this, node)
     return node
@@ -81,6 +86,7 @@ class EdgesBuilder internal constructor() {
    * short for `Start.then(a).then(b)`.
    */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   fun chain(first: Node, second: Node, vararg rest: Node): Node =
     rest.fold(first then second) { last, node -> last then node }
 
@@ -91,6 +97,7 @@ class EdgesBuilder internal constructor() {
    * form can continue a fluent chain, such as after [joinTo].
    */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   fun Node.chain(first: Node, second: Node, vararg rest: Node): Node =
     rest.fold(this then first then second) { last, node -> last then node }
 
@@ -100,6 +107,7 @@ class EdgesBuilder internal constructor() {
    * once they all complete.
    */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   infix fun Node.then(targets: NodeGroup): NodeGroup {
     for (node in targets.nodes) edges += Edge(this, node)
     return targets
@@ -110,6 +118,7 @@ class EdgesBuilder internal constructor() {
    * them as a [NodeGroup], like `then(nodes(...))`. An empty collection adds no edges.
    */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   infix fun Node.then(targets: Collection<Node>): NodeGroup = then(NodeGroup(targets.toList()))
 
   /**
@@ -126,6 +135,7 @@ class EdgesBuilder internal constructor() {
    * Returns [join] so the chain continues from it: `a.then(nodes(b, c)).joinTo(join).then(d)`.
    */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   infix fun NodeGroup.joinTo(join: JoinNode): Node {
     for (node in nodes) edges += Edge(node, join)
     return join
@@ -137,6 +147,7 @@ class EdgesBuilder internal constructor() {
    * adds no edges.
    */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   infix fun Collection<Node>.joinTo(join: JoinNode): Node = NodeGroup(toList()).joinTo(join)
 
   /**
@@ -144,24 +155,26 @@ class EdgesBuilder internal constructor() {
    * complete. Returns the join, so a chain continues from it.
    */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   fun JoinNode.joinFrom(first: Node, vararg rest: Node): Node = nodes(first, *rest).joinTo(this)
 
   /**
    * Starts an edge that fires when this node emits [route] as a [Route.Tag]; [then] completes it.
    */
-  infix fun Node.on(route: String): PendingEdge = on(Route.Tag(route))
+  @JvmSynthetic infix fun Node.on(route: String): PendingEdge = on(Route.Tag(route))
 
   /**
    * Starts an edge that fires when this node emits [route] as a [Route.Num]; [then] completes it.
    */
-  infix fun Node.on(route: Int): PendingEdge = on(Route.Num(route.toLong()))
+  @JvmSynthetic infix fun Node.on(route: Int): PendingEdge = on(Route.Num(route.toLong()))
 
   /**
    * Starts an edge that fires when this node emits [route] as a [Route.Flag]; [then] completes it.
    */
-  infix fun Node.on(route: Boolean): PendingEdge = on(Route.Flag(route))
+  @JvmSynthetic infix fun Node.on(route: Boolean): PendingEdge = on(Route.Flag(route))
 
   /** Starts an edge that fires when this node emits [route]; [then] completes it. */
+  @JvmSynthetic
   infix fun Node.on(route: Route): PendingEdge =
     PendingEdge(this, listOf(route)).also { pendingEdges += it }
 
@@ -169,11 +182,13 @@ class EdgesBuilder internal constructor() {
    * Starts one edge that fires once when this node emits any of [routes] (built with [anyOf]);
    * [then] completes it.
    */
+  @JvmSynthetic
   infix fun Node.on(routes: RouteSet): PendingEdge =
     PendingEdge(this, routes.routes).also { pendingEdges += it }
 
   /** Completes this routed edge at [node] and returns [node], so a chain continues from it. */
   @CanIgnoreReturnValue
+  @JvmSynthetic
   infix fun PendingEdge.then(node: Node): Node {
     pendingEdges.remove(this)
     edges += Edge(from, node, routes)
@@ -198,6 +213,7 @@ class EdgesBuilder internal constructor() {
    * [IllegalArgumentException], and an entry not completed with `then` throws
    * [IllegalStateException].
    */
+  @JvmSynthetic
   infix fun Node.route(block: EdgesDslBlock<RouteMapBuilder>) {
     val routes = RouteMapBuilder(this)
     with(block) { routes.declare() }
@@ -209,6 +225,32 @@ class EdgesBuilder internal constructor() {
     require(routeEdges.isNotEmpty()) { "The routing map of node '$name' needs at least one entry." }
     edges += routeEdges
   }
+
+  /**
+   * Starts a chain of edges at [node] for Java callers. Its calls add the same edges as the Kotlin
+   * calls of the same names: `g.from(a).then(b).then(c)`.
+   */
+  @AdkJavaInteropApi fun from(node: Node): EdgeChain = EdgeChain(this, node)
+
+  /**
+   * Starts a chain of edges at [Start] for Java callers: `g.fromStart().then(a)` instead of
+   * `g.from(Start.INSTANCE).then(a)`.
+   */
+  @AdkJavaInteropApi fun fromStart(): EdgeChain = from(Start)
+
+  /**
+   * Starts a chain of edges at [group] for Java callers, so the group can join without a fan-out:
+   * `g.from(g.nodes(a, b)).joinTo(join)`.
+   */
+  @AdkJavaInteropApi fun from(group: NodeGroup): NodeGroupChain = NodeGroupChain(this, group)
+
+  /**
+   * Starts a chain of edges at [nodes] for Java callers, so they can join without a fan-out:
+   * `g.from(List.of(a, b)).joinTo(join)`.
+   */
+  @AdkJavaInteropApi
+  fun from(nodes: Collection<Node>): NodeGroupChain =
+    NodeGroupChain(this, NodeGroup(nodes.toList()))
 
   /** Returns the edges declared so far, failing if an [on] was left without a target. */
   internal fun build(): List<Edge> {
@@ -438,4 +480,108 @@ internal constructor(private val routeMap: RouteMapBuilder, internal val routes:
 fun interface EdgesDslBlock<in T> {
   /** Declares edges or routes on this builder. */
   fun T.declare()
+}
+
+/**
+ * A chain of edges for Java callers, positioned at a node. [EdgesBuilder.from] starts a chain, and
+ * each call adds the same edges as the edges DSL function of the same name and continues from its
+ * target.
+ */
+@AdkJavaInteropApi
+@ExperimentalWorkflowApi
+class EdgeChain internal constructor(private val builder: EdgesBuilder, private val node: Node) {
+
+  /** Connects the current node to [next] and continues from [next]. */
+  @CanIgnoreReturnValue
+  fun then(next: Node): EdgeChain = with(builder) { EdgeChain(builder, node.then(next)) }
+
+  /**
+   * Connects the current node to [first], [second], and each node in [rest] in order, adding an
+   * edge from each node to the next and continuing from the last node. This adds the same edges as
+   * [EdgesBuilder.chain] would when starting from the current node: `g.fromStart().chain(a, b)` is
+   * the Java equivalent of `chain(Start, a, b)`.
+   */
+  @CanIgnoreReturnValue
+  fun chain(first: Node, second: Node, vararg rest: Node): EdgeChain =
+    EdgeChain(builder, builder.chain(node, first, second, *rest))
+
+  /** Fans out from the current node to each node in [targets] and continues from the group. */
+  @CanIgnoreReturnValue
+  fun then(targets: NodeGroup): NodeGroupChain =
+    with(builder) { NodeGroupChain(builder, node.then(targets)) }
+
+  /**
+   * Fans out from the current node to each node in [targets] and continues from them as a group. An
+   * empty collection adds no edges.
+   */
+  @CanIgnoreReturnValue
+  fun then(targets: Collection<Node>): NodeGroupChain =
+    with(builder) { NodeGroupChain(builder, node.then(targets)) }
+
+  /**
+   * Starts an edge that fires when the current node emits [route] as a [Route.Tag];
+   * [PendingEdgeChain.then] completes it.
+   */
+  fun on(route: String): PendingEdgeChain =
+    with(builder) { PendingEdgeChain(builder, node.on(route)) }
+
+  /**
+   * Starts an edge that fires when the current node emits [route] as a [Route.Num];
+   * [PendingEdgeChain.then] completes it.
+   */
+  fun on(route: Int): PendingEdgeChain = with(builder) { PendingEdgeChain(builder, node.on(route)) }
+
+  /**
+   * Starts an edge that fires when the current node emits [route] as a [Route.Flag];
+   * [PendingEdgeChain.then] completes it.
+   */
+  fun on(route: Boolean): PendingEdgeChain =
+    with(builder) { PendingEdgeChain(builder, node.on(route)) }
+
+  /**
+   * Starts an edge that fires when the current node emits [route]; [PendingEdgeChain.then]
+   * completes it.
+   */
+  fun on(route: Route): PendingEdgeChain =
+    with(builder) { PendingEdgeChain(builder, node.on(route)) }
+
+  /**
+   * Starts one edge that fires once when the current node emits any of [routes] (built with
+   * [EdgesBuilder.anyOf]); [PendingEdgeChain.then] completes it.
+   */
+  fun on(routes: RouteSet): PendingEdgeChain =
+    with(builder) { PendingEdgeChain(builder, node.on(routes)) }
+
+  /** Adds the current node's routing map and ends the chain. */
+  fun route(block: EdgesDslBlock<RouteMapBuilder>) {
+    with(builder) { node.route(block) }
+  }
+}
+
+/**
+ * A chain of edges for Java callers, positioned at a routed edge started by [EdgeChain.on]; [then]
+ * completes it.
+ */
+@AdkJavaInteropApi
+@ExperimentalWorkflowApi
+class PendingEdgeChain
+internal constructor(private val builder: EdgesBuilder, private val edge: PendingEdge) {
+
+  /** Completes the routed edge at [node] and continues from [node]. */
+  @CanIgnoreReturnValue
+  fun then(node: Node): EdgeChain = with(builder) { EdgeChain(builder, edge.then(node)) }
+}
+
+/**
+ * A chain of edges for Java callers, positioned at a [NodeGroup] from a fan-out or
+ * [EdgesBuilder.from].
+ */
+@AdkJavaInteropApi
+@ExperimentalWorkflowApi
+class NodeGroupChain
+internal constructor(private val builder: EdgesBuilder, private val group: NodeGroup) {
+
+  /** Connects each node in the group to [join] and continues from [join]. */
+  @CanIgnoreReturnValue
+  fun joinTo(join: JoinNode): EdgeChain = with(builder) { EdgeChain(builder, group.joinTo(join)) }
 }

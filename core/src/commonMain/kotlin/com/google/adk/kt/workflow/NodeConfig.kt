@@ -16,8 +16,11 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Bundles a node's retry policy and execution timeout. A null [timeout] imposes no limit, so an
@@ -36,5 +39,50 @@ data class NodeConfig(val retryConfig: RetryConfig? = null, val timeout: Duratio
     require(timeout == null || timeout > Duration.ZERO) {
       "timeout must be positive, or null for no timeout."
     }
+  }
+
+  /** Returns [timeout] in whole milliseconds, or `null`. Java cannot read [timeout] (mangled). */
+  fun timeoutMillis(): Long? = timeout?.inWholeMilliseconds
+
+  /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi fun toBuilder(): Builder = Builder().retryConfig(retryConfig).timeout(timeout)
+
+  /**
+   * Fluent builder for [NodeConfig], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var retryConfig: RetryConfig? = null
+    private var timeout: Duration? = null
+
+    fun retryConfig(retryConfig: RetryConfig?): Builder = apply { this.retryConfig = retryConfig }
+
+    // Let toBuilder copy the timeout exactly; the millisecond setter would truncate it.
+    internal fun timeout(timeout: Duration?): Builder = apply { this.timeout = timeout }
+
+    /** Sets [NodeConfig.timeout] in milliseconds. */
+    fun timeoutMillis(timeoutMillis: Long): Builder = apply {
+      this.timeout = timeoutMillis.milliseconds
+    }
+
+    /**
+     * Sets [NodeConfig.timeout] in milliseconds, or clears it when `null`. The non-null overload
+     * lets Java `int` literals compile.
+     */
+    fun timeoutMillis(timeoutMillis: Long?): Builder = apply {
+      this.timeout = timeoutMillis?.milliseconds
+    }
+
+    fun build(): NodeConfig = NodeConfig(retryConfig = retryConfig, timeout = timeout)
+  }
+
+  companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
 }

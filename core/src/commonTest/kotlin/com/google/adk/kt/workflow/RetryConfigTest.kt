@@ -14,18 +14,21 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWorkflowApi::class)
+@file:OptIn(ExperimentalWorkflowApi::class, AdkJavaInteropApi::class)
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.microseconds
 import kotlin.time.Duration.Companion.seconds
 
 /** Exercises the retry policy directly; the workflow tests cover it through public behavior. */
@@ -136,6 +139,46 @@ class RetryConfigTest {
       )
 
     assertEquals(ceiling, config.delayFor(attemptCount = 5000))
+  }
+
+  @Test
+  fun toBuilder_matchesCopy() {
+    val config =
+      RetryConfig(
+        maxAttempts = 3,
+        // Sub-millisecond, so a copy made through the millisecond setters would not match.
+        initialDelay = 1500.microseconds,
+        maxDelay = 2500.microseconds,
+        backoffFactor = 1.5,
+        jitter = 0.25,
+        exceptions = listOf("RuntimeError"),
+      )
+
+    assertEquals(config.copy(), config.toBuilder().build())
+  }
+
+  @Test
+  fun builder_setsDelaysInMillisAndDefaultsTheRest() {
+    val config =
+      RetryConfig.builder().maxAttempts(5).initialDelayMillis(1_000).maxDelayMillis(2_000).build()
+
+    assertEquals(
+      RetryConfig(maxAttempts = 5, initialDelay = 1.seconds, maxDelay = 2.seconds),
+      config,
+    )
+    assertEquals(1_000L, config.initialDelayMillis())
+    assertEquals(2_000L, config.maxDelayMillis())
+    assertEquals(RetryConfig(), RetryConfig.builder().build())
+  }
+
+  @Test
+  fun builder_clearsDelaysWithNullMillis() {
+    val config = RetryConfig(initialDelay = 1.seconds, maxDelay = 2.seconds)
+
+    val cleared = config.toBuilder().initialDelayMillis(null).maxDelayMillis(null).build()
+
+    assertEquals(RetryConfig(), cleared)
+    assertNull(cleared.initialDelayMillis())
   }
 }
 

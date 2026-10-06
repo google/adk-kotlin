@@ -20,10 +20,12 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.types.Schema
+import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -94,5 +96,78 @@ class Workflow(
     // Child events are attributed to the workflow, not to the node inside it.
     context.eventAuthor = name
     Scheduler(this@Workflow, graph, context).run(nodeInput)
+  }
+
+  /**
+   * Fluent builder for [Workflow], provided primarily for Java callers. Any property left unset
+   * falls back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var edges: List<Edge> = emptyList()
+    private var description: String = ""
+    private var maxConcurrency: Int? = null
+    private var rerunOnResume: Boolean = true
+    private var waitForOutput: Boolean = false
+    private var config: NodeConfig = NodeConfig()
+    private var inputSchema: Schema? = null
+    private var outputSchema: Schema? = null
+    private var stateSchema: Schema? = null
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    fun edges(edges: List<Edge>): Builder = apply { this.edges = edges }
+
+    fun edges(vararg edges: Edge): Builder = apply { this.edges = edges.toList() }
+
+    /**
+     * Sets the edges that [block] declares, so Java can write `.edges(g -> ...)` without
+     * `EdgesDsl.edges`.
+     */
+    fun edges(block: EdgesDslBlock<EdgesBuilder>): Builder = apply {
+      this.edges = com.google.adk.kt.workflow.edges(block)
+    }
+
+    fun description(description: String): Builder = apply { this.description = description }
+
+    fun maxConcurrency(maxConcurrency: Int?): Builder = apply {
+      this.maxConcurrency = maxConcurrency
+    }
+
+    fun rerunOnResume(rerunOnResume: Boolean): Builder = apply {
+      this.rerunOnResume = rerunOnResume
+    }
+
+    fun waitForOutput(waitForOutput: Boolean): Builder = apply {
+      this.waitForOutput = waitForOutput
+    }
+
+    fun config(config: NodeConfig): Builder = apply { this.config = config }
+
+    fun inputSchema(inputSchema: Schema?): Builder = apply { this.inputSchema = inputSchema }
+
+    fun outputSchema(outputSchema: Schema?): Builder = apply { this.outputSchema = outputSchema }
+
+    fun stateSchema(stateSchema: Schema?): Builder = apply { this.stateSchema = stateSchema }
+
+    fun build(): Workflow =
+      Workflow(
+        name = checkNotNull(name) { "Workflow.Builder requires name to be set." },
+        edges = edges,
+        description = description,
+        maxConcurrency = maxConcurrency,
+        rerunOnResume = rerunOnResume,
+        waitForOutput = waitForOutput,
+        config = config,
+        inputSchema = inputSchema,
+        outputSchema = outputSchema,
+        stateSchema = stateSchema,
+      )
+  }
+
+  companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
 }
