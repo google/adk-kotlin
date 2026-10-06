@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.ChildRunIds
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -52,6 +53,7 @@ private constructor(
   private val eventSink: EventSink,
   private val parent: Context? = null,
   private val runId: String = "1",
+  private val useAsOutput: Boolean = false,
   private val resumeInputs: Map<String, Any?> = emptyMap(),
   private val useSubBranch: Boolean = false,
   private val overrideBranch: String? = null,
@@ -61,6 +63,7 @@ private constructor(
     node: Node,
     parent: Context,
     runId: String = "1",
+    useAsOutput: Boolean = false,
     resumeInputs: Map<String, Any?> = emptyMap(),
     useSubBranch: Boolean = false,
     overrideBranch: String? = null,
@@ -70,26 +73,21 @@ private constructor(
     eventSink = parent.requireNodeState().eventSink,
     parent = parent,
     runId = runId,
+    useAsOutput = useAsOutput,
     resumeInputs = resumeInputs,
     useSubBranch = useSubBranch,
     overrideBranch = overrideBranch,
   )
 
-  /**
-   * Runs the node, retrying per its policy, and returns the context of the final attempt.
-   *
-   * A retry runs fresh: it builds a new context, so a partial attempt's un-emitted writes are
-   * dropped, and retrying the root re-runs the whole graph rather than replaying already-produced
-   * children (that replay is a later change).
-   */
+  private val childRunIds = ChildRunIds()
+
+  /** Runs the node, retrying per its policy, and returns the context of the final attempt. */
   suspend fun run(nodeInput: Any?): Context {
     val policy = node.config.retryConfig
     var attempt = 1
     while (true) {
       val activation = Activation(newContext(attempt))
       val context = activation.run(nodeInput)
-      // A workflow reports a child's failure by setting it on the context and returning, not by
-      // raising, so both thrown exceptions and child failures run through the retry policy here.
       val failure = context.requireNodeState().failure
       if (
         activation.canRetry &&
@@ -106,8 +104,6 @@ private constructor(
   }
 
   private fun newContext(attempt: Int): Context {
-    // TODO: on resume, recovering interrupt answers from session history (ResumeScan.answersFor) is
-    // added in a later change; until then only explicitly-passed resume inputs are used.
     return Context(
       invocationContext = childInvocationContext(),
       node = node,
@@ -116,6 +112,8 @@ private constructor(
       runId = runId,
       attemptCount = attempt,
       resumeInputs = resumeInputs,
+      useAsOutput = useAsOutput,
+      childRunIds = if (node is Workflow) ChildRunIds() else childRunIds,
     )
   }
 
@@ -159,7 +157,6 @@ private constructor(
         flushPending()
       } catch (e: DynamicNodeFailedException) {
         // A dynamically dispatched child failed; carry its failure up without retrying here.
-        // Dynamic dispatch lands in a later change, so nothing raises this yet.
         canRetry = false
         nodeState.failure = NodeExecutionFailure(e.error, e.errorNodePath)
       } catch (e: CancellationException) {
@@ -246,20 +243,13 @@ private constructor(
         context.actions.stateDelta.isNotEmpty() || context.actions.artifactDelta.isNotEmpty()
       if (!hasPendingOutput && !hasPendingRoute && !hasDeltas) return
 
-      // Construct the event directly instead of calling stamp(), which only sets outputFor when
-      // Event.output is non-null (a deferred output can be null).
       val event =
-        Event(
-          author = context.eventAuthor.ifEmpty { node.name },
-          invocationId = context.invocationContext.invocationId,
-          branch = context.invocationContext.branch,
-          output = if (hasPendingOutput) context.output else null,
-          actions = EventActions(route = if (hasPendingRoute) context.routes else null),
-          nodeInfo =
-            NodeInfo(
-              path = context.nodePath,
-              outputFor = if (hasPendingOutput) listOf(context.nodePath) else null,
-            ),
+        stamp(
+          Event(
+            author = "",
+            output = if (hasPendingOutput) context.output else null,
+            actions = EventActions(route = if (hasPendingRoute) context.routes else null),
+          )
         )
       nodeState.eventSink.send(withPendingDeltas(event), nodeFailure = null)
 
@@ -310,14 +300,9 @@ private constructor(
         nodeInfo =
           (event.nodeInfo ?: NodeInfo()).copy(
             path = context.nodePath,
-            // A message-as-output event carries the node's output as its content (send() has
-            // cleared the output field), so it is stamped outputFor too. Python sets output_for
-            // only when the output field is set (_node_runner.py).
             outputFor =
-              if (
-                event.output != null || (!event.partial && event.nodeInfo?.messageAsOutput == true)
-              ) {
-                listOf(context.nodePath)
+              if (event.output != null || event.isMessageAsOutput) {
+                nodeState.outputFor
               } else {
                 event.nodeInfo?.outputFor
               },

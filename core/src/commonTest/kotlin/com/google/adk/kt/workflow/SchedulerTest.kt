@@ -24,10 +24,15 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -287,10 +292,85 @@ class SchedulerTest {
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, a), Edge(Start, b)))
 
     // Act
-    val error = assertFailsWith<IllegalStateException> { runScheduler(workflow, branch = "root") }
+    val error =
+      assertFailsWith<IllegalArgumentException> { runScheduler(workflow, branch = "root") }
 
     // Assert
+    assertIs<WorkflowConfigurationError>(error)
     assertContains(error.message!!, "multiple terminal nodes produced output")
+  }
+
+  @Test
+  fun run_nodeAssignsNull_emitsNoOutputEvent() {
+    // Arrange
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, OutputAssigner("nothing", null))))
+
+    // Act
+    val events = schedule(workflow, branch = "root")
+
+    // Assert
+    assertEquals(0, events.count { it.nodeInfo?.path?.endsWith("/nothing@1") == true })
+  }
+
+  @Test
+  fun run_nodeAssignsNullThenValue_outputsValue() {
+    // Arrange
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, OutputAssigner("node", null, "X"))))
+
+    // Act
+    val (root, _) = runScheduler(workflow, branch = "root")
+
+    // Assert
+    assertEquals("X", root.output)
+  }
+
+  @Test
+  fun run_nodeAssignsValueThenNull_isRejected() {
+    // Arrange
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, OutputAssigner("node", "X", null))))
+
+    // Act
+    val events = schedule(workflow, branch = "root")
+
+    // Assert
+    val error = events.single { it.nodeInfo?.path == "wf@1/node@1" }
+    assertEquals("IllegalStateException", error.errorCode)
+    assertContains(error.errorMessage!!, "produced a second output")
+  }
+
+  @Test
+  fun finalize_outputSchemaReadsOutputAsNull_producesNoWorkflowOutput() {
+    // Arrange
+    val nullText = Content(parts = listOf(Part(text = "null")))
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, Emitter("a", nullText))),
+        outputSchema = Schema(type = Type.OBJECT, nullable = true),
+      )
+
+    // Act
+    val (root, _) = runScheduler(workflow, branch = "root")
+
+    // Assert
+    assertNull(root.output)
+  }
+
+  @Test
+  fun finalize_terminalNodeAssignsNull_isNotTheWorkflowOutput() {
+    // Arrange
+    val a = Emitter("a", "A")
+    val nothing = OutputAssigner("nothing", null)
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, a), Edge(Start, nothing)))
+
+    // Act
+    val (root, _) = runScheduler(workflow, branch = "root")
+
+    // Assert
+    assertEquals("A", root.output)
   }
 
   @Test
@@ -380,6 +460,21 @@ class SchedulerTest {
     // second one to produce an output.
     assertEquals(2, late.activations)
     assertEquals("ready", downstream.received)
+  }
+
+  @Test
+  fun handleCompletion_waitForOutputNodeAssignsNull_keepsWaiting() {
+    // Arrange
+    val waiter = OutputAssigner("waiter", null, waitForOutput = true)
+    val downstream = Emitter("downstream", "D")
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, waiter), Edge(waiter, downstream)))
+
+    // Act
+    val events = schedule(workflow, branch = "root")
+
+    // Assert
+    assertEquals(0, events.count { it.nodeInfo?.path?.endsWith("/downstream@1") == true })
   }
 
   @Test

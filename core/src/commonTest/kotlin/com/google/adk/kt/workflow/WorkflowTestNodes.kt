@@ -42,6 +42,17 @@ internal class StubNode(override val name: String, private val value: Any? = nul
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { emit(value) }
 }
 
+/** Reports its output by assigning each of [values] in turn rather than by emitting an event. */
+internal class OutputAssigner(
+  override val name: String,
+  private vararg val values: Any?,
+  override val waitForOutput: Boolean = false,
+) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    for (value in values) context.output = value
+  }
+}
+
 /** Throws whatever [error] builds, so a runner's failure path can be observed. */
 internal class ThrowingNode(override val name: String, private val error: () -> Throwable) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { throw error() }
