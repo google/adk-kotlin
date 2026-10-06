@@ -281,6 +281,25 @@ class EventSerializationTest {
   }
 
   @Test
+  fun eventOutput_contentInAMap_roundTripsInItsWireForm() {
+    // Arrange
+    val reply = Content.fromText(Role.MODEL, "hi")
+    val event = Event(author = "join", output = mapOf("agent" to reply), timestamp = 1L)
+
+    // Act
+    val saved = adkJson.encodeToJsonElement(Event.serializer(), event) as JsonObject
+    val reloaded = roundTrip(event).output as Map<*, *>
+
+    // Assert
+    val wireForm = adkJson.encodeToJsonElement(Content.serializer(), reply)
+    assertEquals(wireForm, (saved["output"] as JsonObject)["agent"])
+    assertEquals(
+      reply,
+      adkJson.decodeFromJsonElement(Content.serializer(), anyToJsonElement(reloaded["agent"])),
+    )
+  }
+
+  @Test
   fun functionCall_throughAnyTreeBridge_roundTrips() {
     val functionCall = FunctionCall(id = "call-1", name = "lookup", args = mapOf("q" to "weather"))
 

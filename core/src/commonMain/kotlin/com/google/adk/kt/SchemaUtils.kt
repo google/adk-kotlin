@@ -23,7 +23,13 @@ import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import kotlin.reflect.KType
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.SerialKind
+import kotlinx.serialization.descriptors.StructureKind
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -31,6 +37,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.serializerOrNull
 
 /**
  * Utility class for validating schemas.
@@ -139,7 +146,7 @@ object SchemaUtils {
         Type.BOOLEAN -> value is Boolean
         Type.NUMBER -> value is Number
         Type.ARRAY -> {
-          if (value !is List<*>) {
+          if (value !is Collection<*>) {
             return Result.failure(IllegalArgumentException("$argsName value is not a list: $value"))
           }
           val itemSchema = schema.items ?: return Result.success(Unit)
@@ -393,4 +400,121 @@ object SchemaUtils {
           element.booleanOrNull != null ||
           element.doubleOrNull?.isFinite() == true
     }
+
+  /**
+   * Infers a [Schema] for the JSON form of [kType] from its serializer's descriptor, so it covers
+   * every `@Serializable` type. Returns `null` when the type has no serializer or its shape cannot
+   * be described, such as `Any`, `Unit`, `JsonPrimitive`, `JsonNull`, a star projection, or a
+   * polymorphic class.
+   */
+  @OptIn(FrameworkInternalApi::class)
+  internal fun inferSchema(kType: KType): Schema? {
+    val nullable = if (kType.isMarkedNullable) true else null
+    return when (kType.classifier) {
+      // Neither has a serializer, but a value of either has a JSON form.
+      Number::class -> Schema(type = Type.NUMBER, nullable = nullable)
+      CharSequence::class -> Schema(type = Type.STRING, nullable = nullable)
+      else -> serializerFor(kType)?.descriptor?.let { schemaOf(it, kType.isMarkedNullable) }
+    }
+  }
+
+  /** Returns the [adkJson] serializer for [kType], or `null` when there is none. */
+  @OptIn(FrameworkInternalApi::class)
+  internal fun serializerFor(kType: KType): KSerializer<Any?>? =
+    try {
+      adkJson.serializersModule.serializerOrNull(kType)
+    } catch (e: Exception) {
+      // A star projection, a type parameter, or a private object has no usable serializer.
+      null
+    }
+
+  /**
+   * Maps [descriptor] to the [Schema] of its JSON form, or returns `null` when that form is
+   * unconstrained or cannot be described. A list whose elements cannot be described still maps to
+   * an array, a map to an object, and a class field to an unconstrained schema.
+   */
+  internal fun schemaOf(
+    descriptor: SerialDescriptor,
+    nullable: Boolean,
+    visited: MutableSet<SerialDescriptor> = mutableSetOf(),
+  ): Schema? = describe(descriptor, nullable, visited).takeUnless { it === CYCLE }
+
+  /** Marks a type that contains itself; it propagates up so the whole type has no schema. */
+  private val CYCLE = Schema()
+
+  /** JSON element types whose descriptor claims a narrower shape than the values they hold. */
+  private val UNDESCRIBED_JSON_TYPES =
+    setOf(
+      JsonPrimitive.serializer().descriptor.serialName,
+      JsonNull.serializer().descriptor.serialName,
+    )
+
+  private fun describe(
+    descriptor: SerialDescriptor,
+    nullable: Boolean,
+    visited: MutableSet<SerialDescriptor>,
+  ): Schema? {
+    val isNullable = nullable || descriptor.isNullable
+    if (descriptor.isInline) {
+      return describe(descriptor.getElementDescriptor(0), isNullable, visited)
+    }
+    if (descriptor.serialName.removeSuffix("?") in UNDESCRIBED_JSON_TYPES) return null
+    val nullableFlag = if (isNullable) true else null
+    return when (descriptor.kind) {
+      PrimitiveKind.STRING,
+      PrimitiveKind.CHAR -> Schema(type = Type.STRING, nullable = nullableFlag)
+      PrimitiveKind.INT,
+      PrimitiveKind.LONG,
+      PrimitiveKind.SHORT,
+      PrimitiveKind.BYTE -> Schema(type = Type.INTEGER, nullable = nullableFlag)
+      PrimitiveKind.FLOAT,
+      PrimitiveKind.DOUBLE -> Schema(type = Type.NUMBER, nullable = nullableFlag)
+      PrimitiveKind.BOOLEAN -> Schema(type = Type.BOOLEAN, nullable = nullableFlag)
+      SerialKind.ENUM ->
+        Schema(
+          type = Type.STRING,
+          enum = List(descriptor.elementsCount) { descriptor.getElementName(it) },
+          nullable = nullableFlag,
+        )
+      StructureKind.LIST -> {
+        val items = describe(descriptor.getElementDescriptor(0), nullable = false, visited)
+        if (items === CYCLE) CYCLE
+        else Schema(type = Type.ARRAY, items = items, nullable = nullableFlag)
+      }
+      StructureKind.MAP -> Schema(type = Type.OBJECT, nullable = nullableFlag)
+      StructureKind.CLASS -> classSchemaOf(descriptor, nullableFlag, visited)
+      // No shape to describe; returning here also keeps the recursive JsonElement descriptor
+      // finite.
+      else -> null
+    }
+  }
+
+  private fun classSchemaOf(
+    descriptor: SerialDescriptor,
+    nullable: Boolean?,
+    visited: MutableSet<SerialDescriptor>,
+  ): Schema? {
+    // Generated descriptors compare type arguments, so Box<Box<Int>> is not mistaken for a cycle.
+    if (!visited.add(descriptor)) return CYCLE
+    try {
+      val properties = mutableMapOf<String, Schema>()
+      val required = mutableListOf<String>()
+      for (i in 0 until descriptor.elementsCount) {
+        val elementDescriptor = descriptor.getElementDescriptor(i)
+        val property = describe(elementDescriptor, nullable = false, visited)
+        if (property === CYCLE) return CYCLE
+        // A field with no describable shape, such as a JsonElement, is unconstrained.
+        properties[descriptor.getElementName(i)] = property ?: Schema()
+        if (!descriptor.isElementOptional(i)) required += descriptor.getElementName(i)
+      }
+      return Schema(
+        type = Type.OBJECT,
+        properties = properties,
+        required = required.ifEmpty { null },
+        nullable = nullable,
+      )
+    } finally {
+      visited.remove(descriptor)
+    }
+  }
 }

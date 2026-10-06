@@ -14,18 +14,68 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
+
 package com.google.adk.kt
 
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import kotlin.jvm.JvmInline
+import kotlin.reflect.typeOf
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+
+private data class UserProfileDomain(val userId: String, val tier: String)
+
+@Serializable
+private data class ShippingAddress(val street: String, @SerialName("zip_code") val zipCode: String)
+
+@Serializable
+private data class CustomerOrder(
+  val id: Long,
+  val note: String? = null,
+  val express: Boolean = false,
+  val coupon: String?,
+  val address: ShippingAddress,
+)
+
+@Serializable
+private enum class OrderStatus {
+  @SerialName("open") OPEN,
+  @SerialName("shipped") SHIPPED,
+}
+
+@Serializable private data class Box<T>(val item: T)
+
+@Serializable
+private sealed class Shape {
+  @Serializable data class Circle(val radius: Double) : Shape()
+}
+
+@Serializable private data class TreeNode(val label: String, val children: List<TreeNode>)
+
+@Serializable private data class LinkedItem(val value: Int, val next: LinkedItem?)
+
+@Serializable private data class Payload(val id: String, val extra: JsonElement)
+
+@Serializable private data class Reading(val value: JsonPrimitive)
+
+@JvmInline @Serializable private value class OrderId(val value: String)
 
 class SchemaUtilsTest {
 
@@ -844,4 +894,261 @@ class SchemaUtilsTest {
     assertTrue(SchemaUtils.acceptsString(Schema(anyOf = listOf(Schema(type = Type.STRING)))))
     assertFalse(SchemaUtils.acceptsString(Schema(type = Type.INTEGER)))
   }
+
+  // -- inferSchema --
+
+  @Test
+  fun inferSchema_scalarTypes_mapsToPrimitiveSchemas() {
+    // Arrange
+    val types =
+      listOf(
+        typeOf<String>(),
+        typeOf<Int?>(),
+        typeOf<Short>(),
+        typeOf<Double>(),
+        typeOf<Boolean>(),
+        typeOf<Number>(),
+        typeOf<CharSequence>(),
+        typeOf<Char>(),
+      )
+
+    // Act
+    val schemas = types.map { SchemaUtils.inferSchema(it) }
+
+    // Assert
+    assertEquals(
+      listOf(
+        Schema(type = Type.STRING),
+        Schema(type = Type.INTEGER, nullable = true),
+        Schema(type = Type.INTEGER),
+        Schema(type = Type.NUMBER),
+        Schema(type = Type.BOOLEAN),
+        Schema(type = Type.NUMBER),
+        Schema(type = Type.STRING),
+        Schema(type = Type.STRING),
+      ),
+      schemas,
+    )
+  }
+
+  @Test
+  fun inferSchema_collectionTypes_mapToArray() {
+    // Arrange
+    val types =
+      listOf(
+        typeOf<List<String>>(),
+        typeOf<MutableList<String>>(),
+        typeOf<ArrayList<String>>(),
+        typeOf<Array<String>>(),
+        typeOf<Collection<String>>(),
+        typeOf<Set<String>>(),
+      )
+
+    // Act
+    val schemas = types.map { SchemaUtils.inferSchema(it) }
+    val anyItems = SchemaUtils.inferSchema(typeOf<List<Any?>>())
+
+    // Assert
+    val stringArray = Schema(type = Type.ARRAY, items = Schema(type = Type.STRING))
+    assertEquals(List(types.size) { stringArray }, schemas)
+    assertEquals(Schema(type = Type.ARRAY), anyItems)
+  }
+
+  @Test
+  fun inferSchema_mapTypes_mapToObjectWithoutProperties() {
+    // Act
+    val anyValues = SchemaUtils.inferSchema(typeOf<Map<String, Any?>>())
+    val intValues = SchemaUtils.inferSchema(typeOf<Map<String, Int>>())
+
+    // Assert
+    assertEquals(Schema(type = Type.OBJECT), anyValues)
+    assertEquals(Schema(type = Type.OBJECT), intValues)
+  }
+
+  @Test
+  fun inferSchema_serializableClass_infersPropertiesAndRequiresThoseWithoutDefaults() {
+    // Act
+    val schema = SchemaUtils.inferSchema(typeOf<CustomerOrder?>())
+
+    // Assert
+    val address =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("street" to Schema(type = Type.STRING), "zip_code" to Schema(type = Type.STRING)),
+        required = listOf("street", "zip_code"),
+      )
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "id" to Schema(type = Type.INTEGER),
+            "note" to Schema(type = Type.STRING, nullable = true),
+            "express" to Schema(type = Type.BOOLEAN),
+            "coupon" to Schema(type = Type.STRING, nullable = true),
+            "address" to address,
+          ),
+        required = listOf("id", "coupon", "address"),
+        nullable = true,
+      ),
+      schema,
+    )
+  }
+
+  @Test
+  fun inferSchema_enumGenericAndValueClass_infersFromTheirDescriptors() {
+    // Act
+    val enumSchema = SchemaUtils.inferSchema(typeOf<OrderStatus>())
+    val boxSchema = SchemaUtils.inferSchema(typeOf<Box<Int>>())
+    val valueClassSchema = SchemaUtils.inferSchema(typeOf<OrderId>())
+
+    // Assert
+    assertEquals(Schema(type = Type.STRING, enum = listOf("open", "shipped")), enumSchema)
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("item" to Schema(type = Type.INTEGER)),
+        required = listOf("item"),
+      ),
+      boxSchema,
+    )
+    assertEquals(Schema(type = Type.STRING), valueClassSchema)
+  }
+
+  @Test
+  fun inferSchema_nestedGenericOfTheSameClass_isNotACycle() {
+    // Act
+    val nestedBox = SchemaUtils.inferSchema(typeOf<Box<Box<Int>>>())
+    val nestedPair = SchemaUtils.inferSchema(typeOf<Pair<Pair<Int, Int>, String>>())
+
+    // Assert
+    val intBox =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("item" to Schema(type = Type.INTEGER)),
+        required = listOf("item"),
+      )
+    assertEquals(
+      Schema(type = Type.OBJECT, properties = mapOf("item" to intBox), required = listOf("item")),
+      nestedBox,
+    )
+    val intPair =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("first" to Schema(type = Type.INTEGER), "second" to Schema(type = Type.INTEGER)),
+        required = listOf("first", "second"),
+      )
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("first" to intPair, "second" to Schema(type = Type.STRING)),
+        required = listOf("first", "second"),
+      ),
+      nestedPair,
+    )
+  }
+
+  @Test
+  fun inferSchema_fieldWithoutDescribableShape_isUnconstrained() {
+    // Act
+    val schema = SchemaUtils.inferSchema(typeOf<Payload>())
+
+    // Assert
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("id" to Schema(type = Type.STRING), "extra" to Schema()),
+        required = listOf("id", "extra"),
+      ),
+      schema,
+    )
+  }
+
+  @Test
+  fun inferSchema_jsonPrimitiveAndJsonNull_areUnconstrained() {
+    // Act
+    val topLevel =
+      listOf(typeOf<JsonPrimitive>(), typeOf<JsonPrimitive?>(), typeOf<JsonNull>()).map {
+        SchemaUtils.inferSchema(it)
+      }
+    val field = SchemaUtils.inferSchema(typeOf<Reading>())
+
+    // Assert
+    assertEquals(listOf(null, null, null), topLevel)
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("value" to Schema()),
+        required = listOf("value"),
+      ),
+      field,
+    )
+  }
+
+  @Test
+  fun inferSchema_typesWithoutDescribableShape_returnNull() {
+    // Arrange
+    val types =
+      listOf(
+        typeOf<Any>(),
+        typeOf<Any?>(),
+        typeOf<Unit>(),
+        typeOf<Nothing?>(),
+        typeOf<Shape>(),
+        typeOf<List<*>>(),
+        typeOf<Map<String, *>>(),
+        typeOf<TreeNode>(),
+        typeOf<LinkedItem>(),
+        typeOf<UserProfileDomain>(),
+      )
+
+    // Act
+    val schemas = types.map { SchemaUtils.inferSchema(it) }
+
+    // Assert
+    assertEquals(List(types.size) { null }, schemas)
+  }
+
+  @Test
+  fun inferSchema_inferredSchemas_acceptJsonFormsOfTheirValues() {
+    // Arrange
+    val order =
+      CustomerOrder(id = 7, coupon = "SAVE10", address = ShippingAddress("Main St", "00-001"))
+    val samples =
+      listOf(
+        typeOf<String>() to "a",
+        typeOf<Long>() to 1L,
+        typeOf<Number>() to 1.5,
+        typeOf<Set<Int>>() to setOf(1, 2),
+        typeOf<OrderStatus>() to "shipped",
+        typeOf<CustomerOrder>() to anyJson(order),
+      )
+
+    // Act
+    val results = samples.map { (type, value) ->
+      SchemaUtils.validateValue(value, checkNotNull(SchemaUtils.inferSchema(type)), "value")
+    }
+
+    // Assert
+    assertTrue(results.all { it.isSuccess })
+  }
+
+  @Test
+  fun validateValue_setForArraySchema_succeeds() {
+    // Act
+    val result =
+      SchemaUtils.validateValue(
+        setOf(1, 2),
+        Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER)),
+        "ids",
+      )
+
+    // Assert
+    assertTrue(result.isSuccess)
+  }
+
+  private fun anyJson(value: CustomerOrder): Any? =
+    jsonElementToAny(adkJson.encodeToJsonElement(CustomerOrder.serializer(), value))
 }
