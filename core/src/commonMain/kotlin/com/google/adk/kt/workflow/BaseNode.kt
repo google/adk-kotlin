@@ -77,7 +77,7 @@ abstract class BaseNode(
    * not), and any other value becomes the output.
    */
   fun run(context: Context, nodeInput: Any?): Flow<Event> = flow {
-    val emissions = runNode(context, this@BaseNode.validateInput(nodeInput))
+    val emissions = runNode(context, validateInput(nodeInput))
     emissions.collect { item ->
       when (item) {
         null,
@@ -95,8 +95,14 @@ abstract class BaseNode(
     }
   }
 
+  /** Checks [nodeInput] against [inputSchema], if there is one, and returns the input to run on. */
+  protected open fun validateInput(nodeInput: Any?): Any? {
+    val node: Node = this // Resolves to the Node extension rather than this member.
+    return node.validateInput(nodeInput)
+  }
+
   /** Checks [output] against [outputSchema], if there is one, and returns it. */
-  private fun validateOutput(output: Any?): Any? {
+  protected open fun validateOutput(output: Any?): Any? {
     val schema = outputSchema ?: return output
     return SchemaUtils.validateValue(output, schema, "output of node '$name'").getOrThrow()
   }
