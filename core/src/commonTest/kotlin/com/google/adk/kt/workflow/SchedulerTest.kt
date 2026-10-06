@@ -138,7 +138,7 @@ class SchedulerTest {
         Context(
           invocationContext = invocationContext,
           node = workflow,
-          eventSink = { events.add(it) },
+          eventSink = { event, _ -> events.add(event) },
         )
       root.eventAuthor = workflow.name
       Scheduler(workflow, workflow.graph!!, root).run(nodeInput = null)

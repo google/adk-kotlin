@@ -77,3 +77,10 @@ internal fun no() = Route.Tag("no")
 internal fun runWorkflow(workflow: Workflow): List<Event> = runBlocking {
   workflow.runAsync(testInvocationContext()).toList()
 }
+
+/**
+ * This exception's suppressed exceptions, plus those of the original when coroutine stack-trace
+ * recovery rethrew a copy that carries it as its cause.
+ */
+internal val Throwable.allSuppressed: List<Throwable>
+  get() = suppressedExceptions + cause?.suppressedExceptions.orEmpty()

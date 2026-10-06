@@ -107,7 +107,7 @@ class NodeRunnerTest {
       Context(
         invocationContext = invocationContext,
         node = StubNode("root"),
-        eventSink = { events.add(it) },
+        eventSink = { event, _ -> events.add(event) },
         nodePath = "",
       )
     val context =
@@ -206,7 +206,7 @@ class NodeRunnerTest {
       Context(
         invocationContext = testInvocationContext(),
         node = StubNode("root"),
-        eventSink = { events.add(it) },
+        eventSink = { event, _ -> events.add(event) },
         nodePath = "",
       )
     root.eventAuthor = "custom-agent"
@@ -284,7 +284,7 @@ class NodeRunnerTest {
           Context(
             invocationContext = testInvocationContext(),
             node = StubNode("root"),
-            eventSink = {},
+            eventSink = { _, _ -> },
             nodePath = "",
           )
         NodeRunner(node = node, parent = root).run(nodeInput = null)
@@ -304,7 +304,7 @@ class NodeRunnerTest {
           Context(
             invocationContext = testInvocationContext(),
             node = StubNode("root"),
-            eventSink = {},
+            eventSink = { _, _ -> },
             nodePath = "",
           )
         NodeRunner(node = node, parent = root).run(nodeInput = null)
@@ -382,5 +382,120 @@ class NodeRunnerTest {
     assertNull(errorEvent.actions.route)
     assertEquals("IllegalStateException", errorEvent.errorCode)
     assertEquals("v", errorEvent.actions.stateDelta["k"])
+  }
+
+  @Test
+  fun runRootAttachesTheFailureWhenTheCollectorRejectsItsErrorEvent() = runBlocking {
+    // Arrange
+    val node = UnflushedResultsThenFailNode("worker")
+
+    // Act
+    val thrown =
+      assertFailsWith<UnsupportedOperationException> {
+        NodeRunner.runRoot(node, testInvocationContext()).collect {
+          throw UnsupportedOperationException("collector failed")
+        }
+      }
+
+    // Assert
+    assertTrue(
+      thrown.allSuppressed.any { it.message == "node failed" },
+      "node failure not attached",
+    )
+  }
+
+  @Test
+  fun runRootAttachesANestedNodesFailureWhenTheCollectorRejectsItsErrorEvent() = runBlocking {
+    // Arrange
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, UnflushedResultsThenFailNode("worker"))))
+
+    // Act
+    val thrown =
+      assertFailsWith<UnsupportedOperationException> {
+        NodeRunner.runRoot(workflow, testInvocationContext()).collect {
+          if (it.errorCode != null) throw UnsupportedOperationException("collector failed")
+        }
+      }
+
+    // Assert
+    assertTrue(
+      thrown.allSuppressed.any { it.message == "node failed" },
+      "node failure not attached",
+    )
+  }
+
+  @Test
+  fun runRootAttachesEveryQueuedSiblingFailureWhenTheCollectorRejectsAnErrorEvent() = runBlocking {
+    // Arrange: both nodes fail, and the collector throws on the first error event.
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, ThrowingNode("a") { IllegalStateException("a failed") }),
+            Edge(Start, ThrowingNode("b") { IllegalStateException("b failed") }),
+          ),
+      )
+
+    // Act
+    val thrown =
+      assertFailsWith<UnsupportedOperationException> {
+        NodeRunner.runRoot(workflow, testInvocationContext()).collect {
+          if (it.errorCode != null) throw UnsupportedOperationException("collector failed")
+        }
+      }
+
+    // Assert
+    assertTrue(
+      thrown.allSuppressed.map { it.message }.containsAll(listOf("a failed", "b failed")),
+      "sibling failures not attached",
+    )
+  }
+
+  @Test
+  fun runRootAttachesAQueuedSiblingFailureWhenTheCollectorRejectsANonErrorEvent() = runBlocking {
+    // Arrange: runBlocking runs a, then b, then the collector, so b's error event is in the queue.
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, Emitter("a", "A")),
+            Edge(Start, ThrowingNode("b") { IllegalStateException("b failed") }),
+          ),
+      )
+
+    // Act
+    val thrown =
+      assertFailsWith<UnsupportedOperationException> {
+        NodeRunner.runRoot(workflow, testInvocationContext()).collect {
+          if (it.output == "A") throw UnsupportedOperationException("collector failed")
+        }
+      }
+
+    // Assert
+    assertTrue(
+      thrown.allSuppressed.any { it.message == "b failed" },
+      "sibling failure not attached",
+    )
+  }
+
+  @Test
+  fun runRootDoesNotAttachTheFailureToACollectorCancellation() = runBlocking {
+    // Arrange
+    val node = UnflushedResultsThenFailNode("worker")
+    val cancellation = CancellationException("collector stopped")
+
+    // Act
+    assertFailsWith<CancellationException> {
+      NodeRunner.runRoot(node, testInvocationContext()).collect { throw cancellation }
+    }
+
+    // Assert
+    assertTrue(
+      cancellation.suppressedExceptions.isEmpty(),
+      "node failure attached to a cancellation",
+    )
   }
 }

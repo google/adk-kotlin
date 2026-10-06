@@ -177,7 +177,8 @@ class ContextTest {
 
         override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = emptyFlow()
       }
-    val context = Context(invocationContext = testInvocationContext(), node = node, eventSink = {})
+    val context =
+      Context(invocationContext = testInvocationContext(), node = node, eventSink = { _, _ -> })
 
     context.updateState("temp:scratch", "transient-value")
     context.updateState("persistent", "persistent-value")

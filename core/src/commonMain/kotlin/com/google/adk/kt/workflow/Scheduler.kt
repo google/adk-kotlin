@@ -255,7 +255,8 @@ internal class Scheduler(
           invocationId = context.invocationContext.invocationId,
           branch = context.invocationContext.branch,
           actions = actions,
-        )
+        ),
+        nodeFailure = null,
       )
   }
 

@@ -305,6 +305,24 @@ class WorkflowRootNodeTest {
   }
 
   @Test
+  fun aFailingOnEventCallbackOnARootNodesErrorEventKeepsTheNodeFailure() = runBlocking {
+    // Arrange: the node's only event is its error event, so the callback fails on that one.
+    val plugin = RecordingPlugin(onEventFailure = UnsupportedOperationException("onEvent boom"))
+    val node = StateThenFailNode("boom", key = "partial_step", value = "done")
+    val runner =
+      InMemoryRunner(app = App(appName = "node_app", rootNode = node, plugins = listOf(plugin)))
+
+    // Act
+    val error =
+      assertFailsWith<UnsupportedOperationException> {
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
+      }
+
+    // Assert
+    assertTrue(error.allSuppressed.any { it.message == "node failed" }, "node failure not attached")
+  }
+
+  @Test
   fun aWorkflowSuccessorNodeObservesStateWrittenByItsPredecessorUnderARunner() = runBlocking {
     // Arrange: mirrors Python test_non_partial_event_blocks_until_processed, with slow appends.
     val writer = StateWriter("writer", "shared_key")

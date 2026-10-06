@@ -20,5 +20,9 @@ import com.google.adk.kt.events.Event
 
 /** Destination for events emitted during a workflow execution. */
 internal fun interface EventSink {
-  suspend fun send(event: Event)
+  /**
+   * Sends [event]; [nodeFailure] is set when [event] is the error event of a node that failed with
+   * it, so a sink that cannot deliver the event can still report the failure.
+   */
+  suspend fun send(event: Event, nodeFailure: Exception?)
 }

@@ -29,6 +29,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -224,7 +225,7 @@ private constructor(
       // When content carries message-as-output, clear output to prevent duplicate text on the wire.
       val stamped = stamp(if (event.isMessageAsOutput) event.copy(output = null) else event)
       val outgoing = if (stamped.partial) stamped else withPendingDeltas(stamped)
-      nodeState.eventSink.send(outgoing)
+      nodeState.eventSink.send(outgoing, nodeFailure = null)
 
       if (outgoing.output != null) {
         nodeState.markOutputEmitted()
@@ -260,7 +261,7 @@ private constructor(
               outputFor = if (hasPendingOutput) listOf(context.nodePath) else null,
             ),
         )
-      nodeState.eventSink.send(withPendingDeltas(event))
+      nodeState.eventSink.send(withPendingDeltas(event), nodeFailure = null)
 
       if (hasPendingOutput) nodeState.markOutputEmitted()
       if (hasPendingRoute) nodeState.routesEmitted = true
@@ -281,7 +282,7 @@ private constructor(
             )
           )
         )
-      nodeState.eventSink.send(errorEvent)
+      nodeState.eventSink.send(errorEvent, nodeFailure = e)
       nodeState.failure = NodeExecutionFailure(e, context.nodePath)
     }
 
@@ -331,7 +332,8 @@ private constructor(
      * Each non-partial event suspends the emitting node until the downstream collector has
      * persisted and emitted it, so a successor node always observes its predecessor's committed
      * state deltas and session history, and a failure's error event is persisted before its
-     * exception surfaces. Partial events flow through without waiting for the collector.
+     * exception surfaces; partial events do not wait. If the collector throws an Exception that is
+     * not a cancellation, this function attaches each queued node failure to it as suppressed.
      */
     // Confined to the flow's coroutineScope: async sends to channel, and emit runs on the collector
     // coroutine.
@@ -342,14 +344,10 @@ private constructor(
         val channel = Channel<QueuedEvent>(Channel.BUFFERED)
         val failureDeferred = async {
           try {
-            val sink = EventSink { event ->
-              if (event.partial) {
-                channel.send(QueuedEvent(event, processed = null))
-              } else {
-                val processed = CompletableDeferred<Unit>()
-                channel.send(QueuedEvent(event, processed))
-                processed.await()
-              }
+            val sink = EventSink { event, nodeFailure ->
+              val processed = if (event.partial) null else CompletableDeferred<Unit>()
+              channel.send(QueuedEvent(event, processed, nodeFailure))
+              processed?.await()
             }
             NodeRunner(node = node, invocationContext = context, eventSink = sink)
               .run(nodeInput = context.userContent)
@@ -360,14 +358,23 @@ private constructor(
             val unused = channel.close()
           }
         }
-        // If emit throws, leaving the scope cancels the node waiting on that event.
-        try {
-          for ((event, processed) in channel) {
+        // If emit throws, the scope cancels all nodes.
+        channel.consumeEach { (event, processed, nodeFailure) ->
+          try {
             emit(event)
-            processed?.complete(Unit)
+          } catch (e: CancellationException) {
+            throw e
+          } catch (e: Exception) {
+            // A cancelled node cannot record its failure, so attach the failure here.
+            if (nodeFailure != null) e.addSuppressed(nodeFailure)
+            // The queue can also contain other error events, so attach their failures.
+            while (true) {
+              val queued = channel.tryReceive().getOrNull() ?: break
+              queued.nodeFailure?.let { e.addSuppressed(it) }
+            }
+            throw e
           }
-        } finally {
-          channel.cancel()
+          processed?.complete(Unit)
         }
         failureDeferred.await()
       }
@@ -376,8 +383,15 @@ private constructor(
   }
 }
 
-/** An event on its way to the root collector; [processed] is null for a partial event. */
-private data class QueuedEvent(val event: Event, val processed: CompletableDeferred<Unit>?)
+/**
+ * An event on its way to the root collector; [processed] is null for a partial event, and
+ * [nodeFailure] is set when [event] is the error event of a node that failed with it.
+ */
+private data class QueuedEvent(
+  val event: Event,
+  val processed: CompletableDeferred<Unit>?,
+  val nodeFailure: Exception?,
+)
 
 /**
  * A final content event whose content *is* the node's output, so no separate output event follows.
