@@ -30,8 +30,11 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -506,4 +509,139 @@ class RunnerModelCallbacksIntegrationTest {
         .toList()
     }
   }
+
+  /**
+   * A collector's exception on a model response is not a model error: it must reach the caller
+   * unchanged, not `onModelError`, whose recovery would then break Flow exception transparency.
+   * Mirrors Python ADK, whose `run_and_handle_error` wraps only the model's response stream.
+   */
+  @Test
+  fun runAsync_collectorThrowsOnModelResponse_skipsOnModelError(): Unit = runBlocking {
+    val modelErrors = mutableListOf<Throwable>()
+    val runner = InMemoryRunner(agent = recoveringAgent(modelErrors))
+
+    assertFailsWith<UnsupportedOperationException> {
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .collect { if (it.author == "test-agent") throw UnsupportedOperationException("rejected") }
+    }
+
+    assertTrue(modelErrors.isEmpty(), "a collector failure reached onModelError")
+  }
+
+  /** An `afterModelCallback` failure propagates without reaching `onModelError`, as in Python. */
+  @Test
+  fun runAsync_afterModelCallbackThrows_skipsOnModelError(): Unit = runBlocking {
+    val modelErrors = mutableListOf<Throwable>()
+    val failingCallback = AfterModelCallback { _, _ ->
+      throw UnsupportedOperationException("after-model callback failed")
+    }
+    val runner =
+      InMemoryRunner(
+        agent = recoveringAgent(modelErrors, afterModelCallbacks = listOf(failingCallback))
+      )
+
+    assertFailsWith<UnsupportedOperationException> {
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+    }
+
+    assertTrue(modelErrors.isEmpty(), "an after-model callback failure reached onModelError")
+  }
+
+  /** A failure of a tool the model called propagates without reaching `onModelError`. */
+  @Test
+  fun runAsync_toolThrows_skipsOnModelError(): Unit = runBlocking {
+    val modelErrors = mutableListOf<Throwable>()
+    val failingTool =
+      DummyTool("failing_tool") { _, _ -> throw UnsupportedOperationException("tool failed") }
+    val model =
+      DummyModel.createSequential(
+        "mock-model",
+        listOf(modelFunctionCallResponse("failing_tool", id = "call-1")),
+      )
+    val runner =
+      InMemoryRunner(
+        agent = recoveringAgent(modelErrors, model = model, tools = listOf(failingTool))
+      )
+
+    assertFailsWith<UnsupportedOperationException> {
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+    }
+
+    assertTrue(modelErrors.isEmpty(), "a tool failure reached onModelError")
+  }
+
+  /** A response recovered by `onModelError` passes through `afterModelCallback`, as in Python. */
+  @Test
+  fun runAsync_onModelErrorRecovers_recoveredResponsePassesThroughAfterModelCallback(): Unit =
+    runBlocking {
+      val modelErrors = mutableListOf<Throwable>()
+      val prefixingCallback = AfterModelCallback { _, response ->
+        LlmResponse(content = modelMessage("after: ${response.content?.parts?.single()?.text}"))
+      }
+      val agent =
+        recoveringAgent(
+          modelErrors,
+          model =
+            DummyModel("failing-model") { flow { throw IllegalStateException("model boom") } },
+          afterModelCallbacks = listOf(prefixingCallback),
+        )
+
+      val events =
+        InMemoryRunner(agent = agent)
+          .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+          .toList()
+
+      val modelEvent =
+        events.firstOrNull { it.author == "test-agent" } ?: fail("expected a recovered model event")
+      assertEquals("after: fallback", modelEvent.content?.parts?.singleOrNull()?.text)
+      assertEquals(listOf("model boom"), modelErrors.map { it.message })
+    }
+
+  /** A model that throws before returning its stream still reaches `onModelError`. */
+  @Test
+  fun runAsync_modelThrowsBeforeReturningItsStream_onModelErrorRecovers(): Unit = runBlocking {
+    val modelErrors = mutableListOf<Throwable>()
+    val agent =
+      recoveringAgent(
+        modelErrors,
+        model = DummyModel("eager-model") { throw IllegalStateException("model boom") },
+      )
+
+    val events =
+      InMemoryRunner(agent = agent)
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    val modelEvent =
+      events.firstOrNull { it.author == "test-agent" } ?: fail("expected a recovered model event")
+    assertEquals("fallback", modelEvent.content?.parts?.singleOrNull()?.text)
+    assertEquals(listOf("model boom"), modelErrors.map { it.message })
+  }
+
+  /** An agent whose `onModelError` records each error in [modelErrors] and recovers. */
+  private fun recoveringAgent(
+    modelErrors: MutableList<Throwable>,
+    model: DummyModel =
+      DummyModel("mock-model") { flowOf(LlmResponse(content = modelMessage("answer"))) },
+    afterModelCallbacks: List<AfterModelCallback> = emptyList(),
+    tools: List<BaseTool> = emptyList(),
+  ): LlmAgent =
+    LlmAgent(
+      name = "test-agent",
+      model = model,
+      tools = tools,
+      afterModelCallbacks = afterModelCallbacks,
+      onModelErrorCallbacks =
+        listOf(
+          OnModelErrorCallback { _, _, error ->
+            modelErrors += error
+            CallbackChoice.Break(LlmResponse(content = modelMessage("fallback")))
+          }
+        ),
+    )
 }

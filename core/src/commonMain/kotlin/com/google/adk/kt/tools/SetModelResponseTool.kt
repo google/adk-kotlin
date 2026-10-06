@@ -55,10 +55,9 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
    * Validation is strict (parity with the Java/Python ADK): args that do not conform to
    * [outputSchema] throw, which propagates as a tool execution error rather than being saved as
    * best-effort text. Unless an `onToolError` callback recovers, the exception propagates up
-   * through `handleFunctionCalls` -> `processModelResponse` and is surfaced by the `onModelError`
-   * pipeline in `LlmAgentTurn` (failing the invocation if unrecovered); it does not produce an
-   * error function-response event by default. This differs from the direct-schema path in
-   * `LlmAgent.maybeSaveOutputToState`, which logs the error and stores the raw output instead of
+   * through `handleFunctionCalls` -> `processModelResponse` and fails the invocation; it does not
+   * produce an error function-response event by default. This differs from the direct-schema path
+   * in `LlmAgent.maybeSaveOutputToState`, which logs the error and stores the raw output instead of
    * failing. The asymmetry is intentional: in the workaround path the structured value is produced
    * by a tool call, so a schema mismatch is treated as a tool execution error rather than a
    * best-effort text result.

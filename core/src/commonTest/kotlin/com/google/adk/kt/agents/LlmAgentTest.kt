@@ -841,9 +841,8 @@ class LlmAgentTest {
         )
       // The model calls set_model_response with args that violate the schema (missing the required
       // "answer"). Unlike the best-effort direct-schema path, the workaround validates strictly, so
-      // the tool throws and—absent any onToolError/onModelError recovery—the failure propagates out
-      // of
-      // the invocation rather than being saved as raw text.
+      // the tool throws and—absent any onToolError recovery—the failure propagates out of the
+      // invocation rather than being saved as raw text.
       val setResponseCall =
         modelFunctionCall("set_model_response", mapOf("wrong" to "value"), id = "call_1")
       val model =

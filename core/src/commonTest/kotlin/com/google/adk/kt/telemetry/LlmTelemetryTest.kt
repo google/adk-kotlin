@@ -164,6 +164,26 @@ class LlmTelemetryTest {
   }
 
   @Test
+  fun runAsync_errorRecovered_setsRecoveredFinishReasons() = runBlocking {
+    val testModel = DummyModel("test-model") { flow { throw IllegalStateException("model boom") } }
+    val recover = OnModelErrorCallback { _, _, _ ->
+      CallbackChoice.Break(
+        LlmResponse(content = modelMessage("Recovered"), finishReason = FinishReason.STOP)
+      )
+    }
+    val agent =
+      LlmAgent(name = "test-agent", model = testModel, onModelErrorCallbacks = listOf(recover))
+
+    agent.runAsync(newContext(agent)).toList()
+
+    val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals(
+      listOf("stop"),
+      span.attributes[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS],
+    )
+  }
+
+  @Test
   fun runAsync_beforeModelCallbackShortCircuits_spanEventIdMatchesEmittedEvent() = runBlocking {
     val testModel =
       DummyModel("test-model") { flowOf(LlmResponse(content = modelMessage("unused"))) }

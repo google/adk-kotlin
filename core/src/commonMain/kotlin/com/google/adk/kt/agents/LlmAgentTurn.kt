@@ -34,6 +34,7 @@ import com.google.adk.kt.processors.getStructuredModelResponse
 import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.TelemetryContextElement
 import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.tracedFlow
 import com.google.adk.kt.tools.BaseTool
@@ -48,9 +49,11 @@ import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.onEach
 
 /**
  * Encapsulates the logic for a single turn of an [LlmAgent].
@@ -248,72 +251,74 @@ internal class LlmAgentTurn(
       // serialized response) reflect the final value, matching Python's single `trace_call_llm`.
       var lastResponse: LlmResponse? = null
 
-      try {
-        // flowOn(spanContext) puts the model client's stream under the span without affecting the
-        // outer flow's emission context (which must stay synchronous w.r.t. the collector).
-        agent.model
-          .generateContent(
-            currentRequest,
-            stream = context.runConfig?.streamingMode == StreamingMode.SSE,
+      invokeModel(currentRequest, callbackContext, span, spanContext).collect { response ->
+        // 2. Run after model callbacks
+        val allAfterModelCallbacks =
+          context.pluginManager.afterModelCallbacks + agent.afterModelCallbacks
+        val currentResponse =
+          runAfterModelCallbacksPipeline(
+            callbacks = allAfterModelCallbacks,
+            context = callbackContext,
+            response = response,
           )
-          .flowOn(spanContext)
-          .collect { response ->
-            span.addEvent("chunk_received")
-            // 2. Run after model callbacks
-            val allAfterModelCallbacks =
-              context.pluginManager.afterModelCallbacks + agent.afterModelCallbacks
-            val currentResponse =
-              runAfterModelCallbacksPipeline(
-                callbacks = allAfterModelCallbacks,
-                context = callbackContext,
-                response = response,
-              )
-            lastResponse = currentResponse
+        lastResponse = currentResponse
 
-            modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
-            processModelResponse(currentRequest, currentResponse, modelResponseEvent, span) {
-              modelResponseEvent =
-                modelResponseEvent.copy(
-                  // A streamed reply keeps one id until its complete event, as in ADK Python.
-                  id = if (it.partial) modelResponseEvent.id else Uuid.random(),
-                  timestamp = Clock.System.now().toEpochMilliseconds(),
-                )
-              emit(it)
-            }
-          }
-
-        // Response-derived span attributes (parity with Python `trace_call_llm`).
-        lastResponse?.let { span.recordCallLlmResponse(it) }
-      } catch (e: CancellationException) {
-        // CancellationException is an Exception in Kotlin; rethrow so recovery can't swallow it.
-        throw e
-      } catch (e: Exception) {
-        val allOnModelErrorCallbacks =
-          context.pluginManager.onModelErrorCallbacks + agent.onModelErrorCallbacks
-        val recoveredResponse =
-          when (
-            val result =
-              runOnModelErrorCallbacksPipeline(
-                callbacks = allOnModelErrorCallbacks,
-                context = callbackContext,
-                request = currentRequest,
-                error = e,
-              )
-          ) {
-            is CallbackChoice.Break -> result.value
-            is CallbackChoice.Continue -> null
-          }
-        if (recoveredResponse != null) {
-          span.recordException(e)
-          modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
-          processModelResponse(currentRequest, recoveredResponse, modelResponseEvent, span) {
-            emit(it)
-          }
-        } else {
-          throw e
+        modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
+        processModelResponse(currentRequest, currentResponse, modelResponseEvent, span) {
+          modelResponseEvent =
+            modelResponseEvent.copy(
+              // A streamed reply keeps one id until its complete event, as in ADK Python.
+              id = if (it.partial) modelResponseEvent.id else Uuid.random(),
+              timestamp = Clock.System.now().toEpochMilliseconds(),
+            )
+          emit(it)
         }
       }
+
+      // Response-derived span attributes (parity with Python `trace_call_llm`).
+      lastResponse?.let { span.recordCallLlmResponse(it) }
     }
+
+  /**
+   * Streams the model's responses to [request]. Only the model's own failures go to the
+   * onModelError callbacks, which may replace a failure with a response, as Python's
+   * `run_and_handle_error` does.
+   */
+  private fun invokeModel(
+    request: LlmRequest,
+    callbackContext: CallbackContext,
+    span: Span,
+    spanContext: TelemetryContextElement,
+  ): Flow<LlmResponse> {
+    val isStreaming = context.runConfig?.streamingMode == StreamingMode.SSE
+    // Inside the flow so a model throwing before returning its stream still reaches onModelError.
+    return flow { emitAll(agent.model.generateContent(request, stream = isStreaming)) }
+      // flowOn(spanContext) puts the model client's stream under the span without affecting the
+      // outer flow's emission context (which must stay synchronous w.r.t. the collector).
+      .flowOn(spanContext)
+      .onEach { span.addEvent("chunk_received") }
+      .catch { e ->
+        // Recover only Exceptions, as Python does; rethrow cancellation, which is one in Kotlin.
+        if (e !is Exception || e is CancellationException) throw e
+        val allOnModelErrorCallbacks =
+          context.pluginManager.onModelErrorCallbacks + agent.onModelErrorCallbacks
+        when (
+          val result =
+            runOnModelErrorCallbacksPipeline(
+              callbacks = allOnModelErrorCallbacks,
+              context = callbackContext,
+              request = request,
+              error = e,
+            )
+        ) {
+          is CallbackChoice.Continue -> throw e
+          is CallbackChoice.Break -> {
+            span.recordException(e)
+            emit(result.value)
+          }
+        }
+      }
+  }
 
   /** Records request-derived `call_llm` span attributes (parity with Python `trace_call_llm`). */
   private fun Span.recordCallLlmRequest(request: LlmRequest) {
