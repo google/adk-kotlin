@@ -76,6 +76,25 @@ class EdgesBuilder internal constructor() {
   }
 
   /**
+   * Connects [first], [second], and each node in [rest] in order by adding an edge from each node
+   * to the next. Returns the last node so the chain can continue from it: `chain(Start, a, b)` is
+   * short for `Start.then(a).then(b)`.
+   */
+  @CanIgnoreReturnValue
+  fun chain(first: Node, second: Node, vararg rest: Node): Node =
+    rest.fold(first then second) { last, node -> last then node }
+
+  /**
+   * Connects this node to [first], [second], and each node in [rest] in order by adding an edge
+   * from each node to the next, and returns the last node. `a.chain(b, c)` is short for
+   * `a.then(b).then(c)`. Unlike the `chain` overload that takes the first node as an argument, this
+   * form can continue a fluent chain, such as after [joinTo].
+   */
+  @CanIgnoreReturnValue
+  fun Node.chain(first: Node, second: Node, vararg rest: Node): Node =
+    rest.fold(this then first then second) { last, node -> last then node }
+
+  /**
    * Fans out by connecting this node to each node in [targets] so they run concurrently, as in
    * `a.then(nodes(b, c))`. Returns [targets], which [joinTo] connects to a [JoinNode] to continue
    * once they all complete.

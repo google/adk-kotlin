@@ -80,6 +80,91 @@ class WorkflowDslTest {
   }
 
   @Test
+  fun chain_severalNodes_connectsEachNodeToTheNext() {
+    // Arrange
+    val a = StubNode("a")
+    val b = StubNode("b")
+    val c = StubNode("c")
+
+    // Act
+    val edges = edges { chain(Start, a, b, c) }
+
+    // Assert
+    assertEquals(listOf(Edge(Start, a), Edge(a, b), Edge(b, c)), edges)
+  }
+
+  @Test
+  fun chain_twoNodes_addsOneEdge() {
+    // Arrange
+    val a = StubNode("a")
+    val b = StubNode("b")
+
+    // Act
+    val edges = edges { chain(a, b) }
+
+    // Assert
+    assertEquals(listOf(Edge(a, b)), edges)
+  }
+
+  @Test
+  fun chain_followedByRoute_continuesFromTheLastNode() {
+    // Arrange
+    val a = StubNode("a")
+    val b = StubNode("b")
+    val c = StubNode("c")
+
+    // Act
+    val edges = edges { chain(Start, a, b).route { on("x") then c } }
+
+    // Assert
+    assertEquals(listOf(Edge(Start, a), Edge(a, b), Edge(b, c, Route.Tag("x"))), edges)
+  }
+
+  @Test
+  fun chain_onANode_connectsItToEachNodeInOrder() {
+    // Arrange
+    val a = StubNode("a")
+    val b = StubNode("b")
+    val c = StubNode("c")
+    val d = StubNode("d")
+
+    // Act
+    val edges = edges { a.chain(b, c, d) }
+
+    // Assert
+    assertEquals(listOf(Edge(a, b), Edge(b, c), Edge(c, d)), edges)
+  }
+
+  @Test
+  fun chain_onANodeAfterAJoin_continuesTheChainLikeThen() {
+    // Arrange
+    val web = StubNode("web")
+    val docs = StubNode("docs")
+    val gather = JoinNode("gather")
+    val write = StubNode("write")
+    val review = StubNode("review")
+    val publish = StubNode("publish")
+    val x = StubNode("x")
+    val y = StubNode("y")
+
+    // Act
+    val chained = edges {
+      Start.then(nodes(web, docs)).joinTo(gather).chain(write, review, publish).then(nodes(x, y))
+    }
+
+    // Assert
+    val expected = edges {
+      Start.then(nodes(web, docs))
+        .joinTo(gather)
+        .then(write)
+        .then(review)
+        .then(publish)
+        .then(nodes(x, y))
+    }
+    assertEquals(expected, chained)
+  }
+
+  @Test
   fun then_severalNodes_fansOutToEach() {
     // Arrange
     val plan = StubNode("plan")
