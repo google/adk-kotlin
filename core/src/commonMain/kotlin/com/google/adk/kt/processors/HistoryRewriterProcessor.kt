@@ -16,6 +16,7 @@
 package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
+import com.google.adk.kt.artifacts.isAdkLiveArtifact
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
 import com.google.adk.kt.serialization.Json
@@ -502,7 +503,7 @@ internal class HistoryRewriterProcessor {
           )
         )
       }
-      if (part.inlineData != null || part.fileData != null) {
+      if ((part.inlineData != null || part.fileData != null) && !part.isAdkLiveArtifact()) {
         newParts.add(part)
       } else {
         continue
@@ -574,6 +575,11 @@ internal class HistoryRewriterProcessor {
     // Function calls and responses are never invisible, even if marked as thought
     if (part.functionCall != null || part.functionResponse != null) {
       return false
+    }
+
+    // A saveLiveBlob recording is an artifact:// reference that no model can resolve.
+    if (part.isAdkLiveArtifact()) {
+      return true
     }
 
     // A thought signature is opaque state to hand back verbatim, and it routinely arrives on a part

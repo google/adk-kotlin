@@ -18,6 +18,7 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.artifacts.isAdkLiveArtifact
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GroundingMetadata
@@ -520,7 +521,13 @@ internal class GeminiLiveConnection(
 
   override suspend fun sendRealtime(input: RealtimeInput) {
     when (input) {
-      is RealtimeInput.Audio -> session.sendRealtimeInput(audio = input.blob.toGenaiSdk())
+      is RealtimeInput.Audio -> {
+        // Gemini closes the session on audio with no mime type, so default to its input format.
+        val blob =
+          input.blob.takeUnless { it.mimeType.isNullOrBlank() }
+            ?: input.blob.copy(mimeType = DEFAULT_AUDIO_INPUT_MIME_TYPE)
+        session.sendRealtimeInput(audio = blob.toGenaiSdk())
+      }
       is RealtimeInput.Video -> session.sendRealtimeInput(video = input.blob.toGenaiSdk())
       RealtimeInput.AudioStreamEnd -> session.sendRealtimeInput(audioStreamEnd = true)
       RealtimeInput.ActivityStart -> session.sendRealtimeInput(activityStart = GenAiActivityStart())
@@ -595,7 +602,3 @@ private fun Content.withoutReplayOnlyParts(): Content =
 private fun Part.isAudio(): Boolean =
   inlineData?.mimeType?.startsWith("audio/") == true ||
     fileData?.mimeType?.startsWith("audio/") == true
-
-/** Matches Python's `_is_adk_live_artifact_part`: an internal `_adk_live` artifact reference. */
-private fun Part.isAdkLiveArtifact(): Boolean =
-  fileData?.fileUri?.let { it.startsWith("artifact://") && "/_adk_live/" in it } == true
