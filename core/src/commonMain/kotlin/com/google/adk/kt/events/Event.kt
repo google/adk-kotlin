@@ -69,6 +69,8 @@ import kotlinx.serialization.json.JsonNames
  * @property cacheMetadata Context cache metadata associated with this event's LLM response, used to
  *   carry cache state across turns. `null` when context caching is disabled.
  * @property output For a workflow node, the value handed to successors, distinct from [content].
+ *   Holds a JSON-native value (map with string keys, list, string, number, boolean, null,
+ *   `JsonElement`) or a [Content].
  * @property nodeInfo Identifies the workflow-node activation that emitted this event; `null`
  *   outside a workflow.
  * @property timestamp The timestamp of the event.

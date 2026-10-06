@@ -18,6 +18,7 @@ package com.google.adk.kt.serialization
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.types.Content
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import com.google.genai.kotlin.types.DurationStringSerializer
 import kotlin.math.roundToLong
@@ -104,6 +105,8 @@ fun anyToJsonElement(value: Any?): JsonElement =
     is Map<*, *> ->
       JsonObject(value.entries.associate { (k, v) -> k.toString() to anyToJsonElement(v) })
     is List<*> -> JsonArray(value.map { anyToJsonElement(it) })
+    // A framework value in workflow outputs, written in its wire form as in Event.content.
+    is Content -> adkJson.encodeToJsonElement(Content.serializer(), value)
     else ->
       throw IllegalArgumentException(
         "AnySerializer cannot serialize value of type ${value::class.simpleName}. Tool results " +
