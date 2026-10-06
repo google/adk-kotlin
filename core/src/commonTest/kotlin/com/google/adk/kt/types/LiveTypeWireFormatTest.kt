@@ -17,8 +17,10 @@
 package com.google.adk.kt.types
 
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.junit.Test
 
@@ -88,6 +90,36 @@ class LiveTypeWireFormatTest {
       json.encodeToString(TurnCompleteReason.serializer(), TurnCompleteReason.RESPONSE_REJECTED)
 
     assertEquals("\"RESPONSE_REJECTED\"", encoded)
+  }
+
+  @Test
+  fun interactionStatus_encoded_writesTheEnumName() {
+    val encoded = json.encodeToString(InteractionStatus.serializer(), InteractionStatus.IN_PROGRESS)
+
+    assertEquals("\"IN_PROGRESS\"", encoded)
+  }
+
+  @Test
+  fun interactionStatus_unknownValue_decodesToUnspecified() {
+    val decoded =
+      json.decodeFromString(InteractionStatus.serializer(), "\"NOT_AN_INTERACTION_STATUS\"")
+
+    assertEquals(InteractionStatus.INTERACTION_STATUS_UNSPECIFIED, decoded)
+  }
+
+  @Test
+  fun interactionStatus_knownValue_decodesToTheMatchingMember() {
+    assertEquals(
+      InteractionStatus.IDLE,
+      json.decodeFromString(InteractionStatus.serializer(), "\"IDLE\""),
+    )
+  }
+
+  @Test
+  fun interactionStatus_nonStringValue_failsToDecode() {
+    assertFailsWith<SerializationException> {
+      json.decodeFromString(InteractionStatus.serializer(), "5")
+    }
   }
 
   @Test
