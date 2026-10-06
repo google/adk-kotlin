@@ -18,7 +18,6 @@
 
 package com.google.adk.kt.examples.workflow
 
-import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -39,9 +38,8 @@ import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.asNode
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
 private const val MODEL_NAME = "gemini-3.1-flash-lite"
@@ -124,17 +122,37 @@ private val SAMPLE_ORDERS =
       " account_age_days=2",
   )
 
-/** The nodes of the order workflow, connected by both the dot-call and infix examples. */
+/**
+ * The nodes of the order workflow, connected by both the dot-call and infix examples. Each step
+ * that outputs a `String` stands in for a backend call and says what it did.
+ */
 internal class OrderNodes(model: Model) {
-  val parseOrder: Node = ParseOrder()
+  /**
+   * Parses the order's `key=value` fields into state, where the steps and agents read them, and
+   * outputs the credit check's arguments.
+   */
+  val parseOrder: Node =
+    node<Content, Map<String, Any>>("parse_order") { context, message ->
+      // START hands the first node the user's message as Content.
+      val fields =
+        message.text().trim().split(Regex("\\s+")).associate {
+          it.substringBefore('=') to it.substringAfter('=')
+        }
+      for ((key, value) in fields) context.updateState(key, value.toIntOrNull() ?: value)
+      // Every branch of the fan-out gets this output; only the tool reads it, as its arguments.
+      mapOf(
+        "customerId" to fields.getValue("customer_id"),
+        "orderTotalUsd" to fields.getValue("total_usd").toInt(),
+      )
+    }
   val geoCheck: Node =
-    OrderStep("geo_check") { context ->
+    node<Any?, String>("geo_check") { context, _ ->
       val mismatch = context.state["ship_country"] != context.state["bill_country"]
       context.updateState("geo_mismatch", mismatch)
       if (mismatch) "The shipping and billing countries differ." else "The countries match."
     }
   val fraudScore: Node =
-    OrderStep("fraud_score") { context ->
+    node<Any?, String>("fraud_score") { context, _ ->
       var score = 10
       if (context.state["geo_mismatch"] == true) score += 25
       if ((context.state["account_age_days"] as Number).toInt() < 30) score += 35
@@ -143,13 +161,13 @@ internal class OrderNodes(model: Model) {
       "Fraud score: $score out of 100."
     }
   val reserveInventory: Node =
-    OrderStep("reserve_inventory") { context ->
+    node<Any?, String>("reserve_inventory") { context, _ ->
       val reservation = "RSV-${context.state["order_id"]}"
       context.updateState("reservation", reservation)
       "Reserved stock for order ${context.state["order_id"]} as $reservation."
     }
   val warehouseHold: Node =
-    OrderStep("warehouse_hold") { context ->
+    node<Any?, String>("warehouse_hold") { context, _ ->
       val hold = "${context.state["reservation"]} is held at the NJ-2 warehouse."
       context.updateState("inventory", hold)
       hold
@@ -157,38 +175,66 @@ internal class OrderNodes(model: Model) {
   val creditCheck: Node = CreditCheckTool(CreditBureau()).asNode()
   val riskJoin = JoinNode("risk_join")
   val assessRisk: Node = riskAgent(model)
-  val riskDecision: Node = RiskDecision()
+  /** Routes on the risk agent's decision, since an [LlmAgent] node emits no route. */
+  val riskDecision: Node =
+    node<Any?, Unit>("risk_decision") { context, _ ->
+      val decision = (context.state[RISK_KEY] as? Map<*, *>)?.get("decision") as? String
+      // Without a decision, this node emits no route, so `otherwise` cancels the order.
+      if (decision != null) context.routes = listOf(Route.Tag(decision))
+    }
   val financeReview: Node = financeReviewAgent(model)
   val complianceReview: Node = complianceReviewAgent(model)
   val reviewJoin = JoinNode("review_join")
-  val reviewGate: Node = OrderReviewGate(maxRounds = 2)
+  val reviewGate: Node = orderReviewGate(maxRounds = 2)
   val chargeCard: Node =
-    OrderStep("charge_card") { context ->
+    node<Any?, String>("charge_card") { context, _ ->
       "Charged ${context.state["total_usd"]} USD for order ${context.state["order_id"]}."
     }
   val shipOrder: Node =
-    OrderStep("ship_order") { context ->
+    node<Any?, String>("ship_order") { context, _ ->
       context.updateState("outcome", "charged and shipped")
       "Shipped order ${context.state["order_id"]} from the NJ-2 warehouse."
     }
   val freezeAccount: Node =
-    OrderStep("freeze_account") { context ->
+    node<Any?, String>("freeze_account") { context, _ ->
       "Froze account ${context.state["customer_id"]} pending an investigation."
     }
   val alertSecOps: Node =
-    OrderStep("alert_sec_ops") { context ->
+    node<Any?, String>("alert_sec_ops") { context, _ ->
       "Sent SecOps the fraud signals for order ${context.state["order_id"]}."
     }
   val auditJoin = JoinNode("audit_join")
   val cancelOrder: Node =
-    OrderStep("cancel_order") { context ->
+    node<Any?, String>("cancel_order") { context, _ ->
       context.updateState("outcome", "canceled")
       "Canceled order ${context.state["order_id"]} and released ${context.state["reservation"]}."
     }
   val sendReceipt: Node =
-    OrderStep("send_receipt") { context ->
+    node<Any?, String>("send_receipt") { context, _ ->
       "Emailed customer ${context.state["customer_id"]}: order ${context.state["order_id"]} was" +
         " ${context.state["outcome"]}."
+    }
+
+  /**
+   * Returns a node that routes on both reviewers' verdicts: it emits approved when both approve,
+   * recheck when either asks for one and fewer than [maxRounds] reviews have run, and no route
+   * otherwise, which cancels the order.
+   */
+  private fun orderReviewGate(maxRounds: Int): Node =
+    node<Any?, Unit>("review_gate") { context, _ ->
+      val verdicts =
+        listOf(FINANCE_KEY, COMPLIANCE_KEY).map {
+          (context.state[it] as? Map<*, *>)?.get("verdict")
+        }
+      // The run id counts this node's runs in the current invocation, so it is the review round.
+      val round = context.runId.toInt()
+      val route =
+        when {
+          verdicts.all { it == "approve" } -> "approved"
+          "recheck" in verdicts && round < maxRounds -> "recheck"
+          else -> null
+        }
+      if (route != null) context.routes = listOf(Route.Tag(route))
     }
 }
 
@@ -253,7 +299,7 @@ private const val RISK_KEY = "risk"
 private const val FINANCE_KEY = "finance_review"
 private const val COMPLIANCE_KEY = "compliance_review"
 
-/** The risk agent's structured decision, which [RiskDecision] routes on. */
+/** The risk agent's structured decision, which [OrderNodes.riskDecision] routes on. */
 private val RISK_SCHEMA =
   Schema(
     type = Type.OBJECT,
@@ -272,7 +318,7 @@ private val RISK_SCHEMA =
     required = listOf("decision", "reason"),
   )
 
-/** A reviewer's structured verdict, which [OrderReviewGate] routes on. */
+/** A reviewer's structured verdict, which [OrderNodes.reviewGate] routes on. */
 private val REVIEW_SCHEMA =
   Schema(
     type = Type.OBJECT,
@@ -301,67 +347,4 @@ class CreditBureau {
     context.updateState("credit", result)
     return result
   }
-}
-
-/**
- * Parses the order's `key=value` fields into state, where the steps and agents read them, and
- * outputs the credit check's arguments.
- */
-private class ParseOrder : Node {
-  override val name = "parse_order"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    // START hands the first node the user's message as Content.
-    val fields =
-      (nodeInput as Content).text().trim().split(Regex("\\s+")).associate {
-        it.substringBefore('=') to it.substringAfter('=')
-      }
-    for ((key, value) in fields) context.updateState(key, value.toIntOrNull() ?: value)
-    // Every branch of the fan-out gets this output; only the tool reads it, as its arguments.
-    emit(
-      mapOf(
-        "customerId" to fields.getValue("customer_id"),
-        "orderTotalUsd" to fields.getValue("total_usd").toInt(),
-      )
-    )
-  }
-}
-
-/** Routes on the risk agent's decision, since an [LlmAgent] node emits no route. */
-private class RiskDecision : Node {
-  override val name = "risk_decision"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val decision = (context.state[RISK_KEY] as? Map<*, *>)?.get("decision") as? String
-    // Without a decision, this node emits no route, so `otherwise` cancels the order.
-    if (decision != null) context.routes = listOf(Route.Tag(decision))
-  }
-}
-
-/**
- * Routes on both reviewers' verdicts: emits approved when both approve, recheck when either asks
- * for one and fewer than [maxRounds] reviews have run, and no route otherwise, which cancels the
- * order.
- */
-private class OrderReviewGate(private val maxRounds: Int) : Node {
-  override val name = "review_gate"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val verdicts =
-      listOf(FINANCE_KEY, COMPLIANCE_KEY).map { (context.state[it] as? Map<*, *>)?.get("verdict") }
-    // The run id counts this node's runs in the current invocation, so it is the review round.
-    val round = context.runId.toInt()
-    val route =
-      when {
-        verdicts.all { it == "approve" } -> "approved"
-        "recheck" in verdicts && round < maxRounds -> "recheck"
-        else -> null
-      }
-    if (route != null) context.routes = listOf(Route.Tag(route))
-  }
-}
-
-/** A step that stands in for a backend call: it runs [act] and outputs the line [act] returns. */
-private class OrderStep(override val name: String, private val act: (Context) -> String) : Node {
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { emit(act(context)) }
 }

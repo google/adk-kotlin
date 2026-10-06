@@ -18,7 +18,6 @@
 
 package com.google.adk.kt.examples.workflow
 
-import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -30,12 +29,10 @@ import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.JoinNode
-import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
 private const val MODEL_NAME = "gemini-3.1-flash-lite"
@@ -57,12 +54,35 @@ object NestedWorkflow {
     val join = JoinNode("join_for_aggregation")
 
     return workflow("nested_workflow") {
-      Start.then(ProcessInput())
+      Start.then(processInput)
         .then(nodes(findFamousPerson, findHistoricalEvent))
         .joinTo(join)
-        .then(AggregateResults())
+        .then(aggregateResults)
     }
   }
+
+  /** Stores the year from the user's message in state, and fails the run if there is none. */
+  private val processInput =
+    node<Content, Unit>("process_input") { context, message ->
+      // START hands the first node the user's message as Content.
+      val year = Regex("""\b\d{4}\b""").find(message.text())?.value
+      if (year == null) {
+        val reply = "Please provide a valid 4-digit year (e.g., 1955)."
+        emit(Event(content = Content.fromText(Role.MODEL, reply)))
+        throw IllegalArgumentException("Invalid year format.")
+      }
+      context.updateState("year", year)
+    }
+
+  /** Combines both branches' answers, which [LlmAgent] nodes leave in state rather than output. */
+  private val aggregateResults =
+    node<Any?, Content>("aggregate_results") { context, _ ->
+      val message =
+        "# Year: ${context.state["year"]}\n\n" +
+          "## Famous Person Bio:\n\n${context.state["bio"]}\n\n" +
+          "## Historical Event:\n\n${context.state["historical_event"]}"
+      Content.fromText(Role.MODEL, message)
+    }
 }
 
 /** Runs the workflow on one year and prints each reply. Needs `GOOGLE_API_KEY`. */
@@ -113,32 +133,3 @@ private fun findHistoricalEventAgent(model: Model): LlmAgent =
       ),
     outputKey = "historical_event",
   )
-
-/** Stores the year from the user's message in state, and fails the run if there is none. */
-private class ProcessInput : Node {
-  override val name = "process_input"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    // START hands the first node the user's message as Content.
-    val year = Regex("""\b\d{4}\b""").find((nodeInput as Content).text())?.value
-    if (year == null) {
-      val reply = "Please provide a valid 4-digit year (e.g., 1955)."
-      emit(Event(author = "", content = Content.fromText(Role.MODEL, reply)))
-      throw IllegalArgumentException("Invalid year format.")
-    }
-    context.updateState("year", year)
-  }
-}
-
-/** Combines both branches' answers, which [LlmAgent] nodes leave in state rather than output. */
-private class AggregateResults : Node {
-  override val name = "aggregate_results"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val message =
-      "# Year: ${context.state["year"]}\n\n" +
-        "## Famous Person Bio:\n\n${context.state["bio"]}\n\n" +
-        "## Historical Event:\n\n${context.state["historical_event"]}"
-    emit(Event(author = "", content = Content.fromText(Role.MODEL, message)))
-  }
-}

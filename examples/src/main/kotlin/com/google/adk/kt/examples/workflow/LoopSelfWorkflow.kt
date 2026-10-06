@@ -18,21 +18,18 @@
 
 package com.google.adk.kt.examples.workflow
 
-import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
-import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlin.random.Random
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -42,13 +39,37 @@ import kotlinx.coroutines.runBlocking
 object LoopSelfWorkflow {
 
   /** Builds the workflow. It calls no model. */
-  fun create(): Workflow {
-    val guessNumber = GuessNumber()
-
-    return workflow("loop_self") {
-      chain(Start, ValidateInput(), guessNumber).route { on("guessed_wrong") then guessNumber }
+  fun create(): Workflow =
+    workflow("loop_self") {
+      chain(Start, validateInput, guessNumber).route { on("guessed_wrong") then guessNumber }
     }
-  }
+
+  /** Stores the user's number in state, and fails the run if it is out of range. */
+  private val validateInput =
+    node<Content, Unit>("validate_input") { context, input ->
+      // START hands the first node the user's message as Content.
+      val number = input.text().trim().toInt()
+      if (number !in 0..10) {
+        emit(message("Please provide a number between 0 and 10."))
+        throw IllegalArgumentException("Invalid input.")
+      }
+      context.updateState("target_number", number)
+    }
+
+  /** Guesses a number, and routes back to itself when the guess is wrong. */
+  private val guessNumber =
+    node<Any?, Unit>("guess_number") { context, _ ->
+      val guess = Random.nextInt(0, 11)
+      emit(message("Guessing $guess..."))
+      if (guess == (context.state["target_number"] as Number).toInt()) {
+        emit(message("Correct!"))
+      } else {
+        context.routes = listOf(Route.Tag("guessed_wrong"))
+      }
+    }
+
+  /** A user-facing message from a node, with [text] as its content. */
+  private fun message(text: String) = Event(content = Content.fromText(Role.MODEL, text))
 }
 
 /** Runs the workflow on one number and prints every guess. */
@@ -59,36 +80,5 @@ fun main() = runBlocking {
   runner.runAsync(userId = "user", sessionId = "session", newMessage = message).collect { event ->
     val text = event.contentText(" ")
     if (text.isNotBlank()) println(text)
-  }
-}
-
-/** Stores the user's number in state, and fails the run if it is out of range. */
-private class ValidateInput : Node {
-  override val name = "validate_input"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    // START hands the first node the user's message as Content.
-    val number = (nodeInput as Content).text().trim().toInt()
-    if (number !in 0..10) {
-      val reply = "Please provide a number between 0 and 10."
-      emit(Event(author = "", content = Content.fromText(Role.MODEL, reply)))
-      throw IllegalArgumentException("Invalid input.")
-    }
-    context.updateState("target_number", number)
-  }
-}
-
-/** Guesses a number, and routes back to itself when the guess is wrong. */
-private class GuessNumber : Node {
-  override val name = "guess_number"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val guess = Random.nextInt(0, 11)
-    emit(Event(author = "", content = Content.fromText(Role.MODEL, "Guessing $guess...")))
-    if (guess == (context.state["target_number"] as Number).toInt()) {
-      emit(Event(author = "", content = Content.fromText(Role.MODEL, "Correct!")))
-    } else {
-      context.routes = listOf(Route.Tag("guessed_wrong"))
-    }
   }
 }

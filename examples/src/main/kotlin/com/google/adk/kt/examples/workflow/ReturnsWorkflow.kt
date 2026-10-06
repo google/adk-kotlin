@@ -18,7 +18,6 @@
 
 package com.google.adk.kt.examples.workflow
 
-import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Tool
@@ -27,14 +26,12 @@ import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
-import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.asNode
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -52,13 +49,28 @@ object ReturnsWorkflow {
     val cancelOrder = CancelOrderTool(orders).asNode()
     val sendReturnLabel = SendReturnLabelTool(orders).asNode()
     return workflow("returns") {
-      chain(Start, lookupOrder, ReturnDesk()).route {
+      chain(Start, lookupOrder, returnDesk).route {
         on(anyOf("processing", "packed")) then cancelOrder
         on(anyOf("shipped", "delivered")) then sendReturnLabel
-        otherwise(Decline())
+        otherwise(decline)
       }
     }
   }
+
+  /** Routes on the order's status and passes the order ID to the next step. */
+  private val returnDesk =
+    node<Map<String, Any?>, Map<String, Any?>>("return_desk") { context, lookup ->
+      // Tools built from @Tool methods wrap their return value under "result".
+      val order = lookup[BaseTool.RESULT_KEY] as Map<*, *>
+      context.routes = listOf(Route.Tag(order["status"] as String))
+      mapOf("orderId" to order["orderId"])
+    }
+
+  /** Declines a return for any other status, such as an already returned order. */
+  private val decline =
+    node<Map<String, Any?>, String>("decline") { _, request ->
+      "Order ${request["orderId"]} can't be returned."
+    }
 }
 
 /** Runs the workflow on three orders and prints each step's output. */
@@ -92,25 +104,4 @@ class OrderSystem {
   @Tool
   fun sendReturnLabel(@Param("The order ID, such as A-1001") orderId: String): String =
     "Emailed a prepaid return label for $orderId. The refund follows once the return arrives."
-}
-
-/** Routes on the order's status and passes the order ID to the next step. */
-private class ReturnDesk : Node {
-  override val name = "return_desk"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    // Tools built from @Tool methods wrap their return value under "result".
-    val order = (nodeInput as Map<*, *>)[BaseTool.RESULT_KEY] as Map<*, *>
-    context.routes = listOf(Route.Tag(order["status"] as String))
-    emit(mapOf("orderId" to order["orderId"]))
-  }
-}
-
-/** Declines a return for any other status, such as an already returned order. */
-private class Decline : Node {
-  override val name = "decline"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    emit("Order ${(nodeInput as Map<*, *>)["orderId"]} can't be returned.")
-  }
 }

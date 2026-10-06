@@ -18,7 +18,6 @@
 
 package com.google.adk.kt.examples.workflow
 
-import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -37,9 +36,8 @@ import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
 private const val MODEL_NAME = "gemini-3.1-flash-lite"
@@ -60,7 +58,7 @@ object ResearchWorkflow {
     val gather = JoinNode("gather")
     val write = writerAgent(model)
     val review = reviewerAgent(model)
-    val gate = ReviewGate(maxRounds = 3)
+    val gate = reviewGate(maxRounds = 3)
 
     return workflow("research") {
       Start.then(plan)
@@ -69,10 +67,38 @@ object ResearchWorkflow {
         .chain(write, review, gate)
         .route {
           on("needs-more") then plan // Loops back while the reviewer asks for more.
-          on("done") then BriefPublisher()
+          on("done") then briefPublisher
         }
     }
   }
+
+  /** Outputs the brief the writer stored, which makes it the workflow's output. */
+  private val briefPublisher =
+    node<Any?, String?>("publisher") { context, _ ->
+      val brief = context.state["brief"] as? String
+      // Consumes the brief, so a later question never publishes this one's answer.
+      context.updateState("brief", State.REMOVED)
+      brief
+    }
+
+  /**
+   * Returns a node that routes on the reviewer's verdict, since an [LlmAgent] node emits no route.
+   * It stops the loop after [maxRounds] research rounds even if the reviewer still asks for more.
+   */
+  private fun reviewGate(maxRounds: Int): Node =
+    node<Any?, Unit>("review_gate") { context, _ ->
+      val verdict = (context.state["review"] as? Map<*, *>)?.get("verdict")
+      // The run id counts this node's runs in the current invocation, so it is the round number.
+      val round = context.runId.toInt()
+      val route = if (verdict == "needs-more" && round < maxRounds) "needs-more" else "done"
+      // Clears the review and notes when the loop ends, so the next question starts fresh.
+      if (route == "done") {
+        for (key in listOf("review", "web_notes", "docs_notes")) {
+          context.updateState(key, State.REMOVED)
+        }
+      }
+      context.routes = listOf(Route.Tag(route))
+    }
 }
 
 /** Runs the workflow on one question and prints the published brief. Needs `GOOGLE_API_KEY`. */
@@ -164,7 +190,7 @@ private fun reviewerAgent(model: Model): LlmAgent =
     outputKey = "review",
   )
 
-/** The reviewer's structured verdict, which [ReviewGate] routes on. */
+/** The reviewer's structured verdict, which [ResearchWorkflow.reviewGate] routes on. */
 private val REVIEW_SCHEMA =
   Schema(
     type = Type.OBJECT,
@@ -183,37 +209,3 @@ private val REVIEW_SCHEMA =
       ),
     required = listOf("verdict", "feedback"),
   )
-
-/**
- * Routes on the reviewer's verdict, since an [LlmAgent] node emits no route. Stops the loop after
- * [maxRounds] research rounds even if the reviewer still asks for more.
- */
-private class ReviewGate(private val maxRounds: Int) : Node {
-  override val name = "review_gate"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val verdict = (context.state["review"] as? Map<*, *>)?.get("verdict")
-    // The run id counts this node's runs in the current invocation, so it is the round number.
-    val round = context.runId.toInt()
-    val route = if (verdict == "needs-more" && round < maxRounds) "needs-more" else "done"
-    // Clears the review and notes when the loop ends, so the next question starts fresh.
-    if (route == "done") {
-      for (key in listOf("review", "web_notes", "docs_notes")) {
-        context.updateState(key, State.REMOVED)
-      }
-    }
-    context.routes = listOf(Route.Tag(route))
-  }
-}
-
-/** Outputs the brief the writer stored, which makes it the workflow's output. */
-private class BriefPublisher : Node {
-  override val name = "publisher"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val brief = context.state["brief"]
-    // Consumes the brief, so a later question never publishes this one's answer.
-    context.updateState("brief", State.REMOVED)
-    if (brief != null) emit(brief)
-  }
-}

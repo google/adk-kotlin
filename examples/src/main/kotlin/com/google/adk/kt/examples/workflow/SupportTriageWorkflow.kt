@@ -18,7 +18,6 @@
 
 package com.google.adk.kt.examples.workflow
 
-import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -33,13 +32,11 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
-import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
 private const val MODEL_NAME = "gemini-3.1-flash-lite"
@@ -63,7 +60,7 @@ object SupportTriageWorkflow {
     val summarize = summaryAgent(model)
 
     return workflow("support_triage") {
-      chain(Start, classify, RequestCategory()).route {
+      chain(Start, classify, requestCategory).route {
         on("billing") then billing
         on("tech") then tech
         otherwise(summarize)
@@ -72,6 +69,16 @@ object SupportTriageWorkflow {
       tech.then(summarize)
     }
   }
+
+  /** Routes on the category the classifier returned, since an [LlmAgent] node emits no route. */
+  private val requestCategory =
+    node<Any?, Unit>("request_category") { context, _ ->
+      val category = (context.state[TRIAGE_KEY] as? Map<*, *>)?.get("category") as? String
+      // Consumes the answer, so a later turn never routes on this turn's category.
+      context.updateState(TRIAGE_KEY, State.REMOVED)
+      // Without a category, this node emits no route, so `otherwise` takes the request.
+      if (category != null) context.routes = listOf(Route.Tag(category))
+    }
 }
 
 /**
@@ -198,17 +205,4 @@ class StatusPage {
       "login" to "Operational",
       "billing" to "Operational",
     )
-}
-
-/** Routes on the category the classifier returned, since an [LlmAgent] node emits no route. */
-private class RequestCategory : Node {
-  override val name = "request_category"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val category = (context.state[TRIAGE_KEY] as? Map<*, *>)?.get("category") as? String
-    // Consumes the answer, so a later turn never routes on this turn's category.
-    context.updateState(TRIAGE_KEY, State.REMOVED)
-    // Without a category, this node emits no route, so `otherwise` takes the request.
-    if (category != null) context.routes = listOf(Route.Tag(category))
-  }
 }

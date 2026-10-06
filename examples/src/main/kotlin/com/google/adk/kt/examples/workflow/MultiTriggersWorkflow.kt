@@ -18,19 +18,15 @@
 
 package com.google.adk.kt.examples.workflow
 
-import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
-import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
-import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -40,13 +36,8 @@ import kotlinx.coroutines.runBlocking
 object MultiTriggersWorkflow {
 
   /** Builds the workflow. It calls no model. */
-  fun create(): Workflow {
-    val makeUppercase = MakeUppercase()
-    val countCharacters = CountCharacters()
-    val reverseString = ReverseString()
-    val sendMessage = SendMessage()
-
-    return workflow("multi_triggers") {
+  fun create(): Workflow =
+    workflow("multi_triggers") {
       // START hands each branch the user's message as Content.
       Start.then(nodes(makeUppercase, countCharacters, reverseString))
       // With no JoinNode in between, each predecessor triggers its own run of send_message.
@@ -54,7 +45,21 @@ object MultiTriggersWorkflow {
       countCharacters.then(sendMessage)
       reverseString.then(sendMessage)
     }
-  }
+
+  private val makeUppercase =
+    node<Content, String>("make_uppercase") { _, message -> message.text().uppercase() }
+
+  private val countCharacters =
+    node<Content, Int>("count_characters") { _, message -> message.text().length }
+
+  private val reverseString =
+    node<Content, String>("reverse_string") { _, message -> message.text().reversed() }
+
+  /** Reports the output of whichever predecessor triggered this run. */
+  private val sendMessage =
+    node<Any?, Content>("send_message") { _, input ->
+      Content.fromText(Role.MODEL, "Triggered for input: $input")
+    }
 }
 
 /** Runs the workflow on one message and prints the three reports. */
@@ -65,39 +70,5 @@ fun main() = runBlocking {
   runner.runAsync(userId = "user", sessionId = "session", newMessage = message).collect { event ->
     val text = event.contentText(" ")
     if (text.isNotBlank()) println(text)
-  }
-}
-
-private class MakeUppercase : Node {
-  override val name = "make_uppercase"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    emit((nodeInput as Content).text().uppercase())
-  }
-}
-
-private class CountCharacters : Node {
-  override val name = "count_characters"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    emit((nodeInput as Content).text().length)
-  }
-}
-
-private class ReverseString : Node {
-  override val name = "reverse_string"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    emit((nodeInput as Content).text().reversed())
-  }
-}
-
-/** Reports the output of whichever predecessor triggered this run. */
-private class SendMessage : Node {
-  override val name = "send_message"
-
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    val text = "Triggered for input: $nodeInput"
-    emit(Event(author = "", content = Content.fromText(Role.MODEL, text)))
   }
 }
