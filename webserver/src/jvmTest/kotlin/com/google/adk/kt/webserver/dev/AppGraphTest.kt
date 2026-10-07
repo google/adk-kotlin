@@ -196,6 +196,67 @@ class AppGraphTest {
     assertThat(node).isEqualTo(GraphNode("empty", "workflow"))
   }
 
+  @Test
+  fun find_pathThroughGraphsAndSubAgents_returnsTheNode() {
+    // Arrange
+    val support = graphNodeOf(supportWorkflow())
+    val assistant = graphNodeOf(assistantAgent())
+
+    // Act + Assert
+    assertThat(support.find("")).isSameInstanceAs(support)
+    assertThat(support.find("tech_flow")?.type).isEqualTo("workflow")
+    assertThat(support.find("support/tech_flow/diagnose")?.name).isEqualTo("diagnose")
+    assertThat(support.find("/tech_flow/fix/")?.name).isEqualTo("fix")
+    assertThat(assistant.find("helper")?.tools).containsExactly(GraphTool("lookup_invoice", "tool"))
+  }
+
+  @Test
+  fun find_segmentsWithRunIdSuffix_ignoreTheSuffix() {
+    // Arrange
+    val support = graphNodeOf(supportWorkflow())
+
+    // Act
+    val node = support.find("support@1/tech_flow@2/diagnose@1")
+
+    // Assert
+    assertThat(node?.name).isEqualTo("diagnose")
+  }
+
+  @Test
+  fun find_nameMatchingNoChild_returnsNull() {
+    // Arrange
+    val support = graphNodeOf(supportWorkflow())
+
+    // Act + Assert
+    assertThat(support.find("missing")).isNull()
+    assertThat(support.find("tech_flow/missing")).isNull()
+    assertThat(support.find("classify/anything")).isNull()
+  }
+
+  @Test
+  fun workflowsByPath_nestedWorkflows_keysEachByItsPath() {
+    // Arrange
+    val innermost = Workflow(name = "inner", edges = listOf(Edge(Start, step("leaf"))))
+    val middle = Workflow(name = "middle", edges = listOf(Edge(Start, innermost)))
+    val outer =
+      Workflow(name = "outer", edges = listOf(Edge(Start, middle), Edge(middle, step("z"))))
+
+    // Act
+    val fromRoot = graphNodeOf(outer).workflowsByPath("")
+    val fromMiddle = graphNodeOf(outer).find("middle")!!.workflowsByPath("middle")
+
+    // Assert
+    assertThat(fromRoot.keys).containsExactly("", "middle", "middle/inner").inOrder()
+    assertThat(fromRoot["middle/inner"]?.name).isEqualTo("inner")
+    assertThat(fromMiddle.keys).containsExactly("middle", "middle/inner").inOrder()
+  }
+
+  @Test
+  fun workflowsByPath_agentTree_isEmpty() {
+    // Act + Assert
+    assertThat(graphNodeOf(assistantAgent()).workflowsByPath("")).isEmpty()
+  }
+
   private fun encode(appGraph: AppGraph): JsonElement =
     adkJson.encodeToJsonElement(AppGraph.serializer(), appGraph)
 }

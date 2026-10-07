@@ -55,7 +55,31 @@ internal data class GraphNode(
   @SerialName("sub_agents") val subAgents: List<GraphNode>? = null,
   val tools: List<GraphTool>? = null,
   val graph: WorkflowGraph? = null,
-)
+) {
+  /** The nodes one level down: a workflow's graph nodes, or an agent's sub-agents. */
+  val children: List<GraphNode>
+    get() = graph?.nodes.orEmpty() + subAgents.orEmpty()
+
+  /**
+   * Returns the node at the `/`-separated [path], or null if no child matches. Accepts a path that
+   * starts with this node's name, and ignores an `@<run id>` suffix on any segment.
+   */
+  fun find(path: String): GraphNode? {
+    val names = path.split('/').map { it.substringBefore('@') }.filter { it.isNotEmpty() }
+    val below = if (names.firstOrNull() == name) names.drop(1) else names
+    return below.fold<String, GraphNode?>(this) { node, childName ->
+      node?.children?.firstOrNull { it.name == childName }
+    }
+  }
+
+  /**
+   * Returns every node at or below this one that has a graph, keyed by its `/`-separated path
+   * starting at [path].
+   */
+  fun workflowsByPath(path: String): Map<String, GraphNode> = buildMap {
+    collectWorkflows(this@GraphNode, path, this)
+  }
+}
 
 @Serializable internal data class GraphTool(val name: String, val type: String)
 
@@ -99,6 +123,13 @@ internal fun graphNodeOf(node: Node): GraphNode =
       )
     else -> GraphNode(node.name, typeOf(node))
   }
+
+private fun collectWorkflows(node: GraphNode, path: String, into: MutableMap<String, GraphNode>) {
+  if (node.graph != null) into[path] = node
+  for (child in node.children) {
+    collectWorkflows(child, if (path.isEmpty()) child.name else "$path/${child.name}", into)
+  }
+}
 
 /** Returns the node type string used by the Dev UI graph renderer for [node]. */
 private fun typeOf(node: Node): String =

@@ -184,6 +184,7 @@ class ModuleSurfaceTest {
         "/apps/{app_name}/eval_results/(method:GET)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/events/{eventId}/graph/(method:GET)",
         "/dev/build_graph/{appName}/(method:GET)",
+        "/dev/build_graph_image/{appName}/(method:GET)",
       )
   }
 }
