@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - main
+      - 'release/**'
 
 # A newer run for the same pull request supersedes this one.
 concurrency:
