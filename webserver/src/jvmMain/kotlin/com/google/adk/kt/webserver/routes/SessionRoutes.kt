@@ -240,7 +240,9 @@ private suspend fun SessionService.createSeededSession(
   // leaves the session with the events appended so far.
   // The id-less seeds arrived as one request, so they share a single minted invocation id.
   val seededInvocationId = "s-${Uuid.random()}"
-  request.events?.forEach { appendEvent(session, it.withSeededInvocationId(seededInvocationId)) }
+  request.events?.forEach {
+    val unused = appendEvent(session, it.withSeededInvocationId(seededInvocationId))
+  }
   return CreateSessionOutcome.Created(session)
 }
 

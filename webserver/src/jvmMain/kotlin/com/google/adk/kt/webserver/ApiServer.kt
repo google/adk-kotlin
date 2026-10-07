@@ -22,8 +22,6 @@ import com.google.adk.kt.VERSION
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.telemetry.TelemetryConfig
-import com.google.adk.kt.webserver.dev.AdkDevServer
-import com.google.adk.kt.webserver.dev.adkDevModule
 import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.adk.kt.webserver.routes.appInfoRoutes
 import com.google.adk.kt.webserver.routes.appRoutes
@@ -36,18 +34,18 @@ import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
+import io.ktor.server.application.createApplicationPlugin
+import io.ktor.server.application.hooks.ResponseSent
 import io.ktor.server.application.install
-import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
-import io.ktor.server.plugins.callloging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.uri
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import org.slf4j.Logger
+import io.ktor.util.AttributeKey
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 
@@ -60,20 +58,23 @@ private val logger = LoggerFactory.getLogger(AdkApiServer::class.java)
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it.
  *
- * [AdkDevServer] widens the surface with the development-only endpoints. [start] and [stop] are
- * safe to call from different threads; a [stop] arriving while [start] is still binding aborts it,
- * and a failed [start] leaves the engine recorded, so call [stop] before retrying.
+ * [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] widens the surface with the
+ * development-only endpoints. [start] and [stop] are safe to call from different threads; a [stop]
+ * arriving while [start] is still binding aborts it, and a failed [start] leaves the engine
+ * recorded, so call [stop] before retrying.
  */
 open class AdkApiServer(protected val config: AdkServerConfig) {
   private val lifecycleLock = Any()
-  private var server: ApplicationEngine? = null
+  // A stop callback, not the engine: embeddedServer returns a different type in Ktor 2 and 3.
+  private var stopServer: (() -> Unit)? = null
 
   /**
    * Installs this server's endpoint surface.
    *
    * An override replaces this body, so it must install everything the server serves. Call
    * `super.configure(application)` to add routes on top, or install a module that already contains
-   * [adkApiModule] - as [AdkDevServer] does with [adkDevModule] - but not both, which fails at
+   * [adkApiModule] - as [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] does with
+   * [adkDevModule][com.google.adk.kt.webserver.dev.adkDevModule] - but not both, which fails at
    * start with a duplicate-plugin error.
    */
   protected open fun configure(application: Application) {
@@ -91,9 +92,11 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
     // Released before the blocking call below, so stop() can still take it.
     val engine =
       synchronized(lifecycleLock) {
-        if (server != null) return
-        embeddedServer(Netty, port = config.port, host = config.host) { configure(this) }
-          .also { server = it }
+        if (stopServer != null) return
+        val server =
+          embeddedServer(Netty, port = config.port, host = config.host) { configure(this) }
+        stopServer = { server.stop(STOP_GRACE_MILLIS, STOP_TIMEOUT_MILLIS) }
+        server
       }
     logger.info("{} starting on {}:{}", this::class.simpleName, config.host, config.port)
     engine.start(wait = wait)
@@ -101,22 +104,37 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
 
   fun stop() {
     synchronized(lifecycleLock) {
-      server?.stop(STOP_GRACE_MILLIS, STOP_TIMEOUT_MILLIS)
-      server = null
+      stopServer?.invoke()
+      stopServer = null
     }
     logger.info("{} stopped", this::class.simpleName)
   }
 }
 
-/** Reports server errors that Ktor's call logging emits at INFO as warnings instead. */
-private class StatusAwareLogger(private val delegate: Logger) : Logger by delegate {
-  override fun info(msg: String?) {
-    if (msg != null && msg.contains("Status: 5")) {
-      delegate.warn(msg)
-    } else {
-      delegate.info(msg)
+private val REQUEST_LOGGED_KEY = AttributeKey<Unit>("AdkRequestLogged")
+
+/**
+ * Logs one line per call to [log], at WARN for a 5xx status and INFO otherwise.
+ *
+ * Replaces Ktor's CallLogging, whose package differs between Ktor 2 and 3.
+ */
+internal fun requestLoggingPlugin(log: (Level, String) -> Unit) =
+  createApplicationPlugin("AdkRequestLogging") {
+    on(ResponseSent) { call ->
+      // ResponseSent fires per send; StatusPages and the engine's error fallback can send again.
+      if (REQUEST_LOGGED_KEY in call.attributes) return@on
+      call.attributes.put(REQUEST_LOGGED_KEY, Unit)
+      val status = call.response.status()
+      val level = if (status != null && status.value >= 500) Level.WARN else Level.INFO
+      log(
+        level,
+        "Status: $status, HTTP method: ${call.request.httpMethod.value}, URI: ${call.request.uri}",
+      )
     }
   }
+
+private val requestLogging = requestLoggingPlugin { level, message ->
+  if (level == Level.WARN) logger.warn(message) else logger.info(message)
 }
 
 /**
@@ -136,21 +154,12 @@ fun Application.adkApiModule(config: AdkServerConfig) {
 /** [adkApiModule] with the Development UI decision already made, so it is resolved once. */
 @OptIn(FrameworkInternalApi::class)
 internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boolean) {
-  install(CallLogging) {
-    level = Level.INFO
-    logger = StatusAwareLogger(LoggerFactory.getLogger(CallLogging::class.java))
-    format { call ->
-      val status = call.response.status()
-      val httpMethod = call.request.httpMethod.value
-      val uri = call.request.uri
-      "Status: $status, HTTP method: $httpMethod, URI: $uri"
-    }
-  }
+  install(requestLogging)
   install(ContentNegotiation) { json(adkJson) }
 
   val otelConfig = OpenTelemetryConfig(config.apiServerSpanExporter)
   val sdkTracerProvider = otelConfig.sdkTracerProvider()
-  otelConfig.openTelemetrySdk(sdkTracerProvider)
+  val unused = otelConfig.openTelemetrySdk(sdkTracerProvider)
 
   // The Dev UI trace view needs message content, but it records potential PII into spans.
   TelemetryConfig.captureMessageContent = config.captureMessageContent

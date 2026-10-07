@@ -28,6 +28,9 @@ plugins {
 // are configured in the root build.gradle.kts.
 java { withSourcesJar() }
 
+// The sources jar would otherwise carry the Dev UI assets from src/main/resources.
+tasks.named<Jar>("sourcesJar") { exclude("browser/**") }
+
 publishing {
   publications {
     create<MavenPublication>("maven") {
@@ -46,13 +49,10 @@ dependencies {
   implementation(project(":google-adk-kotlin-core"))
   implementation(libs.kotlinx.serialization)
 
-  implementation(libs.graphviz.java)
-
   implementation(libs.opentelemetry.api)
   implementation(libs.opentelemetry.sdk)
 
   implementation(libs.ktor.serialization.kotlinx.json)
-  implementation(libs.ktor.server.call.logging)
   implementation(libs.ktor.server.content.negotiation)
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)
@@ -63,5 +63,3 @@ dependencies {
   testImplementation(libs.google.truth)
   testImplementation(libs.junit)
 }
-
-tasks.named<ProcessResources>("processResources") { from("browser") { into("browser") } }

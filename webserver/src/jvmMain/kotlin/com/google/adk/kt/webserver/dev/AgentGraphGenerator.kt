@@ -22,17 +22,6 @@ import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.webserver.loaders.AgentLoader
-import guru.nidi.graphviz.attribute.Arrow
-import guru.nidi.graphviz.attribute.Color
-import guru.nidi.graphviz.attribute.Label
-import guru.nidi.graphviz.attribute.Shape
-import guru.nidi.graphviz.attribute.Style
-import guru.nidi.graphviz.engine.Format
-import guru.nidi.graphviz.engine.Graphviz
-import guru.nidi.graphviz.model.Factory
-import guru.nidi.graphviz.model.Link
-import guru.nidi.graphviz.model.MutableGraph
-import guru.nidi.graphviz.model.MutableNode
 import org.slf4j.LoggerFactory
 
 /**
@@ -51,10 +40,10 @@ internal class AgentGraphGenerator(private val agentLoader: AgentLoader) {
   companion object Colors {
     private val logger = LoggerFactory.getLogger(AgentGraphGenerator::class.java)
 
-    private val COLOR_DARK_GREEN = Color.rgb("#0F5223")
-    private val COLOR_LIGHT_GREEN = Color.rgb("#69CB87")
-    private val COLOR_LIGHT_GRAY = Color.rgb("#B0B0B0")
-    private val COLOR_BACKGROUND = Color.rgb("#FAFAFA")
+    private const val COLOR_DARK_GREEN = "#0F5223"
+    private const val COLOR_LIGHT_GREEN = "#69CB87"
+    private const val COLOR_LIGHT_GRAY = "#B0B0B0"
+    private const val COLOR_BACKGROUND = "#FAFAFA"
   }
 
   /**
@@ -80,91 +69,86 @@ internal class AgentGraphGenerator(private val agentLoader: AgentLoader) {
    * @return The Graphviz DOT representation of the agent structure.
    */
   fun generateGraph(rootAgent: BaseAgent, highlightPairs: List<Pair<String, String>>): String {
-    val graph =
-      Factory.mutGraph("agent_schema").setDirected(true).graphAttrs().add(COLOR_BACKGROUND.font())
-
+    val statements = mutableListOf<String>()
     val visitedNodes = mutableSetOf<String>()
-    buildGraphRecursive(graph, rootAgent, highlightPairs, visitedNodes)
+    buildGraphRecursive(statements, rootAgent, highlightPairs, visitedNodes)
 
-    return Graphviz.fromGraph(graph).render(Format.DOT).toString()
+    return buildString {
+      // Strict, as in Python ADK: an edge listed twice is drawn once.
+      appendLine("strict digraph \"agent_schema\" {")
+      appendLine("  graph${formatAttributes("fontcolor" to COLOR_BACKGROUND)}")
+      for (statement in statements) {
+        appendLine("  $statement")
+      }
+      append("}")
+    }
   }
 
   private fun buildGraphRecursive(
-    graph: MutableGraph,
+    statements: MutableList<String>,
     agent: BaseAgent,
     highlightPairs: List<Pair<String, String>>,
     visitedNodes: MutableSet<String>,
   ) {
     val agentName = getNodeName(agent)
     if (agentName.isNotEmpty() && visitedNodes.add(agentName)) {
-      graph.add(createNode(agent, highlightPairs))
+      statements += createNode(agent, highlightPairs)
     }
 
     for (subAgent in agent.subAgents) {
       val subAgentName = getNodeName(subAgent)
-      graph.add(
-        Factory.mutNode(agentName).addLink(createLink(agentName, subAgentName, highlightPairs))
-      )
-      buildGraphRecursive(graph, subAgent, highlightPairs, visitedNodes)
+      statements += createEdge(agentName, subAgentName, highlightPairs)
+      buildGraphRecursive(statements, subAgent, highlightPairs, visitedNodes)
     }
 
     if (agent is LlmAgent) {
       for (tool in agent.tools) {
         val toolName = getNodeName(tool)
         if (toolName.isNotEmpty() && visitedNodes.add(toolName)) {
-          graph.add(createNode(tool, highlightPairs))
+          statements += createNode(tool, highlightPairs)
         }
-        graph.add(
-          Factory.mutNode(agentName).addLink(createLink(agentName, toolName, highlightPairs))
-        )
+        statements += createEdge(agentName, toolName, highlightPairs)
       }
     }
   }
 
-  private fun createNode(
-    toolOrAgent: Any,
-    highlightPairs: List<Pair<String, String>>,
-  ): MutableNode {
+  private fun createNode(toolOrAgent: Any, highlightPairs: List<Pair<String, String>>): String {
     val name = getNodeName(toolOrAgent)
     val shape = getNodeShape(toolOrAgent)
     val caption = getNodeCaption(toolOrAgent)
     val isHighlighted = isNodeHighlighted(name, highlightPairs)
 
-    val node = Factory.mutNode(name).add(Label.of(caption)).add(shape).add(COLOR_LIGHT_GRAY.font())
-
-    if (isHighlighted) {
-      node.add(Style.FILLED)
-      node.add(COLOR_DARK_GREEN)
-    } else {
-      node.add(Style.ROUNDED)
-      node.add(COLOR_LIGHT_GRAY)
-    }
-
-    return node
+    val style = if (isHighlighted) "filled" else "rounded"
+    val color = if (isHighlighted) COLOR_DARK_GREEN else COLOR_LIGHT_GRAY
+    val nodeAttributes =
+      formatAttributes(
+        "label" to caption,
+        "shape" to shape,
+        "fontcolor" to COLOR_LIGHT_GRAY,
+        "style" to style,
+        "color" to color,
+      )
+    return "${quote(name)}$nodeAttributes"
   }
 
-  private fun createLink(
+  private fun createEdge(
     fromName: String,
     toName: String,
     highlightPairs: List<Pair<String, String>>,
-  ): Link {
+  ): String {
     if (fromName.isEmpty() || toName.isEmpty()) {
       throw IllegalArgumentException("Edge names cannot be empty: from='$fromName', to='$toName'")
     }
 
-    val edgeDirection = isEdgeHighlighted(fromName, toName, highlightPairs)
-    return Factory.to(Factory.mutNode(toName)).apply {
-      if (edgeDirection != HighlightDirection.NONE) {
-        with(COLOR_LIGHT_GREEN)
-        if (edgeDirection == HighlightDirection.REVERSE) {
-          with(Arrow.NORMAL.dir(Arrow.DirType.BACK))
-        } else {
-          with(Arrow.NORMAL)
-        }
-      } else {
-        with(COLOR_LIGHT_GRAY, Arrow.NONE)
+    val edgeAttributes =
+      when (isEdgeHighlighted(fromName, toName, highlightPairs)) {
+        HighlightDirection.FORWARD -> formatAttributes("color" to COLOR_LIGHT_GREEN)
+        HighlightDirection.REVERSE ->
+          formatAttributes("color" to COLOR_LIGHT_GREEN, "dir" to "back")
+        HighlightDirection.NONE ->
+          formatAttributes("color" to COLOR_LIGHT_GRAY, "arrowhead" to "none")
       }
-    }
+    return "${quote(fromName)} -> ${quote(toName)}$edgeAttributes"
   }
 
   private fun getNodeName(toolOrAgent: Any): String {
@@ -192,14 +176,14 @@ internal class AgentGraphGenerator(private val agentLoader: AgentLoader) {
     }
   }
 
-  private fun getNodeShape(toolOrAgent: Any): Shape {
+  private fun getNodeShape(toolOrAgent: Any): String {
     return when (toolOrAgent) {
-      is BaseAgent -> Shape.ELLIPSE
-      is FunctionTool -> Shape.BOX
-      is BaseTool -> Shape.BOX
+      is BaseAgent -> "ellipse"
+      is FunctionTool -> "box"
+      is BaseTool -> "box"
       else -> {
         logger.warn("Unsupported type for getNodeShape: {}", toolOrAgent.javaClass.name)
-        Shape.EGG
+        "egg"
       }
     }
   }
@@ -228,4 +212,14 @@ internal class AgentGraphGenerator(private val agentLoader: AgentLoader) {
     }
     return HighlightDirection.NONE
   }
+}
+
+/** Formats DOT attributes as ` [key="value", ...]`. */
+private fun formatAttributes(vararg attributes: Pair<String, String>): String =
+  attributes.joinToString(prefix = " [", postfix = "]") { (key, value) -> "$key=${quote(value)}" }
+
+/** Quotes [value] as a DOT string, escaping backslashes and double quotes. */
+private fun quote(value: String): String {
+  val escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
+  return "\"$escaped\""
 }
