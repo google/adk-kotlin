@@ -185,6 +185,18 @@ data class Event(
   }
 
   /**
+   * Returns this event with [original]'s id, invocation id and timestamp, and with [original]'s
+   * author if this one has none. ADK Python's `Runner._get_output_event` protects the same fields.
+   */
+  internal fun withIdentityOf(original: Event): Event =
+    copy(
+      id = original.id,
+      invocationId = original.invocationId,
+      timestamp = original.timestamp,
+      author = author.ifEmpty { original.author },
+    )
+
+  /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
    * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
    * changes whenever a property is added.

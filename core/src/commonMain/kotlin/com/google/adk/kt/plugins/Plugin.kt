@@ -76,7 +76,8 @@ interface Plugin : AutoCloseable {
    *
    * @param invocationContext The context for the entire invocation.
    * @param event The event raised by the runner.
-   * @return The potentially modified [Event] to propagate downstream.
+   * @return The potentially modified [Event] to propagate downstream. The runner keeps [event]'s
+   *   id, invocation id and timestamp, and its author when the returned event has none.
    */
   suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event = event
 

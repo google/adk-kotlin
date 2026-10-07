@@ -139,7 +139,11 @@ abstract class BaseFuturePlugin(private val pluginName: String) : Plugin {
   ): CompletableFuture<CallbackChoice<Unit, Content>> =
     CompletableFuture.completedFuture(Choices.proceed())
 
-  /** Resolve to a replacement event before it is persisted and yielded; the default keeps it. */
+  /**
+   * Resolve to a replacement event before it is persisted and yielded; the default keeps it. The
+   * runner keeps [event]'s id, invocation id and timestamp, and its author when the replacement has
+   * none.
+   */
   protected open fun onEventAsync(
     invocationContext: InvocationContext,
     event: Event,

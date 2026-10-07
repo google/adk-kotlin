@@ -25,6 +25,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
@@ -1631,6 +1632,86 @@ class AbstractRunnerTest {
   }
 
   @Test
+  fun runAsync_onEventPluginRebuildsStreamedEvents_keepsTheirIdentity() = runBlocking {
+    // Clients group a streamed reply's chunks by event id, so a rebuilt event must keep its id.
+    val seenByPlugin = mutableListOf<Event>()
+    val plugin =
+      object : Plugin {
+        override val name = "event-rebuilder"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+          seenByPlugin.add(event)
+          // A fixed timestamp, so the timestamp check fails unless the runner restores it.
+          return Event(content = event.content, partial = event.partial, timestamp = 0L)
+        }
+      }
+    val runner =
+      InMemoryRunner(
+        app = App(appName = "rebuild_app", rootAgent = streamingAgent(), plugins = listOf(plugin))
+      )
+
+    val streamed = runner.streamReply(userId = "user", sessionId = "session")
+
+    assertEquals(listOf(true, true, false), streamed.map { it.partial })
+    assertEquals(1, streamed.map { it.id }.toSet().size)
+    assertEquals(seenByPlugin.map { it.id }, streamed.map { it.id })
+    assertEquals(seenByPlugin.map { it.invocationId }, streamed.map { it.invocationId })
+    assertEquals(seenByPlugin.map { it.timestamp }, streamed.map { it.timestamp })
+    assertEquals(seenByPlugin.map { it.author }, streamed.map { it.author })
+    val persisted =
+      assertNotNull(runner.sessionService.getSession(SessionKey(runner.appName, "user", "session")))
+        .events
+    assertEquals(streamed.last().id, persisted.single { it.author == "agent" }.id)
+  }
+
+  @Test
+  fun runAsync_chainedOnEventPlugins_laterPluginSeesTheOriginalIdentity() = runBlocking {
+    val seenByRebuilder = mutableListOf<Event>()
+    val seenByRecorder = mutableListOf<Event>()
+    val rebuilder =
+      object : Plugin {
+        override val name = "event-rebuilder"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+          seenByRebuilder.add(event)
+          return Event(
+            author = "rewriter",
+            content = event.content,
+            partial = event.partial,
+            timestamp = 0L,
+          )
+        }
+      }
+    val recorder =
+      object : Plugin {
+        override val name = "event-recorder"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+          seenByRecorder.add(event)
+          return event
+        }
+      }
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = "chain_app",
+            rootAgent = streamingAgent(),
+            plugins = listOf(rebuilder, recorder),
+          )
+      )
+
+    val streamed = runner.streamReply(userId = "user", sessionId = "session")
+
+    assertEquals(seenByRebuilder.map { it.id }, seenByRecorder.map { it.id })
+    assertEquals(seenByRebuilder.map { it.invocationId }, seenByRecorder.map { it.invocationId })
+    assertEquals(seenByRebuilder.map { it.timestamp }, seenByRecorder.map { it.timestamp })
+    assertEquals(seenByRecorder.map { it.id }, streamed.map { it.id })
+    // A plugin may still set the author.
+    assertEquals(listOf("rewriter", "rewriter", "rewriter"), streamed.map { it.author })
+  }
+
+  @Test
   fun runAsync_beforeRunBreakEarlyExitEventPassesThroughOnEventBeforePersistence() = runBlocking {
     // Arrange: mirrors Python test_runner_processes_before_run_early_exit_with_event_callback.
     val haltedContent = modelMessage("halted by beforeRun")
@@ -1692,6 +1773,33 @@ private fun echoAgent(name: String = "agent"): DummyAgent =
       )
     )
   }
+
+/** An [LlmAgent] named "agent" whose model streams the chunks "a" and "b", then the reply "ab". */
+private fun streamingAgent(): LlmAgent =
+  LlmAgent(
+    name = "agent",
+    model =
+      DummyModel(
+        "streaming-model",
+        listOf(
+          flowOf(
+            LlmResponse(content = modelMessage("a"), partial = true),
+            LlmResponse(content = modelMessage("b"), partial = true),
+            LlmResponse(content = modelMessage("ab")),
+          )
+        ),
+      ),
+  )
+
+/** Sends "hi" from [userId] in [sessionId] in streaming mode and returns the emitted events. */
+private suspend fun InMemoryRunner.streamReply(userId: String, sessionId: String): List<Event> =
+  runAsync(
+      userId = userId,
+      sessionId = sessionId,
+      newMessage = userMessage("hi"),
+      runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+    )
+    .toList()
 
 /**
  * An [EventSummarizer] that records every event list passed to [summarizeEvents] in [calls] and

@@ -274,7 +274,8 @@ internal suspend fun runOnUserMessageCallbacksPipeline(
  * Executes the [OnEventCallback] pipeline over the provided callbacks.
  *
  * Allows plugins to dynamically inspect and amend internal events before they are dispatched down
- * the session.
+ * the session. Each callback's result keeps the identity of the event it received, so a plugin that
+ * rebuilds events cannot give one streamed reply several ids.
  */
 internal suspend fun runOnEventCallbacksPipeline(
   callbacks: Iterable<OnEventCallback>,
@@ -284,7 +285,7 @@ internal suspend fun runOnEventCallbacksPipeline(
   runCallbacksPipeline(callbacks = callbacks, initialState = event, onComplete = { it }) {
     callback,
     currentState ->
-    PipelineStep.Continue(callback.call(context, currentState))
+    PipelineStep.Continue(callback.call(context, currentState).withIdentityOf(currentState))
   }
 
 /**
