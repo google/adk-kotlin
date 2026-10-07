@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:Suppress("DEPRECATION") // Covers the AgentLoader path kept until 2.0.
+
 package com.google.adk.kt.webserver.loaders
 
 import com.google.adk.kt.agents.BaseAgent

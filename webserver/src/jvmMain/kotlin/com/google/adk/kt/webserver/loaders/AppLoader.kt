@@ -14,16 +14,20 @@
  * limitations under the License.
  */
 
-@file:Suppress("DEPRECATION") // AgentLoader stays until 2.0.
-
 package com.google.adk.kt.webserver.loaders
 
-import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.apps.App
 
-/** An [AgentLoader] serving one agent, under its own name only. */
-@Deprecated("Use InMemoryAppLoader instead. Scheduled for removal in 2.0.")
-class SingleAgentLoader(private val agent: BaseAgent) : AgentLoader {
-  override fun listAgents(): List<String> = listOf(agent.name)
+/**
+ * The central interface for loading what the ADK web server serves: apps, agents and workflows,
+ * each as an [App] keyed by its app name. Supersedes [AgentLoader]. Implementations must be safe
+ * for concurrent calls.
+ */
+interface AppLoader {
 
-  override fun loadAgent(agentName: String): BaseAgent? = agent.takeIf { it.name == agentName }
+  /** The names of the available apps; each must be a valid app name. Empty if there are none. */
+  fun listApps(): List<String>
+
+  /** The app served as [appName], or null if there is none. */
+  fun loadApp(appName: String): App?
 }

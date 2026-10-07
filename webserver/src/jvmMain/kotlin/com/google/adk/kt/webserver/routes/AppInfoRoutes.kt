@@ -16,8 +16,9 @@
 
 package com.google.adk.kt.webserver.routes
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.webserver.buildAppInfo
-import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.ServedApps
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.response.respond
@@ -31,15 +32,18 @@ import io.ktor.server.routing.get
  * grade a run but a deployment has no reason to publish. Every request walks the agent tree and
  * enumerates its toolsets afresh, so this suits evaluation rather than a hot path.
  */
-internal fun Route.appInfoRoutes(agentLoader: AgentLoader) {
+internal fun Route.appInfoRoutes(servedApps: ServedApps) {
   get("/apps/{appName}/app-info") {
     // The route pattern always supplies the segment, so a missing name can only mean no such app.
     val appName = call.parameters["appName"]
-    val agent = appName?.let { agentLoader.loadAgent(it) }
-    if (agent == null) {
-      return@get call.respond(HttpStatusCode.NotFound, "Agent not found")
+    val root =
+      appName?.let { servedApps.loadRoot(it) }
+        ?: return@get call.respond(HttpStatusCode.NotFound, "Agent not found")
+    // Any agent root has a tree to report; other roots such as a workflow do not.
+    if (root !is BaseAgent) {
+      return@get call.respond(HttpStatusCode.BadRequest, "Root agent is not an LlmAgent")
     }
 
-    call.respond(buildAppInfo(appName, agent))
+    call.respond(buildAppInfo(appName, root))
   }
 }

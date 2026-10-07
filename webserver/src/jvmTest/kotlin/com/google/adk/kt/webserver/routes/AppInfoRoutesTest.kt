@@ -21,7 +21,9 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ReadonlyContext
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
@@ -34,8 +36,13 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.buildAppInfo
-import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.AppLoader
+import com.google.adk.kt.webserver.loaders.AppLoaderApps
+import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
 import com.google.adk.kt.webserver.models.AppInfo
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -331,16 +338,36 @@ class AppInfoRoutesTest {
   fun appInfo_unknownApp_returnsNotFound() = testApplication {
     application {
       install(ContentNegotiation) { json(adkJson) }
-      routing { appInfoRoutes(StubLoader(null)) }
+      routing { appInfoRoutes(AppLoaderApps(StubLoader(null))) }
     }
 
     assertThat(client.get(APP_INFO_URL).status).isEqualTo(HttpStatusCode.NotFound)
   }
 
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun appInfo_nodeGraphRoot_returnsBadRequest() = testApplication {
+    // Arrange
+    val workflow = Workflow(name = "demo", edges = listOf(Edge(Start, llmAgent("step"))))
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing {
+        appInfoRoutes(AppLoaderApps(InMemoryAppLoader(App(appName = "demo", rootNode = workflow))))
+      }
+    }
+
+    // Act
+    val response = client.get(APP_INFO_URL)
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
+    assertThat(response.bodyAsText()).isEqualTo("Root agent is not an LlmAgent")
+  }
+
   private fun ApplicationTestBuilder.installAppInfo(agent: BaseAgent) {
     application {
       install(ContentNegotiation) { json(adkJson) }
-      routing { appInfoRoutes(StubLoader(agent)) }
+      routing { appInfoRoutes(AppLoaderApps(StubLoader(agent))) }
     }
   }
 
@@ -386,10 +413,12 @@ class AppInfoRoutesTest {
   }
 
   /** Serves one agent under any name, so a test need not match the loader's key. */
-  private class StubLoader(private val agent: BaseAgent?) : AgentLoader {
-    override fun listAgents(): List<String> = listOfNotNull(agent?.name)
+  private class StubLoader(private val agent: BaseAgent?) : AppLoader {
+    override fun listApps(): List<String> = listOfNotNull(agent?.let { "demo" })
 
-    override fun loadAgent(agentName: String): BaseAgent? = agent
+    override fun loadApp(appName: String): App? = agent?.let {
+      App(appName = appName, rootAgent = it)
+    }
   }
 
   private class FakeTool(

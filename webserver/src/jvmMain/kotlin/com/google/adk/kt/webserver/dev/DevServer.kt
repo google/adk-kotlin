@@ -56,6 +56,6 @@ fun Application.adkDevModule(config: AdkServerConfig) {
   routing {
     debugRoutes(config.apiServerSpanExporter, camelCase)
     evalRoutes()
-    graphRoutes(config.agentLoader, config.sessionService)
+    graphRoutes(config.servedApps, config.sessionService)
   }
 }

@@ -14,16 +14,22 @@
  * limitations under the License.
  */
 
-@file:Suppress("DEPRECATION") // AgentLoader stays until 2.0.
-
 package com.google.adk.kt.webserver.loaders
 
-import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.apps.App
 
-/** An [AgentLoader] serving one agent, under its own name only. */
-@Deprecated("Use InMemoryAppLoader instead. Scheduled for removal in 2.0.")
-class SingleAgentLoader(private val agent: BaseAgent) : AgentLoader {
-  override fun listAgents(): List<String> = listOf(agent.name)
+/**
+ * An [AppLoader] serving a fixed set of apps, each under its [App.appName]. Construction throws
+ * [IllegalArgumentException] if two apps share a name.
+ */
+class InMemoryAppLoader(vararg apps: App) : AppLoader {
+  private val appsByName: Map<String, App> = apps.associateBy(App::appName)
 
-  override fun loadAgent(agentName: String): BaseAgent? = agent.takeIf { it.name == agentName }
+  init {
+    require(appsByName.size == apps.size) { "App names must be unique." }
+  }
+
+  override fun listApps(): List<String> = appsByName.keys.sorted()
+
+  override fun loadApp(appName: String): App? = appsByName[appName]
 }

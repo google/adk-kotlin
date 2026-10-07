@@ -16,16 +16,14 @@
 
 package com.google.adk.kt.webserver.routes
 
-import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionService
-import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.models.AgentRunRequest
 import com.google.adk.kt.webserver.models.SseError
 import io.ktor.http.ContentType
@@ -50,7 +48,7 @@ private val logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass(
 
 @OptIn(FrameworkInternalApi::class)
 internal fun Route.runRoutes(
-  agentLoader: AgentLoader,
+  servedApps: ServedApps,
   sessionService: SessionService,
   artifactService: ArtifactService,
   plugins: List<Plugin> = emptyList(),
@@ -58,11 +56,9 @@ internal fun Route.runRoutes(
   route("/run") {
     post {
       val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
-      val agent = agentLoader.loadAgent(request.appName)
-      if (agent == null) {
-        return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
-      }
-      val runner = buildRunner(agent, request.appName, sessionService, artifactService, plugins)
+      val runner =
+        servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
+          ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
 
       // The /run endpoint always returns the full event list; SSE is handled by /run_sse.
       val runConfig = RunConfig(streamingMode = StreamingMode.NONE)
@@ -87,11 +83,9 @@ internal fun Route.runRoutes(
 
   post("/run_sse") {
     val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
-    val agent = agentLoader.loadAgent(request.appName)
-    if (agent == null) {
-      return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
-    }
-    val runner = buildRunner(agent, request.appName, sessionService, artifactService, plugins)
+    val runner =
+      servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
+        ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
 
     val runConfig =
       RunConfig(streamingMode = if (request.streaming) StreamingMode.SSE else StreamingMode.NONE)
@@ -129,25 +123,3 @@ internal fun Route.runRoutes(
     }
   }
 }
-
-/**
- * Builds an [InMemoryRunner] from the root [agent].
- *
- * [appName] comes from the request and names an agent, so it is passed to the runner as given: an
- * `App` would additionally require it to be a valid app name, which is a narrower grammar than
- * agent names allow.
- */
-private fun buildRunner(
-  agent: BaseAgent,
-  appName: String,
-  sessionService: SessionService,
-  artifactService: ArtifactService,
-  plugins: List<Plugin>,
-): InMemoryRunner =
-  InMemoryRunner(
-    agent = agent,
-    appName = appName,
-    sessionService = sessionService,
-    artifactService = artifactService,
-    plugins = plugins,
-  )

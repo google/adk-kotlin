@@ -15,11 +15,13 @@
  */
 
 @file:OptIn(ExperimentalAppInfoFeature::class)
+@file:Suppress("DEPRECATION") // AgentLoader stays until 2.0.
 
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
@@ -27,12 +29,20 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.dev.AdkDevServer
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.AgentLoaderApps
+import com.google.adk.kt.webserver.loaders.AppLoader
+import com.google.adk.kt.webserver.loaders.AppLoaderApps
+import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
+import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.loaders.SingleAgentLoader
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 
 /**
  * What an [AdkApiServer] or [AdkDevServer] needs to serve a set of agents over HTTP.
  *
+ * @property agentLoader The agents to serve. Deprecated: set [appLoader] instead. Set exactly one
+ *   of the two.
+ * @property appLoader The apps to serve. Set exactly one of [agentLoader] and this.
  * @property captureMessageContent When true the server records prompt and response content into
  *   telemetry spans so the Dev UI trace view can display it. This may capture PII, so it defaults
  *   to false; enable it only for local development.
@@ -57,7 +67,8 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  *   setting it requires `@OptIn(ExperimentalAppInfoFeature::class)`.
  */
 data class AdkServerConfig(
-  val agentLoader: AgentLoader,
+  @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
+  val agentLoader: AgentLoader? = null,
   val sessionService: SessionService,
   val artifactService: ArtifactService,
   val port: Int = DEFAULT_PORT,
@@ -68,7 +79,47 @@ data class AdkServerConfig(
   val webUiEnabled: Boolean? = null,
   val camelCaseEnforced: Boolean? = null,
   @property:ExperimentalAppInfoFeature val includeAppInfo: Boolean? = null,
+  val appLoader: AppLoader? = null,
 ) {
+  init {
+    require((agentLoader == null) != (appLoader == null)) {
+      "Set exactly one of agentLoader and appLoader."
+    }
+  }
+
+  /** Keeps code compiled against the constructor without [appLoader] linking. */
+  @Deprecated("Binary compatibility only.", level = DeprecationLevel.HIDDEN)
+  constructor(
+    agentLoader: AgentLoader,
+    sessionService: SessionService,
+    artifactService: ArtifactService,
+    port: Int = DEFAULT_PORT,
+    host: String = DEFAULT_HOST,
+    apiServerSpanExporter: ApiServerSpanExporter = ApiServerSpanExporter(),
+    captureMessageContent: Boolean = false,
+    plugins: List<Plugin> = emptyList(),
+    webUiEnabled: Boolean? = null,
+    camelCaseEnforced: Boolean? = null,
+    includeAppInfo: Boolean? = null,
+  ) : this(
+    agentLoader = agentLoader,
+    sessionService = sessionService,
+    artifactService = artifactService,
+    port = port,
+    host = host,
+    apiServerSpanExporter = apiServerSpanExporter,
+    captureMessageContent = captureMessageContent,
+    plugins = plugins,
+    webUiEnabled = webUiEnabled,
+    camelCaseEnforced = camelCaseEnforced,
+    includeAppInfo = includeAppInfo,
+    appLoader = null,
+  )
+
+  /** What the routes serve, chosen once from whichever loader is set. */
+  internal val servedApps: ServedApps =
+    appLoader?.let(::AppLoaderApps) ?: AgentLoaderApps(checkNotNull(agentLoader))
+
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
    * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
@@ -78,6 +129,7 @@ data class AdkServerConfig(
   fun toBuilder(): Builder =
     Builder()
       .agentLoader(agentLoader)
+      .appLoader(appLoader)
       .sessionService(sessionService)
       .artifactService(artifactService)
       .port(port)
@@ -107,8 +159,12 @@ data class AdkServerConfig(
     private var webUiEnabled: Boolean? = null
     private var camelCaseEnforced: Boolean? = null
     private var includeAppInfo: Boolean? = null
+    private var appLoader: AppLoader? = null
 
-    fun agentLoader(agentLoader: AgentLoader): Builder = apply { this.agentLoader = agentLoader }
+    @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
+    fun agentLoader(agentLoader: AgentLoader?): Builder = apply { this.agentLoader = agentLoader }
+
+    fun appLoader(appLoader: AppLoader?): Builder = apply { this.appLoader = appLoader }
 
     fun sessionService(sessionService: SessionService): Builder = apply {
       this.sessionService = sessionService
@@ -145,7 +201,7 @@ data class AdkServerConfig(
 
     fun build(): AdkServerConfig =
       AdkServerConfig(
-        agentLoader = checkNotNull(agentLoader) { "agentLoader must be set." },
+        agentLoader = agentLoader,
         sessionService = checkNotNull(sessionService) { "sessionService must be set." },
         artifactService = checkNotNull(artifactService) { "artifactService must be set." },
         port = port,
@@ -156,6 +212,7 @@ data class AdkServerConfig(
         webUiEnabled = webUiEnabled,
         camelCaseEnforced = camelCaseEnforced,
         includeAppInfo = includeAppInfo,
+        appLoader = appLoader,
       )
   }
 
@@ -177,6 +234,20 @@ data class AdkServerConfig(
     fun inMemory(agent: BaseAgent, port: Int = DEFAULT_PORT): AdkServerConfig =
       AdkServerConfig(
         agentLoader = SingleAgentLoader(agent),
+        sessionService = InMemorySessionService(),
+        artifactService = InMemoryArtifactService(),
+        port = port,
+      )
+
+    /**
+     * Config for serving a single [app], such as one rooted on a workflow, with session and
+     * artifact state held in memory, which is lost when the process exits.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun inMemory(app: App, port: Int = DEFAULT_PORT): AdkServerConfig =
+      AdkServerConfig(
+        appLoader = InMemoryAppLoader(app),
         sessionService = InMemorySessionService(),
         artifactService = InMemoryArtifactService(),
         port = port,

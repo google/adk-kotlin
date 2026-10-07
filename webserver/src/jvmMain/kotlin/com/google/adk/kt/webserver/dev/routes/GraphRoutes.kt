@@ -16,10 +16,11 @@
 
 package com.google.adk.kt.webserver.dev.routes
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.dev.AgentGraphGenerator
-import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.ServedApps
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.server.application.call
@@ -70,8 +71,8 @@ internal fun extractGraphParams(parameters: Parameters): GraphRoutesResult {
   return GraphRoutesResult.Success(GraphParams(appName, userId, sessionId, eventId))
 }
 
-internal fun Route.graphRoutes(agentLoader: AgentLoader, sessionService: SessionService) {
-  val graphGenerator = AgentGraphGenerator(agentLoader)
+internal fun Route.graphRoutes(servedApps: ServedApps, sessionService: SessionService) {
+  val graphGenerator = AgentGraphGenerator(servedApps)
   route("/apps/{appName}/users/{userId}/sessions/{sessionId}/events/{eventId}/graph") {
     get {
       val result = extractGraphParams(call.parameters)
@@ -89,7 +90,7 @@ internal fun Route.graphRoutes(agentLoader: AgentLoader, sessionService: Session
 
       val agent =
         try {
-          agentLoader.loadAgent(appName)
+          servedApps.loadRoot(appName) as? BaseAgent
         } catch (e: Exception) {
           return@get call.respond(
             GraphRoutesErrors.ERR_AGENT_NOT_LOADED.code,

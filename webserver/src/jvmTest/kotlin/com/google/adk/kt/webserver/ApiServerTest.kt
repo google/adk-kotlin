@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:Suppress("DEPRECATION") // Covers the AgentLoader path kept until 2.0.
+
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
@@ -30,9 +32,11 @@ import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.SingleAgentLoader
 import com.google.adk.kt.webserver.models.RunResponse
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -84,7 +88,7 @@ class FakeArtifactService : ArtifactService {
     emptyList()
 }
 
-class FakeAgent : BaseAgent(name = "mock-agent", description = "Fake Agent") {
+class FakeAgent(name: String = "mock-agent") : BaseAgent(name = name, description = "Fake Agent") {
   override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
     emit(
       Event(
@@ -206,7 +210,32 @@ class ApiServerTest {
     assertThat(body).doesNotContain("\"interrupted\"")
   }
 
-  private fun testConfig(plugins: List<Plugin> = emptyList()) =
+  @Test
+  fun runRoute_deprecatedAgentLoaderWithDottedAgentName_runsTheAgent() = testApplication {
+    // Arrange
+    application {
+      adkApiModule(testConfig(agentLoader = SingleAgentLoader(FakeAgent("support.bot"))))
+    }
+
+    // Act
+    val response = client.post("/run") { runBody("support.bot") }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(response.bodyAsText()).contains("mocked response from Agent mock-agent")
+  }
+
+  private fun HttpRequestBuilder.runBody(appName: String) {
+    contentType(ContentType.Application.Json)
+    setBody(
+      "{\"appName\":\"$appName\",\"userId\":\"testUser\",\"sessionId\":\"testSession\",\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hi\"}]}}"
+    )
+  }
+
+  private fun testConfig(
+    plugins: List<Plugin> = emptyList(),
+    agentLoader: AgentLoader = this.agentLoader,
+  ) =
     AdkServerConfig(
       agentLoader = agentLoader,
       sessionService = sessionService,

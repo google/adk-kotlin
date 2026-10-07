@@ -15,17 +15,20 @@
  */
 
 @file:OptIn(ExperimentalAppInfoFeature::class)
+@file:Suppress("DEPRECATION") // Covers the AgentLoader path kept until 2.0.
 
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
@@ -115,6 +118,83 @@ class AdkServerConfigTest {
   }
 
   @Test
+  fun inMemory_app_servesTheApp() = testApplication {
+    // Arrange
+    val app = App(appName = "demo_app", rootAgent = agent)
+
+    // Act
+    application { adkApiModule(AdkServerConfig.inMemory(app)) }
+
+    // Assert
+    assertThat(client.get("/list-apps").bodyAsText()).isEqualTo("[\"demo_app\"]")
+  }
+
+  @Test
+  fun inMemory_agentWithDottedName_servesItUnderThatName() = testApplication {
+    // Arrange
+    val dotted = FakeAgent("support.bot")
+
+    // Act
+    application { adkApiModule(AdkServerConfig.inMemory(dotted).copy(includeAppInfo = true)) }
+
+    // Assert
+    assertThat(client.get("/list-apps").bodyAsText()).isEqualTo("[\"support.bot\"]")
+    assertThat(client.get("/apps/support.bot/app-info").status).isEqualTo(HttpStatusCode.OK)
+  }
+
+  @Test
+  fun constructor_bothOrNeitherLoader_throws() {
+    // Arrange
+    val sessions = InMemorySessionService()
+    val artifacts = InMemoryArtifactService()
+    val apps = InMemoryAppLoader(App(appName = "demo_app", rootAgent = agent))
+
+    // Act + Assert
+    assertThrows(IllegalArgumentException::class.java) {
+      AdkServerConfig(
+        agentLoader = FakeAgentLoader(),
+        sessionService = sessions,
+        artifactService = artifacts,
+        appLoader = apps,
+      )
+    }
+    assertThrows(IllegalArgumentException::class.java) {
+      AdkServerConfig(sessionService = sessions, artifactService = artifacts)
+    }
+  }
+
+  @Test
+  fun builder_appLoader_roundTripsThroughToBuilder() {
+    // Arrange
+    val apps = InMemoryAppLoader(App(appName = "demo_app", rootAgent = agent))
+
+    // Act
+    val config =
+      AdkServerConfig.builder()
+        .appLoader(apps)
+        .sessionService(InMemorySessionService())
+        .artifactService(InMemoryArtifactService())
+        .build()
+
+    // Assert
+    assertThat(config.appLoader).isSameInstanceAs(apps)
+    assertThat(config.agentLoader).isNull()
+    assertThat(config.toBuilder().build()).isEqualTo(config)
+  }
+
+  @Test
+  fun builder_withoutALoader_throws() {
+    // Arrange
+    val builder =
+      AdkServerConfig.builder()
+        .sessionService(InMemorySessionService())
+        .artifactService(InMemoryArtifactService())
+
+    // Act + Assert
+    assertThrows(IllegalArgumentException::class.java) { builder.build() }
+  }
+
+  @Test
   fun builder_appliesConstructorDefaultsForUnsetProperties() {
     val config =
       AdkServerConfig.builder()
@@ -163,7 +243,7 @@ class AdkServerConfigTest {
   }
 
   @Test
-  fun builder_requiresAgentLoaderSessionAndArtifactServices() {
+  fun builder_requiresSessionAndArtifactServices() {
     assertThrows(IllegalStateException::class.java) { AdkServerConfig.builder().build() }
   }
 

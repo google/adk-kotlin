@@ -196,12 +196,12 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
         )
       )
     }
-    appRoutes(config.agentLoader)
+    appRoutes(config.servedApps)
     artifactRoutes(config.artifactService)
-    runRoutes(config.agentLoader, config.sessionService, config.artifactService, config.plugins)
+    runRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
     sessionRoutes(config.sessionService)
     if (appInfoEnabled) {
-      appInfoRoutes(config.agentLoader)
+      appInfoRoutes(config.servedApps)
     }
     if (webUiEnabled) {
       staticRoutes(this@adkApiModule)

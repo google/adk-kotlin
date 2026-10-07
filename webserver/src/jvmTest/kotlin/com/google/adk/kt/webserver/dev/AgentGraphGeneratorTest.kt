@@ -17,13 +17,15 @@
 package com.google.adk.kt.webserver.dev
 
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
-import com.google.adk.kt.webserver.loaders.SingleAgentLoader
+import com.google.adk.kt.webserver.loaders.AppLoaderApps
+import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.Flow
 import org.junit.Test
@@ -40,7 +42,8 @@ class AgentGraphGeneratorTest {
       subAgents = listOf(LlmAgent(name = "sub", model = FakeModel)),
       tools = listOf(FakeTool("tool")),
     )
-  private val generator = AgentGraphGenerator(SingleAgentLoader(root))
+  private val generator =
+    AgentGraphGenerator(AppLoaderApps(InMemoryAppLoader(App(appName = "root", rootAgent = root))))
 
   @Test
   fun generateGraph_toolCall_highlightsBothNodesAndTheForwardEdge() {

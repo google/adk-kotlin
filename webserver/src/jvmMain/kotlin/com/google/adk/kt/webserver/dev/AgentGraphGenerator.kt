@@ -21,15 +21,15 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
-import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.ServedApps
 import org.slf4j.LoggerFactory
 
 /**
  * Utility class for generating Graphviz DOT representations of agent structures.
  *
- * @param agentLoader The agent loader to use for loading agents.
+ * @param servedApps Where to read each app's root agent from.
  */
-internal class AgentGraphGenerator(private val agentLoader: AgentLoader) {
+internal class AgentGraphGenerator(private val servedApps: ServedApps) {
 
   enum class HighlightDirection {
     NONE,
@@ -57,7 +57,7 @@ internal class AgentGraphGenerator(private val agentLoader: AgentLoader) {
     agentName: String,
     highlightPairs: List<Pair<String, String>> = emptyList(),
   ): String {
-    val agent = agentLoader.loadAgent(agentName) ?: return ""
+    val agent = servedApps.loadRoot(agentName) as? BaseAgent ?: return ""
     return generateGraph(agent, highlightPairs)
   }
 

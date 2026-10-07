@@ -16,10 +16,11 @@
 
 package com.google.adk.kt.webserver.routes
 
-import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.serialization.adkJson
-import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.AppLoader
+import com.google.adk.kt.webserver.loaders.AppLoaderApps
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -37,18 +38,18 @@ import org.junit.runners.JUnit4
 @RunWith(JUnit4::class)
 class AppRoutesTest {
 
-  class FakeAgentLoader(val agentList: List<String> = emptyList()) : AgentLoader {
-    override fun listAgents(): List<String> = agentList
+  class FakeAppLoader(val appList: List<String> = emptyList()) : AppLoader {
+    override fun listApps(): List<String> = appList
 
-    override fun loadAgent(agentName: String): BaseAgent? = null
+    override fun loadApp(appName: String): App? = null
   }
 
   @Test
   fun listApps_returnsAppList() = testApplication {
-    val fakeLoader = FakeAgentLoader(agentList = listOf("app1", "app2"))
+    val fakeLoader = FakeAppLoader(appList = listOf("app1", "app2"))
     application {
       install(ContentNegotiation) { json(adkJson) }
-      routing { appRoutes(fakeLoader) }
+      routing { appRoutes(AppLoaderApps(fakeLoader)) }
     }
 
     val response = client.get("/list-apps")
@@ -61,10 +62,10 @@ class AppRoutesTest {
 
   @Test
   fun listApps_empty_returnsEmptyList() = testApplication {
-    val fakeLoader = FakeAgentLoader(agentList = emptyList())
+    val fakeLoader = FakeAppLoader(appList = emptyList())
     application {
       install(ContentNegotiation) { json(adkJson) }
-      routing { appRoutes(fakeLoader) }
+      routing { appRoutes(AppLoaderApps(fakeLoader)) }
     }
 
     val response = client.get("/list-apps")

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:Suppress("DEPRECATION") // AgentLoader stays until 2.0.
+
 package com.google.adk.kt.webserver.loaders
 
 import com.google.adk.kt.agents.BaseAgent
@@ -23,6 +25,7 @@ import com.google.adk.kt.agents.BaseAgent
  *
  * [SingleAgentLoader] is the one-agent case.
  */
+@Deprecated("Use InMemoryAppLoader instead. Scheduled for removal in 2.0.")
 class MultiAgentLoader(vararg agents: BaseAgent) : AgentLoader {
   private val agentsByName: Map<String, BaseAgent> = agents.associateBy(BaseAgent::name)
 
