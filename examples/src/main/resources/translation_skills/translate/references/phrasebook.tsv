@@ -1,0 +1,36 @@
+phrase	language	translation
+hello	spanish	hola
+hello	french	bonjour
+hello	german	hallo
+hello	polish	cześć
+hello	japanese	konnichiwa
+goodbye	spanish	adiós
+goodbye	french	au revoir
+goodbye	german	auf Wiedersehen
+goodbye	polish	do widzenia
+goodbye	japanese	sayōnara
+thank you	spanish	gracias
+thank you	french	merci
+thank you	german	danke
+thank you	polish	dziękuję
+thank you	japanese	arigatō
+good morning	spanish	buenos días
+good morning	french	bonjour
+good morning	german	guten Morgen
+good morning	polish	dzień dobry
+good morning	japanese	ohayō
+please	spanish	por favor
+please	french	s'il vous plaît
+please	german	bitte
+please	polish	proszę
+please	japanese	onegaishimasu
+yes	spanish	sí
+yes	french	oui
+yes	german	ja
+yes	polish	tak
+yes	japanese	hai
+no	spanish	no
+no	french	non
+no	german	nein
+no	polish	nie
+no	japanese	iie
