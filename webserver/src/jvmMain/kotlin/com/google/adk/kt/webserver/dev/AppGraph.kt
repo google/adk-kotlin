@@ -80,6 +80,8 @@ internal const val WORKFLOW_NODE_TYPE = "workflow"
 
 internal const val TOOL_NODE_TYPE = "tool"
 
+internal const val JOIN_NODE_TYPE = "join"
+
 /** Describes the app [appName], rooted at [root]. */
 internal fun appGraphOf(appName: String, root: Node): AppGraph =
   AppGraph(appName, graphNodeOf(root))
@@ -104,7 +106,7 @@ private fun typeOf(node: Node): String =
     is Start -> "start"
     is Workflow -> WORKFLOW_NODE_TYPE
     is BaseAgent -> AGENT_NODE_TYPE
-    is JoinNode -> "join"
+    is JoinNode -> JOIN_NODE_TYPE
     else -> "node"
   }
 
