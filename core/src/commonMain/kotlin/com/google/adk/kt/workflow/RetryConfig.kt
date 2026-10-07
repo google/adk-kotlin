@@ -18,13 +18,13 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.retry.ExponentialBackoff
+import com.google.adk.kt.retry.exponentialBackoffDelay
 import kotlin.jvm.JvmStatic
 import kotlin.math.max
-import kotlin.math.pow
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * How a node is retried when it raises. Every property is optional: null means "unset" and falls
@@ -82,22 +82,15 @@ data class RetryConfig(
   }
 
   /** Returns how long to wait after the failed [attemptCount] before trying again. */
-  internal fun delayFor(attemptCount: Int, random: Random = Random.Default): Duration {
-    val ceiling = maxDelay ?: DEFAULT_MAX_DELAY
-    val spread = jitter ?: DEFAULT_JITTER
-    val backoff = (backoffFactor ?: DEFAULT_BACKOFF_FACTOR).pow(max(0, attemptCount - 1))
-    // A finite backoffFactor still overflows to infinity over enough attempts; with a zero
-    // initialDelay that would make the delay NaN, so treat an overflowed backoff as the ceiling.
-    if (!backoff.isFinite()) return ceiling
-    var delay = (initialDelay ?: DEFAULT_INITIAL_DELAY) * backoff
-
-    if (spread > 0.0) {
-      // Cap before jittering, not after, so jitter keeps spreading delays near the ceiling.
-      delay = minOf(delay, ceiling / (1.0 + spread))
-      delay = maxOf(Duration.ZERO, delay * (1.0 + random.nextDouble(-spread, spread)))
-    }
-    return minOf(delay, ceiling)
-  }
+  internal fun delayFor(attemptCount: Int, random: Random = Random.Default): Duration =
+    exponentialBackoffDelay(
+      retryIndex = max(0, attemptCount - 1),
+      initialDelay = initialDelay ?: DEFAULT_INITIAL_DELAY,
+      maxDelay = maxDelay ?: DEFAULT_MAX_DELAY,
+      backoffFactor = backoffFactor ?: DEFAULT_BACKOFF_FACTOR,
+      jitter = jitter ?: DEFAULT_JITTER,
+      random = random,
+    )
 
   /** Returns [initialDelay] in whole milliseconds, or `null`. Java cannot read it (mangled). */
   fun initialDelayMillis(): Long? = initialDelay?.inWholeMilliseconds
@@ -191,11 +184,11 @@ data class RetryConfig(
   companion object {
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
 
-    const val DEFAULT_MAX_ATTEMPTS: Int = 5
-    const val DEFAULT_BACKOFF_FACTOR: Double = 2.0
-    const val DEFAULT_JITTER: Double = 1.0
-    val DEFAULT_INITIAL_DELAY: Duration = 1.seconds
-    val DEFAULT_MAX_DELAY: Duration = 60.seconds
+    const val DEFAULT_MAX_ATTEMPTS: Int = ExponentialBackoff.DEFAULT_MAX_ATTEMPTS
+    const val DEFAULT_BACKOFF_FACTOR: Double = ExponentialBackoff.DEFAULT_BACKOFF_FACTOR
+    const val DEFAULT_JITTER: Double = ExponentialBackoff.DEFAULT_JITTER
+    val DEFAULT_INITIAL_DELAY: Duration = ExponentialBackoff.DEFAULT_INITIAL_DELAY
+    val DEFAULT_MAX_DELAY: Duration = ExponentialBackoff.DEFAULT_MAX_DELAY
 
     /**
      * Returns the name a retry policy matches [error] by. Node failures are compared by simple type

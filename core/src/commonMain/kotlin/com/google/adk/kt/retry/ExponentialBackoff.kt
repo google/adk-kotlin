@@ -150,11 +150,12 @@ data class ExponentialBackoff(
   }
 
   companion object {
-    private const val DEFAULT_MAX_ATTEMPTS: Int = 5
-    private val DEFAULT_INITIAL_DELAY: Duration = 1.seconds
-    private val DEFAULT_MAX_DELAY: Duration = 60.seconds
-    private const val DEFAULT_BACKOFF_FACTOR: Double = 2.0
-    private const val DEFAULT_JITTER: Double = 1.0
+    // Also the workflow RetryConfig's defaults.
+    internal const val DEFAULT_MAX_ATTEMPTS: Int = 5
+    internal val DEFAULT_INITIAL_DELAY: Duration = 1.seconds
+    internal val DEFAULT_MAX_DELAY: Duration = 60.seconds
+    internal const val DEFAULT_BACKOFF_FACTOR: Double = 2.0
+    internal const val DEFAULT_JITTER: Double = 1.0
 
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
@@ -165,17 +166,18 @@ data class ExponentialBackoff(
  * [backoffFactor] per retry, with [jitter] and the [maxDelay] cap applied as [ExponentialBackoff]
  * describes.
  */
-private fun exponentialBackoffDelay(
+internal fun exponentialBackoffDelay(
   retryIndex: Int,
   initialDelay: Duration,
   maxDelay: Duration,
   backoffFactor: Double,
   jitter: Double,
+  random: Random = Random.Default,
 ): Duration {
   // Clamped, as an infinite power times a zero initialDelay would be NaN.
   val delay = initialDelay * backoffFactor.pow(retryIndex).coerceAtMost(Double.MAX_VALUE)
   // Cap before jittering, not after, so jitter keeps spreading delays near the cap.
   val capped = minOf(delay, maxDelay / (1.0 + jitter))
-  val spread = if (jitter == 0.0) 0.0 else Random.nextDouble(-jitter, jitter)
+  val spread = if (jitter == 0.0) 0.0 else random.nextDouble(-jitter, jitter)
   return (capped * (1.0 + spread)).coerceIn(Duration.ZERO, maxDelay)
 }

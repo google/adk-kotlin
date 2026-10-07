@@ -126,19 +126,32 @@ class RetryConfigTest {
   }
 
   @Test
-  fun delayForCapsAnOverflowedBackoffInsteadOfCrashing() {
+  fun delayForKeepsAZeroDelayZeroWhenTheBackoffOverflows() {
     // A finite backoffFactor raised across a huge attempt count overflows to infinity; with a zero
-    // initialDelay the naive delay would be NaN. Assert it caps at the ceiling instead of throwing.
-    val ceiling = 60.seconds
+    // initialDelay the naive delay would be NaN. Assert it stays zero instead of throwing.
     val config =
       RetryConfig(
         initialDelay = Duration.ZERO,
         backoffFactor = 2.0,
         jitter = 0.0,
-        maxDelay = ceiling,
+        maxDelay = 60.seconds,
       )
 
-    assertEquals(ceiling, config.delayFor(attemptCount = 5000))
+    assertEquals(Duration.ZERO, config.delayFor(attemptCount = 5000))
+  }
+
+  @Test
+  fun delayForAppliesJitterWhenTheBackoffOverflows() {
+    // MidpointRandom adds no jitter, so this is the cap-before-jitter value, not maxDelay.
+    val config =
+      RetryConfig(
+        initialDelay = 1.seconds,
+        backoffFactor = 2.0,
+        jitter = 1.0,
+        maxDelay = 60.seconds,
+      )
+
+    assertEquals(30.seconds, config.delayFor(attemptCount = 5000, random = MidpointRandom()))
   }
 
   @Test
