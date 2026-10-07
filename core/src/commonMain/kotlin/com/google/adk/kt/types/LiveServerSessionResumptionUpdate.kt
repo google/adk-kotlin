@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * A handle for resuming this session on a later connection.
@@ -32,7 +33,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class LiveServerSessionResumptionUpdate(
-  val newHandle: String? = null,
+  @JsonNames("new_handle") val newHandle: String? = null,
   val resumable: Boolean? = null,
-  val lastConsumedClientMessageIndex: Long? = null,
+  @JsonNames("last_consumed_client_message_index") val lastConsumedClientMessageIndex: Long? = null,
 )

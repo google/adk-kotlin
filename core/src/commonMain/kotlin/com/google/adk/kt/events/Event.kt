@@ -27,7 +27,12 @@ import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.TurnCompleteReason
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.workflow.NodeInfo
 import com.google.adk.kt.workflow.NodeInfoNullIfEmptySerializer
 import kotlin.jvm.JvmOverloads
@@ -74,9 +79,21 @@ import kotlinx.serialization.json.JsonNames
  * @property nodeInfo Identifies the workflow-node activation that emitted this event; `null`
  *   outside a workflow.
  * @property timestamp The timestamp of the event.
+ * @property turnCompleteReason Why the model ended its turn, when the live server reports a reason
+ *   other than ordinary completion.
+ * @property interactionStatus Whether the model is still working on the prompt, reported only with
+ *   [turnComplete]; see [InteractionStatus]. On a completed turn, `null` means the model is done.
+ * @property inputTranscription Transcription of the audio the user sent on a live connection.
+ * @property outputTranscription Transcription of the audio the model returned on a live connection.
+ * @property liveSessionId Identifier of the live session this event came from.
+ * @property liveSessionResumptionUpdate A resumption handle issued by the live server.
+ * @property voiceActivity A voice activity signal from the live server, marking where it detected
+ *   speech starting or stopping.
  */
 @Serializable
-data class Event(
+data class Event
+@JvmOverloads
+constructor(
   // Always emit: an omitted default is regenerated at decode time (a fresh random), losing the id.
   @OptIn(ExperimentalSerializationApi::class)
   @EncodeDefault(EncodeDefault.Mode.ALWAYS)
@@ -109,6 +126,14 @@ data class Event(
   @EncodeDefault(EncodeDefault.Mode.ALWAYS)
   @Serializable(with = LenientEpochMillisSerializer::class)
   val timestamp: Long = Clock.System.now().toEpochMilliseconds(),
+  @JsonNames("turn_complete_reason") val turnCompleteReason: TurnCompleteReason? = null,
+  @JsonNames("interaction_status") val interactionStatus: InteractionStatus? = null,
+  @JsonNames("input_transcription") val inputTranscription: Transcription? = null,
+  @JsonNames("output_transcription") val outputTranscription: Transcription? = null,
+  @JsonNames("live_session_id") val liveSessionId: String? = null,
+  @JsonNames("live_session_resumption_update")
+  val liveSessionResumptionUpdate: LiveServerSessionResumptionUpdate? = null,
+  @JsonNames("voice_activity") val voiceActivity: VoiceActivity? = null,
 ) {
 
   /** Returns all function calls from this event. */
@@ -227,11 +252,19 @@ data class Event(
       .output(output)
       .nodeInfo(nodeInfo)
       .timestamp(timestamp)
+      .turnCompleteReason(turnCompleteReason)
+      .interactionStatus(interactionStatus)
+      .inputTranscription(inputTranscription)
+      .outputTranscription(outputTranscription)
+      .liveSessionId(liveSessionId)
+      .liveSessionResumptionUpdate(liveSessionResumptionUpdate)
+      .voiceActivity(voiceActivity)
 
   /**
    * Fluent builder for [Event], provided primarily for Java callers. Any property left unset falls
    * back to the same default as the constructor.
    */
+  @AdkJavaInteropApi
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
     private var id: String = Uuid.random()
@@ -257,6 +290,13 @@ data class Event(
     private var output: @Contextual Any? = null
     private var nodeInfo: NodeInfo? = null
     private var timestamp: Long = Clock.System.now().toEpochMilliseconds()
+    private var turnCompleteReason: TurnCompleteReason? = null
+    private var interactionStatus: InteractionStatus? = null
+    private var inputTranscription: Transcription? = null
+    private var outputTranscription: Transcription? = null
+    private var liveSessionId: String? = null
+    private var liveSessionResumptionUpdate: LiveServerSessionResumptionUpdate? = null
+    private var voiceActivity: VoiceActivity? = null
 
     fun id(id: String): Builder = apply { this.id = id }
 
@@ -318,6 +358,34 @@ data class Event(
 
     fun timestamp(timestamp: Long): Builder = apply { this.timestamp = timestamp }
 
+    fun turnCompleteReason(turnCompleteReason: TurnCompleteReason?): Builder = apply {
+      this.turnCompleteReason = turnCompleteReason
+    }
+
+    fun interactionStatus(interactionStatus: InteractionStatus?): Builder = apply {
+      this.interactionStatus = interactionStatus
+    }
+
+    fun inputTranscription(inputTranscription: Transcription?): Builder = apply {
+      this.inputTranscription = inputTranscription
+    }
+
+    fun outputTranscription(outputTranscription: Transcription?): Builder = apply {
+      this.outputTranscription = outputTranscription
+    }
+
+    fun liveSessionId(liveSessionId: String?): Builder = apply {
+      this.liveSessionId = liveSessionId
+    }
+
+    fun liveSessionResumptionUpdate(
+      liveSessionResumptionUpdate: LiveServerSessionResumptionUpdate?
+    ): Builder = apply { this.liveSessionResumptionUpdate = liveSessionResumptionUpdate }
+
+    fun voiceActivity(voiceActivity: VoiceActivity?): Builder = apply {
+      this.voiceActivity = voiceActivity
+    }
+
     fun build(): Event =
       Event(
         id = id,
@@ -343,6 +411,13 @@ data class Event(
         output = output,
         nodeInfo = nodeInfo,
         timestamp = timestamp,
+        turnCompleteReason = turnCompleteReason,
+        interactionStatus = interactionStatus,
+        inputTranscription = inputTranscription,
+        outputTranscription = outputTranscription,
+        liveSessionId = liveSessionId,
+        liveSessionResumptionUpdate = liveSessionResumptionUpdate,
+        voiceActivity = voiceActivity,
       )
   }
 

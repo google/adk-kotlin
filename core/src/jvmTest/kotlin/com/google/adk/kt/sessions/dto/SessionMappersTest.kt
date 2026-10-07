@@ -16,14 +16,23 @@
 
 package com.google.adk.kt.sessions.dto
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.TurnCompleteReason
+import com.google.adk.kt.types.VoiceActivity
+import com.google.adk.kt.types.VoiceActivityType
+import com.google.adk.kt.types.WordInfo
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -295,5 +304,111 @@ class SessionMappersTest {
     val event = dto.toAdk()
 
     assertThat(event.customMetadata).containsExactly("present", "v", "absent", null)
+  }
+
+  @Test
+  fun eventToDto_transcriptionsRoundTrip_otherLiveSignalsAreNotCarried() {
+    // Transcriptions are proto fields; the other live signals are not.
+    val event =
+      Event(
+        author = "agent",
+        turnCompleteReason = TurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = InteractionStatus.IN_PROGRESS,
+        inputTranscription = Transcription(text = "what is the weather", finished = true),
+        outputTranscription = Transcription(text = "it is sunny", finished = true),
+        liveSessionId = "live-1",
+        voiceActivity = VoiceActivity(voiceActivityType = VoiceActivityType.ACTIVITY_START),
+        liveSessionResumptionUpdate = LiveServerSessionResumptionUpdate(newHandle = "handle-1"),
+      )
+
+    val restored = event.toDto().toAdk()
+
+    assertThat(restored.inputTranscription).isEqualTo(event.inputTranscription)
+    assertThat(restored.outputTranscription).isEqualTo(event.outputTranscription)
+    assertThat(restored.voiceActivity).isNull()
+    assertThat(restored.liveSessionResumptionUpdate).isNull()
+    assertThat(restored.turnCompleteReason).isNull()
+    assertThat(restored.interactionStatus).isNull()
+    assertThat(restored.liveSessionId).isNull()
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun sessionEventDtoToAdk_transcriptionsOnlyInRawEvent_areRead() {
+    // ADK Python stores transcriptions only in rawEvent, so its events carry no typed fields.
+    val dto =
+      adkJson.decodeFromString(
+        SessionEventDto.serializer(),
+        """
+        {"name": "projects/p/locations/l/reasoningEngines/r/sessions/s/events/e1",
+         "author": "agent",
+         "rawEvent": {"author": "agent",
+           "inputTranscription": {"text": "is the room free", "finished": true},
+           "outputTranscription": {"text": "it is", "finished": false}}}
+        """,
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.inputTranscription)
+      .isEqualTo(Transcription(text = "is the room free", finished = true))
+    assertThat(event.outputTranscription).isEqualTo(Transcription(text = "it is", finished = false))
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun sessionEventDtoToAdk_typedAndRawTranscriptions_typedWins() {
+    val dto =
+      adkJson.decodeFromString(
+        SessionEventDto.serializer(),
+        """
+        {"author": "agent",
+         "eventMetadata": {"inputTranscription": {"text": "typed", "finished": true}},
+         "rawEvent": {"inputTranscription": {"text": "raw", "finished": true}}}
+        """,
+      )
+
+    assertThat(dto.toAdk().inputTranscription)
+      .isEqualTo(Transcription(text = "typed", finished = true))
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun sessionEventDtoToAdk_malformedRawEventTranscription_isSkipped() {
+    val dto =
+      adkJson.decodeFromString(
+        SessionEventDto.serializer(),
+        """
+        {"author": "agent",
+         "rawEvent": {"inputTranscription": {"finished": "maybe"},
+           "outputTranscription": "not an object"}}
+        """,
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.inputTranscription).isNull()
+    assertThat(event.outputTranscription).isNull()
+  }
+
+  @Test
+  fun eventToDto_transcription_sendsOnlyTheKeysTheProtoHas() {
+    // `session.proto`'s Transcription has only text and finished; any other key is rejected.
+    val event =
+      Event(
+        author = "agent",
+        inputTranscription =
+          Transcription(
+            text = "hola",
+            finished = true,
+            languageCode = "es-ES",
+            speakerLabel = "spk_1",
+            words = listOf(WordInfo(word = "hola", startOffset = "0s", endOffset = "0.4s")),
+          ),
+      )
+
+    val keys = event.toDto().eventMetadata?.inputTranscription?.jsonObject?.keys
+
+    assertThat(keys).containsExactly("text", "finished")
   }
 }
