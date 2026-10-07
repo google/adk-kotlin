@@ -42,11 +42,13 @@ import kotlin.time.Duration.Companion.milliseconds
  * @property exceptions Simple class names of failures to retry on, such as "NodeTimeoutException",
  *   matched exactly with no subclass matching. A failure is retried when it matches this list or
  *   [exceptionClasses], and any failure is retried when both are null; a
- *   [WorkflowConfigurationException] is never retried, even when listed.
+ *   [WorkflowConfigurationException] is never retried, even when listed, nor is a pause or a
+ *   handoff outside a node activation, such as under a tool, where neither is supported yet.
  * @property exceptionClasses Failure types to retry on, each also matching its subclasses. A
  *   failure is retried when it matches this list or [exceptions], and any failure is retried when
  *   both are null. A [WorkflowConfigurationException] is never retried, even when its class is
- *   listed.
+ *   listed, nor is a pause or a handoff outside a node activation, such as under a tool, where
+ *   neither is supported yet.
  */
 @ExperimentalWorkflowApi
 data class RetryConfig(
@@ -74,7 +76,8 @@ data class RetryConfig(
    * has budget left and raised a type this config retries.
    */
   internal fun shouldRetry(error: Throwable, attemptCount: Int): Boolean {
-    if (attemptCount >= maxAttempts || error is WorkflowConfigurationException) return false
+    if (attemptCount >= maxAttempts) return false
+    if (error is WorkflowConfigurationException || error is UnsupportedException) return false
     if (exceptions == null && exceptionClasses == null) return true
     return errorTypeName(error) in exceptions.orEmpty() ||
       exceptionClasses.orEmpty().any { it.isInstance(error) }

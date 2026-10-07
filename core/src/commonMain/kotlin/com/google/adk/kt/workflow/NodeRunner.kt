@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.ChildRunIds
 import com.google.adk.kt.agents.ChildRuns
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.InvocationEventSink
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
@@ -65,6 +66,7 @@ private constructor(
   private val overrideBranch: String? = null,
   private val overrideIsolationScope: String? = null,
   private val openInterrupts: Set<String> = emptySet(),
+  private val fromTool: Boolean = false,
 ) {
 
   constructor(
@@ -99,13 +101,22 @@ private constructor(
     node is BaseAgent &&
       (node !is LlmAgent || node.nodeMode(invocationContext) != AgentMode.SINGLE_TURN)
 
-  // A root reads its invocation's events once, for its own answers and replay.
+  // A root reads its invocation's events once, for its own answers and replay; a tool's never does.
   private val rootHistory: List<Event>? =
-    if (parent == null && !resumesItself) ResumeScan.invocationEvents(invocationContext) else null
+    if (parent == null && !fromTool && !resumesItself) {
+      ResumeScan.invocationEvents(invocationContext)
+    } else {
+      null
+    }
 
-  // Reconstruct the ancestor agent path when a follow-up turn starts at a sub-agent.
+  // A tool's node runs under its caller; a follow-up turn's sub-agent, under its ancestor agents.
   private val nodePath: String =
-    Context.buildNodePath(parent?.nodePath ?: ancestorAgentPath(node), node.name, runId)
+    Context.buildNodePath(
+      parent?.nodePath
+        ?: if (fromTool) invocationContext.frameworkData.nodePath else ancestorAgentPath(node),
+      node.name,
+      runId,
+    )
 
   // Child nodes receive recovered answers from their parent's scan; only root runs scan here.
   private val resolvedResumeInputs: Map<String, Any?> =
@@ -116,7 +127,7 @@ private constructor(
     }
 
   // Python's runner opens the root workflow's span once per invocation, not once per attempt.
-  private val tracesWholeRun: Boolean = parent == null && node is Workflow
+  private val tracesWholeRun: Boolean = parent == null && !fromTool && node is Workflow
   private val runSpanEventIds = mutableListOf<String>()
   private val nestedInWorkflow: Boolean =
     generateSequence(parent) { it.parent }.any { it.node is Workflow }
@@ -386,6 +397,8 @@ private constructor(
     private suspend fun send(event: Event) {
       // When content carries message-as-output, clear output to prevent duplicate text on the wire.
       val stamped = stamp(if (event.isMessageAsOutput) event.copy(output = null) else event)
+      // Reject a pause before withPendingDeltas takes the deltas, so fail() puts them on the error.
+      (nodeState.eventSink as? PauseRejectingSink)?.rejectPause(stamped)
       val outgoing = if (stamped.partial) stamped else withPendingDeltas(stamped)
       nodeState.eventSink.send(outgoing)
 
@@ -471,6 +484,40 @@ private constructor(
 
   companion object {
     /**
+     * Runs [node] for a tool call under the caller's node path, the agent's or the tool node's, and
+     * sends its events to [sink]; [node] itself is never replayed. A pause fails [node] before its
+     * request is stored, since a run outside a node activation cannot pause yet.
+     */
+    suspend fun runFromTool(
+      node: Node,
+      invocationContext: InvocationContext,
+      sink: EventSink,
+      runId: String,
+      input: Any?,
+      useSubBranch: Boolean,
+      overrideBranch: String?,
+      overrideIsolationScope: String?,
+    ): Context {
+      val parentPath = invocationContext.frameworkData.nodePath
+      return NodeRunner(
+          node = node,
+          // The caller's end flag, node context and mode are its own, not the child's.
+          invocationContext =
+            invocationContext.copy(
+              frameworkData =
+                invocationContext.frameworkData.copy(nodeContext = null, agentModeOverride = null)
+            ),
+          eventSink = PauseRejectingSink(sink),
+          runId = runId,
+          useSubBranch = useSubBranch,
+          overrideBranch = overrideBranch,
+          overrideIsolationScope = overrideIsolationScope ?: taskScope(node, parentPath, runId),
+          fromTool = true,
+        )
+        .run(nodeInput = input, validateInput = false)
+    }
+
+    /**
      * Runs [node] at the top of the invocation, beside the root node that [root] ran, and returns
      * its context.
      */
@@ -520,7 +567,9 @@ private constructor(
               channel.send(QueuedEvent(event, processed, nodeFailure))
               processed?.await()
             }
-            runRootLoop(node, context, sink)
+            // Every context derived from the root copies the sink, so tools can run nodes.
+            val frameworkData = context.frameworkData.copy(eventSink = InvocationEventSink(sink))
+            runRootLoop(node, context.copy(frameworkData = frameworkData), sink)
           } finally {
             // Explicit cause: no-arg close() fails to link against kotlinx-coroutines < 1.11.
             val unused = channel.close(cause = null)
@@ -613,6 +662,21 @@ private data class QueuedEvent(
   val processed: CompletableDeferred<Unit>?,
   val nodeFailure: Exception?,
 )
+
+/**
+ * The sink of a node run outside a node activation, which cannot pause yet: [rejectPause] fails a
+ * pause before its request is stored.
+ */
+private class PauseRejectingSink(sink: EventSink) : EventSink by sink {
+  /** Throws if [event], already stamped with its node's path, pauses for input. */
+  fun rejectPause(event: Event) {
+    if (event.longRunningToolIds.isEmpty()) return
+    throw UnsupportedException(
+      "Node '${event.nodeInfo?.path}' paused for input, and a run outside a node activation" +
+        " cannot pause yet."
+    )
+  }
+}
 
 /**
  * A final content event whose content *is* the node's output, so no separate output event follows.

@@ -64,6 +64,7 @@ import com.google.adk.kt.summarizer.isCompactionEvent
 import com.google.adk.kt.telemetry.currentTelemetryContext
 import com.google.adk.kt.telemetry.trace
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.NodeTool
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -462,7 +463,8 @@ abstract class AbstractRunner : Runner {
 
   /**
    * Collects every [Toolset][com.google.adk.kt.tools.Toolset] and [BaseTool] reachable from
-   * [current] into [into], walking [BaseAgent.subAgents], [Workflow] graphs, and [ToolNode]s.
+   * [current] into [into], walking [BaseAgent.subAgents], [Workflow] graphs, [ToolNode]s, and the
+   * nodes [NodeTool]s run.
    */
   @OptIn(ExperimentalWorkflowApi::class)
   private fun collectToolsToClose(current: Node, into: MutableSet<AutoCloseable>) {
@@ -470,8 +472,12 @@ abstract class AbstractRunner : Runner {
       is LlmAgent -> {
         into.addAll(current.toolsets)
         into.addAll(current.tools)
+        current.tools.filterIsInstance<NodeTool>().forEach { collectToolsToClose(it.node, into) }
       }
-      is ToolNode -> into.add(current.tool)
+      is ToolNode -> {
+        into.add(current.tool)
+        (current.tool as? NodeTool)?.let { collectToolsToClose(it.node, into) }
+      }
       is Workflow -> current.graph?.nodes?.forEach { collectToolsToClose(it, into) }
     }
     if (current is BaseAgent) {

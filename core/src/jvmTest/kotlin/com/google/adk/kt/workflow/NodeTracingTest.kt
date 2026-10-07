@@ -564,6 +564,36 @@ class NodeTracingTest {
   }
 
   @Test
+  fun run_retriedWorkflowRunByATool_getsASpanPerAttempt() {
+    var calls = 0
+    val flaky =
+      node<Any?, String>("flaky") { _, _ ->
+        calls += 1
+        if (calls == 1) throw TestNodeException("first try")
+        "ok"
+      }
+    val retry = NodeConfig(RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO))
+    val inner = Workflow("inner", edges = listOf(Edge(Start, flaky)), config = retry)
+
+    runAsApp(toolCallingAgent(childRunningTool { context -> context.runNode(inner) }, "fc_1"))
+
+    // Unlike an invocation's root workflow, a tool's workflow is traced once per attempt.
+    assertThat(exported.count { it.name == "invoke_workflow inner" }).isEqualTo(2)
+  }
+
+  @Test
+  fun run_failedWorkflowRunByATool_describesItsSpanByTheChildsMessage() {
+    val boom = node<Any?, String>("boom") { _, _ -> throw TestNodeException("boom") }
+    val inner = Workflow("inner", edges = listOf(Edge(Start, boom)))
+
+    assertFailsWith<TestNodeException> {
+      runAsApp(toolCallingAgent(childRunningTool { context -> context.runNode(inner) }, "fc_1"))
+    }
+
+    assertThat(span("invoke_workflow inner").status.description).isEqualTo("boom")
+  }
+
+  @Test
   fun run_retriedRootWorkflow_keepsOneSpanAcrossItsAttempts() {
     var calls = 0
     val flaky =

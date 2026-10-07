@@ -71,4 +71,15 @@ internal object InternalToolHelpers {
         else value.booleanOrNull ?: value.doubleOrNull?.let { it != 0.0 } ?: true
       else -> true
     }
+
+  /**
+   * Builds the LLM-visible error a tool returns when its arguments fail validation. [details] says
+   * what is wrong, so the model can retry with corrected arguments.
+   */
+  fun argumentValidationError(toolName: String, details: String?): Map<String, String> =
+    mapOf(
+      FunctionTool.ERROR_KEY to
+        "Invoking `$toolName()` failed due to argument validation errors:\n$details\n" +
+          "You could retry calling this tool with corrected argument types."
+    )
 }

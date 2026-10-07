@@ -48,6 +48,7 @@ import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.NodeTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
@@ -55,6 +56,8 @@ import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.workflow.Edge
 import com.google.adk.kt.workflow.Start
@@ -341,6 +344,54 @@ class InMemoryRunnerTest {
 
     // Assert
     assertThat(shared.closeCount).isEqualTo(1)
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun close_nodeToolOverWorkflow_closesToolsInsideIt() {
+    // Arrange: the workflow reaches its tools only through the NodeTool, not the agent tree.
+    val agentTool = RecordingTool("agent-tool")
+    val agentToolset = RecordingToolset()
+    val nodeTool = RecordingTool("node-tool")
+    val innerAgent =
+      llmAgent(name = "inner", tools = listOf(agentTool), toolsets = listOf(agentToolset))
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, innerAgent), Edge(innerAgent, nodeTool.asNode())),
+        inputSchema = Schema(type = Type.OBJECT),
+      )
+    val root = llmAgent(name = "root", tools = listOf(NodeTool(workflow)))
+    val runner = InMemoryRunner(agent = root)
+
+    // Act
+    runner.close()
+
+    // Assert
+    assertThat(agentTool.closeCount).isEqualTo(1)
+    assertThat(agentToolset.closeCount).isEqualTo(1)
+    assertThat(nodeTool.closeCount).isEqualTo(1)
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun close_nodeToolRunAsWorkflowStep_closesToolsInsideIt() {
+    // Arrange: the inner tool is reached only through the ToolNode that runs the NodeTool.
+    val innerTool = RecordingTool("inner-tool")
+    val inner =
+      Workflow(
+        name = "inner",
+        edges = listOf(Edge(Start, innerTool.asNode())),
+        inputSchema = Schema(type = Type.OBJECT),
+      )
+    val outer = Workflow(name = "outer", edges = listOf(Edge(Start, NodeTool(inner).asNode())))
+    val runner = InMemoryRunner(app = App(appName = "app", rootNode = outer))
+
+    // Act
+    runner.close()
+
+    // Assert
+    assertThat(innerTool.closeCount).isEqualTo(1)
   }
 
   @Test
