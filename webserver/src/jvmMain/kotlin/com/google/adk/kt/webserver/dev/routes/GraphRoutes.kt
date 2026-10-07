@@ -20,14 +20,18 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.dev.AgentGraphGenerator
+import com.google.adk.kt.webserver.dev.appGraphOf
 import com.google.adk.kt.webserver.loaders.ServedApps
+import com.google.adk.kt.workflow.Node
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
+import io.ktor.server.util.getOrFail
 
 internal data class GraphRoutesError(val message: String, val code: HttpStatusCode)
 
@@ -147,4 +151,35 @@ internal fun Route.graphRoutes(servedApps: ServedApps, sessionService: SessionSe
       }
     }
   }
+
+  // The app's structure, which the Dev UI navigates and lays out its node-state view from.
+  get("/dev/build_graph/{appName}") {
+    val appName = call.parameters.getOrFail("appName")
+    val root = call.loadRootOrRespond(servedApps, appName) ?: return@get
+    call.respond(appGraphOf(appName, root))
+  }
+}
+
+/** Loads the root node for [appName], or sends an error response and returns null. */
+private suspend fun ApplicationCall.loadRootOrRespond(
+  servedApps: ServedApps,
+  appName: String,
+): Node? {
+  val root =
+    try {
+      servedApps.loadRoot(appName)
+    } catch (e: Exception) {
+      respond(
+        GraphRoutesErrors.ERR_AGENT_NOT_LOADED.code,
+        GraphRoutesErrors.ERR_AGENT_NOT_LOADED.message,
+      )
+      return null
+    }
+  if (root == null) {
+    respond(
+      GraphRoutesErrors.ERR_AGENT_NOT_FOUND.code,
+      GraphRoutesErrors.ERR_AGENT_NOT_FOUND.message,
+    )
+  }
+  return root
 }
