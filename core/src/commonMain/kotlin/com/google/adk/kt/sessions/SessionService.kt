@@ -115,4 +115,19 @@ interface SessionService {
     session.lastUpdateTime = Instant.fromEpochMilliseconds(event.timestamp)
     return event
   }
+
+  /**
+   * Waits until the writes appended before this call are persisted: those to [key], or to every
+   * session when [key] is `null`. Canceling the caller stops the wait, not the writes.
+   *
+   * The default does nothing, which suits a service that persists each write before returning; a
+   * service that buffers writes overrides it, and a service that wraps another passes it on.
+   *
+   * @param key The session to flush, or `null` for every session. A non-null key needs a non-null
+   *   [SessionKey.id].
+   * @throws SessionException if a buffered write could not be persisted.
+   */
+  suspend fun flush(key: SessionKey? = null) {
+    // Default implementation does nothing.
+  }
 }

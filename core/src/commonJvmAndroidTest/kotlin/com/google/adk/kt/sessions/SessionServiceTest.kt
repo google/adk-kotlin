@@ -121,6 +121,15 @@ class SessionServiceTest {
     }
   }
 
+  @Test
+  fun flush_default_returnsWithoutCallingTheService() {
+    runBlocking {
+      // Every abstract method of this service throws, so returning proves the default calls none.
+      sessionService.flush(SessionKey("test-app", "user-id", "session-id"))
+      sessionService.flush()
+    }
+  }
+
   companion object {
     private val sessionService =
       object : SessionService {

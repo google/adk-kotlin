@@ -261,6 +261,13 @@ subprojects {
     }
   }
 
+  // kotlinCompatVersion alone keeps interface methods abstract, with bodies in `DefaultImpls`, so a
+  // method added with a body throws AbstractMethodError in implementers built against an earlier
+  // release. ENABLE emits real JVM default methods and keeps `DefaultImpls` for those implementers.
+  tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+    compilerOptions { jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.ENABLE) }
+  }
+
   // Publishing is configured once here for any subproject that applies
   // Gradle's built-in `maven-publish` plugin. Per-module build files set the
   // `artifactId` on the publications the Kotlin / Android plugins auto-create

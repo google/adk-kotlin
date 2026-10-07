@@ -28,6 +28,7 @@ import java.util.concurrent.CompletableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.future.future
 
@@ -35,7 +36,7 @@ import kotlinx.coroutines.future.future
  * Java-friendly base for implementing a [SessionService]. Every method of the engine interface is
  * `suspend`; this base final-overrides each and asks the Java subclass for a [CompletableFuture]
  * instead. Return each future promptly and do any blocking work inside it, not before returning it.
- * The two methods with default bodies ([closeSession], [appendEvent]) keep those defaults
+ * The methods with default bodies ([closeSession], [appendEvent], [flush]) keep those defaults
  * reachable: leave the hook unoverridden and the engine's own behaviour runs.
  */
 @AdkJavaInteropApi
@@ -66,6 +67,11 @@ abstract class BaseFutureSessionService : SessionService {
 
   final override suspend fun appendEvent(session: Session, event: Event): Event =
     appendEventAsync(session, event).await()
+
+  // Awaits through asDeferred, so a canceled caller cannot cancel a shared future.
+  final override suspend fun flush(key: SessionKey?) {
+    flushAsync(key).asDeferred().await()
+  }
 
   protected abstract fun createSessionAsync(
     key: SessionKey,
@@ -109,6 +115,16 @@ abstract class BaseFutureSessionService : SessionService {
     defaultScope.future {
       superAppendEvent(session, event)
     }
+
+  /**
+   * Returns a future that completes once the writes appended before the call are persisted: those
+   * to [key], or to every session when [key] is `null`. Complete it exceptionally with a
+   * [com.google.adk.kt.sessions.SessionException] if a write cannot be persisted; the base never
+   * cancels it, so callers may share one future. Defaults to a completed future, mirroring the
+   * engine's default body.
+   */
+  protected open fun flushAsync(key: SessionKey?): CompletableFuture<Void?> =
+    CompletableFuture.completedFuture(null)
 
   private suspend fun superAppendEvent(session: Session, event: Event): Event =
     super.appendEvent(session, event)

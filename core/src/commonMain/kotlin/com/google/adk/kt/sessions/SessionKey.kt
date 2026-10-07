@@ -24,6 +24,6 @@ package com.google.adk.kt.sessions
  * @property id Unique session identifier within the `(appName, userId)` namespace. May be `null`
  *   when passed to [SessionService.createSession] to request that the service generate one. Methods
  *   that address an existing session ([SessionService.getSession], [SessionService.deleteSession],
- *   [SessionService.listEvents]) require a non-null [id].
+ *   [SessionService.listEvents], [SessionService.flush]) require a non-null [id].
  */
 data class SessionKey(val appName: String, val userId: String, val id: String?)
