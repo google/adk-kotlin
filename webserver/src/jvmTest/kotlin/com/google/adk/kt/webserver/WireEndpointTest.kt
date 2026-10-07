@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:Suppress("DEPRECATION") // Covers the AgentLoader path kept until 2.0.
-
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
@@ -34,7 +32,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.AppLoader
 import com.google.adk.kt.webserver.models.AppInfo
 import com.google.adk.kt.webserver.models.SessionDto
 import com.google.adk.kt.webserver.models.VersionInfo
@@ -75,7 +73,7 @@ import org.junit.runners.JUnit4
 class WireEndpointTest {
   private val sessionService = FakeSessionService()
   private val artifactService = FakeArtifactService()
-  private val agentLoader = EchoAgentLoader()
+  private val appLoader = FakeAppLoader("echo-agent") { EchoAgent() }
 
   private val snakeCaseRun =
     """
@@ -360,7 +358,9 @@ class WireEndpointTest {
 
   @Test
   fun runSse_failureAfterTheStreamOpens_endsWithAnErrorFrame() = testApplication {
-    application { adkApiModule(testConfig(agentLoader = FailingAgentLoader())) }
+    application {
+      adkApiModule(testConfig(appLoader = FakeAppLoader("echo-agent") { FailingAgent() }))
+    }
 
     val body = client.post("/run_sse") { jsonBody(camelCaseRun) }.bodyAsText()
 
@@ -375,7 +375,9 @@ class WireEndpointTest {
   @Test
   fun runSse_eventThatCannotBeEncoded_endsWithAnErrorFrame() = testApplication {
     // Encoding happens on the way out, downstream of the run, so it needs the same treatment.
-    application { adkApiModule(testConfig(agentLoader = UnencodableAgentLoader())) }
+    application {
+      adkApiModule(testConfig(appLoader = FakeAppLoader("echo-agent") { UnencodableAgent() }))
+    }
 
     val body = client.post("/run_sse") { jsonBody(camelCaseRun) }.bodyAsText()
 
@@ -388,7 +390,9 @@ class WireEndpointTest {
   @Test
   fun runSse_agentRaisesItsOwnCancellation_endsWithAnErrorFrame() = testApplication {
     // A timeout the agent raises is a CancellationException too, but not the caller leaving.
-    application { adkApiModule(testConfig(agentLoader = TimingOutAgentLoader())) }
+    application {
+      adkApiModule(testConfig(appLoader = FakeAppLoader("echo-agent") { TimingOutAgent() }))
+    }
 
     val body = client.post("/run_sse") { jsonBody(camelCaseRun) }.bodyAsText()
 
@@ -457,7 +461,9 @@ class WireEndpointTest {
   @Test
   fun appInfo_emitsCamelCaseWithoutNullFields() = testApplication {
     application {
-      adkApiModule(testConfig(agentLoader = AppInfoAgentLoader()).copy(includeAppInfo = true))
+      adkApiModule(
+        testConfig(appLoader = FakeAppLoader("info-agent", ::infoAgent)).copy(includeAppInfo = true)
+      )
     }
 
     val response = client.get("/apps/info-agent/app-info")
@@ -557,7 +563,7 @@ class WireEndpointTest {
 
   @Test
   fun run_callerDataKeepsItsOwnSpelling() = testApplication {
-    application { adkApiModule(testConfig(agentLoader = CallerDataAgentLoader())) }
+    application { adkApiModule(testConfig(appLoader = FakeAppLoader { CallerDataAgent() })) }
 
     val response =
       client.post("/run") { jsonBody(camelCaseRun.replace("echo-agent", "mock-agent")) }
@@ -594,9 +600,9 @@ class WireEndpointTest {
       .replace(Regex("\"invocationId\":\"[^\"]*\""), "\"invocationId\":\"\"")
       .replace(Regex("\"timestamp\":[0-9]+"), "\"timestamp\":0")
 
-  private fun testConfig(agentLoader: AgentLoader = this.agentLoader) =
+  private fun testConfig(appLoader: AppLoader = this.appLoader) =
     AdkServerConfig(
-      agentLoader = agentLoader,
+      appLoader = appLoader,
       sessionService = sessionService,
       artifactService = artifactService,
       apiServerSpanExporter = ApiServerSpanExporter(),
@@ -643,32 +649,16 @@ private class EchoAgent :
   }
 }
 
-private class EchoAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("echo-agent")
-
-  override fun loadAgent(agentName: String) = if (agentName == "echo-agent") EchoAgent() else null
-}
-
-/**
- * Serves an agent with an instruction, a tool and a sub-agent, so `app-info` has a body to emit.
- */
-private class AppInfoAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("info-agent")
-
-  override fun loadAgent(agentName: String) =
-    if (agentName == "info-agent") {
-      LlmAgent(
-        name = "info-agent",
-        model = NeverCalledModel,
-        description = "Reports itself",
-        instruction = Instruction.Text("Say hello"),
-        tools = listOf(StubTool()),
-        subAgents = listOf(LlmAgent(name = "child", model = NeverCalledModel)),
-      )
-    } else {
-      null
-    }
-}
+/** An agent with an instruction, a tool and a sub-agent, so `app-info` has a body to emit. */
+private fun infoAgent() =
+  LlmAgent(
+    name = "info-agent",
+    model = NeverCalledModel,
+    description = "Reports itself",
+    instruction = Instruction.Text("Say hello"),
+    tools = listOf(StubTool()),
+    subAgents = listOf(LlmAgent(name = "child", model = NeverCalledModel)),
+  )
 
 private object NeverCalledModel : Model {
   override val name = "never-called"
@@ -713,27 +703,6 @@ private class UnencodableAgent :
   }
 }
 
-private class UnencodableAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("echo-agent")
-
-  override fun loadAgent(agentName: String) =
-    if (agentName == "echo-agent") UnencodableAgent() else null
-}
-
-private class TimingOutAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("echo-agent")
-
-  override fun loadAgent(agentName: String) =
-    if (agentName == "echo-agent") TimingOutAgent() else null
-}
-
-private class FailingAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("echo-agent")
-
-  override fun loadAgent(agentName: String) =
-    if (agentName == "echo-agent") FailingAgent() else null
-}
-
 /** Emits one event whose free-form maps hold the spellings and nulls the rule does not govern. */
 private class CallerDataAgent : BaseAgent(name = "mock-agent", description = "Caller data agent") {
   override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
@@ -769,11 +738,4 @@ private class CallerDataAgent : BaseAgent(name = "mock-agent", description = "Ca
       )
     )
   }
-}
-
-private class CallerDataAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("mock-agent")
-
-  override fun loadAgent(agentName: String) =
-    if (agentName == "mock-agent") CallerDataAgent() else null
 }

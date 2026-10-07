@@ -23,6 +23,8 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.int
+import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.examples.hello.HelloAgent
 import com.google.adk.kt.examples.tools.AgentToolDemoAgent
@@ -33,7 +35,7 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.webserver.AdkApiServer
 import com.google.adk.kt.webserver.AdkServerConfig
 import com.google.adk.kt.webserver.dev.AdkDevServer
-import com.google.adk.kt.webserver.loaders.MultiAgentLoader
+import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
 
 /**
  * Serves five of the example agents over HTTP, so the Development UI can drive them.
@@ -75,13 +77,13 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
     // Built here so --help needs no API key: constructing a Gemini agent requires one.
     val config =
       AdkServerConfig(
-        agentLoader =
-          MultiAgentLoader(
-            HelloAgent.rootAgent,
-            AgentToolDemoAgent.rootAgent,
-            FunctionToolDemoAgent.rootAgent,
-            GoogleSearchExample.rootAgent,
-            AgentTransferDemoAgent.rootAgent,
+        appLoader =
+          InMemoryAppLoader(
+            appOf(HelloAgent.rootAgent),
+            appOf(AgentToolDemoAgent.rootAgent),
+            appOf(FunctionToolDemoAgent.rootAgent),
+            appOf(GoogleSearchExample.rootAgent),
+            appOf(AgentTransferDemoAgent.rootAgent),
           ),
         sessionService = InMemorySessionService(),
         artifactService = InMemoryArtifactService(),
@@ -96,3 +98,6 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
 }
 
 fun main(args: Array<String>) = ExampleServerCommand().main(args)
+
+/** Serves [agent] as an app named after it. */
+private fun appOf(agent: BaseAgent): App = App(appName = agent.name, rootAgent = agent)

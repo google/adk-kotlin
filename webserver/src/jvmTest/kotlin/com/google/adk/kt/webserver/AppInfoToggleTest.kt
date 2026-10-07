@@ -36,7 +36,7 @@ import org.junit.runners.JUnit4
 class AppInfoToggleTest {
   private val sessionService = FakeSessionService()
   private val artifactService = FakeArtifactService()
-  private val agentLoader = FakeAgentLoader()
+  private val appLoader = FakeAppLoader()
 
   @Test
   fun appInfo_unsetEverywhere_isNotMounted() =
@@ -158,7 +158,7 @@ class AppInfoToggleTest {
     application {
       adkApiModule(
         AdkServerConfig(
-          agentLoader = agentLoader,
+          appLoader = appLoader,
           sessionService = sessionService,
           artifactService = artifactService,
           includeAppInfo = includeAppInfo,

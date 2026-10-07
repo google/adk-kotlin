@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.examples.server;
 
+import com.google.adk.kt.agents.BaseAgent;
+import com.google.adk.kt.apps.App;
 import com.google.adk.kt.artifacts.InMemoryArtifactService;
 import com.google.adk.kt.examples.hello.HelloAgentJava;
 import com.google.adk.kt.examples.tools.AgentToolDemoAgentJava;
@@ -26,7 +28,7 @@ import com.google.adk.kt.webserver.AdkApiServer;
 import com.google.adk.kt.webserver.AdkServerConfig;
 import com.google.adk.kt.webserver.ExperimentalAppInfoFeature;
 import com.google.adk.kt.webserver.dev.AdkDevServer;
-import com.google.adk.kt.webserver.loaders.MultiAgentLoader;
+import com.google.adk.kt.webserver.loaders.InMemoryAppLoader;
 
 /**
  * Serves several example agents over HTTP, so the Development UI can drive them.
@@ -59,12 +61,12 @@ public final class ExampleServerJava {
 
     AdkServerConfig config =
         AdkServerConfig.builder()
-            .agentLoader(
-                new MultiAgentLoader(
-                    HelloAgentJava.rootAgent,
-                    AgentToolDemoAgentJava.rootAgent,
-                    GoogleSearchExampleJava.rootAgent,
-                    AgentTransferDemoAgentJava.rootAgent))
+            .appLoader(
+                new InMemoryAppLoader(
+                    appOf(HelloAgentJava.rootAgent),
+                    appOf(AgentToolDemoAgentJava.rootAgent),
+                    appOf(GoogleSearchExampleJava.rootAgent),
+                    appOf(AgentTransferDemoAgentJava.rootAgent)))
             .sessionService(new InMemorySessionService())
             .artifactService(new InMemoryArtifactService())
             .port(port)
@@ -76,4 +78,9 @@ public final class ExampleServerJava {
   }
 
   private ExampleServerJava() {}
+
+  /** Serves {@code agent} as an app named after it. */
+  private static App appOf(BaseAgent agent) {
+    return App.builder().appName(agent.getName()).rootAgent(agent).build();
+  }
 }

@@ -18,7 +18,7 @@ package com.google.adk.kt.webserver.dev
 
 import com.google.adk.kt.webserver.APP_INFO_ENABLED_PROPERTY
 import com.google.adk.kt.webserver.AdkServerConfig
-import com.google.adk.kt.webserver.FakeAgentLoader
+import com.google.adk.kt.webserver.FakeAppLoader
 import com.google.adk.kt.webserver.FakeArtifactService
 import com.google.adk.kt.webserver.FakeSessionService
 import com.google.adk.kt.webserver.adkApiModule
@@ -99,7 +99,7 @@ class ModuleSurfaceTest {
 
   private fun testConfig() =
     AdkServerConfig(
-      agentLoader = FakeAgentLoader(),
+      appLoader = FakeAppLoader(),
       sessionService = FakeSessionService(),
       artifactService = FakeArtifactService(),
       apiServerSpanExporter = ApiServerSpanExporter(),

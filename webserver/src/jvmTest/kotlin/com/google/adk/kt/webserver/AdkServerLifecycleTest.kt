@@ -191,7 +191,7 @@ class AdkServerLifecycleTest {
 
   private fun testConfig(port: Int) =
     AdkServerConfig(
-      agentLoader = FakeAgentLoader(),
+      appLoader = FakeAppLoader(),
       sessionService = FakeSessionService(),
       artifactService = FakeArtifactService(),
       port = port,

@@ -37,7 +37,7 @@ import org.junit.runners.JUnit4
 class WebUiToggleTest {
   private val sessionService = FakeSessionService()
   private val artifactService = FakeArtifactService()
-  private val agentLoader = FakeAgentLoader()
+  private val appLoader = FakeAppLoader()
 
   @Test
   fun webUi_unset_isMounted() =
@@ -176,7 +176,7 @@ class WebUiToggleTest {
     application {
       adkApiModule(
         AdkServerConfig(
-          agentLoader = agentLoader,
+          appLoader = appLoader,
           sessionService = sessionService,
           artifactService = artifactService,
           webUiEnabled = true,

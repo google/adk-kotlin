@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:Suppress("DEPRECATION") // Covers the AgentLoader path kept until 2.0.
-
 package com.google.adk.kt.webserver
 
 import com.google.adk.kt.agents.BaseAgent
@@ -24,7 +22,6 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.post
@@ -107,7 +104,7 @@ class SessionSeedingTest {
 
   private fun testConfig() =
     AdkServerConfig(
-      agentLoader = HistoryAgentLoader(),
+      appLoader = FakeAppLoader("history-agent") { HistoryAgent() },
       sessionService = InMemorySessionService(),
       artifactService = FakeArtifactService(),
       apiServerSpanExporter = ApiServerSpanExporter(),
@@ -142,11 +139,4 @@ private class HistoryAgent :
       )
     )
   }
-}
-
-private class HistoryAgentLoader : AgentLoader {
-  override fun listAgents() = listOf("history-agent")
-
-  override fun loadAgent(agentName: String) =
-    if (agentName == "history-agent") HistoryAgent() else null
 }

@@ -198,7 +198,7 @@ class AdkServerConfigTest {
   fun builder_appliesConstructorDefaultsForUnsetProperties() {
     val config =
       AdkServerConfig.builder()
-        .agentLoader(FakeAgentLoader())
+        .appLoader(FakeAppLoader())
         .sessionService(InMemorySessionService())
         .artifactService(InMemoryArtifactService())
         .build()

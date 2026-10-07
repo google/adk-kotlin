@@ -48,7 +48,7 @@ class RequestFramingTest {
       embeddedServer(Netty, port = EPHEMERAL_PORT, host = LOOPBACK) {
         adkApiModule(
           AdkServerConfig(
-            agentLoader = FakeAgentLoader(),
+            appLoader = FakeAppLoader(),
             sessionService = FakeSessionService(),
             artifactService = FakeArtifactService(),
             apiServerSpanExporter = ApiServerSpanExporter(),

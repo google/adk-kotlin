@@ -147,7 +147,7 @@ class RequestBodyCoverageTest {
       }
       adkApiModule(
         AdkServerConfig(
-          agentLoader = FakeAgentLoader(),
+          appLoader = FakeAppLoader(),
           sessionService = FakeSessionService(),
           artifactService = FakeArtifactService(),
           apiServerSpanExporter = ApiServerSpanExporter(),
