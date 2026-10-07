@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmOverloads
 import kotlinx.serialization.Serializable
 
 /**
@@ -28,11 +29,16 @@ import kotlinx.serialization.Serializable
  * @property customVocabulary Phrases that bias the speech model towards recognising these terms.
  * @property diarization Whether to label distinct speakers.
  * @property wordTimestamp Whether to generate word-level timestamps.
+ * @property mode Configures transcription mode; if unspecified, defaults to `VERBATIM`. Timestamps
+ *   and diarization are incompatible with `SMART`.
  */
 @Serializable
-data class AudioTranscriptionConfig(
+data class AudioTranscriptionConfig
+@JvmOverloads
+constructor(
   val languageCodes: List<String>? = null,
   val customVocabulary: List<String>? = null,
   val diarization: Boolean? = null,
   val wordTimestamp: Boolean? = null,
+  val mode: AudioTranscriptionConfigMode? = null,
 )

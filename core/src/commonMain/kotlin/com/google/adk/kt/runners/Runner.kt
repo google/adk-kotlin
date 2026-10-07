@@ -17,8 +17,10 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryService
@@ -27,6 +29,7 @@ import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.workflow.Node
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 /** The Runner interface defines the contract for running agents. */
 interface Runner : AutoCloseable {
@@ -87,6 +90,32 @@ interface Runner : AutoCloseable {
     newMessage: Content,
     runConfig: RunConfig? = null,
   ): Iterator<Event>
+
+  /**
+   * Runs the agent over a live (bidirectional streaming) connection and returns a cold [Flow] of
+   * the conversation's [Event]s, delivering inline audio, video, and image data to the caller
+   * without storing it in the session. Closing the caller-owned [liveRequestQueue] ends the run,
+   * and [RunConfig.maxLlmCalls] does not apply to a live run. The default implementation fails with
+   * [UnsupportedOperationException] when collected, so custom [Runner] implementations keep
+   * compiling.
+   *
+   * @param userId The user ID of the session.
+   * @param sessionId The session ID, fetched or created when collection starts.
+   * @param liveRequestQueue The queue for content, media, and activity signals.
+   * @param runConfig The run configuration, or `null` for the `RunConfig()` defaults.
+   * @return The run's events.
+   */
+  @ExperimentalLiveApi
+  fun runLive(
+    userId: String,
+    sessionId: String,
+    liveRequestQueue: LiveRequestQueue,
+    runConfig: RunConfig? = null,
+  ): Flow<Event> = flow {
+    throw UnsupportedOperationException(
+      "${this@Runner::class.simpleName} does not support live runs"
+    )
+  }
 
   /**
    * Rewinds the session to before the specified invocation.

@@ -16,15 +16,19 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.LiveConnectConfig
 import com.google.adk.kt.types.LlmConstants
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.SpeechConfig
 import com.google.adk.kt.types.fromGenaiSdk
 import com.google.adk.kt.types.toGenaiSdk
 import com.google.genai.kotlin.Client
@@ -32,10 +36,21 @@ import com.google.genai.kotlin.ClientException
 import com.google.genai.kotlin.GenAiApiException
 import com.google.genai.kotlin.types.HttpOptions
 import com.google.genai.kotlin.types.HttpRetryOptions
+import com.google.genai.kotlin.types.LiveConnectConfig as GenAiLiveConnectConfig
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.jvm.JvmOverloads
+import kotlin.jvm.JvmStatic
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * Implementation of [Model] that interacts with Google Gemini models using the GenAI SDK.
@@ -52,7 +67,34 @@ internal constructor(
   internal val client: Client,
   override val name: String,
   private val models: GeminiModels,
+  /**
+   * The speech config for live sessions opened by this model. When set, it replaces the request's
+   * own speech config at connect, as in ADK Python.
+   */
+  val speechConfig: SpeechConfig? = null,
 ) : Model {
+
+  /**
+   * How live sessions are opened. A settable property, not a constructor parameter, because tests
+   * construct [Gemini] through its public constructors and swap this afterward. See [GeminiLive].
+   */
+  internal var live: GeminiLive = RealGeminiLive(client.live)
+
+  /**
+   * Wrapper around the GenAI SDK's live client, serving the same purpose as [GeminiModels]: the
+   * SDK's `LiveSession` is final and only obtainable by opening a real websocket, so a test that
+   * wants to see what a connect was configured with needs a seam here. It is set after construction
+   * rather than injected like [GeminiModels], because the constructors callers use do not carry it.
+   */
+  internal interface GeminiLive {
+    suspend fun connect(model: String, config: GenAiLiveConnectConfig): LiveSessionHandle
+  }
+
+  /** The real [GeminiLive], opening an actual session. */
+  private class RealGeminiLive(private val delegate: com.google.genai.kotlin.Live) : GeminiLive {
+    override suspend fun connect(model: String, config: GenAiLiveConnectConfig): LiveSessionHandle =
+      SdkLiveSessionHandle(delegate.connect(model, config))
+  }
 
   /**
    * Creates a [Gemini] from a preconfigured GenAI SDK [Client], for callers that need a custom
@@ -61,8 +103,14 @@ internal constructor(
    * @param client The [Client] instance from the GenAI SDK used for making API calls.
    * @param name The name of the specific Gemini model to use (e.g.,
    *   "gemini-3.1-flash-lite-preview").
+   * @param speechConfig The speech config for live sessions; see [Gemini.speechConfig].
    */
-  constructor(client: Client, name: String) : this(client, name, RealGeminiModels(client.models))
+  @JvmOverloads
+  constructor(
+    client: Client,
+    name: String,
+    speechConfig: SpeechConfig? = null,
+  ) : this(client, name, RealGeminiModels(client.models), speechConfig)
 
   /**
    * Wrapper around the GenAI SDK's generate calls, expressed in ADK types, to allow mocking in
@@ -112,12 +160,14 @@ internal constructor(
    *   "gemini-3.1-flash-lite-preview").
    * @param apiKey The Google AI API key. If not provided, falls back to GOOGLE_API_KEY or
    *   GEMINI_API_KEY environment variables on GenAI SDK level.
+   * @param speechConfig The speech config for live sessions; see [Gemini.speechConfig].
    */
   @JvmOverloads
   constructor(
     name: String,
     apiKey: String? = null,
-  ) : this(Client(apiKey = apiKey, httpOptions = adkHttpOptions()), name)
+    speechConfig: SpeechConfig? = null,
+  ) : this(Client(apiKey = apiKey, httpOptions = adkHttpOptions()), name, speechConfig)
 
   /**
    * Creates a [Gemini] instance using Vertex AI credentials for authentication. Its client retries
@@ -127,10 +177,13 @@ internal constructor(
    * @param name The name of the specific Gemini model to use (e.g.,
    *   "gemini-3.1-flash-lite-preview").
    * @param vertexCredentials The Vertex AI credentials to use.
+   * @param speechConfig The speech config for live sessions; see [Gemini.speechConfig].
    */
+  @JvmOverloads
   constructor(
     name: String,
     vertexCredentials: VertexCredentials,
+    speechConfig: SpeechConfig? = null,
   ) : this(
     Client(
       project = vertexCredentials.project,
@@ -140,17 +193,51 @@ internal constructor(
       httpOptions = adkHttpOptions(),
     ),
     name,
+    speechConfig,
   )
 
   /**
-   * Test-only constructor that targets [baseUrl] (e.g. a local server) with the same HTTP options
-   * as the public [apiKey] constructor, so tests can check the headers and retries on the wire.
+   * Opens a live session, configured by [LlmRequest.liveConnectConfig]; a caller cancelled while it
+   * opens is released at once, and the session is closed in the background once it has opened.
+   *
+   * The request's model, when set, is connected to instead of this instance's, as in ADK Python.
+   * Reconnection and session resumption are not handled here: a dropped connection surfaces as an
+   * error out of [LiveConnection.receive] for the caller to act on.
    */
-  internal constructor(
-    name: String,
-    apiKey: String?,
-    baseUrl: String,
-  ) : this(Client(apiKey = apiKey, httpOptions = adkHttpOptions(baseUrl)), name)
+  @ExperimentalLiveApi
+  override suspend fun connect(request: LlmRequest): LiveConnection {
+    val modelName = request.model?.name ?: name
+    logger.debug { "Opening live connection to $modelName." }
+    val config =
+      request.liveConnectConfig
+        .let { live -> speechConfig?.let { live.copy(speechConfig = it) } ?: live }
+        .let { live -> if (client.enterprise) live.resumingTransparently() else live }
+        .carryingAgentConfig(request.config)
+        .toGenaiSdk()
+    val collector = currentCoroutineContext()[ContinuationInterceptor] ?: EmptyCoroutineContext
+    val opener = live
+    // Outside the caller's cancellation: the SDK orphans a socket whose opening is cancelled.
+    @Suppress("UnsafeCoroutineCrossing") // Only locals the caller hands over cross the scope.
+    val opening = CoroutineScope(collector).async { opener.connect(modelName, config) }
+    val handle =
+      try {
+        // A completed await() skips the cancel check, so check here and let the closer run.
+        opening.await().also { currentCoroutineContext().ensureActive() }
+      } catch (e: CancellationException) {
+        // The open's own cancellation must not cancel an active caller; wrap it as the pump does.
+        if (currentCoroutineContext().isActive) {
+          throw IllegalStateException("The live session failed to open.", e)
+        }
+        // Closed once it opens; cancelling the open instead is what loses the socket.
+        @Suppress("UnsafeCoroutineCrossing") // Same reason as above.
+        val unusedCloser =
+          CoroutineScope(collector).launch {
+            runCatching { GeminiLiveConnection.closeOrDrop(opening.await()) }
+          }
+        throw e
+      }
+    return GeminiLiveConnection(handle, modelVersion = modelName, pumpDispatcher = collector)
+  }
 
   @OptIn(FrameworkInternalApi::class)
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
@@ -265,7 +352,68 @@ internal constructor(
     }
   }
 
+  /**
+   * Fluent builder for [Gemini], provided primarily for Java callers. Any property left unset falls
+   * back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var name: String? = null
+    private var client: Client? = null
+    private var apiKey: String? = null
+    private var vertexCredentials: VertexCredentials? = null
+    private var speechConfig: SpeechConfig? = null
+
+    fun name(name: String): Builder = apply { this.name = name }
+
+    /** Sets the SDK client; set at most one of this, [apiKey], and [vertexCredentials]. */
+    fun client(client: Client): Builder = apply { this.client = client }
+
+    /** Sets the Google AI API key; set at most one of this, [client], and [vertexCredentials]. */
+    fun apiKey(apiKey: String?): Builder = apply { this.apiKey = apiKey }
+
+    /** Sets the Vertex AI credentials; set at most one of this, [client], and [apiKey]. */
+    fun vertexCredentials(vertexCredentials: VertexCredentials): Builder = apply {
+      this.vertexCredentials = vertexCredentials
+    }
+
+    fun speechConfig(speechConfig: SpeechConfig?): Builder = apply {
+      this.speechConfig = speechConfig
+    }
+
+    /**
+     * Builds the [Gemini] model, using a Google AI API key unless a client or Vertex AI credentials
+     * are set.
+     */
+    fun build(): Gemini {
+      val name = checkNotNull(name) { "Gemini.Builder requires name to be set." }
+      val client = client
+      val apiKey = apiKey
+      val vertexCredentials = vertexCredentials
+      check(listOfNotNull(client, apiKey, vertexCredentials).size <= 1) {
+        "Gemini.Builder accepts at most one of client, apiKey or vertexCredentials."
+      }
+      return when {
+        client != null -> Gemini(client, name, speechConfig)
+        vertexCredentials != null -> Gemini(name, vertexCredentials, speechConfig)
+        else -> Gemini(name, apiKey, speechConfig)
+      }
+    }
+  }
+
   companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
+
+    /**
+     * Test-only factory that targets [baseUrl] (for example a local server) with the same HTTP
+     * options as the public `apiKey` constructor. It is a function rather than an internal
+     * constructor because Java sees internal constructors, and a third `String` parameter made `new
+     * Gemini("m", "k", null)` ambiguous.
+     */
+    internal fun withBaseUrl(name: String, apiKey: String?, baseUrl: String): Gemini =
+      Gemini(Client(apiKey = apiKey, httpOptions = adkHttpOptions(baseUrl)), name)
+
     // Usage-tracking headers shared across ADK SDKs: "google-adk/<v> gl-<lang>/<ver>".
     private val TRACKING_HEADERS = run {
       val frameworkLabel = "google-adk/$VERSION"
@@ -390,3 +538,34 @@ internal fun List<Content>.ensureModelResponse(): List<Content> {
       )
   }
 }
+
+/**
+ * On a resume that leaves `transparent` unset, asks Vertex AI for transparent resumption, as ADK
+ * Python does, so the server reports the last client message it consumed.
+ */
+internal fun LiveConnectConfig.resumingTransparently(): LiveConnectConfig {
+  val resumption = sessionResumption ?: return this
+  if (resumption.handle == null || resumption.transparent != null) return this
+  return copy(sessionResumption = resumption.copy(transparent = true))
+}
+
+/**
+ * Returns this live config with the agent's own configuration folded in.
+ *
+ * The two halves of a request are assembled in different places: `LlmRequest.liveConnectConfig`
+ * carries what the run config chose, while the agent's instruction and tools live on
+ * `LlmRequest.config`; without this fold a live agent has no persona and the model is never told
+ * the tools exist.
+ */
+internal fun LiveConnectConfig.carryingAgentConfig(
+  config: GenerateContentConfig
+): LiveConnectConfig =
+  copy(
+    // Instruction and tools replace the live config's own. With no instruction it is left out, not
+    // sent as an empty part, which Vertex refuses (1007).
+    systemInstruction = config.systemInstruction?.copy(role = Role.SYSTEM),
+    tools = config.tools,
+    // The agent's thinking wins; the live config's own safety wins over the agent's.
+    thinkingConfig = config.thinkingConfig ?: thinkingConfig,
+    safetySettings = safetySettings ?: config.safetySettings,
+  )

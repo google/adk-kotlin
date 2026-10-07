@@ -591,7 +591,11 @@ class GeminiContinuationTest {
     stream: Boolean,
   ): List<LlmResponse> {
     val gemini =
-      Gemini("gemini-test-model", apiKey = "fake-key", baseUrl = server.url("/").toString())
+      Gemini.withBaseUrl(
+        "gemini-test-model",
+        apiKey = "fake-key",
+        baseUrl = server.url("/").toString(),
+      )
     return gemini.client.use {
       gemini
         .generateContent(LlmRequest(contents = listOf(QUESTION), config = CONFIG), stream)

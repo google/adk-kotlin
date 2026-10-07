@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import kotlin.jvm.JvmOverloads
 import kotlinx.serialization.Serializable
 
 /**
@@ -24,9 +25,13 @@ import kotlinx.serialization.Serializable
  * @property replicatedVoiceConfig The configuration for a replicated voice, which is a clone of a
  *   user's voice. If unset, a default voice is used.
  * @property prebuiltVoiceConfig The configuration for a prebuilt voice.
+ * @property voice The speaker identifier for synthesis.
  */
 @Serializable
-data class VoiceConfig(
+data class VoiceConfig
+@JvmOverloads
+constructor(
   val replicatedVoiceConfig: ReplicatedVoiceConfig? = null,
   val prebuiltVoiceConfig: PrebuiltVoiceConfig? = null,
+  val voice: String? = null,
 )

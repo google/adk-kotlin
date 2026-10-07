@@ -51,11 +51,13 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.Node
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.jvm.JvmSynthetic
 import kotlin.jvm.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -237,6 +239,14 @@ data class InvocationContext(
     require(agent !is NodeViewAgent || node != null) { "A node-view agent requires its node." }
   }
 
+  /** The user's input on a live run, or `null` on a turn-based one; see [ContextFrameworkData]. */
+  internal val liveRequestQueue: LiveRequestQueue?
+    get() = frameworkData.liveRequestQueue
+
+  /** Taken around each append to [session] during a live run; see [ContextFrameworkData]. */
+  internal val sessionAppendLock: Mutex
+    get() = frameworkData.sessionAppendLock
+
   /** Returns whether the current invocation is resumable. */
   val isResumable: Boolean
     get() = resumabilityConfig?.isResumable == true
@@ -264,6 +274,17 @@ data class InvocationContext(
    */
   internal fun forAgent(childAgent: BaseAgent): InvocationContext =
     this.copy(agent = childAgent, node = null)
+
+  /**
+   * Returns a context for [childAgent] taking over a live conversation from this one.
+   *
+   * Everything the caller owns carries over (the session, and the queue they are speaking into),
+   * but the run config's resumption handle does not. A handle names the session this agent was
+   * holding; the child opens its own and would otherwise resume into a conversation that is not its
+   * own, which is why ADK Python clears it on transfer too.
+   */
+  internal fun forLiveChild(childAgent: BaseAgent): InvocationContext =
+    forAgent(childAgent).copy(runConfig = runConfig?.forNewLiveSession())
 
   /**
    * Creates a new InvocationContext for a child agent, derived from this context. Appends the given
@@ -889,7 +910,7 @@ private fun buildToolNotFoundResponse(
 /**
  * Framework-internal per-invocation data holder. Groups scratch state used by ADK's own machinery
  * and the ADK Java interop so it stays off [InvocationContext]'s public constructor. The type
- * itself needs no opt-in; its members are marked [FrameworkInternalApi].
+ * itself needs no opt-in; its public members are marked [FrameworkInternalApi].
  */
 data class ContextFrameworkData(
   /**
@@ -897,7 +918,46 @@ data class ContextFrameworkData(
    * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
    */
   @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
-)
+) {
+  /**
+   * The user's input on a live run, set by whatever opens it, and `null` on a turn-based one.
+   *
+   * A body property, so it stays off every public signature; contexts derived with
+   * [InvocationContext.copy] share this holder and so the same queue.
+   */
+  @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
+
+  /**
+   * Live audio the caller has sent since the last flush.
+   *
+   * Populated only when [RunConfig.saveLiveBlob] is set, and only by [AudioCacheManager], which
+   * serializes every access; this is a plain list and is not safe to touch directly. It lives on
+   * the context rather than inside the manager so that a live run transferring to a sub-agent keeps
+   * one recording instead of starting a second, which is also where Python keeps it.
+   */
+  internal val inputRealtimeCache: MutableList<RealtimeCacheEntry> = mutableListOf()
+  /** The audio the model has spoken since the last flush. See [inputRealtimeCache]. */
+  internal val outputRealtimeCache: MutableList<RealtimeCacheEntry> = mutableListOf()
+
+  /**
+   * Serializes a live run's appends to [InvocationContext.session] (contexts made with
+   * [InvocationContext.copy] share this lock). The turn and its caller both append to that same
+   * object under it, because a session service can reject overlapping appends. Never emit while
+   * holding it, because the collector can deadlock: append, release, then emit.
+   */
+  internal val sessionAppendLock = Mutex()
+}
+
+/**
+ * Returns this config for a fresh live session: the resumption handle is cleared and the rest, a
+ * `transparent` setting included, kept, as ADK Python's `run_config_for_new_live_session` does.
+ *
+ * `@JvmSynthetic` because a top-level internal function compiles to an unmangled public static that
+ * Java could otherwise call.
+ */
+@JvmSynthetic
+internal fun RunConfig.forNewLiveSession(): RunConfig =
+  copy(sessionResumption = sessionResumption?.copy(handle = null))
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

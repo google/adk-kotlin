@@ -17,6 +17,7 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Candidate
@@ -24,6 +25,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.SpeechConfig
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
@@ -39,6 +41,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.time.Duration.Companion.minutes
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -96,6 +99,103 @@ class GeminiJvmTest {
     val model = Gemini(name = "gemini-test", vertexCredentials = vertexCredentials)
 
     assertThat(model.client.enterprise).isTrue()
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_noName_throwsIllegalStateException() {
+    assertFailsWith<IllegalStateException> { Gemini.builder().build() }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_apiKeyAndVertexCredentials_throwsIllegalStateException() {
+    assertFailsWith<IllegalStateException> {
+      Gemini.builder()
+        .name("gemini-test")
+        .apiKey("fake-key")
+        .vertexCredentials(fakeVertexCredentials())
+        .build()
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_clientAndApiKey_throwsIllegalStateException() {
+    assertFailsWith<IllegalStateException> {
+      Gemini.builder()
+        .name("gemini-test")
+        .client(Client(apiKey = "fake"))
+        .apiKey("fake-key")
+        .build()
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_clientAndVertexCredentials_throwsIllegalStateException() {
+    assertFailsWith<IllegalStateException> {
+      Gemini.builder()
+        .name("gemini-test")
+        .client(Client(apiKey = "fake"))
+        .vertexCredentials(fakeVertexCredentials())
+        .build()
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_withClient_usesSameClientAndCarriesNameAndSpeechConfig() {
+    val client = Client(apiKey = "fake")
+    val speechConfig = SpeechConfig(languageCode = "en-US")
+
+    val model =
+      Gemini.builder().name("gemini-test").client(client).speechConfig(speechConfig).build()
+
+    assertSame(client, model.client)
+    assertThat(model.name).isEqualTo("gemini-test")
+    assertSame(speechConfig, model.speechConfig)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_withApiKey_buildsNonEnterpriseClientAndCarriesSpeechConfig() {
+    val speechConfig = SpeechConfig(languageCode = "en-US")
+
+    val model =
+      Gemini.builder().name("gemini-test").apiKey("fake-key").speechConfig(speechConfig).build()
+
+    assertThat(model.client.enterprise).isFalse()
+    assertThat(model.name).isEqualTo("gemini-test")
+    assertSame(speechConfig, model.speechConfig)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_withVertexCredentials_buildsEnterpriseClient() {
+    val model =
+      Gemini.builder().name("gemini-test").vertexCredentials(fakeVertexCredentials()).build()
+
+    assertThat(model.client.enterprise).isTrue()
+    assertThat(model.client.project).isEqualTo("test-project")
+    assertThat(model.client.location).isEqualTo("us-central1")
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun build_onlyName_matchesNameOnlyConstructor() {
+    // No client, apiKey or vertexCredentials set: the builder must behave exactly like the
+    // `Gemini(name)` constructor it delegates to, whatever that does in this environment.
+    val constructed = runCatching { Gemini(name = "gemini-test") }
+    val built = runCatching { Gemini.builder().name("gemini-test").build() }
+
+    assertThat(built.isSuccess).isEqualTo(constructed.isSuccess)
+    if (constructed.isSuccess) {
+      assertThat(built.getOrThrow().client.enterprise)
+        .isEqualTo(constructed.getOrThrow().client.enterprise)
+    } else {
+      assertThat(built.exceptionOrNull()).isInstanceOf(constructed.exceptionOrNull()!!.javaClass)
+    }
   }
 
   @Test
@@ -330,11 +430,12 @@ class GeminiJvmTest {
       }
 
   /**
-   * Drives a [Gemini.generateContent] flow against the mock server through the test-only `baseUrl`
-   * constructor, which applies the production HTTP options (tracking headers and retries).
+   * Drives a [Gemini.generateContent] flow against the mock server through the test-only
+   * [Gemini.withBaseUrl] factory, which applies the production HTTP options (tracking headers and
+   * retries).
    */
   private suspend fun collectGenerateContent(stream: Boolean) {
-    Gemini(
+    Gemini.withBaseUrl(
         name = "gemini-3.1-flash-preview",
         apiKey = "fake-key",
         baseUrl = mockServer.url("/").toString(),
@@ -345,6 +446,18 @@ class GeminiJvmTest {
       )
       .toList()
   }
+
+  private fun fakeVertexCredentials(): VertexCredentials =
+    VertexCredentials(
+      project = "test-project",
+      location = "us-central1",
+      credentials =
+        GoogleCredentials.newBuilder()
+          .setAccessToken(
+            AccessToken("fake-token", Date(Instant.now().plus(1, ChronoUnit.DAYS).toEpochMilli()))
+          )
+          .build(),
+    )
 
   private fun buildResponse(
     text: String,

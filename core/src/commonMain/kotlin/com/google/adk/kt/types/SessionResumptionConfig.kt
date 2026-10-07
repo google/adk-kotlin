@@ -26,7 +26,8 @@ import kotlinx.serialization.Serializable
  * @property handle Resumption handle of a previous session to restore. If absent, a new session is
  *   started.
  * @property transparent Whether the server should report the last consumed client message index, so
- *   a reconnect can resume without replaying. Only honoured on the Vertex backend.
+ *   a reconnect can resume without replaying. Only honored on the Vertex backend; Gemini API
+ *   clients reject it.
  */
 @Serializable
 data class SessionResumptionConfig(val handle: String? = null, val transparent: Boolean? = null)

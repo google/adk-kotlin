@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * A single transcribed word and where it falls in the audio.
@@ -31,6 +32,6 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class WordInfo(
   val word: String? = null,
-  val startOffset: String? = null,
-  val endOffset: String? = null,
+  @JsonNames("start_offset") val startOffset: String? = null,
+  @JsonNames("end_offset") val endOffset: String? = null,
 )

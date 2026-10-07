@@ -50,6 +50,11 @@ import kotlinx.serialization.json.encodeToJsonElement
  *   cache creation on a minimum size.
  * @property liveConnectConfig The configuration used when opening a live connection. Ignored by
  *   [Model.generateContent]; it applies only to [Model.connect].
+ *
+ *   [Gemini.connect] folds in the agent's instruction, tools and thinking when the connection
+ *   opens, and the agent's values win for those; the request processor has already folded the
+ *   agent's sampling settings when it built the request. This config's own sampling and safety
+ *   settings win over the agent's.
  */
 data class LlmRequest(
   val model: Model? = null,

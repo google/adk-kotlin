@@ -16,7 +16,9 @@
 package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.serialization.Json
@@ -128,6 +130,25 @@ class OutputSchemaProcessorTest {
 
     assertTrue(result.toolsDict.any { it.name == SetModelResponseTool.NAME })
   }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun process_outputSchemaWithSubAgentsOnGemini2OnALiveRun_addsSetModelResponseTool() =
+    runBlocking {
+      // Live runs offer transfer_to_agent too, so the workaround must activate on Gemini 2.x.
+      val agent =
+        LlmAgent(
+          name = "parent",
+          model = DummyModel("gemini-2.0-flash"),
+          outputSchema = outputSchema,
+          subAgents = listOf(LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"))),
+        )
+      val context = contextFor(agent).apply { frameworkData.liveRequestQueue = LiveRequestQueue() }
+
+      val result = OutputSchemaProcessor().process(context, LlmRequest())
+
+      assertTrue(result.toolsDict.any { it.name == SetModelResponseTool.NAME })
+    }
 
   @Test
   fun process_outputSchemaWithSubAgentsOnSupportedModel_returnsRequestUnchanged() = runBlocking {

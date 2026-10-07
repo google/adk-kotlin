@@ -38,4 +38,6 @@ internal data class EventMetadataDto(
   val groundingMetadata: JsonElement? = null,
   val usageMetadata: JsonElement? = null,
   val customMetadata: JsonElement? = null,
+  val inputTranscription: JsonElement? = null,
+  val outputTranscription: JsonElement? = null,
 )

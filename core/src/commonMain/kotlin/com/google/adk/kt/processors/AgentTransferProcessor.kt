@@ -18,11 +18,13 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.TransferToAgentTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
+import kotlin.jvm.JvmSynthetic
 
 /**
  * An [LlmRequestProcessor] that adds agent transfer capabilities to the LLM request.
@@ -37,7 +39,10 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
     emitEvent: suspend (Event) -> Unit,
   ): LlmRequest {
     val agent = context.agent
-    val targets = findTransferTargets(agent)
+    // A live run can only hand over to an agent that runs live, so it offers only those targets.
+    val targets =
+      if (context.liveRequestQueue != null) liveTransferTargets(agent)
+      else findTransferTargets(agent)
 
     if (targets.isEmpty()) {
       return request
@@ -96,10 +101,9 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
  * Returns the agents [agent] may transfer control to: its sub-agents, and (when permitted) its
  * parent and peers.
  *
- * Exposed at package scope so the output-schema gating ([BasicRequestProcessor] and
- * [OutputSchemaProcessor]) can tell whether [AgentTransferProcessor] will attach a
- * `transfer_to_agent` tool to the request, since that tool is subject to the same Gemini 2.x
- * "response schema cannot be combined with tools" limitation as user-declared tools.
+ * Shared with [BasicRequestProcessor], [OutputSchemaProcessor] and [liveTransferTargets] so
+ * output-schema gating and live handovers agree with [AgentTransferProcessor] on which agents a
+ * request can reach.
  */
 internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   val targets = buildList {
@@ -127,3 +131,12 @@ internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   }
   return uniqueTargets
 }
+
+/**
+ * The transfer targets a live run may use: only agents that can run live (an [LlmAgent]). A
+ * workflow agent has no live run, so it is not offered and naming one is refused. `@JvmSynthetic`
+ * keeps this top-level internal helper off the Java surface.
+ */
+@JvmSynthetic
+internal fun liveTransferTargets(agent: BaseAgent): List<BaseAgent> =
+  findTransferTargets(agent).filter { it is LlmAgent }

@@ -20,11 +20,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
 /**
- * Wire-level representation of `SessionEvent` from `session.proto`.
+ * Wire-level representation of `SessionEvent` from `session.proto`, where [content] stays a
+ * [JsonElement] that the mapper decodes to [com.google.adk.kt.types.Content].
  *
- * [content] is left as a [JsonElement] and decoded to [com.google.adk.kt.types.Content] by the
- * mapper. [name] is populated only on read (the resource-name path whose last segment is the local
- * event id); it is never emitted on write.
+ * [name] is populated only on read (the resource-name path whose last segment is the local event
+ * id) and never emitted on write. [rawEvent] is read only, for the transcriptions ADK Python stores
+ * there and nowhere else, and this port never writes it.
  */
 @Serializable
 internal data class SessionEventDto(
@@ -37,4 +38,5 @@ internal data class SessionEventDto(
   val content: JsonElement? = null,
   val actions: EventActionsDto? = null,
   val eventMetadata: EventMetadataDto? = null,
+  val rawEvent: JsonElement? = null,
 )

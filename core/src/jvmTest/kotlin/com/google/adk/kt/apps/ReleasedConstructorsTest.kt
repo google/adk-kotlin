@@ -23,10 +23,15 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.InvocationCostManager
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.models.CacheMetadata
+import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionService
@@ -34,12 +39,33 @@ import com.google.adk.kt.summarizer.EventsCompactionConfig
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.types.ActivityHandling
+import com.google.adk.kt.types.AudioTranscriptionConfig
+import com.google.adk.kt.types.Citation
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.ContextWindowCompressionConfig
 import com.google.adk.kt.types.FinishReason
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.HarmBlockThreshold
+import com.google.adk.kt.types.HarmCategory
+import com.google.adk.kt.types.LiveConnectConfig
 import com.google.adk.kt.types.LogprobsResult
+import com.google.adk.kt.types.MediaResolution
+import com.google.adk.kt.types.Modality
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.ProactivityConfig
+import com.google.adk.kt.types.RealtimeInputConfig
+import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.SafetySetting
+import com.google.adk.kt.types.SessionResumptionConfig
+import com.google.adk.kt.types.SpeechConfig
+import com.google.adk.kt.types.ThinkingConfig
+import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VoiceActivity
+import com.google.adk.kt.workflow.NodeInfo
 import java.io.ByteArrayOutputStream
 import java.net.URLClassLoader
 import javax.tools.ToolProvider
@@ -51,6 +77,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Code built against an earlier release must keep linking to the constructors below. Some also keep
@@ -99,6 +126,48 @@ class ReleasedConstructorsTest {
     // Assert
     assertSame(resumability, app.resumabilityConfig)
     assertNull(app.rootNode)
+  }
+
+  @Test
+  fun gemini_releasedConstructors_resolveAndLeaveSpeechConfigUnset() {
+    // Arrange: the released `Gemini` constructors, before `speechConfig` was added last.
+    val client = Class.forName("com.google.genai.kotlin.Client")
+    val string = String::class.java
+
+    // Act / Assert: getConstructor throws if a released signature is gone, so resolving each one is
+    // the check; the two-arg instance must still default speechConfig to null.
+    val withKey =
+      Gemini::class.java.getConstructor(string, string).newInstance("gemini-test", "fake-key")
+    Gemini::class.java.getConstructor(string)
+    Gemini::class.java.getConstructor(client, string)
+    Gemini::class.java.getConstructor(string, VertexCredentials::class.java)
+
+    assertNull(withKey.speechConfig)
+  }
+
+  @Test
+  fun gemini_javaSourcePassingNullSpeechConfig_compilesAndLeavesItUnset() {
+    // Arrange: a bare null third argument was ambiguous while a test-only (String, String, String)
+    // constructor existed, because Java sees internal constructors.
+    val caller =
+      compileJava(
+        "NullSpeechConfigGeminiCaller",
+        """
+        import com.google.adk.kt.models.Gemini;
+
+        public final class NullSpeechConfigGeminiCaller {
+          public static Gemini create() {
+            return new Gemini("gemini-test", "fake-key", null);
+          }
+        }
+        """,
+      )
+
+    // Act
+    val gemini = caller.getMethod("create").invoke(null) as Gemini
+
+    // Assert
+    assertNull(gemini.speechConfig)
   }
 
   @Test
@@ -309,6 +378,302 @@ class ReleasedConstructorsTest {
     assertNull(response.turnComplete)
   }
 
+  @Test
+  fun runConfig_releasedFullConstructor_stillLinks() {
+    // Arrange: distinct non-default values for all 3 released parameters, so a swap is caught.
+    val streamingMode = StreamingMode.SSE
+    val maxLlmCalls = 7
+    val customMetadata = mapOf<String, Any>("k" to "v")
+
+    // Act
+    val config =
+      RunConfig::class
+        .java
+        .getConstructor(*RELEASED_RUN_CONFIG_PARAMETERS)
+        .newInstance(streamingMode, maxLlmCalls, customMetadata) as RunConfig
+
+    // Assert
+    assertEquals(
+      RunConfig(
+        streamingMode = streamingMode,
+        maxLlmCalls = maxLlmCalls,
+        customMetadata = customMetadata,
+      ),
+      config,
+    )
+  }
+
+  @Test
+  fun runConfig_releasedNoArgConstructor_stillLinks() {
+    // Arrange / Act: the released class had a no-arg constructor; all its params had defaults.
+    val config = RunConfig::class.java.getConstructor().newInstance()
+
+    // Assert
+    assertEquals(RunConfig(), config)
+  }
+
+  @Test
+  fun runConfig_javaSourceWrittenAgainstTheReleasedApi_compiles() {
+    // Arrange
+    val caller =
+      compileJava(
+        "ReleasedRunConfigCaller",
+        """
+        import com.google.adk.kt.agents.RunConfig;
+        import com.google.adk.kt.agents.StreamingMode;
+        import java.util.Map;
+
+        public final class ReleasedRunConfigCaller {
+          public static RunConfig create() {
+            return new RunConfig(StreamingMode.SSE, 7, Map.of("k", "v"));
+          }
+        }
+        """,
+      )
+
+    // Act
+    val config = caller.getMethod("create").invoke(null) as RunConfig
+
+    // Assert
+    assertEquals(
+      RunConfig(
+        streamingMode = StreamingMode.SSE,
+        maxLlmCalls = 7,
+        customMetadata = mapOf("k" to "v"),
+      ),
+      config,
+    )
+  }
+
+  @Test
+  fun liveConnectConfig_releasedFullConstructor_stillLinks() {
+    // Arrange: a distinct non-default value for every one of the 19 released parameters, so a swap
+    // is caught - including the two same-typed transcription fields.
+    val modalities = listOf(Modality.AUDIO)
+    val media = MediaResolution.MEDIA_RESOLUTION_LOW
+    val speech = SpeechConfig(languageCode = "en-US")
+    val thinking = ThinkingConfig(thinkingBudget = 1)
+    val instruction = Content(role = Role.SYSTEM, parts = listOf(Part(text = "si")))
+    val tools =
+      listOf(
+        Tool(functionDeclarations = listOf(FunctionDeclaration(name = "f", description = "d")))
+      )
+    val resumption = SessionResumptionConfig(handle = "h")
+    val inputTranscription = AudioTranscriptionConfig(languageCodes = listOf("fr"))
+    val outputTranscription = AudioTranscriptionConfig(languageCodes = listOf("de"))
+    val realtime = RealtimeInputConfig(activityHandling = ActivityHandling.NO_INTERRUPTION)
+    val compression = ContextWindowCompressionConfig(triggerTokens = 1024L)
+    val proactivity = ProactivityConfig(proactiveAudio = true)
+    val safety =
+      listOf(
+        SafetySetting(
+          category = HarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold = HarmBlockThreshold.BLOCK_NONE,
+        )
+      )
+    val arguments =
+      arrayOf<Any?>(
+        modalities,
+        0.1f,
+        0.2f,
+        3,
+        4,
+        media,
+        6,
+        speech,
+        thinking,
+        true,
+        instruction,
+        tools,
+        resumption,
+        inputTranscription,
+        outputTranscription,
+        realtime,
+        compression,
+        proactivity,
+        safety,
+      )
+
+    // Act
+    val config =
+      LiveConnectConfig::class
+        .java
+        .getConstructor(*RELEASED_LIVE_CONNECT_CONFIG_PARAMETERS)
+        .newInstance(*arguments) as LiveConnectConfig
+
+    // Assert
+    assertEquals(
+      LiveConnectConfig(
+        responseModalities = modalities,
+        temperature = 0.1f,
+        topP = 0.2f,
+        topK = 3,
+        maxOutputTokens = 4,
+        mediaResolution = media,
+        seed = 6,
+        speechConfig = speech,
+        thinkingConfig = thinking,
+        enableAffectiveDialog = true,
+        systemInstruction = instruction,
+        tools = tools,
+        sessionResumption = resumption,
+        inputAudioTranscription = inputTranscription,
+        outputAudioTranscription = outputTranscription,
+        realtimeInputConfig = realtime,
+        contextWindowCompression = compression,
+        proactivity = proactivity,
+        safetySettings = safety,
+      ),
+      config,
+    )
+  }
+
+  @Test
+  fun liveConnectConfig_releasedNoArgConstructor_stillLinks() {
+    // Arrange / Act: the released class had a no-arg constructor; all its params had defaults.
+    val config = LiveConnectConfig::class.java.getConstructor().newInstance()
+
+    // Assert
+    assertEquals(LiveConnectConfig(), config)
+  }
+
+  @Test
+  fun liveConnectConfig_javaSourceWrittenAgainstTheReleasedApi_compiles() {
+    // Arrange: distinct values for the directly expressible params; the complex object params stay
+    // null (the all-19-distinct reflection case above already covers forwarding).
+    val caller =
+      compileJava(
+        "ReleasedLiveConnectConfigCaller",
+        """
+        import com.google.adk.kt.types.LiveConnectConfig;
+
+        public final class ReleasedLiveConnectConfigCaller {
+          public static LiveConnectConfig create() {
+            return new LiveConnectConfig(
+                null, 0.1f, 0.2f, 3, 4, null, 6, null, null, true, null, null, null, null,
+                null, null, null, null, null);
+          }
+        }
+        """,
+      )
+
+    // Act
+    val config = caller.getMethod("create").invoke(null) as LiveConnectConfig
+
+    // Assert
+    assertEquals(0.1f, config.temperature)
+    assertEquals(0.2f, config.topP)
+    assertEquals(3, config.topK)
+    assertEquals(4, config.maxOutputTokens)
+    assertEquals(6, config.seed)
+    assertEquals(true, config.enableAffectiveDialog)
+    assertNull(config.explicitVadSignal)
+  }
+
+  @Test
+  fun event_releasedFullConstructor_stillLinks() {
+    // Arrange
+    val arguments =
+      with(RELEASED_EVENT) {
+        arrayOf<Any?>(
+          id,
+          invocationId,
+          author,
+          content,
+          actions,
+          longRunningToolIds,
+          partial,
+          turnComplete,
+          errorCode,
+          errorMessage,
+          finishReason,
+          usageMetadata,
+          avgLogProbs,
+          interrupted,
+          branch,
+          groundingMetadata,
+          modelVersion,
+          citationMetadata,
+          cacheMetadata,
+          customMetadata,
+          output,
+          nodeInfo,
+          timestamp,
+        )
+      }
+
+    // Act
+    val event = Event::class.java.getConstructor(*RELEASED_EVENT_PARAMETERS).newInstance(*arguments)
+
+    // Assert
+    assertEquals(RELEASED_EVENT, event)
+  }
+
+  @Test
+  fun event_javaSourceWrittenAgainstTheReleasedApi_compiles() {
+    // Arrange
+    val caller =
+      compileJava(
+        "ReleasedEventCaller",
+        """
+        import com.google.adk.kt.events.Event;
+        import com.google.adk.kt.events.EventActions;
+        import java.util.Set;
+
+        public final class ReleasedEventCaller {
+          public static Event create() {
+            return new Event(
+                "evt-1", null, "agent", null, new EventActions(), Set.of(), false, false, null,
+                null, null, null, null, false, null, null, null, null, null, null, null, null,
+                1234L);
+          }
+        }
+        """,
+      )
+
+    // Act
+    val event = caller.getMethod("create").invoke(null) as Event
+
+    // Assert
+    assertEquals(Event(id = "evt-1", author = "agent", timestamp = 1234L), event)
+  }
+
+  @Test
+  fun event_releasedNoArgConstructor_stillLinks() {
+    // Arrange / Act: the released class had a no-arg constructor; all its params had defaults.
+    val event = Event::class.java.getConstructor().newInstance()
+
+    // Assert
+    assertEquals(Event(id = event.id, timestamp = event.timestamp), event)
+  }
+
+  @Test
+  fun voiceActivity_javaSourceReadsAudioOffsetMillis() {
+    // Arrange
+    val reader =
+      compileJava(
+        "VoiceActivityReader",
+        """
+        import com.google.adk.kt.types.VoiceActivity;
+
+        public final class VoiceActivityReader {
+          public static Long read(VoiceActivity activity) {
+            return activity.audioOffsetMillis();
+          }
+        }
+        """,
+      )
+
+    // Act
+    val millis =
+      reader
+        .getMethod("read", VoiceActivity::class.java)
+        .invoke(null, VoiceActivity(audioOffset = 1_500.milliseconds))
+
+    // Assert
+    assertEquals(1_500L, millis)
+  }
+
   /** Compiles [source] with javac against the test classpath and loads [className]. */
   private fun compileJava(className: String, source: String): Class<*> {
     val compiler = checkNotNull(ToolProvider.getSystemJavaCompiler()) { "javac is unavailable." }
@@ -366,6 +731,32 @@ class ReleasedConstructorsTest {
         InvocationCostManager::class.java,
       )
 
+    val RELEASED_RUN_CONFIG_PARAMETERS: Array<Class<*>> =
+      arrayOf(StreamingMode::class.java, Int::class.java, Map::class.java)
+
+    val RELEASED_LIVE_CONNECT_CONFIG_PARAMETERS: Array<Class<*>> =
+      arrayOf(
+        List::class.java,
+        Float::class.javaObjectType,
+        Float::class.javaObjectType,
+        Int::class.javaObjectType,
+        Int::class.javaObjectType,
+        MediaResolution::class.java,
+        Int::class.javaObjectType,
+        SpeechConfig::class.java,
+        ThinkingConfig::class.java,
+        Boolean::class.javaObjectType,
+        Content::class.java,
+        List::class.java,
+        SessionResumptionConfig::class.java,
+        AudioTranscriptionConfig::class.java,
+        AudioTranscriptionConfig::class.java,
+        RealtimeInputConfig::class.java,
+        ContextWindowCompressionConfig::class.java,
+        ProactivityConfig::class.java,
+        List::class.java,
+      )
+
     val RELEASED_LLM_RESPONSE_PARAMETERS: Array<Class<*>> =
       arrayOf(
         Content::class.java,
@@ -382,6 +773,64 @@ class ReleasedConstructorsTest {
         Double::class.javaObjectType,
         LogprobsResult::class.java,
         CacheMetadata::class.java,
+      )
+
+    val RELEASED_EVENT_PARAMETERS: Array<Class<*>> =
+      arrayOf(
+        String::class.java,
+        String::class.java,
+        String::class.java,
+        Content::class.java,
+        EventActions::class.java,
+        Set::class.java,
+        Boolean::class.java,
+        Boolean::class.java,
+        String::class.java,
+        String::class.java,
+        FinishReason::class.java,
+        UsageMetadata::class.java,
+        Double::class.javaObjectType,
+        Boolean::class.java,
+        String::class.java,
+        GroundingMetadata::class.java,
+        String::class.java,
+        CitationMetadata::class.java,
+        CacheMetadata::class.java,
+        Map::class.java,
+        Any::class.java,
+        NodeInfo::class.java,
+        Long::class.java,
+      )
+
+    /**
+     * A distinct, non-default value for every released parameter, so a swapped or dropped argument
+     * fails.
+     */
+    val RELEASED_EVENT =
+      Event(
+        id = "evt-1",
+        invocationId = "inv-1",
+        author = "agent",
+        content = Content(role = "model", parts = listOf(Part(text = "hi"))),
+        actions = EventActions(skipSummarization = true),
+        longRunningToolIds = setOf("call-1"),
+        partial = true,
+        turnComplete = true,
+        errorCode = "E1",
+        errorMessage = "failed",
+        finishReason = FinishReason.STOP,
+        usageMetadata = UsageMetadata(totalTokenCount = 7),
+        avgLogProbs = -0.5,
+        interrupted = true,
+        branch = "root.child",
+        groundingMetadata = GroundingMetadata(webSearchQueries = listOf("q")),
+        modelVersion = "v1",
+        citationMetadata = CitationMetadata(listOf(Citation(uri = "https://example.com"))),
+        cacheMetadata = CacheMetadata(fingerprint = "fp", contentsCount = 2),
+        customMetadata = mapOf("k" to "v"),
+        output = "result",
+        nodeInfo = NodeInfo(path = "wf@1"),
+        timestamp = 1234L,
       )
   }
 }

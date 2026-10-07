@@ -24,6 +24,7 @@ package com.google.adk.kt.types
 
 import com.google.genai.kotlin.types.ActivityHandling as GenAiActivityHandling
 import com.google.genai.kotlin.types.AudioTranscriptionConfig as GenAiAudioTranscriptionConfig
+import com.google.genai.kotlin.types.AudioTranscriptionConfigMode as GenAiAudioTranscriptionConfigMode
 import com.google.genai.kotlin.types.AutomaticActivityDetection as GenAiAutomaticActivityDetection
 import com.google.genai.kotlin.types.ContextWindowCompressionConfig as GenAiContextWindowCompressionConfig
 import com.google.genai.kotlin.types.EndSensitivity as GenAiEndSensitivity
@@ -43,6 +44,7 @@ import com.google.genai.kotlin.types.SpeakerVoiceConfig as GenAiSpeakerVoiceConf
 import com.google.genai.kotlin.types.SpeechConfig as GenAiSpeechConfig
 import com.google.genai.kotlin.types.StartSensitivity as GenAiStartSensitivity
 import com.google.genai.kotlin.types.Transcription as GenAiTranscription
+import com.google.genai.kotlin.types.TranslationConfig as GenAiTranslationConfig
 import com.google.genai.kotlin.types.TurnCompleteReason as GenAiTurnCompleteReason
 import com.google.genai.kotlin.types.TurnCoverage as GenAiTurnCoverage
 import com.google.genai.kotlin.types.UsageMetadata as GenAiLiveUsageMetadata
@@ -155,6 +157,7 @@ internal fun GenAiVoiceConfig.fromGenaiSdk(): VoiceConfig =
   VoiceConfig(
     replicatedVoiceConfig = replicatedVoiceConfig?.fromGenaiSdk(),
     prebuiltVoiceConfig = prebuiltVoiceConfig?.fromGenaiSdk(),
+    voice = voice,
   )
 
 /** Converts an ADK [VoiceConfig] to a [GenAiVoiceConfig] for the GenAI SDK. */
@@ -162,6 +165,7 @@ internal fun VoiceConfig.toGenaiSdk(): GenAiVoiceConfig =
   GenAiVoiceConfig(
     replicatedVoiceConfig = replicatedVoiceConfig?.toGenaiSdk(),
     prebuiltVoiceConfig = prebuiltVoiceConfig?.toGenaiSdk(),
+    voice = voice,
   )
 
 // --- SpeakerVoiceConfig ---
@@ -247,12 +251,21 @@ internal fun RealtimeInputConfig.toGenaiSdk(): GenAiRealtimeInputConfig =
     turnCoverage = turnCoverage?.toGenaiSdk(),
   )
 
+// --- AudioTranscriptionConfigMode ---
+/** Converts a [GenAiAudioTranscriptionConfigMode] from the GenAI SDK to an ADK enum. */
+internal fun GenAiAudioTranscriptionConfigMode.toKt(): AudioTranscriptionConfigMode =
+  runCatching { AudioTranscriptionConfigMode.valueOf(this.value) }
+    .getOrDefault(AudioTranscriptionConfigMode.MODE_UNSPECIFIED)
+
+/** Converts an ADK [AudioTranscriptionConfigMode] to a [GenAiAudioTranscriptionConfigMode]. */
+internal fun AudioTranscriptionConfigMode.toGenaiSdk(): GenAiAudioTranscriptionConfigMode =
+  GenAiAudioTranscriptionConfigMode(this.name)
+
 // --- AudioTranscriptionConfig ---
 /**
  * Converts a [GenAiAudioTranscriptionConfig] from the GenAI SDK to an ADK
- * [AudioTranscriptionConfig]. Four SDK fields are not mirrored: the deprecated `languageAuto`,
- * `languageHints` and `adaptationPhrases`, and `mode`, which is current -- so a caller cannot ask
- * for `SMART` transcription and always gets the default `VERBATIM`.
+ * [AudioTranscriptionConfig]. Three SDK fields are not mirrored: the deprecated `languageAuto`,
+ * `languageHints` and `adaptationPhrases`.
  */
 internal fun GenAiAudioTranscriptionConfig.fromGenaiSdk(): AudioTranscriptionConfig =
   AudioTranscriptionConfig(
@@ -260,6 +273,7 @@ internal fun GenAiAudioTranscriptionConfig.fromGenaiSdk(): AudioTranscriptionCon
     customVocabulary = customVocabulary,
     diarization = diarization,
     wordTimestamp = wordTimestamp,
+    mode = mode?.toKt(),
   )
 
 /**
@@ -272,6 +286,7 @@ internal fun AudioTranscriptionConfig.toGenaiSdk(): GenAiAudioTranscriptionConfi
     customVocabulary = customVocabulary,
     diarization = diarization,
     wordTimestamp = wordTimestamp,
+    mode = mode?.toGenaiSdk(),
   )
 
 // --- SessionResumptionConfig ---
@@ -326,11 +341,25 @@ internal fun GenAiProactivityConfig.fromGenaiSdk(): ProactivityConfig =
 internal fun ProactivityConfig.toGenaiSdk(): GenAiProactivityConfig =
   GenAiProactivityConfig(proactiveAudio = proactiveAudio)
 
+// --- TranslationConfig ---
+/** Converts a [GenAiTranslationConfig] from the GenAI SDK to an ADK [TranslationConfig]. */
+internal fun GenAiTranslationConfig.fromGenaiSdk(): TranslationConfig =
+  TranslationConfig(
+    targetLanguageCode = targetLanguageCode,
+    echoTargetLanguage = echoTargetLanguage,
+  )
+
+/** Converts an ADK [TranslationConfig] to a [GenAiTranslationConfig] for the GenAI SDK. */
+internal fun TranslationConfig.toGenaiSdk(): GenAiTranslationConfig =
+  GenAiTranslationConfig(
+    targetLanguageCode = targetLanguageCode,
+    echoTargetLanguage = echoTargetLanguage,
+  )
+
 // --- LiveConnectConfig ---
 /**
  * Converts a [GenAiLiveConnectConfig] from the GenAI SDK to an ADK [LiveConnectConfig]. The SDK
- * fields ADK does not mirror -- `httpOptions`, `avatarConfig`, `explicitVadSignal` and
- * `translationConfig` -- are dropped.
+ * fields ADK does not mirror, `httpOptions` and `avatarConfig`, are dropped.
  *
  * Three numbers also narrow on the way in: `temperature` and `topP` cross from the SDK's `Double?`
  * to `Float?`, and `topK` to `Int?`, which truncates toward zero rather than rounding.
@@ -356,6 +385,8 @@ internal fun GenAiLiveConnectConfig.fromGenaiSdk(): LiveConnectConfig =
     contextWindowCompression = contextWindowCompression?.fromGenaiSdk(),
     proactivity = proactivity?.fromGenaiSdk(),
     safetySettings = safetySettings?.map { it.fromGenaiSdk() },
+    explicitVadSignal = explicitVadSignal,
+    translationConfig = translationConfig?.fromGenaiSdk(),
   )
 
 /**
@@ -386,6 +417,8 @@ internal fun LiveConnectConfig.toGenaiSdk(): GenAiLiveConnectConfig =
     contextWindowCompression = contextWindowCompression?.toGenaiSdk(),
     proactivity = proactivity?.toGenaiSdk(),
     safetySettings = safetySettings?.map { it.toGenaiSdk() },
+    explicitVadSignal = explicitVadSignal,
+    translationConfig = translationConfig?.toGenaiSdk(),
   )
 
 // --- Server message types ---

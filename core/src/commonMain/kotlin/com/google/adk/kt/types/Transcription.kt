@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 /**
  * A transcription of audio, either the user's input or the model's output.
@@ -34,7 +35,7 @@ import kotlinx.serialization.Serializable
 data class Transcription(
   val text: String? = null,
   val finished: Boolean? = null,
-  val languageCode: String? = null,
-  val speakerLabel: String? = null,
+  @JsonNames("language_code") val languageCode: String? = null,
+  @JsonNames("speaker_label") val speakerLabel: String? = null,
   val words: List<WordInfo>? = null,
 )
