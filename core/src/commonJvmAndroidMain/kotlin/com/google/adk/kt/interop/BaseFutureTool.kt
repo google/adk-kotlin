@@ -22,6 +22,8 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import java.util.concurrent.CompletableFuture
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.reactive.asFlow
+import org.reactivestreams.Publisher
 
 /**
  * Java-friendly base for implementing a [BaseTool] asynchronously. A Java subclass overrides
@@ -42,10 +44,12 @@ constructor(
 ) : BaseTool(name, description, isLongRunning, customMetadata) {
 
   /**
-   * Asynchronous counterpart of [run]; implement the tool's logic here. Return the future promptly
-   * and do any blocking work inside it, not before returning it -- this runs on the engine's
-   * coroutine thread. The result must be JSON-native (a [Map], [List], [String], number,
-   * [Boolean]); a non-[Map] result is wrapped under [BaseTool.RESULT_KEY].
+   * Asynchronous counterpart of [run]; return the future promptly and do any blocking work inside
+   * it, since this runs on the engine's coroutine thread. The result must be JSON-native (a
+   * non-[Map] is wrapped under [BaseTool.RESULT_KEY]), or a Reactive Streams [Publisher] that
+   * streams as [BaseTool.run] describes for a Flow. A live tool can read the experimental
+   * `context.getLiveRequests()` through `AsyncJavaHelpers.asPublisher`, whose signals can arrive on
+   * the engine's send thread, so do slow work on another thread.
    */
   @JvmSuppressWildcards
   protected abstract fun runAsync(
@@ -54,7 +58,11 @@ constructor(
   ): CompletableFuture<Any>
 
   final override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any =
-    runAsync(context, args).await()
+    when (val result = runAsync(context, args).await()) {
+      // A Reactive Streams Publisher streams like a Kotlin Flow; a JDK Flow.Publisher is not one.
+      is Publisher<*> -> @Suppress("UNCHECKED_CAST") (result as Publisher<Any>).asFlow()
+      else -> result
+    }
 
   /**
    * Asynchronous counterpart of [BaseTool.processLlmRequest]; override to attach instructions,

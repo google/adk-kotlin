@@ -27,6 +27,8 @@ import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmRequest
@@ -63,6 +65,7 @@ import com.google.adk.kt.testing.connectionDrop
 import com.google.adk.kt.testing.goAway
 import com.google.adk.kt.testing.handleUpdate
 import com.google.adk.kt.testing.inputTranscription
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
@@ -72,6 +75,7 @@ import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.storedBytes
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.turnComplete
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.GoogleSearchTool
@@ -82,6 +86,7 @@ import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_T
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.InteractionStatus
@@ -104,6 +109,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
@@ -112,11 +118,13 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -972,6 +980,24 @@ class LlmAgentTurnTest {
       "This tool call requires confirmation, please approve or reject.",
       events.flatMap { it.functionResponses() }.single().response["error"],
     )
+  }
+
+  @Test
+  fun runLive_approvedFlowToolResumes_failsFastBeforeConnecting() {
+    runBlocking {
+      // A live run asks for no approval, so the one it resumes was given to an earlier turn's call.
+      val twoValuesLog = mutableListOf<String>()
+      val endlessLog = mutableListOf<String>()
+
+      val twoValues = liveResumeFailure(twoValuesLog, flowOf<Any>("first", "second"))
+      val endless = liveResumeFailure(endlessLog, flow<Any> { awaitCancellation() })
+
+      val message = "A streaming tool can't resume an approved call in a live run."
+      assertEquals(message, twoValues.message)
+      assertEquals(message, endless.message)
+      assertEquals(listOf("tool"), twoValuesLog)
+      assertEquals(listOf("tool"), endlessLog)
+    }
   }
 
   @Test
@@ -2767,6 +2793,95 @@ class LlmAgentTurnTest {
         sessionService.createSession(key),
         Event(author = Role.USER, content = content),
       )
+    return checkNotNull(sessionService.getSession(key))
+  }
+
+  /**
+   * Runs a live run whose session holds an approved call to a tool returning [stream], and returns
+   * how the run failed. [log] records the tool's run and the model's connect.
+   */
+  private suspend fun liveResumeFailure(
+    log: MutableList<String>,
+    stream: Flow<Any>,
+  ): IllegalStateException {
+    val gated =
+      object : FunctionTool("my_function", "Needs approval.", requiresConfirmation = true) {
+        override fun declaration(): FunctionDeclaration? = null
+
+        override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
+          log += "tool"
+          return stream
+        }
+      }
+    val model =
+      RecordingLiveModel(
+        RecordingLiveConnection(listOf(turnComplete())),
+        onConnect = { log += "connect" },
+      )
+    val agent = LlmAgent(name = "LiveAgent", model = model, tools = listOf(gated))
+    val session = sessionWithApprovedCall(agent.name, toolName = "my_function", callId = "orig_1")
+    // The timeout keeps a hang from stalling the suite; it is not the failure the callers expect.
+    return assertFailsWith<IllegalStateException> {
+      withTimeout(5.seconds) { agent.runLive(liveContextFor(agent, session = session)).toList() }
+    }
+  }
+
+  /** A session in which [agentName]'s call [callId] to [toolName] asked for approval and got it. */
+  private suspend fun sessionWithApprovedCall(
+    agentName: String,
+    toolName: String,
+    callId: String,
+  ): Session {
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "live-session")
+    val session = sessionService.createSession(key)
+    val args = mapOf("param" to "value")
+    val original =
+      mapOf(
+        FunctionCall.NAME_KEY to toolName,
+        FunctionCall.ARGS_KEY to args,
+        FunctionCall.ID_KEY to callId,
+      )
+    val confirm = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    val history =
+      listOf(
+        Event(author = agentName, content = modelFunctionCall(toolName, args, id = callId)),
+        Event(
+          author = agentName,
+          content =
+            userFunctionResponse(
+              toolName,
+              callId,
+              response = mapOf("error" to "requires confirmation"),
+            ),
+          actions =
+            EventActions().apply {
+              requestedToolConfirmations[callId] =
+                ToolConfirmation(confirmed = false, hint = "please confirm")
+            },
+        ),
+        Event(
+          author = agentName,
+          content =
+            modelFunctionCall(
+              confirm,
+              mapOf(FunctionCall.ORIGINAL_FUNCTION_CALL_KEY to original),
+              id = "synth_1",
+            ),
+        ),
+        Event(
+          author = Role.USER,
+          content =
+            userFunctionResponse(
+              confirm,
+              "synth_1",
+              response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
+            ),
+        ),
+      )
+    for (event in history) {
+      val unused = sessionService.appendEvent(session, event)
+    }
     return checkNotNull(sessionService.getSession(key))
   }
 
@@ -8956,6 +9071,470 @@ class LlmAgentTurnTest {
   }
 
   private class ScriptedTurnFailure : RuntimeException("the turn failed")
+
+  @Test
+  fun runAsync_toolReturnsAFlow_answersWithItsOneValueAfterItsEvents() {
+    runBlocking {
+      val requests = mutableListOf<LlmRequest>()
+      val responses =
+        ArrayDeque(
+          listOf(
+            modelFunctionCallResponse("analyze", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+          )
+        )
+      val model =
+        DummyModel("model") { request ->
+          requests += request
+          flowOf(responses.removeFirst())
+        }
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flowOf(Event(content = modelMessage("Starting")), mapOf("rows" to 42))
+        }
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+
+      val events =
+        InMemoryRunner(agent = agent)
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+          .toList()
+
+      val progress = events.indexOfFirst { it.branch == "analyze@c1" }
+      val answer = events.indexOfFirst { event -> event.functionResponses().any { it.id == "c1" } }
+      assertTrue(progress in 0 until answer, "the tool's event should precede its answer")
+      assertEquals("analyze", events[progress].author)
+      assertEquals(mapOf("rows" to 42), events[answer].functionResponses().single().response)
+      val secondRequestParts = requests[1].contents.flatMap { it.parts }
+      assertTrue(
+        secondRequestParts.mapNotNull { it.text }.none { "Starting" in it },
+        "the tool's event should not reach the model",
+      )
+    }
+  }
+
+  @Test
+  fun runAsync_streamingToolSetsActionsWhileStreaming_putsThemOnItsAnswer() {
+    runBlocking {
+      var requests = 0
+      val model =
+        DummyModel("model") {
+          requests++
+          flowOf(
+            if (requests == 1) modelFunctionCallResponse("summarize", id = "c1")
+            else LlmResponse(content = modelMessage("summary"))
+          )
+        }
+      val tool =
+        DummyTool(name = "summarize") { context, _ ->
+          flow {
+            context.actions.skipSummarization = true
+            emit(Event(author = "custom_reporter", content = modelMessage("Progress")))
+            emit(mapOf("done" to "report"))
+          }
+        }
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+
+      val events =
+        InMemoryRunner(agent = agent)
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+          .toList()
+
+      val answer = events.single { it.functionResponses().isNotEmpty() }
+      assertEquals(
+        "the tool's actions should ride its answer",
+        true,
+        answer.actions.skipSummarization,
+      )
+      assertEquals(1, requests)
+      assertTrue(events.none { it.author == "custom_reporter" })
+    }
+  }
+
+  @Test
+  fun runAsync_toolEventsFromAnEarlierTurn_stayOutOfTheNextTurnsContext() {
+    runBlocking {
+      val requests = mutableListOf<LlmRequest>()
+      val responses =
+        ArrayDeque(
+          listOf(
+            modelFunctionCallResponse("analyze", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+            LlmResponse(content = modelMessage("again")),
+          )
+        )
+      val model =
+        DummyModel("model") { request ->
+          requests += request
+          flowOf(responses.removeFirst())
+        }
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flowOf(Event(content = modelMessage("Starting")), mapOf("rows" to 42))
+        }
+      val runner =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+
+      val first =
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run")).toList()
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("and now?")).toList()
+
+      assertTrue(
+        first.any { it.branch == "analyze@c1" },
+        "the tool's event should reach the caller",
+      )
+      val lastTexts = requests.last().contents.flatMap { it.parts }.mapNotNull { it.text }
+      assertTrue(lastTexts.none { "Starting" in it }, "the tool's event should stay out of context")
+    }
+  }
+
+  @Test
+  fun runAsync_streamingToolThrowsAfterAnEvent_stillDeliversTheEvent() {
+    runBlocking {
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flow<Any> {
+            emit(Event(content = modelMessage("Starting")))
+            throw IllegalStateException("broken")
+          }
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(modelFunctionCallResponse("analyze", id = "c1")),
+        )
+      val seen = mutableListOf<Event>()
+
+      assertFailsWith<IllegalStateException> {
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+          .onEach { seen += it }
+          .toList()
+      }
+      assertEquals(1, seen.count { it.branch == "analyze@c1" })
+    }
+  }
+
+  @Test
+  fun runAsync_streamingToolEmitsNullsAroundAValue_answersWithTheValue() {
+    runBlocking {
+      val tool = DummyTool(name = "analyze") { _, _ -> flowOf(null, "300", null) }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(
+            modelFunctionCallResponse("analyze", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+
+      val events =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+          .toList()
+
+      val answer = events.flatMap { it.functionResponses() }.single { it.id == "c1" }
+      assertEquals(mapOf("result" to "300"), answer.response)
+    }
+  }
+
+  @Test
+  fun runAsync_streamingToolEmitsAFunctionResponse_answersWithItsPayload() {
+    runBlocking {
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flowOf(FunctionResponse(name = "other", id = "x", response = mapOf("ok" to true)))
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(
+            modelFunctionCallResponse("analyze", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+
+      val events =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+          .toList()
+
+      val answer = events.flatMap { it.functionResponses() }.single { it.id == "c1" }
+      assertEquals(mapOf("ok" to true), answer.response)
+      assertEquals("analyze", answer.name)
+    }
+  }
+
+  @Test
+  fun runAsync_streamingToolEmitsAnEventWithAnOutput_answersWithIt() {
+    runBlocking {
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flowOf(Event(content = modelMessage("Working"), output = mapOf("rows" to 42)))
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(
+            modelFunctionCallResponse("analyze", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+
+      val events =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+          .toList()
+
+      val answer = events.flatMap { it.functionResponses() }.single { it.id == "c1" }
+      assertEquals(mapOf("rows" to 42), answer.response)
+      assertNull(events.single { it.branch == "analyze@c1" }.output)
+    }
+  }
+
+  @Test
+  fun runAsync_toolReturnsASharedFlow_failsFast() {
+    runBlocking {
+      val tool = DummyTool(name = "ticker") { _, _ -> MutableStateFlow(mapOf("price" to 300)) }
+      val model =
+        DummyModel.createSequential("model", listOf(modelFunctionCallResponse("ticker", id = "c1")))
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+
+      // The timeout keeps a hang from stalling the suite; it is not the failure this test expects.
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          withTimeout(5.seconds) {
+            InMemoryRunner(agent = agent)
+              .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+              .toList()
+          }
+        }
+
+      assertEquals(
+        "A tool returned a SharedFlow, which never completes; outside a live run a tool's Flow " +
+          "must complete.",
+        failure.message,
+      )
+    }
+  }
+
+  @Test
+  fun runAsync_streamingToolEventRequestsATransfer_failsTheRun() {
+    runBlocking {
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(actions = EventActions(transferToAgent = "other_agent")),
+            mapOf("rows" to 42),
+          )
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(
+            modelFunctionCallResponse("analyze", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          withTimeout(5.seconds) {
+            InMemoryRunner(agent = agent)
+              .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+              .toList()
+          }
+        }
+
+      assertEquals("Only agents can request an agent transfer.", failure.message)
+    }
+  }
+
+  @Test
+  fun runAsync_streamingToolEvent_reachesTheCallerBeforeTheToolFinishes() {
+    runBlocking {
+      val gate = CompletableDeferred<Unit>()
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flow<Any> {
+            emit(Event(content = modelMessage("Working")))
+            gate.await()
+            emit(mapOf("rows" to 42))
+          }
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(
+            modelFunctionCallResponse("analyze", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+
+      // The tool finishes only once the caller has its event, so a held-back event times out.
+      val events =
+        withTimeout(5.seconds) {
+          InMemoryRunner(agent = agent)
+            .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+            .onEach { if (it.branch == "analyze@c1") gate.complete(Unit) }
+            .toList()
+        }
+
+      val progress = events.indexOfFirst { it.branch == "analyze@c1" }
+      val answer = events.indexOfFirst { event -> event.functionResponses().any { it.id == "c1" } }
+      assertTrue(progress in 0 until answer, "the tool's event should precede its answer")
+      assertEquals(mapOf("rows" to 42), events[answer].functionResponses().single().response)
+    }
+  }
+
+  @Test
+  fun runAsync_parallelFlowTools_deliverAllEventsInEachToolsOrder() {
+    runBlocking {
+      val n = 500
+      fun streamingTool(name: String) =
+        DummyTool(name = name) { _, _ ->
+          flow<Any> {
+            repeat(n) { emit(Event(content = modelMessage("$name$it"))) }
+            emit(mapOf("done" to name))
+          }
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(
+            modelParallelFunctionCallsResponse(
+              FunctionCall("a", id = "ca"),
+              FunctionCall("b", id = "cb"),
+            ),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+      val tools = listOf(streamingTool("a"), streamingTool("b"))
+      val agent = LlmAgent(name = "agent", model = model, tools = tools)
+
+      // On Default the two calls can run on different threads, so both may add events at once.
+      val events =
+        withContext(Dispatchers.Default) {
+          InMemoryRunner(agent = agent)
+            .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+            .toList()
+        }
+
+      val answer = events.indexOfFirst { it.functionResponses().isNotEmpty() }
+      assertEquals(
+        mapOf("ca" to mapOf("done" to "a"), "cb" to mapOf("done" to "b")),
+        events[answer].functionResponses().associate { it.id to it.response },
+      )
+      for (tool in listOf("a", "b")) {
+        val texts =
+          events.take(answer).filter { it.author == tool }.map { it.content?.parts?.single()?.text }
+        assertEquals(List(n) { "$tool$it" }, texts)
+      }
+      assertTrue(events.drop(answer + 1).none { it.author == "a" || it.author == "b" })
+    }
+  }
+
+  @Test
+  fun runAsync_toolFlowEmitsASecondResult_failsTheRunAndStopsTheFlow() {
+    runBlocking {
+      var closed = false
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flow {
+            try {
+              emit("a")
+              emit("b")
+              emit("c")
+            } finally {
+              closed = true
+            }
+          }
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(modelFunctionCallResponse("analyze", id = "c1")),
+        )
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          InMemoryRunner(agent = agent)
+            .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+            .toList()
+        }
+
+      assertEquals(
+        "A streaming tool can produce at most one result unless a live run streams it.",
+        failure.message,
+      )
+      assertTrue(closed, "the tool's flow should be closed")
+    }
+  }
+
+  @Test
+  fun runLive_writeFailsAndIsReplayed_copiesTheRequestToLiveRequestsOnce() {
+    runBlocking {
+      val collecting = CompletableDeferred<Unit>()
+      val heard = mutableListOf<LiveRequest>()
+      val listener =
+        DummyTool(name = "listener") { context, _ ->
+          flow<String> {
+            context.liveRequests.onStart { collecting.complete(Unit) }.collect { heard += it }
+          }
+        }
+      val isHello: (Content) -> Boolean = { content -> content.parts.any { it.text == "hello" } }
+      val queue = LiveRequestQueue()
+      val first =
+        ScriptedConn("c0") {
+          emit(handleUpdate("h-1"))
+          emit(modelFunctionCallResponse("listener", id = "c1"))
+          it.closed.await()
+        }
+      first.onSendContent = { if (isHello(it)) throw connectionDrop() }
+      val second = ScriptedConn("c1") { it.closed.await() }
+      second.onSendContent = { if (isHello(it)) queue.close() }
+      val agent =
+        LlmAgent(name = "a", model = RecordingLiveModel(first, second), tools = listOf(listener))
+
+      withTimeout(10.seconds) {
+        val run = launch { agent.runLive(liveContextFor(agent, queue)).collect {} }
+        collecting.await()
+        queue.sendContent(userMessage("hello"))
+        run.join()
+      }
+
+      assertEquals(1, heard.count { (it.input as? ContentInput)?.content?.let(isHello) == true })
+    }
+  }
+
+  @Test
+  fun runAsync_toolCollectsLiveRequests_findsThemEmpty() {
+    runBlocking {
+      val tool =
+        DummyTool(name = "listener") { context, _ ->
+          flow { emit(context.liveRequests.toList().size) }
+        }
+      val model =
+        DummyModel.createSequential(
+          "model",
+          listOf(
+            modelFunctionCallResponse("listener", id = "c1"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+
+      val events =
+        InMemoryRunner(agent = agent)
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run"))
+          .toList()
+
+      val answer = events.flatMap { it.functionResponses() }.single { it.id == "c1" }
+      assertEquals(mapOf("result" to 0), answer.response)
+    }
+  }
 
   private class TeardownFailure : RuntimeException("teardown failed")
 }

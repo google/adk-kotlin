@@ -59,7 +59,12 @@ abstract class BaseTool(
    * [com.google.adk.kt.events.Event] goes to the caller only; the model stops the stream by calling
    * a `stop_streaming(function_name)` or `stopStreaming(functionName)` tool you declare, whose body
    * never runs. If the model makes a new call with the same arguments while the first flow is still
-   * streaming, that call is answered as already running and starts no second stream.
+   * streaming, that call is answered as already running and starts no second stream. In an agent's
+   * turn outside a live run, the flow's one value becomes the answer (an emitted event's output
+   * counts as that value), its events reach the caller as they arrive, and the tool's own event
+   * that asks for an agent transfer fails the call. There the flow must complete, so a returned
+   * [kotlinx.coroutines.flow.SharedFlow] fails the call. A live run also fails an approved call it
+   * resumes if the tool returns a flow, since the resume runs before the model connects.
    */
   abstract suspend fun run(context: ToolContext, args: Map<String, Any?>): Any
 

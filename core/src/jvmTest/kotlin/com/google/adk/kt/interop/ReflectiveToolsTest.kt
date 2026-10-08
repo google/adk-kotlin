@@ -14,27 +14,65 @@
  * limitations under the License.
  */
 
-@file:OptIn(AdkJavaInteropApi::class)
+@file:OptIn(AdkJavaInteropApi::class, ExperimentalLiveApi::class)
 
 package com.google.adk.kt.interop
 
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LiveRequest
+import com.google.adk.kt.agents.LiveRequestQueue
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
+import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.testing.DummyLiveModel
+import com.google.adk.kt.testing.DummyLiveStep
+import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
+import com.google.adk.kt.testing.DummyLiveStep.Respond
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.testToolContext
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Type
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asContextElement
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.reactive.asFlow
+import kotlinx.coroutines.reactive.asPublisher
 import kotlinx.coroutines.runBlocking
+import org.reactivestreams.Publisher
+import org.reactivestreams.Subscriber
+import org.reactivestreams.Subscription
 
 enum class Style {
   FORMAL,
@@ -146,6 +184,26 @@ class Fixture {
   fun ambiguousToolCount(@Param(name = "count") count: Int): String = count.toString()
 
   fun notATool(): String = ""
+}
+
+/** Tools whose results stream, for the live-run tests. */
+class StreamingFixture {
+  @Tool(description = "Streams two prices.")
+  fun prices(): Publisher<String> = flowOf("300", "400").asPublisher()
+
+  @Tool(description = "Echoes what the user says.")
+  fun echoLive(input: Publisher<LiveRequest>): Publisher<String> =
+    input
+      .asFlow()
+      .mapNotNull { request ->
+        (request.input as? ContentInput)?.content?.parts?.firstNotNullOfOrNull { it.text }
+      }
+      .map { "heard $it" }
+      .asPublisher()
+
+  @Tool(description = "Takes the live input through a wildcard.")
+  fun echoOut(input: Publisher<out LiveRequest>): Publisher<String> =
+    input.asFlow().map { "heard" }.asPublisher()
 }
 
 class ReflectiveToolsTest {
@@ -423,5 +481,206 @@ class ReflectiveToolsTest {
   @Test
   fun fromMethod_notAnnotated_fails() {
     assertFailsWith<IllegalArgumentException> { ReflectiveTools.fromMethod(fixture, "notATool") }
+  }
+
+  private fun answers(callId: String, response: Map<String, Any?>): (Any) -> Boolean = { message ->
+    message is ContentInput &&
+      message.content.parts.any {
+        it.functionResponse?.id == callId && it.functionResponse.response == response
+      }
+  }
+
+  /**
+   * Runs [tool] live against [script] until the turn completes, then checks every gate was met.
+   * With [ping], the caller says `ping(n)` for n = 1, 2, ... every 20 ms (real time: the tool
+   * starts listening asynchronously, so it repeats until heard).
+   */
+  private suspend fun runLive(
+    script: List<DummyLiveStep>,
+    tool: BaseTool,
+    ping: ((Int) -> String)? = null,
+  ) {
+    coroutineScope {
+      val model = DummyLiveModel(script)
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(tool))
+      val queue = LiveRequestQueue()
+      val pinger = launch {
+        var n = 0
+        while (ping != null) {
+          queue.sendContent(Content(Role.USER, listOf(Part(text = ping(++n)))))
+          delay(20.milliseconds)
+        }
+      }
+      try {
+        InMemoryRunner(agent = agent)
+          .runLive("u", "s", queue, RunConfig(streamingMode = StreamingMode.BIDI))
+          .onEach { if (it.turnComplete) queue.close() }
+          .collect()
+        model.connections.single().assertAllWaitsMet()
+      } finally {
+        pinger.cancel()
+      }
+    }
+  }
+
+  private fun pricesScript() =
+    listOf(
+      Respond(modelFunctionCallResponse("prices", id = "c1")),
+      AwaitSent("the pending answer", answers("c1", PENDING)),
+      AwaitSent("the first price", answers("c1", mapOf("result" to "300"))),
+      AwaitSent("the second price", answers("c1", mapOf("result" to "400"))),
+      Respond(LlmResponse(turnComplete = true)),
+    )
+
+  /** The n of a "ping n" message, or null. */
+  private fun pingNumber(content: Content?): Int? =
+    content?.parts?.firstNotNullOfOrNull { it.text }?.removePrefix("ping ")?.toIntOrNull()
+
+  @Test
+  fun fromMethod_methodReturningAPublisher_streamsUnderALiveRun() {
+    runBlocking {
+      runLive(pricesScript(), ReflectiveTools.fromMethod(StreamingFixture(), "prices"))
+    }
+  }
+
+  @Test
+  fun fromMethod_publisherOfLiveRequestsParameter_receivesWhatTheUserSays() {
+    runBlocking {
+      val tool = ReflectiveTools.fromMethod(StreamingFixture(), "echoLive")
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("echoLive", id = "c1")),
+          AwaitSent("an echo", answers("c1", mapOf("result" to "heard ping"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+
+      runLive(script, tool, ping = { "ping" })
+
+      assertNull(tool.declaration()?.parameters, "the live input should not be a model parameter")
+    }
+  }
+
+  @Test
+  fun fromMethod_subscriberBlockingOnTheLiveInput_doesNotHoldBackTheSends() {
+    // The n of the first "ping n" the subscriber gets; its onNext blocks until the test ends.
+    val blockedOn = AtomicInteger()
+    val release = CountDownLatch(1)
+    val subscriber =
+      object : Subscriber<LiveRequest> {
+        override fun onSubscribe(subscription: Subscription) {
+          subscription.request(Long.MAX_VALUE)
+        }
+
+        override fun onNext(request: LiveRequest) {
+          val ping = pingNumber((request.input as? ContentInput)?.content) ?: return
+          blockedOn.compareAndSet(0, ping)
+          // Bounded, so a stalled send loop fails the script's wait instead of hanging the test.
+          release.await(10, TimeUnit.SECONDS)
+        }
+
+        override fun onError(t: Throwable) {}
+
+        override fun onComplete() {}
+      }
+    // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+    class SlowListener {
+      @Tool(description = "Listens to the user with a subscriber that blocks.")
+      fun listen(input: Publisher<LiveRequest>): Publisher<String> =
+        flow<String> {
+            input.subscribe(subscriber)
+            awaitCancellation()
+          }
+          .asPublisher()
+    }
+    val script =
+      listOf(
+        Respond(modelFunctionCallResponse("listen", id = "c1")),
+        // Only the blocked ping or a later one: an earlier one may be checked after the block.
+        AwaitSent("a ping sent while the subscriber blocks") { message ->
+          val sent = pingNumber((message as? ContentInput)?.content)
+          sent != null && blockedOn.get() in 1..sent
+        },
+        Respond(LlmResponse(turnComplete = true)),
+      )
+
+    try {
+      // Multi-threaded, so a blocked sender cannot also stall the script's timeout.
+      runBlocking(Dispatchers.Default) {
+        runLive(script, ReflectiveTools.fromMethod(SlowListener(), "listen"), ping = { "ping $it" })
+      }
+    } finally {
+      release.countDown()
+    }
+  }
+
+  @Test
+  fun fromMethod_publisherOfALiveRequestWildcard_takesTheLiveInput() {
+    val tool = ReflectiveTools.fromMethod(StreamingFixture(), "echoOut")
+
+    assertNull(tool.declaration()?.parameters, "the live input should not be a model parameter")
+  }
+
+  @Test
+  fun fromMethod_publisherOfAnotherType_fails() {
+    // Local, so KSP, which processes this source set in Gradle, never sees these invalid tools.
+    class BadStreamingFixture {
+      @Tool(description = "Takes a Publisher of anything.")
+      fun anything(input: Publisher<*>): String = "x"
+
+      @Tool(description = "Takes a Publisher of strings.")
+      fun strings(input: Publisher<String>): String = "x"
+    }
+
+    assertFailsWith<IllegalArgumentException> {
+      ReflectiveTools.fromMethod(BadStreamingFixture(), "anything")
+    }
+    assertFailsWith<IllegalArgumentException> {
+      ReflectiveTools.fromMethod(BadStreamingFixture(), "strings")
+    }
+  }
+
+  @Test
+  fun fromMethod_twoPublisherParameters_fails() {
+    // Local, so KSP, which processes this source set in Gradle, never sees this invalid tool.
+    class BadStreamingFixture {
+      @Tool(description = "Takes two live inputs.")
+      fun two(first: Publisher<LiveRequest>, second: Publisher<LiveRequest>): String = "x"
+    }
+
+    val failure =
+      assertFailsWith<IllegalArgumentException> {
+        ReflectiveTools.fromMethod(BadStreamingFixture(), "two")
+      }
+
+    assertEquals(
+      "two may take at most one Publisher parameter, for the live input.",
+      failure.message,
+    )
+  }
+
+  @Test
+  fun fromMethod_publisherSubtypeParameter_fails() {
+    // Local, so KSP, which processes this source set in Gradle, never sees this invalid tool.
+    abstract class LivePublisher<T> : Publisher<T>
+
+    class BadStreamingFixture {
+      @Tool(description = "Takes a Publisher subtype.")
+      fun subtype(input: LivePublisher<LiveRequest>): String = "x"
+    }
+
+    val failure =
+      assertFailsWith<IllegalArgumentException> {
+        ReflectiveTools.fromMethod(BadStreamingFixture(), "subtype")
+      }
+
+    assertEquals(
+      "A Publisher parameter of subtype must be a Publisher<LiveRequest>.",
+      failure.message,
+    )
+  }
+
+  companion object {
+    private val PENDING =
+      mapOf("status" to "The function is running asynchronously and the results are pending.")
   }
 }

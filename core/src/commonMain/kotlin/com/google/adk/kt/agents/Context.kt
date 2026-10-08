@@ -17,6 +17,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.ValueCoercer
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
@@ -55,6 +56,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.jvm.Volatile
 import kotlin.reflect.KType
 import kotlin.reflect.typeOf
 import kotlinx.coroutines.CancellationException
@@ -62,6 +64,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -508,6 +513,22 @@ open class Context(
     actions.requestedToolConfirmations[functionCallId] =
       ToolConfirmation(hint = hint, confirmed = false, payload = payload)
   }
+
+  /**
+   * The live run that started this tool call's stream, set while that stream runs; null otherwise.
+   */
+  @Volatile internal var liveInputSource: LiveStreamingTools? = null
+
+  /**
+   * Every [LiveRequest] the live run takes off its queue, caller input and tool answers alike,
+   * including this tool's own, from when this flow is collected. Each collection gets its own
+   * buffered copy, which ends when the queue closes, the run ends, the tool is stopped or the agent
+   * hands over. It is empty except inside the [Flow] a streaming tool returns in a live run, so
+   * callbacks and workflow nodes always see it empty.
+   */
+  @ExperimentalLiveApi
+  val liveRequests: Flow<LiveRequest>
+    get() = flow { liveInputSource?.let { emitAll(it.requests()) } }
 
   /** The node this context is an activation of. */
   @ExperimentalWorkflowApi

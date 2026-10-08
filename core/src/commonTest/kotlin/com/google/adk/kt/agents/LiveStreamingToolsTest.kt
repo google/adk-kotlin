@@ -38,6 +38,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -338,6 +339,19 @@ class LiveStreamingToolsTest {
       assertThat(answer)
         .isEqualTo(mapOf("status" to "No active streaming function named monitor found"))
       assertThat(closed).isEmpty()
+    }
+  }
+
+  @Test
+  fun requests_inputClosedBeforeCollection_completesEmpty() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      tools.closeInput()
+      try {
+        assertThat(tools.requests().toList()).isEmpty()
+      } finally {
+        withContext(NonCancellable) { tools.close() }
+      }
     }
   }
 
