@@ -19,6 +19,9 @@ package com.google.adk.kt.crypto
 import java.security.MessageDigest
 
 internal actual fun sha256Hex(input: String): String =
-  MessageDigest.getInstance("SHA-256").digest(input.encodeToByteArray()).joinToString("") {
+  sha256(input.encodeToByteArray()).joinToString("") {
     (it.toInt() and 0xff).toString(16).padStart(2, '0')
   }
+
+internal actual fun sha256(input: ByteArray): ByteArray =
+  MessageDigest.getInstance("SHA-256").digest(input)

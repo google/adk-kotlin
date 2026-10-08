@@ -41,7 +41,51 @@ class Secret(@Transient private val value: String) {
 
   override fun hashCode(): Int = value.hashCode()
 
-  override fun toString(): String = "<redacted>"
+  override fun toString(): String = REDACTED
+}
+
+/** The placeholder that [Secret], [redacted] and [redactedUrl] print in place of a value. */
+private const val REDACTED = "<redacted>"
+
+/** Returns [REDACTED] if this value is set, showing that it is set but not what it is. */
+internal fun String?.redacted(): String? = this?.let { REDACTED }
+
+/**
+ * Returns this URL with its user info and the values of its query and fragment parameters replaced
+ * by [REDACTED]. The scheme, host, path and parameter names stay, so the URL remains recognizable
+ * while the state, codes and tokens it may carry are hidden.
+ */
+internal fun String?.redactedUrl(): String? {
+  if (this == null) return null
+  // Every part of the pattern is optional, so it matches any string; the fallback hides it all.
+  val parts = URI_PARTS.matchEntire(this) ?: return redacted()
+  val (scheme, authority, path, query, fragment) = parts.destructured
+  return scheme +
+    authority.withRedactedUserInfo() +
+    path +
+    query.withRedactedParameters() +
+    fragment.withRedactedParameters()
+}
+
+// RFC 3986 appendix B's parser; each part keeps its delimiter, and a fragment may span lines.
+private val URI_PARTS = Regex("""([^:/?#]+:)?(//[^/?#]*)?([^?#]*)(\?[^#]*)?(#[\s\S]*)?""")
+
+/** Replaces the `user:password` part of an authority such as `//user:password@host`. */
+private fun String.withRedactedUserInfo(): String =
+  if ('@' in this) "//" + REDACTED + substring(lastIndexOf('@')) else this
+
+/** Keeps the leading `?` or `#` and each parameter name, and replaces each value. */
+private fun String.withRedactedParameters(): String {
+  if (isEmpty()) return this
+  return take(1) +
+    drop(1).split('&').joinToString("&") { parameter ->
+      when {
+        parameter.isEmpty() -> parameter
+        '=' in parameter -> parameter.substringBefore('=') + "=" + REDACTED
+        // Without `=` the text may itself be a value, so none of it is kept.
+        else -> REDACTED
+      }
+    }
 }
 
 /**

@@ -22,6 +22,7 @@ import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.serialization.adkJson
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlinx.serialization.Serializable
 import org.junit.Test
 
@@ -103,6 +104,151 @@ class SecretTest {
     assertEquals(holder, adkJson.decodeFromString(NullableHolder.serializer(), json))
     assertEquals("{}", adkJson.encodeToString(NullableHolder.serializer(), NullableHolder(null)))
     assertEquals(NullableHolder(null), adkJson.decodeFromString(NullableHolder.serializer(), "{}"))
+  }
+
+  @Test
+  fun redactedUrl_atSignInPassword_redactsAllUserInfo() {
+    assertEquals(
+      "https://<redacted>@host.example/path",
+      "https://user:sentinel@password@host.example/path".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_atSignInPath_keepsPath() {
+    assertEquals("https://host.example/users/@me", "https://host.example/users/@me".redactedUrl())
+  }
+
+  @Test
+  fun redactedUrl_emptyQuery_keepsDelimiter() {
+    assertEquals("https://host.example/path?", "https://host.example/path?".redactedUrl())
+  }
+
+  @Test
+  fun redactedUrl_equalsInValue_redactsWholeValue() {
+    assertEquals(
+      "https://host.example/path?state=<redacted>",
+      "https://host.example/path?state=sentinel==".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_fragmentParameters_redactsValues() {
+    assertEquals(
+      "https://app.example/callback#access_token=<redacted>&state=<redacted>",
+      "https://app.example/callback#access_token=sentinel-token&state=sentinel-state".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_lineBreakInFragment_redactsValue() {
+    assertEquals(
+      "https://host.example/path#state=<redacted>",
+      "https://host.example/path#state=sentinel\nstate".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_noQuery_returnsUrlUnchanged() {
+    assertEquals("https://app.example/callback", "https://app.example/callback".redactedUrl())
+  }
+
+  @Test
+  fun redactedUrl_null_returnsNull() {
+    assertNull(null.redactedUrl())
+  }
+
+  @Test
+  fun redactedUrl_parameterWithoutEquals_redactsWholeParameter() {
+    assertEquals(
+      "https://host.example/path?<redacted>&name=<redacted>",
+      "https://host.example/path?sentinel-value&name=sentinel-name".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_queryAndFragment_redactsBoth() {
+    assertEquals(
+      "https://host.example/path?code=<redacted>#state=<redacted>",
+      "https://host.example/path?code=sentinel-code#state=sentinel-state".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_queryParameters_keepsNamesAndRedactsValues() {
+    assertEquals(
+      "https://auth.example/authorize?client_id=<redacted>&state=<redacted>&nonce=<redacted>",
+      "https://auth.example/authorize?client_id=client&state=sentinel-state&nonce=sentinel-nonce"
+        .redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_questionMarkInFragment_staysInFragment() {
+    assertEquals(
+      "https://host.example/path#state=<redacted>",
+      "https://host.example/path#state=sentinel?state".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_relativeUrl_redactsQueryValues() {
+    assertEquals("/callback?code=<redacted>", "/callback?code=sentinel-code".redactedUrl())
+  }
+
+  @Test
+  fun redactedUrl_rfc3986AppendixBExample_redactsFragment() {
+    assertEquals(
+      "http://www.ics.uci.edu/pub/ietf/uri/#<redacted>",
+      "http://www.ics.uci.edu/pub/ietf/uri/#Related".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_rfc3986ComponentExample_redactsQueryAndFragmentValues() {
+    assertEquals(
+      "foo://example.com:8042/over/there?name=<redacted>#<redacted>",
+      "foo://example.com:8042/over/there?name=ferret#nose".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_rfc3986IpLiteralExample_keepsAuthorityAndPath() {
+    assertEquals(
+      "ldap://[2001:db8::7]/c=GB?<redacted>",
+      "ldap://[2001:db8::7]/c=GB?objectClass?one".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_rfc3986MailtoExample_returnsUrlUnchanged() {
+    assertEquals("mailto:John.Doe@example.com", "mailto:John.Doe@example.com".redactedUrl())
+  }
+
+  @Test
+  fun redactedUrl_rfc3986UrnExample_returnsUrlUnchanged() {
+    assertEquals(
+      "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
+      "urn:oasis:names:specification:docbook:dtd:xml:4.1.2".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redactedUrl_userInfo_redactsUserInfo() {
+    assertEquals(
+      "https://<redacted>@host.example/path",
+      "https://user:sentinel-password@host.example/path".redactedUrl(),
+    )
+  }
+
+  @Test
+  fun redacted_null_returnsNull() {
+    assertNull(null.redacted())
+  }
+
+  @Test
+  fun redacted_value_returnsPlaceholder() {
+    assertEquals("<redacted>", "sentinel-state".redacted())
   }
 
   @Serializable

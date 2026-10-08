@@ -18,3 +18,6 @@ package com.google.adk.kt.crypto
 
 /** Returns the lowercase hex-encoded SHA-256 digest of [input]'s UTF-8 bytes. */
 internal expect fun sha256Hex(input: String): String
+
+/** Returns the SHA-256 digest of [input]. */
+internal expect fun sha256(input: ByteArray): ByteArray
