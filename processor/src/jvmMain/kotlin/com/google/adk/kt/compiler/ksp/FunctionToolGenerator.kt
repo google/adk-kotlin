@@ -41,6 +41,7 @@ import com.google.devtools.ksp.symbol.KSTypeParameter
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.symbol.Variance
+import com.squareup.kotlinpoet.AnnotationSpec
 import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.CodeBlock
 import com.squareup.kotlinpoet.FileSpec
@@ -78,20 +79,61 @@ internal class FunctionToolGenerator(
     val className = "${functionName.replaceFirstChar { it.uppercaseChar() }}Tool"
 
     val returnType = function.returnType?.resolve()
-    if (returnType != null && isFlow(returnType)) {
-      // The runtime only handles a non-null Flow.
+    if (returnType != null && isStream(returnType)) {
+      val kind = if (isPublisher(returnType)) "Publisher" else "Flow"
+      // The runtime only handles a non-null Flow or Publisher.
       if (returnType.isMarkedNullable) {
-        logger.error("A @Tool function cannot return a nullable Flow: ${functionName}", function)
+        logger.error("A @Tool function cannot return a nullable $kind: ${functionName}", function)
         return null
       }
       if (flowElementType(returnType) == null) {
-        logger.error("A @Tool Flow return needs a concrete element type: ${functionName}", function)
+        logger.error(
+          "A @Tool $kind return needs a concrete element type: ${functionName}",
+          function,
+        )
         return null
       }
+      // Reactive Streams forbids null values, and asFlow() needs a non-null element type.
+      if (isPublisher(returnType) && flowElementType(returnType)?.isMarkedNullable == true) {
+        logger.error(
+          "A @Tool Publisher return cannot carry nullable values: ${functionName}",
+          function,
+        )
+        return null
+      }
+    }
+    // As in ReflectiveTools, the only Publisher a tool may take is the run's input.
+    val publisherParameters = function.parameters.filter { isPublisher(it.type.resolve()) }
+    if (
+      publisherParameters.size > 1 ||
+        publisherParameters.any { !isLiveInputParameter(it.type.resolve()) }
+    ) {
+      logger.error(
+        "A @Tool function may take one Publisher parameter, declared as Publisher<LiveRequest> " +
+          "or Publisher<out LiveRequest>, for the live input: ${functionName}",
+        function,
+      )
+      return null
+    }
+    // The live input is set only while a returned stream runs, so any other return never hears it.
+    if (publisherParameters.isNotEmpty() && (returnType == null || !isStream(returnType))) {
+      logger.error(
+        "A @Tool function that takes the live input must return a Flow or a Publisher: " +
+          functionName,
+        function,
+      )
+      return null
     }
 
     val superclass = FunctionTool::class.asClassName()
     val typeBuilder = TypeSpec.classBuilder(className).superclass(superclass)
+    if (publisherParameters.isNotEmpty()) {
+      typeBuilder.addAnnotation(
+        AnnotationSpec.builder(ClassName("kotlin", "OptIn"))
+          .addMember("%T::class", ClassName("com.google.adk.kt.annotations", "ExperimentalLiveApi"))
+          .build()
+      )
+    }
 
     val toolAnnotation =
       function.annotations.firstOrNull {
@@ -245,6 +287,16 @@ internal class FunctionToolGenerator(
 
       if (isContextParameter(paramType)) {
         invokeArgs.add("context")
+        continue
+      }
+      if (isLiveInputParameter(paramType)) {
+        // Signals the input on the run's dispatcher, as a Flow tool's collector receives it.
+        executeFun.addStatement(
+          "val arg_${paramName} = context.liveRequests.%M(%M())",
+          ASPUBLISHER_MEMBER,
+          CURRENT_COROUTINE_CONTEXT_MEMBER,
+        )
+        invokeArgs.add("arg_${paramName}")
         continue
       }
 
@@ -845,11 +897,14 @@ internal class FunctionToolGenerator(
         // `BaseTool.isLongRunning`.
         executeFun.addStatement("return Unit")
       }
-      isFlow(returnType) -> {
+      isStream(returnType) -> {
         val elementType = checkNotNull(flowElementType(returnType)) { "checked in generate" }
+        // A Publisher becomes a Flow, so both are handled alike.
+        val stream = if (isPublisher(returnType)) "$callStatement.%M()" else callStatement
+        val streamArgs = if (isPublisher(returnType)) arrayOf<Any>(ASFLOW_MEMBER) else emptyArray()
         if (isPassThroughElement(elementType)) {
           // Passed through; the runtime routes Events, unwraps FunctionResponses, wraps the rest.
-          executeFun.addStatement("return $callStatement")
+          executeFun.addStatement("return $stream", *streamArgs)
           return
         }
 
@@ -869,7 +924,8 @@ internal class FunctionToolGenerator(
           if (elementType.isMarkedNullable) "if (value == null) null else $wrapped" else wrapped
         // Each value answers like one `T` (a null stays null); `·` stops a wrap before the lambda.
         executeFun.addStatement(
-          "return $callStatement.%M·{ value -> $body }",
+          "return $stream.%M·{ value -> $body }",
+          *streamArgs,
           FLOW_MAP_MEMBER,
           BaseTool::class.asClassName(),
         )
@@ -907,7 +963,7 @@ internal class FunctionToolGenerator(
     funSpec.addCode("  name = %S,\n", toolName)
     funSpec.addCode("  description = %S,\n", functionDesc)
 
-    val paramTypes = function.parameters.filter { !isContextParameter(it.type.resolve()) }
+    val paramTypes = function.parameters.filter { !isInjectedParameter(it.type.resolve()) }
     if (paramTypes.isNotEmpty()) {
       funSpec.addCode("  parameters = %T(\n", Schema::class.asClassName())
       funSpec.addCode("    type = %T.OBJECT,\n", Type::class.asClassName())
@@ -952,7 +1008,7 @@ internal class FunctionToolGenerator(
     if (isLongRunning) return null
     val declaredType = function.returnType?.resolve() ?: return null
     val returnType =
-      if (isFlow(declaredType)) {
+      if (isStream(declaredType)) {
         flowElementType(declaredType)?.takeUnless { isPassThroughElement(it) } ?: return null
       } else {
         declaredType
@@ -1059,7 +1115,7 @@ internal class FunctionToolGenerator(
    * guarantees unique parameter names, not wire names).
    */
   private fun validateWireNames(function: KSFunctionDeclaration): Boolean {
-    val valueParams = function.parameters.filter { !isContextParameter(it.type.resolve()) }
+    val valueParams = function.parameters.filter { !isInjectedParameter(it.type.resolve()) }
     for (param in valueParams) {
       val explicit =
         paramAnnotation(param)?.arguments?.firstOrNull { it.name?.asString() == "name" }?.value
@@ -1311,6 +1367,12 @@ internal class FunctionToolGenerator(
     private val PASS_THROUGH_QUALIFIED_NAMES =
       setOf(Event::class.qualifiedName, FunctionResponse::class.qualifiedName, ANY_QUALIFIED_NAME)
     private val FLOW_MAP_MEMBER = MemberName("kotlinx.coroutines.flow", "map")
+    private val ASFLOW_MEMBER = MemberName("kotlinx.coroutines.reactive", "asFlow")
+    private val ASPUBLISHER_MEMBER = MemberName("kotlinx.coroutines.reactive", "asPublisher")
+    private val CURRENT_COROUTINE_CONTEXT_MEMBER =
+      MemberName("kotlinx.coroutines", "currentCoroutineContext")
+    private const val PUBLISHER_QUALIFIED_NAME = "org.reactivestreams.Publisher"
+    private const val LIVE_REQUEST_QUALIFIED_NAME = "com.google.adk.kt.agents.LiveRequest"
 
     /** Whether the class of [type] is [qualifiedName] or has it among its supertypes. */
     private fun isOrExtends(type: KSType, qualifiedName: String): Boolean {
@@ -1327,12 +1389,20 @@ internal class FunctionToolGenerator(
     /**
      * The `T` of [FLOW] as seen from the flow [type], resolved through any subtype's type
      * parameters, such as `List<Quote>` for `Paged<T> : Flow<List<T>>` used as `Paged<Quote>`.
-     * Returns null when it is not concrete, as in `Flow<*>`.
+     * Returns null when it is not concrete, as in `Flow<*>`. A Publisher's `T` resolves the same
+     * way.
      */
     private fun flowElementType(type: KSType): KSType? {
       val declaration = type.declaration as? KSClassDeclaration ?: return null
+      // A Publisher hands its `T` to `subscribe(Subscriber<in T>)` as a Flow does to `collect`.
+      val (stream, consume) =
+        if (isPublisher(type)) {
+          PUBLISHER_QUALIFIED_NAME to "subscribe"
+        } else {
+          FLOW.canonicalName to "collect"
+        }
       // asMemberOf reports a star-projected `T` as `Any`, so a star is caught here first.
-      val parameter = flowParameterOf(declaration)
+      val parameter = flowParameterOf(declaration, stream)
       if (parameter != null) {
         val argument = type.arguments.getOrNull(declaration.typeParameters.indexOf(parameter))
         if (argument?.variance == Variance.STAR) return null
@@ -1340,22 +1410,21 @@ internal class FunctionToolGenerator(
       val flow =
         (sequenceOf(declaration) +
             declaration.getAllSuperTypes().mapNotNull { it.declaration as? KSClassDeclaration })
-          .firstOrNull { it.qualifiedName?.asString() == FLOW.canonicalName } ?: return null
-      val collect =
-        flow.getDeclaredFunctions().firstOrNull { it.simpleName.asString() == "collect" }
+          .firstOrNull { it.qualifiedName?.asString() == stream } ?: return null
+      val collect = flow.getDeclaredFunctions().firstOrNull { it.simpleName.asString() == consume }
       val collector = collect?.asMemberOf(type.makeNotNullable())?.parameterTypes?.singleOrNull()
       return collector?.arguments?.singleOrNull()?.type?.resolve()
     }
 
-    /** The type parameter of [declaration] that the `T` of [FLOW] is bound to directly, if any. */
-    private fun flowParameterOf(declaration: KSClassDeclaration): KSTypeParameter? {
-      if (declaration.qualifiedName?.asString() == FLOW.canonicalName) {
+    /** The type parameter of [declaration] that [stream]'s `T` is bound to directly, if any. */
+    private fun flowParameterOf(declaration: KSClassDeclaration, stream: String): KSTypeParameter? {
+      if (declaration.qualifiedName?.asString() == stream) {
         return declaration.typeParameters.singleOrNull()
       }
       for (reference in declaration.superTypes) {
         val supertype = reference.resolve()
         val parent = supertype.declaration as? KSClassDeclaration ?: continue
-        val parameter = flowParameterOf(parent) ?: continue
+        val parameter = flowParameterOf(parent, stream) ?: continue
         val argument = supertype.arguments.getOrNull(parent.typeParameters.indexOf(parameter))
         return argument?.type?.resolve()?.declaration as? KSTypeParameter
       }
@@ -1368,6 +1437,28 @@ internal class FunctionToolGenerator(
      */
     private fun isPassThroughElement(type: KSType): Boolean =
       type.declaration.qualifiedName?.asString() in PASS_THROUGH_QUALIFIED_NAMES
+
+    /** Whether [type] is a Reactive Streams Publisher, or a subtype such as RxJava's `Flowable`. */
+    private fun isPublisher(type: KSType): Boolean = isOrExtends(type, PUBLISHER_QUALIFIED_NAME)
+
+    /** Whether [type] is a Flow or a Publisher, which a live run streams. */
+    private fun isStream(type: KSType): Boolean = isFlow(type) || isPublisher(type)
+
+    /**
+     * Whether [type] is the `Publisher<LiveRequest>` or `Publisher<out LiveRequest>` that receives
+     * the run's input; a subtype such as `Flowable` or a nullable `LiveRequest?` element cannot
+     * hold the `Publisher` the tool is handed.
+     */
+    private fun isLiveInputParameter(type: KSType): Boolean {
+      if (type.declaration.qualifiedName?.asString() != PUBLISHER_QUALIFIED_NAME) return false
+      val element = flowElementType(type)
+      return element?.isMarkedNullable == false &&
+        element.declaration.qualifiedName?.asString() == LIVE_REQUEST_QUALIFIED_NAME
+    }
+
+    /** Whether the framework, not the model, supplies a parameter of [type]. */
+    private fun isInjectedParameter(type: KSType): Boolean =
+      isContextParameter(type) || isLiveInputParameter(type)
 
     /** Returns true if [type] is an injected context parameter (`Context` or `ToolContext`). */
     private fun isContextParameter(type: KSType): Boolean =

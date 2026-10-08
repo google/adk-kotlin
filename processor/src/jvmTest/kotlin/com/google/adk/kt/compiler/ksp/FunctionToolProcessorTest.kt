@@ -19,6 +19,7 @@ package com.google.adk.kt.compiler.ksp
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequest
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
@@ -50,14 +51,18 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.reactive.asFlow
+import kotlinx.coroutines.reactive.asPublisher
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
+import org.reactivestreams.Publisher
 
 @RunWith(JUnit4::class)
 class FunctionToolProcessorTest {
@@ -689,6 +694,66 @@ class FunctionToolProcessorTest {
     }
   }
 
+  @Test
+  fun execute_toolReturningAPublisher_shapesEachLikeASingleResult() {
+    runBlocking {
+      val result = PublishQuotesTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList())
+        .containsExactly(mapOf("result" to mapOf("symbol" to "GOOG", "price" to 300)))
+    }
+  }
+
+  @Test
+  fun declaration_toolReturningAPublisher_describesOneValueLikeASingleResult() {
+    val response = PublishQuotesTool().declaration()?.response
+
+    assertThat(response?.properties?.get("result")?.properties?.keys)
+      .containsExactly("symbol", "price")
+  }
+
+  @Test
+  fun execute_toolReturningAPublisherOfAny_passesItsValuesThroughUnconverted() {
+    runBlocking {
+      val result = PublishMixedTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList()).containsExactly(mixedEvent, "done").inOrder()
+    }
+  }
+
+  @Test
+  fun declaration_toolReturningAPublisherOfAny_declaresNoResponse() {
+    assertThat(PublishMixedTool().declaration()?.response).isNull()
+  }
+
+  @Test
+  fun declaration_toolReturningAPublisherSubtypeWithAnUnrelatedTypeParameter_describesItsValue() {
+    assertThat(KeyedPublisherTool().declaration()!!.response?.properties?.get("result")?.type)
+      .isEqualTo(Type.STRING)
+  }
+
+  @Test
+  fun declaration_toolTakingTheLiveInput_leavesItOutOfTheParameters() {
+    val tool = EchoLiveInputTool()
+
+    assertThat(tool.declaration()?.parameters?.properties.orEmpty()).doesNotContainKey("input")
+  }
+
+  @Test
+  fun declaration_toolTakingTheLiveInputAsAnOutProjection_leavesItOutOfTheParameters() {
+    assertThat(EchoOutLiveInputTool().declaration()?.parameters?.properties.orEmpty())
+      .doesNotContainKey("input")
+  }
+
+  @Test
+  fun execute_toolTakingTheLiveInputOutsideALiveRun_endsAtOnce() {
+    runBlocking {
+      val result = EchoLiveInputTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList()).isEmpty()
+    }
+  }
+
   companion object {
     /** Matches a message that answers call [id] with exactly [response]. */
     @OptIn(ExperimentalLiveApi::class)
@@ -949,3 +1014,22 @@ internal class Paged<T>(private val pages: List<List<T>>) : Flow<List<T>> {
 }
 
 @Tool internal fun pagedQuotes(): Paged<Quote> = Paged(listOf(listOf(Quote("GOOG", 300))))
+
+@Tool internal fun publishQuotes(): Publisher<Quote> = flowOf(Quote("GOOG", 300)).asPublisher()
+
+@Tool internal fun publishMixed(): Publisher<Any> = flowOf<Any>(mixedEvent, "done").asPublisher()
+
+internal class KeyedPublisher<K>(vararg values: String) :
+  Publisher<String> by flowOf(*values).asPublisher()
+
+@Tool internal fun keyedPublisher(): KeyedPublisher<Int> = KeyedPublisher("a", "b")
+
+@OptIn(ExperimentalLiveApi::class)
+@Tool
+internal fun echoLiveInput(input: Publisher<LiveRequest>): Flow<String> =
+  input.asFlow().map { "heard" }
+
+@OptIn(ExperimentalLiveApi::class)
+@Tool
+internal fun echoOutLiveInput(input: Publisher<out LiveRequest>): Flow<String> =
+  input.asFlow().map { "heard" }
