@@ -30,13 +30,17 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.junit.Test
 
@@ -304,5 +308,96 @@ class LiveStreamingToolsTest {
     assertWithMessage("a stopped stream's queued value was received")
       .that(queue.receiveRequest())
       .isNull()
+  }
+
+  @Test
+  fun stopAll_streamRunning_leavesNoStreamToStop() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      val tool = DummyTool(name = "monitor") { _, _ -> flow<String> { awaitCancellation() } }
+      val stop = DummyTool(name = "stop_streaming") { _, _ -> "ran" }
+
+      val closed: List<Content>
+      try {
+        val unused = tools.run(tool, streamingToolContext("c1"), emptyMap())
+        tools.onAnswersQueued(answerTo("c1"))
+        assertThat(tools.stopAll()).hasSize(1)
+        val answer =
+          tools.run(stop, streamingToolContext("s1"), mapOf("function_name" to "monitor"))
+        assertThat(answer)
+          .isEqualTo(mapOf("status" to "No active streaming function named monitor found"))
+      } finally {
+        closed = withContext(NonCancellable) { tools.close() }
+      }
+
+      assertThat(closed).isEmpty()
+    }
+  }
+
+  @Test
+  fun run_stopStreaming_stopsOnlyTheNamedTool() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      val monitor = DummyTool(name = "monitor") { _, _ -> flow<String> { awaitCancellation() } }
+      val news = DummyTool(name = "news") { _, _ -> flow<String> { awaitCancellation() } }
+      val stop = DummyTool(name = "stop_streaming") { _, _ -> "ran" }
+
+      val closed: List<Content>
+      try {
+        for ((tool, callId) in listOf(monitor to "c1", news to "n1")) {
+          val unused = tools.run(tool, streamingToolContext(callId), emptyMap())
+          tools.onAnswersQueued(answerTo(callId))
+        }
+        val answer =
+          tools.run(stop, streamingToolContext("s1"), mapOf("function_name" to "monitor"))
+        assertThat(answer)
+          .isEqualTo(mapOf("status" to "Successfully stopped streaming function monitor"))
+      } finally {
+        closed = withContext(NonCancellable) { tools.close() }
+      }
+
+      // Only news is still streaming when the run ends.
+      assertThat(closed.flatMap { it.parts }.map { it.functionResponse?.id }).containsExactly("n1")
+    }
+  }
+
+  @Test
+  fun run_stopStreamingCancelledWhileItWaits_endsAtOnce() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      val started = CompletableDeferred<Unit>()
+      val cancelled = CompletableDeferred<Unit>()
+      // Outlasts the one-second stop timeout, so the stop is still waiting when its caller cancels.
+      val stubborn =
+        DummyTool(name = "monitor") { _, _ ->
+          flow<String> {
+            try {
+              started.complete(Unit)
+              awaitCancellation()
+            } finally {
+              cancelled.complete(Unit)
+              withContext(NonCancellable) { delay(1500.milliseconds) }
+            }
+          }
+        }
+      val stop = DummyTool(name = "stop_streaming") { _, _ -> "ran" }
+
+      try {
+        val unused = tools.run(stubborn, streamingToolContext("c1"), emptyMap())
+        tools.onAnswersQueued(answerTo("c1"))
+        started.await()
+        val job = async {
+          tools.run(stop, streamingToolContext("s1"), mapOf("function_name" to "monitor"))
+        }
+        cancelled.await()
+        job.cancel()
+
+        assertWithMessage("the stop should end once its caller is cancelled")
+          .that(withTimeoutOrNull(500.milliseconds) { job.join() })
+          .isNotNull()
+      } finally {
+        withContext(NonCancellable) { tools.close() }
+      }
+    }
   }
 }

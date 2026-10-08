@@ -782,10 +782,13 @@ internal class LlmAgentTurn(
             // Held until the write returns, so a cancellation in between re-sends it.
             val pending = PendingSend(liveRequest, persisted = false, screened = null)
             pendingRequest.store(pending)
+            // Copied once, as taken off the queue; the replay above is not copied again.
+            liveTools?.copyInput(liveRequest)
             if (!sendOrReplay(pending)) return@launch
             pendingRequest.store(null)
           }
           // receiveRequest returns null only once the caller has closed the queue.
+          liveTools?.closeInput()
           result.closedByCaller = true
           val closedInTime = close()
           // A close that timed out may never end the connection's receive, so stop reading too.
@@ -2056,15 +2059,18 @@ internal class LlmAgentTurn(
   ): Event? {
     val functionCalls = actionEvent.functionCalls()
     val functionResponseEvent =
-      functionCalls
-        .takeIf { it.isNotEmpty() }
-        ?.let { calls ->
+      if (functionCalls.isEmpty()) {
+        null
+      } else {
+        TurnBasedToolRunner().runThenEmitEvents(emitEvent) { turnRunner ->
           // A live run runs tools through its streaming tools, so a returned Flow streams.
-          val runner: ToolRunner = if (liveTools == null) DEFAULT_TOOL_RUNNER else liveTools::run
-          context.handleFunctionCallsWith(calls, tools, toolRunner = runner)
+          val runner: ToolRunner = if (liveTools == null) turnRunner else liveTools::run
+          context
+            .handleFunctionCallsWith(functionCalls, tools, toolRunner = runner)
+            // A live answer names the session its call came from.
+            ?.copy(liveSessionId = actionEvent.liveSessionId)
         }
-        // A live answer names the session its call came from, as in ADK Python.
-        ?.copy(liveSessionId = actionEvent.liveSessionId)
+      }
 
     functionResponseEvent?.let { responseEvent ->
       // A live run can't take an approval yet, so it asks for none, as in ADK Python.

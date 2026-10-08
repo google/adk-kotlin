@@ -44,11 +44,21 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * Maps each stop-tool name a live run intercepts to the argument naming the tool to stop:
+ * `stop_streaming(function_name)` and `stopStreaming(functionName)`, the camelCase name a Kotlin
+ * `@Tool` function declares by default.
+ */
+private val STOP_STREAMING_ARGS =
+  mapOf("stop_streaming" to "function_name", "stopStreaming" to "functionName")
 
 /**
  * Wraps [value] in a user [Content] carrying a [FunctionResponse] for [toolName] and [callId]. A
@@ -83,8 +93,8 @@ internal inline fun <T> AtomicReference<T>.mutate(transform: (T) -> T) {
 }
 
 /**
- * The streaming tools one agent's live run started, each collected in the background until it ends
- * or the run ends or hands the conversation over.
+ * The streaming tools one agent's live run started, each collected in the background until it ends,
+ * is stopped, or the run ends or hands the conversation over.
  *
  * Each [Event] a tool emits reaches only the caller, and the tool waits until the caller has
  * handled it before continuing; every other value reaches the model as a function response to the
@@ -147,12 +157,57 @@ internal class LiveStreamingTools(
         !job.isCancelled
   }
 
+  // One unbounded channel per input collector; null once the input is closed.
+  private val listeners = AtomicReference<List<Channel<LiveRequest>>?>(emptyList())
+
   /**
-   * Runs a live tool call, collecting a returned [Flow] in the background and answering the call as
-   * pending. A repeat of a still-streaming call with the same arguments gets an "already running"
-   * answer instead of a second stream.
+   * The run's input from when this flow is collected until the queue closes or the run ends. Each
+   * collection gets its own channel, dropped when the collection stops.
+   */
+  fun requests(): Flow<LiveRequest> = flow {
+    val channel = Channel<LiveRequest>(Channel.UNLIMITED)
+    while (true) {
+      val current = listeners.load() ?: return@flow
+      if (listeners.compareAndSet(current, current + channel)) break
+    }
+    try {
+      emitAll(channel)
+    } finally {
+      channel.cancel()
+      listeners.mutate { current -> current?.minus(channel) }
+    }
+  }
+
+  /**
+   * Copies [request], just taken off the caller's queue, to every collector of the run's input. It
+   * never suspends, so a request the sender takes is copied even if the sender is cancelled before
+   * writing it.
+   */
+  fun copyInput(request: LiveRequest) {
+    // A collector that has stopped has cancelled its channel, which simply refuses the copy.
+    listeners.load()?.forEach { channel ->
+      val unused = channel.trySend(request)
+    }
+  }
+
+  /** Completes every collector of the run's input: the caller hung up, or the run is over. */
+  fun closeInput() {
+    listeners.exchange(null)?.forEach { it.close() }
+  }
+
+  /**
+   * Runs a live tool call: intercepts a stop tool to cancel the tool it names, or collects a
+   * returned [Flow] in the background and answers the call as pending. A repeat of a
+   * still-streaming call with the same arguments gets an "already running" answer instead of a
+   * second stream.
    */
   suspend fun run(tool: BaseTool, context: ToolContext, args: Map<String, Any?>): Any {
+    val stopArg = STOP_STREAMING_ARGS[tool.name]
+    if (stopArg != null && stopArg in args) {
+      val target = args[stopArg]
+      require(target is String) { "${tool.name} requires a string $stopArg." }
+      return mapOf(STATUS_KEY to stop(target))
+    }
     // Checked before the tool runs, so a repeat skips the work a tool does to start a stream.
     val original = active.load().firstOrNull { it.isRepeatedBy(tool.name, args) }
     if (original != null) {
@@ -165,7 +220,7 @@ internal class LiveStreamingTools(
     val stream = result as? Flow<*> ?: return result
     // Every live call has an id: the turn fills in a missing one before any tool runs.
     val callId = checkNotNull(context.functionCallId) { "A live tool call has no id." }
-    if (!start(tool, callId, args, stream)) return alreadyRunning(tool.name)
+    if (!start(tool, callId, args, context, stream)) return alreadyRunning(tool.name)
     return mapOf(STATUS_KEY to PENDING_STATUS)
   }
 
@@ -229,7 +284,7 @@ internal class LiveStreamingTools(
   suspend fun stopRunning(): Unit =
     withContext(NonCancellable) {
       val running = active.exchange(emptyList())
-      // Before cancelling: a replaced call needs no stopped answer.
+      // Before cancelling: a replaced call, or one stop_streaming ended, needs no stopped answer.
       val ended = running.filter { !it.job.isCancelled }
       owed.mutate { calls -> calls + ended }
       // A call that ignores cancellation is already warned about and left behind.
@@ -271,12 +326,13 @@ internal class LiveStreamingTools(
     }
 
   /**
-   * Stops every streaming call, releases the scope and drops what no one will deliver.
+   * Stops every streaming call, closes the run's input ([closeInput]), and releases the scope.
    *
    * @return what [stopAll] returns.
    */
   suspend fun close(): List<Content> {
     val stopped = stopAll()
+    closeInput()
     events.close()
     scope.cancel()
     return stopped
@@ -293,10 +349,11 @@ internal class LiveStreamingTools(
     tool: BaseTool,
     callId: String,
     args: Map<String, Any?>,
+    context: ToolContext,
     stream: Flow<*>,
   ): Boolean {
     // Waits for its pending answer to be queued, so the model hears that first.
-    val job = scope.launch(start = CoroutineStart.LAZY) { relay(tool, callId, stream) }
+    val job = scope.launch(start = CoroutineStart.LAZY) { relay(tool, callId, context, stream) }
     // A copy, so a caller changing its map cannot change what later calls are compared with.
     val call = StreamingCall(tool.name, callId, args.toMap(), job)
     val stale: List<StreamingCall>
@@ -334,7 +391,9 @@ internal class LiveStreamingTools(
     return true
   }
 
-  private suspend fun relay(tool: BaseTool, callId: String, stream: Flow<*>) {
+  private suspend fun relay(tool: BaseTool, callId: String, context: ToolContext, stream: Flow<*>) {
+    // Set only while the tool's returned flow runs, so only that flow hears the run's input.
+    context.liveInputSource = this
     try {
       stream.collect { value ->
         // A flow that never suspends would otherwise outlive a stop or a handover.
@@ -351,6 +410,8 @@ internal class LiveStreamingTools(
       if ((e is Error && e !is NotImplementedError) || !currentCoroutineContext().isActive) throw e
       failed.mutate { ids -> ids + callId }
       reportFailure(tool, callId, e)
+    } finally {
+      context.liveInputSource = null
     }
   }
 
@@ -385,6 +446,14 @@ internal class LiveStreamingTools(
       )
     // A value the tool sends next reaches the model only after the caller has this event.
     if (events.trySend(delivered).isSuccess) delivered.handled.await()
+  }
+
+  /** Stops every running call of [toolName] and returns the status message for the model. */
+  private suspend fun stop(toolName: String): String {
+    val running = active.load().filter { it.toolName == toolName }
+    if (running.isEmpty()) return "No active streaming function named $toolName found"
+    if (!cancelAndAwait(running)) return "The task is not cancelled yet for $toolName."
+    return "Successfully stopped streaming function $toolName"
   }
 
   /**
