@@ -33,9 +33,13 @@ import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.reflect.typeOf
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -43,6 +47,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -77,6 +86,9 @@ private data class UserProfileDomain(val userId: String, val tier: String)
 @Serializable private data class UserProfile(val id: String, val age: Int)
 
 @Serializable private data class TicketQuery(val project: String, val maxResults: Int = 5)
+
+@Serializable
+private data class OrderRequest(val item: String, val quantity: Int, val unitPrice: Double)
 
 class FunctionNodeTest {
 
@@ -404,6 +416,343 @@ class FunctionNodeTest {
     assertContains(wrongElement.message.orEmpty(), "input of node 'sum'[1]")
     assertFalse(secret in wrongElement.message.orEmpty())
     assertEquals(listOf("a, b"), joined)
+  }
+
+  // -- Parallel worker FunctionNode builders --
+
+  @Test
+  fun parallelNode_listAndSingleItemInputs_mapsItemsInOrderAndPreservesItemMetadata() {
+    // Arrange
+    val produceItems = node<Any?, List<Int>>("produce_items") { _, _ -> listOf(1, 2, 3) }
+    val doubleItems =
+      parallelNode("double_items") { _, item: Int ->
+        // Later items finish first, so output order must come from the input.
+        delay(((3 - item) * 15).milliseconds)
+        item * 10
+      }
+    val listWorkflow =
+      Workflow(
+        name = "list_wf",
+        edges = listOf(Edge(Start, produceItems), Edge(produceItems, doubleItems)),
+      )
+    val produceSingle = node<Any?, Int>("produce_single") { _, _ -> 7 }
+    val singleItemWorkflow =
+      Workflow(
+        name = "single_wf",
+        edges = listOf(Edge(Start, produceSingle), Edge(produceSingle, doubleItems)),
+      )
+
+    // Act
+    val listEvents = runWorkflowThroughRunner(listWorkflow)
+    val singleEvents = runWorkflowThroughRunner(singleItemWorkflow)
+
+    // Assert
+    assertEquals(typeOf<List<Int>>(), doubleItems.inputType)
+    assertEquals(typeOf<List<Int>>(), doubleItems.outputType)
+    val intArray = Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER))
+    assertEquals(intArray, doubleItems.inputSchema)
+    assertEquals(intArray, doubleItems.outputSchema)
+    assertTrue(doubleItems.rerunOnResume)
+    assertNull(doubleItems.maxParallelWorkers)
+    assertEquals(typeOf<Int>(), doubleItems.itemNode?.inputType)
+    assertEquals(typeOf<Int>(), doubleItems.itemNode?.outputType)
+    assertEquals(Schema(type = Type.INTEGER), doubleItems.itemNode?.inputSchema)
+    assertEquals(Schema(type = Type.INTEGER), doubleItems.itemNode?.outputSchema)
+    assertEquals(listOf(10, 20, 30), listEvents.last { it.output != null }.output)
+    assertEquals(listOf(70), singleEvents.last { it.output != null }.output)
+  }
+
+  @Test
+  fun parallelNode_messageAfterStart_fansOutOverItsJsonListOrRunsItAsOneItem() {
+    // Arrange
+    val upper = parallelNode("upper") { _, item: String -> item.uppercase() }
+    val echo = parallelNode("echo") { _, item: String -> item }
+    val describe = parallelNode("describe") { _, item: Any? -> item.toString() }
+    val partCounts = parallelNode("part_counts") { _, item: Any? -> (item as Content).parts.size }
+    val sizes = parallelNode("sizes") { _, message: Content -> message.text().length }
+    val upperWorkflow = Workflow(name = "upper_wf", edges = listOf(Edge(Start, upper)))
+    val echoWorkflow = Workflow(name = "echo_wf", edges = listOf(Edge(Start, echo)))
+    val describeWorkflow = Workflow(name = "describe_wf", edges = listOf(Edge(Start, describe)))
+    val partsWorkflow = Workflow(name = "parts_wf", edges = listOf(Edge(Start, partCounts)))
+    val sizesWorkflow = Workflow(name = "sizes_wf", edges = listOf(Edge(Start, sizes)))
+    val listMessage = Content.fromText(Role.USER, """["a", "b"]""")
+    val objectMessage = Content.fromText(Role.USER, """{"a":1}""")
+    val mixedMessage =
+      Content(
+        role = Role.USER,
+        parts = listOf(Part(text = """["a", "b"]"""), Part(functionCall = FunctionCall(name = "f"))),
+      )
+
+    // Act
+    val listEvents = runWorkflowThroughRunner(upperWorkflow, listMessage)
+    val textEvents = runWorkflowThroughRunner(upperWorkflow, Content.fromText(Role.USER, "plain"))
+    val objectEvents = runWorkflowThroughRunner(echoWorkflow, objectMessage)
+    val anyEvents = runWorkflowThroughRunner(describeWorkflow, listMessage)
+    val mixedEvents = runWorkflowThroughRunner(partsWorkflow, mixedMessage)
+    val wholeEvents = runWorkflowThroughRunner(sizesWorkflow, listMessage)
+
+    // Assert
+    assertEquals(listOf("A", "B"), listEvents.last { it.output != null }.output)
+    assertEquals(listOf("PLAIN"), textEvents.last { it.output != null }.output)
+    assertEquals(listOf("""{"a":1}"""), objectEvents.last { it.output != null }.output)
+    assertEquals(listOf("a", "b"), anyEvents.last { it.output != null }.output)
+    assertEquals(listOf(2), mixedEvents.last { it.output != null }.output)
+    assertEquals(listOf(10), wholeEvents.last { it.output != null }.output)
+  }
+
+  @Test
+  fun parallelNode_emptyListInput_outputsAnEmptyList() {
+    // Arrange
+    val produceNone = node<Any?, List<Int>>("produce_none") { _, _ -> emptyList() }
+    val doubleItems = parallelNode("double_items") { _, item: Int -> item * 2 }
+    val workflow = Workflow("wf", listOf(Edge(Start, produceNone), Edge(produceNone, doubleItems)))
+
+    // Act
+    val events = runWorkflowThroughRunner(workflow)
+
+    // Assert
+    assertEquals(emptyList<Int>(), events.last { it.output != null }.output)
+  }
+
+  @OptIn(ExperimentalAtomicApi::class)
+  @Test
+  fun parallelNode_emittingProgressAndWrappedFunctionNode_respectMaxParallelWorkers() {
+    // Arrange
+    val active = AtomicInt(0)
+    val peak = AtomicInt(0)
+    val produceItems = node<Any?, List<String>>("produce") { _, _ -> listOf("a", "b", "c", "d") }
+    val streamItems =
+      parallelNode("stream_items", maxParallelWorkers = 2) { _, item: String ->
+        val now = active.addAndFetch(1)
+        do {
+          val seen = peak.load()
+        } while (now > seen && !peak.compareAndSet(seen, now))
+        delay(20.milliseconds)
+        emit(Event(content = Content.fromText(Role.MODEL, "step:$item")))
+        val unused = active.addAndFetch(-1)
+        item.uppercase()
+      }
+    val singleFn = node("append_bang") { _, s: String -> "$s!" }
+    val wrappedParallel = parallelNode(singleFn, maxParallelWorkers = 2)
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, produceItems),
+            Edge(produceItems, streamItems),
+            Edge(streamItems, wrappedParallel),
+          ),
+      )
+
+    // Act
+    val events = runWorkflowThroughRunner(workflow)
+
+    // Assert
+    assertEquals(2, peak.load())
+    assertEquals(
+      setOf("step:a", "step:b", "step:c", "step:d"),
+      events.mapNotNull { it.content?.text() }.toSet(),
+    )
+    assertEquals(listOf("A!", "B!", "C!", "D!"), events.last { it.output != null }.output)
+  }
+
+  @OptIn(ExperimentalAtomicApi::class)
+  @Test
+  fun parallelNode_maxParallelWorkersOneOnAMultiThreadedDispatcher_startsItemsInIndexOrder() {
+    // Arrange
+    val items = (1..30).toList()
+    val starts = mutableListOf<Int>()
+    val active = AtomicInt(0)
+    val peak = AtomicInt(0)
+    val produceItems = node<Any?, List<Int>>("produce") { _, _ -> items }
+    val worker =
+      parallelNode("worker", maxParallelWorkers = 1) { _, item: Int ->
+        starts += item
+        val now = active.addAndFetch(1)
+        if (now > peak.load()) peak.store(now)
+        val unused = active.addAndFetch(-1)
+        item
+      }
+    val runner =
+      runnerFor(Workflow("wf", listOf(Edge(Start, produceItems), Edge(produceItems, worker))))
+
+    // Act
+    val unused =
+      runBlocking(Dispatchers.Default) {
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = startMessage).toList()
+      }
+
+    // Assert
+    assertEquals(items, starts)
+    assertEquals(1, peak.load())
+  }
+
+  @OptIn(ExperimentalAtomicApi::class)
+  @Test
+  fun parallelNode_itemRetry_retriesOnlyTheFailedItem() {
+    // Arrange
+    val itemRuns = AtomicInt(0)
+    val produceItems = node<Any?, List<Int>>("produce") { _, _ -> listOf(1, 2) }
+    val worker =
+      parallelNode(
+        "worker",
+        config =
+          NodeConfig(retryConfig = RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO)),
+      ) { ctx, item: Int ->
+        val unused = itemRuns.addAndFetch(1)
+        if (item == 2 && ctx.attemptCount == 1) throw IllegalStateException("transient")
+        item * 10
+      }
+    val workflow = Workflow("wf", listOf(Edge(Start, produceItems), Edge(produceItems, worker)))
+
+    // Act
+    val events = runWorkflowThroughRunner(workflow)
+
+    // Assert
+    assertEquals(listOf(10, 20), events.last { it.output != null }.output)
+    assertEquals(3, itemRuns.load())
+  }
+
+  @OptIn(ExperimentalAtomicApi::class)
+  @Test
+  fun parallelNode_itemInterrupt_interruptsTheNodeAndCancelsTheItemsStillRunning() {
+    // Arrange
+    val finishedSiblings = AtomicInt(0)
+    val worker =
+      parallelNode("worker") { _, item: Int ->
+        if (item == 2) {
+          emit(Event(longRunningToolIds = setOf("ask")))
+        } else {
+          delay(500.milliseconds)
+          val unused = finishedSiblings.addAndFetch(1)
+        }
+        item * 10
+      }
+
+    // Act
+    val ctx = runBlocking {
+      NodeRunner(node = worker, parent = nodeContext(worker)).run(listOf(1, 2, 3))
+    }
+
+    // Assert
+    assertEquals(setOf("ask"), ctx.interruptIds)
+    assertNull(ctx.output)
+    assertEquals(0, finishedSiblings.load())
+  }
+
+  @Test
+  fun parallelNode_itemFailureWithOneWorker_startsNoQueuedItem() {
+    // Arrange
+    val startsPerRun = mutableListOf<List<Int>>()
+
+    // Act
+    repeat(50) {
+      val starts = mutableListOf<Int>()
+      val produceItems = node<Any?, List<Int>>("produce") { _, _ -> listOf(1, 2, 3) }
+      val worker =
+        parallelNode("worker", maxParallelWorkers = 1) { _, item: Int ->
+          starts += item
+          if (item == 1) throw IllegalStateException("boom")
+          item
+        }
+      val runner =
+        runnerFor(Workflow("wf", listOf(Edge(Start, produceItems), Edge(produceItems, worker))))
+      val unused =
+        assertFailsWith<IllegalStateException> {
+          runBlocking(Dispatchers.Default) {
+            runner.runAsync(userId = "u", sessionId = "s", newMessage = startMessage).toList()
+          }
+        }
+      startsPerRun += starts.toList()
+    }
+
+    // Assert
+    assertEquals(List(50) { listOf(1) }, startsPerRun)
+  }
+
+  @OptIn(ExperimentalAtomicApi::class)
+  @Test
+  fun parallelNode_itemFailure_cancelsTheItemsStillRunning() {
+    // Arrange
+    val finishedSiblings = AtomicInt(0)
+    val produceItems = node<Any?, List<Int>>("produce") { _, _ -> listOf(1, 2, 3) }
+    val worker =
+      parallelNode("worker") { _, item: Int ->
+        if (item == 2) throw IllegalStateException("boom")
+        delay(500.milliseconds)
+        val unused = finishedSiblings.addAndFetch(1)
+        item
+      }
+    val workflow = Workflow("wf", listOf(Edge(Start, produceItems), Edge(produceItems, worker)))
+    val runner = runnerFor(workflow)
+
+    // Act
+    val failure = assertFailsWith<IllegalStateException> { runner.runEvents() }
+    val errorPaths =
+      runner.session().events.filter { it.errorCode != null }.map { it.nodeInfo?.path }
+
+    // Assert
+    assertEquals("boom", failure.message)
+    assertEquals(0, finishedSiblings.load())
+    assertEquals(listOf("wf@1/worker@1/worker@2"), errorPaths)
+  }
+
+  @Test
+  fun workflow_parallelFanOutToReducer_persistsItemOutputsAndTotal() {
+    // Arrange
+    val produceLines =
+      node<Any?, List<OrderRequest>>("produce_lines") { _, _ ->
+        listOf(OrderRequest("Book", 2, 10.0), OrderRequest("Pen", 3, 1.5))
+      }
+    val priceLines =
+      parallelNode("price_lines") { _, line: OrderRequest -> line.quantity * line.unitPrice }
+    val sumTotal =
+      node("sum_total") { ctx, totals: List<Double> ->
+        ctx.updateState("order_total", totals.sum())
+        totals.sum()
+      }
+    val workflow =
+      Workflow(
+        name = "order_wf",
+        edges =
+          listOf(
+            Edge(Start, produceLines),
+            Edge(produceLines, priceLines),
+            Edge(priceLines, sumTotal),
+          ),
+      )
+    val runner = runnerFor(workflow)
+
+    // Act
+    val events = runner.runEvents()
+    val session = runner.session()
+
+    // Assert
+    assertEquals(24.5, events.last { it.output != null }.output)
+    assertEquals(24.5, session.state["order_total"])
+    val fanOutEvent = session.events.single { it.nodeInfo?.path == "order_wf@1/price_lines@1" }
+    assertEquals(listOf(20.0, 4.5), fanOutEvent.output)
+  }
+
+  @Test
+  fun parallelNode_nonPositiveMaxParallelWorkers_throwsWorkflowConfigurationError() {
+    // Arrange
+    val singleFn = node("single") { _, x: Int -> x }
+
+    // Act
+    val zeroError =
+      assertFailsWith<WorkflowConfigurationError> {
+        parallelNode("bad_zero", maxParallelWorkers = 0) { _, x: Int -> x }
+      }
+    val negativeError =
+      assertFailsWith<WorkflowConfigurationError> {
+        parallelNode(singleFn, maxParallelWorkers = -1)
+      }
+
+    // Assert
+    assertContains(zeroError.message.orEmpty(), "maxParallelWorkers must be at least 1")
+    assertContains(negativeError.message.orEmpty(), "maxParallelWorkers must be at least 1")
   }
 
   // -- Node name validation --
