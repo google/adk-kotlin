@@ -51,6 +51,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
+ * Maps each stop-tool name a live run intercepts to the argument naming the tool to stop:
+ * `stop_streaming(function_name)` and `stopStreaming(functionName)`, the camelCase name a Kotlin
+ * `@Tool` function declares by default.
+ */
+private val STOP_STREAMING_ARGS =
+  mapOf("stop_streaming" to "function_name", "stopStreaming" to "functionName")
+
+/**
  * Wraps [value] in a user [Content] carrying a [FunctionResponse] for [toolName] and [callId]. A
  * [FunctionResponse] [value] contributes only its payload, since the call it answers is not the
  * tool's to choose, and `Unit` becomes `{"result": null}`.
@@ -83,8 +91,8 @@ internal inline fun <T> AtomicReference<T>.mutate(transform: (T) -> T) {
 }
 
 /**
- * The streaming tools one agent's live run started, each collected in the background until it ends
- * or the run ends or hands the conversation over.
+ * The streaming tools one agent's live run started, each collected in the background until it ends,
+ * is stopped, or the run ends or hands the conversation over.
  *
  * Each [Event] a tool emits reaches only the caller, and the tool waits until the caller has
  * handled it before continuing; every other value reaches the model as a function response to the
@@ -148,11 +156,18 @@ internal class LiveStreamingTools(
   }
 
   /**
-   * Runs a live tool call, collecting a returned [Flow] in the background and answering the call as
-   * pending. A repeat of a still-streaming call with the same arguments gets an "already running"
-   * answer instead of a second stream.
+   * Runs a live tool call: intercepts a stop tool to cancel the tool it names, or collects a
+   * returned [Flow] in the background and answers the call as pending. A repeat of a
+   * still-streaming call with the same arguments gets an "already running" answer instead of a
+   * second stream.
    */
   suspend fun run(tool: BaseTool, context: ToolContext, args: Map<String, Any?>): Any {
+    val stopArg = STOP_STREAMING_ARGS[tool.name]
+    if (stopArg != null && stopArg in args) {
+      val target = args[stopArg]
+      require(target is String) { "${tool.name} requires a string $stopArg." }
+      return mapOf(STATUS_KEY to stop(target))
+    }
     // Checked before the tool runs, so a repeat skips the work a tool does to start a stream.
     val original = active.load().firstOrNull { it.isRepeatedBy(tool.name, args) }
     if (original != null) {
@@ -229,7 +244,7 @@ internal class LiveStreamingTools(
   suspend fun stopRunning(): Unit =
     withContext(NonCancellable) {
       val running = active.exchange(emptyList())
-      // Before cancelling: a replaced call needs no stopped answer.
+      // Before cancelling: a replaced call, or one stop_streaming ended, needs no stopped answer.
       val ended = running.filter { !it.job.isCancelled }
       owed.mutate { calls -> calls + ended }
       // A call that ignores cancellation is already warned about and left behind.
@@ -385,6 +400,14 @@ internal class LiveStreamingTools(
       )
     // A value the tool sends next reaches the model only after the caller has this event.
     if (events.trySend(delivered).isSuccess) delivered.handled.await()
+  }
+
+  /** Stops every running call of [toolName] and returns the status message for the model. */
+  private suspend fun stop(toolName: String): String {
+    val running = active.load().filter { it.toolName == toolName }
+    if (running.isEmpty()) return "No active streaming function named $toolName found"
+    if (!cancelAndAwait(running)) return "The task is not cancelled yet for $toolName."
+    return "Successfully stopped streaming function $toolName"
   }
 
   /**

@@ -2056,15 +2056,18 @@ internal class LlmAgentTurn(
   ): Event? {
     val functionCalls = actionEvent.functionCalls()
     val functionResponseEvent =
-      functionCalls
-        .takeIf { it.isNotEmpty() }
-        ?.let { calls ->
+      if (functionCalls.isEmpty()) {
+        null
+      } else {
+        TurnBasedToolRunner().runThenEmitEvents(emitEvent) { turnRunner ->
           // A live run runs tools through its streaming tools, so a returned Flow streams.
-          val runner: ToolRunner = if (liveTools == null) DEFAULT_TOOL_RUNNER else liveTools::run
-          context.handleFunctionCallsWith(calls, tools, toolRunner = runner)
+          val runner: ToolRunner = if (liveTools == null) turnRunner else liveTools::run
+          context
+            .handleFunctionCallsWith(functionCalls, tools, toolRunner = runner)
+            // A live answer names the session its call came from.
+            ?.copy(liveSessionId = actionEvent.liveSessionId)
         }
-        // A live answer names the session its call came from, as in ADK Python.
-        ?.copy(liveSessionId = actionEvent.liveSessionId)
+      }
 
     functionResponseEvent?.let { responseEvent ->
       // A live run can't take an approval yet, so it asks for none, as in ADK Python.
