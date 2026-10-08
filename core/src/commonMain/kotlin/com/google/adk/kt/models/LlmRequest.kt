@@ -49,7 +49,9 @@ import kotlinx.serialization.json.encodeToJsonElement
  * @property cacheableContentsTokenCount Prompt token count from the previous request, used to gate
  *   cache creation on a minimum size.
  * @property liveConnectConfig The configuration used when opening a live connection. Ignored by
- *   [Model.generateContent]; it applies only to [Model.connect].
+ *   [Model.generateContent]; it applies only to [Model.connect]. The agent's instruction, tools,
+ *   and thinking settings win over this config's, while this config's sampling and safety settings
+ *   win over the agent's.
  */
 data class LlmRequest(
   val model: Model? = null,

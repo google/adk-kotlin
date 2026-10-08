@@ -17,9 +17,11 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.LiveConnectConfig
 
 /**
  * A processor that handles basic information to build the LLM request.
@@ -45,6 +47,47 @@ internal class BasicRequestProcessor : LlmRequestProcessor {
         ?.let { outputSchema ->
           baseConfig.copy(responseSchema = outputSchema, responseMimeType = "application/json")
         } ?: baseConfig
-    return request.copy(model = agent.model, config = config)
+    val liveConnectConfig =
+      (context.runConfig?.let { request.liveConnectConfig.applyRunConfig(it) }
+          ?: request.liveConnectConfig)
+        .foldSamplingFrom(config)
+    return request.copy(model = agent.model, config = config, liveConnectConfig = liveConnectConfig)
   }
 }
+
+/**
+ * Folds the agent's sampling settings into this live config, as ADK Python's `basic.py` does.
+ *
+ * Applied for every request, live or not; the live config's own value wins, otherwise the agent's
+ * [config] value is used.
+ */
+private fun LiveConnectConfig.foldSamplingFrom(config: GenerateContentConfig): LiveConnectConfig =
+  copy(
+    temperature = temperature ?: config.temperature,
+    topP = topP ?: config.topP,
+    topK = topK ?: config.topK,
+    maxOutputTokens = maxOutputTokens ?: config.maxOutputTokens,
+    mediaResolution = mediaResolution ?: config.mediaResolution,
+    seed = seed ?: config.seed,
+  )
+
+/**
+ * Returns this config with the connect-time settings of [runConfig] applied.
+ *
+ * Applied for every request, live or not, as ADK Python does; a non-live request simply never reads
+ * the result. Every setting passes through on every model and the server decides what it accepts.
+ */
+private fun LiveConnectConfig.applyRunConfig(runConfig: RunConfig): LiveConnectConfig =
+  copy(
+    responseModalities = runConfig.responseModalities.ifEmpty { null },
+    speechConfig = runConfig.speechConfig,
+    outputAudioTranscription = runConfig.outputAudioTranscription,
+    inputAudioTranscription = runConfig.inputAudioTranscription,
+    realtimeInputConfig = runConfig.realtimeInputConfig,
+    explicitVadSignal = runConfig.explicitVadSignal,
+    translationConfig = runConfig.translationConfig,
+    enableAffectiveDialog = runConfig.enableAffectiveDialog,
+    proactivity = runConfig.proactivity,
+    sessionResumption = runConfig.sessionResumption,
+    contextWindowCompression = runConfig.contextWindowCompression,
+  )

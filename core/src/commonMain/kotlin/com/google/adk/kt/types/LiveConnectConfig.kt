@@ -16,6 +16,9 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.AdkJavaInteropApi
+import kotlin.jvm.JvmOverloads
+import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Serializable
 
 /**
@@ -48,9 +51,13 @@ import kotlinx.serialization.Serializable
  * @property contextWindowCompression Keeps the session's context below a given length.
  * @property proactivity Whether the model may decline to respond to a prompt.
  * @property safetySettings Safety settings to apply to the session.
+ * @property explicitVadSignal Whether the model sends its voice activity detection signals.
+ * @property translationConfig Real-time speech-to-speech translation, for translation models.
  */
 @Serializable
-data class LiveConnectConfig(
+data class LiveConnectConfig
+@JvmOverloads
+constructor(
   val responseModalities: List<Modality>? = null,
   val temperature: Float? = null,
   val topP: Float? = null,
@@ -70,4 +77,175 @@ data class LiveConnectConfig(
   val contextWindowCompression: ContextWindowCompressionConfig? = null,
   val proactivity: ProactivityConfig? = null,
   val safetySettings: List<SafetySetting>? = null,
-)
+  val explicitVadSignal: Boolean? = null,
+  val translationConfig: TranslationConfig? = null,
+) {
+
+  /**
+   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
+   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
+   * changes whenever a property is added.
+   */
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder =
+    Builder()
+      .responseModalities(responseModalities.orEmpty())
+      .temperature(temperature)
+      .topP(topP)
+      .topK(topK)
+      .maxOutputTokens(maxOutputTokens)
+      .mediaResolution(mediaResolution)
+      .seed(seed)
+      .speechConfig(speechConfig)
+      .thinkingConfig(thinkingConfig)
+      .enableAffectiveDialog(enableAffectiveDialog)
+      .systemInstruction(systemInstruction)
+      .tools(tools.orEmpty())
+      .sessionResumption(sessionResumption)
+      .inputAudioTranscription(inputAudioTranscription)
+      .outputAudioTranscription(outputAudioTranscription)
+      .realtimeInputConfig(realtimeInputConfig)
+      .contextWindowCompression(contextWindowCompression)
+      .proactivity(proactivity)
+      .safetySettings(safetySettings.orEmpty())
+      .explicitVadSignal(explicitVadSignal)
+      .translationConfig(translationConfig)
+
+  /**
+   * Fluent builder for [LiveConnectConfig], provided primarily for Java callers. Any property left
+   * unset falls back to the same default as the constructor.
+   */
+  @AdkJavaInteropApi
+  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
+  class Builder {
+    private var responseModalities: List<Modality> = emptyList()
+    private var temperature: Float? = null
+    private var topP: Float? = null
+    private var topK: Int? = null
+    private var maxOutputTokens: Int? = null
+    private var mediaResolution: MediaResolution? = null
+    private var seed: Int? = null
+    private var speechConfig: SpeechConfig? = null
+    private var thinkingConfig: ThinkingConfig? = null
+    private var enableAffectiveDialog: Boolean? = null
+    private var systemInstruction: Content? = null
+    private var tools: List<Tool> = emptyList()
+    private var sessionResumption: SessionResumptionConfig? = null
+    private var inputAudioTranscription: AudioTranscriptionConfig? = null
+    private var outputAudioTranscription: AudioTranscriptionConfig? = null
+    private var realtimeInputConfig: RealtimeInputConfig? = null
+    private var contextWindowCompression: ContextWindowCompressionConfig? = null
+    private var proactivity: ProactivityConfig? = null
+    private var safetySettings: List<SafetySetting> = emptyList()
+    private var explicitVadSignal: Boolean? = null
+    private var translationConfig: TranslationConfig? = null
+
+    /** An empty list leaves it unset. */
+    fun responseModalities(responseModalities: List<Modality>): Builder = apply {
+      this.responseModalities = responseModalities
+    }
+
+    fun temperature(temperature: Float?): Builder = apply { this.temperature = temperature }
+
+    fun topP(topP: Float?): Builder = apply { this.topP = topP }
+
+    fun topK(topK: Int?): Builder = apply { this.topK = topK }
+
+    fun maxOutputTokens(maxOutputTokens: Int?): Builder = apply {
+      this.maxOutputTokens = maxOutputTokens
+    }
+
+    fun mediaResolution(mediaResolution: MediaResolution?): Builder = apply {
+      this.mediaResolution = mediaResolution
+    }
+
+    fun seed(seed: Int?): Builder = apply { this.seed = seed }
+
+    fun speechConfig(speechConfig: SpeechConfig?): Builder = apply {
+      this.speechConfig = speechConfig
+    }
+
+    fun thinkingConfig(thinkingConfig: ThinkingConfig?): Builder = apply {
+      this.thinkingConfig = thinkingConfig
+    }
+
+    fun enableAffectiveDialog(enableAffectiveDialog: Boolean?): Builder = apply {
+      this.enableAffectiveDialog = enableAffectiveDialog
+    }
+
+    fun systemInstruction(systemInstruction: Content?): Builder = apply {
+      this.systemInstruction = systemInstruction
+    }
+
+    /** An empty list leaves it unset. */
+    fun tools(tools: List<Tool>): Builder = apply { this.tools = tools }
+
+    fun sessionResumption(sessionResumption: SessionResumptionConfig?): Builder = apply {
+      this.sessionResumption = sessionResumption
+    }
+
+    fun inputAudioTranscription(inputAudioTranscription: AudioTranscriptionConfig?): Builder =
+      apply {
+        this.inputAudioTranscription = inputAudioTranscription
+      }
+
+    fun outputAudioTranscription(outputAudioTranscription: AudioTranscriptionConfig?): Builder =
+      apply {
+        this.outputAudioTranscription = outputAudioTranscription
+      }
+
+    fun realtimeInputConfig(realtimeInputConfig: RealtimeInputConfig?): Builder = apply {
+      this.realtimeInputConfig = realtimeInputConfig
+    }
+
+    fun contextWindowCompression(
+      contextWindowCompression: ContextWindowCompressionConfig?
+    ): Builder = apply { this.contextWindowCompression = contextWindowCompression }
+
+    fun proactivity(proactivity: ProactivityConfig?): Builder = apply {
+      this.proactivity = proactivity
+    }
+
+    /** An empty list leaves it unset. */
+    fun safetySettings(safetySettings: List<SafetySetting>): Builder = apply {
+      this.safetySettings = safetySettings
+    }
+
+    fun explicitVadSignal(explicitVadSignal: Boolean?): Builder = apply {
+      this.explicitVadSignal = explicitVadSignal
+    }
+
+    fun translationConfig(translationConfig: TranslationConfig?): Builder = apply {
+      this.translationConfig = translationConfig
+    }
+
+    fun build(): LiveConnectConfig =
+      LiveConnectConfig(
+        responseModalities = responseModalities.ifEmpty { null },
+        temperature = temperature,
+        topP = topP,
+        topK = topK,
+        maxOutputTokens = maxOutputTokens,
+        mediaResolution = mediaResolution,
+        seed = seed,
+        speechConfig = speechConfig,
+        thinkingConfig = thinkingConfig,
+        enableAffectiveDialog = enableAffectiveDialog,
+        systemInstruction = systemInstruction,
+        tools = tools.ifEmpty { null },
+        sessionResumption = sessionResumption,
+        inputAudioTranscription = inputAudioTranscription,
+        outputAudioTranscription = outputAudioTranscription,
+        realtimeInputConfig = realtimeInputConfig,
+        contextWindowCompression = contextWindowCompression,
+        proactivity = proactivity,
+        safetySettings = safetySettings.ifEmpty { null },
+        explicitVadSignal = explicitVadSignal,
+        translationConfig = translationConfig,
+      )
+  }
+
+  companion object {
+    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
+  }
+}

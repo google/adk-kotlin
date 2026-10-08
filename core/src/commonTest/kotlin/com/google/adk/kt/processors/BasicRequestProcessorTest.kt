@@ -18,17 +18,31 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.testSession
+import com.google.adk.kt.types.ActivityHandling
+import com.google.adk.kt.types.AudioTranscriptionConfig
+import com.google.adk.kt.types.ContextWindowCompressionConfig
 import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.LiveConnectConfig
+import com.google.adk.kt.types.MediaResolution
+import com.google.adk.kt.types.Modality
+import com.google.adk.kt.types.ProactivityConfig
+import com.google.adk.kt.types.RealtimeInputConfig
 import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.SessionResumptionConfig
+import com.google.adk.kt.types.SpeechConfig
+import com.google.adk.kt.types.TranslationConfig
 import com.google.adk.kt.types.Type
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+
+private const val MODEL = "gemini-live-test"
 
 class BasicRequestProcessorTest {
 
@@ -140,5 +154,176 @@ class BasicRequestProcessorTest {
 
     assertEquals(outputSchema, request.config.responseSchema)
     assertEquals("application/json", request.config.responseMimeType)
+  }
+
+  @Test
+  fun run_withDefaultRunConfig_deliversTranscriptionToLiveConnectConfig() = runBlocking {
+    // Asserts arrival, not the default's value: without the copy it never reaches the connection.
+    val agent = LlmAgent(name = "test", model = DummyModel("gemini-2.0-flash-live"))
+    val context = InvocationContext(session = testSession(), runConfig = RunConfig(), agent = agent)
+
+    val request = BasicRequestProcessor().process(context, LlmRequest())
+
+    assertEquals(AudioTranscriptionConfig(), request.liveConnectConfig.outputAudioTranscription)
+    assertEquals(AudioTranscriptionConfig(), request.liveConnectConfig.inputAudioTranscription)
+  }
+
+  @Test
+  fun run_withPopulatedRunConfig_copiesEveryLiveField() = runBlocking {
+    val runConfig =
+      RunConfig(
+        responseModalities = listOf(Modality.AUDIO),
+        speechConfig = SpeechConfig(languageCode = "en-US"),
+        outputAudioTranscription = AudioTranscriptionConfig(languageCodes = listOf("en-US")),
+        inputAudioTranscription = AudioTranscriptionConfig(languageCodes = listOf("fr-FR")),
+        realtimeInputConfig =
+          RealtimeInputConfig(activityHandling = ActivityHandling.NO_INTERRUPTION),
+        explicitVadSignal = true,
+        translationConfig = TranslationConfig(targetLanguageCode = "es"),
+        enableAffectiveDialog = true,
+        proactivity = ProactivityConfig(proactiveAudio = true),
+        sessionResumption = SessionResumptionConfig(handle = "resumption-handle"),
+        contextWindowCompression = ContextWindowCompressionConfig(triggerTokens = 1024L),
+      )
+    val agent = LlmAgent(name = "test", model = DummyModel("gemini-2.0-flash-live"))
+    val context = InvocationContext(session = testSession(), runConfig = runConfig, agent = agent)
+
+    val live = BasicRequestProcessor().process(context, LlmRequest()).liveConnectConfig
+
+    assertEquals(runConfig.responseModalities, live.responseModalities)
+    assertEquals(runConfig.speechConfig, live.speechConfig)
+    assertEquals(runConfig.outputAudioTranscription, live.outputAudioTranscription)
+    assertEquals(runConfig.inputAudioTranscription, live.inputAudioTranscription)
+    assertEquals(runConfig.realtimeInputConfig, live.realtimeInputConfig)
+    assertEquals(runConfig.explicitVadSignal, live.explicitVadSignal)
+    assertEquals(runConfig.translationConfig, live.translationConfig)
+    assertEquals(runConfig.enableAffectiveDialog, live.enableAffectiveDialog)
+    assertEquals(runConfig.proactivity, live.proactivity)
+    assertEquals(runConfig.sessionResumption, live.sessionResumption)
+    assertEquals(runConfig.contextWindowCompression, live.contextWindowCompression)
+  }
+
+  @Test
+  fun run_withAnyLiveModel_passesRequestedResponseModalitiesThrough() = runBlocking {
+    // As in ADK Python: the list is passed through on every model, so a model that cannot answer in
+    // text refuses the setup instead of silently answering in audio.
+    val runConfig = RunConfig(responseModalities = listOf(Modality.TEXT))
+    val agent = LlmAgent(name = "test", model = DummyModel(MODEL))
+    val context = InvocationContext(session = testSession(), runConfig = runConfig, agent = agent)
+
+    val live = BasicRequestProcessor().process(context, LlmRequest()).liveConnectConfig
+
+    assertEquals(listOf(Modality.TEXT), live.responseModalities)
+  }
+
+  @Test
+  fun run_withNullRunConfig_appliesNoRunConfigSettings() = runBlocking {
+    val agent = LlmAgent(name = "test", model = DummyModel("gemini-2.0-flash-live"))
+    val context = InvocationContext(session = testSession(), runConfig = null, agent = agent)
+
+    val request = BasicRequestProcessor().process(context, LlmRequest())
+
+    assertEquals(LiveConnectConfig(), request.liveConnectConfig)
+  }
+
+  @Test
+  fun run_withAnyLiveModel_leavesEmptyResponseModalitiesUnset() = runBlocking {
+    // Empty means no preference, so it stays unset; the server's audio default applies.
+    val runConfig = RunConfig(responseModalities = emptyList())
+    val agent = LlmAgent(name = "test", model = DummyModel("gemini-3.0-flash-live-preview"))
+    val context = InvocationContext(session = testSession(), runConfig = runConfig, agent = agent)
+
+    val live = BasicRequestProcessor().process(context, LlmRequest()).liveConnectConfig
+
+    assertNull(live.responseModalities)
+  }
+
+  @Test
+  fun run_withAgentSampling_foldsItIntoLiveConnectConfig() = runBlocking {
+    // Folded in like ADK Python: the agent's values are used when the live config has none.
+    val config =
+      GenerateContentConfig(
+        temperature = 0.25f,
+        topP = 0.9f,
+        topK = 40,
+        maxOutputTokens = 256,
+        mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW,
+        seed = 7,
+      )
+    val agent =
+      LlmAgent(
+        name = "test",
+        model = DummyModel("gemini-2.0-flash-live"),
+        generateContentConfig = config,
+      )
+    val context = InvocationContext(session = testSession(), runConfig = RunConfig(), agent = agent)
+
+    val live = BasicRequestProcessor().process(context, LlmRequest()).liveConnectConfig
+
+    assertEquals(0.25f, live.temperature)
+    assertEquals(0.9f, live.topP)
+    assertEquals(40, live.topK)
+    assertEquals(256, live.maxOutputTokens)
+    assertEquals(MediaResolution.MEDIA_RESOLUTION_LOW, live.mediaResolution)
+    assertEquals(7, live.seed)
+  }
+
+  @Test
+  fun run_withSamplingOnTheLiveConnectConfig_keepsItOverTheAgents() = runBlocking {
+    // Every field the rule covers, not a sample: the live config's own value wins.
+    val config =
+      GenerateContentConfig(
+        temperature = 0.9f,
+        topP = 0.8f,
+        topK = 99,
+        maxOutputTokens = 4096,
+        mediaResolution = MediaResolution.MEDIA_RESOLUTION_HIGH,
+        seed = 1,
+      )
+    val agent =
+      LlmAgent(
+        name = "test",
+        model = DummyModel("gemini-2.0-flash-live"),
+        generateContentConfig = config,
+      )
+    val context = InvocationContext(session = testSession(), runConfig = RunConfig(), agent = agent)
+    val request =
+      LlmRequest()
+        .copy(
+          liveConnectConfig =
+            LiveConnectConfig(
+              temperature = 0.1f,
+              topP = 0.2f,
+              topK = 1,
+              maxOutputTokens = 16,
+              mediaResolution = MediaResolution.MEDIA_RESOLUTION_LOW,
+              seed = 2,
+            )
+        )
+
+    val live = BasicRequestProcessor().process(context, request).liveConnectConfig
+
+    assertEquals(0.1f, live.temperature)
+    assertEquals(0.2f, live.topP)
+    assertEquals(1, live.topK)
+    assertEquals(16, live.maxOutputTokens)
+    assertEquals(MediaResolution.MEDIA_RESOLUTION_LOW, live.mediaResolution)
+    assertEquals(2, live.seed)
+  }
+
+  @Test
+  fun run_withNullRunConfigAndAgentSampling_stillFoldsSampling() = runBlocking {
+    // The fold is unconditional, as in ADK Python, so a null run config still gets it.
+    val agent =
+      LlmAgent(
+        name = "test",
+        model = DummyModel("gemini-2.0-flash-live"),
+        generateContentConfig = GenerateContentConfig(seed = 7),
+      )
+    val context = InvocationContext(session = testSession(), runConfig = null, agent = agent)
+
+    val live = BasicRequestProcessor().process(context, LlmRequest()).liveConnectConfig
+
+    assertEquals(7, live.seed)
   }
 }

@@ -18,7 +18,9 @@ package com.google.adk.kt.types
 
 import com.google.genai.kotlin.types.ActivityHandling as SdkActivityHandling
 import com.google.genai.kotlin.types.AudioTranscriptionConfig as SdkAudioTranscriptionConfig
+import com.google.genai.kotlin.types.AudioTranscriptionConfigMode as SdkAudioTranscriptionConfigMode
 import com.google.genai.kotlin.types.EndSensitivity as SdkEndSensitivity
+import com.google.genai.kotlin.types.HttpOptions as SdkHttpOptions
 import com.google.genai.kotlin.types.InteractionStatus as SdkInteractionStatus
 import com.google.genai.kotlin.types.LanguageHints as SdkLanguageHints
 import com.google.genai.kotlin.types.LiveConnectConfig as SdkLiveConnectConfig
@@ -288,6 +290,42 @@ class LiveConvertersTest {
   }
 
   @Test
+  fun voiceConfig_voice_roundTripsThroughSdk() {
+    val config = VoiceConfig(voice = "speaker-1")
+
+    val sdk = config.toGenaiSdk()
+
+    assertEquals("speaker-1", sdk.voice)
+    assertEquals(config, sdk.fromGenaiSdk())
+  }
+
+  @Test
+  fun audioTranscriptionConfigMode_roundTripsThroughSdk() {
+    assertEquals(
+      AudioTranscriptionConfigMode.entries.toList(),
+      AudioTranscriptionConfigMode.entries.map { it.toGenaiSdk().toKt() },
+    )
+  }
+
+  @Test
+  fun audioTranscriptionConfig_smartMode_roundTripsThroughSdk() {
+    val config = AudioTranscriptionConfig(mode = AudioTranscriptionConfigMode.SMART)
+
+    val sdk = config.toGenaiSdk()
+
+    assertEquals(SdkAudioTranscriptionConfigMode.SMART, sdk.mode)
+    assertEquals(config, sdk.fromGenaiSdk())
+  }
+
+  @Test
+  fun audioTranscriptionConfig_unsetMode_staysNull() {
+    val config = AudioTranscriptionConfig(languageCodes = listOf("en-US"))
+
+    assertNull(config.toGenaiSdk().mode)
+    assertNull(config.toGenaiSdk().fromGenaiSdk().mode)
+  }
+
+  @Test
   fun sessionResumptionConfig_roundTripsThroughSdk() {
     val config = SessionResumptionConfig(handle = "handle-1", transparent = true)
 
@@ -301,6 +339,13 @@ class LiveConvertersTest {
         triggerTokens = 16_000L,
         slidingWindow = SlidingWindow(targetTokens = 8_000L),
       )
+
+    assertEquals(config, config.toGenaiSdk().fromGenaiSdk())
+  }
+
+  @Test
+  fun translationConfig_everyFieldSet_roundTripsThroughSdk() {
+    val config = TranslationConfig(targetLanguageCode = "es", echoTargetLanguage = true)
 
     assertEquals(config, config.toGenaiSdk().fromGenaiSdk())
   }
@@ -334,6 +379,8 @@ class LiveConvertersTest {
     assertEquals(16_000L, sdk.contextWindowCompression?.triggerTokens)
     assertEquals(true, sdk.proactivity?.proactiveAudio)
     assertEquals(1, sdk.safetySettings?.size)
+    assertEquals(true, sdk.explicitVadSignal)
+    assertEquals("es", sdk.translationConfig?.targetLanguageCode)
   }
 
   @Test
@@ -355,15 +402,12 @@ class LiveConvertersTest {
     // The converter must not invent these; `toGenaiSdk`'s KDoc says which are permanent.
     assertNull(sdk.httpOptions)
     assertNull(sdk.avatarConfig)
-    assertNull(sdk.explicitVadSignal)
-    assertNull(sdk.translationConfig)
   }
 
   @Test
   fun liveConnectConfig_mirrorsEverySdkFieldItDoesNotDeliberatelyDrop() {
     // Names only: the round trip above catches wrong targets; this catches an undecided field.
-    val deliberatelyDropped =
-      setOf("avatarConfig", "explicitVadSignal", "httpOptions", "translationConfig")
+    val deliberatelyDropped = setOf("avatarConfig", "httpOptions")
     val sdkDescriptor = SdkLiveConnectConfig.serializer().descriptor
     val adkDescriptor = LiveConnectConfig.serializer().descriptor
     val sdkDeclared =
@@ -376,13 +420,13 @@ class LiveConvertersTest {
 
   @Test
   fun liveConnectConfig_fromGenaiSdk_ignoresUnmirroredSdkFields() {
-    val sdk = SdkLiveConnectConfig(explicitVadSignal = true, temperature = 0.25)
+    val sdk = SdkLiveConnectConfig(httpOptions = SdkHttpOptions(timeout = 5), temperature = 0.25)
 
     val adk = sdk.fromGenaiSdk()
 
     assertEquals(0.25f, adk.temperature)
     // Converting back does not resurrect the unmirrored field.
-    assertNull(adk.toGenaiSdk().explicitVadSignal)
+    assertNull(adk.toGenaiSdk().httpOptions)
   }
 
   @Test
@@ -601,5 +645,7 @@ class LiveConvertersTest {
             threshold = HarmBlockThreshold.BLOCK_ONLY_HIGH,
           )
         ),
+      explicitVadSignal = true,
+      translationConfig = TranslationConfig(targetLanguageCode = "es", echoTargetLanguage = true),
     )
 }

@@ -18,16 +18,19 @@ package com.google.adk.kt.types
 
 import kotlinx.serialization.Serializable
 
-/**
- * Configures the session resumption mechanism.
- *
- * Setting this asks the server to send session resumption updates over the connection.
- *
- * @property handle Resumption handle of a previous session to restore. If absent, a new session is
- *   started.
- * @property transparent Whether the server should report the last consumed client message index, so
- *   a reconnect can resume without replaying. Only honored on the Vertex backend; Gemini API
- *   clients reject it.
- */
+/** How [AudioTranscriptionConfig] transcribes speech; defaults to [VERBATIM] when unspecified. */
 @Serializable
-data class SessionResumptionConfig(val handle: String? = null, val transparent: Boolean? = null)
+enum class AudioTranscriptionConfigMode {
+  /** Leaves the mode unspecified, which defaults to [VERBATIM]. */
+  MODE_UNSPECIFIED,
+
+  /** Transcribes speech as spoken. */
+  VERBATIM,
+
+  /**
+   * Removes disfluencies (filler words, repetitions, and false starts), cleans up grammar, formats
+   * paragraphs and lists, and applies inline self-corrections. Incompatible with
+   * [AudioTranscriptionConfig.wordTimestamp] and [AudioTranscriptionConfig.diarization].
+   */
+  SMART,
+}
