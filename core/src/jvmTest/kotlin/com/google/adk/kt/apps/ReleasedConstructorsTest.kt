@@ -25,6 +25,8 @@ import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.models.Gemini
@@ -39,6 +41,7 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.ActivityHandling
 import com.google.adk.kt.types.AudioTranscriptionConfig
+import com.google.adk.kt.types.Citation
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.ContextWindowCompressionConfig
@@ -63,7 +66,9 @@ import com.google.adk.kt.types.SpeechConfig
 import com.google.adk.kt.types.ThinkingConfig
 import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceConfig
+import com.google.adk.kt.workflow.NodeInfo
 import java.io.ByteArrayOutputStream
 import java.net.URLClassLoader
 import javax.tools.ToolProvider
@@ -75,6 +80,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Code built against an earlier release must keep linking to the constructors below. Some also keep
@@ -581,6 +587,110 @@ class ReleasedConstructorsTest {
     assertNull(config.explicitVadSignal)
   }
 
+  @Test
+  fun event_releasedFullConstructor_stillLinks() {
+    // Arrange
+    val arguments =
+      with(RELEASED_EVENT) {
+        arrayOf<Any?>(
+          id,
+          invocationId,
+          author,
+          content,
+          actions,
+          longRunningToolIds,
+          partial,
+          turnComplete,
+          errorCode,
+          errorMessage,
+          finishReason,
+          usageMetadata,
+          avgLogProbs,
+          interrupted,
+          branch,
+          groundingMetadata,
+          modelVersion,
+          citationMetadata,
+          cacheMetadata,
+          customMetadata,
+          output,
+          nodeInfo,
+          timestamp,
+        )
+      }
+
+    // Act
+    val event = Event::class.java.getConstructor(*RELEASED_EVENT_PARAMETERS).newInstance(*arguments)
+
+    // Assert
+    assertEquals(RELEASED_EVENT, event)
+  }
+
+  @Test
+  fun event_javaSourceWrittenAgainstTheReleasedApi_compiles() {
+    // Arrange
+    val caller =
+      compileJava(
+        "ReleasedEventCaller",
+        """
+        import com.google.adk.kt.events.Event;
+        import com.google.adk.kt.events.EventActions;
+        import java.util.Set;
+
+        public final class ReleasedEventCaller {
+          public static Event create() {
+            return new Event(
+                "evt-1", null, "agent", null, new EventActions(), Set.of(), false, false, null,
+                null, null, null, null, false, null, null, null, null, null, null, null, null,
+                1234L);
+          }
+        }
+        """,
+      )
+
+    // Act
+    val event = caller.getMethod("create").invoke(null) as Event
+
+    // Assert
+    assertEquals(Event(id = "evt-1", author = "agent", timestamp = 1234L), event)
+  }
+
+  @Test
+  fun event_releasedNoArgConstructor_stillLinks() {
+    // Arrange / Act: the released class had a no-arg constructor; all its params had defaults.
+    val event = Event::class.java.getConstructor().newInstance()
+
+    // Assert
+    assertEquals(Event(id = event.id, timestamp = event.timestamp), event)
+  }
+
+  @Test
+  fun voiceActivity_javaSourceReadsAudioOffsetMillis() {
+    // Arrange
+    val reader =
+      compileJava(
+        "VoiceActivityReader",
+        """
+        import com.google.adk.kt.types.VoiceActivity;
+
+        public final class VoiceActivityReader {
+          public static Long read(VoiceActivity activity) {
+            return activity.audioOffsetMillis();
+          }
+        }
+        """,
+      )
+
+    // Act
+    val millis =
+      reader
+        .getMethod("read", VoiceActivity::class.java)
+        .invoke(null, VoiceActivity(audioOffset = 1_500.milliseconds))
+
+    // Assert
+    assertEquals(1_500L, millis)
+  }
+
   /** Compiles [source] with javac against the test classpath and loads [className]. */
   private fun compileJava(className: String, source: String): Class<*> {
     val compiler = checkNotNull(ToolProvider.getSystemJavaCompiler()) { "javac is unavailable." }
@@ -680,6 +790,64 @@ class ReleasedConstructorsTest {
         Double::class.javaObjectType,
         LogprobsResult::class.java,
         CacheMetadata::class.java,
+      )
+
+    val RELEASED_EVENT_PARAMETERS: Array<Class<*>> =
+      arrayOf(
+        String::class.java,
+        String::class.java,
+        String::class.java,
+        Content::class.java,
+        EventActions::class.java,
+        Set::class.java,
+        Boolean::class.java,
+        Boolean::class.java,
+        String::class.java,
+        String::class.java,
+        FinishReason::class.java,
+        UsageMetadata::class.java,
+        Double::class.javaObjectType,
+        Boolean::class.java,
+        String::class.java,
+        GroundingMetadata::class.java,
+        String::class.java,
+        CitationMetadata::class.java,
+        CacheMetadata::class.java,
+        Map::class.java,
+        Any::class.java,
+        NodeInfo::class.java,
+        Long::class.java,
+      )
+
+    /**
+     * A distinct, non-default value for every released parameter, so a swapped or dropped argument
+     * fails.
+     */
+    val RELEASED_EVENT =
+      Event(
+        id = "evt-1",
+        invocationId = "inv-1",
+        author = "agent",
+        content = Content(role = "model", parts = listOf(Part(text = "hi"))),
+        actions = EventActions(skipSummarization = true),
+        longRunningToolIds = setOf("call-1"),
+        partial = true,
+        turnComplete = true,
+        errorCode = "E1",
+        errorMessage = "failed",
+        finishReason = FinishReason.STOP,
+        usageMetadata = UsageMetadata(totalTokenCount = 7),
+        avgLogProbs = -0.5,
+        interrupted = true,
+        branch = "root.child",
+        groundingMetadata = GroundingMetadata(webSearchQueries = listOf("q")),
+        modelVersion = "v1",
+        citationMetadata = CitationMetadata(listOf(Citation(uri = "https://example.com"))),
+        cacheMetadata = CacheMetadata(fingerprint = "fp", contentsCount = 2),
+        customMetadata = mapOf("k" to "v"),
+        output = "result",
+        nodeInfo = NodeInfo(path = "wf@1"),
+        timestamp = 1234L,
       )
   }
 }

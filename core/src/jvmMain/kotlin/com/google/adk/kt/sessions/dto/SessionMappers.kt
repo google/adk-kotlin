@@ -19,6 +19,7 @@ package com.google.adk.kt.sessions.dto
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
@@ -27,6 +28,7 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.time.Instant
 import kotlinx.serialization.json.JsonArray
@@ -49,6 +51,8 @@ internal fun Event.toDto(): SessionEventDto {
       groundingMetadata = groundingMetadata?.let { adkJson.encodeToJsonElement(it) },
       usageMetadata = usageMetadata?.let { adkJson.encodeToJsonElement(it) },
       customMetadata = customMetadata?.let { customMetadataToDto(it) },
+      inputTranscription = inputTranscription?.toWire(),
+      outputTranscription = outputTranscription?.toWire(),
     )
   val actionsDto =
     EventActionsDto(
@@ -93,9 +97,45 @@ internal fun SessionEventDto.toAdk(): Event {
     usageMetadata =
       metadata?.usageMetadata?.let { adkJson.decodeFromJsonElement<UsageMetadata>(it) },
     customMetadata = metadata?.customMetadata?.let { customMetadataFromDto(it) },
+    inputTranscription =
+      metadata?.inputTranscription?.let { adkJson.decodeFromJsonElement<Transcription>(it) }
+        ?: rawTranscription("inputTranscription"),
+    outputTranscription =
+      metadata?.outputTranscription?.let { adkJson.decodeFromJsonElement<Transcription>(it) }
+        ?: rawTranscription("outputTranscription"),
     timestamp = timestamp?.toEpochMillis() ?: 0L,
   )
 }
+
+/**
+ * The transcription ADK Python stores under [key] in `rawEvent`, the only place it writes one, or
+ * `null` when it is absent or malformed. Logs a warning naming only [key] when it is malformed.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun SessionEventDto.rawTranscription(key: String): Transcription? {
+  val value = (rawEvent as? JsonObject)?.get(key)
+  if (value == null || value is JsonNull) return null
+  val element =
+    value as? JsonObject
+      ?: run {
+        logger.warn { "Skipped a malformed $key in a session event's rawEvent." }
+        return null
+      }
+  return try {
+    adkJson.decodeFromJsonElement<Transcription>(element)
+  } catch (_: IllegalArgumentException) {
+    logger.warn { "Skipped a malformed $key in a session event's rawEvent." }
+    null
+  }
+}
+
+/**
+ * `session.proto`'s `Transcription` has only `text` and `finished`, and Agent Engine rejects a
+ * request carrying any other key, so the rest of a [Transcription] is not sent.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun Transcription.toWire(): JsonElement =
+  adkJson.encodeToJsonElement(Transcription(text = text, finished = finished))
 
 /**
  * Serializes [content] to the Vertex wire JSON. The wire is proto3-JSON, where a `bytes` field is a
@@ -209,3 +249,5 @@ private fun customMetadataFromDto(customMetadata: JsonElement): Map<String, Any?
       }
     }
   }
+
+private val logger = LoggerFactory.getLogger(SessionEventDto::class)
