@@ -368,7 +368,12 @@ internal class HistoryRewriterProcessor {
           it.id?.takeIf { id -> id in toolCallIds }
         }
       }
-      if (unmatchedResultIds.isNotEmpty() || isSubmittedResult || isDirectTransfer(events[i])) {
+      if (
+        unmatchedResultIds.isNotEmpty() ||
+          isSubmittedResult ||
+          isDirectTransfer(events[i]) ||
+          isStreamFinalAnswer(events[i])
+      ) {
         continue
       }
       if (!isCurrentTurnBoundary(events[i], agentName, currentBranch, toolCallIds)) continue
@@ -381,7 +386,12 @@ internal class HistoryRewriterProcessor {
       ) {
         continue
       }
-      return events.subList(start, events.size)
+      val turn = events.subList(start, events.size)
+      // A stream's final answer to a call made before the turn has nothing in it to answer.
+      val turnCallIds = turn.functionCallIds()
+      return turn.filter { event ->
+        !isStreamFinalAnswer(event) || event.functionResponses().any { it.id in turnCallIds }
+      }
     }
     return emptyList()
   }
@@ -392,6 +402,14 @@ internal class HistoryRewriterProcessor {
    */
   private fun isSubmittedToolResult(event: Event): Boolean =
     event.author == Role.USER && event.functionResponses().isNotEmpty()
+
+  /**
+   * Whether [event] is a live stream's final answer, recorded after the call's first answer. It
+   * replaces that answer where it stands rather than continuing a turn.
+   */
+  private fun isStreamFinalAnswer(event: Event): Boolean =
+    event.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true &&
+      event.functionResponses().isNotEmpty()
 
   /**
    * Whether [event] is a `transfer_to_agent` call or response. A turn started on one would drop the
@@ -734,6 +752,9 @@ internal class HistoryRewriterProcessor {
 
     val currentFunctionResponseIds = functionResponses.mapNotNull { it.id }.toSet()
 
+    // A live stream's final answer replaces the call's first answer where it stands.
+    if (isStreamFinalAnswer(lastEvent)) return events
+
     // Fast-path (parity with Java/Python): if the immediately-preceding event already contains a
     // matching function_call for the latest function_response, the history is already in the
     // canonical [..., model(function_call), function_response] shape, so return as-is. This
@@ -924,3 +945,9 @@ internal class HistoryRewriterProcessor {
     private const val AF_FUNCTION_CALL_ID_PREFIX = "adk-"
   }
 }
+
+/**
+ * The [Event.customMetadata] key that marks a live stream's final answer, which a live run records
+ * once it stops the stream or the stream ends on its own.
+ */
+internal const val STREAM_FINAL_ANSWER_KEY = "adk_stream_final_answer"
