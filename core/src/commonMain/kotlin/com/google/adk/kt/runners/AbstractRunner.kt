@@ -58,6 +58,7 @@ import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.NodeRunner
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -151,6 +152,12 @@ abstract class AbstractRunner : Runner {
   /**
    * Main entry method to run the agent in this runner.
    *
+   * Flushes [sessionService] after appending each final response and before emitting it, and when
+   * the run completes or fails with an exception, but not when it is canceled (including by a
+   * collector that stops early) or fails with an [Error]. A failed flush is thrown, or attached as
+   * suppressed if the run already failed; an end-of-run flush can fail only after the last event
+   * was emitted.
+   *
    * @param userId The user ID of the session.
    * @param sessionId The session ID of the session.
    * @param invocationId The invocation ID of the session, set this to resume an interrupted
@@ -172,38 +179,68 @@ abstract class AbstractRunner : Runner {
     // thread where the caller's ambient context is gone, so parent the invocation span here.
     val parentContext = currentTelemetryContext()
     return flow {
-        // 1. Get or create session
         val key = SessionKey(appName, userId, sessionId)
         val session = sessionService.getSession(key) ?: sessionService.createSession(key)
 
-        // 2. Build the invocation context (resolving the agent to run).
-        val context =
-          createInvocationContext(session, invocationId, newMessage, stateDelta, runConfig)
-
-        // 3. No-op if the resolved agent for a resumed invocation is already final -- there is
-        // nothing left to run. Mirrors Python ADK 1.x `runners.run_async`. For a new invocation
-        // `endOfAgents` is empty, so this never short-circuits a fresh run.
-        if (context.endOfAgents[context.node?.name ?: context.agent.name] == true) {
-          return@flow
+        // Errors are fatal and canceled runs stop, so neither gets the end-of-run flush.
+        try {
+          runInvocation(session, invocationId, newMessage, stateDelta, runConfig)
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          flushAfterFailure(session.key, e)
+          throw e
         }
-
-        // 4. Run agent with plugins. `catch` sees only failures from the run itself (upstream), not
-        // a downstream collector error or cancellation, then re-raises unchanged after notifying
-        // plugins. Mirrors ADK Python `on_run_error_callback` (`_exec_with_plugin`) and ADK Java
-        // `onRunErrorCallback`: notification-only, the error is never suppressed.
-        emitAll(
-          runAgentWithPlugins(context).catch { error ->
-            if (error is CancellationException) throw error
-            runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
-            throw error
-          }
-        )
-
-        // 5. Post-invocation context compaction. Runs after a successful invocation; like Python, a
-        // compaction failure is not a run error, so it stays outside the notification above.
-        runPostInvocationCompaction(session)
+        // Like compaction, a failed flush here is not a run error, so plugins are not notified.
+        sessionService.flush(session.key)
       }
       .trace("invocation", parent = parentContext)
+  }
+
+  /** Runs one invocation on [session] and emits its events; [runAsync] flushes once it ends. */
+  private suspend fun FlowCollector<Event>.runInvocation(
+    session: Session,
+    invocationId: String?,
+    newMessage: Content?,
+    stateDelta: Map<String, Any>?,
+    runConfig: RunConfig?,
+  ) {
+    // Building the context resolves the agent to run.
+    val context = createInvocationContext(session, invocationId, newMessage, stateDelta, runConfig)
+
+    // A resumed invocation whose resolved agent is already final has nothing left to run. Mirrors
+    // Python ADK 1.x `runners.run_async`. A new invocation's `endOfAgents` is empty, so this never
+    // short-circuits a fresh run.
+    if (context.endOfAgents[context.node?.name ?: context.agent.name] == true) {
+      return
+    }
+
+    // `catch` sees only failures from the run itself (upstream), not a downstream collector error
+    // or cancellation, then re-raises unchanged after notifying plugins. Mirrors ADK Python
+    // `on_run_error_callback` (`_exec_with_plugin`) and ADK Java `onRunErrorCallback`:
+    // notification-only, the error is never suppressed.
+    emitAll(
+      runAgentWithPlugins(context).catch { error ->
+        if (error is CancellationException) throw error
+        runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
+        throw error
+      }
+    )
+
+    // Compaction runs after a successful invocation; like Python, a compaction failure is not a run
+    // error, so it stays outside the notification above.
+    runPostInvocationCompaction(session)
+  }
+
+  /** Flushes [key] after the run failed with [failure], attaching a flush failure to it. */
+  private suspend fun flushAfterFailure(key: SessionKey, failure: Exception) {
+    try {
+      sessionService.flush(key)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      failure.addSuppressed(e)
+    }
   }
 
   /**
@@ -252,7 +289,9 @@ abstract class AbstractRunner : Runner {
    *
    * Services that were supplied by the caller ([sessionService], [artifactService],
    * [memoryService]) are deliberately *not* closed -- the runner does not own them, and closing a
-   * shared client would break other users of it.
+   * shared client would break other users of it. Unlike ADK Python's `Runner.close`, it does not
+   * flush [sessionService] either; what a canceled run, or one that failed with an [Error], left
+   * pending is for the service's owner to flush.
    */
   override fun close() {
     val exceptions = mutableListOf<Exception>()
@@ -309,6 +348,10 @@ abstract class AbstractRunner : Runner {
     }
   }
 
+  /**
+   * Rewinds the session as [Runner.rewindAsync] describes, then flushes [sessionService] so the
+   * rewind is persisted.
+   */
   override suspend fun rewindAsync(
     userId: String,
     sessionId: String,
@@ -341,6 +384,7 @@ abstract class AbstractRunner : Runner {
       )
 
     val unused = sessionService.appendEvent(session, rewindEvent)
+    sessionService.flush(session.key)
   }
 
   /**
@@ -535,7 +579,7 @@ abstract class AbstractRunner : Runner {
             )
           val shouldAppendEvent = true
           if (shouldAppendEvent) {
-            val unused = sessionService.appendEvent(context.session, earlyExitEvent)
+            appendAndFlushIfFinal(context, earlyExitEvent)
           }
           emit(earlyExitEvent)
         }
@@ -549,7 +593,7 @@ abstract class AbstractRunner : Runner {
             val finalEvent = processEventWithPluginCallbacks(context, event)
             if (!isLiveCall) {
               if (event.partial == false) {
-                val unused = sessionService.appendEvent(context.session, finalEvent)
+                appendAndFlushIfFinal(context, finalEvent)
               }
             }
 
@@ -745,7 +789,7 @@ abstract class AbstractRunner : Runner {
       // The root is finished (e.g. an LlmAgent that transferred and closed) or has no checkpoint:
       // resolve the agent to actually resume from history -- e.g. the transferred-to sub-agent --
       // and restore its branch. A genuinely finished invocation is caught by the endOfAgents no-op
-      // guard in runAsync.
+      // guard in runInvocation.
       val resumeRoot = selectAgentToRun(currentContext)
       // A node root has no agent tree to restore a branch from, so it keeps the one it has.
       val resumedBranch =
@@ -942,6 +986,15 @@ abstract class AbstractRunner : Runner {
     val enriched = applyRunConfigCustomMetadata(event, context.runConfig)
     val processed = runOnEventCallbacksPipeline(pluginManager.onEventCallbacks, context, enriched)
     return applyRunConfigCustomMetadata(processed, context.runConfig)
+  }
+
+  /**
+   * Appends [event] to the session and flushes the session when [event] is a final response, so the
+   * caller never receives a final response that a buffering session service has not persisted.
+   */
+  private suspend fun appendAndFlushIfFinal(context: InvocationContext, event: Event) {
+    val unused = sessionService.appendEvent(context.session, event)
+    if (event.isFinalResponse) sessionService.flush(context.session.key)
   }
 
   private fun applyRunConfigCustomMetadata(event: Event, runConfig: RunConfig?): Event {
