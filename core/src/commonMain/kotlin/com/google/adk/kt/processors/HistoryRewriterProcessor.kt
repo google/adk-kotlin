@@ -352,7 +352,7 @@ internal class HistoryRewriterProcessor {
           )
         )
       }
-      if (part.inlineData != null || part.fileData != null) {
+      if (part.hasDataOrCode()) {
         newParts.add(part)
       } else {
         continue
@@ -391,8 +391,8 @@ internal class HistoryRewriterProcessor {
    * This can happen to the events that only changed session state. When both content and
    * transcriptions are empty, the event will be considered as empty. The content is considered
    * empty if none of its parts contain text, inline data, function call, function response,
-   * server-side tool call, or server-side tool response. Parts with only thoughts are also
-   * considered empty.
+   * server-side tool call, server-side tool response, executable code, or code execution result.
+   * Parts with only thoughts are also considered empty.
    */
   private fun containsEmptyContent(event: Event): Boolean {
     // Compaction events carry their summary in actions.compaction rather than content; keep them so
@@ -411,8 +411,8 @@ internal class HistoryRewriterProcessor {
    * Returns whether a part is invisible for LLM context.
    *
    * A part is invisible if:
-   * - It has no meaningful content (text, inline_data, function_call, function_response, tool_call
-   *   or tool_response) and no thought_signature, OR
+   * - It has no meaningful content (text, inline_data, function_call, function_response, tool_call,
+   *   tool_response, executable_code or code_execution_result) and no thought_signature, OR
    * - It is marked as a thought AND contains none of those.
    *
    * Function calls and responses are never invisible, even if marked as thought, because they
@@ -438,10 +438,14 @@ internal class HistoryRewriterProcessor {
     }
 
     val isThought = part.thought == true
-    val hasContent = !part.text.isNullOrBlank() || part.inlineData != null || part.fileData != null
+    val hasContent = !part.text.isNullOrBlank() || part.hasDataOrCode()
 
     return isThought || !hasContent
   }
+
+  /** Whether this part carries inline or file data, or code the model ran and its result. */
+  private fun Part.hasDataOrCode(): Boolean =
+    inlineData != null || fileData != null || executableCode != null || codeExecutionResult != null
 
   /** Checks if the event is an ADK framework event. */
   private fun isAdkFrameworkEvent(event: Event): Boolean =

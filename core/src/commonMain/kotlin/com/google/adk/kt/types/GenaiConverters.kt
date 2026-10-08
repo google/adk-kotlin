@@ -66,6 +66,7 @@ import com.google.genai.kotlin.types.Segment as GenAiSegment
 import com.google.genai.kotlin.types.ThinkingConfig as GenAiThinkingConfig
 import com.google.genai.kotlin.types.Tool as GenAiTool
 import com.google.genai.kotlin.types.ToolCall as GenAiToolCall
+import com.google.genai.kotlin.types.ToolCodeExecution as GenAiToolCodeExecution
 import com.google.genai.kotlin.types.ToolConfig as GenAiToolConfig
 import com.google.genai.kotlin.types.ToolResponse as GenAiToolResponse
 import com.google.genai.kotlin.types.ToolType as GenAiToolType
@@ -712,6 +713,7 @@ internal fun GenAiTool.fromGenaiSdk(): Tool =
     functionDeclarations = functionDeclarations?.map { it.fromGenaiSdk() },
     googleSearch = googleSearch?.fromGenaiSdk(),
     googleMaps = googleMaps?.fromGenaiSdk(),
+    codeExecution = codeExecution?.fromGenaiSdk(),
     retrieval = retrieval?.fromGenaiSdk(),
     urlContext = urlContext?.fromGenaiSdk(),
   )
@@ -722,9 +724,17 @@ internal fun Tool.toGenaiSdk(): GenAiTool =
     functionDeclarations = functionDeclarations?.map { it.toGenaiSdk() },
     googleSearch = googleSearch?.toGenaiSdk(),
     googleMaps = googleMaps?.toGenaiSdk(),
+    codeExecution = codeExecution?.toGenaiSdk(),
     retrieval = retrieval?.toGenaiSdk(),
     urlContext = urlContext?.toGenaiSdk(),
   )
+
+// --- ToolCodeExecution ---
+/** Converts a [GenAiToolCodeExecution] from the GenAI SDK to an ADK [ToolCodeExecution]. */
+internal fun GenAiToolCodeExecution.fromGenaiSdk(): ToolCodeExecution = ToolCodeExecution()
+
+/** Converts an ADK [ToolCodeExecution] to a [GenAiToolCodeExecution] for the GenAI SDK. */
+internal fun ToolCodeExecution.toGenaiSdk(): GenAiToolCodeExecution = GenAiToolCodeExecution()
 
 // --- Retrieval ---
 /** Converts a [GenAiRetrieval] from the GenAI SDK to an ADK [Retrieval]. */

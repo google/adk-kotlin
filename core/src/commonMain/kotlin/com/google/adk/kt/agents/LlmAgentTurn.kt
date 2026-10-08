@@ -265,12 +265,7 @@ internal class LlmAgentTurn(
 
         modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
         processModelResponse(currentRequest, currentResponse, modelResponseEvent, span) {
-          modelResponseEvent =
-            modelResponseEvent.copy(
-              // A streamed reply keeps one id until its complete event, as in ADK Python.
-              id = if (it.partial) modelResponseEvent.id else Uuid.random(),
-              timestamp = Clock.System.now().toEpochMilliseconds(),
-            )
+          modelResponseEvent = modelResponseEvent.refreshedAfter(it)
           emit(it)
         }
       }
@@ -406,6 +401,17 @@ internal class LlmAgentTurn(
     if (actions === callbackContext.eventActions) this
     else copy(actions = callbackContext.eventActions)
 
+  /**
+   * This event at the current time, for the next event emitted after [emitted]. As in ADK Python, a
+   * streamed reply keeps one id until its complete event, so the id changes only after a complete
+   * one.
+   */
+  private fun Event.refreshedAfter(emitted: Event): Event =
+    copy(
+      id = if (emitted.partial) id else Uuid.random(),
+      timestamp = Clock.System.now().toEpochMilliseconds(),
+    )
+
   private suspend fun processModelResponse(
     request: LlmRequest,
     response: LlmResponse,
@@ -414,15 +420,20 @@ internal class LlmAgentTurn(
     emitEvent: suspend (Event) -> Unit,
   ) {
     val callbackContext = CallbackContext(context)
+    var responseEvent = baseEvent
     val processedResponse =
       responseProcessors.fold(response) { res, processor ->
-        processor.process(callbackContext, res) { event -> emitEvent(event) }
+        processor.process(callbackContext, request, res) { event ->
+          emitEvent(event)
+          // As in ADK Python, the response's own event then gets a new id and a later timestamp.
+          responseEvent = responseEvent.refreshedAfter(event)
+        }
       }
 
     if (processedResponse.isEmpty()) return
 
     val toolsDict = getToolMap(request)
-    val finalizedEvent = baseEvent.finalizeModelResponseEvent(processedResponse, toolsDict)
+    val finalizedEvent = responseEvent.finalizeModelResponseEvent(processedResponse, toolsDict)
     // Last write wins, so a trace lookup by the last saved event's id finds this span.
     span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = finalizedEvent.id
     emitEvent(finalizedEvent)

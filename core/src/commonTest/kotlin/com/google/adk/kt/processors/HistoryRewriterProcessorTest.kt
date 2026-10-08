@@ -20,6 +20,8 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userEvent
+import com.google.adk.kt.types.CodeExecutionResult
+import com.google.adk.kt.types.ExecutableCode
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
@@ -216,6 +218,34 @@ class HistoryRewriterProcessorTest {
     assertTrue(contents[1].parts.none { it.toolCall != null })
   }
 
+  // A reply holding only code and its result must stay in history for the model's next turn.
+  @Test
+  fun rewrite_codeExecutionOnlyEvent_isKept() {
+    val events = listOf(userEvent("What is 2 + 2?"), codeExecutionEvent(author = "agent"))
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(2, contents.size)
+    assertEquals("print(2 + 2)", contents[1].parts[0].executableCode?.code)
+    assertEquals("4", contents[1].parts[1].codeExecutionResult?.output)
+  }
+
+  // Another agent's code and its result are passed on as they are, like its inline data.
+  @Test
+  fun rewrite_codeExecutionPartsFromOtherAgent_areKept() {
+    val events = listOf(userEvent("What is 2 + 2?"), codeExecutionEvent(author = "other_agent"))
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(2, contents.size)
+    val parts = contents[1].parts
+    assertEquals("For context:", parts[0].text)
+    assertEquals("print(2 + 2)", parts[1].executableCode?.code)
+    assertEquals("4", parts[2].codeExecutionResult?.output)
+  }
+
   // A signature carrier is visible but has nothing to narrate, so it must not start the current
   // turn: doing so truncates history at an event that then contributes nothing, leaving no request.
   @Test
@@ -302,4 +332,15 @@ class HistoryRewriterProcessorTest {
 
   private fun modelPartEvent(part: Part, author: String = "agent"): Event =
     Event(author = author, content = modelMessage(part))
+
+  /** A model reply holding only code that ran on the model's side and its result. */
+  private fun codeExecutionEvent(author: String): Event =
+    Event(
+      author = author,
+      content =
+        modelMessage(
+          Part(executableCode = ExecutableCode(code = "print(2 + 2)")),
+          Part(codeExecutionResult = CodeExecutionResult(output = "4")),
+        ),
+    )
 }
