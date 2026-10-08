@@ -25,8 +25,8 @@ import kotlinx.serialization.json.JsonElement
  * The streaming/turn signaling fields ([partial], [turnComplete], [interrupted], [branch],
  * [longRunningToolIds]) live under this nested object on the wire even though the ADK domain
  * [com.google.adk.kt.events.Event] carries them flat at the top level. Structured sub-objects
- * ([groundingMetadata], [usageMetadata], [customMetadata]) are kept as [JsonElement] to decouple
- * the DTO from the ADK model shape; the mapper decodes them into the corresponding ADK types.
+ * ([groundingMetadata], [customMetadata]) are kept as [JsonElement] to decouple the DTO from the
+ * ADK model shape; the mapper decodes them into the corresponding ADK types.
  */
 @Serializable
 internal data class EventMetadataDto(
@@ -36,6 +36,5 @@ internal data class EventMetadataDto(
   val branch: String? = null,
   val longRunningToolIds: List<String>? = null,
   val groundingMetadata: JsonElement? = null,
-  val usageMetadata: JsonElement? = null,
   val customMetadata: JsonElement? = null,
 )

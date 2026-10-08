@@ -16,18 +16,32 @@
 
 package com.google.adk.kt.sessions.dto
 
+import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.events.EventCompaction
+import com.google.adk.kt.events.ToolConfirmation
+import com.google.adk.kt.models.CacheMetadata
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
+import com.google.adk.kt.types.Citation
+import com.google.adk.kt.types.CitationMetadata
+import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.workflow.Route
 import com.google.common.truth.Truth.assertThat
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -41,7 +55,8 @@ import org.junit.runners.JUnit4
  *
  * These pin down the flattening of streaming/turn signaling onto [Event], the [State.REMOVED]
  * sentinel encoding (JSON `null` on the wire), the `transferAgent`/`transferToAgent` compatibility
- * read, and the session name/fallback-id and timestamp handling.
+ * read, the session name/fallback-id and timestamp handling, and where fields the API drops are
+ * stored.
  */
 @RunWith(JUnit4::class)
 class SessionMappersTest {
@@ -211,11 +226,15 @@ class SessionMappersTest {
     val content = userMessage(Part(text = "hi", partMetadata = mapOf("k" to "v")))
     val event = Event(author = "user", timestamp = 1000L, content = content)
 
-    val part = event.toDto().content!!.jsonObject["parts"]!!.jsonArray.single().jsonObject
+    val dto = event.toDto()
 
+    val part = dto.content!!.jsonObject["parts"]!!.jsonArray.single().jsonObject
     assertThat(part.keys).doesNotContain("partMetadata")
     // The rest of the part is untouched.
     assertThat(part["text"]!!.jsonPrimitive.content).isEqualTo("hi")
+    // ADK Python strips partMetadata from rawEvent too.
+    val rawPart = dto.rawEvent!!["content"]!!.jsonObject["parts"]!!.jsonArray.single().jsonObject
+    assertThat(rawPart.keys).containsExactly("text")
   }
 
   @Test
@@ -295,5 +314,429 @@ class SessionMappersTest {
     val event = dto.toAdk()
 
     assertThat(event.customMetadata).containsExactly("present", "v", "absent", null)
+  }
+
+  @Test
+  fun eventToDto_fieldsTheApiDrops_areStoredInRawEventAndCustomMetadata() {
+    val event =
+      Event(
+        author = "agent",
+        timestamp = 1_700_000_000_123L,
+        usageMetadata = UsageMetadata(totalTokenCount = 12),
+        actions =
+          EventActions(
+            endOfAgent = true,
+            agentState = TypedData.MapValue(mapOf("step" to TypedData.IntValue(2))),
+            requestedToolConfirmations =
+              mutableMapOf("call-1" to ToolConfirmation(confirmed = true, hint = "ok?")),
+            compaction = COMPACTION,
+          ),
+      )
+
+    val dto = event.toDto()
+
+    val customMetadata = dto.eventMetadata!!.customMetadata!!.jsonObject
+    assertThat(
+        customMetadata["_usage_metadata"]!!.jsonObject["totalTokenCount"]!!.jsonPrimitive.int
+      )
+      .isEqualTo(12)
+    assertThat(customMetadata["_compaction"]!!.jsonObject["startTimestamp"]!!.jsonPrimitive.double)
+      .isWithin(1e-6)
+      .of(1_700_000_000.1)
+    val rawActions = dto.rawEvent!!["actions"]!!.jsonObject
+    assertThat(rawActions["endOfAgent"]!!.jsonPrimitive.boolean).isTrue()
+    assertThat(rawActions.keys).containsAtLeast("agentState", "requestedToolConfirmations")
+  }
+
+  @Test
+  fun eventToDto_rawEvent_hasShapePythonAdkReads() {
+    val event =
+      Event(
+        id = "event-1",
+        author = "agent",
+        timestamp = 1_700_000_000_123L,
+        citationMetadata = CitationMetadata(listOf(Citation(uri = "https://example.com"))),
+        cacheMetadata = CACHE_METADATA,
+        actions =
+          EventActions(route = listOf(Route.Tag("next")), compaction = COMPACTION).apply {
+            stateDelta["kept"] = "v"
+            stateDelta["removed"] = State.REMOVED
+          },
+      )
+
+    val rawEvent = event.toDto().rawEvent!!
+
+    assertThat(rawEvent["id"]!!.jsonPrimitive.content).isEqualTo("event-1")
+    assertThat(rawEvent["timestamp"]!!.jsonPrimitive.double).isWithin(1e-6).of(1_700_000_000.123)
+    // ADK Python names the citation list `citations`.
+    assertThat(rawEvent["citationMetadata"]!!.jsonObject.keys).containsExactly("citations")
+    // ADK Python's CacheMetadata rejects camelCase keys and takes epoch seconds.
+    val cacheMetadata = rawEvent["cacheMetadata"]!!.jsonObject
+    assertThat(cacheMetadata.keys)
+      .containsExactly(
+        "fingerprint",
+        "contents_count",
+        "cache_name",
+        "expire_time",
+        "invocations_used",
+        "created_at",
+      )
+    assertThat(cacheMetadata["expire_time"]!!.jsonPrimitive.double)
+      .isWithin(1e-6)
+      .of(1_700_000_600.5)
+    val rawActions = rawEvent["actions"]!!.jsonObject
+    assertThat(rawActions["stateDelta"]!!.jsonObject["removed"]).isEqualTo(JsonNull)
+    assertThat(rawActions["compaction"]!!.jsonObject["startTimestamp"]!!.jsonPrimitive.double)
+      .isWithin(1e-6)
+      .of(1_700_000_000.1)
+    // ADK Python 1.x rejects unknown EventActions keys, which would fail its whole session load.
+    assertThat(rawActions.keys).doesNotContain("route")
+  }
+
+  @Test
+  fun eventToDto_outputNotJsonNative_isLeftOutOfRawEvent() {
+    data class NodeResult(val n: Int)
+    val event = Event(author = "node", timestamp = 1000L, output = NodeResult(3))
+
+    val rawEvent = event.toDto().rawEvent!!
+
+    assertThat(rawEvent.keys).doesNotContain("output")
+    assertThat(rawEvent["author"]!!.jsonPrimitive.content).isEqualTo("node")
+  }
+
+  @Test
+  fun event_roundTripThroughRawEvent_restoresWholeEvent() {
+    val original =
+      Event(
+        id = "event-1",
+        invocationId = "inv-1",
+        author = "agent",
+        timestamp = 1_700_000_000_123L,
+        content =
+          modelMessage(
+            Part(text = "hi", thoughtSignature = byteArrayOf(-5, -1, 1)),
+            Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
+          ),
+        turnComplete = true,
+        finishReason = FinishReason.STOP,
+        usageMetadata = UsageMetadata(promptTokenCount = 10, totalTokenCount = 12),
+        modelVersion = "model-1",
+        citationMetadata = CitationMetadata(listOf(Citation(uri = "https://example.com"))),
+        cacheMetadata = CACHE_METADATA,
+        customMetadata = mapOf("k" to "v"),
+        output = mapOf("n" to 1L),
+        actions =
+          EventActions(
+              transferToAgent = "other",
+              endOfAgent = true,
+              requestedToolConfirmations =
+                mutableMapOf("call-1" to ToolConfirmation(confirmed = true, hint = "ok?")),
+              agentState = TypedData.MapValue(mapOf("step" to TypedData.IntValue(2))),
+              compaction = COMPACTION,
+            )
+            .apply {
+              stateDelta["k"] = "v"
+              stateDelta["gone"] = State.REMOVED
+            },
+      )
+
+    val restored = original.toDto().copy(name = "sessions/s1/events/server-id").toAdk()
+
+    assertThat(restored).isEqualTo(original)
+  }
+
+  @Test
+  fun event_roundTripThroughRawEvent_keepsSmallCompactionTimestamps() {
+    val compaction =
+      EventCompaction(
+        startTimestamp = 1000L,
+        endTimestamp = 2000L,
+        compactedContent = modelMessage("summary"),
+      )
+    val event =
+      Event(author = "agent", timestamp = 3000L, actions = EventActions(compaction = compaction))
+
+    val restored = event.toDto().copy(name = "sessions/s1/events/e1").toAdk()
+
+    assertThat(restored.actions.compaction).isEqualTo(compaction)
+  }
+
+  @Test
+  fun sessionEventDtoToAdk_pythonWrittenRawEvent_readsFieldsKotlinModels() {
+    // As ADK Python dumps it: float seconds, URL-safe base64 and keys Kotlin does not model.
+    val rawEvent =
+      Json.parseToJsonElement(
+          """
+          {
+            "id": "python-event-id",
+            "timestamp": 1700000000.9,
+            "nodeInfo": {"path": ""},
+            "content": {"role": "model", "parts": [{"text": "hi", "thoughtSignature": "-_8B"}]},
+            "usageMetadata": {"promptTokenCount": 10, "totalTokenCount": 12},
+            "customMetadata": {"k": "v"},
+            "citationMetadata": {"citations": [{"uri": "https://example.com"}]},
+            "actions": {
+              "stateDelta": {"gone": null},
+              "agentState": {"current_sub_agent": "b"},
+              "requestedToolConfirmations": {"call-1": {"hint": "ok?", "confirmed": false}},
+              "compaction": {
+                "startTimestamp": 1700000000.1236,
+                "endTimestamp": 1700000000.2,
+                "compactedContent": {"role": "model", "parts": [{"text": "sum"}]}
+              }
+            }
+          }
+          """
+        )
+        .jsonObject
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/server-id",
+        author = "agent",
+        invocationId = "inv-1",
+        timestamp = TimestampDto.fromEpochMillis(1_700_000_000_500L),
+        rawEvent = rawEvent,
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.id).isEqualTo("python-event-id")
+    // As in ADK Python, the envelope timestamp wins over rawEvent's.
+    assertThat(event.timestamp).isEqualTo(1_700_000_000_500L)
+    assertThat(event.content!!.parts.single().thoughtSignature!!.toList())
+      .isEqualTo(byteArrayOf(-5, -1, 1).toList())
+    assertThat(event.usageMetadata!!.totalTokenCount).isEqualTo(12)
+    assertThat(event.customMetadata).containsExactly("k", "v")
+    assertThat(event.citationMetadata!!.citationSources.single().uri)
+      .isEqualTo("https://example.com")
+    assertThat(event.actions.stateDelta["gone"]).isEqualTo(State.REMOVED)
+    assertThat(event.actions.requestedToolConfirmations["call-1"]!!.hint).isEqualTo("ok?")
+    // Floored like the event timestamps, so the first compacted event stays in range.
+    assertThat(event.actions.compaction!!.startTimestamp).isEqualTo(1_700_000_000_123L)
+    // ADK Python's agentState is a plain object, which Kotlin's TypedData cannot hold.
+    assertThat(event.actions.agentState).isNull()
+  }
+
+  @Test
+  fun sessionEventDtoToAdk_rawEventWithoutId_usesResourceNameId() {
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/server-id",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        rawEvent =
+          JsonObject(mapOf("customMetadata" to JsonObject(mapOf("k" to JsonPrimitive("v"))))),
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.id).isEqualTo("server-id")
+    // The customMetadata shows that rawEvent was read.
+    assertThat(event.customMetadata).containsExactly("k", "v")
+  }
+
+  @Test
+  fun sessionEventDtoToAdk_rawEventEmptyId_usesResourceNameId() {
+    // As in ADK Python, an empty stored id falls back to the resource name.
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/server-id",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        rawEvent =
+          JsonObject(
+            mapOf(
+              "id" to JsonPrimitive(""),
+              "customMetadata" to JsonObject(mapOf("k" to JsonPrimitive("v"))),
+            )
+          ),
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.id).isEqualTo("server-id")
+    // The customMetadata shows that rawEvent was read.
+    assertThat(event.customMetadata).containsExactly("k", "v")
+  }
+
+  @Test
+  fun sessionEventDtoToAdk_emptyRawEvent_usesTypedFields() {
+    // As in ADK Python, an empty rawEvent counts as missing.
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/server-id",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        content = Json.parseToJsonElement("""{"parts": [{"text": "typed"}]}"""),
+        actions = EventActionsDto(transferAgent = "typed-agent"),
+        rawEvent = JsonObject(emptyMap()),
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.content!!.parts.single().text).isEqualTo("typed")
+    assertThat(event.actions.transferToAgent).isEqualTo("typed-agent")
+  }
+
+  @Test
+  fun sessionEventDtoToAdk_pythonEventWithoutRawEvent_readsCustomMetadataKeys() {
+    // ADK Python stores an event without raw_event when its Vertex AI SDK rejects that field.
+    val customMetadata =
+      Json.parseToJsonElement(
+        """
+        {
+          "k": "v",
+          "_usage_metadata": {
+            "prompt_token_count": 10,
+            "total_token_count": 12,
+            "prompt_tokens_details": [{"modality": "TEXT", "token_count": 10}]
+          },
+          "_compaction": {
+            "start_timestamp": 1718648987.6949995,
+            "end_timestamp": 1718648987.8,
+            "compacted_content": {"role": "model", "parts": [{"text": "summary"}]}
+          }
+        }
+        """
+      )
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/e9",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        eventMetadata = EventMetadataDto(customMetadata = customMetadata),
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.id).isEqualTo("e9")
+    assertThat(event.usageMetadata!!.promptTokenCount).isEqualTo(10)
+    assertThat(event.usageMetadata.promptTokensDetails!!.single().tokenCount).isEqualTo(10)
+    // CPython's datetime.fromtimestamp puts an event at this float in ms 694, not 695.
+    assertThat(event.actions.compaction!!.startTimestamp).isEqualTo(1_718_648_987_694L)
+    assertThat(event.actions.compaction!!.compactedContent.parts.single().text).isEqualTo("summary")
+    assertThat(event.customMetadata).containsExactly("k", "v")
+  }
+
+  @Test
+  fun sessionEventDtoToAdk_pythonCompactionWithUserData_keepsItsKeys() {
+    // ADK Python writes _compaction with snake_case schema keys; user data keeps its own keys.
+    val customMetadata =
+      Json.parseToJsonElement(
+        """
+        {
+          "_compaction": {
+            "start_timestamp": 1700000000.1,
+            "end_timestamp": 1700000000.2,
+            "compacted_content": {
+              "role": "model",
+              "parts": [
+                {"function_call": {"name": "lookup", "args": {"user_id": "u1"}}},
+                {"function_response": {"name": "lookup", "response": {"user_name": "Ann"}}},
+                {"text": "summary", "part_metadata": {"user_tag": 1}}
+              ]
+            }
+          }
+        }
+        """
+      )
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/e9",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        eventMetadata = EventMetadataDto(customMetadata = customMetadata),
+      )
+
+    val parts = dto.toAdk().actions.compaction!!.compactedContent.parts
+
+    assertThat(parts[0].functionCall!!.args).containsExactly("user_id", "u1")
+    assertThat(parts[1].functionResponse!!.response).containsExactly("user_name", "Ann")
+    assertThat(parts[2].partMetadata).containsExactly("user_tag", 1L)
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun sessionEventDtoToAdk_unreadableRawEvent_keepsFieldsTheApiDropsFromRawActions() {
+    val agentState = TypedData.MapValue(mapOf("step" to TypedData.IntValue(2)))
+    val rawActions =
+      mapOf(
+        "endOfAgent" to JsonPrimitive(true),
+        "agentState" to adkJson.encodeToJsonElement(TypedData.serializer(), agentState),
+        "requestedToolConfirmations" to
+          Json.parseToJsonElement("""{"call-1": {"hint": "ok?", "confirmed": false}}"""),
+      )
+    val rawEvent =
+      JsonObject(
+        mapOf(
+          "id" to JsonPrimitive("raw-id"),
+          "content" to Json.parseToJsonElement("""{"parts": [{"inlineData": {"data": "!!!!"}}]}"""),
+          "actions" to JsonObject(rawActions),
+        )
+      )
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/e9",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        rawEvent = rawEvent,
+      )
+
+    val event = dto.toAdk()
+
+    // The resource-name id shows that the typed-field fallback ran.
+    assertThat(event.id).isEqualTo("e9")
+    assertThat(event.actions.endOfAgent).isTrue()
+    assertThat(event.actions.agentState).isEqualTo(agentState)
+    assertThat(event.actions.requestedToolConfirmations["call-1"]!!.hint).isEqualTo("ok?")
+  }
+
+  @Test
+  fun sessionEventDtoToAdk_nullToolConfirmation_isSkipped() {
+    val rawEvent =
+      Json.parseToJsonElement(
+          """
+          {
+            "content": {"parts": [{"inlineData": {"data": "!!!!"}}]},
+            "actions": {
+              "requestedToolConfirmations": {
+                "call-1": null,
+                "call-2": {"hint": "ok?", "confirmed": false}
+              }
+            }
+          }
+          """
+        )
+        .jsonObject
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/e9",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        rawEvent = rawEvent,
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.actions.requestedToolConfirmations.keys).containsExactly("call-2")
+  }
+
+  private companion object {
+    val COMPACTION =
+      EventCompaction(
+        startTimestamp = 1_700_000_000_100L,
+        endTimestamp = 1_700_000_000_200L,
+        compactedContent = modelMessage("summary"),
+      )
+
+    val CACHE_METADATA =
+      CacheMetadata(
+        fingerprint = "fp",
+        contentsCount = 2,
+        cacheName = "projects/p/locations/l/cachedContents/c",
+        expireTime = 1_700_000_600_500L,
+        invocationsUsed = 1,
+        createdAt = 1_700_000_000_250L,
+      )
   }
 }
