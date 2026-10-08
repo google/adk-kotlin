@@ -169,7 +169,7 @@ internal constructor(
 
     try {
       // Loops so ADK can resume a long generation when the model pauses and returns a token.
-      val continuation = Continuation(finalRequest.contents)
+      val continuation = Continuation(finalRequest.contents, finalRequest.config)
       var contents = finalRequest.contents
       var config = finalRequest.config
       if (stream) {
@@ -205,7 +205,7 @@ internal constructor(
           llmResponse = LlmResponse.from(response)
           val next =
             continuation.advance(
-              response.resumeToken(),
+              continuation.resumeToken(response),
               llmResponse.content?.parts.orEmpty(),
               llmResponse.usageMetadata,
             ) ?: break

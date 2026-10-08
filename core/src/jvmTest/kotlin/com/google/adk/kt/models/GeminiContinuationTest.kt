@@ -443,25 +443,132 @@ class GeminiContinuationTest {
   fun resumeToken_pausedWithToken_returnsToken() {
     val token = "state".encodeToByteArray()
 
-    assertThat(response(FinishReason.CONTINUATION, token = token).resumeToken()).isEqualTo(token)
+    assertThat(continuation().resumeToken(response(FinishReason.CONTINUATION, token = token)))
+      .isEqualTo(token)
   }
 
   @Test
   fun resumeToken_pausedWithoutToken_returnsNull() {
-    assertThat(response(FinishReason.CONTINUATION, token = null).resumeToken()).isNull()
-    assertThat(response(FinishReason.CONTINUATION, token = ByteArray(0)).resumeToken()).isNull()
+    assertThat(continuation().resumeToken(response(FinishReason.CONTINUATION, token = null)))
+      .isNull()
+    assertThat(
+        continuation().resumeToken(response(FinishReason.CONTINUATION, token = ByteArray(0)))
+      )
+      .isNull()
   }
 
   @Test
   fun resumeToken_notPaused_ignoresToken() {
     val token = "state".encodeToByteArray()
 
-    assertThat(response(FinishReason.STOP, token = token).resumeToken()).isNull()
+    assertThat(continuation().resumeToken(response(FinishReason.STOP, token = token))).isNull()
   }
 
   @Test
   fun resumeToken_noCandidates_returnsNull() {
-    assertThat(GenerateContentResponse().resumeToken()).isNull()
+    assertThat(continuation().resumeToken(GenerateContentResponse())).isNull()
+  }
+
+  @Test
+  fun resumeToken_maxTokensWithoutOutputLimit_returnsToken() {
+    val token = "state".encodeToByteArray()
+
+    assertThat(continuation().resumeToken(response(FinishReason.MAX_TOKENS, token = token)))
+      .isEqualTo(token)
+  }
+
+  @Test
+  fun resumeToken_maxTokensAtOutputLimit_returnsNull() {
+    val token = "state".encodeToByteArray()
+
+    assertThat(
+        continuation(LIMITED_CONFIG).resumeToken(response(FinishReason.MAX_TOKENS, token = token))
+      )
+      .isNull()
+  }
+
+  @Test
+  fun resumeToken_maxTokensWithoutToken_returnsNull() {
+    assertThat(continuation().resumeToken(response(FinishReason.MAX_TOKENS, token = null))).isNull()
+  }
+
+  @Test
+  fun generateContent_maxTokensWithoutOutputLimit_resumesUntilComplete(): Unit = runBlocking {
+    models.respond(maxTokens("state", Part(text = "The answer is")), finished(Part(text = " 42.")))
+
+    val response = generate(stream = false).single()
+
+    assertThat(response.content).isEqualTo(Content.fromText(Role.MODEL, "The answer is 42."))
+    assertThat(response.finishReason).isEqualTo(FinishReason.STOP)
+    assertThat(models.requests).hasSize(2)
+    assertThat(models.requests[1].contents)
+      .containsExactly(QUESTION, Content.fromText(Role.MODEL, "The answer is"))
+      .inOrder()
+    assertThat(models.requests[1].token).isEqualTo("state".encodeToByteArray())
+  }
+
+  @Test
+  fun generateContent_streamMaxTokensWithoutOutputLimit_resumesInOneAggregatedStream(): Unit =
+    runBlocking {
+      models.respondStreams(
+        listOf(chunk(Part(text = "The answer")), maxTokens("state", Part(text = " is"))),
+        listOf(finished(Part(text = " 42."))),
+      )
+
+      val responses = generate(stream = true)
+
+      // The capped request does not end the generation, so no response reports MAX_TOKENS.
+      assertThat(responses.map { it.finishReason }).doesNotContain(FinishReason.MAX_TOKENS)
+      assertThat(responses.mapNotNull { it.errorCode }).isEmpty()
+      val last = responses.last()
+      assertThat(last.content?.parts?.single()?.text).isEqualTo("The answer is 42.")
+      assertThat(last.finishReason).isEqualTo(FinishReason.STOP)
+      assertThat(models.requests).hasSize(2)
+      assertThat(models.requests[1].token).isEqualTo("state".encodeToByteArray())
+    }
+
+  @Test
+  fun generateContent_maxTokensAtOutputLimit_returnsOutput(): Unit = runBlocking {
+    models.respond(maxTokens("state", Part(text = "a")))
+
+    val response = generate(stream = false, config = LIMITED_CONFIG).single()
+
+    assertThat(models.requests).hasSize(1)
+    assertThat(response.content?.parts?.single()?.text).isEqualTo("a")
+    assertThat(response.finishReason).isEqualTo(FinishReason.MAX_TOKENS)
+  }
+
+  @Test
+  fun generateContent_streamMaxTokensAtOutputLimit_endsWithMaxTokens(): Unit = runBlocking {
+    models.respondStreams(listOf(maxTokens("state", Part(text = "a"))))
+
+    val responses = generate(stream = true, config = LIMITED_CONFIG)
+
+    assertThat(models.requests).hasSize(1)
+    assertThat(responses.last().content?.parts?.single()?.text).isEqualTo("a")
+    assertThat(responses.last().finishReason).isEqualTo(FinishReason.MAX_TOKENS)
+  }
+
+  @Test
+  fun generateContent_pausedThenMaxTokensAtOutputLimit_returnsWholeOutput(): Unit = runBlocking {
+    models.respond(paused("first", Part(text = "a")), maxTokens("second", Part(text = "b")))
+
+    val response = generate(stream = false, config = LIMITED_CONFIG).single()
+
+    assertThat(models.requests).hasSize(2)
+    assertThat(response.content?.parts?.single()?.text).isEqualTo("ab")
+    assertThat(response.finishReason).isEqualTo(FinishReason.MAX_TOKENS)
+  }
+
+  @Test
+  fun generateContent_maxTokensWithoutToken_returnsOutput(): Unit = runBlocking {
+    models.respond(response(FinishReason.MAX_TOKENS, Part(text = "a")))
+
+    val response = generate(stream = false).single()
+
+    assertThat(models.requests).hasSize(1)
+    assertThat(response.content?.parts?.single()?.text).isEqualTo("a")
+    assertThat(response.finishReason).isEqualTo(FinishReason.MAX_TOKENS)
   }
 
   @Test
@@ -602,6 +709,10 @@ class GeminiContinuationTest {
 
 private val QUESTION = Content.fromText(Role.USER, "What is the answer?")
 private val CONFIG = GenerateContentConfig(temperature = 0.5f)
+private val LIMITED_CONFIG = CONFIG.copy(maxOutputTokens = 100)
+
+private fun continuation(config: GenerateContentConfig = CONFIG) =
+  Continuation(listOf(QUESTION), config)
 
 private fun response(
   finishReason: FinishReason?,
@@ -624,6 +735,10 @@ private fun response(
 /** A response that pauses generation, which [token] resumes. */
 private fun paused(token: String, vararg parts: Part, usage: UsageMetadata? = null) =
   response(FinishReason.CONTINUATION, *parts, usage = usage, token = token.encodeToByteArray())
+
+/** A response from a request that reached its output cap, carrying [token]. */
+private fun maxTokens(token: String, vararg parts: Part) =
+  response(FinishReason.MAX_TOKENS, *parts, token = token.encodeToByteArray())
 
 private fun finished(vararg parts: Part, usage: UsageMetadata? = null) =
   response(FinishReason.STOP, *parts, usage = usage)
