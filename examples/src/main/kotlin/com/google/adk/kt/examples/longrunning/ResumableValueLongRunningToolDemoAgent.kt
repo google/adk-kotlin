@@ -39,7 +39,7 @@ private const val APP_NAME = "nav_value_app"
  * instead of pausing. The `endOfAgent` marker is still suppressed, so the invocation stays live and
  * the device's real result can be delivered later by a resume.
  */
-fun main() = runBlocking {
+fun main() : Unit = runBlocking {
   val model = ScriptedNavModel()
   val agent =
     LlmAgent(

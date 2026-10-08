@@ -55,7 +55,7 @@ private val ON_DEVICE_FAVORITES = setOf("home", "the office")
  * device's result and a later `runAsync` delivers it as a `FunctionResponse`. This demo uses a
  * non-resumable app.
  */
-fun main() = runBlocking {
+fun main() : Unit = runBlocking {
   val model = ScriptedNavPlannerModel()
   val agent =
     LlmAgent(

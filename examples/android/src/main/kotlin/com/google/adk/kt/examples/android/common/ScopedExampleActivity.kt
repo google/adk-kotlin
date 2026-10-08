@@ -35,7 +35,7 @@ abstract class ScopedExampleActivity : ComponentActivity() {
    * Coroutine scope for agent work. Coroutines launch on the default dispatcher; UI updates are
    * marshaled back via [runOnUiThread]. Cancelled in [onDestroy].
    */
-  protected val scope = CoroutineScope(SupervisorJob())
+  protected val scope : CoroutineScope = CoroutineScope(SupervisorJob())
 
   override fun onDestroy() {
     scope.cancel()

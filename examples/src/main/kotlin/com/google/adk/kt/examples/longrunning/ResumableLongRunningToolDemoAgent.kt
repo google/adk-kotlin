@@ -47,7 +47,7 @@ private const val APP_NAME = "nav_app"
  * the same turn, in a resumable app too; see `LongRunningToolDemoAgent.kt` for the non-resumable
  * value case.
  */
-fun main() = runBlocking {
+fun main() : Unit = runBlocking {
   val model = ScriptedNavModel()
   val agent =
     LlmAgent(

@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.examples.a2a
 
+import com.google.adk.kt.a2a.agent.BaseRemoteA2AAgent
 import com.google.adk.kt.a2a.jvm.A2AAgent
 import kotlinx.coroutines.runBlocking
 
@@ -35,7 +36,7 @@ import kotlinx.coroutines.runBlocking
 object A2AAgentDemo {
 
   @JvmField
-  val rootAgent = run {
+  val rootAgent : BaseRemoteA2AAgent = run {
     val agentUrl = System.getenv("A2A_AGENT_URL") ?: "http://localhost:8080/a2a"
     val agentName = System.getenv("A2A_AGENT_NAME") ?: "remote-agent"
     // Streaming follows the run's RunConfig.streamingMode (defaults to NONE -> `message/send`).
