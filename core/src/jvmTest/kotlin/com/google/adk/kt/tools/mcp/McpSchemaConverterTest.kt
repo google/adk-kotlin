@@ -17,7 +17,6 @@
 package com.google.adk.kt.tools.mcp
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.tools.mcp.McpSchemaConverter.toAdkFunctionDeclaration
 import com.google.adk.kt.tools.mcp.McpSchemaConverter.toAdkSchema
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
