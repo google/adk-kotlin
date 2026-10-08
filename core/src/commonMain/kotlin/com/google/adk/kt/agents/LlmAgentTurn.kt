@@ -1059,7 +1059,7 @@ internal class LlmAgentTurn(
       // When the output-schema-with-tools workaround is active, the model produces its final answer
       // by calling the `set_model_response` tool. Convert that structured response into a synthetic
       // final model-response event so the turn terminates and the output is saved to state.
-      getStructuredModelResponse(responseEvent)?.let { json ->
+      getStructuredModelResponse(responseEvent, tools)?.let { json ->
         emitEvent(createFinalModelResponseEvent(context, json))
       }
     }

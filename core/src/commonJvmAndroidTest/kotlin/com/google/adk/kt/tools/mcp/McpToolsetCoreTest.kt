@@ -86,6 +86,37 @@ class McpToolsetCoreTest {
   }
 
   @Test
+  fun reservedToolNames_areSkippedBeforeTheServerToolFilter() = runBlocking {
+    val namesSeenByFilter = mutableListOf<String>()
+    val session =
+      FakeSession(
+        extraDefinitions =
+          listOf(
+              "transfer_to_agent",
+              "set_model_response",
+              "adk_request_input",
+              "transfer_to_agent_v2",
+            )
+            .map { McpToolDefinition(it, "Server tool") }
+      )
+    val toolset =
+      core(
+        FakeSessionManager(session),
+        toolFilter =
+          com.google.adk.kt.tools.ToolFilter.Predicate { tool, _ ->
+            namesSeenByFilter += tool.name
+            true
+          },
+      )
+
+    assertThat(toolset.getTools().map { it.name })
+      .containsExactly("echo", "transfer_to_agent_v2")
+      .inOrder()
+    assertThat(namesSeenByFilter).containsExactly("echo", "transfer_to_agent_v2").inOrder()
+    Unit
+  }
+
+  @Test
   fun progressConsumers_forwardFunctionCallIdAndListener() = runBlocking {
     val session = FakeSession()
     val manager = FakeSessionManager(session, hasProgressConsumers = true, onProgress = {})
@@ -566,6 +597,7 @@ class McpToolsetCoreTest {
     private val failToolDiscovery: Boolean = false,
     override val supportsResources: Boolean = false,
     private val definition: McpToolDefinition = McpToolDefinition("echo", "Echoes input"),
+    private val extraDefinitions: List<McpToolDefinition> = emptyList(),
     private val resourceContents: Map<String, List<McpClientResourceContent>> = emptyMap(),
     private val resourcePages: Map<String?, McpClientResourcePage> = emptyMap(),
     private val resourceTemplatePages: Map<String?, McpClientResourceTemplatePage> = emptyMap(),
@@ -594,7 +626,7 @@ class McpToolsetCoreTest {
     override suspend fun listTools(): List<McpToolDefinition> {
       listToolsCalls++
       if (failToolDiscovery) throw IllegalStateException("simulated discovery failure")
-      return listOf(definition)
+      return listOf(definition) + extraDefinitions
     }
 
     val callOptions = mutableListOf<McpToolCallOptions>()

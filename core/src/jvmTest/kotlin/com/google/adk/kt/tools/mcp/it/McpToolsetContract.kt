@@ -302,7 +302,10 @@ class McpToolsetContract(private val harness: McpToolsetHarness) {
     }
 
   private companion object {
-    /** The tools [FakeMcpServer] advertises, in the order `McpToolset` returns them. */
+    /**
+     * The tools [FakeMcpServer] advertises, in the order `McpToolset` returns them, less the
+     * reserved [FakeMcpServer.TOOL_TRANSFER_TO_AGENT], which `McpToolset` skips.
+     */
     private val ADVERTISED_TOOLS =
       arrayOf(
         FakeMcpServer.TOOL_ECHO,

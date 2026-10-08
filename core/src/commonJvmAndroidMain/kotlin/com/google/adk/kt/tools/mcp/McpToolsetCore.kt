@@ -17,13 +17,17 @@
 package com.google.adk.kt.tools.mcp
 
 import com.google.adk.kt.agents.ReadonlyContext
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.SetModelResponseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.ToolFilter
 import com.google.adk.kt.tools.Toolset
+import com.google.adk.kt.tools.TransferToAgentTool
 import com.google.adk.kt.tools.isToolSelected
+import com.google.adk.kt.types.FunctionCall
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -76,8 +80,18 @@ internal class McpToolsetCore(
       try {
         val session = sessionManager.getSession(headers, stale)
         active = session
+        // Skipped before toolFilter, as in Python: a server tool must not take ADK's own calls.
+        val (reservedTools, allowedTools) =
+          session.listTools().partition { it.name in RESERVED_TOOL_NAMES }
+        for (tool in reservedTools) {
+          // Safe to log: the name equals one of ADK's own constants.
+          logger.warn {
+            "Skipping MCP tool '${tool.name}' because it collides with a reserved ADK framework " +
+              "tool name."
+          }
+        }
         val serverTools =
-          session.listTools().map { definition ->
+          allowedTools.map { definition ->
             val invocation = McpToolInvocation { context, arguments ->
               callTool(definition.name, context, arguments, headers)
             }
@@ -214,6 +228,13 @@ internal class McpToolsetCore(
     const val RETRY_DELAY_MS = 100L
     const val MAX_FULL_SCAN_PAGES = 100
     val logger = LoggerFactory.getLogger(McpToolsetCore::class)
+
+    /** The tool names ADK itself puts on the wire, matching Python's `_RESERVED_TOOL_NAMES`. */
+    @OptIn(FrameworkInternalApi::class)
+    val RESERVED_TOOL_NAMES: Set<String> =
+      FunctionCall.ADK_RESERVED_FUNCTION_NAMES +
+        TransferToAgentTool.TRANSFER_TO_AGENT_TOOL_NAME +
+        SetModelResponseTool.NAME
   }
 
   private class LoadedTools(val serverTools: List<BaseTool>, val resourceTools: List<BaseTool>)
