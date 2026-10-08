@@ -30,6 +30,7 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.flow
@@ -157,6 +158,79 @@ class LlmAgentTurnTest {
 
     assertEquals("SAFETY", modelEvent.errorCode)
     assertEquals(mapOf("trace_id" to "abc123", "attempt" to 2), modelEvent.customMetadata)
+  }
+
+  @Test
+  fun runAsync_responseCarryingOnlyGroundingMetadata_stillBecomesAnEvent() = runBlocking {
+    // ADK Python and Java keep a grounding-only response as an event too.
+    val grounding = GroundingMetadata(webSearchQueries = listOf("kotlin adk"))
+    val model =
+      DummyModel("grounding-model") {
+        flow {
+          emit(LlmResponse(groundingMetadata = grounding))
+          emit(LlmResponse(content = modelMessage("Grounded.")))
+        }
+      }
+    val agent = LlmAgent(name = "Searcher", description = "Searches.", model = model)
+    val runner = InMemoryRunner(agent = agent)
+
+    val modelEvents =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hi?"))
+        .toList()
+        .filter { it.author == agent.name }
+
+    assertEquals(grounding, modelEvents.first().groundingMetadata)
+    val key = com.google.adk.kt.sessions.SessionKey(runner.appName, "user1", "session1")
+    val saved = checkNotNull(runner.sessionService.getSession(key)).events
+    assertEquals(true, saved.any { it.groundingMetadata == grounding })
+  }
+
+  @Test
+  fun runAsync_responseCarryingOnlyErrorCode_stillBecomesAnEvent() = runBlocking {
+    // ADK Python and Java keep an error-code-only response as an event too.
+    val model =
+      DummyModel("error-model") {
+        flow {
+          emit(LlmResponse(errorCode = "E1"))
+          emit(LlmResponse(content = modelMessage("Done.")))
+        }
+      }
+    val agent = LlmAgent(name = "Erring", description = "Errs.", model = model)
+    val runner = InMemoryRunner(agent = agent)
+
+    val modelEvents =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hi?"))
+        .toList()
+        .filter { it.author == agent.name }
+
+    assertEquals("E1", modelEvents.first().errorCode)
+    val key = com.google.adk.kt.sessions.SessionKey(runner.appName, "user1", "session1")
+    val saved = checkNotNull(runner.sessionService.getSession(key)).events
+    assertEquals(true, saved.any { it.errorCode == "E1" })
+  }
+
+  @Test
+  fun runAsync_responseCarryingOnlyAnEmptyErrorCode_isDropped() = runBlocking {
+    // ADK Python drops it too: an empty error code is falsy there.
+    val model =
+      DummyModel("error-model") {
+        flow {
+          emit(LlmResponse(errorCode = ""))
+          emit(LlmResponse(content = modelMessage("Done.")))
+        }
+      }
+    val agent = LlmAgent(name = "Erring", description = "Errs.", model = model)
+    val runner = InMemoryRunner(agent = agent)
+
+    val modelEvents =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hi?"))
+        .toList()
+        .filter { it.author == agent.name }
+
+    assertEquals(modelMessage("Done."), modelEvents.single().content)
   }
 
   @Test
