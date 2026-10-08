@@ -238,10 +238,14 @@ private suspend fun SessionService.createSeededSession(
     }
   // Appending is not atomic with creation, matching the reference server: a failure part-way
   // leaves the session with the events appended so far.
-  // The id-less seeds arrived as one request, so they share a single minted invocation id.
-  val seededInvocationId = "s-${Uuid.random()}"
-  request.events?.forEach {
-    val unused = appendEvent(session, it.withSeededInvocationId(seededInvocationId))
+  if (!request.events.isNullOrEmpty()) {
+    // The id-less seeds arrived as one request, so they share a single minted invocation id.
+    val seededInvocationId = "s-${Uuid.random()}"
+    for (event in request.events) {
+      val unused = appendEvent(session, event.withSeededInvocationId(seededInvocationId))
+    }
+    // A buffering session service must have persisted the seed before the caller builds on it.
+    flush(session.key)
   }
   return CreateSessionOutcome.Created(session)
 }

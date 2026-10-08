@@ -64,6 +64,22 @@ class AdkServerLifecycleTest {
   }
 
   @Test
+  fun stop_flushesTheSessionService() {
+    val port = freePort()
+    val sessionService = RecordingSessionService()
+    val server = AdkApiServer(testConfig(port).copy(sessionService = sessionService))
+
+    try {
+      server.start()
+      awaitHealthy(port)
+    } finally {
+      server.stop()
+    }
+
+    assertThat(sessionService.calls).containsExactly("flush:all")
+  }
+
+  @Test
   fun concurrentStarts_startASingleServer() {
     val port = freePort()
     val server = newServer(port)

@@ -21,6 +21,7 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.VERSION
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.adk.kt.webserver.routes.appInfoRoutes
@@ -33,6 +34,7 @@ import com.google.adk.kt.webserver.routes.staticRoutes
 import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.call
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ResponseSent
@@ -46,11 +48,21 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.util.AttributeKey
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 
 private const val STOP_GRACE_MILLIS = 1000L
 private const val STOP_TIMEOUT_MILLIS = 5000L
+
+/**
+ * Short enough that the engine's stop (1 s grace, 5 s timeout by default) and then this flush
+ * typically fit Cloud Run's 10 s between SIGTERM and SIGKILL.
+ */
+private val STOP_FLUSH_TIMEOUT = 3.seconds
 
 private val logger = LoggerFactory.getLogger(AdkApiServer::class.java)
 
@@ -102,6 +114,10 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
     engine.start(wait = wait)
   }
 
+  /**
+   * Stops the engine, which waits for [adkApiModule] to flush [AdkServerConfig.sessionService]: up
+   * to 3 seconds more for a flush that honors cancellation.
+   */
   fun stop() {
     synchronized(lifecycleLock) {
       stopServer?.invoke()
@@ -138,9 +154,10 @@ private val requestLogging = requestLoggingPlugin { level, message ->
 }
 
 /**
- * Installs the ADK agent runtime: health, version, app discovery, sessions, artifacts, the run
+ * Installs the ADK agent runtime (health, version, app discovery, sessions, artifacts, the run
  * endpoints, and app-info when [AdkServerConfig.includeAppInfo] or the `adk.app.info.enabled`
- * property asks for it.
+ * property asks for it) and flushes [AdkServerConfig.sessionService] when the application stops,
+ * waiting up to 3 seconds for a flush that honors cancellation.
  *
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
@@ -156,6 +173,8 @@ fun Application.adkApiModule(config: AdkServerConfig) {
 internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boolean) {
   install(requestLogging)
   install(ContentNegotiation) { json(adkJson) }
+
+  flushSessionServiceOnStop(config.sessionService)
 
   val otelConfig = OpenTelemetryConfig(config.apiServerSpanExporter)
   val sdkTracerProvider = otelConfig.sdkTracerProvider()
@@ -207,6 +226,33 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
       staticRoutes(this@adkApiModule)
     }
   }
+}
+
+/**
+ * Flushes [sessionService] when this application stops, giving up after [STOP_FLUSH_TIMEOUT] if the
+ * flush honors cancellation. Ktor raises [ApplicationStopping] on `stop()` and from its JVM
+ * shutdown hook, after the engine's shutdown grace period, so the flush also persists what calls
+ * cut off by the stop had buffered.
+ */
+private fun Application.flushSessionServiceOnStop(sessionService: SessionService) {
+  @Suppress("DEPRECATION") // Ktor 2, which the Gradle build uses, has no Application.monitor.
+  val monitor = environment.monitor
+  lateinit var subscription: DisposableHandle
+  subscription =
+    monitor.subscribe(ApplicationStopping) {
+      // Unsubscribes, since a dev-mode reload reruns this module on the same monitor.
+      subscription.dispose()
+      try {
+        runBlocking {
+          withTimeoutOrNull(STOP_FLUSH_TIMEOUT) { sessionService.flush() }
+            ?: logger.warn("Timed out flushing buffered session writes on stop")
+        }
+      } catch (e: Exception) {
+        if (e is InterruptedException) Thread.currentThread().interrupt()
+        // Type only: the message can carry session content, which a log must not.
+        logger.warn("Failed to flush buffered session writes on stop: {}", e.javaClass.name)
+      }
+    }
 }
 
 private fun Application.resolveWebUi(config: AdkServerConfig): Boolean =
