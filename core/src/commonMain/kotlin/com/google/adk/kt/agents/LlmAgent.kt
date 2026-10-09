@@ -253,10 +253,11 @@ class LlmAgent(
    * Runs this agent over a live connection.
    *
    * A live run is one continuous conversation rather than a sequence of steps, so unlike
-   * [runAsyncImpl] it has no step loop or step cap: it holds one connection open until the caller
-   * closes the queue or the connection ends. Like [runAsyncImpl], it saves a non-partial final text
-   * to [outputKey]; its after-model callbacks see only the output transcription so far, and any
-   * change they make blocks the turn and restarts the session.
+   * [runAsyncImpl] it has no step loop or step cap: it keeps the conversation going until the
+   * caller closes the queue or a connection ends with nothing to resume, reconnecting after a
+   * server go-away or a resumable drop and handing over to another agent on a transfer. Like
+   * [runAsyncImpl], it saves a non-partial final text to [outputKey]; its after-model callbacks see
+   * only the output transcription so far, and any change they make restarts the session.
    */
   @OptIn(ExperimentalLiveApi::class)
   override fun runLiveImpl(context: InvocationContext): Flow<Event> =

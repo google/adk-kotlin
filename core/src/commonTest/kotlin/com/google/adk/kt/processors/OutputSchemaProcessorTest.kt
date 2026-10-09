@@ -133,22 +133,22 @@ class OutputSchemaProcessorTest {
 
   @OptIn(ExperimentalLiveApi::class)
   @Test
-  fun process_outputSchemaWithSubAgentsOnGemini2OnALiveRun_returnsRequestUnchanged() = runBlocking {
-    // A live run isn't offered transfer_to_agent, so the sub-agents add no tool to work around.
-    val agent =
-      LlmAgent(
-        name = "parent",
-        model = DummyModel("gemini-2.0-flash"),
-        outputSchema = outputSchema,
-        subAgents = listOf(LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"))),
-      )
-    val context = contextFor(agent).apply { frameworkData.liveRequestQueue = LiveRequestQueue() }
-    val request = LlmRequest()
+  fun process_outputSchemaWithSubAgentsOnGemini2OnALiveRun_addsSetModelResponseTool() =
+    runBlocking {
+      // Live runs offer transfer_to_agent too, so the workaround must activate on Gemini 2.x.
+      val agent =
+        LlmAgent(
+          name = "parent",
+          model = DummyModel("gemini-2.0-flash"),
+          outputSchema = outputSchema,
+          subAgents = listOf(LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"))),
+        )
+      val context = contextFor(agent).apply { frameworkData.liveRequestQueue = LiveRequestQueue() }
 
-    val result = OutputSchemaProcessor().process(context, request)
+      val result = OutputSchemaProcessor().process(context, LlmRequest())
 
-    assertEquals(request, result)
-  }
+      assertTrue(result.toolsDict.any { it.name == SetModelResponseTool.NAME })
+    }
 
   @Test
   fun process_outputSchemaWithSubAgentsOnSupportedModel_returnsRequestUnchanged() = runBlocking {
