@@ -117,14 +117,13 @@ class ServerSessionFlushTest {
     testApplication {
       application { adkApiModule(testConfig(sessionService)) }
 
-      val outcome = runCatching {
+      val response =
         client.post("/apps/mock-agent/users/u/sessions") {
           jsonBody("""{"sessionId":"s3","events":[$USER_EVENT]}""")
         }
-      }
 
-      // No StatusPages is installed, so the failure surfaces as a throw.
-      assertThat(outcome.exceptionOrNull()).isInstanceOf(SessionException::class.java)
+      // No StatusPages is installed, so the engine returns a 500 for the failure.
+      assertThat(response.status).isEqualTo(HttpStatusCode.InternalServerError)
       assertThat(sessionService.calls).containsExactly("append", "flush:s3").inOrder()
     }
   }
@@ -165,7 +164,7 @@ class ServerSessionFlushTest {
       }
     }
     // A dev-mode reload keeps the monitor, so a later stop on it must not flush this service again.
-    stopped.environment.monitor.raise(ApplicationStopping, stopped)
+    stopped.monitor.raise(ApplicationStopping, stopped)
 
     assertThat(sessionService.calls).containsExactly("flush:all")
   }

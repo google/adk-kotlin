@@ -727,22 +727,19 @@ class SessionRoutesTest {
 
   @Test
   fun createSession_appendFailingMidway_keepsTheSessionAndEarlierEvents() = testApplication {
-    // Seeding is not atomic with creation, matching the reference server: the session survives with
-    // the events appended so far. The failure surfaces as a throw because the test engine rethrows
-    // what a real one would answer 500.
+    // Seeding is not atomic with creation, matching the reference server.
     val fakeService = FailingAppendSessionService(acceptCount = 2)
     application { sessionApp(fakeService) }
 
-    val outcome = runCatching {
+    val response =
       client.post("/apps/testApp/users/testUser/sessions") {
         jsonBody(
           """{"sessionId":"s1","events":[{"id":"e1","author":"user"},""" +
             """{"id":"e2","author":"user"},{"id":"e3","author":"user"}]}"""
         )
       }
-    }
 
-    assertThat(outcome.isFailure).isTrue()
+    assertThat(response.status).isEqualTo(HttpStatusCode.InternalServerError)
     assertThat(fakeService.createdSessions).hasSize(1)
     assertThat(fakeService.appended).isEqualTo(2)
   }
@@ -791,19 +788,18 @@ class SessionRoutesTest {
 
   @Test
   fun createSessionWithId_unrelatedSessionFailure_isNotConflict() = testApplication {
-    // Only a taken id is a conflict; any other SessionException must reach the caller instead.
-    val failure = SessionException("Session storage unavailable")
+    // Only a taken id is a conflict; any other SessionException must fail the request instead.
     application {
       install(ContentNegotiation) { json(adkJson) }
-      routing { sessionRoutes(FailingSessionService(failure)) }
+      routing {
+        sessionRoutes(FailingSessionService(SessionException("Session storage unavailable")))
+      }
     }
 
-    val outcome = runCatching { client.post("/apps/testApp/users/testUser/sessions/test-session") }
+    val response = client.post("/apps/testApp/users/testUser/sessions/test-session")
 
-    // No StatusPages is installed, so it surfaces as a throw, and coroutine stack-trace recovery
-    // re-wraps it, so match on type and message rather than on identity.
-    assertThat(outcome.exceptionOrNull()).isInstanceOf(SessionException::class.java)
-    assertThat(outcome.exceptionOrNull()).hasMessageThat().isEqualTo(failure.message)
+    // No StatusPages is installed, so the engine returns a 500 rather than a 409.
+    assertThat(response.status).isEqualTo(HttpStatusCode.InternalServerError)
   }
 
   @Test

@@ -19,7 +19,7 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import java.net.Socket
@@ -39,7 +39,7 @@ import org.junit.runners.JUnit4
  */
 @RunWith(JUnit4::class)
 class RequestFramingTest {
-  private lateinit var server: ApplicationEngine
+  private lateinit var server: EmbeddedServer<*, *>
   private var port = 0
 
   @Before
@@ -56,7 +56,7 @@ class RequestFramingTest {
         )
       }
     server.start(wait = false)
-    port = runBlocking { server.resolvedConnectors().first().port }
+    port = runBlocking { server.engine.resolvedConnectors().first().port }
   }
 
   @After

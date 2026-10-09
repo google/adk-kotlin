@@ -21,7 +21,7 @@ google-auth = "1.48.0"
 google-cloud-bigquery = "2.68.0"
 google-cloud-storage = "2.61.0"
 google-firebase-platform = "34.16.0"
-google-genai-kotlin = "1.4.0"
+google-genai-kotlin = "1.6.0"
 google-gson = "2.14.0"
 google-mlkit-genai = "1.0.0-beta3"
 google-services = "4.4.4"
@@ -34,8 +34,7 @@ kotlinx-atomicfu = "0.33.0"
 kotlinx-coroutines = "1.11.0"
 kotlinx-serialization = "1.8.1"
 ksp = "2.3.9"
-ktor = "2.3.13"
-ktor-mcp = "3.5.2"
+ktor = "3.6.0"
 kxml2 = "2.3.0"
 litertlm = "0.13.1"
 mcp = "2.0.0"
@@ -105,8 +104,8 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 kotlinx-serialization = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-java = { module = "io.ktor:ktor-client-java", version.ref = "ktor" }
-ktor-client-mock-mcp = { module = "io.ktor:ktor-client-mock", version.ref = "ktor-mcp" }
-ktor-client-okhttp-mcp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor-mcp" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
 ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
 ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }

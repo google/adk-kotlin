@@ -28,8 +28,8 @@ import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.server.application.Application
 import io.ktor.server.application.plugin
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.Routing
+import io.ktor.server.routing.RoutingNode
+import io.ktor.server.routing.RoutingRoot
 import io.ktor.server.testing.testApplication
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -124,7 +124,7 @@ class ModuleSurfaceTest {
       testApplication {
         application {
           install()
-          routes += plugin(Routing).leafRoutes()
+          routes += plugin(RoutingRoot).leafRoutes()
         }
         // testApplication builds the Application lazily, so force it.
         client.get("/health")
@@ -142,7 +142,7 @@ class ModuleSurfaceTest {
     return routes
   }
 
-  private fun Route.leafRoutes(): List<String> =
+  private fun RoutingNode.leafRoutes(): List<String> =
     if (children.isEmpty()) listOf(toString()) else children.flatMap { it.leafRoutes() }
 
   private companion object {
@@ -169,7 +169,8 @@ class ModuleSurfaceTest {
     val APP_INFO_ROUTES = setOf("/apps/{appName}/app-info/(method:GET)")
 
     /** The Development UI mount, which Python also serves from the API server. */
-    val WEB_UI_ROUTES = setOf("/(method:GET)", "/dev-ui/(method:GET)", "/dev-ui/{...}/(method:GET)")
+    val WEB_UI_ROUTES =
+      setOf("/(method:GET)", "/dev-ui/(method:GET)", "/(static-content)/dev-ui/{...}/(method:GET)")
 
     /** Mirrors which side Python puts each endpoint on; the URL prefixes differ. */
     val DEVELOPMENT_ONLY_ROUTES =

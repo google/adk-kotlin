@@ -26,7 +26,7 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.plugin
 import io.ktor.server.routing.HttpMethodRouteSelector
-import io.ktor.server.routing.Routing
+import io.ktor.server.routing.RoutingRoot
 import io.ktor.server.routing.getAllRoutes
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
@@ -126,7 +126,7 @@ class RequestBodyCoverageTest {
 
   /** Every POST route the server mounts, with a value substituted for each path parameter. */
   private fun Application.postRoutePaths(): List<String> =
-    plugin(Routing)
+    plugin(RoutingRoot)
       .getAllRoutes()
       .filter { (it.selector as? HttpMethodRouteSelector)?.method == HttpMethod.Post }
       .map { PATH_PARAMETER.replace(it.parent.toString(), PROBE) }
