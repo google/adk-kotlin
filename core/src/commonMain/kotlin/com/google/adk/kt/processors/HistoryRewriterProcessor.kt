@@ -30,6 +30,7 @@ import com.google.adk.kt.types.Role
  * Handles:
  * - Filtering "invisible" parts (pure thoughts).
  * - Rearranging/merging function response events (parallel calls).
+ * - Merging stored live transcriptions into `user` and `model` text turns.
  */
 internal class HistoryRewriterProcessor {
   fun rewrite(
@@ -51,32 +52,31 @@ internal class HistoryRewriterProcessor {
       shouldIncludeEventInContext(currentBranch, it)
     }
 
-    // Process events. Compaction events are kept here (they carry their summary in
-    // actions.compaction rather than content) so processCompactionEvents can expand them below.
-    val filteredEvents = rawFilteredEvents.mapNotNull { event ->
-      when {
-        event.actions.compaction != null -> event
-        event.content == null -> null
-        isOtherAgentReply(agentName, event) -> presentOtherAgentMessage(event)
-        else -> event
-      }
-    }
-
     // Replace each compaction event with its summary and drop the raw events it covers.
     val eventsWithCompactionApplied =
-      if (filteredEvents.any { it.actions.compaction != null }) {
-        processCompactionEvents(filteredEvents)
+      if (rawFilteredEvents.any { it.actions.compaction != null }) {
+        processCompactionEvents(rawFilteredEvents, agentName)
       } else {
-        filteredEvents
+        rawFilteredEvents
       }
 
     // Compaction may have summarized away a function_call whose response survives (e.g. a
     // long-running call resumed after it was compacted). Recover the missing call from the
     // pre-compaction events so call/response pairing stays intact for the steps below.
-    val recoveredEvents = recoverCompactedFunctionCalls(eventsWithCompactionApplied, filteredEvents)
+    val recoveredEvents =
+      recoverCompactedFunctionCalls(eventsWithCompactionApplied, rawFilteredEvents)
+
+    val filteredEvents =
+      mergeTranscriptions(recoveredEvents).mapNotNull { event ->
+        when {
+          event.content == null -> null
+          isOtherAgentReply(agentName, event) -> presentOtherAgentMessage(event)
+          else -> event
+        }
+      }
 
     // Rearrange for latest function response (merge scenarios) and async function responses
-    return recoveredEvents
+    return filteredEvents
       .let { rearrangeEventsForLatestFunctionResponse(it) }
       .let { rearrangeEventsForAsyncFunctionResponsesInHistory(it) }
       .mapNotNull { event ->
@@ -86,13 +86,81 @@ internal class HistoryRewriterProcessor {
   }
 
   /**
+   * Merges each run of transcription events without visible content into one text event, input
+   * transcriptions as a `user` turn and output transcriptions as a `model` turn, so later
+   * invocations on the session replay what was said. A run is one author's consecutive chunks of
+   * one kind, and a blank run is dropped. It runs before the other-agent rewrite, so another
+   * agent's speech is narrated as context just like text.
+   */
+  private fun mergeTranscriptions(events: List<Event>): List<Event> {
+    val merged = mutableListOf<Event>()
+    val text = StringBuilder()
+    events.forEachIndexed { i, event ->
+      val kind = transcriptionKind(event)
+      if (kind == null) {
+        merged += event
+        return@forEachIndexed
+      }
+      text.append(kind.textOf(event))
+      if (!continuesTranscriptionRun(event, events.getOrNull(i + 1))) {
+        // Blankness is judged per run, so a lone space chunk still separates words.
+        if (text.isNotBlank()) merged += kind.toTextEvent(event, text.toString())
+        text.clear()
+      }
+    }
+    return merged
+  }
+
+  /** Whether [next] continues [event]'s run: same kind, same author, no visible content. */
+  private fun continuesTranscriptionRun(event: Event, next: Event?): Boolean {
+    val kind = transcriptionKind(event) ?: return false
+    return next != null && next.author == event.author && transcriptionKind(next) == kind
+  }
+
+  /** The kind of transcription [event] is merged as, or null if it has visible content or none. */
+  private fun transcriptionKind(event: Event): TranscriptionKind? =
+    when {
+      hasContent(event) -> null
+      !event.inputTranscription?.text.isNullOrEmpty() -> TranscriptionKind.INPUT
+      !event.outputTranscription?.text.isNullOrEmpty() -> TranscriptionKind.OUTPUT
+      else -> null
+    }
+
+  private enum class TranscriptionKind {
+    INPUT,
+    OUTPUT;
+
+    fun textOf(event: Event): String =
+      when (this) {
+        INPUT -> event.inputTranscription?.text
+        OUTPUT -> event.outputTranscription?.text
+      }.orEmpty()
+
+    /** The run's last [event], carrying the run's [text] as content instead of a transcription. */
+    fun toTextEvent(event: Event, text: String): Event =
+      when (this) {
+        INPUT ->
+          event.copy(
+            content = Content(Role.USER, listOf(Part(text = text))),
+            inputTranscription = null,
+          )
+        OUTPUT ->
+          event.copy(
+            content = Content(Role.MODEL, listOf(Part(text = text))),
+            outputTranscription = null,
+          )
+      }
+  }
+
+  /**
    * Processes events by applying compaction. Identifies compacted ranges and filters out events
    * that are covered by compaction summaries.
    *
    * @param events The list of events to process.
+   * @param agentName The current agent, which authors each summary.
    * @return The list of events with compaction applied.
    */
-  private fun processCompactionEvents(events: List<Event>): List<Event> {
+  private fun processCompactionEvents(events: List<Event>, agentName: String): List<Event> {
     // Extract all compaction ranges from the events.
     val compactionRanges = events.mapIndexedNotNull { index, event ->
       event.actions.compaction?.let { CompactionRange(index, it.startTimestamp, it.endTimestamp) }
@@ -112,7 +180,8 @@ internal class HistoryRewriterProcessor {
           compaction.endTimestamp,
           range.index,
           events[range.index].copy(
-            author = Role.MODEL,
+            // The agent's own, so the other-agent rewrite does not narrate it.
+            author = agentName.ifEmpty { Role.MODEL },
             content = compaction.compactedContent,
             timestamp = compaction.endTimestamp,
           ),
@@ -274,21 +343,52 @@ internal class HistoryRewriterProcessor {
     currentBranch: String?,
   ): List<Event> {
     for (i in events.indices.reversed()) {
-      if (isCurrentTurnBoundary(events[i], agentName, currentBranch)) {
-        return events.subList(i, events.size)
-      }
+      if (!isCurrentTurnBoundary(events[i], agentName, currentBranch)) continue
+      val start = runStart(events, i, currentBranch)
+      // A blank spoken run is dropped by the merge, so it cannot start the turn.
+      val kind = transcriptionKind(events[i])
+      if (kind != null && runText(events, start, i, kind, currentBranch).isBlank()) continue
+      return events.subList(start, events.size)
     }
     return emptyList()
   }
+
+  /**
+   * Returns where the transcription run that ends at [end] starts, so the current turn keeps all of
+   * a spoken turn rather than its last chunk. Events left out of the context do not break the run.
+   */
+  private fun runStart(events: List<Event>, end: Int, currentBranch: String?): Int {
+    var start = end
+    for (i in end - 1 downTo 0) {
+      if (!shouldIncludeEventInContext(currentBranch, events[i])) continue
+      if (!continuesTranscriptionRun(events[i], events[start])) break
+      start = i
+    }
+    return start
+  }
+
+  /** The text the merge would give the [kind] run from [start] to [end]. */
+  private fun runText(
+    events: List<Event>,
+    start: Int,
+    end: Int,
+    kind: TranscriptionKind,
+    currentBranch: String?,
+  ): String =
+    (start..end)
+      .map { events[it] }
+      .filter { shouldIncludeEventInContext(currentBranch, it) }
+      .joinToString("") { kind.textOf(it) }
 
   /**
    * Returns whether [event] qualifies as the start of the current turn for [agentName] on
    * [currentBranch]: it must be visible in this agent's context, and it must be a user input or
    * another agent's reply (not this agent's own output, and not an internal/auth/etc. event).
    *
-   * An other-agent reply also has to survive [presentOtherAgentMessage]. Signature and server-side
-   * tool parts are visible but have nothing to narrate, so a turn started on one would truncate the
-   * history at an event that then contributes nothing, leaving the request with no contents at all.
+   * An other-agent reply also has to survive [presentOtherAgentMessage], unless it is a spoken
+   * chunk, which is narrated once the merge gives it content. Signature and server-side tool parts
+   * are visible but have nothing to narrate, so a turn started on one would truncate the history at
+   * an event that then contributes nothing, leaving the request with no contents at all.
    */
   private fun isCurrentTurnBoundary(
     event: Event,
@@ -297,7 +397,8 @@ internal class HistoryRewriterProcessor {
   ): Boolean {
     if (!shouldIncludeEventInContext(currentBranch, event)) return false
     if (event.author == Role.USER) return true
-    return isOtherAgentReply(agentName, event) && presentOtherAgentMessage(event) != null
+    return isOtherAgentReply(agentName, event) &&
+      (transcriptionKind(event) != null || presentOtherAgentMessage(event) != null)
   }
 
   private fun isOtherAgentReply(currentAgentName: String, event: Event): Boolean {
@@ -386,26 +487,26 @@ internal class HistoryRewriterProcessor {
   }
 
   /**
-   * Check if an event should be skipped due to missing or empty content.
-   *
-   * This can happen to the events that only changed session state. When both content and
-   * transcriptions are empty, the event will be considered as empty. The content is considered
-   * empty if none of its parts contain text, inline data, function call, function response,
-   * server-side tool call, or server-side tool response. Parts with only thoughts are also
-   * considered empty.
+   * Check if an event should be skipped due to missing or empty content, such as an event that only
+   * changed session state. It is empty when it has no visible content (see [hasContent]) and no
+   * transcription has text.
    */
   private fun containsEmptyContent(event: Event): Boolean {
     // Compaction events carry their summary in actions.compaction rather than content; keep them so
     // processCompactionEvents can expand them into summary content.
     if (event.actions.compaction != null) return false
 
-    val hasContent =
-      event.content != null &&
-        event.content.role != null &&
-        event.content.parts.isNotEmpty() &&
-        !event.content.parts.all { isPartInvisible(it) }
-    return !hasContent
+    return !hasContent(event) &&
+      event.inputTranscription?.text.isNullOrEmpty() &&
+      event.outputTranscription?.text.isNullOrEmpty()
   }
+
+  /** Whether [event] has a role and at least one part that is visible in the LLM context. */
+  private fun hasContent(event: Event): Boolean =
+    event.content != null &&
+      event.content.role != null &&
+      event.content.parts.isNotEmpty() &&
+      !event.content.parts.all { isPartInvisible(it) }
 
   /**
    * Returns whether a part is invisible for LLM context.
