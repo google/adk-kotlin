@@ -18,6 +18,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.TransferToAgentTool
@@ -83,7 +84,8 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
       )
 
       val parent = agent.parentAgent
-      if (parent != null && !agent.disallowTransferToParent) {
+      // A live run filters out a non-live parent, so mention the parent only when it is offered.
+      if (parent != null && !agent.disallowTransferToParent && parent in targets) {
         append(
           "\n\nIf neither you nor the other agents are best for the question, transfer to your parent agent ${parent.name}."
         )
@@ -93,11 +95,11 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
 }
 
 /**
- * The agents a request for [context] offers `transfer_to_agent` to: [findTransferTargets], except
- * on a live run, which can't transfer yet and so isn't offered a tool that would do nothing.
+ * The agents a request for [context] offers `transfer_to_agent` to: [findTransferTargets], or on a
+ * live run only its [liveTransferTargets].
  */
 internal fun offeredTransferTargets(agent: BaseAgent, context: InvocationContext): List<BaseAgent> =
-  if (context.liveRequestQueue != null) emptyList() else findTransferTargets(agent)
+  if (context.liveRequestQueue != null) liveTransferTargets(agent) else findTransferTargets(agent)
 
 /**
  * Returns the agents [agent] may transfer control to: its sub-agents, and (when permitted) its
@@ -129,3 +131,10 @@ internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   }
   return uniqueTargets
 }
+
+/**
+ * Returns the [findTransferTargets] a live run can hand over to: only [LlmAgent]s, the one built-in
+ * agent type that runs live.
+ */
+internal fun liveTransferTargets(agent: BaseAgent): List<BaseAgent> =
+  findTransferTargets(agent).filter { it is LlmAgent }
