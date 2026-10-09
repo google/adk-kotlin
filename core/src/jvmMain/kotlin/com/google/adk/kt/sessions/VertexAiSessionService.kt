@@ -23,12 +23,14 @@ import com.google.adk.kt.sessions.dto.toAdk
 import com.google.adk.kt.sessions.dto.toDto
 import com.google.auth.oauth2.GoogleCredentials
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.java.Java
+import io.ktor.client.engine.okhttp.OkHttp
 import java.time.Duration as JavaDuration
+import java.util.concurrent.Executors
 import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
 import kotlin.time.Instant
 import kotlin.time.toKotlinDuration
+import okhttp3.Dispatcher
 
 /**
  * A [SessionService] backed by the managed Vertex AI Session Service.
@@ -79,7 +81,7 @@ internal constructor(
    * @param reasoningEngineId The numeric id of the reasoning engine to address.
    * @param credentials Credentials for the Vertex AI API; defaults to application-default
    *   credentials scoped for Google Cloud Platform.
-   * @param httpClient The underlying ktor [HttpClient].
+   * @param httpClient The underlying Ktor [HttpClient]; by default one on the OkHttp engine.
    * @param sessionTtl Lifetime applied to every session this service creates, including those the
    *   runner creates through the [SessionService] interface. A per-call `ttl` or `expireTime`
    *   overrides it; `null` leaves the backend default in place.
@@ -89,7 +91,7 @@ internal constructor(
     location: String,
     reasoningEngineId: String,
     credentials: GoogleCredentials = GoogleApiClient.defaultCredentials(),
-    httpClient: HttpClient = HttpClient(Java),
+    httpClient: HttpClient = defaultHttpClient(),
     sessionTtl: Duration? = null,
   ) : this(
     VertexAiSessionsClient(GoogleApiClient(httpClient, credentials)),
@@ -272,7 +274,7 @@ internal constructor(
             "VertexAiSessionService.Builder requires reasoningEngineId to be set."
           },
         credentials = credentials ?: GoogleApiClient.defaultCredentials(),
-        httpClient = httpClient ?: HttpClient(Java),
+        httpClient = httpClient ?: defaultHttpClient(),
         sessionTtl = sessionTtl,
       )
   }
@@ -303,3 +305,30 @@ internal constructor(
     }
   }
 }
+
+/**
+ * A Ktor client on the OkHttp engine, as the Gemini model uses, which closes the connection of a
+ * cancelled call. The configuration keeps what the Java engine did: daemon threads, no limit on
+ * calls at once, and no socket timeouts.
+ */
+internal fun defaultHttpClient(): HttpClient =
+  HttpClient(OkHttp) {
+    engine {
+      config {
+        // OkHttp's own dispatcher keeps the JVM alive for a minute and caps calls at 5 per host.
+        dispatcher(
+          Dispatcher(Executors.newCachedThreadPool(::daemonThread)).apply {
+            maxRequests = Int.MAX_VALUE
+            maxRequestsPerHost = Int.MAX_VALUE
+          }
+        )
+        // OkHttp would otherwise time out after 10 seconds without data.
+        connectTimeout(java.time.Duration.ZERO)
+        readTimeout(java.time.Duration.ZERO)
+        writeTimeout(java.time.Duration.ZERO)
+      }
+    }
+  }
+
+private fun daemonThread(task: Runnable): Thread =
+  Thread(task, "ADK Vertex AI sessions").apply { isDaemon = true }

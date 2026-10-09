@@ -100,6 +100,7 @@ kotlin {
         implementation(libs.mcp)
         implementation(libs.ktor.client.core)
         implementation(libs.ktor.client.java)
+        implementation(libs.ktor.client.okhttp)
         implementation(libs.kotlinx.coroutines.reactor)
         implementation(libs.slf4j.api)
         implementation(libs.google.flogger.extensions)

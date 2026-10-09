@@ -17,7 +17,7 @@ This page gives rules, not version numbers. Current values live in `gradle/libs.
 All artifacts share the group `com.google.adk` and one release version (see the install snippet in `README.md`). Published artifact IDs:
 
 - `google-adk-kotlin-core` for the runtime, and `google-adk-kotlin-processor` for `@Tool` code generation.
-- `google-adk-kotlin-<module>` for the other JVM and multiplatform modules: `webserver`, `integrations`, `integrations-spring`, `integrations-anthropic`, `a2a`, `litertlm`.
+- `google-adk-kotlin-<module>` for the other JVM and multiplatform modules: `webserver`, `integrations`, `integrations-spring`, `integrations-anthropic`, `integrations-openai`, `a2a`, `litertlm`.
 - The Android-only modules are published with an `-android` suffix: `google-adk-kotlin-firebase-android` and `google-adk-kotlin-mlkit-android`. ML Kit uses a `-beta` version of the shared release.
 
 `testing` and the examples are not published. The `artifactId` in a module's `build.gradle.kts` is authoritative.
@@ -53,7 +53,7 @@ For `Unresolved reference` to a generated tool, check in order: the KSP plugin i
 
 ### Credentials
 
-`Gemini` without an explicit key reads `GOOGLE_API_KEY` or `GEMINI_API_KEY`, and `Claude` reads `ANTHROPIC_API_KEY`; Vertex AI takes explicit credentials. On Android, use the Firebase AI module instead of API keys.
+`Gemini` without an explicit key reads `GOOGLE_API_KEY` or `GEMINI_API_KEY`, and `Claude` reads `ANTHROPIC_API_KEY`; `ChatCompletions` reads `OPENAI_BASE_URL` when no base URL is passed, and `OPENAI_API_KEY` when neither a key nor a base URL is passed. Vertex AI takes explicit credentials. On Android, use the Firebase AI module instead of API keys.
 
 ## Contributor setup
 

@@ -54,6 +54,10 @@ include(":google-adk-kotlin-integrations-anthropic")
 
 project(":google-adk-kotlin-integrations-anthropic").projectDir = file("integrations/anthropic")
 
+include(":google-adk-kotlin-integrations-openai")
+
+project(":google-adk-kotlin-integrations-openai").projectDir = file("integrations/openai")
+
 include(":google-adk-kotlin-a2a")
 
 project(":google-adk-kotlin-a2a").projectDir = file("a2a")
