@@ -20,10 +20,15 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userEvent
+import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
 import com.google.adk.kt.types.ToolType
+import com.google.adk.kt.types.Transcription
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -300,6 +305,352 @@ class HistoryRewriterProcessorTest {
     )
   }
 
+  // A live session stores what was said as transcriptions only, and a new session replays them.
+  @Test
+  fun rewrite_transcriptionOnlyEvents_becomeUserAndModelText() {
+    val events = listOf(heard("My name "), heard("is Ada."), spoken("Hi "), spoken("Ada!"))
+
+    assertEquals(listOf("user" to "My name is Ada.", "model" to "Hi Ada!"), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_typedAndSpokenTurns_keepTheirOrder() {
+    val events =
+      listOf(
+        userEvent("Hello."),
+        modelPartEvent(Part(text = "Hi, who is this?")),
+        heard("It is Ada."),
+        spoken("Nice to meet you, "),
+        spoken("Ada."),
+        userEvent("What is my name?"),
+      )
+
+    assertEquals(
+      listOf(
+        "user" to "Hello.",
+        "model" to "Hi, who is this?",
+        "user" to "It is Ada.",
+        "model" to "Nice to meet you, Ada.",
+        "user" to "What is my name?",
+      ),
+      turns(rewrite(events)),
+    )
+  }
+
+  @Test
+  fun rewrite_alternatingSpokenTurns_staySeparate() {
+    val events = listOf(heard("a"), spoken("b"), heard("c"), spoken("d"))
+
+    assertEquals(
+      listOf("user" to "a", "model" to "b", "user" to "c", "model" to "d"),
+      turns(rewrite(events)),
+    )
+  }
+
+  @Test
+  fun rewrite_inputThenOutputChunkFromOneAuthor_stayApart() {
+    val events =
+      listOf(heard("a"), Event(author = "user", outputTranscription = Transcription("b")))
+
+    assertEquals(listOf("user" to "a", "model" to "b"), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_spokenRunsSplitByATypedTurn_stayApart() {
+    val events = listOf(heard("a"), userEvent("typed"), heard("b"))
+
+    assertEquals(listOf("user" to "a", "user" to "typed", "user" to "b"), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_runBeforeAnEventWithContent_isFlushedFirst() {
+    // The event with content is kept as is, so the run before it must not carry over past it.
+    val typed =
+      Event(
+        author = "user",
+        content = userMessage("typed"),
+        inputTranscription = Transcription("x"),
+      )
+    val events = listOf(heard("a"), typed, heard("b"))
+
+    assertEquals(listOf("user" to "a", "user" to "typed", "user" to "b"), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_eventWithContentAndTranscription_keepsOnlyItsContent() {
+    val event =
+      Event(
+        author = "user",
+        content = userMessage("typed"),
+        inputTranscription = Transcription("x"),
+      )
+
+    assertEquals(listOf("user" to "typed"), turns(rewrite(listOf(event))))
+  }
+
+  @Test
+  fun rewrite_emptyChunkInsideRun_doesNotSplitIt() {
+    val noText = Event(author = "user", inputTranscription = Transcription())
+    val events = listOf(heard("My "), heard(""), noText, heard("name."))
+
+    assertEquals(listOf("user" to "My name."), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_emptyTranscription_isDropped() {
+    val events = listOf(heard(""), userEvent("Hello."))
+
+    assertEquals(listOf("user" to "Hello."), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_otherAgentsSpokenReply_isPresentedAsContext() {
+    val events =
+      listOf(
+        heard("Is it sunny?"),
+        spoken("Yes, ", author = "weather_agent"),
+        spoken("sunny.", author = "weather_agent"),
+      )
+
+    val contents = rewrite(events, agentName = "router")
+
+    assertEquals(
+      listOf(
+        "user" to listOf("Is it sunny?"),
+        "user" to listOf("For context:", "[weather_agent] said: Yes, sunny."),
+      ),
+      contents.map { content -> content.role to content.parts.map { it.text } },
+    )
+  }
+
+  @Test
+  fun rewrite_spokenRepliesFromTwoAgents_stayAttributedToEach() {
+    val events =
+      listOf(
+        heard("Weather and time?"),
+        spoken("Sunny.", author = "weather_agent"),
+        spoken("Noon.", author = "clock_agent"),
+      )
+
+    val contents = rewrite(events, agentName = "router")
+
+    assertEquals(
+      listOf(
+        listOf("Weather and time?"),
+        listOf("For context:", "[weather_agent] said: Sunny."),
+        listOf("For context:", "[clock_agent] said: Noon."),
+      ),
+      texts(contents),
+    )
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_keepsTheWholeSpokenRun() {
+    val events =
+      listOf(
+        userEvent("Earlier question."),
+        modelPartEvent(Part(text = "Earlier answer.")),
+        heard("My name "),
+        heard("is Ada."),
+      )
+
+    val contents = rewrite(events, includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("user" to "My name is Ada."), turns(contents))
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_keepsAnotherAgentsWholeSpokenRun() {
+    val events =
+      listOf(
+        userEvent("Is it sunny?"),
+        spoken("Yes, ", author = "weather_agent"),
+        spoken("sunny.", author = "weather_agent"),
+      )
+
+    val contents = rewrite(events, agentName = "router", includeContents = IncludeContents.NONE)
+
+    assertEquals(
+      listOf(listOf("For context:", "[weather_agent] said: Yes, sunny.")),
+      texts(contents),
+    )
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_otherAgentsSpokenRunWithThoughts_startsTheTurn() {
+    fun chunk(text: String) =
+      Event(
+        author = "weather_agent",
+        content = modelMessage(Part(text = "Look it up.", thought = true)),
+        outputTranscription = Transcription(text),
+      )
+    val events = listOf(userEvent("Is it sunny?"), chunk("Yes, "), chunk("sunny."))
+
+    val contents = rewrite(events, agentName = "router", includeContents = IncludeContents.NONE)
+
+    assertEquals(
+      listOf(listOf("For context:", "[weather_agent] said: Yes, sunny.")),
+      texts(contents),
+    )
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_trailingEmptyChunk_keepsTheTurn() {
+    val events = listOf(heard("Hello."), heard(""))
+
+    val contents = rewrite(events, includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("user" to "Hello."), turns(contents))
+  }
+
+  @Test
+  fun rewrite_compactionEndingInsideASpokenRun_keepsOnlyTheUncoveredChunks() {
+    val events =
+      listOf(
+        heard("one ", timestamp = 100L),
+        heard("two", timestamp = 200L),
+        compactionEvent(startTs = 100L, endTs = 150L, summary = "SUM"),
+      )
+
+    assertEquals(listOf("model" to "SUM", "user" to "two"), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_otherAgentsCompactedLongRunningCall_isRecoveredAndNarrated() {
+    val call =
+      Event(
+        author = "weather_agent",
+        content = modelMessage(Part(functionCall = FunctionCall(name = "lookup", id = "c1"))),
+        longRunningToolIds = setOf("c1"),
+        timestamp = 100L,
+      )
+    val response =
+      Event(
+        author = "weather_agent",
+        content =
+          Content(
+            role = "user",
+            parts = listOf(Part(functionResponse = FunctionResponse(name = "lookup", id = "c1"))),
+          ),
+        timestamp = 200L,
+      )
+    val events =
+      listOf(call, compactionEvent(startTs = 100L, endTs = 150L, summary = "SUM"), response)
+
+    val contents = rewrite(events, agentName = "router")
+
+    assertEquals(
+      listOf(
+        listOf("SUM"),
+        listOf("For context:", "[weather_agent] called tool `lookup` with parameters: {}"),
+        listOf("For context:", "[weather_agent] `lookup` tool returned result: {}"),
+      ),
+      texts(contents),
+    )
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_consecutiveUserTurns_keepsOnlyTheLast() {
+    val events = listOf(userEvent("Turn 1"), userEvent("Turn 2"))
+
+    val contents = rewrite(events, includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("user" to "Turn 2"), turns(contents))
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_otherAgentsTextReplies_keepsOnlyTheLast() {
+    val events =
+      listOf(
+        userEvent("Is it sunny?"),
+        modelPartEvent(Part(text = "Checking."), "weather_agent"),
+        modelPartEvent(Part(text = "Sunny."), "weather_agent"),
+      )
+
+    val contents = rewrite(events, agentName = "router", includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf(listOf("For context:", "[weather_agent] said: Sunny.")), texts(contents))
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_runWithAnExcludedChunk_staysWhole() {
+    val events = listOf(userEvent("Earlier question."), heard("My "), heard(""), heard("name."))
+
+    val contents = rewrite(events, includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("user" to "My name."), turns(contents))
+  }
+
+  @Test
+  fun rewrite_emptyContentWithTranscription_isMergedAsTranscription() {
+    val event =
+      Event(
+        author = "user",
+        content = Content(role = "user", parts = emptyList()),
+        inputTranscription = Transcription(text = "Hi."),
+      )
+
+    assertEquals(listOf("user" to "Hi."), turns(rewrite(listOf(event))))
+  }
+
+  @Test
+  fun rewrite_thoughtOnlyContentWithTranscription_isMergedAsTranscription() {
+    val event =
+      Event(
+        author = "agent",
+        content = modelMessage(Part(text = "Greet them.", thought = true)),
+        outputTranscription = Transcription(text = "Hello."),
+      )
+
+    assertEquals(listOf("model" to "Hello."), turns(rewrite(listOf(event))))
+  }
+
+  @Test
+  fun rewrite_spaceChunkBetweenWords_isKept() {
+    val events = listOf(heard("Hello"), heard(" "), heard("world."))
+
+    assertEquals(listOf("user" to "Hello world."), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_blankSpokenRun_isDropped() {
+    val events = listOf(heard("Hi."), spoken(" "), spoken("  "))
+
+    assertEquals(listOf("user" to "Hi."), turns(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_blankSpokenRun_doesNotBlankTheTurn() {
+    val events = listOf(userEvent("Is it sunny?"), spoken("   ", author = "weather_agent"))
+
+    val contents = rewrite(events, agentName = "router", includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("user" to "Is it sunny?"), turns(contents))
+  }
+
+  private fun rewrite(
+    events: List<Event>,
+    agentName: String = "agent",
+    includeContents: IncludeContents = IncludeContents.DEFAULT,
+  ): List<Content> =
+    HistoryRewriterProcessor().rewrite(events, agentName, currentBranch = null, includeContents)
+
+  private fun turns(contents: List<Content>): List<Pair<String?, String?>> = contents.map {
+    it.role to it.parts.single().text
+  }
+
   private fun modelPartEvent(part: Part, author: String = "agent"): Event =
     Event(author = author, content = modelMessage(part))
+
+  /** A stored transcription of the user's speech. */
+  private fun heard(text: String, timestamp: Long = 0L): Event =
+    Event(author = "user", inputTranscription = Transcription(text), timestamp = timestamp)
+
+  /** A stored transcription of an agent's speech. */
+  private fun spoken(text: String, author: String = "agent"): Event =
+    Event(author = author, outputTranscription = Transcription(text))
+
+  private fun texts(contents: List<Content>): List<List<String?>> = contents.map { content ->
+    content.parts.map { it.text }
+  }
 }
