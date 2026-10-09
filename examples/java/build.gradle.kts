@@ -39,6 +39,8 @@ dependencies {
   implementation(libs.kotlinx.coroutines.reactive)
   implementation(project(":google-adk-kotlin-litertlm"))
   implementation(libs.google.ai.edge.litertlm.jvm)
+  // The Chat Completions Vertex demo gets its access token from the auth library directly.
+  implementation(libs.google.auth.oauth2.http)
   implementation(libs.opentelemetry.sdk)
   implementation(project(":google-adk-kotlin-integrations"))
   implementation(project(":google-adk-kotlin-integrations-anthropic"))
