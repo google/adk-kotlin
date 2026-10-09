@@ -18,11 +18,13 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.TransferToAgentTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
+import kotlin.jvm.JvmSynthetic
 
 /**
  * An [LlmRequestProcessor] that adds agent transfer capabilities to the LLM request.
@@ -37,6 +39,7 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
     emitEvent: suspend (Event) -> Unit,
   ): LlmRequest {
     val agent = context.agent
+    // A live run can only hand over to an agent that runs live, so it offers only those targets.
     val targets = offeredTransferTargets(agent, context)
 
     if (targets.isEmpty()) {
@@ -83,7 +86,8 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
       )
 
       val parent = agent.parentAgent
-      if (parent != null && !agent.disallowTransferToParent) {
+      // A live run filters out a non-live parent, so mention the parent only when it is offered.
+      if (parent != null && !agent.disallowTransferToParent && parent in targets) {
         append(
           "\n\nIf neither you nor the other agents are best for the question, transfer to your parent agent ${parent.name}."
         )
@@ -93,15 +97,12 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
 }
 
 /**
- * The agents a request for [context] offers `transfer_to_agent` to: [findTransferTargets], except
- * on a live run, which can't transfer yet and so isn't offered a tool that would do nothing.
- */
-internal fun offeredTransferTargets(agent: BaseAgent, context: InvocationContext): List<BaseAgent> =
-  if (context.liveRequestQueue != null) emptyList() else findTransferTargets(agent)
-
-/**
  * Returns the agents [agent] may transfer control to: its sub-agents, and (when permitted) its
- * parent and peers. Requests read it through [offeredTransferTargets].
+ * parent and peers.
+ *
+ * Shared with [BasicRequestProcessor], [OutputSchemaProcessor] and [liveTransferTargets] so
+ * output-schema gating and live handovers agree with [AgentTransferProcessor] on which agents a
+ * request can reach.
  */
 internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   val targets = buildList {
@@ -129,3 +130,15 @@ internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   }
   return uniqueTargets
 }
+
+/**
+ * The transfer targets a live run may use: only [LlmAgent] targets, today the only agents that run
+ * live. A workflow agent has no live run, so it is not offered and naming one is refused.
+ * `@JvmSynthetic` keeps this top-level internal helper off the Java surface.
+ */
+@JvmSynthetic
+internal fun liveTransferTargets(agent: BaseAgent): List<BaseAgent> =
+  findTransferTargets(agent).filter { it is LlmAgent }
+
+internal fun offeredTransferTargets(agent: BaseAgent, context: InvocationContext): List<BaseAgent> =
+  if (context.liveRequestQueue != null) liveTransferTargets(agent) else findTransferTargets(agent)
