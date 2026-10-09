@@ -39,8 +39,10 @@ import com.google.adk.kt.workflow.NodeExecutionFailure
 import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.adk.kt.workflow.NodeRunner
 import com.google.adk.kt.workflow.OutputRecord
+import com.google.adk.kt.workflow.ResumeScan
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.validateInput
 import com.google.adk.kt.workflow.validateNodeName
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.concurrent.atomics.AtomicReference
@@ -128,6 +130,7 @@ open class Context(
         outputParent = if (useAsOutput) parentState else null,
         outputForAncestors = outputForAncestors,
         childRunIds = childRunIds,
+        history = parentState?.history ?: invocationContext.session.events.toList(),
       )
   }
 
@@ -501,9 +504,10 @@ open class Context(
    *
    * @param node Child node to execute.
    * @param nodeInput Input passed to [node], or `null` if none.
-   * @param runId Explicit run ID for [node]. Must contain at least one non-digit character and must
-   *   not contain `'/'`, `'@'`, or `'.'`. When `null` or empty, an incrementing numeric ID is
-   *   generated per child node name.
+   * @param runId Explicit run ID for [node]: at least one non-digit, and no `'/'`, `'@'`, or `'.'`.
+   *   A child that finished in an earlier turn under the same ID returns its recorded output
+   *   without running again. When `null` or empty, the child gets the next number for its name,
+   *   which follows call order, so concurrent children need explicit IDs.
    * @param useAsOutput When `true`, delegates this node's output to [node]. This node must not
    *   produce or return its own output unless [node] fails before emitting an output.
    * @param useSubBranch When `true`, runs [node] on a sub-branch `<branch>.<node.name>@<runId>`.
@@ -513,7 +517,11 @@ open class Context(
    * @throws IllegalStateException if called outside a node activation, if this node does not set
    *   `rerunOnResume = true`, or if [useAsOutput] is `true` after this node already produced or
    *   delegated its output.
-   * @throws IllegalArgumentException if [node]'s name or [runId] is invalid.
+   * @throws IllegalArgumentException if [node]'s name or [runId] is invalid, or if [nodeInput]
+   *   fails [node]'s input schema. A [node][com.google.adk.kt.workflow.node] child's input check
+   *   throws
+   *   [NodeInputValidationException][com.google.adk.kt.workflow.NodeInputValidationException]
+   *   instead.
    */
   @CanIgnoreReturnValue
   @ExperimentalWorkflowApi
@@ -607,7 +615,10 @@ open class Context(
     return childState.output
   }
 
-  /** Runs [node] as a child activation and returns its [Context]. */
+  /**
+   * Runs [node] as a child activation and returns its [Context], replaying a completed or waiting
+   * child on resume.
+   */
   @ExperimentalWorkflowApi
   internal suspend fun runNodeForContext(
     node: Node,
@@ -620,15 +631,29 @@ open class Context(
     validateNodeName(node.name)
     val ns = requireNodeState()
     val id = runId?.takeIf { it.isNotEmpty() } ?: ns.nextChildRunId(node.name)
+    // Input validation runs in the caller so a rejected input fails this node.
+    val input = node.validateInput(nodeInput)
+    val recovered = recoveredChildren[BranchPath.segment(node.name, id)]
+    val interception = ResumeScan.intercept(node, recovered, dynamic = true)
+    if (!interception.shouldRun) {
+      return ResumeScan.replayContext(this, node, id, useAsOutput, interception)
+    }
     return NodeRunner(
         node = node,
         parent = this,
         runId = id,
         useAsOutput = useAsOutput,
+        resumeInputs = interception.resumeInputs,
         useSubBranch = useSubBranch,
         overrideBranch = overrideBranch,
       )
-      .run(nodeInput)
+      .run(input, validateInput = false)
+  }
+
+  /** Recovered states of this activation's children from earlier turns, keyed by `name@runId`. */
+  private val recoveredChildren by lazy {
+    val ns = requireNodeState()
+    ResumeScan.scan(ns.history, ns.nodePath, invocationContext.invocationId)
   }
 
   private var nodeState: NodeExecutionState? = null
@@ -638,7 +663,7 @@ open class Context(
 
   companion object {
     internal fun buildNodePath(parentPath: String?, name: String, runId: String): String =
-      BranchPath.appendSegment(parentPath, name, runId, separator = '/')
+      BranchPath.childNodePath(parentPath, BranchPath.segment(name, runId))
   }
 }
 
@@ -654,6 +679,8 @@ internal class NodeExecutionState(
   /** Ancestor node paths this activation's output also satisfies, nearest ancestor first. */
   val outputForAncestors: List<String> = emptyList(),
   private val childRunIds: ChildRunIds = ChildRunIds(),
+  /** Session events at the start of this run, used to reconstruct progress from earlier turns. */
+  val history: List<Event> = emptyList(),
 ) {
   /** Node paths this activation's output satisfies: [nodePath] followed by [outputForAncestors]. */
   val outputFor: List<String> = listOf(nodePath) + outputForAncestors

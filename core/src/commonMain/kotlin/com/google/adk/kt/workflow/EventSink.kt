@@ -25,4 +25,6 @@ internal fun interface EventSink {
    * it, so a sink that cannot deliver the event can still report the failure.
    */
   suspend fun send(event: Event, nodeFailure: Exception?)
+
+  suspend fun send(event: Event) = send(event, nodeFailure = null)
 }
