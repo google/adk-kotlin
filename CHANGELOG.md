@@ -1,5 +1,65 @@
 # Changelog
 
+## [1.4.0](https://github.com/google/adk-kotlin/compare/v1.3.0...v1.4.0) (2026-10-09)
+
+
+### Features
+
+* add a Kotlin DSL for building workflow graphs ([1feff45](https://github.com/google/adk-kotlin/commit/1feff451944f92ca5c383c8f2ab9f1f3b855c85d))
+* add Anthropic Claude model backend ([4e07995](https://github.com/google/adk-kotlin/commit/4e0799598a57f2fd991580f4022b6985a44a8f25))
+* add chain(...) to the workflow edges DSL, and Kotlin workflow graph examples including ports of adk-python's workflow samples ([5f72bb8](https://github.com/google/adk-kotlin/commit/5f72bb8659e6b0c7d8e31e7412a70e1e101a3fce))
+* add dynamic node dispatch via Context.runNode to workflows ([cffe728](https://github.com/google/adk-kotlin/commit/cffe728f67541774237fb385e3a4e04915de40aa))
+* add Environment interface ([762da2f](https://github.com/google/adk-kotlin/commit/762da2f31fe5c19ec330e11ca88076f4621a01f4))
+* add EnvironmentToolset for file I/O and command execution ([240e28b](https://github.com/google/adk-kotlin/commit/240e28b1c7e283a680b861a137db6d5019edc16f))
+* add extended thinking, image input, prompt caching, and structured output to Claude ([5046161](https://github.com/google/adk-kotlin/commit/504616150a0bef7399b38a1301f81401b8799117))
+* add FinishReason.TOO_MANY_TOOL_CALLS ([8ac466b](https://github.com/google/adk-kotlin/commit/8ac466b778eaa06d35c3965e5e64ae4063f969f2))
+* add FunctionNode and the node(...) factory for typed workflow steps ([d6ab0e3](https://github.com/google/adk-kotlin/commit/d6ab0e33aba5631934d1acd8c4b4405cf4294946))
+* add Java ports of the workflow graph examples ([cc23c02](https://github.com/google/adk-kotlin/commit/cc23c029514cbf523fbe25413dee45c75c8137b4))
+* add JVM LocalEnvironment implementation ([94a6dbe](https://github.com/google/adk-kotlin/commit/94a6dbe7071ef18b95b0bc118a9c75f959d18b97))
+* add parallelNode workflow nodes that fan out over list inputs ([a86f913](https://github.com/google/adk-kotlin/commit/a86f9137b48607f94a91c6634a48feffbfa6b763))
+* add ReflectAndRetryToolPlugin to retry failed tool calls with reflection guidance ([081ea5d](https://github.com/google/adk-kotlin/commit/081ea5d97ecdd17843b641b12236eaa3bb62bb82))
+* add Vertex AI backend for the Claude model ([0f4ef3b](https://github.com/google/adk-kotlin/commit/0f4ef3b80f11bdbe2a5db7221980bf353af41c85))
+* **auth:** add Secret and the experimental auth opt-in annotations ([a24edbc](https://github.com/google/adk-kotlin/commit/a24edbc94eca48df454839399966eac50a3fb27c))
+* draw workflow graphs in the Dev UI ([7b5e4b4](https://github.com/google/adk-kotlin/commit/7b5e4b49c74850faa8a89f5b96e877f07ae1e3f1))
+* **events:** add live session fields to Event ([20bdd4d](https://github.com/google/adk-kotlin/commit/20bdd4de28facd4308be8a442d8843b27dd5afea))
+* infer workflow schemas from Kotlin types through their serializers, and persist Content in workflow outputs ([1ffee7f](https://github.com/google/adk-kotlin/commit/1ffee7fc729cf9cb187f3037a65671327849df2e))
+* **live:** add a Java-interop builder for LiveRequest ([aefdbba](https://github.com/google/adk-kotlin/commit/aefdbba3afc0eea3a92165783156388d7a63a4cf))
+* **live:** add live server fields to LlmResponse ([da3eb68](https://github.com/google/adk-kotlin/commit/da3eb68c6be46c459bdf3be1b6561aeebc738256))
+* **live:** add the live connection interfaces and request queue ([6450f67](https://github.com/google/adk-kotlin/commit/6450f6756624e691e65e6b6ce7cf9945b13ccf5e))
+* **live:** implement live connections on Gemini ([0015305](https://github.com/google/adk-kotlin/commit/0015305accba9f08fc1744b549c3bb64cc6350c9))
+* **live:** let Java models implement live connections ([d6fbe1f](https://github.com/google/adk-kotlin/commit/d6fbe1fa55d46e1fa0cb13ea076f35426d01eac1))
+* **live:** run a live conversation on an agent, from queue to caller's events ([9ddab7f](https://github.com/google/adk-kotlin/commit/9ddab7f594dda3ed23f679bbbb80139537b5b93c))
+* load apps, agents and workflows through the new AppLoader and InMemoryAppLoader; deprecate AgentLoader ([469288c](https://github.com/google/adk-kotlin/commit/469288c34a35d42e0aaf317a475d7771b0724238))
+* make workflows, the edges DSL, node config and a Java node base class available to Java callers ([a973bdf](https://github.com/google/adk-kotlin/commit/a973bdfe80f9486d5751f186f71c14f7661b8c3a))
+* **mcp:** add shared JVM and Android MCP toolset ([ff010b6](https://github.com/google/adk-kotlin/commit/ff010b6c06e9d9821738904d7f7ef4e910e27065))
+* port adk-python's state, node_output and retry workflow samples, and build the workflow examples from function nodes ([1a9de8c](https://github.com/google/adk-kotlin/commit/1a9de8cbc8bc4a5f6c34cfdaeeb8f3fd7dc67905))
+* **retry:** add RetryPolicy and ExponentialBackoff ([a8e5bb3](https://github.com/google/adk-kotlin/commit/a8e5bb30b0aa31becf0c88b1ded9903745804a6d))
+* run skill scripts in an Environment via SkillToolset ([df8c670](https://github.com/google/adk-kotlin/commit/df8c670f94b6da5e111871a79afc502b1213501b))
+* **runners:** flush buffered session writes before final responses and at the end of each run ([d49ead0](https://github.com/google/adk-kotlin/commit/d49ead0f4397c3fddeeeda94fb333fb6e54b8282))
+* serve an app's structure, including workflow graphs, to the Dev UI ([fe051b4](https://github.com/google/adk-kotlin/commit/fe051b4767344bf38098cf3b66755bb1deb1b7eb))
+* **sessions:** add SessionService.flush for services that buffer writes ([49dcf35](https://github.com/google/adk-kotlin/commit/49dcf350f32538f8bb153a42c0f37c8cd2566361))
+* **webserver:** flush buffered session writes on shutdown and after seeding a session ([4035d0a](https://github.com/google/adk-kotlin/commit/4035d0a7340d5d2f88fc7700bb28fd4d3461fe46))
+* **webserver:** refresh the bundled Development UI to adk-web 1.0.7 ([89c796c](https://github.com/google/adk-kotlin/commit/89c796cddfa12a2ca5513cb08c2afa55bf7692d4))
+* **webserver:** serve the development endpoints under the /dev/apps prefix ([2808a6b](https://github.com/google/adk-kotlin/commit/2808a6b9ea913d769f07c48209f47ad4428d2aaa))
+
+
+### Bug Fixes
+
+* **a2a:** skip an unconvertible remote A2A part instead of failing the turn ([377d21b](https://github.com/google/adk-kotlin/commit/377d21b8544e1856ef7a9c8b90d5ce3b069e23b0))
+* **agents:** route only model failures to onModelError ([9ed4244](https://github.com/google/adk-kotlin/commit/9ed4244fef52bfc30d6245cecb6f392a727f8283))
+* apply edge styles in the event graph's DOT source ([043e3a1](https://github.com/google/adk-kotlin/commit/043e3a1f55196f968c61ac76643331e9786d8e81))
+* **core:** keep an event's id when an onEvent plugin replaces it ([f899671](https://github.com/google/adk-kotlin/commit/f8996712ae402cb8f2bd3bc5c0a1368f9064ed16))
+* emit events for model responses carrying only an error code or grounding metadata ([195cb88](https://github.com/google/adk-kotlin/commit/195cb88d4b804debc4e51a4b8d614c41cc581d4a))
+* route a function response to the agent that issued the call, on its branch ([e63b67e](https://github.com/google/adk-kotlin/commit/e63b67e5d5e1c90439f8721a72e40df0a49bfa1a))
+* run after-tool callbacks when a before-tool callback replaces the tool result ([92ac35f](https://github.com/google/adk-kotlin/commit/92ac35f7ba7364b32c899676ea71a896b861d369))
+* **workflow:** jitter RetryConfig delays once the backoff overflows ([9d8c0ea](https://github.com/google/adk-kotlin/commit/9d8c0eac04598c3c4ed77afd270b59f31e913046))
+* **workflow:** keep a failed node's error when processing its error event fails ([6c69053](https://github.com/google/adk-kotlin/commit/6c690539a712440e1e7e2dc8645e22d81a0fd23c))
+
+
+### Documentation
+
+* codify backward-compatibility rules for public data classes ([0094a39](https://github.com/google/adk-kotlin/commit/0094a39fcb2eafb1192a9ba76cba68ddf33099be))
+
 ## [1.3.0](https://github.com/google/adk-kotlin/compare/v1.2.0...v1.3.0) (2026-10-02)
 
 
