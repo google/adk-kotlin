@@ -161,7 +161,7 @@ private fun cacheStatus(cache: CacheMetadata, previousActiveName: String?): Stri
  * Cache creation happens on the Gemini backend, so this requires `GEMINI_API_KEY` or
  * `GOOGLE_API_KEY` to be set; without one the demo explains what is needed and exits.
  */
-fun main() = runBlocking {
+fun main() : Unit = runBlocking {
   if (!hasApiKey()) {
     println(
       "Set GEMINI_API_KEY or GOOGLE_API_KEY to run this demo. Context caches are created on the " +

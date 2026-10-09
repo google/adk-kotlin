@@ -40,7 +40,7 @@ import kotlinx.coroutines.runBlocking
  *
  * Compare with `ResumableLongRunningToolDemoAgent.kt`, which pauses immediately instead.
  */
-fun main() = runBlocking {
+fun main() : Unit = runBlocking {
   val model = ScriptedNavModel()
   val agent =
     LlmAgent(

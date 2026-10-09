@@ -77,7 +77,7 @@ private fun hasApiKey(): Boolean =
 private fun realOrCanned(cannedName: String, cannedReply: String): Model =
   if (hasApiKey()) Gemini(name = MODEL_NAME) else CannedModel(cannedName, cannedReply)
 
-fun main() = runBlocking {
+fun main() : Unit = runBlocking {
   val agentModel = PrintingModel("AGENT LLM", realOrCanned("agent", "(canned) Here is an answer."))
   val summarizerModel =
     PrintingModel(
