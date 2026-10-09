@@ -37,7 +37,7 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
     emitEvent: suspend (Event) -> Unit,
   ): LlmRequest {
     val agent = context.agent
-    val targets = findTransferTargets(agent)
+    val targets = offeredTransferTargets(agent, context)
 
     if (targets.isEmpty()) {
       return request
@@ -93,13 +93,15 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
 }
 
 /**
+ * The agents a request for [context] offers `transfer_to_agent` to: [findTransferTargets], except
+ * on a live run, which can't transfer yet and so isn't offered a tool that would do nothing.
+ */
+internal fun offeredTransferTargets(agent: BaseAgent, context: InvocationContext): List<BaseAgent> =
+  if (context.liveRequestQueue != null) emptyList() else findTransferTargets(agent)
+
+/**
  * Returns the agents [agent] may transfer control to: its sub-agents, and (when permitted) its
- * parent and peers.
- *
- * Exposed at package scope so the output-schema gating ([BasicRequestProcessor] and
- * [OutputSchemaProcessor]) can tell whether [AgentTransferProcessor] will attach a
- * `transfer_to_agent` tool to the request, since that tool is subject to the same Gemini 2.x
- * "response schema cannot be combined with tools" limitation as user-declared tools.
+ * parent and peers. Requests read it through [offeredTransferTargets].
  */
 internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   val targets = buildList {

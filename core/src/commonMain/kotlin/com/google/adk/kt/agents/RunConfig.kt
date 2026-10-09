@@ -74,7 +74,7 @@ enum class StreamingMode {
  *
  * @property streamingMode Streaming mode, NONE, SSE or BIDI.
  * @property maxLlmCalls Limit on the total number of LLM calls per run. A positive value is
- *   enforced; a value <= 0 means unbounded.
+ *   enforced, except by a live run, which ignores it; a value <= 0 means unbounded.
  * @property customMetadata Custom metadata for the current invocation.
  * @property responseModalities The modalities the model may return. Empty leaves it unset, and the
  *   SDK then asks for audio on a live connection, as unset does in ADK Python. A value set here is

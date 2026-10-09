@@ -57,7 +57,7 @@ internal class OutputSchemaProcessor : LlmRequestProcessor {
 
     // When the schema is applied directly to the request config by BasicRequestProcessor, this
     // processor is a no-op.
-    if (agent.appliesOutputSchemaDirectly) {
+    if (agent.appliesOutputSchemaDirectly(context)) {
       return request
     }
 
@@ -72,20 +72,13 @@ internal class OutputSchemaProcessor : LlmRequestProcessor {
 /**
  * Whether the model will be offered any tools, for the purpose of [LlmAgent.outputSchema] gating.
  *
- * This is broader than just [LlmAgent.tools]/[LlmAgent.toolsets]: it also counts the
- * framework-injected `transfer_to_agent` tool that [AgentTransferProcessor] attaches whenever the
- * agent can transfer to a sub-agent, parent, or peer (see [findTransferTargets]). That tool is
- * subject to the same Gemini 2.x "response schema cannot be combined with tools" limitation, so it
- * must participate in the decision between applying the schema directly and falling back to the
- * [SetModelResponseTool] workaround.
- *
- * Both [BasicRequestProcessor] and [OutputSchemaProcessor] call this single predicate so their
- * decisions cannot drift apart. Note this is intentionally stricter than the Java/Python ADK, which
- * only inspect the agent's declared tools and therefore would emit a response schema alongside the
- * `transfer_to_agent` tool on Gemini 2.x.
+ * Besides the agent's own tools it counts the `transfer_to_agent` tool that
+ * [AgentTransferProcessor] attaches whenever the request offers a transfer (see
+ * [offeredTransferTargets]), since Gemini 2.x can't combine that tool with a response schema
+ * either. This is stricter than ADK Python and Java, which inspect only the agent's declared tools.
  */
-internal fun LlmAgent.hasToolsForOutputSchemaGating(): Boolean =
-  tools.isNotEmpty() || toolsets.isNotEmpty() || findTransferTargets(this).isNotEmpty()
+internal fun LlmAgent.hasToolsForOutputSchemaGating(context: InvocationContext): Boolean =
+  tools.isNotEmpty() || toolsets.isNotEmpty() || offeredTransferTargets(this, context).isNotEmpty()
 
 /**
  * Whether [LlmAgent.outputSchema] can be applied directly to the request config instead of via the
@@ -97,8 +90,8 @@ internal fun LlmAgent.hasToolsForOutputSchemaGating(): Boolean =
  * [OutputSchemaProcessor] (which installs the workaround when it does not) consult this single
  * predicate so their decisions cannot drift apart.
  */
-internal val LlmAgent.appliesOutputSchemaDirectly: Boolean
-  get() = !hasToolsForOutputSchemaGating() || model.canUseOutputSchemaWithTools
+internal fun LlmAgent.appliesOutputSchemaDirectly(context: InvocationContext): Boolean =
+  !hasToolsForOutputSchemaGating(context) || model.canUseOutputSchemaWithTools
 
 /**
  * Extracts the structured JSON response from a [SetModelResponseTool] call, if present.

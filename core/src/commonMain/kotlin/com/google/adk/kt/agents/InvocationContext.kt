@@ -56,6 +56,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -236,6 +237,14 @@ data class InvocationContext(
     // A node-view agent must carry its node so `node` exposes the running unit.
     require(agent !is NodeViewAgent || node != null) { "A node-view agent requires its node." }
   }
+
+  /** The user's input on a live run, or `null` on a turn-based one; see [ContextFrameworkData]. */
+  internal val liveRequestQueue: LiveRequestQueue?
+    get() = frameworkData.liveRequestQueue
+
+  /** Taken around each append to [session] during a live run; see [ContextFrameworkData]. */
+  internal val sessionAppendLock: Mutex
+    get() = frameworkData.sessionAppendLock
 
   /** Returns whether the current invocation is resumable. */
   val isResumable: Boolean
@@ -889,7 +898,7 @@ private fun buildToolNotFoundResponse(
 /**
  * Framework-internal per-invocation data holder. Groups scratch state used by ADK's own machinery
  * and the ADK Java interop so it stays off [InvocationContext]'s public constructor. The type
- * itself needs no opt-in; its members are marked [FrameworkInternalApi].
+ * itself needs no opt-in; its public members are marked [FrameworkInternalApi].
  */
 data class ContextFrameworkData(
   /**
@@ -897,7 +906,23 @@ data class ContextFrameworkData(
    * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
    */
   @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
-)
+) {
+  /**
+   * The user's input on a live run, set by whatever opens it, and `null` on a turn-based one.
+   *
+   * A body property, so it stays off every public signature; contexts derived with
+   * [InvocationContext.copy] share this holder and so the same queue.
+   */
+  @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
+
+  /**
+   * Serializes a live run's appends to [InvocationContext.session] (contexts made with
+   * [InvocationContext.copy] share this lock). The turn and its caller both append to that same
+   * object under it, because a session service can reject overlapping appends. Never emit while
+   * holding it, because the collector can deadlock: append, release, then emit.
+   */
+  internal val sessionAppendLock = Mutex()
+}
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

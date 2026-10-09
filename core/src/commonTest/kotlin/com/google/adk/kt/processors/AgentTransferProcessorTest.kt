@@ -16,7 +16,9 @@
 
 package com.google.adk.kt.processors
 
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.testInvocationContext
@@ -26,6 +28,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -130,6 +133,28 @@ class AgentTransferProcessorTest {
       """
         .trimMargin()
     assertEquals(expectedInstruction, instructionText)
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun processRequest_onALiveRun_offersNoTransfer() = runBlocking {
+    val context =
+      testInvocationContext(
+          agent =
+            LlmAgent(
+              name = "root",
+              description = "Root agent",
+              model = DummyModel("root"),
+              subAgents =
+                listOf(LlmAgent(name = "sub", description = "Sub agent", model = DummyModel("sub"))),
+            )
+        )
+        .apply { frameworkData.liveRequestQueue = LiveRequestQueue() }
+
+    val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
+
+    assertNull(processedRequest.config.systemInstruction)
+    assertTrue(processedRequest.config.tools.isNullOrEmpty())
   }
 
   @Test

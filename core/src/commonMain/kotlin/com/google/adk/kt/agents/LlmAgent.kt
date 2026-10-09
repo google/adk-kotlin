@@ -18,6 +18,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.AfterModelCallback
@@ -50,6 +51,7 @@ import com.google.adk.kt.types.Schema
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onEach
 
 /**
  * LLM-based Agent.
@@ -124,7 +126,7 @@ import kotlinx.coroutines.flow.flow
  *   the agent stops emitting further events, even if it has not yet produced a final response.
  *   Defaults to `null`, meaning no cap: the agent keeps stepping until it produces a final response
  *   or the invocation otherwise ends (which can run unbounded). Mirrors the Java ADK
- *   `LlmAgent.maxSteps`.
+ *   `LlmAgent.maxSteps`. A live run ignores it.
  *
  * Note: this cap is enforced with local, in-process state that is not persisted, so it resets if
  * the runtime restarts mid-invocation. "Max steps" is experimental and may evolve in the future
@@ -246,6 +248,21 @@ class LlmAgent(
 
     return null
   }
+
+  /**
+   * Runs this agent over a live connection.
+   *
+   * A live run is one continuous conversation rather than a sequence of steps, so unlike
+   * [runAsyncImpl] it has no step loop or step cap: it holds one connection open until the caller
+   * closes the queue or the connection ends. Like [runAsyncImpl], it saves a non-partial final text
+   * to [outputKey]; its after-model callbacks see only the output transcription so far, and any
+   * change they make blocks the turn and restarts the session.
+   */
+  @OptIn(ExperimentalLiveApi::class)
+  override fun runLiveImpl(context: InvocationContext): Flow<Event> =
+    LlmAgentTurn(this, context, systemBeforeTurnProcessors, systemAfterTurnProcessors)
+      .executeLive()
+      .onEach { maybeSaveOutputToState(it) }
 
   override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
     val agentState = context.agentStates[name]

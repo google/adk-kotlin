@@ -16,7 +16,9 @@
 package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.serialization.Json
@@ -127,6 +129,25 @@ class OutputSchemaProcessorTest {
     val result = OutputSchemaProcessor().process(contextFor(agent), LlmRequest())
 
     assertTrue(result.toolsDict.any { it.name == SetModelResponseTool.NAME })
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun process_outputSchemaWithSubAgentsOnGemini2OnALiveRun_returnsRequestUnchanged() = runBlocking {
+    // A live run isn't offered transfer_to_agent, so the sub-agents add no tool to work around.
+    val agent =
+      LlmAgent(
+        name = "parent",
+        model = DummyModel("gemini-2.0-flash"),
+        outputSchema = outputSchema,
+        subAgents = listOf(LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"))),
+      )
+    val context = contextFor(agent).apply { frameworkData.liveRequestQueue = LiveRequestQueue() }
+    val request = LlmRequest()
+
+    val result = OutputSchemaProcessor().process(context, request)
+
+    assertEquals(request, result)
   }
 
   @Test

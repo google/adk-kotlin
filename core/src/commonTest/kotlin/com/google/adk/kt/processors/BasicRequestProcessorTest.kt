@@ -17,8 +17,10 @@
 package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
@@ -135,6 +137,28 @@ class BasicRequestProcessorTest {
 
     assertNull(request.config.responseSchema)
     assertNull(request.config.responseMimeType)
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun run_withOutputSchemaAndSubAgents_gemini2ModelOnALiveRun_setsResponseSchema() = runBlocking {
+    // A live run isn't offered transfer_to_agent, so the sub-agents don't count as tools.
+    val agent =
+      LlmAgent(
+        name = "parent",
+        model = DummyModel("gemini-2.0-flash"),
+        outputSchema = outputSchema,
+        subAgents = listOf(LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"))),
+      )
+    val context =
+      InvocationContext(session = testSession(), runConfig = null, agent = agent).apply {
+        frameworkData.liveRequestQueue = LiveRequestQueue()
+      }
+
+    val request = BasicRequestProcessor().process(context, LlmRequest())
+
+    assertEquals(outputSchema, request.config.responseSchema)
+    assertEquals("application/json", request.config.responseMimeType)
   }
 
   @Test

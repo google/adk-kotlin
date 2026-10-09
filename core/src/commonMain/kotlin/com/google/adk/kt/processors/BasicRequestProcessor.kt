@@ -43,7 +43,7 @@ internal class BasicRequestProcessor : LlmRequestProcessor {
     val baseConfig = agent.generateContentConfig ?: GenerateContentConfig()
     val config =
       agent.outputSchema
-        ?.takeIf { agent.appliesOutputSchemaDirectly }
+        ?.takeIf { agent.appliesOutputSchemaDirectly(context) }
         ?.let { outputSchema ->
           baseConfig.copy(responseSchema = outputSchema, responseMimeType = "application/json")
         } ?: baseConfig
