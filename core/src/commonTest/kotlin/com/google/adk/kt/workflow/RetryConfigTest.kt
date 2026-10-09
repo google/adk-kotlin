@@ -25,7 +25,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.microseconds
@@ -61,19 +60,18 @@ class RetryConfigTest {
   }
 
   @Test
-  fun unsetFieldsFallBackToTheDefaults() {
-    // jitter is pinned to 0 so delays are deterministic; every other field is left unset to assert
-    // it resolves to its default (maxAttempts 5, initialDelay 1s, backoffFactor 2.0, maxDelay 60s).
-    val config = RetryConfig(jitter = 0.0)
-    val error = NodeExecutionException("RuntimeError", "boom")
-
-    assertTrue(config.shouldRetry(error, attemptCount = 4))
-    assertFalse(config.shouldRetry(error, attemptCount = 5))
-
-    assertEquals(1.seconds, config.delayFor(attemptCount = 1))
-    assertEquals(2.seconds, config.delayFor(attemptCount = 2))
-    assertEquals(4.seconds, config.delayFor(attemptCount = 3))
-    assertEquals(60.seconds, config.delayFor(attemptCount = 20))
+  fun omittedFieldsTakeTheDefaults() {
+    assertEquals(
+      RetryConfig(
+        maxAttempts = 5,
+        initialDelay = 1.seconds,
+        maxDelay = 60.seconds,
+        backoffFactor = 2.0,
+        jitter = 1.0,
+        exceptions = null,
+      ),
+      RetryConfig(),
+    )
   }
 
   @Test
@@ -173,25 +171,15 @@ class RetryConfigTest {
   @Test
   fun builder_setsDelaysInMillisAndDefaultsTheRest() {
     val config =
-      RetryConfig.builder().maxAttempts(5).initialDelayMillis(1_000).maxDelayMillis(2_000).build()
+      RetryConfig.builder().maxAttempts(3).initialDelayMillis(2_000).maxDelayMillis(30_000).build()
 
     assertEquals(
-      RetryConfig(maxAttempts = 5, initialDelay = 1.seconds, maxDelay = 2.seconds),
+      RetryConfig(maxAttempts = 3, initialDelay = 2.seconds, maxDelay = 30.seconds),
       config,
     )
-    assertEquals(1_000L, config.initialDelayMillis())
-    assertEquals(2_000L, config.maxDelayMillis())
+    assertEquals(2_000L, config.initialDelayMillis())
+    assertEquals(30_000L, config.maxDelayMillis())
     assertEquals(RetryConfig(), RetryConfig.builder().build())
-  }
-
-  @Test
-  fun builder_clearsDelaysWithNullMillis() {
-    val config = RetryConfig(initialDelay = 1.seconds, maxDelay = 2.seconds)
-
-    val cleared = config.toBuilder().initialDelayMillis(null).maxDelayMillis(null).build()
-
-    assertEquals(RetryConfig(), cleared)
-    assertNull(cleared.initialDelayMillis())
   }
 }
 

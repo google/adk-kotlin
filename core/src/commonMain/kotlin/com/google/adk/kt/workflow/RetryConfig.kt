@@ -27,10 +27,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * How a node is retried when it raises. Every property is optional: null means "unset" and falls
- * back to the matching `DEFAULT_` constant when the retry is computed, except [exceptions], which
- * has no default. Unset is kept distinct from a set value rather than resolved at construction, so
- * a policy declared with field presence carries the same meaning here as where it was declared.
+ * How a node is retried when it raises.
  *
  * @property maxAttempts Attempts including the first, so 0 or 1 means no retry.
  * @property initialDelay Delay before the first retry.
@@ -45,30 +42,22 @@ import kotlin.time.Duration.Companion.milliseconds
  */
 @ExperimentalWorkflowApi
 data class RetryConfig(
-  val maxAttempts: Int? = null,
-  val initialDelay: Duration? = null,
-  val maxDelay: Duration? = null,
-  val backoffFactor: Double? = null,
-  val jitter: Double? = null,
+  val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
+  val initialDelay: Duration = DEFAULT_INITIAL_DELAY,
+  val maxDelay: Duration = DEFAULT_MAX_DELAY,
+  val backoffFactor: Double = DEFAULT_BACKOFF_FACTOR,
+  val jitter: Double = DEFAULT_JITTER,
   val exceptions: List<String>? = null,
 ) {
 
   init {
-    require(maxAttempts == null || maxAttempts >= 0) {
-      "maxAttempts must not be negative; 0 or 1 means no retry, null uses the default."
+    require(maxAttempts >= 0) { "maxAttempts must not be negative; 0 or 1 means no retry." }
+    require(initialDelay >= Duration.ZERO) { "initialDelay must not be negative." }
+    require(maxDelay >= Duration.ZERO) { "maxDelay must not be negative." }
+    require(backoffFactor.isFinite() && backoffFactor >= 0.0) {
+      "backoffFactor must be finite and not negative."
     }
-    require(initialDelay == null || initialDelay >= Duration.ZERO) {
-      "initialDelay must not be negative, or null for the default."
-    }
-    require(maxDelay == null || maxDelay >= Duration.ZERO) {
-      "maxDelay must not be negative, or null for the default."
-    }
-    require(backoffFactor == null || (backoffFactor.isFinite() && backoffFactor >= 0.0)) {
-      "backoffFactor must be finite and not negative, or null for the default."
-    }
-    require(jitter == null || (jitter.isFinite() && jitter >= 0.0)) {
-      "jitter must be finite and not negative, or null for the default."
-    }
+    require(jitter.isFinite() && jitter >= 0.0) { "jitter must be finite and not negative." }
   }
 
   /**
@@ -76,7 +65,7 @@ data class RetryConfig(
    * has budget left and raised a type this config retries.
    */
   internal fun shouldRetry(error: Throwable, attemptCount: Int): Boolean {
-    if (attemptCount >= (maxAttempts ?: DEFAULT_MAX_ATTEMPTS)) return false
+    if (attemptCount >= maxAttempts) return false
     val retryable = exceptions ?: return true
     return errorTypeName(error) in retryable
   }
@@ -85,18 +74,18 @@ data class RetryConfig(
   internal fun delayFor(attemptCount: Int, random: Random = Random.Default): Duration =
     exponentialBackoffDelay(
       retryIndex = max(0, attemptCount - 1),
-      initialDelay = initialDelay ?: DEFAULT_INITIAL_DELAY,
-      maxDelay = maxDelay ?: DEFAULT_MAX_DELAY,
-      backoffFactor = backoffFactor ?: DEFAULT_BACKOFF_FACTOR,
-      jitter = jitter ?: DEFAULT_JITTER,
+      initialDelay = initialDelay,
+      maxDelay = maxDelay,
+      backoffFactor = backoffFactor,
+      jitter = jitter,
       random = random,
     )
 
-  /** Returns [initialDelay] in whole milliseconds, or `null`. Java cannot read it (mangled). */
-  fun initialDelayMillis(): Long? = initialDelay?.inWholeMilliseconds
+  /** Returns [initialDelay] in whole milliseconds. Java cannot read it (mangled). */
+  fun initialDelayMillis(): Long = initialDelay.inWholeMilliseconds
 
-  /** Returns [maxDelay] in whole milliseconds, or `null`. Java cannot read it (mangled). */
-  fun maxDelayMillis(): Long? = maxDelay?.inWholeMilliseconds
+  /** Returns [maxDelay] in whole milliseconds. Java cannot read it (mangled). */
+  fun maxDelayMillis(): Long = maxDelay.inWholeMilliseconds
 
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
@@ -120,33 +109,25 @@ data class RetryConfig(
   @AdkJavaInteropApi
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
-    private var maxAttempts: Int? = null
-    private var initialDelay: Duration? = null
-    private var maxDelay: Duration? = null
-    private var backoffFactor: Double? = null
-    private var jitter: Double? = null
+    private var maxAttempts: Int = DEFAULT_MAX_ATTEMPTS
+    private var initialDelay: Duration = DEFAULT_INITIAL_DELAY
+    private var maxDelay: Duration = DEFAULT_MAX_DELAY
+    private var backoffFactor: Double = DEFAULT_BACKOFF_FACTOR
+    private var jitter: Double = DEFAULT_JITTER
     private var exceptions: List<String>? = null
 
-    fun maxAttempts(maxAttempts: Int?): Builder = apply { this.maxAttempts = maxAttempts }
+    fun maxAttempts(maxAttempts: Int): Builder = apply { this.maxAttempts = maxAttempts }
 
     // Let toBuilder copy the delays exactly; the millisecond setters would truncate them.
-    internal fun initialDelay(initialDelay: Duration?): Builder = apply {
+    internal fun initialDelay(initialDelay: Duration): Builder = apply {
       this.initialDelay = initialDelay
     }
 
-    internal fun maxDelay(maxDelay: Duration?): Builder = apply { this.maxDelay = maxDelay }
+    internal fun maxDelay(maxDelay: Duration): Builder = apply { this.maxDelay = maxDelay }
 
     /** Sets [RetryConfig.initialDelay] in milliseconds. */
     fun initialDelayMillis(initialDelayMillis: Long): Builder = apply {
       this.initialDelay = initialDelayMillis.milliseconds
-    }
-
-    /**
-     * Sets [RetryConfig.initialDelay] in milliseconds, or clears it when `null`. The non-null
-     * overload lets Java `int` literals compile.
-     */
-    fun initialDelayMillis(initialDelayMillis: Long?): Builder = apply {
-      this.initialDelay = initialDelayMillis?.milliseconds
     }
 
     /** Sets [RetryConfig.maxDelay] in milliseconds. */
@@ -154,19 +135,9 @@ data class RetryConfig(
       this.maxDelay = maxDelayMillis.milliseconds
     }
 
-    /**
-     * Sets [RetryConfig.maxDelay] in milliseconds, or clears it when `null`. The non-null overload
-     * lets Java `int` literals compile.
-     */
-    fun maxDelayMillis(maxDelayMillis: Long?): Builder = apply {
-      this.maxDelay = maxDelayMillis?.milliseconds
-    }
+    fun backoffFactor(backoffFactor: Double): Builder = apply { this.backoffFactor = backoffFactor }
 
-    fun backoffFactor(backoffFactor: Double?): Builder = apply {
-      this.backoffFactor = backoffFactor
-    }
-
-    fun jitter(jitter: Double?): Builder = apply { this.jitter = jitter }
+    fun jitter(jitter: Double): Builder = apply { this.jitter = jitter }
 
     fun exceptions(exceptions: List<String>?): Builder = apply { this.exceptions = exceptions }
 
