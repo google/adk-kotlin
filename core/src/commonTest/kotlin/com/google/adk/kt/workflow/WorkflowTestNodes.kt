@@ -37,6 +37,13 @@ internal class Emitter(override val name: String, private val value: Any?) : Nod
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { emit(value) }
 }
 
+/** A node that echoes the input it received, for asserting what a predecessor passed to it. */
+internal class CaptureInput(override val name: String) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    emit(mapOf("received" to nodeInput))
+  }
+}
+
 /** A bare node that emits a fixed value (null by default), for graph topology tests. */
 internal class StubNode(override val name: String, private val value: Any? = null) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { emit(value) }
