@@ -19,6 +19,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeModelCallbacksPipeline
@@ -39,6 +40,7 @@ import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.createFinalModelResponseEvent
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
 import com.google.adk.kt.processors.getStructuredModelResponse
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
@@ -46,6 +48,7 @@ import com.google.adk.kt.telemetry.TelemetryContextElement
 import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.noop.NoOpSpan
 import com.google.adk.kt.telemetry.tracedFlow
+import com.google.adk.kt.telemetry.withSpan
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.GoogleSearchAgentTool
 import com.google.adk.kt.tools.GoogleSearchTool
@@ -84,6 +87,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 
 /**
  * Encapsulates the logic for a single turn of an [LlmAgent].
@@ -273,6 +278,9 @@ internal class LlmAgentTurn(
     // A request processor can end the invocation, as in ADK Python.
     if (context.isEndOfInvocation) return false
 
+    // One event id for this live session's history seeding.
+    val sendDataEventId = Uuid.random()
+
     // A model without live support throws here, from `Model.connect`'s default.
     val connection = agent.model.connect(request)
     // Closed at most once, so a close that never returns holds the run for one bound, not two.
@@ -291,7 +299,19 @@ internal class LlmAgentTurn(
       val resuming = request.liveConnectConfig.sessionResumption?.handle != null
       // Seed the assembled history; the model replies only if it ends with the user's turn.
       if (request.contents.isNotEmpty() && !resuming) {
-        connection.sendHistory(request.contents)
+        // Safe inside `flow { }`: withSpan switches context, but nothing in this block emits.
+        withSpan(
+          SEND_DATA_SPAN,
+          {
+            this[TelemetryAttributes.GCP_VERTEX_AGENT_INVOCATION_ID] = context.invocationId
+            this[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = sendDataEventId
+            this[TelemetryAttributes.GCP_VERTEX_AGENT_DATA] = capturedJson {
+              request.contents.toLiveTracePayload()
+            }
+          },
+        ) {
+          connection.sendHistory(request.contents)
+        }
       }
       collector.emitAll(collectLiveTurns(request, connection, queue, close) { blocked = true })
     } finally {
@@ -1079,6 +1099,35 @@ private val logger = LoggerFactory.getLogger(LlmAgentTurn::class)
  * never answers cannot hold the run open. A close that blocks its thread is not bounded.
  */
 private val CONNECTION_TEARDOWN_TIMEOUT = 10.seconds
+
+/**
+ * Span over the history a live run sends at connect, which no `call_llm` span covers; named as in
+ * Python.
+ */
+private const val SEND_DATA_SPAN = "send_data"
+
+/**
+ * Replaces inline media with its MIME type and byte count and drops thought signatures so the span
+ * stays small and readable.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun List<Content>.toLiveTracePayload(): JsonElement =
+  adkJson.encodeToJsonElement(
+    map { content ->
+      content.copy(
+        parts =
+          content.parts.map { part ->
+            val blob = part.inlineData
+            if (blob == null) {
+              part.copy(thoughtSignature = null)
+            } else {
+              val mimeType = blob.mimeType?.takeIf { it.isNotEmpty() } ?: "unknown"
+              Part(text = "<inline_data: $mimeType, ${blob.data?.size ?: 0} bytes>")
+            }
+          }
+      )
+    }
+  )
 
 /**
  * A sealed class representing either a [LlmRequest] or a [LlmResponse].
