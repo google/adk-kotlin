@@ -22,7 +22,11 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.routing.routing
+import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -32,34 +36,44 @@ import org.junit.runners.JUnit4
 class DevUiAssetsTest {
 
   @Test
-  fun devUi_index_isServedFromClasspath() = withoutWebUiDir {
-    testApplication {
-      application { routing { staticRoutes(this@application) } }
+  fun devUi_index_isServedFromClasspath() = testStaticRoutes {
+    val response = client.get("/dev-ui/index.html")
 
-      val response = client.get("/dev-ui/index.html")
-
-      assertThat(response.status).isEqualTo(HttpStatusCode.OK)
-      assertThat(response.bodyAsText()).contains("<html")
-    }
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(response.bodyAsText()).contains("<html")
   }
 
   @Test
-  fun devUi_nestedAsset_isServedFromClasspath() = withoutWebUiDir {
-    testApplication {
-      application { routing { staticRoutes(this@application) } }
-
-      // A nested path proves the whole asset tree is packaged, not just the entry point.
-      assertThat(client.get("/dev-ui/assets/audio-processor.js").status)
-        .isEqualTo(HttpStatusCode.OK)
-    }
+  fun devUi_nestedAsset_isServedFromClasspath() = testStaticRoutes {
+    // A nested path proves the whole asset tree is packaged, not just the entry point.
+    assertThat(client.get("/dev-ui/assets/audio-processor.js").status).isEqualTo(HttpStatusCode.OK)
   }
 
-  /** Runs [body] with the `adk.web.ui.dir` system property cleared. */
-  private fun withoutWebUiDir(body: () -> Unit) {
+  @Test
+  fun devUi_runtimeConfig_pinsTelemetryOff() = testStaticRoutes {
+    val config = client.get("/dev-ui/assets/config/runtime-config.json").bodyAsText()
+
+    // Refreshes overwrite this; unpinned, the UI served by the API module asks for consent.
+    assertThat(Json.parseToJsonElement(config).jsonObject["telemetry"])
+      .isEqualTo(JsonPrimitive(false))
+  }
+
+  @Test
+  fun devUi_prismThemes_areServed() = testStaticRoutes {
+    // The UI loads these for code highlighting, but newer adk-web builds stopped shipping them.
+    assertThat(client.get("/dev-ui/prism-light.css").status).isEqualTo(HttpStatusCode.OK)
+    assertThat(client.get("/dev-ui/prism-dark.css").status).isEqualTo(HttpStatusCode.OK)
+  }
+
+  /** Runs [body] against the static routes, with the `adk.web.ui.dir` system property cleared. */
+  private fun testStaticRoutes(body: suspend ApplicationTestBuilder.() -> Unit) {
     val previous: String? = System.getProperty(WEB_UI_DIR_PROPERTY)
     System.clearProperty(WEB_UI_DIR_PROPERTY)
     try {
-      body()
+      testApplication {
+        application { routing { staticRoutes(this@application) } }
+        body()
+      }
     } finally {
       if (previous != null) System.setProperty(WEB_UI_DIR_PROPERTY, previous)
     }
