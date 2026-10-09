@@ -26,13 +26,21 @@ import com.google.adk.kt.sessions.dto.TimestampDto
 import com.google.adk.kt.testing.SessionServiceAssertions
 import com.google.adk.kt.testing.userMessage
 import com.google.common.truth.Truth.assertThat
+import io.ktor.client.request.get
 import java.io.IOException
+import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 import kotlin.test.assertFailsWith
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -927,5 +935,64 @@ class VertexAiSessionServiceTest {
         author = "agent",
         timestamp = TimestampDto.fromEpochMillis(epochMillis),
       )
+  }
+
+  @Test
+  fun defaultHttpClient_runsMoreThanFiveCallsToOneHostAtOnce() {
+    // OkHttp's default dispatcher runs at most 5 calls per host and queues the rest.
+    val calls = 6
+    val gaveUp = AtomicBoolean()
+    withLocalServer(CountDownLatch(calls), gaveUp) { url ->
+      val client = defaultHttpClient()
+
+      val unused = runBlocking { List(calls) { async { client.get(url) } }.awaitAll() }
+
+      assertThat(gaveUp.get()).isFalse()
+    }
+  }
+
+  @Test
+  fun defaultHttpClient_leavesNoThreadThatKeepsTheJvmAlive() {
+    withLocalServer(CountDownLatch(1), AtomicBoolean()) { url ->
+      val before = nonDaemonThreads()
+
+      val unused = runBlocking { defaultHttpClient().get(url) }
+
+      // OkHttp's default dispatcher threads would hold the JVM open for a minute after the call.
+      val added = (nonDaemonThreads() - before).map { it.name }
+      assertThat(added.filter { it.startsWith("OkHttp") || it.startsWith("ADK") }).isEmpty()
+    }
+  }
+
+  private fun nonDaemonThreads(): Set<Thread> =
+    Thread.getAllStackTraces().keys.filter { it.isAlive && !it.isDaemon }.toSet()
+
+  /**
+   * Runs [block] against a local server that answers each request with an empty 200 once [inFlight]
+   * has counted down, or after 5 seconds, which sets [gaveUp].
+   */
+  private fun withLocalServer(
+    inFlight: CountDownLatch,
+    gaveUp: AtomicBoolean,
+    block: (url: String) -> Unit,
+  ) {
+    ServerSocket(0).use { listener ->
+      thread(isDaemon = true) {
+        while (true) {
+          val socket = runCatching { listener.accept() }.getOrNull() ?: break
+          thread(isDaemon = true) {
+            socket.use {
+              val input = it.getInputStream().bufferedReader()
+              while (input.readLine()?.isNotEmpty() == true) {}
+              inFlight.countDown()
+              if (!inFlight.await(5, TimeUnit.SECONDS)) gaveUp.set(true)
+              val response = "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"
+              it.getOutputStream().apply { write(response.toByteArray()) }.flush()
+            }
+          }
+        }
+      }
+      block("http://localhost:${listener.localPort}/")
+    }
   }
 }

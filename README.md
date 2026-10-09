@@ -91,6 +91,7 @@ version shown above.
 | `integrations`           | `google-adk-kotlin-integrations`           | Plugins and integrations with external services (e.g. BigQuery agent analytics).                            |
 | `integrations/spring`    | `google-adk-kotlin-integrations-spring`    | Use any Spring AI `ChatModel` (OpenAI, Anthropic, Vertex, ...) to drive an ADK agent. JVM only.             |
 | `integrations/anthropic` | `google-adk-kotlin-integrations-anthropic` | Anthropic Claude models, built on the official Anthropic Java SDK. JVM only.                                |
+| `integrations/openai`    | `google-adk-kotlin-integrations-openai`    | OpenAI models, and others behind a compatible Chat Completions endpoint, such as Gemini. JVM only.          |
 | `a2a`                    | `google-adk-kotlin-a2a`                    | Agent2Agent (A2A) support for talking to remote agents.                                                     |
 | `litertlm`               | `google-adk-kotlin-litertlm`               | On-device models through LiteRT-LM. Requires JDK 21+; see [litertlm/README.md](litertlm/README.md).         |
 | `firebase`               | `google-adk-kotlin-firebase-android`       | Android-only model backed by Firebase AI Logic.                                                             |
