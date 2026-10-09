@@ -29,6 +29,7 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyEvents
+import com.google.adk.kt.testing.textAgent
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
@@ -41,9 +42,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class RunnerTest {
@@ -234,6 +237,105 @@ class RunnerTest {
         .toList()
 
     assertEquals(listOf(Role.MODEL to "Modified model response"), simplifyEvents(events))
+  }
+
+  @Test
+  fun runAsync_withOnEventCallbackReturningNewEvent_persistsItWithOriginalIdentity() = runBlocking {
+    var agentEvent: Event? = null
+    val spyAgent =
+      DummyAgent(
+        name = "spy-agent",
+        onRunAsync = { ctx ->
+          val event =
+            Event(
+              invocationId = ctx.invocationId,
+              author = Role.MODEL,
+              content = modelMessage("Original model response"),
+              timestamp = 1000L,
+            )
+          agentEvent = event
+          emit(event)
+        },
+      )
+
+    val plugin =
+      object : Plugin {
+        override val name = "test-plugin"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event =
+          Event(
+            invocationId = "",
+            author = "",
+            content = modelMessage("Redacted"),
+            customMetadata = mapOf("redacted" to true),
+          )
+      }
+
+    val runner = InMemoryRunner(agent = spyAgent, plugins = listOf(plugin))
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = Content(Role.USER))
+        .toList()
+
+    val original = assertNotNull(agentEvent)
+    val streamed = events.single()
+    assertEquals(original.id, streamed.id)
+    assertEquals(original.invocationId, streamed.invocationId)
+    assertEquals(1000L, streamed.timestamp)
+    assertEquals(listOf(Role.MODEL to "Redacted"), simplifyEvents(events))
+    assertEquals(mapOf("redacted" to true), streamed.customMetadata)
+    val session = runner.sessionService.getSession(SessionKey(runner.appName, "user1", "session1"))
+    assertNotNull(session)
+    assertEquals(streamed, session.events.last())
+  }
+
+  @Test
+  fun runAsync_withOnEventCallbackClearingContent_keepsContentCleared() = runBlocking {
+    val agent = textAgent("agent", "Secret")
+
+    val plugin =
+      object : Plugin {
+        override val name = "test-plugin"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event =
+          event.copy(content = null)
+      }
+
+    val runner = InMemoryRunner(agent = agent, plugins = listOf(plugin))
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = Content(Role.USER))
+        .toList()
+
+    assertNull(events.single().content)
+  }
+
+  @Test
+  fun runAsync_withChainedOnEventCallbacks_emptyAuthorKeepsEarlierCallbacksAuthor() = runBlocking {
+    val agent = textAgent("agent", "Original model response")
+
+    val renamingPlugin =
+      object : Plugin {
+        override val name = "renaming-plugin"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event =
+          Event(author = "redactor")
+      }
+    val redactingPlugin =
+      object : Plugin {
+        override val name = "redacting-plugin"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event =
+          Event(author = "", content = modelMessage("Redacted"))
+      }
+
+    val runner = InMemoryRunner(agent = agent, plugins = listOf(renamingPlugin, redactingPlugin))
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = Content(Role.USER))
+        .toList()
+
+    assertEquals(listOf("redactor" to "Redacted"), simplifyEvents(events))
   }
 
   @Test
