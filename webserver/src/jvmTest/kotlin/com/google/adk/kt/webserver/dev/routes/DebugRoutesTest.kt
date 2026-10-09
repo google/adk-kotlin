@@ -18,6 +18,11 @@ package com.google.adk.kt.webserver.dev.routes
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.webserver.AdkServerConfig
+import com.google.adk.kt.webserver.FakeAppLoader
+import com.google.adk.kt.webserver.FakeArtifactService
+import com.google.adk.kt.webserver.FakeSessionService
+import com.google.adk.kt.webserver.dev.adkDevModule
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
 import com.google.common.truth.Truth.assertThat
@@ -166,4 +171,39 @@ class DebugRoutesTest {
     assertThat(response.status).isEqualTo(HttpStatusCode.OK)
     assertThat(response.bodyAsText()).isEqualTo("[]")
   }
+
+  @Test
+  fun devModule_sessionTraceUnderDevAppPrefix_matchesTheUnprefixedPath() = testApplication {
+    val exporter = exporterWithSpan("s3")
+
+    application { adkDevModule(devConfig(exporter)) }
+
+    val prefixed = client.get("/dev/apps/any-app/debug/trace/session/s3")
+    val unprefixed = client.get("/debug/trace/session/s3").bodyAsText()
+
+    assertThat(prefixed.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(unprefixed).contains("\"span_id\"")
+    assertThat(prefixed.bodyAsText()).isEqualTo(unprefixed)
+  }
+
+  @Test
+  fun devModule_eventTraceUnderDevAppPrefix_returnsData() = testApplication {
+    val exporter = ApiServerSpanExporter()
+    exporter.eventIdTraceStorage["e3"] = mapOf("key" to "value")
+
+    application { adkDevModule(devConfig(exporter)) }
+
+    val response = client.get("/dev/apps/any-app/debug/trace/e3")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(response.bodyAsText()).contains("\"key\":\"value\"")
+  }
+
+  private fun devConfig(exporter: ApiServerSpanExporter) =
+    AdkServerConfig(
+      appLoader = FakeAppLoader(),
+      sessionService = FakeSessionService(),
+      artifactService = FakeArtifactService(),
+      apiServerSpanExporter = exporter,
+    )
 }

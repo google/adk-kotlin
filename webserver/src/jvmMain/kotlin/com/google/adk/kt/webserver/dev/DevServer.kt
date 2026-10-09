@@ -22,8 +22,11 @@ import com.google.adk.kt.webserver.adkApiModule
 import com.google.adk.kt.webserver.dev.routes.debugRoutes
 import com.google.adk.kt.webserver.dev.routes.evalRoutes
 import com.google.adk.kt.webserver.dev.routes.graphRoutes
+import com.google.adk.kt.webserver.dev.routes.telemetryConfigRoutes
+import com.google.adk.kt.webserver.dev.routes.unimplementedDevRoutes
 import com.google.adk.kt.webserver.resolveCamelCase
 import io.ktor.server.application.Application
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 
 /**
@@ -40,8 +43,7 @@ class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
 }
 
 /**
- * Installs [adkApiModule] plus the development-only endpoints the Dev UI drives: request traces,
- * evaluation and agent graphs.
+ * Installs [adkApiModule] plus the development-only endpoints the Dev UI calls.
  *
  * Installs [adkApiModule] itself, so do not install both. Unlike [adkApiModule] this mounts the
  * Development UI, unless [AdkServerConfig.webUiEnabled] or the `adk.web.ui.enabled` property turns
@@ -57,5 +59,11 @@ fun Application.adkDevModule(config: AdkServerConfig) {
     debugRoutes(config.apiServerSpanExporter, camelCase)
     evalRoutes()
     graphRoutes(config.servedApps, config.sessionService)
+    telemetryConfigRoutes()
+    // adk-web 1.0 and later call these under ADK Python's `/dev` prefix; the old paths stay.
+    route("/dev/apps/{appName}") {
+      debugRoutes(config.apiServerSpanExporter, camelCase)
+      unimplementedDevRoutes()
+    }
   }
 }

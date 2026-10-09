@@ -32,6 +32,7 @@ import com.google.adk.kt.webserver.routes.runRoutes
 import com.google.adk.kt.webserver.routes.sessionRoutes
 import com.google.adk.kt.webserver.routes.staticRoutes
 import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
+import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopping
@@ -130,7 +131,8 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
 private val REQUEST_LOGGED_KEY = AttributeKey<Unit>("AdkRequestLogged")
 
 /**
- * Logs one line per call to [log], at WARN for a 5xx status and INFO otherwise.
+ * Logs one line per call to [log], at WARN for a 5xx status and INFO otherwise. A 501 counts as
+ * INFO, since the development endpoints answer it on purpose for features they do not implement.
  *
  * Replaces Ktor's CallLogging, whose package differs between Ktor 2 and 3.
  */
@@ -141,7 +143,12 @@ internal fun requestLoggingPlugin(log: (Level, String) -> Unit) =
       if (REQUEST_LOGGED_KEY in call.attributes) return@on
       call.attributes.put(REQUEST_LOGGED_KEY, Unit)
       val status = call.response.status()
-      val level = if (status != null && status.value >= 500) Level.WARN else Level.INFO
+      val level =
+        if (status != null && status.value >= 500 && status != HttpStatusCode.NotImplemented) {
+          Level.WARN
+        } else {
+          Level.INFO
+        }
       log(
         level,
         "Status: $status, HTTP method: ${call.request.httpMethod.value}, URI: ${call.request.uri}",

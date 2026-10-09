@@ -159,38 +159,49 @@ internal fun Route.graphRoutes(servedApps: ServedApps, sessionService: SessionSe
   }
 
   // The app's structure, which the Dev UI navigates and lays out its node-state view from.
-  get("/dev/build_graph/{appName}") {
-    val appName = call.parameters.getOrFail("appName")
-    val root = call.loadRootOrRespond(servedApps, appName) ?: return@get
-    call.respond(appGraphOf(appName, root))
+  for (path in BUILD_GRAPH_PATHS) {
+    get(path) {
+      val appName = call.parameters.getOrFail("appName")
+      val root = call.loadRootOrRespond(servedApps, appName) ?: return@get
+      call.respond(appGraphOf(appName, root))
+    }
   }
 
   // DOT source for the root and every workflow below it, or a bare DotGraph for a non-empty `node`.
-  get("/dev/build_graph_image/{appName}") {
-    val appName = call.parameters.getOrFail("appName")
-    val darkMode =
-      queryBooleanOrNull(call.request.queryParameters["dark_mode"] ?: "false")
-        ?: return@get call.respond(
-          GraphRoutesErrors.ERR_INVALID_DARK_MODE.code,
-          GraphRoutesErrors.ERR_INVALID_DARK_MODE.message,
-        )
-    val root = call.loadRootOrRespond(servedApps, appName) ?: return@get
-    val nodePath = call.request.queryParameters["node"].orEmpty()
-    val target =
-      graphNodeOf(root).find(nodePath)
-        ?: return@get call.respond(
-          GraphRoutesErrors.ERR_NODE_NOT_FOUND.code,
-          GraphRoutesErrors.ERR_NODE_NOT_FOUND.message,
-        )
-    if (nodePath.isNotEmpty()) {
-      // On-demand drill-in requests expect a single DotGraph object rather than a path-keyed map.
-      return@get call.respond(DotGraph(plotGraph(target, darkMode)))
+  for (path in BUILD_GRAPH_IMAGE_PATHS) {
+    get(path) {
+      val appName = call.parameters.getOrFail("appName")
+      val darkMode =
+        queryBooleanOrNull(call.request.queryParameters["dark_mode"] ?: "false")
+          ?: return@get call.respond(
+            GraphRoutesErrors.ERR_INVALID_DARK_MODE.code,
+            GraphRoutesErrors.ERR_INVALID_DARK_MODE.message,
+          )
+      val root = call.loadRootOrRespond(servedApps, appName) ?: return@get
+      val nodePath = call.request.queryParameters["node"].orEmpty()
+      val target =
+        graphNodeOf(root).find(nodePath)
+          ?: return@get call.respond(
+            GraphRoutesErrors.ERR_NODE_NOT_FOUND.code,
+            GraphRoutesErrors.ERR_NODE_NOT_FOUND.message,
+          )
+      if (nodePath.isNotEmpty()) {
+        // On-demand drill-in requests expect a single DotGraph object rather than a path-keyed map.
+        return@get call.respond(DotGraph(plotGraph(target, darkMode)))
+      }
+      // A non-workflow root is drawn as its agent tree; other keys start with the root's name.
+      val graphs = mapOf("" to target) + (target.workflowsByPath(target.name) - target.name)
+      call.respond(graphs.mapValues { (_, node) -> DotGraph(plotGraph(node, darkMode)) })
     }
-    // A non-workflow root is drawn as its agent tree; other keys start with the root's name.
-    val graphs = mapOf("" to target) + (target.workflowsByPath(target.name) - target.name)
-    call.respond(graphs.mapValues { (_, node) -> DotGraph(plotGraph(node, darkMode)) })
   }
 }
+
+// adk-web 1.0 and later call the `/dev/apps` paths; earlier UIs call the others.
+private val BUILD_GRAPH_PATHS =
+  listOf("/dev/apps/{appName}/build_graph", "/dev/build_graph/{appName}")
+
+private val BUILD_GRAPH_IMAGE_PATHS =
+  listOf("/dev/apps/{appName}/build_graph_image", "/dev/build_graph_image/{appName}")
 
 private val TRUE_QUERY_VALUES = setOf("1", "on", "t", "true", "y", "yes")
 
@@ -207,9 +218,9 @@ private fun queryBooleanOrNull(value: String): Boolean? =
 /**
  * DOT source for one graph, under the `dotSrc` key the Dev UI reads.
  *
- * `GET /dev/build_graph_image/{appName}` returns a bare [DotGraph] when a non-empty `node` query
- * parameter requests a single subtree, and a path-keyed map of [DotGraph]s when `node` is omitted
- * or empty.
+ * `GET /dev/apps/{appName}/build_graph_image` (and the older `/dev/build_graph_image/{appName}`)
+ * returns a bare [DotGraph] when a non-empty `node` query parameter requests a single subtree, and
+ * a path-keyed map of [DotGraph]s when `node` is omitted or empty.
  */
 @Serializable internal data class DotGraph(val dotSrc: String)
 

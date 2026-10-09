@@ -273,6 +273,38 @@ class GraphRoutesTest {
     assertThat(response.status).isEqualTo(HttpStatusCode.BadRequest)
   }
 
+  @Test
+  fun buildGraph_devAppsPath_answersLikeTheOldPath() = testApplication {
+    // Arrange
+    serve()
+
+    // Act
+    val current = client.get("/dev/apps/support/build_graph")
+    val old = client.get("/dev/build_graph/support")
+
+    // Assert
+    assertThat(current.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(current.bodyAsText()).isEqualTo(old.bodyAsText())
+  }
+
+  @Test
+  fun buildGraphImage_devAppsPath_answersLikeTheOldPath() = testApplication {
+    // Arrange
+    serve()
+
+    // Act
+    val all = client.get("/dev/apps/support/build_graph_image?dark_mode=true")
+    val oldAll = client.get("/dev/build_graph_image/support?dark_mode=true")
+    val one = client.get("/dev/apps/support/build_graph_image?node=tech_flow")
+    val oldOne = client.get("/dev/build_graph_image/support?node=tech_flow")
+
+    // Assert
+    assertThat(all.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(all.bodyAsText()).isEqualTo(oldAll.bodyAsText())
+    assertThat(one.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(one.bodyAsText()).isEqualTo(oldOne.bodyAsText())
+  }
+
   private fun ApplicationTestBuilder.serve(
     appLoader: AppLoader =
       InMemoryAppLoader(

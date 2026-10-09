@@ -67,6 +67,17 @@ class RequestLoggingTest {
   }
 
   @Test
+  fun notImplemented_logsOneInfoLine() {
+    val lines =
+      linesLoggedFor("/stub") {
+        routing { get("/stub") { call.respond(HttpStatusCode.NotImplemented) } }
+      }
+
+    assertThat(lines)
+      .containsExactly(Level.INFO to "Status: 501 Not Implemented, HTTP method: GET, URI: /stub")
+  }
+
+  @Test
   fun resentResponse_logsOneLine() {
     val lines =
       linesLoggedFor("/ok") {
