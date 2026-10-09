@@ -50,6 +50,7 @@ class RunConfigTest {
     assertEquals(null, config.proactivity)
     assertEquals(null, config.sessionResumption)
     assertEquals(null, config.contextWindowCompression)
+    assertEquals(false, config.saveLiveBlob)
   }
 
   @Test
@@ -96,6 +97,7 @@ class RunConfigTest {
         proactivity = ProactivityConfig(proactiveAudio = true),
         sessionResumption = SessionResumptionConfig(handle = "resumption-handle"),
         contextWindowCompression = ContextWindowCompressionConfig(triggerTokens = 1024L),
+        saveLiveBlob = true,
       )
 
     assertEquals(config.copy(), config.toBuilder().build())
@@ -112,7 +114,7 @@ class RunConfigTest {
         " outputAudioTranscription=$transcription, inputAudioTranscription=$transcription," +
         " realtimeInputConfig=null, explicitVadSignal=null, translationConfig=null," +
         " enableAffectiveDialog=null, proactivity=null," +
-        " sessionResumption=null, contextWindowCompression=null)",
+        " sessionResumption=null, contextWindowCompression=null, saveLiveBlob=false)",
       RunConfig().toString(),
     )
   }
@@ -153,6 +155,7 @@ class RunConfigTest {
         .proactivity(proactivity)
         .sessionResumption(sessionResumption)
         .contextWindowCompression(contextWindowCompression)
+        .saveLiveBlob(true)
         .build()
 
     assertEquals(
@@ -171,6 +174,7 @@ class RunConfigTest {
         proactivity = proactivity,
         sessionResumption = sessionResumption,
         contextWindowCompression = contextWindowCompression,
+        saveLiveBlob = true,
       ),
       built,
     )
