@@ -19,6 +19,7 @@ package com.google.adk.kt.models
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
+import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.ModalityTokenCount
 import com.google.adk.kt.types.Part
@@ -27,26 +28,14 @@ import com.google.adk.kt.types.UsageMetadata
 
 private val logger = LoggerFactory.getLogger(Continuation::class)
 
-/** Returns the token that resumes this response, or null if it did not pause or has no token. */
-internal fun GenerateContentResponse.resumeToken(): ByteArray? {
-  val candidate = candidates.firstOrNull()
-  if (candidate?.finishReason != FinishReason.CONTINUATION) return null
-  val token = candidate.continuationToken
-  if (token == null || token.isEmpty()) {
-    logger.warn {
-      "The model paused the generation for continuation, but the response carries no" +
-        " continuation token, so the partial output is returned."
-    }
-    return null
-  }
-  return token
-}
-
 /** The contents of a request that resumes a paused generation, and the token that resumes it. */
 internal class ResumeRequest(val contents: List<Content>, val token: ByteArray)
 
 /** One generation, carried across the requests that resume it after the model pauses it. */
-internal class Continuation(private val contents: List<Content>) {
+internal class Continuation(
+  private val contents: List<Content>,
+  private val config: GenerateContentConfig,
+) {
   private val parts = mutableListOf<Part>()
   private var token: ByteArray? = null
   private var resumes = 0
@@ -58,6 +47,27 @@ internal class Continuation(private val contents: List<Content>) {
   /** Whether the generation took more than one request. */
   private val resumed: Boolean
     get() = token != null
+
+  /**
+   * Returns the token that resumes [response], or null if it did not pause or has no token. Without
+   * a `maxOutputTokens` limit, `MAX_TOKENS` is a pause too: the request reached its own output cap,
+   * not the caller's.
+   */
+  fun resumeToken(response: GenerateContentResponse): ByteArray? {
+    val candidate = response.candidates.firstOrNull() ?: return null
+    val paused =
+      candidate.finishReason == FinishReason.CONTINUATION ||
+        (candidate.finishReason == FinishReason.MAX_TOKENS && config.maxOutputTokens == null)
+    if (!paused) return null
+    val token = candidate.continuationToken?.takeIf { it.isNotEmpty() }
+    if (token == null && candidate.finishReason == FinishReason.CONTINUATION) {
+      logger.warn {
+        "The model paused the generation for continuation, but the response carries no" +
+          " continuation token, so the partial output is returned."
+      }
+    }
+    return token
+  }
 
   /** Whether a request that ended with [nextToken] is resumed. */
   fun willResume(nextToken: ByteArray): Boolean =
@@ -199,7 +209,7 @@ internal class StreamedOutput(private val continuation: Continuation) {
     val candidate = response.candidates.firstOrNull() ?: return response
     // A stream terminator carries nothing, and resending it would add an empty text part.
     _parts += candidate.content.parts.filterNot { it.isStreamTerminator() }
-    val responseToken = response.resumeToken() ?: return response
+    val responseToken = continuation.resumeToken(response) ?: return response
     token = responseToken
     // A pause that is not resumed ends the generation, so it keeps its finish reason.
     if (!continuation.willResume(responseToken)) return response
