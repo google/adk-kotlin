@@ -40,7 +40,7 @@ Since KSP 2.3.0, KSP versions are independent of Kotlin versions; pick a KSP rel
 
 ### Floors
 
-- **Kotlin 2.1 or newer.** Artifacts are compiled for language and API level 2.1 whatever compiler builds them (`kotlinCompatVersion` in the root build file).
+- **Kotlin 2.1 or newer.** Artifacts are compiled for language and API level 2.1 whatever compiler builds them (`kotlinCompatVersion` in the root build file). An app that compiles against Ktor directly, for example to mount `adkApiModule` in its own server, also needs a compiler that can read the Kotlin metadata of the Ktor release in `gradle/libs.versions.toml`; a compiler reads metadata at most one minor version newer than itself.
 - **JDK 17 or newer**; the LiteRT-LM module needs JDK 21.
 - **Android:** `minSdk` and `compileSdk` are `androidMinSdk` / `androidCompileSdk` in the root build file.
 

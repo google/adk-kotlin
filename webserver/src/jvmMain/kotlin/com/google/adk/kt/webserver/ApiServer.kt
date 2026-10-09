@@ -235,8 +235,6 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
  * cut off by the stop had buffered.
  */
 private fun Application.flushSessionServiceOnStop(sessionService: SessionService) {
-  @Suppress("DEPRECATION") // Ktor 2, which the Gradle build uses, has no Application.monitor.
-  val monitor = environment.monitor
   lateinit var subscription: DisposableHandle
   subscription =
     monitor.subscribe(ApplicationStopping) {

@@ -144,9 +144,8 @@ data class McpProgressUpdate(val progress: Double, val total: Double?, val messa
  * Common configuration for a remote Streamable HTTP MCP toolset.
  *
  * This is the portable MCP entry point for JVM and Android. Platform-specific transports and MCP
- * SDKs are selected internally. JVM callers do not add an extra MCP SDK. On Android, ADK declares
- * `kotlin-sdk-client` and `ktor-client-okhttp` as `compileOnly`, so the app must add those
- * artifacts itself. JVM-only stdio and legacy SSE continue to use `McpToolset.McpToolsetConfig`.
+ * SDKs are selected internally, so callers on either platform do not add an extra MCP SDK. JVM-only
+ * stdio and legacy SSE continue to use `McpToolset.McpToolsetConfig`.
  *
  * A configured `headerProvider` is invoked before tool discovery and again before each tool call
  * (matching ADK Python). An [IllegalArgumentException] from that provider or from a
@@ -196,11 +195,6 @@ data class RemoteMcpToolsetConfig(
    * `McpToolException.McpToolExecutionException` with the SDK or transport error as
    * [Throwable.cause]; JVM rethrows that underlying error so existing callers keep catching
    * SDK/transport types.
-   *
-   * On Android, ADK declares the Kotlin MCP SDK and Ktor OkHttp engine as `compileOnly`. An app
-   * that uses this toolset must add those dependencies itself. google-genai-kotlin 1.4.0 still
-   * depends on Ktor 2, so an Android app cannot use Gemini and MCP in the same process until
-   * genai-kotlin moves to Ktor 3.
    */
   @JvmOverloads
   fun toToolset(

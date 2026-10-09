@@ -170,9 +170,10 @@ class VertexAiRagClientTest {
       .isEqualTo("multipart")
     assertThat(request.headers.values("Content-Type").firstOrNull()).contains("multipart/form-data")
     val body = request.body?.utf8()
-    // Both multipart parts are present, and they carry the metadata and file payloads.
-    assertThat(body).contains("name=metadata")
-    assertThat(body).contains("name=file")
+    // Both multipart parts are present with the metadata and file payloads. Some Ktor builds quote
+    // part names and some do not, so accept both.
+    assertThat(body).containsMatch("name=\"?metadata\"?")
+    assertThat(body).containsMatch("name=\"?file\"?")
     assertThat(body).contains("\"displayName\":\"adk-memory-v1.a.b.c\"")
     assertThat(body).contains("the-file-content")
   }

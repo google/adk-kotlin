@@ -92,8 +92,8 @@ internal fun Route.runRoutes(
 
     val sessionId = request.sessionId ?: UUID.randomUUID().toString()
 
-    // Ktor 2.x has no SSE plugin, so stream manually. Use async respondBytesWriter, not
-    // respondTextWriter, whose blocking bridge parks via a coroutines internal gone in 1.11.0.
+    // Use async respondBytesWriter instead of respondTextWriter, which writes through a
+    // blocking Writer on a dispatcher thread.
     call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
       runner
         .runAsync(
