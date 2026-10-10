@@ -28,6 +28,7 @@ import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.tools.SetModelResponseTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
@@ -44,6 +45,23 @@ class OutputSchemaProcessorTest {
 
   private fun contextFor(agent: LlmAgent): InvocationContext =
     InvocationContext(session = testSession(), runConfig = null, agent = agent)
+
+  private fun setModelResponseEvent(response: Map<String, Any?>): Event =
+    Event(
+      author = "test-agent",
+      content =
+        userFunctionResponse(name = SetModelResponseTool.NAME, id = CALL_ID, response = response),
+    )
+
+  /** Returns a [SetModelResponseTool] that has validated [args] for the call [CALL_ID]. */
+  private suspend fun toolThatValidated(args: Map<String, Any?>): SetModelResponseTool {
+    val tool = SetModelResponseTool(outputSchema)
+    assertEquals(
+      args,
+      tool.run(ToolContext(testInvocationContext(), functionCallId = CALL_ID), args),
+    )
+    return tool
+  }
 
   @Test
   fun process_noOutputSchema_returnsRequestUnchanged() = runBlocking {
@@ -170,30 +188,87 @@ class OutputSchemaProcessorTest {
   }
 
   @Test
-  fun getStructuredModelResponse_withSetModelResponse_returnsJson() {
-    val response = mapOf<String, Any?>("answer" to "42")
-    val event =
-      Event(
-        author = "test-agent",
-        content =
-          userFunctionResponse(name = SetModelResponseTool.NAME, id = null, response = response),
-      )
+  fun getStructuredModelResponse_toolValidatedTheCall_returnsJson() = runBlocking {
+    val args = mapOf<String, Any?>("answer" to "42")
+    val tools = mapOf(SetModelResponseTool.NAME to toolThatValidated(args))
 
-    val json = getStructuredModelResponse(event)
+    val json = getStructuredModelResponse(setModelResponseEvent(args), tools)
 
-    assertEquals(response, json?.let { Json.fromJsonToMap(it) })
+    assertEquals(args, json?.let { Json.fromJsonToMap(it) })
   }
 
   @Test
-  fun getStructuredModelResponse_withOtherFunctionResponse_returnsNull() {
+  fun getStructuredModelResponse_toolValidatedEmptyObject_returnsEmptyJson() = runBlocking {
+    val tools = mapOf(SetModelResponseTool.NAME to toolThatValidated(emptyMap()))
+
+    assertEquals("{}", getStructuredModelResponse(setModelResponseEvent(emptyMap()), tools))
+  }
+
+  @Test
+  fun getStructuredModelResponse_responseChangedAfterValidation_returnsValidatedArgs() =
+    runBlocking {
+      val tools = mapOf(SetModelResponseTool.NAME to toolThatValidated(mapOf("answer" to "42")))
+      // An after-tool callback rewrote the response the tool returned.
+      val event = setModelResponseEvent(mapOf("answer" to "rewritten"))
+
+      val json = getStructuredModelResponse(event, tools)
+
+      assertEquals(mapOf<String, Any?>("answer" to "42"), json?.let { Json.fromJsonToMap(it) })
+    }
+
+  @Test
+  fun getStructuredModelResponse_toolValidatedAnotherCall_returnsNull() = runBlocking {
+    val tools = mapOf(SetModelResponseTool.NAME to toolThatValidated(mapOf("answer" to "42")))
     val event =
       Event(
         author = "test-agent",
         content =
-          userFunctionResponse(name = "my_tool", id = null, response = mapOf("result" to "ok")),
+          userFunctionResponse(
+            name = SetModelResponseTool.NAME,
+            id = "call_2",
+            response = mapOf("answer" to "42"),
+          ),
       )
 
-    assertNull(getStructuredModelResponse(event))
+    assertNull(getStructuredModelResponse(event, tools))
+  }
+
+  @Test
+  fun getStructuredModelResponse_callbackAnsweredTheCall_returnsNull() {
+    // A callback answered for the tool, so the tool never validated this call.
+    val event = setModelResponseEvent(mapOf("error" to "Fix the arguments and call again."))
+    val tools = mapOf(SetModelResponseTool.NAME to SetModelResponseTool(outputSchema))
+
+    assertNull(getStructuredModelResponse(event, tools))
+  }
+
+  @Test
+  fun getStructuredModelResponse_withOtherFunctionResponse_returnsNull() = runBlocking {
+    val tools = mapOf(SetModelResponseTool.NAME to toolThatValidated(mapOf("answer" to "42")))
+    val event =
+      Event(
+        author = "test-agent",
+        content =
+          userFunctionResponse(name = "my_tool", id = CALL_ID, response = mapOf("result" to "ok")),
+      )
+
+    assertNull(getStructuredModelResponse(event, tools))
+  }
+
+  @Test
+  fun getStructuredModelResponse_nameDispatchedToAnotherTool_returnsNull() {
+    val event = setModelResponseEvent(mapOf("answer" to "from another tool"))
+    val tools = mapOf(SetModelResponseTool.NAME to DummyTool(SetModelResponseTool.NAME))
+
+    assertNull(getStructuredModelResponse(event, tools))
+  }
+
+  @Test
+  fun getStructuredModelResponse_noToolHasTheName_returnsNull() {
+    // What the agent records when the model calls set_model_response but no tool answers to it.
+    val event = setModelResponseEvent(mapOf("error" to "tool not found"))
+
+    assertNull(getStructuredModelResponse(event, mapOf("my_tool" to DummyTool("my_tool"))))
   }
 
   @Test
@@ -206,5 +281,9 @@ class OutputSchemaProcessorTest {
     assertEquals("structured-agent", event.author)
     assertEquals(Role.MODEL, event.content?.role)
     assertEquals("""{"answer":"42"}""", event.content?.parts?.firstOrNull()?.text)
+  }
+
+  private companion object {
+    const val CALL_ID = "call_1"
   }
 }

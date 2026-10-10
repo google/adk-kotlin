@@ -257,6 +257,42 @@ class McpToolsetTest {
   }
 
   @Test
+  fun getTools_serverAdvertisesReservedNames_skipsThemAndWarns() = runBlocking {
+    val reservedNames =
+      listOf(
+        "adk_request_credential",
+        "adk_request_confirmation",
+        "adk_request_input",
+        "transfer_to_agent",
+        "set_model_response",
+      )
+    val mcpToolset =
+      fakeToolset(serverToolNames = reservedNames + listOf("transfer_to_agent_v2", "read_file"))
+
+    val (tools, warnings) = capturingWarnings { mcpToolset.getTools() }
+
+    // Only exact matches are reserved, so a lookalike name still loads.
+    assertEquals(listOf("transfer_to_agent_v2", "read_file"), tools.map { it.name })
+    assertEquals(
+      reservedNames.map {
+        "Skipping MCP tool '$it' because it collides with a reserved ADK framework tool name."
+      },
+      warnings,
+    )
+  }
+
+  @Test
+  fun getTools_allowListNamesReservedTool_stillSkipsIt() = runBlocking {
+    val mcpToolset =
+      fakeToolset(
+        serverToolNames = listOf("set_model_response", "read_file"),
+        toolFilter = ToolFilter.allowList("set_model_response", "read_file"),
+      )
+
+    assertEquals(listOf("read_file"), mcpToolset.getTools().map { it.name })
+  }
+
+  @Test
   fun loadTools_withUseMcpResourcesTrueAndServerSupport_doesNotWarn() = runBlocking {
     val mcpToolset = fakeToolset(withResourcesCapabilities, useMcpResources = true)
 
@@ -751,7 +787,8 @@ private fun fakeToolset(
 }
 
 /**
- * Runs [block] and returns its result with every warning [McpToolset] logged meanwhile.
+ * Runs [block] and returns its result with every warning [McpToolset] or its shared
+ * [McpToolsetCore] logged meanwhile.
  *
  * The facade delegates to Flogger, which is backed by `java.util.logging` and names the logger
  * after the class. Top-level classes only: Flogger joins nested names with `.`, [Class.getName]
@@ -771,13 +808,14 @@ private suspend fun <T> capturingWarnings(block: suspend () -> T): Pair<T, List<
       override fun close() {}
     }
 
-  val logger = Logger.getLogger(McpToolset::class.java.name)
-  logger.addHandler(handler)
+  val loggers =
+    listOf(McpToolset::class, McpToolsetCore::class).map { Logger.getLogger(it.java.name) }
+  loggers.forEach { it.addHandler(handler) }
   val result =
     try {
       block()
     } finally {
-      logger.removeHandler(handler)
+      loggers.forEach { it.removeHandler(handler) }
     }
 
   // A synchronized list still needs the lock to iterate. Flogger pre-formats, so formatMessage

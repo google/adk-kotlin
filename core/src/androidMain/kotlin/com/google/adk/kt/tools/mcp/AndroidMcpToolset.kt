@@ -125,7 +125,8 @@ private constructor(
    * @param headers Static HTTP headers applied to every transport request. Values returned by
    *   [headerProvider] override headers with the same name.
    * @param toolFilter Optional selector for tools advertised by the MCP server. It does not filter
-   *   ADK-owned resource tools enabled by [useMcpResources].
+   *   ADK-owned resource tools enabled by [useMcpResources]. A server tool whose name ADK uses for
+   *   its own tools, such as `transfer_to_agent`, is always skipped with a warning.
    * @param timeouts Connection, request, and socket timeouts for the transport.
    * @param useMcpResources Whether to expose ADK's `list_mcp_resources`, `load_mcp_resource`, and
    *   `list_mcp_resource_templates` tools when the server reports the MCP `resources` capability.

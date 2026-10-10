@@ -16,6 +16,8 @@
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.collections.concurrentMutableMapOf
+import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 
@@ -43,29 +45,30 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
         "the specified schema format.",
   ) {
 
+  /** The arguments [run] validated, by function call id; only these end the turn. */
+  private val validatedResponses = concurrentMutableMapOf<String, Map<String, Any?>>()
+
   override fun declaration(): FunctionDeclaration =
     FunctionDeclaration(name = name, description = description, parameters = outputSchema)
 
   /**
-   * Validates [args] against [outputSchema] and returns them unchanged.
+   * Validates [args] against [outputSchema], records them as the call's structured response, and
+   * returns them unchanged; a callback that answers for this tool without running it never ends the
+   * turn.
    *
-   * This tool is a marker for the final response; it does not perform any side effects beyond
-   * returning its arguments, which the flow captures as the structured final response.
-   *
-   * Validation is strict (parity with the Java/Python ADK): args that do not conform to
-   * [outputSchema] throw, which propagates as a tool execution error rather than being saved as
-   * best-effort text. Unless an `onToolError` callback recovers, the exception propagates up
-   * through `handleFunctionCalls` -> `processModelResponse` and fails the invocation; it does not
-   * produce an error function-response event by default. This differs from the direct-schema path
-   * in `LlmAgent.maybeSaveOutputToState`, which logs the error and stores the raw output instead of
-   * failing. The asymmetry is intentional: in the workaround path the structured value is produced
-   * by a tool call, so a schema mismatch is treated as a tool execution error rather than a
-   * best-effort text result.
+   * Validation is strict: non-conforming [args] throw a tool execution error that fails the
+   * invocation unless an `onToolError` callback recovers, unlike the direct-schema path in
+   * `LlmAgent.maybeSaveOutputToState`, which logs the mismatch and stores the raw text.
    */
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Map<String, Any?> {
     SchemaUtils.validateMapOnSchema(args, outputSchema, argsName = "Output").getOrThrow()
+    validatedResponses[context.functionCallId.orEmpty()] = args
     return args
   }
+
+  /** Returns the JSON of the arguments [run] validated for [functionCallId], or `null` if none. */
+  internal fun validatedResponseJson(functionCallId: String?): String? =
+    validatedResponses[functionCallId.orEmpty()]?.let { Json.toJsonString(it) }
 
   companion object {
     const val NAME: String = "set_model_response"

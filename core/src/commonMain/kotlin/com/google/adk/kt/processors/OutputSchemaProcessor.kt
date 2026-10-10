@@ -20,7 +20,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.canUseOutputSchemaWithTools
-import com.google.adk.kt.serialization.Json
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.SetModelResponseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -94,22 +94,22 @@ internal fun LlmAgent.appliesOutputSchemaDirectly(context: InvocationContext): B
   !hasToolsForOutputSchemaGating(context) || model.canUseOutputSchemaWithTools
 
 /**
- * Extracts the structured JSON response from a [SetModelResponseTool] call, if present.
- *
- * Note: the serialized arguments come from the function-response map, which the tool-execution
- * machinery builds by dropping entries whose value is `null`. So a `set_model_response` call with
- * an explicit `null` for a nullable field is serialized without that field. This matches the Python
- * ADK (which uses `exclude_none=True`) but differs from the direct-schema path, where the model's
- * JSON text is parsed verbatim and explicit `null`s are preserved.
+ * Returns the JSON-serialized arguments that ADK's own [SetModelResponseTool] in [tools] validated
+ * for a `set_model_response` response in [functionResponseEvent], or `null` if there are none.
  *
  * @param functionResponseEvent The function-response event produced after executing tool calls.
- * @return The JSON-serialized arguments of the `set_model_response` call, or `null` if the event
- *   did not contain such a call.
+ * @param tools The tools the event's calls were dispatched to, keyed by name.
  */
-internal fun getStructuredModelResponse(functionResponseEvent: Event): String? {
+internal fun getStructuredModelResponse(
+  functionResponseEvent: Event,
+  tools: Map<String, BaseTool>,
+): String? {
+  val tool = tools[SetModelResponseTool.NAME] as? SetModelResponseTool ?: return null
   for (functionResponse in functionResponseEvent.functionResponses()) {
     if (functionResponse.name == SetModelResponseTool.NAME) {
-      return Json.toJsonString(functionResponse.response)
+      tool.validatedResponseJson(functionResponse.id)?.let {
+        return it
+      }
     }
   }
   return null
