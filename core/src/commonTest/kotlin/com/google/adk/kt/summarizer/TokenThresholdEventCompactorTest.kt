@@ -29,6 +29,7 @@ import com.google.adk.kt.testing.modelEvent
 import com.google.adk.kt.testing.modelEventWithPromptTokens
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userEvent
+import com.google.adk.kt.types.Role
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -260,7 +261,13 @@ class TokenThresholdEventCompactorTest {
     val call =
       eventWithFunctionCall(invocationId = "inv_2", timestamp = 200L, callName = "t", callId = "c1")
     val response =
-      eventWithFunctionResponse(invocationId = "inv_2", timestamp = 210L, name = "t", callId = "c1")
+      eventWithFunctionResponse(
+        invocationId = "inv_2",
+        timestamp = 210L,
+        name = "t",
+        callId = "c1",
+        author = Role.MODEL,
+      )
     val e4 = modelEventWithPromptTokens(150, invocationId = "inv_2", timestamp = 220L)
     session.events.addAll(listOf(e1, call, response, e4))
 
@@ -269,6 +276,44 @@ class TokenThresholdEventCompactorTest {
     // longestSelfContainedPrefix drops the call, so the call and
     // its response stay together in the raw tail; only e1 is compacted.
     assertEquals(listOf(e1), summarizer.calls.single())
+  }
+
+  @Test
+  fun compact_userResponseToRegularCall_excludedFromSummary() = runBlocking {
+    val summarizer = RecordingSummarizer(returning = compactionEvent(startTs = 100L, endTs = 200L))
+    val sessionService = RecordingSessionService()
+    val compactor =
+      tokenThresholdCompactor(tokenThreshold = 100, eventRetentionSize = 1, summarizer)
+    val session = testSession()
+    val call =
+      eventWithFunctionCall(invocationId = "inv_1", timestamp = 100L, callName = "t", callId = "c1")
+    val toolResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv_1",
+        timestamp = 110L,
+        name = "t",
+        callId = "c1",
+        response = mapOf("allowed" to false),
+        author = Role.MODEL,
+      )
+    val userResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv_2",
+        timestamp = 200L,
+        name = "t",
+        callId = "c1",
+        response = mapOf("allowed" to true),
+      )
+    val e4 = modelEventWithPromptTokens(150, invocationId = "inv_2", timestamp = 210L)
+    session.events.addAll(listOf(call, toolResponse, userResponse, e4))
+
+    compactor.compact(session, sessionService)
+
+    // Prompt building ignores the user's response to the regular call, so the summary must too.
+    assertEquals(
+      listOf(mapOf("allowed" to false)),
+      summarizer.calls.single().flatMap { it.functionResponses() }.map { it.response },
+    )
   }
 
   @Test

@@ -226,6 +226,7 @@ class PromptTokenCountTest {
           name = "search",
           callId = "call_1",
           response = mapOf("result" to "b".repeat(100)),
+          author = "model",
         ),
       )
     // Call: "search" (6) + {"query":"a*100"} (112).
@@ -251,6 +252,7 @@ class PromptTokenCountTest {
           timestamp = 110L,
           name = "search",
           callId = "call_1",
+          author = "model",
         ),
       )
 

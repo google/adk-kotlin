@@ -17,6 +17,7 @@ package com.google.adk.kt.summarizer
 
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
+import com.google.adk.kt.events.dropUnsolicitedFunctionResponses
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionService
@@ -52,10 +53,8 @@ class SlidingWindowEventCompactor(private val config: EventsCompactionConfig) : 
     if (!config.hasSlidingWindowConfig()) return
     val summarizer =
       requireNotNull(config.summarizer) { "Missing EventSummarizer for event compaction." }
-    // Drop rewound invocations first so the summary covers only live events. This keeps the
-    // compactor consistent with prompt building (HistoryRewriterProcessor also applies rewinds);
-    // otherwise rewound content would leak back into future prompts via the compaction summary.
-    val liveEvents = applyRewinds(session.events)
+    // Prompt building drops rewound events and unsolicited responses; so must the summary.
+    val liveEvents = applyRewinds(dropUnsolicitedFunctionResponses(session.events))
     val compactionWindow = selectCompactionWindow(liveEvents) ?: return
     val compactionEvent = trySummarizeEvents(summarizer, compactionWindow, logger) ?: return
     val appendedEvent = sessionService.appendEvent(session, compactionEvent)

@@ -23,6 +23,8 @@ import com.google.adk.kt.processors.generateRequestConfirmationEvent
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.modelFunctionCall
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
@@ -121,6 +123,37 @@ class EventTest {
 
     assertNotNull(confirmationEvent)
     assertEquals(actions, confirmationEvent.actions)
+  }
+
+  // A reused id is judged by its latest call, and an emptied event stays for rewinds to find.
+  @Test
+  fun dropUnsolicitedFunctionResponses_reusedCallId_judgedByLatestCall() {
+    val longRunningCall =
+      Event(
+        author = "agent",
+        content = modelFunctionCall("approve", id = "c1"),
+        longRunningToolIds = setOf("c1"),
+      )
+    val postedBack = Event(author = Role.USER, content = userFunctionResponse("approve", "c1"))
+    val regularCall = Event(author = "agent", content = modelFunctionCall("lookup", id = "c1"))
+    val toolResponse = Event(author = "agent", content = userFunctionResponse("lookup", "c1"))
+    val unsolicited = Event(author = Role.USER, content = userFunctionResponse("lookup", "c1"))
+
+    val result =
+      dropUnsolicitedFunctionResponses(
+        listOf(longRunningCall, postedBack, regularCall, toolResponse, unsolicited)
+      )
+
+    assertEquals(
+      listOf(
+        longRunningCall,
+        postedBack,
+        regularCall,
+        toolResponse,
+        unsolicited.copy(content = Content(role = Role.USER, parts = emptyList())),
+      ),
+      result,
+    )
   }
 
   @Test

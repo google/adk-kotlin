@@ -17,6 +17,7 @@ package com.google.adk.kt.summarizer
 
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
+import com.google.adk.kt.events.dropUnsolicitedFunctionResponses
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionService
@@ -58,9 +59,8 @@ class TokenThresholdEventCompactor(
     val tokenThreshold = config.tokenThreshold ?: return
     val eventRetentionSize = config.eventRetentionSize ?: return
 
-    // Drop rewound invocations first so the summary covers only live events. This keeps the
-    // compactor consistent with prompt building (HistoryRewriterProcessor also applies rewinds).
-    val liveEvents = applyRewinds(session.events)
+    // Prompt building drops rewound events and unsolicited responses; so must the summary.
+    val liveEvents = applyRewinds(dropUnsolicitedFunctionResponses(session.events))
 
     val promptTokenCount = latestPromptTokenCount(liveEvents, agentName, branch) ?: return
     if (promptTokenCount < tokenThreshold) return

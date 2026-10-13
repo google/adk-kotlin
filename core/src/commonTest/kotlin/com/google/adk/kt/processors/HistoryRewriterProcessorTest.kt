@@ -18,9 +18,16 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.testing.compactionEvent
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.rewindEvent
 import com.google.adk.kt.testing.userEvent
+import com.google.adk.kt.testing.userFunctionResponse
+import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
 import com.google.adk.kt.types.ToolType
@@ -299,6 +306,196 @@ class HistoryRewriterProcessorTest {
       contents[1].parts.map { it.text },
     )
   }
+
+  // A response to a call the framework already ran must not replace its result or cut later turns.
+  @Test
+  fun rewrite_userResponseToRegularCall_isDropped() {
+    val events = completedPermissionCheck() + userPermissionResponse()
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(4, contents.size)
+    assertEquals(mapOf("allowed" to false), contents[2].parts.single().functionResponse?.response)
+    assertEquals("Permission denied.", contents[3].parts.single().text)
+  }
+
+  // The response stays in the session, so later turns must ignore it too.
+  @Test
+  fun rewrite_userResponseToRegularCallEarlierInHistory_isDropped() {
+    val events = completedPermissionCheck() + userPermissionResponse() + userEvent("Now delete it.")
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(5, contents.size)
+    assertEquals(mapOf("allowed" to false), contents[2].parts.single().functionResponse?.response)
+    assertEquals("Permission denied.", contents[3].parts.single().text)
+    assertEquals("Now delete it.", contents[4].parts.single().text)
+  }
+
+  // Under NONE the response would otherwise start the turn and be the only tool result sent.
+  @Test
+  fun rewrite_includeContentsNone_userResponseToRegularCall_isDropped() {
+    val events = completedPermissionCheck() + userPermissionResponse()
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(
+          events,
+          agentName = "agent",
+          currentBranch = null,
+          includeContents = IncludeContents.NONE,
+        )
+
+    assertEquals(4, contents.size)
+    assertEquals("Delete the file.", contents[0].parts.single().text)
+    assertEquals(mapOf("allowed" to false), contents[2].parts.single().functionResponse?.response)
+  }
+
+  // Only the response goes; the rest of the user's message still reaches the model.
+  @Test
+  fun rewrite_userResponseToRegularCallWithText_keepsText() {
+    val events =
+      completedPermissionCheck() +
+        Event(
+          author = Role.USER,
+          content =
+            userMessage(
+              responsePart("check_permission", "perm-1", mapOf("allowed" to true)),
+              Part(text = "Try again."),
+            ),
+        )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(5, contents.size)
+    assertEquals(mapOf("allowed" to false), contents[2].parts.single().functionResponse?.response)
+    assertEquals(listOf("Try again."), contents[4].parts.map { it.text })
+  }
+
+  // A long-running call takes the result the user posts back, which replaces the placeholder.
+  @Test
+  fun rewrite_userResponseToLongRunningCall_replacesPlaceholder() {
+    val events =
+      listOf(
+        userEvent("Submit the expense."),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("approve_expense", id = "lr-1"),
+          longRunningToolIds = setOf("lr-1"),
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("approve_expense", "lr-1", mapOf("status" to "pending")),
+        ),
+        Event(author = "agent", content = modelMessage("Waiting for approval.")),
+        Event(
+          author = Role.USER,
+          content = userFunctionResponse("approve_expense", "lr-1", mapOf("status" to "approved")),
+        ),
+      )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(3, contents.size)
+    assertEquals("lr-1", contents[1].parts.single().functionCall?.id)
+    assertEquals(
+      mapOf("status" to "approved"),
+      contents[2].parts.single().functionResponse?.response,
+    )
+  }
+
+  // In a parallel call only the long-running call takes the user's result.
+  @Test
+  fun rewrite_userResponsesToParallelCalls_keepsOnlyLongRunningOne() {
+    val events =
+      listOf(
+        userEvent("Submit the expense and check the budget."),
+        Event(
+          author = "agent",
+          content =
+            modelMessage(
+              Part(functionCall = FunctionCall(name = "approve_expense", id = "lr-1")),
+              Part(functionCall = FunctionCall(name = "check_budget", id = "reg-1")),
+            ),
+          longRunningToolIds = setOf("lr-1"),
+        ),
+        Event(
+          author = "agent",
+          content =
+            userMessage(
+              responsePart("approve_expense", "lr-1", mapOf("status" to "pending")),
+              responsePart("check_budget", "reg-1", mapOf("ok" to false)),
+            ),
+        ),
+        Event(author = "agent", content = modelMessage("Over budget; waiting for approval.")),
+        Event(
+          author = Role.USER,
+          content =
+            userMessage(
+              responsePart("approve_expense", "lr-1", mapOf("status" to "approved")),
+              responsePart("check_budget", "reg-1", mapOf("ok" to true)),
+            ),
+        ),
+      )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(3, contents.size)
+    val responses = contents[2].parts.mapNotNull { it.functionResponse }
+    assertEquals(mapOf("status" to "approved"), responses.single { it.id == "lr-1" }.response)
+    assertEquals(mapOf("ok" to false), responses.single { it.id == "reg-1" }.response)
+  }
+
+  // A rewound long-running call that reused the id must not make the response solicited.
+  @Test
+  fun rewrite_userResponseToRegularCall_rewoundLongRunningCallWithSameId_isDropped() {
+    val events =
+      completedPermissionCheck() +
+        listOf(
+          Event(
+            author = "agent",
+            invocationId = "inv-2",
+            content = modelFunctionCall("approve", id = "perm-1"),
+            longRunningToolIds = setOf("perm-1"),
+          ),
+          rewindEvent(invocationId = "inv-3", rewoundInvocationId = "inv-2"),
+          userPermissionResponse(),
+        )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(4, contents.size)
+    assertEquals(mapOf("allowed" to false), contents[2].parts.single().functionResponse?.response)
+    assertEquals("Permission denied.", contents[3].parts.single().text)
+  }
+
+  /** A permission check the framework ran and the model then refused on. */
+  private fun completedPermissionCheck(): List<Event> =
+    listOf(
+      userEvent("Delete the file."),
+      Event(author = "agent", content = modelFunctionCall("check_permission", id = "perm-1")),
+      Event(
+        author = "agent",
+        content = userFunctionResponse("check_permission", "perm-1", mapOf("allowed" to false)),
+      ),
+      Event(author = "agent", content = modelMessage("Permission denied.")),
+    )
+
+  /** The user posting `allowed = true` for the call in [completedPermissionCheck]. */
+  private fun userPermissionResponse(): Event =
+    Event(
+      author = Role.USER,
+      content = userFunctionResponse("check_permission", "perm-1", mapOf("allowed" to true)),
+    )
+
+  private fun responsePart(name: String, id: String, response: Map<String, Any?>): Part =
+    Part(functionResponse = FunctionResponse(name = name, id = id, response = response))
 
   private fun modelPartEvent(part: Part, author: String = "agent"): Event =
     Event(author = author, content = modelMessage(part))

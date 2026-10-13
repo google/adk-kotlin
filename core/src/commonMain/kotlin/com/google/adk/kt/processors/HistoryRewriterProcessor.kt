@@ -18,6 +18,7 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
+import com.google.adk.kt.events.dropUnsolicitedFunctionResponses
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -29,6 +30,7 @@ import com.google.adk.kt.types.Role
  *
  * Handles:
  * - Filtering "invisible" parts (pure thoughts).
+ * - Dropping unsolicited function responses (user-authored, to calls that were not long-running).
  * - Rearranging/merging function response events (parallel calls).
  */
 internal class HistoryRewriterProcessor {
@@ -38,10 +40,13 @@ internal class HistoryRewriterProcessor {
     currentBranch: String?,
     includeContents: IncludeContents = IncludeContents.DEFAULT,
   ): List<Content> {
+    // Done first, since later steps can remove the call a response answers.
+    val solicitedEvents = dropUnsolicitedFunctionResponses(events)
+
     val workingEvents =
       when (includeContents) {
-        IncludeContents.DEFAULT -> events
-        IncludeContents.NONE -> getCurrentTurnEvents(events, agentName, currentBranch)
+        IncludeContents.DEFAULT -> solicitedEvents
+        IncludeContents.NONE -> getCurrentTurnEvents(solicitedEvents, agentName, currentBranch)
       }
 
     val rewindFilteredEvents = applyRewinds(workingEvents)

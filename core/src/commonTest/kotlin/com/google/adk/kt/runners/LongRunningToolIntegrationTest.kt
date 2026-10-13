@@ -916,6 +916,7 @@ class LongRunningToolIntegrationTest {
         name = "reg_tool",
         callId = "reg-1",
         response = mapOf("result" to "ok"),
+        author = "model",
       )
     // Summarizes the invocation window up to and including reg-1's response and lr-1's placeholder.
     val compaction = compactionEvent(startTs = 1L, endTs = 4L, timestamp = 4L)
@@ -1009,6 +1010,7 @@ class LongRunningToolIntegrationTest {
         name = "reg_tool",
         callId = "reg-1",
         response = mapOf("result" to "ok"),
+        author = "model",
       )
     // Summarizes the window through reg-1's response and both placeholders.
     val compaction = compactionEvent(startTs = 1L, endTs = 5L, timestamp = 5L)
@@ -1101,6 +1103,7 @@ class LongRunningToolIntegrationTest {
         name = "reg_tool",
         callId = "reg-1",
         response = mapOf("result" to "ok"),
+        author = "model",
       )
     // inv2: a separate long-running call.
     val lrCall2 =
@@ -1225,6 +1228,7 @@ class LongRunningToolIntegrationTest {
         name = "reg_tool",
         callId = "reg-1",
         response = mapOf("result" to "done"),
+        author = "model",
       )
 
     val error =
@@ -1319,6 +1323,60 @@ class LongRunningToolIntegrationTest {
           ),
       ),
       callerRequests.last().simplifiedContents(),
+    )
+  }
+
+  /**
+   * Only a long-running call takes a posted-back response: one posted for a regular call must not
+   * replace the tool's result, or cut the model's reply to it, in the next request.
+   */
+  @Test
+  fun runAsync_responseForRegularCall_doesNotReplaceToolResult() = runBlocking {
+    val requests = mutableListOf<LlmRequest>()
+    val agent =
+      LlmAgent(
+        name = AGENT_NAME,
+        model =
+          DummyModel("model") { request ->
+            requests.add(request)
+            flowOf(
+              if (requests.size == 1) modelFunctionCallResponse(TOOL_NAME_1, id = "reg_1")
+              else LlmResponse(content = modelMessage("denied"))
+            )
+          },
+        tools = listOf(DummyTool(name = TOOL_NAME_1, onRun = { _, _ -> mapOf("allowed" to false) })),
+      )
+    val runner = InMemoryRunner(agent = agent)
+    runner
+      .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("delete it"))
+      .toList()
+
+    runner
+      .runAsync(
+        userId = USER_ID,
+        sessionId = SESSION_ID,
+        newMessage =
+          userFunctionResponse(
+            name = TOOL_NAME_1,
+            id = "reg_1",
+            response = mapOf("allowed" to true),
+          ),
+      )
+      .toList()
+
+    assertEquals(3, requests.size)
+    assertEquals(
+      listOf(
+        Role.USER to "delete it",
+        Role.MODEL to Part(functionCall = FunctionCall(name = TOOL_NAME_1)),
+        Role.USER to
+          Part(
+            functionResponse =
+              FunctionResponse(name = TOOL_NAME_1, response = mapOf("allowed" to false))
+          ),
+        Role.MODEL to "denied",
+      ),
+      requests.last().simplifiedContents(),
     )
   }
 

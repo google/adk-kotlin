@@ -30,6 +30,7 @@ import com.google.adk.kt.testing.modelEvent
 import com.google.adk.kt.testing.rewindEvent
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userEvent
+import com.google.adk.kt.types.Role
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -346,6 +347,7 @@ class SlidingWindowEventCompactorTest {
         timestamp = 220L,
         name = "call_name",
         callId = "call_1",
+        author = Role.MODEL,
       )
     session.events.addAll(listOf(firstUser, firstModel, secondUser, callEvent, responseEvent))
 
@@ -436,6 +438,7 @@ class SlidingWindowEventCompactorTest {
         timestamp = 220L,
         name = "lookup",
         callId = "call_1",
+        author = Role.MODEL,
       )
     session.events.addAll(listOf(firstUser, firstModel, callEvent, pendingHitl, responseEvent))
 
@@ -475,6 +478,47 @@ class SlidingWindowEventCompactorTest {
     assertEquals(listOf(firstUser, firstModel, thirdUser, thirdModel), summarizer.calls.single())
     // Raw events stay persisted; compaction reads through rewinds but does not delete history.
     assertTrue(session.events.containsAll(listOf(rewoundUser, rewoundModel, rewindMarker)))
+  }
+
+  @Test
+  fun compact_userResponseToRegularCall_excludedFromSummary() = runBlocking {
+    val summarizer = RecordingSummarizer(returning = compactionEvent(startTs = 100L, endTs = 210L))
+    val sessionService = RecordingSessionService()
+    val compactor =
+      SlidingWindowEventCompactor(
+        EventsCompactionConfig(compactionInterval = 2, overlapSize = 1, summarizer = summarizer)
+      )
+    val session = testSession()
+    val firstUser = userEvent("delete it", invocationId = "inv_1", timestamp = 100L)
+    val callEvent =
+      eventWithFunctionCall(invocationId = "inv_1", timestamp = 110L, callName = "t", callId = "c1")
+    val toolResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv_1",
+        timestamp = 120L,
+        name = "t",
+        callId = "c1",
+        response = mapOf("allowed" to false),
+        author = Role.MODEL,
+      )
+    val userResponse =
+      eventWithFunctionResponse(
+        invocationId = "inv_2",
+        timestamp = 200L,
+        name = "t",
+        callId = "c1",
+        response = mapOf("allowed" to true),
+      )
+    val secondModel = modelEvent("ok", invocationId = "inv_2", timestamp = 210L)
+    session.events.addAll(listOf(firstUser, callEvent, toolResponse, userResponse, secondModel))
+
+    compactor.compact(session, sessionService)
+
+    // Prompt building ignores the user's response to the regular call, so the summary must too.
+    assertEquals(
+      listOf(mapOf("allowed" to false)),
+      summarizer.calls.single().flatMap { it.functionResponses() }.map { it.response },
+    )
   }
 
   @Test

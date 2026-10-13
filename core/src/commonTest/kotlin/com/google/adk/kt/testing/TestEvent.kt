@@ -87,8 +87,11 @@ fun eventWithFunctionCall(
   )
 
 /**
- * A `user`-authored [Event] carrying the [name] function response that closes [callId], with an
- * optional [response] payload (defaults to an empty map).
+ * An [Event] carrying the [name] function response that closes [callId], with an optional
+ * [response] payload (defaults to an empty map).
+ *
+ * [author] defaults to `user`, the result a client posts back for a long-running call. Pass a
+ * non-user author for the response the framework records after running a regular call.
  */
 fun eventWithFunctionResponse(
   invocationId: String,
@@ -96,9 +99,10 @@ fun eventWithFunctionResponse(
   name: String,
   callId: String,
   response: Map<String, Any?> = emptyMap(),
+  author: String = Role.USER,
 ): Event =
   Event(
-    author = Role.USER,
+    author = author,
     invocationId = invocationId,
     content = userFunctionResponse(name = name, id = callId, response = response),
     timestamp = timestamp,
