@@ -16,14 +16,19 @@
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.AgentModeOverride
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.findAgent
+import com.google.adk.kt.agents.runsAsTool
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -182,6 +187,7 @@ abstract class AbstractRunner : Runner {
     // thread where the caller's ambient context is gone, so parent the invocation span here.
     val parentContext = currentTelemetryContext()
     return flow {
+        requireRunnableRoot()
         val key = SessionKey(appName, userId, sessionId)
         val session = sessionService.getSession(key) ?: sessionService.createSession(key)
 
@@ -515,10 +521,17 @@ abstract class AbstractRunner : Runner {
       } else {
         invocationId
       }
+    // A message that no function response ties to an invocation continues a paused task.
+    val freshInvocationId =
+      resolvedInvocationId
+        ?: newMessage
+          ?.takeIf { root !is BaseAgent || root is LlmAgent }
+          ?.takeIf { message -> message.parts.none { !it.functionResponse?.id.isNullOrEmpty() } }
+          ?.let { pausedTaskEvent(session.events)?.invocationId }
 
     // `isResumable` enables stateful checkpointing (`agentState` / `endOfAgent` events) and
     // resuming without a new user message (`newMessage == null`). When `isResumable` is false, a
-    // node root still reuses `resolvedInvocationId` via `setupContextForNewInvocation` so the
+    // node root still reuses `freshInvocationId` via `setupContextForNewInvocation` so the
     // response event joins the calling invocation's history.
     if (isResumable && resolvedInvocationId != null) {
       return setupContextForResumedInvocation(
@@ -536,7 +549,7 @@ abstract class AbstractRunner : Runner {
     }
     return setupContextForNewInvocation(
       session,
-      resolvedInvocationId,
+      freshInvocationId,
       newMessage,
       runConfig,
       stateDelta,
@@ -693,10 +706,12 @@ abstract class AbstractRunner : Runner {
           invocationId = currentContext.invocationId,
           author = Role.USER,
           content = currentContext.userContent,
+          // A reply while a task is paused belongs to that task's conversation.
+          isolationScope = pausedTaskEvent(context.session.events)?.isolationScope,
         )
         .apply { applyStateDelta(this, stateDelta) }
         .let { applyRunConfigCustomMetadata(it, context.runConfig) }
-        .withBranchFromMatchingCall(currentContext)
+        .withContextFromMatchingCall(currentContext)
 
     val unused = sessionService.appendEvent(context.session, event)
 
@@ -715,9 +730,17 @@ abstract class AbstractRunner : Runner {
     }
   }
 
-  private suspend fun Event.withBranchFromMatchingCall(context: InvocationContext): Event =
-    context.findMatchingFunctionCall(this)?.branch?.let { branch -> this.copy(branch = branch) }
-      ?: this
+  /**
+   * Gives a function-response message the branch and isolation scope of the call it answers, so the
+   * agent that made the call sees the answer in its history.
+   */
+  private suspend fun Event.withContextFromMatchingCall(context: InvocationContext): Event {
+    val call = context.findMatchingFunctionCall(this) ?: return this
+    return copy(
+      branch = call.branch ?: branch,
+      isolationScope = isolationScope ?: call.isolationScope,
+    )
+  }
 
   /**
    * Sets up an [InvocationContext] for a brand new invocation.
@@ -879,16 +902,68 @@ abstract class AbstractRunner : Runner {
   @OptIn(ExperimentalWorkflowApi::class)
   private fun runRoot(context: InvocationContext): Flow<Event> =
     when (val root = context.node ?: context.agent) {
+      is LlmAgent -> runLlmAgentRoot(root, context)
       is BaseAgent -> root.runAsync(context)
       else -> NodeRunner.runRoot(root, context)
     }
+
+  /** Rejects a root that can't run before the session is touched, as Python ADK does. */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private fun requireRunnableRoot() {
+    require((root as? LlmAgent)?.mode != AgentMode.SINGLE_TURN) {
+      "LlmAgent as root agent must have mode='chat' or 'task', but got mode='single_turn'."
+    }
+  }
+
+  /**
+   * Runs an [LlmAgent] root. A chat or task root, or one delegating to task or single-turn agents,
+   * runs as a workflow node; any other root keeps the classic agent flow.
+   */
+  @OptIn(FrameworkInternalApi::class, ExperimentalWorkflowApi::class)
+  private fun runLlmAgentRoot(agent: LlmAgent, context: InvocationContext): Flow<Event> {
+    if (agent.mode == null && !agent.delegatesToModeAgents()) return agent.runAsync(context)
+    val mode = AgentModeOverride(agent = agent, mode = agent.mode ?: AgentMode.CHAT)
+    val nodeContext =
+      context.copy(frameworkData = context.frameworkData.copy(agentModeOverride = mode))
+    return NodeRunner.runRoot(agent, nodeContext)
+  }
+
+  /** Whether any agent below this one is a task or single-turn agent. */
+  private fun BaseAgent.delegatesToModeAgents(): Boolean = subAgents.any { sub ->
+    (sub as? LlmAgent)?.mode.runsAsTool || sub.delegatesToModeAgents()
+  }
 
   /**
    * Picks which agent handles this turn. A follow-up turn can land on a sub-agent chosen from the
    * prior turn's history; a node root has no agent tree, so it always runs itself.
    */
-  private suspend fun selectAgentToRun(context: InvocationContext): Node =
-    (root as? BaseAgent)?.let { findAgentToRun(context, it) } ?: root
+  @OptIn(ExperimentalWorkflowApi::class)
+  private suspend fun selectAgentToRun(context: InvocationContext): Node {
+    // A task root, or a coordinator of task agents, resumes its delegations itself.
+    val rootLlmAgent = root as? LlmAgent
+    if (
+      rootLlmAgent != null &&
+        (rootLlmAgent.mode == AgentMode.TASK ||
+          rootLlmAgent.subAgents.any { (it as? LlmAgent)?.mode == AgentMode.TASK })
+    ) {
+      return rootLlmAgent
+    }
+    return (root as? BaseAgent)?.let { findAgentToRun(context, it) } ?: root
+  }
+
+  /**
+   * Returns the latest event of the task still waiting on the user: the newest live event, left
+   * after rewinds, whose isolation scope no terminal `finish_task` response has closed.
+   */
+  private fun pausedTaskEvent(events: List<Event>): Event? {
+    val live = applyRewinds(events)
+    val finishedScopes =
+      live.filter { FinishTaskTool.isTerminalResponse(it) }.mapNotNull { it.isolationScope }.toSet()
+    return live.lastOrNull { event ->
+      val scope = event.isolationScope
+      scope != null && scope !in finishedScopes
+    }
+  }
 
   /**
    * Finds the appropriate [BaseAgent] to run for the session in [context].

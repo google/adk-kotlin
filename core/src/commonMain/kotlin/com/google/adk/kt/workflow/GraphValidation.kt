@@ -18,6 +18,8 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 
 /**
@@ -34,6 +36,7 @@ internal fun validateGraph(nodes: List<Node>, edges: List<Edge>) {
   validateNoDuplicateEdges(edges)
   validateDefaultRoutes(edges)
   validateNoUnconditionalCycles(edges, nodeNames)
+  validateChatAgentWiring(edges)
 }
 
 private fun fail(message: String): Nothing =
@@ -149,4 +152,21 @@ private fun validateNoUnconditionalCycles(edges: List<Edge>, nodeNames: Set<Stri
   }
 
   for (name in nodeNames) if (name !in done) visit(name)
+}
+
+/**
+ * Rejects a chat agent that follows any node but [Start]: it reads the conversation, so it cannot
+ * take a predecessor's output as its input.
+ */
+private fun validateChatAgentWiring(edges: List<Edge>) {
+  for (edge in edges) {
+    val agent = edge.to as? LlmAgent ?: continue
+    if (agent.defaultMode() != AgentMode.CHAT || edge.from.name == START_NODE_NAME) continue
+    fail(
+      "The agent '${agent.name}' has been added to the workflow with mode='chat' following node" +
+        " '${edge.from.name}'. This is not supported because chat-mode agents rely on" +
+        " conversational history (session events) and cannot consume direct node inputs from" +
+        " preceding nodes. Please change the agent's mode to 'single_turn'"
+    )
+  }
 }
