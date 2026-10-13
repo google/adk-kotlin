@@ -495,6 +495,7 @@ class SessionMappersTest {
         liveSessionResumptionUpdate =
           LiveServerSessionResumptionUpdate(newHandle = "handle-1", resumable = true),
         voiceActivity = VoiceActivity(voiceActivityType = VoiceActivityType.ACTIVITY_START),
+        isolationScope = "wf@1/task@1",
         actions =
           EventActions(
               skipSummarization = true,

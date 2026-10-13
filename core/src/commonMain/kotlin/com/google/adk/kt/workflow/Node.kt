@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
@@ -120,5 +121,21 @@ internal fun validateNodeName(name: String) {
 internal fun validateRunId(runId: String, nodeName: String) {
   require('/' !in runId && '@' !in runId && '.' !in runId) {
     "runId \"$runId\" for node '$nodeName' must not contain '/', '@', or '.'."
+  }
+}
+
+/**
+ * Validates that [node]'s name is valid at the invocation root: non-empty and free of '/' and '@',
+ * and also free of '.' unless [node] is a root [BaseAgent] (whose agent name may contain '.').
+ */
+internal fun validateRootNodeName(node: Node) {
+  if (node !is BaseAgent || node.parentAgent != null) {
+    validateNodeName(node.name)
+    return
+  }
+  val name = node.name
+  require(name.isNotEmpty()) { "A node name must not be empty." }
+  require('/' !in name && '@' !in name) {
+    "A node name must not contain '/' or '@', but '$name' does."
   }
 }

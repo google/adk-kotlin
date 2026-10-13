@@ -61,18 +61,7 @@ open class AgentTool(
   val propagateGroundingMetadata: Boolean = false,
 ) : BaseTool(name = agent.name, description = agent.description) {
 
-  private val inputSchema: Schema? by lazy { getInputSchema(agent) }
-
-  /**
-   * Recursively finds the input schema from the first [LlmAgent] encountered in a depth-first
-   * traversal of the agent's sub-agents. Only the first sub-agent is considered at each level.
-   */
-  private fun getInputSchema(agent: BaseAgent): Schema? =
-    when {
-      agent is LlmAgent -> agent.inputSchema
-      agent.subAgents.isNotEmpty() -> getInputSchema(agent.subAgents.first())
-      else -> null
-    }
+  private val inputSchema: Schema? by lazy { inputSchemaOf(agent) }
 
   override fun declaration(): FunctionDeclaration {
     return FunctionDeclaration(
@@ -213,9 +202,20 @@ open class AgentTool(
   companion object {
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
 
-    private const val REQUEST_KEY = "request"
+    internal const val REQUEST_KEY = "request"
 
     /** Temp state key under which propagated grounding metadata is stored. */
     private const val GROUNDING_METADATA_TEMP_KEY = "temp:_adk_grounding_metadata"
   }
 }
+
+/**
+ * Finds the input schema of the first [LlmAgent] in a depth-first walk of [agent] and its first
+ * sub-agent at each level, or null when there is none.
+ */
+internal fun inputSchemaOf(agent: BaseAgent): Schema? =
+  when {
+    agent is LlmAgent -> agent.inputSchema
+    agent.subAgents.isNotEmpty() -> inputSchemaOf(agent.subAgents.first())
+    else -> null
+  }
