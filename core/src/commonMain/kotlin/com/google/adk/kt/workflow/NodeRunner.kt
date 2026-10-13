@@ -59,6 +59,7 @@ private constructor(
   private val resumeInputs: Map<String, Any?> = emptyMap(),
   private val useSubBranch: Boolean = false,
   private val overrideBranch: String? = null,
+  private val overrideIsolationScope: String? = null,
 ) {
 
   constructor(
@@ -69,6 +70,7 @@ private constructor(
     resumeInputs: Map<String, Any?> = emptyMap(),
     useSubBranch: Boolean = false,
     overrideBranch: String? = null,
+    overrideIsolationScope: String? = null,
   ) : this(
     node = node,
     invocationContext = parent.invocationContext,
@@ -79,6 +81,7 @@ private constructor(
     resumeInputs = resumeInputs,
     useSubBranch = useSubBranch,
     overrideBranch = overrideBranch,
+    overrideIsolationScope = overrideIsolationScope,
   )
 
   private val childRunIds = ChildRunIds()
@@ -161,6 +164,7 @@ private constructor(
       // A retried workflow restarts node numbering, so finished nodes replay under their paths.
       childRunIds = if (node is Workflow) ChildRunIds() else childRunIds,
       childRuns = if (node is Workflow) ChildRuns() else childRuns,
+      isolationScope = overrideIsolationScope,
     )
 
   /**
@@ -343,6 +347,7 @@ private constructor(
         author = context.eventAuthor.ifEmpty { node.name },
         invocationId = context.invocationContext.invocationId,
         branch = event.branch ?: context.invocationContext.branch,
+        isolationScope = event.isolationScope ?: context.isolationScope,
         nodeInfo =
           (event.nodeInfo ?: NodeInfo()).copy(
             path = context.nodePath,

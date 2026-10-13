@@ -18,6 +18,9 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.modeOverrideFor
+import com.google.adk.kt.agents.runsAsTool
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.TransferToAgentTool
@@ -43,12 +46,21 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
       return request
     }
 
-    val transferInstructions = buildTransferInstructions(agent, targets)
     val transferTool = TransferToAgentTool(targets.map { it.name })
+    // A task or single-turn agent keeps the tool but is not told to hand the question over.
+    if (runsDelegated(context)) return request.appendTools(listOf(transferTool))
+    val transferInstructions = buildTransferInstructions(agent, targets)
 
     return request
       .appendInstructions(Content(parts = listOf(Part(text = transferInstructions))))
       .appendTools(listOf(transferTool))
+  }
+
+  /** Whether the agent of [context] runs as a task or single-turn agent. */
+  private fun runsDelegated(context: InvocationContext): Boolean {
+    val agent = context.agent
+    val mode = context.frameworkData.modeOverrideFor(agent) ?: (agent as? LlmAgent)?.mode
+    return mode.runsAsTool
   }
 
   private fun buildTargetAgentsInfo(targetAgent: BaseAgent) =
@@ -101,12 +113,18 @@ internal fun offeredTransferTargets(agent: BaseAgent, context: InvocationContext
 
 /**
  * Returns the agents [agent] may transfer control to: its sub-agents, and (when permitted) its
- * parent and peers. Requests read it through [offeredTransferTargets].
+ * parent and peers. A task or single-turn agent is reached as a tool instead, so it is left out.
+ * Requests read it through [offeredTransferTargets].
+ *
+ * Exposed at package scope so the output-schema gating ([BasicRequestProcessor] and
+ * [OutputSchemaProcessor]) can tell whether [AgentTransferProcessor] will attach a
+ * `transfer_to_agent` tool to the request, since that tool is subject to the same Gemini 2.x
+ * "response schema cannot be combined with tools" limitation as user-declared tools.
  */
 internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   val targets = buildList {
     // Sub-agents are always potential targets.
-    addAll(agent.subAgents)
+    addAll(agent.subAgents.filter { it.isTransferTarget() })
 
     val parent = agent.parentAgent
     if (parent != null) {
@@ -117,7 +135,7 @@ internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
 
       // Peer agents are potential targets if allowed.
       if (!agent.disallowTransferToPeers) {
-        addAll(parent.subAgents.filter { it.name != agent.name })
+        addAll(parent.subAgents.filter { it.name != agent.name && it.isTransferTarget() })
       }
     }
   }
@@ -129,3 +147,6 @@ internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   }
   return uniqueTargets
 }
+
+/** Whether this agent is reached by transfer, which a task or single-turn agent is not. */
+private fun BaseAgent.isTransferTarget(): Boolean = !(this as? LlmAgent)?.mode.runsAsTool

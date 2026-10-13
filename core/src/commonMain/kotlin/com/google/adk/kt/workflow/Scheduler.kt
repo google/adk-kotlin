@@ -17,7 +17,10 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
@@ -185,6 +188,20 @@ internal class Scheduler(
           recoveredNode,
           cancelledMidRun = context.isCancelledMidRun(childKey),
         )
+      // Through the dynamic dispatch path, so an agent node's transfer_to_agent is followed too.
+      fun dispatch(firstHop: Context?) = scope.async {
+        context.runNodeForContext(
+          node = node,
+          nodeInput = trigger.input,
+          runId = runId,
+          useAsOutput = useAsOutput,
+          useSubBranch = trigger.useSubBranch,
+          overrideBranch = trigger.branch,
+          overrideIsolationScope = taskScopeFor(nodeName, runId),
+          staticResumeInputs = interception.resumeInputs,
+          firstHop = firstHop,
+        )
+      }
       if (recoveredNode != null && !interception.shouldRun) {
         val completesTransfer =
           interception.transferToAgent != null &&
@@ -193,22 +210,16 @@ internal class Scheduler(
         if (!completesTransfer) replayed.add(nodeName)
         val replayContext =
           ResumeScan.replayContext(context, node, runId, useAsOutput, interception)
-        running[nodeName] = scope.async { replayContext }
+        // An agent's answered transfer hands off again, so the loop resumes its paused target.
+        running[nodeName] =
+          if (completesTransfer && node is BaseAgent) {
+            dispatch(firstHop = replayContext)
+          } else {
+            scope.async { replayContext }
+          }
         return completesTransfer
       }
-
-      running[nodeName] = scope.async {
-        NodeRunner(
-            node = node,
-            parent = context,
-            runId = runId,
-            useAsOutput = useAsOutput,
-            resumeInputs = interception.resumeInputs,
-            useSubBranch = trigger.useSubBranch,
-            overrideBranch = trigger.branch,
-          )
-          .run(trigger.input)
-      }
+      running[nodeName] = dispatch(firstHop = null)
       return true
     }
   }
@@ -293,6 +304,14 @@ internal class Scheduler(
         )
       )
   }
+
+  /** A task agent's isolation scope: its own node path, which keeps its conversation apart. */
+  private fun taskScopeFor(nodeName: String, runId: String): String? =
+    if ((graph.node(nodeName) as? LlmAgent)?.mode == AgentMode.TASK) {
+      Context.buildNodePath(context.nodePath, nodeName, runId)
+    } else {
+      null
+    }
 
   private fun enqueueSuccessorNodeTriggers(nodeName: String, childContext: Context) {
     val successors = graph.nodesTriggeredBy(nodeName, childContext.routes)
