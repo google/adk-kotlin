@@ -389,7 +389,8 @@ private constructor(
               .failure
               ?.cause
           } finally {
-            val unused = channel.close()
+            // Explicit cause: no-arg close() fails to link against kotlinx-coroutines < 1.11.
+            val unused = channel.close(cause = null)
           }
         }
         // If emit throws, the scope cancels all nodes.
