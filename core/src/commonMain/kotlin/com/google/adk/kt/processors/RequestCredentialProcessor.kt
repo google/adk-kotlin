@@ -102,9 +102,10 @@ internal class RequestCredentialProcessor : LlmRequestProcessor {
       agentEvents.lastOrNull { event -> event.functionCalls().any { it.id in callIds } }
         ?: return request
     context
-      .handleFunctionCalls(
+      .handleFunctionCallsWith(
         functionCalls = callEvent.functionCalls().filter { it.id in callIds },
         tools = agent.toolsByName(context),
+        emitEvent = emitEvent,
       )
       ?.let { emitEvent(it) }
     return request

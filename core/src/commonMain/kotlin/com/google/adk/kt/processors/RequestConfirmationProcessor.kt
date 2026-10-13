@@ -176,11 +176,12 @@ internal class RequestConfirmationProcessor : LlmRequestProcessor {
 
     // Re-execute the original calls with the confirmations, and emit the resulting events.
     context
-      .handleFunctionCalls(
+      .handleFunctionCallsWith(
         functionCalls = pending.values.map { it.originalCall },
         tools = agent.tools.associateBy { it.name },
         filters = pending.keys,
         toolConfirmations = pending.mapValues { it.value.confirmation },
+        emitEvent = emitEvent,
       )
       ?.let { emitEvent(it) }
 

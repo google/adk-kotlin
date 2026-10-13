@@ -31,19 +31,15 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.telemetry.failureDescription
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.consumeEach
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -66,6 +62,7 @@ private constructor(
   private val overrideBranch: String? = null,
   private val overrideIsolationScope: String? = null,
   private val openInterrupts: Set<String> = emptySet(),
+  private val fromTool: Boolean = false,
 ) {
 
   constructor(
@@ -100,13 +97,24 @@ private constructor(
     node is BaseAgent &&
       (node !is LlmAgent || node.nodeMode(invocationContext) != AgentMode.SINGLE_TURN)
 
+  // A tool-dispatched run scans only events recorded during its own call when retrying.
+  private val historyStartIndex: Int = if (fromTool) invocationContext.session.events.size else 0
+
   // A root reads its invocation's events once, for its own answers and replay.
   private val rootHistory: List<Event>? =
-    if (parent == null && !resumesItself) ResumeScan.invocationEvents(invocationContext) else null
+    if (parent == null && !fromTool && !resumesItself) {
+      ResumeScan.invocationEvents(invocationContext)
+    } else {
+      null
+    }
 
   // Reconstruct the ancestor agent path when a follow-up turn starts at a sub-agent.
   private val nodePath: String =
-    Context.buildNodePath(parent?.nodePath ?: ancestorAgentPath(node), node.name, runId)
+    Context.buildNodePath(
+      parent?.nodePath ?: ancestorAgentPath(node).takeIf { !fromTool },
+      node.name,
+      runId,
+    )
 
   // Child nodes receive recovered answers from their parent's scan; only root runs scan here.
   private val resolvedResumeInputs: Map<String, Any?> =
@@ -212,6 +220,8 @@ private constructor(
       childRunIds = if (node is Workflow) ChildRunIds() else childRunIds,
       childRuns = if (node is Workflow) ChildRuns() else childRuns,
       isolationScope = overrideIsolationScope,
+      enableReplay = !fromTool,
+      historyStartIndex = historyStartIndex,
     )
 
   private fun childInvocationContext(): InvocationContext =
@@ -235,7 +245,7 @@ private constructor(
     suspend fun run(nodeInput: Any?, validateInput: Boolean): Context {
       val cancelledNodePaths = context.invocationContext.frameworkData.cancelledNodePaths
       try {
-        runAttempt(nodeInput, validateInput)
+        runAttemptWithActiveSink(nodeInput, validateInput)
         flushPending()
       } catch (e: NodeInterruptedException) {
         // A dispatched child paused, or raiseOnWait aborted the run. Any interrupt ids are already
@@ -258,6 +268,24 @@ private constructor(
       if (currentCoroutineContext().isActive) cancelledNodePaths -= nodeState.nodePath
       else cancelledNodePaths[nodeState.nodePath] = Unit
       return context
+    }
+
+    /**
+     * Runs [runAttempt] with [nodeState]'s sink in [ActiveNodeSink], so child nodes run by an
+     * agent's tools emit directly to that sink, bypassing [dispatch]. A node that swallows its
+     * cancellation still finishes, as it would without the element.
+     */
+    private suspend fun runAttemptWithActiveSink(nodeInput: Any?, validateInput: Boolean) {
+      var finished = false
+      try {
+        withContext(ActiveNodeSink(context.invocationContext.invocationId, nodeState.eventSink)) {
+          runAttempt(nodeInput, validateInput)
+          finished = true
+        }
+      } catch (e: CancellationException) {
+        // withContext rethrows a cancellation on exit even when the node returned normally.
+        if (!finished) throw e
+      }
     }
 
     /**
@@ -474,6 +502,30 @@ private constructor(
   }
 
   companion object {
+    /** Runs [node] from a tool call, without a parent activation or replay from prior runs. */
+    suspend fun runFromTool(
+      node: Node,
+      invocationContext: InvocationContext,
+      sink: EventSink,
+      runId: String,
+      input: Any?,
+      useSubBranch: Boolean,
+      overrideBranch: String?,
+      overrideIsolationScope: String?,
+    ): Context =
+      NodeRunner(
+          node = node,
+          invocationContext = invocationContext,
+          eventSink = sink,
+          runId = runId,
+          useSubBranch = useSubBranch,
+          overrideBranch = overrideBranch,
+          overrideIsolationScope =
+            overrideIsolationScope ?: taskScope(node, parentPath = null, runId = runId),
+          fromTool = true,
+        )
+        .run(nodeInput = input, validateInput = false)
+
     /**
      * Runs [node] at the top of the invocation, beside the root node that [root] ran, and returns
      * its context.
@@ -506,50 +558,12 @@ private constructor(
 
     /**
      * Runs [node] as the root of [context]; only the [com.google.adk.kt.runners.Runner] should
-     * collect it. Each non-partial event suspends the emitting node until the Runner persists and
-     * emits it, so a successor sees committed state deltas and an error event is stored before its
-     * exception surfaces; partial events do not wait. If the collector throws a non-cancellation
-     * Exception, this attaches each queued node failure to it as suppressed.
+     * collect it. Events go through [withCommittedEventSink], so a successor sees committed state
+     * deltas and an error event is stored before its exception surfaces.
      */
-    // Confined to the flow's coroutineScope: async sends to channel, and emit runs on the collector
-    // coroutine.
-    @Suppress("UnsafeCoroutineCrossing")
     fun runRoot(node: Node, context: InvocationContext): Flow<Event> = flow {
-      val failure = coroutineScope {
-        val channel = Channel<QueuedEvent>(Channel.BUFFERED)
-        val failureDeferred = async {
-          try {
-            val sink = EventSink { event, nodeFailure ->
-              val processed = if (event.partial) null else CompletableDeferred<Unit>()
-              channel.send(QueuedEvent(event, processed, nodeFailure))
-              processed?.await()
-            }
-            runRootLoop(node, context, sink)
-          } finally {
-            // Explicit cause: no-arg close() fails to link against kotlinx-coroutines < 1.11.
-            val unused = channel.close(cause = null)
-          }
-        }
-        // If emit throws, the scope cancels all nodes.
-        channel.consumeEach { (event, processed, nodeFailure) ->
-          try {
-            emit(event)
-          } catch (e: CancellationException) {
-            throw e
-          } catch (e: Exception) {
-            // A cancelled node cannot record its failure, so attach the failure here.
-            if (nodeFailure != null) e.addSuppressed(nodeFailure)
-            // The queue can also contain other error events, so attach their failures.
-            while (true) {
-              val queued = channel.tryReceive().getOrNull() ?: break
-              queued.nodeFailure?.let { e.addSuppressed(it) }
-            }
-            throw e
-          }
-          processed?.complete(Unit)
-        }
-        failureDeferred.await()
-      }
+      val failure =
+        withCommittedEventSink({ emit(it) }) { sink -> runRootLoop(node, context, sink) }
       if (failure != null) throw failure
     }
 
@@ -607,16 +621,6 @@ private constructor(
       }
   }
 }
-
-/**
- * An event on its way to the root collector; [processed] is null for a partial event, and
- * [nodeFailure] is set when [event] is the error event of a node that failed with it.
- */
-private data class QueuedEvent(
-  val event: Event,
-  val processed: CompletableDeferred<Unit>?,
-  val nodeFailure: Exception?,
-)
 
 /**
  * A final content event whose content *is* the node's output, so no separate output event follows.

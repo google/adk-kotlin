@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ReadonlyContext
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.AuthConfig
@@ -44,6 +45,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.node
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -618,6 +620,25 @@ class RequestCredentialProcessorTest {
       listOf(FunctionResponse(name = TOOL_NAME, id = "call-1", response = mapOf("status" to "ok"))),
       event.functionResponses(),
     )
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun process_rerunToolRunsNode_emitsChildEventsBeforeResponse() = runBlocking {
+    val child = node<Any?, String>("child") { _, _ -> "child_out" }
+    val tool =
+      DummyTool(TOOL_NAME) { toolContext, _ ->
+        mapOf("result" to toolContext.runNode(child, runId = "run_1"))
+      }
+    val context = newContext(tool)
+    context.session.events.addAll(credentialRequestEvents())
+    context.session.events.add(credentialResponse(TOKENS))
+
+    context.process()
+
+    assertEquals(listOf("child@run_1", null), emitted.map { it.nodeInfo?.path })
+    assertEquals("child_out", emitted[0].output)
+    assertEquals(mapOf("result" to "child_out"), emitted[1].functionResponses().single().response)
   }
 
   @Test

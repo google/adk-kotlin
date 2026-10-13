@@ -17,6 +17,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
@@ -34,6 +35,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.node
 import kotlin.test.assertEquals
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
@@ -396,6 +398,44 @@ class RequestConfirmationProcessorTest {
     assertEquals(toolName, response.name)
     assertEquals(originalCallId, response.id)
     assertEquals(mapOf("status" to "executed"), response.response)
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun process_confirmedToolRunsNode_emitsChildEventsBeforeResponse() = runBlocking {
+    val toolName = "risky_tool"
+    val child = node<Any?, String>("child") { _, _ -> "child_out" }
+    val (session, context) =
+      newConfirmationContext(
+        tools =
+          listOf(
+            DummyTool(toolName) { toolContext, _ ->
+              mapOf("result" to toolContext.runNode(child, runId = "run_1"))
+            }
+          )
+      )
+    val originalCallId = "orig_1"
+    session.events.addAll(originalCallEvents(context.invocationId, toolName, originalCallId))
+    session.events.add(
+      agentEvent(
+        context.invocationId,
+        synthConfirmationCallPart(
+          synthId = "synth_1",
+          originalToolName = toolName,
+          originalCallId = originalCallId,
+        ),
+      )
+    )
+    session.events.add(approvalEvent(context.invocationId, synthId = "synth_1"))
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(listOf("child@run_1", null), emittedEvents.map { it.nodeInfo?.path })
+    assertEquals("child_out", emittedEvents[0].output)
+    assertEquals(
+      mapOf("result" to "child_out"),
+      emittedEvents[1].functionResponses().single().response,
+    )
   }
 
   @Test

@@ -97,10 +97,11 @@ class ParallelAgent(
     // merged stream still takes precedence via the check below.
     mergeAwaitingCollector(flows)
       .transformWhile { event ->
-        if (context.shouldPauseInvocation(event)) {
+        if (event.nodeInfo == null && context.shouldPauseInvocation(event)) {
           pauseInvocation = true
         }
-        val escalate = event.actions.escalate && event.author in subAgentNames
+        val escalate =
+          event.nodeInfo == null && event.actions.escalate && event.author in subAgentNames
         if (escalate) {
           escalated = true
         }

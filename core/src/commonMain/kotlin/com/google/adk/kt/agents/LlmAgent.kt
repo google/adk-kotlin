@@ -762,6 +762,11 @@ class LlmAgent(
     var shouldPause = false
     var transferred = false
     executeTurns(context).collect { event ->
+      // Child-node events from a tool's runNode are not this agent's own output or transfer.
+      if (event.nodeInfo != null) {
+        emit(event)
+        return@collect
+      }
       maybeSaveOutputToState(event, context)
       emit(event)
       if (context.shouldPauseInvocation(event)) {
@@ -780,7 +785,7 @@ class LlmAgent(
 
     if (context.isResumable && context.agent == this@LlmAgent) {
       val events = context.getEvents(currentInvocation = true, currentBranch = true)
-      if (events.takeLast(2).any { context.shouldPauseInvocation(it) }) {
+      if (events.takeLast(2).any { it.nodeInfo == null && context.shouldPauseInvocation(it) }) {
         return@flow
       }
       context.setAgentState(name, endOfAgent = true)
@@ -810,7 +815,7 @@ class LlmAgent(
       LlmAgentTurn(this@LlmAgent, context, systemBeforeTurnProcessors, systemAfterTurnProcessors)
         .execute()
         .collect { event ->
-          lastEvent = event
+          if (event.nodeInfo == null) lastEvent = event
           emit(event)
         }
       // Enforce the per-agent step cap. Checked after running the step so that maxSteps == N runs
@@ -872,6 +877,7 @@ class LlmAgent(
    */
   @OptIn(FrameworkInternalApi::class)
   private fun maybeSaveOutputToState(event: Event, context: InvocationContext) {
+    if (event.nodeInfo != null) return
     if (event.author != name) {
       logger.debug { "Skipping output save for agent $name: event authored by ${event.author}" }
       return

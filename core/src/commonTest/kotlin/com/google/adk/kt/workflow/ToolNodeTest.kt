@@ -487,6 +487,25 @@ class ToolNodeTest {
   }
 
   @Test
+  fun run_toolRunsNode_childEventsAreSentBeforeTheToolOutput() {
+    // Arrange
+    val tool =
+      DummyTool(name = "run_child") { context, _ ->
+        "tool:${context.runNode(Emitter("child", "C"), runId = "run_1")}"
+      }
+
+    // Act
+    val events = runToolAfter(null, tool.asNode())
+
+    // Assert: the child's output stays its own, so the tool node outputs the tool's result.
+    val childIndex = events.indexOfFirst { it.nodeInfo?.path == "child@run_1" }
+    val toolIndex = events.indexOfFirst { it.nodeInfo?.path == "wf@1/run_child@1" }
+    assertTrue(childIndex in 0..<toolIndex)
+    assertEquals("C", events[childIndex].output)
+    assertEquals("tool:C", events[toolIndex].output)
+  }
+
+  @Test
   fun run_agentTool_runsTheAgentOnTheRequestAndOutputsItsReply() {
     // Arrange
     var modelInput: String? = null
