@@ -18,6 +18,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
@@ -137,7 +138,7 @@ class AgentTransferProcessorTest {
 
   @OptIn(ExperimentalLiveApi::class)
   @Test
-  fun processRequest_onALiveRun_offersNoTransfer() = runBlocking {
+  fun processRequest_onALiveRun_offersTransfer() = runBlocking {
     val context =
       testInvocationContext(
           agent =
@@ -153,8 +154,67 @@ class AgentTransferProcessorTest {
 
     val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
 
-    assertNull(processedRequest.config.systemInstruction)
-    assertTrue(processedRequest.config.tools.isNullOrEmpty())
+    assertNotNull(processedRequest.config.systemInstruction)
+    assertTrue(
+      processedRequest.config.tools.orEmpty().any {
+        it.functionDeclarations.orEmpty().any { fd -> fd.name == TRANSFER_TO_AGENT_TOOL_NAME }
+      }
+    )
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun processRequest_onALiveRun_doesNotOfferAWorkflowAgent() = runBlocking {
+    // A live run offers only a live-capable sub-agent, never a SequentialAgent.
+    val context =
+      testInvocationContext(
+          agent =
+            LlmAgent(
+              name = "root",
+              description = "Root agent",
+              model = DummyModel("root"),
+              subAgents =
+                listOf(
+                  LlmAgent(name = "live_sub", description = "Live sub", model = DummyModel("live")),
+                  SequentialAgent(
+                    name = "workflow",
+                    subAgents =
+                      listOf(LlmAgent(name = "step", description = "s", model = DummyModel("step"))),
+                  ),
+                ),
+            )
+        )
+        .apply { frameworkData.liveRequestQueue = LiveRequestQueue() }
+
+    val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
+
+    val instructions =
+      processedRequest.config.systemInstruction?.parts.orEmpty().joinToString { it.text.orEmpty() }
+    assertTrue("live_sub" in instructions, "the live target should be offered")
+    assertTrue("workflow" !in instructions, "a workflow agent must not be offered on a live run")
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun processRequest_onALiveRun_doesNotOfferAWorkflowParent() = runBlocking {
+    // A workflow parent cannot run live, so instructions omit it even when a sibling is offered.
+    val worker = LlmAgent(name = "worker", description = "Worker", model = DummyModel("worker"))
+    val sibling = LlmAgent(name = "sibling", description = "Sibling", model = DummyModel("sibling"))
+    val unused = SequentialAgent(name = "workflow", subAgents = listOf(worker, sibling))
+    val context =
+      testInvocationContext(agent = worker).apply {
+        frameworkData.liveRequestQueue = LiveRequestQueue()
+      }
+
+    val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
+
+    val instructions =
+      processedRequest.config.systemInstruction?.parts.orEmpty().joinToString { it.text.orEmpty() }
+    assertTrue("sibling" in instructions, "the live sibling should be offered")
+    assertTrue(
+      "transfer to your parent agent" !in instructions,
+      "a workflow parent must not be offered on a live run",
+    )
   }
 
   @Test

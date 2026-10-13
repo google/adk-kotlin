@@ -51,6 +51,7 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.Node
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.jvm.JvmSynthetic
 import kotlin.jvm.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -273,6 +274,16 @@ data class InvocationContext(
    */
   internal fun forAgent(childAgent: BaseAgent): InvocationContext =
     this.copy(agent = childAgent, node = null)
+
+  /**
+   * Returns a context for [childAgent] taking over a live conversation from this one.
+   *
+   * The session and [liveRequestQueue] carry over, but the run config's resumption handle does not:
+   * it names this agent's live session, and the child would resume into it. ADK Python clears it on
+   * transfer too.
+   */
+  internal fun forLiveChild(childAgent: BaseAgent): InvocationContext =
+    forAgent(childAgent).copy(runConfig = runConfig?.forNewLiveSession())
 
   /**
    * Creates a new InvocationContext for a child agent, derived from this context. Appends the given
@@ -916,6 +927,17 @@ data class ContextFrameworkData(
   @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
 
   /**
+   * Live audio the caller has sent since the last flush.
+   *
+   * Filled only through [AudioCacheManager], when [RunConfig.saveLiveBlob] is set. It lives on the
+   * context rather than in the manager, so a live run that transfers to a sub-agent keeps one
+   * recording instead of starting a second, as in ADK Python.
+   */
+  internal val inputRealtimeCache: RealtimeCache = RealtimeCache()
+  /** The audio the model has spoken since the last flush. See [inputRealtimeCache]. */
+  internal val outputRealtimeCache: RealtimeCache = RealtimeCache()
+
+  /**
    * Serializes a live run's appends to [InvocationContext.session] (contexts made with
    * [InvocationContext.copy] share this lock). The turn and its caller both append to that same
    * object under it, because a session service can reject overlapping appends. Never emit while
@@ -923,6 +945,16 @@ data class ContextFrameworkData(
    */
   internal val sessionAppendLock = Mutex()
 }
+
+/**
+ * Returns a copy of this config for a fresh live session, with the resumption handle cleared and
+ * the rest (including `transparent`) kept, as ADK Python's `run_config_for_new_live_session` does.
+ *
+ * `@JvmSynthetic` hides the top-level internal function from Java callers.
+ */
+@JvmSynthetic
+internal fun RunConfig.forNewLiveSession(): RunConfig =
+  copy(sessionResumption = sessionResumption?.copy(handle = null))
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

@@ -37,5 +37,11 @@ kotlin {
         implementation(libs.kotlinx.coroutines.core)
       }
     }
+      getByName("jvmTest") {
+        dependencies {
+          implementation(kotlin("test"))
+          implementation(libs.google.truth)
+          }
+      }
   }
 }

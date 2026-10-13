@@ -19,11 +19,14 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.AfterModelCallback
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
@@ -36,23 +39,30 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.telemetry.Telemetry
+import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.TRANSFER_TO_AGENT_RESPONSE_PART
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.simplifyEvents
+import com.google.adk.kt.testing.storedBytes
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
+import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.InteractionStatus
+import com.google.adk.kt.types.LiveServerGoAway
 import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -62,29 +72,40 @@ import com.google.adk.kt.types.TurnCompleteReason
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceActivityType
+import com.google.genai.kotlin.GenAiApiException
+import kotlin.random.Random
+import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class LlmAgentTurnTest {
@@ -492,8 +513,11 @@ class LlmAgentTurnTest {
         )
       )
     val agent = liveAgent(connection)
+    // The stored handle makes a clean close reconnect now, so the caller closes to end the run.
+    val queue = LiveRequestQueue()
+    queue.close()
 
-    val events = agent.runLive(liveContextFor(agent)).toList()
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
 
     assertEquals(listOf(activity), events.mapNotNull { it.voiceActivity })
     assertEquals(listOf(update), events.mapNotNull { it.liveSessionResumptionUpdate })
@@ -548,9 +572,14 @@ class LlmAgentTurnTest {
     val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
     val agent = liveAgent(connection)
     val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+    // The caller handle makes a clean close reconnect now, so the caller closes to end the run.
+    val queue = LiveRequestQueue()
+    queue.close()
 
     agent
-      .runLive(liveContextFor(agent, session = sessionWithEarlierMessage(), runConfig = runConfig))
+      .runLive(
+        liveContextFor(agent, queue, session = sessionWithEarlierMessage(), runConfig = runConfig)
+      )
       .toList()
 
     assertEquals(0, connection.sendHistoryCalls)
@@ -564,6 +593,130 @@ class LlmAgentTurnTest {
     agent.runLive(liveContextFor(agent)).toList()
 
     assertEquals(0, connection.sendHistoryCalls)
+  }
+
+  @Test
+  fun runLive_seedingHistory_recordsASendDataSpan() = runBlocking {
+    val tracer = DummyTracer()
+    Telemetry.setTracerForTest(tracer)
+    TelemetryConfig.captureMessageContent = false
+    try {
+      val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+      val agent = liveAgent(connection)
+      val context = liveContextFor(agent, session = sessionWithEarlierMessage())
+
+      agent.runLive(context).toList()
+
+      val span = tracer.recordedSpans.single { it.name == "send_data" }
+      assertEquals(
+        context.invocationId,
+        span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_INVOCATION_ID],
+      )
+      val eventId = span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID]
+      assertNotNull(eventId)
+      assertNotEquals(context.invocationId, eventId)
+      // Content capture is off, so the span carries the placeholder instead of the history.
+      assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_DATA])
+    } finally {
+      Telemetry.resetTracer()
+    }
+  }
+
+  @Test
+  fun runLive_emptyHistory_recordsNoSendDataSpan() = runBlocking {
+    val tracer = DummyTracer()
+    Telemetry.setTracerForTest(tracer)
+    try {
+      val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+      val agent = liveAgent(connection)
+
+      agent.runLive(liveContextFor(agent)).toList()
+
+      assertTrue(tracer.recordedSpans.none { it.name == "send_data" })
+    } finally {
+      Telemetry.resetTracer()
+    }
+  }
+
+  @Test
+  fun runLive_twoRuns_recordDistinctSendDataEventIds() = runBlocking {
+    val tracer = DummyTracer()
+    Telemetry.setTracerForTest(tracer)
+    try {
+      repeat(2) {
+        val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+        val agent = liveAgent(connection)
+        agent.runLive(liveContextFor(agent, session = sessionWithEarlierMessage())).toList()
+      }
+
+      val eventIds =
+        tracer.recordedSpans
+          .filter { it.name == "send_data" }
+          .map { it.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] }
+      assertEquals(2, eventIds.toSet().size)
+    } finally {
+      Telemetry.resetTracer()
+    }
+  }
+
+  @Test
+  fun runLive_sendDataSpan_summarizesInlineMediaAndLeavesOutThoughtSignatures() = runBlocking {
+    val tracer = DummyTracer()
+    Telemetry.setTracerForTest(tracer)
+    TelemetryConfig.captureMessageContent = true
+    try {
+      val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+      val agent = liveAgent(connection)
+      val history =
+        userMessage(
+          Part(inlineData = Blob(mimeType = "audio/pcm", data = ByteArray(64))),
+          Part(inlineData = Blob()),
+          Part(inlineData = Blob(mimeType = "", data = ByteArray(8))),
+          Part(text = "signed", thoughtSignature = ByteArray(32)),
+        )
+
+      agent.runLive(liveContextFor(agent, session = sessionWithEarlierMessage(history))).toList()
+
+      val data =
+        tracer.recordedSpans
+          .single { it.name == "send_data" }
+          .attributes[TelemetryAttributes.GCP_VERTEX_AGENT_DATA]
+          .toString()
+      assertTrue("<inline_data: audio/pcm, 64 bytes>" in data)
+      assertTrue("<inline_data: unknown, 0 bytes>" in data)
+      assertTrue("<inline_data: unknown, 8 bytes>" in data)
+      assertTrue("inlineData" !in data)
+      assertTrue("signed" in data)
+      assertTrue("thoughtSignature" !in data)
+    } finally {
+      TelemetryConfig.captureMessageContent = false
+      Telemetry.resetTracer()
+    }
+  }
+
+  @Test
+  fun runLive_callersResumptionHandle_recordsNoSendDataSpan() = runBlocking {
+    // A resumed session's history is already on the server, so nothing is seeded and no span opens.
+    val tracer = DummyTracer()
+    Telemetry.setTracerForTest(tracer)
+    try {
+      val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+      val agent = liveAgent(connection)
+      val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+      // The caller handle makes a clean close reconnect now, so the caller closes to end the run.
+      val queue = LiveRequestQueue()
+      queue.close()
+
+      agent
+        .runLive(
+          liveContextFor(agent, queue, session = sessionWithEarlierMessage(), runConfig = runConfig)
+        )
+        .toList()
+
+      assertTrue(tracer.recordedSpans.none { it.name == "send_data" })
+    } finally {
+      Telemetry.resetTracer()
+    }
   }
 
   @Test
@@ -968,7 +1121,10 @@ class LlmAgentTurnTest {
 
     val stored = checkNotNull(sessionService.getSession(key))
     assertEquals("v", stored.state["k"])
-    assertEquals(agent.name, stored.events.single().author)
+    // The session holds the user turn plus the callback's state event.
+    assertEquals(2, stored.events.size)
+    assertTrue(stored.events.any { it.author == Role.USER })
+    assertTrue(stored.events.any { it.author == agent.name })
     assertEquals(listOf("hi"), connection.sentTexts())
   }
 
@@ -1220,6 +1376,41 @@ class LlmAgentTurnTest {
   }
 
   @Test
+  fun runLive_repeatedGoAwaysWithNoHandle_doNotNestFlows() = runTest {
+    val queue = LiveRequestQueue()
+    // Each session speaks once, then a handle-less go-away, which reopens a fresh session.
+    fun goAwayTurn() =
+      RecordingLiveConnection(
+        listOf(
+          LlmResponse(content = modelMessage("x"), turnComplete = true),
+          LlmResponse(goAway = LiveServerGoAway()),
+        )
+      )
+    val model =
+      RecordingLiveModel(
+        goAwayTurn(),
+        goAwayTurn(),
+        goAwayTurn(),
+        RecordingLiveConnection(untilClosed = true),
+      ) { connects ->
+        if (connects == 4) queue.close()
+      }
+    val agent = LlmAgent(name = "LiveAgent", model = model)
+    val depths = mutableListOf<Int>()
+
+    agent.runLive(liveContextFor(agent, queue)).collect { event ->
+      if (event.content?.parts?.firstOrNull()?.text == "x") {
+        depths += Throwable().stackTraceToString().lines().size
+      }
+    }
+
+    // A nested restart would put more frames between each later session and this collector.
+    assertEquals(4, model.connectCalls)
+    assertEquals(3, depths.size)
+    assertEquals(1, depths.distinct().size)
+  }
+
+  @Test
   fun runLive_restartedTurnEndingTheInvocation_skipsAfterAgentCallbacks() = runBlocking {
     val queue = LiveRequestQueue()
     // The input arrives only after the first session ends, so only the restarted turn screens it.
@@ -1404,14 +1595,17 @@ class LlmAgentTurnTest {
     }
 
   @Test
-  fun runLive_customToolTransfer_doesNotRunTheTargetTurnBased() = runBlocking {
+  fun runLive_customToolTransfer_doesNotRunTheTargetTurnBased() = runTest {
     var childModelCalls = 0
+    var childConnects = 0
     val childModel =
       object : Model {
         override val name = "child-model"
 
-        override suspend fun connect(request: LlmRequest): LiveConnection =
-          RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+        override suspend fun connect(request: LlmRequest): LiveConnection {
+          childConnects++
+          return RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+        }
 
         override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
           flow {
@@ -1419,7 +1613,7 @@ class LlmAgentTurnTest {
           }
       }
     val child = LlmAgent(name = "child", description = "The transfer target.", model = childModel)
-    // A live run isn't offered transfer_to_agent, but a custom tool can still request a transfer.
+    // A custom tool can also request a transfer without calling transfer_to_agent.
     val handOff =
       DummyTool("hand_off") { toolContext, _ ->
         toolContext.actions.transferToAgent = "child"
@@ -1451,6 +1645,7 @@ class LlmAgentTurnTest {
 
     // Running the target turn-based would call its model with the parent's live queue in hand.
     assertEquals(0, childModelCalls)
+    assertEquals(1, childConnects)
   }
 
   @Test
@@ -1542,6 +1737,159 @@ class LlmAgentTurnTest {
   }
 
   @Test
+  fun runLive_dropAfterTheUserTurnIsStored_doesNotStoreItTwice() = runTest {
+    val committed = CompletableDeferred<Unit>()
+    val sessionService = CommitThenYieldSessionService({ it.author == Role.USER }, committed)
+    val key = SessionKey("app", "user", "replay-user")
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hi"))
+    val firstSent = mutableListOf<String>()
+    val secondSent = mutableListOf<String>()
+    val first =
+      ScriptedConn("c0") {
+        committed.await()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    first.onSendContent = { c -> firstSent += c.parts.mapNotNull { it.text } }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    second.onSendContent = { c -> secondSent += c.parts.mapNotNull { it.text } }
+    val agent = LlmAgent(name = "live_agent", model = RecordingLiveModel(first, second))
+    val context =
+      liveContextFor(
+        agent,
+        queue,
+        session = sessionService.createSession(key),
+        sessionService = sessionService,
+        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+      )
+
+    agent.runLive(context).toList()
+
+    // The cancelled sender never writes to c0; the resumed c1 receives the replayed turn.
+    assertEquals(emptyList<String>(), firstSent)
+    assertEquals(listOf("hi"), secondSent)
+    val stored = checkNotNull(sessionService.getSession(key))
+    assertEquals(1, stored.events.count { it.author == Role.USER })
+  }
+
+  @Test
+  fun runLive_dropAfterACallbacksStateIsStored_doesNotStoreItTwice() = runTest {
+    val committed = CompletableDeferred<Unit>()
+    val sessionService =
+      CommitThenYieldSessionService({ it.actions.stateDelta["k"] == "v" }, committed)
+    val key = SessionKey("app", "user", "replay-delta")
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hi"))
+    var callbackRuns = 0
+    val countingCallback = BeforeModelCallback { callbackContext, request ->
+      callbackRuns++
+      callbackContext.updateState("k", "v")
+      CallbackChoice.Continue(request)
+    }
+    val firstSent = mutableListOf<String>()
+    val secondSent = mutableListOf<String>()
+    val first =
+      ScriptedConn("c0") {
+        committed.await()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    first.onSendContent = { c -> firstSent += c.parts.mapNotNull { it.text } }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    second.onSendContent = { c -> secondSent += c.parts.mapNotNull { it.text } }
+    val agent =
+      LlmAgent(
+        name = "live_agent",
+        model = RecordingLiveModel(first, second),
+        beforeModelCallbacks = listOf(countingCallback),
+      )
+    val context =
+      liveContextFor(
+        agent,
+        queue,
+        session = sessionService.createSession(key),
+        sessionService = sessionService,
+        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+      )
+
+    agent.runLive(context).toList()
+
+    // The replay reuses the screened content, so the callback runs once and c1 receives the turn.
+    assertEquals(emptyList<String>(), firstSent)
+    assertEquals(listOf("hi"), secondSent)
+    assertEquals(1, callbackRuns)
+    val stored = checkNotNull(sessionService.getSession(key))
+    assertEquals(1, stored.events.count { it.actions.stateDelta["k"] == "v" })
+  }
+
+  @Test
+  fun runLive_sessionAppendThatTimesOut_failsTheRunWithAClearError() =
+    runTest(timeout = 20.seconds) {
+      val inner = InMemorySessionService()
+      val sessionService =
+        object : SessionService by inner {
+          override suspend fun appendEvent(session: Session, event: Event): Event =
+            awaitCancellation()
+        }
+      val key = SessionKey("app", "user", "hung-append")
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("hi"))
+      queue.close()
+      val connection = ScriptedConn("c0") { it.closed.await() }
+      val agent = LlmAgent(name = "live_agent", model = RecordingLiveModel(connection))
+      val context =
+        liveContextFor(
+          agent,
+          queue,
+          session = inner.createSession(key),
+          sessionService = sessionService,
+        )
+
+      // A timed-out append leaves the session state unknown, so the run fails rather than continue.
+      val failure = assertFailsWith<IllegalStateException> { agent.runLive(context).toList() }
+
+      assertTrue(testScheduler.currentTime >= 10_000, "did not wait the append timeout first")
+      assertTrue(
+        failure.message?.contains("did not finish") == true,
+        "the failure did not explain itself: ${failure.message}",
+      )
+      assertTrue(failure.message?.contains("hi") != true, "the error echoed the payload")
+    }
+
+  @Test
+  fun runLive_appendBlockedByAHeldLock_failsTheRunInsteadOfHanging() =
+    runTest(timeout = 20.seconds) {
+      val inner = InMemorySessionService()
+      val key = SessionKey("app", "user", "held-lock")
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("hi"))
+      queue.close()
+      val connection = ScriptedConn("c0") { it.closed.await() }
+      val agent = LlmAgent(name = "live_agent", model = RecordingLiveModel(connection))
+      val context =
+        liveContextFor(agent, queue, session = inner.createSession(key), sessionService = inner)
+      // Another appender holds the lock and never releases it.
+      launch { context.sessionAppendLock.lock() }.join()
+
+      val failure = assertFailsWith<IllegalStateException> { agent.runLive(context).toList() }
+
+      assertTrue(testScheduler.currentTime >= 10_000, "did not bound the wait for the held lock")
+      assertTrue(
+        failure.message?.contains("waited over") == true,
+        "the failure did not explain itself: ${failure.message}",
+      )
+    }
+
+  @Test
   fun runLive_stateWrites_addNoEventToTheStream() = runBlocking {
     val agent =
       liveAgent(
@@ -1570,7 +1918,7 @@ class LlmAgentTurnTest {
   }
 
   @Test
-  fun runLive_agentWithSubAgents_isNotOfferedTransferToAgent() = runBlocking {
+  fun runLive_agentWithSubAgents_isOfferedTransferToAgent() = runBlocking {
     val model = RecordingLiveModel(RecordingLiveConnection(untilClosed = true))
     val agent =
       LlmAgent(
@@ -1588,7 +1936,7 @@ class LlmAgentTurnTest {
       model.connectedRequests.single().config.tools.orEmpty().flatMap {
         it.functionDeclarations.orEmpty()
       }
-    assertTrue(offered.none { it.name == TRANSFER_TO_AGENT_TOOL_NAME })
+    assertTrue(offered.any { it.name == TRANSFER_TO_AGENT_TOOL_NAME })
   }
 
   @Test
@@ -1714,8 +2062,7 @@ class LlmAgentTurnTest {
     assertNotSame(modelEvents[1].actions, modelEvents[2].actions)
     assertNotSame(modelEvents[0].actions, modelEvents[2].actions)
 
-    // The final-response event writes outputKey into its own snapshot; the earlier partials'
-    // snapshots are unaffected, proving the late write does not leak backward.
+    // The final-response event writes outputKey into its own snapshot, not the earlier partials'.
     assertEquals("ab", modelEvents[2].actions.stateDelta["output"])
     assertNull(modelEvents[0].actions.stateDelta["output"])
     assertNull(modelEvents[1].actions.stateDelta["output"])
@@ -1807,6 +2154,50 @@ class LlmAgentTurnTest {
     assertEquals(events[2].id, events[3].id)
     assertNotEquals(events[1].id, events[3].id)
   }
+
+  @Test
+  fun runLive_withSaveLiveBlob_doesNotRecordTheInterruptedChunk() = runBlocking {
+    val artifacts = InMemoryArtifactService()
+    val connection =
+      RecordingLiveConnection(
+        listOf(
+          LlmResponse(content = modelAudio(1, 2)),
+          LlmResponse(content = modelAudio(3), interrupted = true),
+          LlmResponse(turnComplete = true),
+        )
+      )
+    val agent = liveAgent(connection)
+    val context =
+      liveContextFor(agent, runConfig = RunConfig(saveLiveBlob = true), artifactService = artifacts)
+
+    val events = agent.runLive(context).toList()
+
+    val recording = events.single { it.content?.parts?.firstOrNull()?.fileData != null }
+    assertContentEquals(byteArrayOf(1, 2), artifacts.storedBytes(recording, context.session.key))
+  }
+
+  @Test
+  fun runLive_withSaveLiveBlobButNoArtifactService_keepsNoAudio() = runBlocking {
+    val agent = liveAgent(RecordingLiveConnection(listOf(LlmResponse(content = modelAudio(1, 2)))))
+    val queue = LiveRequestQueue()
+    queue.sendRealtime(
+      RealtimeInput.Audio(Blob(mimeType = "audio/pcm;rate=16000", data = byteArrayOf(9)))
+    )
+    queue.close()
+    val context = liveContextFor(agent, queue, runConfig = RunConfig(saveLiveBlob = true))
+
+    val unused = agent.runLive(context).toList()
+
+    // With nowhere to save a recording, neither side's audio is held for one.
+    assertEquals(0, context.frameworkData.inputRealtimeCache.take().size)
+    assertEquals(0, context.frameworkData.outputRealtimeCache.take().size)
+  }
+
+  private fun modelAudio(vararg bytes: Byte) =
+    Content(
+      role = Role.MODEL,
+      parts = listOf(Part(inlineData = Blob(mimeType = "audio/pcm;rate=24000", data = bytes))),
+    )
 
   private fun liveAgent(
     connection: LiveConnection,
@@ -1907,13 +2298,15 @@ class LlmAgentTurnTest {
       )
     )
 
-  private suspend fun sessionWithEarlierMessage(): Session {
+  private suspend fun sessionWithEarlierMessage(
+    content: Content = userMessage("earlier")
+  ): Session {
     val sessionService = InMemorySessionService()
     val key = SessionKey("app", "user", "live-session")
     val unused =
       sessionService.appendEvent(
         sessionService.createSession(key),
-        Event(author = Role.USER, content = userMessage("earlier")),
+        Event(author = Role.USER, content = content),
       )
     return checkNotNull(sessionService.getSession(key))
   }
@@ -1924,6 +2317,7 @@ class LlmAgentTurnTest {
     session: Session? = null,
     sessionService: SessionService? = null,
     runConfig: RunConfig? = null,
+    artifactService: ArtifactService? = null,
   ): InvocationContext =
     InvocationContext(
         agent = agent,
@@ -1932,8 +2326,27 @@ class LlmAgentTurnTest {
             ?: InMemorySessionService().createSession(SessionKey("app", "user", "live-session")),
         runConfig = runConfig,
         sessionService = sessionService,
+        artifactService = artifactService,
       )
       .apply { frameworkData.liveRequestQueue = queue }
+
+  /**
+   * Commits an append, then suspends, so a drop can cancel the caller after the commit is stored.
+   */
+  private class CommitThenYieldSessionService(
+    private val gateOn: (Event) -> Boolean,
+    private val committed: CompletableDeferred<Unit>,
+    private val inner: InMemorySessionService = InMemorySessionService(),
+  ) : SessionService by inner {
+    override suspend fun appendEvent(session: Session, event: Event): Event {
+      val stored = inner.appendEvent(session, event)
+      if (gateOn(event)) {
+        committed.complete(Unit)
+        yield()
+      }
+      return stored
+    }
+  }
 
   /**
    * Fails an append that starts while another is still running, as `RoomSessionService` rejects one
@@ -2046,7 +2459,2116 @@ class LlmAgentTurnTest {
     override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {}
   }
 
+  @Test
+  fun runLive_callersResumptionHandle_resumesTheFirstConnectionFromIt() = runBlocking {
+    val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+    val model = RecordingLiveModel(connection)
+    val agent = LlmAgent(name = "live_agent", description = "A live agent.", model = model)
+    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+    // The caller handle makes a clean close reconnect now, so the caller closes to end the run.
+    val queue = LiveRequestQueue()
+    queue.close()
+
+    agent.runLive(liveContextFor(agent, queue, runConfig = runConfig)).toList()
+
+    assertEquals(
+      "h-1",
+      model.connectedRequests.single().liveConnectConfig.sessionResumption?.handle,
+    )
+  }
+
+  /** Plays one turn, then never answers a close, like a peer that went silent. */
+  private class NeverClosingConnection(private val script: List<LlmResponse>) :
+    SingleCollectorLiveConnection() {
+    private var served = false
+
+    override fun responses(): Flow<LlmResponse> = flow {
+      if (served) return@flow
+      served = true
+      for (response in script) emit(response)
+    }
+
+    override suspend fun sendHistory(history: List<Content>) {}
+
+    override suspend fun sendContent(content: Content, partial: Boolean) {}
+
+    override suspend fun sendRealtime(input: RealtimeInput) {}
+
+    override suspend fun closeSession(): Unit = awaitCancellation()
+  }
+
+  @Test
+  fun runLive_transferWhileTheOldConnectionNeverCloses_stillHandsOver() =
+    runTest(timeout = 30.seconds) {
+      // runTest: virtual time skips the handover pause and the 10 s teardown timeout.
+      val childModel =
+        RecordingLiveModel(RecordingLiveConnection(listOf(LlmResponse(turnComplete = true))))
+      val child = LlmAgent(name = "child", description = "The transfer target.", model = childModel)
+      val silentParent =
+        NeverClosingConnection(listOf(modelTransferToAgentResponse("child", id = "t1")))
+      val root =
+        LlmAgent(
+          name = "root",
+          description = "Transfers mid-conversation.",
+          model = RecordingLiveModel(silentParent),
+          subAgents = listOf(child),
+        )
+
+      root.runLive(liveContextFor(root)).toList()
+
+      assertEquals(1, childModel.connectCalls)
+    }
+
+  /** Plays its turn once a realtime write has started, and takes 3 s over each realtime write. */
+  private class SlowRealtimeConnection(private val turn: List<LlmResponse>) :
+    SingleCollectorLiveConnection() {
+    val sentContent = mutableListOf<Content>()
+    private val writing = CompletableDeferred<Unit>()
+    private var served = false
+
+    override fun responses(): Flow<LlmResponse> = flow {
+      if (served) return@flow
+      served = true
+      writing.await()
+      for (response in turn) emit(response)
+    }
+
+    override suspend fun sendHistory(history: List<Content>) {}
+
+    override suspend fun sendContent(content: Content, partial: Boolean) {
+      sentContent += content
+    }
+
+    override suspend fun sendRealtime(input: RealtimeInput) {
+      writing.complete(Unit)
+      delay(3.seconds)
+    }
+
+    override suspend fun closeSession() {}
+  }
+
+  @Test
+  fun runLive_transferAnswerQueuedBehindASlowWrite_reachesTheParentNotTheChild() =
+    runTest(timeout = 60.seconds) {
+      // runTest: virtual time runs the 3 s write, the handover's wait and pause, and the teardowns.
+      val queue = LiveRequestQueue()
+      // Open until the queue closes, so an answer left in the queue would be written to it.
+      val childConnection =
+        RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)), untilClosed = true)
+      val child =
+        LlmAgent(
+          name = "child",
+          description = "The transfer target.",
+          model = RecordingLiveModel(childConnection, onConnect = { queue.close() }),
+        )
+      val parent = SlowRealtimeConnection(listOf(modelTransferToAgentResponse("child", id = "t1")))
+      val root =
+        LlmAgent(
+          name = "root",
+          description = "Transfers mid-conversation.",
+          model = RecordingLiveModel(parent),
+          subAgents = listOf(child),
+        )
+      // Written first, so the answer queues behind a write that outlasts the handover pause.
+      queue.sendRealtime(
+        RealtimeInput.Audio(Blob(mimeType = "audio/pcm;rate=16000", data = ByteArray(640)))
+      )
+
+      root.runLive(liveContextFor(root, queue)).toList()
+
+      fun answers(sent: List<Content>) =
+        sent.flatMap { it.parts }.mapNotNull { it.functionResponse?.name }
+      assertEquals(
+        "transfer answers (parent to child)",
+        listOf("transfer_to_agent") to emptyList<String>(),
+        answers(parent.sentContent) to answers(childConnection.sentContent),
+      )
+    }
+
+  /**
+   * A live connection whose [script] drives what `receive()` emits or throws, for the reconnect and
+   * drop tests. [onSendContent] and [onClose] let a test interpose on a write or the teardown, and
+   * the script runs once, so a later `receive()` returns empty, which the flow reads as a close.
+   */
+  private class ScriptedConn(
+    val name: String,
+    private val script:
+      suspend kotlinx.coroutines.flow.FlowCollector<LlmResponse>.(ScriptedConn) -> Unit,
+  ) : LiveConnection {
+    val closed = CompletableDeferred<Unit>()
+    var closeCalls = 0
+    var onSendContent: suspend (Content) -> Unit = {}
+    var onSendRealtime: suspend (RealtimeInput) -> Unit = {}
+    var onClose: suspend () -> Unit = {}
+    private var served = false
+
+    override suspend fun sendHistory(history: List<Content>) {}
+
+    override suspend fun sendContent(content: Content, partial: Boolean) {
+      onSendContent(content)
+    }
+
+    override suspend fun sendRealtime(input: RealtimeInput) {
+      onSendRealtime(input)
+    }
+
+    override fun receive(): Flow<LlmResponse> = flow {
+      if (served) return@flow
+      served = true
+      script(this@ScriptedConn)
+    }
+
+    override suspend fun closeSession() {
+      closeCalls++
+      closed.complete(Unit)
+      onClose()
+    }
+  }
+
+  private fun handleUpdate(handle: String): LlmResponse =
+    LlmResponse(liveSessionResumptionUpdate = LiveServerSessionResumptionUpdate(newHandle = handle))
+
+  @Test
+  fun runLive_reconnectAfterADrop_closesEachConnectionOnce() = runTest {
+    // The close-once flag is per connection, so a reconnect's new connection is also closed once.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    val second = ScriptedConn("c1") { it.closed.await() }
+    val model = RecordingLiveModel(first, second) { connects -> if (connects == 2) queue.close() }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(2, model.connectCalls)
+    assertEquals(1, first.closeCalls)
+    assertEquals(1, second.closeCalls)
+  }
+
+  @Test
+  fun runLive_senderCancelledAtGoAwayWhileACallbackSavesState_reconnectStillAppends() = runTest {
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "cancelled-append")
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("first"))
+    var screened = false
+    // Screens "first" under NonCancellable until the sender is cancelled, then writes state once.
+    val callback = BeforeModelCallback { callbackContext, request ->
+      if (request.contents.any { c -> c.parts.any { it.text == "first" } } && !screened) {
+        screened = true
+        val job = currentCoroutineContext().job
+        withContext(NonCancellable) { withTimeout(5.seconds) { while (job.isActive) delay(10) } }
+        callbackContext.updateState("k", "v")
+      }
+      CallbackChoice.Continue(request)
+    }
+    // conn1 hands back a handle, then a go-away that cancels the sender mid-callback.
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+      }
+    // conn2 resumes, waits for the re-sent "first", takes a new "second", then ends the run.
+    val firstResent = CompletableDeferred<Unit>()
+    val secondSent = CompletableDeferred<Unit>()
+    val second =
+      ScriptedConn("c1") {
+        firstResent.await()
+        queue.sendContent(userMessage("second"))
+        secondSent.await()
+        emit(LlmResponse(content = modelMessage("hi"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    second.onSendContent = { content ->
+      when (content.parts.singleOrNull()?.text) {
+        "first" -> firstResent.complete(Unit)
+        "second" -> secondSent.complete(Unit)
+      }
+    }
+    val model = RecordingLiveModel(first, second)
+    val agent =
+      LlmAgent(name = "live_agent", model = model, beforeModelCallbacks = listOf(callback))
+    val context =
+      liveContextFor(
+        agent,
+        queue,
+        session = sessionService.createSession(key),
+        sessionService = sessionService,
+      )
+
+    agent.runLive(context).toList()
+
+    assertEquals(2, model.connectCalls)
+    val stored = checkNotNull(sessionService.getSession(key))
+    val userTexts =
+      stored.events
+        .filter { it.author == Role.USER }
+        .mapNotNull { it.content?.parts?.singleOrNull()?.text }
+    assertEquals(listOf("first", "second"), userTexts)
+  }
+
+  @Test
+  fun runLive_reconnectWhoseOpenDrops_isRetriedWithinTheBudget() = runTest {
+    // conn1 drops after seeding a handle; the 2nd open fails as a drop; the 3rd opens and ends.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    val third =
+      ScriptedConn("c2") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model =
+      RecordingLiveModel(first, third) { connects ->
+        if (connects == 2) {
+          throw IllegalStateException(
+            "The live session failed to open.",
+            GenAiApiException(1011, "ConnectionClosed", "internal error"),
+          )
+        }
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(3, model.connectCalls)
+    assertEquals(
+      listOf("h-1", "h-1"),
+      model.connectedRequests.drop(1).map { it.liveConnectConfig.sessionResumption?.handle },
+    )
+  }
+
+  @Test
+  fun runLive_firstOpenDropsWithoutAHandle_failsAtOnce() = runBlocking {
+    // With no handle to resume from, a drop while opening fails the run as any drop does.
+    val openFailure =
+      IllegalStateException(
+        "The live session failed to open.",
+        GenAiApiException(1006, "ConnectionClosed", "socket closed"),
+      )
+    val model =
+      RecordingLiveModel(ScriptedConn("unused") {}) { connects ->
+        if (connects == 1) throw openFailure
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<IllegalStateException> {
+        agent.runLive(liveContextFor(agent, LiveRequestQueue())).toList()
+      }
+
+    assertSame(openFailure, failure)
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_reconnectWhoseOpenIsRefused_failsAtOnce() = runTest {
+    // conn1 drops after seeding a handle; the 2nd open fails with a non-drop cause, so it surfaces.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    val second = ScriptedConn("c1") { it.closed.await() }
+    val model =
+      RecordingLiveModel(first, second) { connects ->
+        if (connects == 2) {
+          throw IllegalStateException(
+            "The live session failed to open.",
+            GenAiApiException(1008, "ConnectionClosed", "policy"),
+          )
+        }
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<IllegalStateException> {
+        agent.runLive(liveContextFor(agent, queue)).toList()
+      }
+
+    assertEquals("The live session failed to open.", failure.message)
+    assertEquals(2, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_everyReconnectsOpenDrops_failsAfterTheBudget() = runTest {
+    // conn1 seeds a handle then drops; every later open fails as a drop, exhausting the budget.
+    var connects = 0
+    val model =
+      object : Model {
+        override val name = "always-fails-to-open"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {}
+
+        override suspend fun connect(request: LlmRequest): LiveConnection {
+          connects++
+          if (connects == 1) {
+            return ScriptedConn("c0") {
+              emit(handleUpdate("h-1"))
+              throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+            }
+          }
+          throw IllegalStateException(
+            "The live session failed to open.",
+            GenAiApiException(1006, "ConnectionClosed", "socket closed"),
+          )
+        }
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<IllegalStateException> { agent.runLive(liveContextFor(agent)).toList() }
+
+    assertEquals("The live session failed to open.", failure.message)
+    assertEquals(MAX_LIVE_CONNECTS, connects)
+  }
+
+  @Test
+  fun runLive_policyViolationClose_isNotRetried() = runBlocking {
+    // A policy close (1008) is the server refusing us, not a drop, so the run does not reconnect.
+    val connection =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        throw GenAiApiException(1008, "ConnectionClosed", "policy violation")
+      }
+    val model = RecordingLiveModel(connection)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<GenAiApiException> { agent.runLive(liveContextFor(agent)).toList() }
+
+    assertEquals(1008, failure.code)
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_unresumableUpdate_dropSurfacesInsteadOfResumingAnOlderHandle() = runBlocking {
+    // A withdrawn handle is cleared, so the next drop has nothing to resume and surfaces itself.
+    val connection =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-old"))
+        emit(LlmResponse(turnComplete = true))
+        emit(
+          LlmResponse(
+            liveSessionResumptionUpdate =
+              LiveServerSessionResumptionUpdate(newHandle = null, resumable = false)
+          )
+        )
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    val model = RecordingLiveModel(connection)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<GenAiApiException> { agent.runLive(liveContextFor(agent)).toList() }
+
+    assertEquals(1006, failure.code)
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_cleanCloseWhileHoldingAHandle_resumesTheSession() = runTest {
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        emit(LlmResponse(content = modelMessage("hi"), turnComplete = true))
+        // receive() ends here cleanly: no drop, no go-away, caller still connected.
+      }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(content = modelMessage("resumed"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(2, model.connectCalls)
+    assertEquals("h-1", model.connectedRequests[1].liveConnectConfig.sessionResumption?.handle)
+    assertTrue(events.any { it.content?.parts?.singleOrNull()?.text == "resumed" })
+  }
+
+  @Test
+  fun runLive_dropsUntilTheBudgetRunsOut_rethrowsTheDrop() = runTest {
+    // On exhaustion the drop that caused it surfaces, not a generic IllegalStateException.
+    var connects = 0
+    val model =
+      object : Model {
+        override val name = "always-drops"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {}
+
+        override suspend fun connect(request: LlmRequest): LiveConnection {
+          connects++
+          val first = connects == 1
+          return ScriptedConn("c$connects") {
+            if (first) emit(handleUpdate("h-1"))
+            throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+          }
+        }
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<GenAiApiException> { agent.runLive(liveContextFor(agent)).toList() }
+
+    assertEquals(1006, failure.code)
+    assertEquals(MAX_LIVE_CONNECTS, connects)
+  }
+
+  @Test
+  fun runLive_dropsAroundACompletedTurn_resetTheReconnectBudget() = runTest {
+    // c5 completes a turn before it drops, resetting the budget, so all nine drops reconnect.
+    val queue = LiveRequestQueue()
+    var connects = 0
+    val model =
+      object : Model {
+        override val name = "completed-turn-resets-budget"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {}
+
+        override suspend fun connect(request: LlmRequest): LiveConnection {
+          connects++
+          return when (connects) {
+            1 ->
+              ScriptedConn("c1") {
+                emit(handleUpdate("h-1"))
+                throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+              }
+            5 ->
+              ScriptedConn("c5") {
+                emit(LlmResponse(turnComplete = true))
+                throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+              }
+            10 ->
+              ScriptedConn("c10") {
+                emit(LlmResponse(turnComplete = true))
+                queue.close()
+                it.closed.await()
+              }
+            else ->
+              ScriptedConn("c$connects") {
+                throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+              }
+          }
+        }
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    // The completed turn reset the budget, so the run finishes instead of exhausting it.
+    agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(10, connects)
+  }
+
+  @Test
+  fun runLive_cancelledWhileClosing_opensNoFurtherConnection() = runTest {
+    // A run cancelled during the uninterruptible close must not then open the child's connection.
+    var job: Job? = null
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    parentConn.onClose = {
+      job?.cancel()
+      delay(10)
+    }
+    val childModel = RecordingLiveModel(ScriptedConn("child") { it.closed.await() })
+    val child = LlmAgent(name = "child", description = "The transfer target.", model = childModel)
+    val parent =
+      LlmAgent(
+        name = "parent",
+        description = "Transfers mid-conversation.",
+        model = RecordingLiveModel(parentConn),
+        subAgents = listOf(child),
+      )
+
+    job = launch { runCatching { parent.runLive(liveContextFor(parent)).toList() } }
+    checkNotNull(job).join()
+
+    assertEquals(0, childModel.connectCalls)
+  }
+
+  @Test
+  fun runLive_collectorThrowsConnectionClosed_propagatesWithoutReconnect() = runBlocking {
+    // A ConnectionClosed thrown by the caller collecting events is theirs, not a drop to retry.
+    val connection =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        emit(LlmResponse(content = modelMessage("hi"), turnComplete = true))
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(connection)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<GenAiApiException> {
+        agent.runLive(liveContextFor(agent)).collect {
+          throw GenAiApiException(1006, "ConnectionClosed", "downstream")
+        }
+      }
+
+    assertEquals(1006, failure.code)
+    assertTrue("downstream" in failure.message.orEmpty())
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_dropAfterTheCallerClosedMidWrite_isReportedWithoutReconnecting() = runBlocking {
+    // The caller hangs up mid-send, so the direct queue check, not the sender, catches it.
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hold me"))
+    val sendStarted = CompletableDeferred<Unit>()
+    val mayDrop = CompletableDeferred<Unit>()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        mayDrop.await()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    first.onSendContent = {
+      sendStarted.complete(Unit)
+      awaitCancellation()
+    }
+    val second = ScriptedConn("c1") { it.closed.await() }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    var failure: Throwable? = null
+    val job = launch {
+      failure =
+        runCatching { agent.runLive(liveContextFor(agent, queue)).toList() }.exceptionOrNull()
+    }
+    sendStarted.await()
+    queue.close()
+    mayDrop.complete(Unit)
+    job.join()
+
+    assertEquals(1, model.connectCalls)
+    assertTrue(failure is GenAiApiException)
+  }
+
+  @Test
+  fun runLive_goAwayWithNoHandle_continuesInAFreshSession() = runTest {
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(LlmResponse(content = modelMessage("hi"), turnComplete = true))
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+      }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(content = modelMessage("fresh"), turnComplete = true))
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second, onConnect = { if (it == 2) queue.close() })
+    val agent = LlmAgent(name = "live_agent", model = model)
+    val context = liveContextFor(agent, queue, session = sessionWithEarlierMessage())
+
+    val events = agent.runLive(context).toList()
+
+    assertEquals(2, model.connectCalls)
+    // The fresh session is seeded with history and carries no resumption handle.
+    assertNull(model.connectedRequests[1].liveConnectConfig.sessionResumption?.handle)
+    assertTrue(
+      "earlier" in model.connectedRequests[1].contents.flatMap { it.parts }.mapNotNull { it.text }
+    )
+    assertTrue(events.any { it.content?.parts?.singleOrNull()?.text == "fresh" })
+  }
+
+  @Test
+  fun runLive_goAwaysWithAHandleThatNeverCompleteATurn_doNotExhaustTheBudget() = runTest {
+    // A go-away never counts against the reconnect budget, so seven in a row still reconnect.
+    goAwaysThenFinish(withHandle = true)
+  }
+
+  @Test
+  fun runLive_goAwaysWithNoHandleThatNeverCompleteATurn_doNotExhaustTheBudget() = runTest {
+    // The same on the fresh-session path: a handle-less go-away restarts and never counts either.
+    goAwaysThenFinish(withHandle = false)
+  }
+
+  private suspend fun goAwaysThenFinish(withHandle: Boolean) {
+    val queue = LiveRequestQueue()
+    var connects = 0
+    val model =
+      object : Model {
+        override val name = "goaways-then-finish"
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {}
+
+        override suspend fun connect(request: LlmRequest): LiveConnection {
+          connects++
+          return if (connects <= 7) {
+            ScriptedConn("c$connects") {
+              if (withHandle) emit(handleUpdate("h"))
+              emit(LlmResponse(goAway = LiveServerGoAway()))
+            }
+          } else {
+            ScriptedConn("c$connects") {
+              emit(LlmResponse(content = modelMessage("done"), turnComplete = true))
+              queue.close()
+              it.closed.await()
+            }
+          }
+        }
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(8, connects)
+    assertTrue(events.any { it.content?.parts?.singleOrNull()?.text == "done" })
+  }
+
+  @Test
+  fun runLive_withSaveLiveBlob_audioOnATurnCompleteResponse_isNotRecordedWithTheNextTurn() =
+    runBlocking {
+      val artifacts = InMemoryArtifactService()
+      val connection =
+        RecordingLiveConnection(
+          listOf(LlmResponse(content = modelAudio(1, 2), turnComplete = true)),
+          listOf(LlmResponse(content = modelAudio(3)), LlmResponse(turnComplete = true)),
+        )
+      val agent = liveAgent(connection)
+      val context =
+        liveContextFor(
+          agent,
+          runConfig = RunConfig(saveLiveBlob = true),
+          artifactService = artifacts,
+        )
+
+      val events = agent.runLive(context).toList()
+
+      val recorded =
+        events
+          .filter { it.content?.parts?.firstOrNull()?.fileData != null }
+          .flatMap { artifacts.storedBytes(it, context.session.key)?.toList() ?: emptyList() }
+      // The audio that rode the turnComplete response is dropped, not folded into the next turn.
+      assertEquals(listOf<Byte>(3), recorded)
+    }
+
+  @Test
+  fun runLive_dropWhileWritingTheTransferAnswer_stillTransfers() = runTest {
+    val queue = LiveRequestQueue()
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    // The sender drops exactly when it writes the transfer answer.
+    parentConn.onSendContent = { content ->
+      if (content.parts.any { it.functionResponse != null }) {
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    }
+    val childConn =
+      ScriptedConn("child") {
+        emit(LlmResponse(content = modelMessage("child here"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val childModel = RecordingLiveModel(childConn)
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    val events = parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1, childModel.connectCalls)
+    assertTrue(events.any { it.content?.parts?.singleOrNull()?.text == "child here" })
+  }
+
+  @Test
+  fun runLive_dropDuringTheHandoverPause_stillTransfers() = runTest {
+    val queue = LiveRequestQueue()
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    parentConn.onSendContent = { content ->
+      when {
+        // Once the answer is written, the caller speaks during the 1 s pause.
+        content.parts.any { it.functionResponse != null } -> queue.sendContent(userMessage("late"))
+        content.parts.any { it.text == "late" } ->
+          throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    }
+    val childConn =
+      ScriptedConn("child") {
+        emit(LlmResponse(content = modelMessage("child here"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val childModel = RecordingLiveModel(childConn)
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    val events = parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1, childModel.connectCalls)
+    assertTrue(events.any { it.content?.parts?.singleOrNull()?.text == "child here" })
+  }
+
+  @Test
+  fun runLive_transferSetOnANonToolEvent_handsOverWithoutWaitingForAnAnswer() = runTest {
+    val queue = LiveRequestQueue()
+    val parentConn =
+      RecordingLiveConnection(
+        listOf(
+          LlmResponse(
+            content = modelMessage("ok"),
+            outputTranscription = Transcription(text = "ok"),
+          )
+        )
+      )
+    var childAtMs = -1L
+    val childConn = ScriptedConn("child") { it.closed.await() }
+    val childModel =
+      RecordingLiveModel(
+        childConn,
+        onConnect = {
+          childAtMs = testScheduler.currentTime
+          queue.close()
+        },
+      )
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(
+        name = "parent",
+        model = RecordingLiveModel(parentConn),
+        subAgents = listOf(child),
+        afterModelCallbacks =
+          listOf(
+            AfterModelCallback { ctx, response ->
+              ctx.actions.transferToAgent = "child"
+              response
+            }
+          ),
+      )
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1, childModel.connectCalls)
+    assertTrue(
+      childAtMs in 0 until 2_000,
+      "the handover waited for an answer that never comes (${childAtMs}ms)",
+    )
+  }
+
+  @Test
+  fun runLive_transferToAnUndeclaredAgent_failsWithoutRunningIt() = runTest {
+    // "grandchild" exists in the tree but is not a declared target from the root, so it is refused.
+    val grandchildModel = RecordingLiveModel(ScriptedConn("gc") { it.closed.await() })
+    val grandchild = LlmAgent(name = "grandchild", description = "g", model = grandchildModel)
+    val child =
+      LlmAgent(
+        name = "child",
+        description = "c",
+        model = RecordingLiveModel(ScriptedConn("c") { it.closed.await() }),
+        subAgents = listOf(grandchild),
+      )
+    val root =
+      LlmAgent(
+        name = "root",
+        model =
+          RecordingLiveModel(
+            ScriptedConn("root") {
+              emit(modelTransferToAgentResponse("grandchild"))
+              it.closed.await()
+            }
+          ),
+        subAgents = listOf(child),
+      )
+
+    val failure =
+      assertFailsWith<IllegalArgumentException> { root.runLive(liveContextFor(root)).toList() }
+
+    assertTrue("grandchild" !in failure.message.orEmpty(), "the error echoed the model-chosen name")
+    assertEquals(0, grandchildModel.connectCalls)
+  }
+
+  @Test
+  fun runLive_transferToItself_reopensTheSameAgent() = runTest {
+    // Naming the running agent is allowed: it continues on a fresh connection of its own.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("first") {
+        emit(handleUpdate("h-1"))
+        emit(modelTransferToAgentResponse("root"))
+        it.closed.await()
+      }
+    val second = ScriptedConn("second") { it.closed.await() }
+    val model = RecordingLiveModel(first, second) { connects -> if (connects == 2) queue.close() }
+    // A sub-agent, so transfer_to_agent is offered at all.
+    val child =
+      LlmAgent(
+        name = "child",
+        description = "c",
+        model = RecordingLiveModel(ScriptedConn("c") { it.closed.await() }),
+      )
+    val root = LlmAgent(name = "root", model = model, subAgents = listOf(child))
+
+    root.runLive(liveContextFor(root, queue)).toList()
+
+    assertEquals(
+      listOf(null, null),
+      model.connectedRequests.map { it.liveConnectConfig.sessionResumption?.handle },
+    )
+  }
+
+  @Test
+  fun runLive_transferWithACallersResumptionHandle_childConnectsWithoutIt() = runTest {
+    val queue = LiveRequestQueue()
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    val childModel =
+      RecordingLiveModel(ScriptedConn("child") { it.closed.await() }, onConnect = { queue.close() })
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parentModel = RecordingLiveModel(parentConn)
+    val parent = LlmAgent(name = "parent", model = parentModel, subAgents = listOf(child))
+    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "parent-h"))
+
+    parent.runLive(liveContextFor(parent, queue, runConfig = runConfig)).toList()
+
+    assertEquals(
+      "parent-h",
+      parentModel.connectedRequests.single().liveConnectConfig.sessionResumption?.handle,
+    )
+    assertNull(childModel.connectedRequests.single().liveConnectConfig.sessionResumption?.handle)
+  }
+
+  @Test
+  fun runLive_transferAnswerBehindTwoWrites_waitsForTheAnswerNotAnEarlierWrite() = runTest {
+    // Only the answer's own write ends the wait; an earlier write finishing must not.
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("a"))
+    queue.sendContent(userMessage("b"))
+    val writingA = CompletableDeferred<Unit>()
+    val parentAnswers = mutableListOf<String>()
+    val parentConn =
+      ScriptedConn("parent") {
+        writingA.await()
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    parentConn.onSendContent = { content ->
+      when (content.parts.firstOrNull()?.text) {
+        "a" -> {
+          writingA.complete(Unit)
+          delay(1.seconds)
+        }
+        "b" -> delay(3.seconds)
+      }
+      parentAnswers += content.parts.mapNotNull { it.functionResponse?.name }
+    }
+    val child =
+      LlmAgent(
+        name = "child",
+        description = "c",
+        model =
+          RecordingLiveModel(
+            RecordingLiveConnection(untilClosed = true),
+            onConnect = { queue.close() },
+          ),
+      )
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(listOf("transfer_to_agent"), parentAnswers)
+  }
+
+  /** A `transfer_to_agent` call in the same response as the caller's finished speech. */
+  private fun transferWithHeardInput(): LlmResponse =
+    modelTransferToAgentResponse("child", id = "t1")
+      .copy(inputTranscription = Transcription(text = "hi", finished = true))
+
+  /** Screens the heard "hi" for 100 ms of virtual time, so the sender runs first; may block it. */
+  private fun slowScreening(block: Boolean = false) = BeforeModelCallback { _, request ->
+    if (request.contents.any { c -> c.parts.any { it.text == "hi" } }) {
+      delay(100)
+      if (block) {
+        return@BeforeModelCallback CallbackChoice.Break(LlmResponse(content = modelMessage("no")))
+      }
+    }
+    CallbackChoice.Continue(request)
+  }
+
+  @Test
+  fun runLive_transferAndABlockedInputInOneResponse_stillTransfers() = runTest {
+    val queue = LiveRequestQueue()
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(transferWithHeardInput())
+        it.closed.await()
+      }
+    val restarted = ScriptedConn("restarted") { it.closed.await() }
+    val parentModel = RecordingLiveModel(parentConn, restarted) { n -> if (n == 2) queue.close() }
+    val childModel =
+      RecordingLiveModel(ScriptedConn("child") { it.closed.await() }, onConnect = { queue.close() })
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(
+        name = "parent",
+        model = parentModel,
+        subAgents = listOf(child),
+        beforeModelCallbacks = listOf(slowScreening(block = true)),
+      )
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1 to 1, childModel.connectCalls to parentModel.connectCalls)
+  }
+
+  @Test
+  fun runLive_dropBeforeTheTransferIsRecorded_stillTransfers() = runTest {
+    // The answer's write drops the connection while the same response's input is still screened.
+    val queue = LiveRequestQueue()
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(transferWithHeardInput())
+        it.closed.await()
+      }
+    parentConn.onSendContent = { content ->
+      if (content.parts.any { it.functionResponse != null }) {
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    }
+    val childModel =
+      RecordingLiveModel(ScriptedConn("child") { it.closed.await() }, onConnect = { queue.close() })
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(
+        name = "parent",
+        model = RecordingLiveModel(parentConn),
+        subAgents = listOf(child),
+        beforeModelCallbacks = listOf(slowScreening()),
+      )
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1, childModel.connectCalls)
+  }
+
+  @Test
+  fun runLive_dropBeforeTheTransferIsRecordedWithAHandle_handsOverInsteadOfReconnecting() =
+    runTest {
+      val queue = LiveRequestQueue()
+      val first =
+        ScriptedConn("c0") {
+          emit(handleUpdate("h-1"))
+          emit(transferWithHeardInput())
+          it.closed.await()
+        }
+      first.onSendContent = { content ->
+        if (content.parts.any { it.functionResponse != null }) {
+          throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+        }
+      }
+      val second =
+        ScriptedConn("c1") {
+          emit(LlmResponse(content = modelMessage("c1 speaks"), turnComplete = true))
+          it.closed.await()
+        }
+      val childModel =
+        RecordingLiveModel(
+          ScriptedConn("child") { it.closed.await() },
+          onConnect = { queue.close() },
+        )
+      val child = LlmAgent(name = "child", description = "c", model = childModel)
+      val parentModel = RecordingLiveModel(first, second)
+      val parent =
+        LlmAgent(
+          name = "parent",
+          model = parentModel,
+          subAgents = listOf(child),
+          beforeModelCallbacks = listOf(slowScreening()),
+        )
+
+      parent.runLive(liveContextFor(parent, queue)).toList()
+
+      assertEquals(1 to 1, parentModel.connectCalls to childModel.connectCalls)
+    }
+
+  @Test
+  fun runLive_blockedReplyCutOffByADrop_isStillEmittedOnce() = runTest {
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("blocked"))
+    val refusal = modelMessage("not allowed")
+    val callbackRan = CompletableDeferred<Unit>()
+    // The drop lands before the refusal is delivered, so only the re-emit delivers it.
+    val first =
+      ScriptedConn("c0") {
+        callbackRan.await()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent =
+      LlmAgent(
+        name = "live_agent",
+        model = model,
+        beforeModelCallbacks =
+          listOf(
+            BeforeModelCallback { _, request ->
+              if (request.contents.single().parts.single().text == "blocked") {
+                callbackRan.complete(Unit)
+                CallbackChoice.Break(LlmResponse(content = refusal))
+              } else {
+                CallbackChoice.Continue(request)
+              }
+            }
+          ),
+      )
+    val context =
+      liveContextFor(
+        agent,
+        queue,
+        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+      )
+
+    val events = agent.runLive(context).toList()
+
+    assertEquals(1, events.count { it.content == refusal })
+  }
+
+  @Test
+  fun runLive_blockedReplyWhenTheCallerHangsUp_isEmittedExactlyOnce() = runBlocking {
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("blocked"))
+    val refusal = modelMessage("not allowed")
+    val callbackRan = CompletableDeferred<Unit>()
+    // A hang-up waits for the in-flight reply to be handled, so it arrives once.
+    val connection =
+      ScriptedConn("c0") {
+        callbackRan.await()
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(connection)
+    val agent =
+      LlmAgent(
+        name = "live_agent",
+        model = model,
+        beforeModelCallbacks =
+          listOf(
+            BeforeModelCallback { _, request ->
+              if (request.contents.single().parts.single().text == "blocked") {
+                callbackRan.complete(Unit)
+                CallbackChoice.Break(LlmResponse(content = refusal))
+              } else {
+                CallbackChoice.Continue(request)
+              }
+            }
+          ),
+      )
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(1, events.count { it.content == refusal })
+  }
+
+  @Test
+  fun liveReconnectDelay_eachAttempt_staysWithinADoublingCeiling() {
+    // A max draw hits the ceiling, so this checks that the ceiling doubles on each attempt.
+    val maxDraw =
+      object : Random() {
+        override fun nextBits(bitCount: Int) = 0
+
+        override fun nextLong(from: Long, until: Long) = until - 1
+      }
+    // attempt is 1-based: the first reconnect's ceiling is the 250 ms base, not twice it.
+    assertEquals(
+      listOf(250L, 500L, 1000L, 2000L, 4000L),
+      (1..5).map { liveReconnectDelay(it, maxDraw).inWholeMilliseconds },
+    )
+    // Full jitter: every draw stays within the ceiling across the reconnect budget.
+    val random = Random(20260824)
+    repeat(200) {
+      for (attempt in 1..5) {
+        val delay = liveReconnectDelay(attempt, random)
+        val ceiling = (250L shl (attempt - 1)).milliseconds
+        assertTrue(delay in 0.milliseconds..ceiling, "attempt $attempt drew $delay, above $ceiling")
+      }
+    }
+  }
+
+  @Test
+  fun liveReconnectDelay_fixedDraw_returnsTheDraw() {
+    // The draw is used, not ignored: a zero draw gives no wait, a fixed draw gives exactly it.
+    val zeroDraw =
+      object : Random() {
+        override fun nextBits(bitCount: Int) = 0
+
+        override fun nextLong(from: Long, until: Long) = from
+      }
+    assertEquals(0L, liveReconnectDelay(3, zeroDraw).inWholeMilliseconds)
+    val fixedDraw =
+      object : Random() {
+        override fun nextBits(bitCount: Int) = 0
+
+        override fun nextLong(from: Long, until: Long) = 123L
+      }
+    assertEquals(123L, liveReconnectDelay(3, fixedDraw).inWholeMilliseconds)
+  }
+
+  @Test
+  fun liveReconnectDelay_lastAttemptInTheBudget_capsAtFourSeconds() {
+    // Five reconnects is the whole budget, so the ceiling never exceeds 4 s.
+    val maxDraw =
+      object : Random() {
+        override fun nextBits(bitCount: Int) = 0
+
+        override fun nextLong(from: Long, until: Long) = until - 1
+      }
+    assertEquals(4000L, liveReconnectDelay(5, maxDraw).inWholeMilliseconds)
+  }
+
+  @Test
+  fun runLive_withSaveLiveBlob_interruption_keepsRecordingTheCaller() = runBlocking {
+    val artifacts = InMemoryArtifactService()
+    val connection =
+      RecordingLiveConnection(
+        listOf(
+          LlmResponse(content = modelAudio(1)),
+          LlmResponse(content = modelAudio(2), interrupted = true),
+          LlmResponse(turnComplete = true),
+        )
+      )
+    val agent = liveAgent(connection)
+    val queue = LiveRequestQueue()
+    queue.sendRealtime(
+      RealtimeInput.Audio(Blob(mimeType = "audio/pcm;rate=16000", data = byteArrayOf(9)))
+    )
+    queue.close()
+    val context =
+      liveContextFor(
+        agent,
+        queue,
+        runConfig = RunConfig(saveLiveBlob = true),
+        artifactService = artifacts,
+      )
+
+    val events = agent.runLive(context).toList()
+
+    val userRecordings = events.filter {
+      it.author == Role.USER && it.content?.parts?.firstOrNull()?.fileData != null
+    }
+    assertEquals(1, userRecordings.size)
+    assertContentEquals(
+      byteArrayOf(9),
+      artifacts.storedBytes(userRecordings.single(), context.session.key),
+    )
+    // The caller's recording is emitted at turnComplete, after the earlier interrupted event.
+    val interruptedAt = events.indexOfFirst { it.interrupted }
+    assertTrue(interruptedAt in 0 until events.indexOf(userRecordings.single()))
+  }
+
+  @Test
+  fun runLive_withSaveLiveBlob_interruption_emitsTheModelRecordingBeforeTheInterruption() =
+    runBlocking {
+      val artifacts = InMemoryArtifactService()
+      val connection =
+        RecordingLiveConnection(
+          listOf(
+            LlmResponse(content = modelAudio(1)),
+            LlmResponse(interrupted = true),
+            LlmResponse(turnComplete = true),
+          )
+        )
+      val agent = liveAgent(connection)
+      val context =
+        liveContextFor(
+          agent,
+          runConfig = RunConfig(saveLiveBlob = true),
+          artifactService = artifacts,
+        )
+
+      val events = agent.runLive(context).toList()
+
+      val recordingAt = events.indexOfFirst { it.content?.parts?.firstOrNull()?.fileData != null }
+      val interruptedAt = events.indexOfFirst { it.interrupted }
+      // The interruption ends the model's turn, so its recording is written then, ahead of it.
+      assertTrue(
+        recordingAt in 0 until interruptedAt,
+        "recording $recordingAt, interrupted $interruptedAt",
+      )
+    }
+
+  @Test
+  fun runLive_withoutSaveLiveBlob_recordsNothing() = runBlocking {
+    val artifacts = InMemoryArtifactService()
+    val connection =
+      RecordingLiveConnection(
+        listOf(LlmResponse(content = modelAudio(1, 2)), LlmResponse(turnComplete = true))
+      )
+    val agent = liveAgent(connection)
+    val queue = LiveRequestQueue()
+    queue.sendRealtime(
+      RealtimeInput.Audio(Blob(mimeType = "audio/pcm;rate=16000", data = byteArrayOf(9)))
+    )
+    queue.close()
+    val context = liveContextFor(agent, queue, runConfig = RunConfig(), artifactService = artifacts)
+
+    val events = agent.runLive(context).toList()
+
+    assertTrue(events.none { it.content?.parts?.firstOrNull()?.fileData != null })
+    assertEquals(emptyList<String>(), artifacts.listArtifactKeys(context.session.key))
+  }
+
+  @Test
+  fun runLive_withSaveLiveBlob_dropMidAudioWrite_recordsTheReplayedChunkOnce() = runTest {
+    val artifacts = InMemoryArtifactService()
+    val queue = LiveRequestQueue()
+    queue.sendRealtime(
+      RealtimeInput.Audio(Blob(mimeType = "audio/pcm;rate=16000", data = byteArrayOf(9)))
+    )
+    val writing = CompletableDeferred<Unit>()
+    val first =
+      ScriptedConn("c0") {
+        writing.await()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    first.onSendRealtime = {
+      writing.complete(Unit)
+      awaitCancellation()
+    }
+    val resent = CompletableDeferred<Unit>()
+    val second =
+      ScriptedConn("c1") {
+        resent.await()
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    second.onSendRealtime = { resent.complete(Unit) }
+    val agent = LlmAgent(name = "live_agent", model = RecordingLiveModel(first, second))
+    val context =
+      liveContextFor(
+        agent,
+        queue,
+        runConfig =
+          RunConfig(
+            saveLiveBlob = true,
+            sessionResumption = SessionResumptionConfig(handle = "h-1"),
+          ),
+        artifactService = artifacts,
+      )
+
+    val events = agent.runLive(context).toList()
+
+    val recording = events.single { it.content?.parts?.firstOrNull()?.fileData != null }
+    // The replay re-sends the chunk to the new connection but does not record it a second time.
+    assertContentEquals(byteArrayOf(9), artifacts.storedBytes(recording, context.session.key))
+  }
+
+  @Test
+  fun runLive_contentWithStateDelta_recordsTheDeltaOnceOnTheUserTurn() = runBlocking {
+    val agent = liveAgent(RecordingLiveConnection(untilClosed = true))
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "delta")
+    val queue = LiveRequestQueue()
+    queue.send(LiveRequest(ContentInput(userMessage("hi")), stateDelta = mapOf("k" to "v")))
+    queue.close()
+
+    agent
+      .runLive(
+        liveContextFor(
+          agent,
+          queue,
+          session = sessionService.createSession(key),
+          sessionService = sessionService,
+        )
+      )
+      .toList()
+
+    val withDelta =
+      sessionService.getSession(key)?.events.orEmpty().filter { it.actions.stateDelta.isNotEmpty() }
+    assertEquals(1, withDelta.size)
+    assertEquals("hi", withDelta.single().content?.parts?.single()?.text)
+    assertEquals("v", withDelta.single().actions.stateDelta["k"])
+  }
+
+  @Test
+  fun runLive_transferAnswerNeverWritten_handsOverAfterTheBound() = runTest {
+    val queue = LiveRequestQueue()
+    // Queued before the transfer, so the answer waits behind a write that never returns.
+    queue.sendRealtime(
+      RealtimeInput.Audio(Blob(mimeType = "audio/pcm;rate=16000", data = ByteArray(4)))
+    )
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    parentConn.onSendRealtime = { awaitCancellation() }
+    var childAtMs = -1L
+    val childConn = ScriptedConn("child") { it.closed.await() }
+    val childModel =
+      RecordingLiveModel(
+        childConn,
+        onConnect = {
+          childAtMs = testScheduler.currentTime
+          queue.close()
+        },
+      )
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1, childModel.connectCalls)
+    // Virtual time is exact: the 5 s answer bound, then the 1 s pause.
+    assertEquals(6_000L, childAtMs)
+  }
+
+  @Test
+  fun runLive_transfer_pausesBeforeHandingOver() = runTest {
+    val queue = LiveRequestQueue()
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    var childAtMs = -1L
+    val childConn = ScriptedConn("child") { it.closed.await() }
+    val childModel =
+      RecordingLiveModel(
+        childConn,
+        onConnect = {
+          childAtMs = testScheduler.currentTime
+          queue.close()
+        },
+      )
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1, childModel.connectCalls)
+    assertTrue(childAtMs >= 1_000, "no handover pause before the child connected (${childAtMs}ms)")
+  }
+
+  @Test
+  fun runLive_goAwayAfterTheCallerClosed_deliversTheQueuedInput() = runTest {
+    // A go-away after close() still drains input queued before the close, resuming from the handle.
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("a"))
+    queue.sendContent(userMessage("bye"))
+    queue.close()
+    // conn1 parks its write so nothing leaves on it, then hands back a handle and a go-away.
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+        it.closed.await()
+      }
+    first.onSendContent = { awaitCancellation() }
+    val second = RecordingLiveConnection(untilClosed = true)
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "LiveAgent", model = model)
+
+    agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals("the go-away did not reconnect to drain the closed queue", 2, model.connectCalls)
+    assertTrue("bye" in second.sentTexts(), "queued input was dropped on the reconnect")
+  }
+
+  @Test
+  fun runLive_callerHangsUpDuringHandover_endsPromptly() = runTest {
+    // A caller hang-up before a handover skips the 5 s + 1 s wait: the answer can never be written.
+    val queue = LiveRequestQueue()
+    val parentConn =
+      ScriptedConn("parent") {
+        queue.close()
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    val childConn = ScriptedConn("child") { it.closed.await() }
+    val childModel = RecordingLiveModel(childConn)
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertTrue(testScheduler.currentTime < 1_000, "waited out the handover after a hang-up")
+  }
+
+  @Test
+  fun runLive_transferAnswerWritten_handsOverWithoutWaitingTheBound() = runTest {
+    // A written answer hands over after only the pause, not the full 5 s answer bound.
+    val queue = LiveRequestQueue()
+    var childAtMs = -1L
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    val childConn = ScriptedConn("child") { it.closed.await() }
+    val childModel =
+      RecordingLiveModel(
+        childConn,
+        onConnect = {
+          childAtMs = testScheduler.currentTime
+          queue.close()
+        },
+      )
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(1, childModel.connectCalls)
+    assertTrue(
+      childAtMs < 5_000,
+      "waited the answer bound though the answer was written (${childAtMs}ms)",
+    )
+  }
+
+  @Test
+  fun runLive_transferAfterTheCallerClosed_opensNoChildConnection() = runBlocking {
+    // Once the caller closes the queue, a transfer ends the run instead of opening the child.
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("a"))
+    queue.close()
+    val parentConn =
+      ScriptedConn("parent") {
+        emit(modelTransferToAgentResponse("child"))
+        it.closed.await()
+      }
+    // Park the write so the sender never drains to the close, leaving isClosed the only stopper.
+    parentConn.onSendContent = { awaitCancellation() }
+    val childConn = ScriptedConn("child") { it.closed.await() }
+    val childModel = RecordingLiveModel(childConn)
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(name = "parent", model = RecordingLiveModel(parentConn), subAgents = listOf(child))
+
+    parent.runLive(liveContextFor(parent, queue)).toList()
+
+    assertEquals(0, childModel.connectCalls)
+  }
+
+  @Test
+  fun runLive_resumptionUpdateWithAnEmptyHandle_dropSurfacesInsteadOfResuming() = runBlocking {
+    // An empty handle update is no handle, so the following drop surfaces rather than resuming.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(LlmResponse(content = modelMessage("hi"), turnComplete = true))
+        emit(handleUpdate(""))
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<GenAiApiException> { agent.runLive(liveContextFor(agent, queue)).toList() }
+
+    assertEquals(1006, failure.code)
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_closeCode1011_isRetriedLikeAnAbnormalClose() = runTest {
+    // 1011 (internal server error) is a recoverable drop, so a held handle reconnects on it.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        throw GenAiApiException(1011, "ConnectionClosed", "internal error")
+      }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(content = modelMessage("resumed"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(2, model.connectCalls)
+    assertTrue(events.any { it.content?.parts?.singleOrNull()?.text == "resumed" })
+  }
+
+  @Test
+  fun runLive_dropWithoutTheConnectionClosedStatus_isNotRetried() = runBlocking {
+    // A 1006 with a non-abnormal-close status is a refusal, not a drop, so it surfaces.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        throw GenAiApiException(1006, "ServerError", "not a socket close")
+      }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<GenAiApiException> { agent.runLive(liveContextFor(agent, queue)).toList() }
+
+    assertEquals(1006, failure.code)
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_cancelledAsADropIsCaught_opensNoFurtherConnection() = runBlocking {
+    // Cancellation caught alongside the drop ends the run; it must not be retried as a drop.
+    var job: Job? = null
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        job?.cancel()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    val second = ScriptedConn("c1") { it.closed.await() }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    job = launch { runCatching { agent.runLive(liveContextFor(agent)).toList() } }
+    checkNotNull(job).join()
+
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_freshSessionAfterAHandlelessGoAway_rebuildsRequestFromTheSession() = runTest {
+    // A fresh restart rebuilds from the session, so the second connection gets the first's turn.
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "fresh-restart")
+    val unused =
+      sessionService.appendEvent(
+        sessionService.createSession(key),
+        Event(author = Role.USER, content = userMessage("earlier")),
+      )
+    val session = checkNotNull(sessionService.getSession(key))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("during"))
+    val duringSeen = CompletableDeferred<Unit>()
+    val first =
+      ScriptedConn("c0") {
+        emit(LlmResponse(content = modelMessage("hi"), turnComplete = true))
+        duringSeen.await()
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+      }
+    // The first connection persists "during" before signalling, so the restart can rebuild with it.
+    first.onSendContent = { content ->
+      if (content.parts.any { it.text == "during" }) duringSeen.complete(Unit)
+    }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    agent
+      .runLive(liveContextFor(agent, queue, session = session, sessionService = sessionService))
+      .toList()
+
+    assertEquals(2, model.connectCalls)
+    val secondHistory =
+      model.connectedRequests[1].contents.flatMap { it.parts }.mapNotNull { it.text }
+    assertTrue("during" in secondHistory)
+  }
+
+  @Test
+  fun runLive_handlelessGoAway_waitsTheBackoffBeforeRestarting() = runTest {
+    // Each handle-less go-away restarts through the jittered backoff, so virtual time advances.
+    val queue = LiveRequestQueue()
+    fun goAwayTurn() =
+      ScriptedConn("c") {
+        emit(LlmResponse(content = modelMessage("hi"), turnComplete = true))
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+      }
+    val last =
+      ScriptedConn("last") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(goAwayTurn(), goAwayTurn(), goAwayTurn(), last)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(4, model.connectCalls)
+    assertTrue(testScheduler.currentTime > 0)
+  }
+
+  @Test
+  fun runLive_goAway_doesNotReadFurtherFromTheOldConnection() = runTest {
+    // After a go-away the loop reconnects; a payload riding that response is not read or emitted.
+    val queue = LiveRequestQueue()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        emit(
+          LlmResponse(
+            goAway = LiveServerGoAway(),
+            content = modelMessage("leaked"),
+            turnComplete = true,
+          )
+        )
+      }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(content = modelMessage("resumed"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(2, model.connectCalls)
+    assertTrue(events.none { it.content?.parts?.singleOrNull()?.text == "leaked" })
+  }
+
+  @Test
+  fun runLive_transferToAWorkflowAgent_failsWithoutRunningIt() = runTest {
+    // The live sibling is there so transfer_to_agent is offered at all.
+    val stepModel = RecordingLiveModel(RecordingLiveConnection(untilClosed = true))
+    val liveSib =
+      LlmAgent(
+        name = "live_sib",
+        description = "s",
+        model = RecordingLiveModel(RecordingLiveConnection(untilClosed = true)),
+      )
+    val workflow =
+      SequentialAgent(
+        name = "workflow",
+        subAgents = listOf(LlmAgent(name = "step", description = "s", model = stepModel)),
+      )
+    val root =
+      LlmAgent(
+        name = "root",
+        model =
+          RecordingLiveModel(
+            ScriptedConn("root") {
+              emit(modelTransferToAgentResponse("workflow"))
+              it.closed.await()
+            }
+          ),
+        subAgents = listOf(liveSib, workflow),
+      )
+
+    val failure =
+      assertFailsWith<IllegalArgumentException> { root.runLive(liveContextFor(root)).toList() }
+
+    assertEquals(0, stepModel.connectCalls)
+    assertTrue("workflow" !in failure.message.orEmpty(), "the error echoed the model-chosen name")
+  }
+
+  @Test
+  fun runLive_goAwayWithNoHandleWhileAWriteDrops_continuesInAFreshSession() = runTest {
+    // A handle-less go-away restarts fresh even when a concurrent write drops the old connection.
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hello"))
+    val gate = CompletableDeferred<Unit>()
+    val first =
+      ScriptedConn("c0") {
+        gate.complete(Unit)
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+      }
+    first.onSendContent = {
+      gate.await()
+      throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+    }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(content = modelMessage("fresh"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(2, model.connectCalls)
+    assertTrue(events.any { it.content?.parts?.singleOrNull()?.text == "fresh" })
+  }
+
+  @Test
+  fun runLive_writeFailsBeforeTheReceiveReportsTheDrop_resumesAndResendsTheRequest() = runTest {
+    // A write failure before the receive side drops still replays the request on resume.
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "write-before-drop")
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hello"))
+    val sendFailed = CompletableDeferred<Unit>()
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        sendFailed.await()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    first.onSendContent = {
+      sendFailed.complete(Unit)
+      throw kotlinx.coroutines.channels.ClosedSendChannelException("socket closed")
+    }
+    val resent = CompletableDeferred<Unit>()
+    val secondSent = mutableListOf<String>()
+    val second =
+      ScriptedConn("c1") {
+        resent.await()
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    second.onSendContent = { content ->
+      secondSent += content.parts.mapNotNull { it.text }
+      resent.complete(Unit)
+    }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    agent
+      .runLive(
+        liveContextFor(
+          agent,
+          queue,
+          session = sessionService.createSession(key),
+          sessionService = sessionService,
+        )
+      )
+      .toList()
+
+    assertEquals(2, model.connectCalls)
+    assertEquals(listOf("hello"), secondSent)
+    assertEquals(
+      1,
+      checkNotNull(sessionService.getSession(key)).events.count { it.author == Role.USER },
+    )
+  }
+
+  @Test
+  fun runLive_writeFailsAfterAGoAway_continuesInAFreshSession() = runTest {
+    // A plain write failure after a handleless go-away restarts fresh rather than failing the run.
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hello"))
+    val gate = CompletableDeferred<Unit>()
+    val first =
+      ScriptedConn("c0") {
+        gate.complete(Unit)
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+      }
+    first.onSendContent = {
+      gate.await()
+      throw kotlinx.coroutines.channels.ClosedSendChannelException("socket closed")
+    }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(content = modelMessage("fresh"), turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(2, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_writeFailsOnAnOpenConnection_failsTheRunWithTheWriteError() = runTest {
+    // A write failure while the receive side stays open fails the run after the teardown timeout.
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hello"))
+    val first = ScriptedConn("c0") { it.closed.await() }
+    first.onSendContent = { throw IllegalStateException("bad frame") }
+    val model = RecordingLiveModel(first)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      runCatching { agent.runLive(liveContextFor(agent, queue)).toList() }.exceptionOrNull()
+
+    assertTrue(failure is IllegalStateException && failure.message == "bad frame")
+    assertTrue(
+      testScheduler.currentTime >= 10_000,
+      "did not wait the teardown bound before failing",
+    )
+    assertEquals(1, first.closeCalls)
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_callersEmptyResumptionHandle_stillSeedsTheHistory() = runBlocking {
+    // An empty handle names no session to resume, so the run starts fresh and sends history.
+    val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+    val agent = liveAgent(connection)
+    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = ""))
+
+    agent
+      .runLive(liveContextFor(agent, session = sessionWithEarlierMessage(), runConfig = runConfig))
+      .toList()
+
+    assertEquals(1, connection.sendHistoryCalls)
+  }
+
+  @Test
+  fun runLive_partialContent_isNotRecordedInTheSession() = runBlocking {
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "partial")
+    val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+    val agent = liveAgent(connection)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("half"), partial = true)
+    queue.close()
+
+    agent
+      .runLive(
+        liveContextFor(
+          agent,
+          queue,
+          session = sessionService.createSession(key),
+          sessionService = sessionService,
+        )
+      )
+      .toList()
+
+    assertEquals(listOf("half"), connection.sentTexts())
+    assertEquals(
+      0,
+      checkNotNull(sessionService.getSession(key)).events.count { it.author == Role.USER },
+    )
+  }
+
+  @Test
+  fun runLive_toolAnswerFromTheCaller_isNotRecordedAsAUserTurn() = runBlocking {
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "tool-answer")
+    val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+    val agent = liveAgent(connection)
+    val queue = LiveRequestQueue()
+    queue.sendContent(
+      Content(
+        parts =
+          listOf(
+            Part(functionResponse = FunctionResponse(name = "f", response = mapOf("r" to "ok")))
+          )
+      )
+    )
+    queue.close()
+
+    agent
+      .runLive(
+        liveContextFor(
+          agent,
+          queue,
+          session = sessionService.createSession(key),
+          sessionService = sessionService,
+        )
+      )
+      .toList()
+
+    assertEquals(1, connection.sentContent.size)
+    assertEquals(
+      0,
+      checkNotNull(sessionService.getSession(key)).events.count { it.author == Role.USER },
+    )
+  }
+
+  @Test
+  fun runLive_wrappedDropAfterTheOpen_isNotRetried() = runTest {
+    // Only a failed open wraps its cause; a wrapped drop from a live connection is not a drop.
+    val first =
+      ScriptedConn("c0") {
+        emit(handleUpdate("h-1"))
+        throw IllegalStateException(
+          "wrapped",
+          GenAiApiException(1006, "ConnectionClosed", "socket closed"),
+        )
+      }
+    val second = ScriptedConn("c1") { it.closed.await() }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    assertFailsWith<IllegalStateException> { agent.runLive(liveContextFor(agent)).toList() }
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_openCancelledWithADropCause_isNotRetried() = runBlocking {
+    // A cancellation that carries a drop as its cause is still a cancellation, never a retry.
+    val queue = LiveRequestQueue()
+    val second = ScriptedConn("c1") { it.closed.await() }
+    var connects = 0
+    val model =
+      object : Model {
+        override val name = "live-model"
+
+        override suspend fun connect(request: LlmRequest): LiveConnection {
+          connects++
+          if (connects == 1) {
+            throw kotlinx.coroutines.CancellationException("open cancelled").apply {
+              initCause(GenAiApiException(1006, "ConnectionClosed", "socket closed"))
+            }
+          }
+          // Reached only by a retry; closing the queue lets that run end on its own.
+          queue.close()
+          return second
+        }
+
+        override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+          flow {}
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+
+    val outcome = runCatching {
+      agent.runLive(liveContextFor(agent, queue, runConfig = runConfig)).toList()
+    }
+
+    assertTrue(outcome.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+    assertEquals(1, connects)
+  }
+
+  @Test
+  fun runLive_dropWhileARealtimeInputsStateIsStored_sendsItOnTheResumedConnection() = runTest {
+    val committed = CompletableDeferred<Unit>()
+    val sessionService = CommitThenYieldSessionService({ it.author == Role.USER }, committed)
+    val key = SessionKey("app", "user", "replay-realtime")
+    val queue = LiveRequestQueue()
+    queue.send(LiveRequest(RealtimeInput.ActivityStart, stateDelta = mapOf("k" to "v")))
+    var firstSent = 0
+    var secondSent = 0
+    val first =
+      ScriptedConn("c0") {
+        committed.await()
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    first.onSendRealtime = { firstSent++ }
+    val second =
+      ScriptedConn("c1") {
+        emit(LlmResponse(turnComplete = true))
+        queue.close()
+        it.closed.await()
+      }
+    second.onSendRealtime = { secondSent++ }
+    val agent = LlmAgent(name = "live_agent", model = RecordingLiveModel(first, second))
+    val context =
+      liveContextFor(
+        agent,
+        queue,
+        session = sessionService.createSession(key),
+        sessionService = sessionService,
+        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+      )
+
+    agent.runLive(context).toList()
+
+    // The cancelled sender stops before writing to the dropped c0; the resumed c1 gets the input.
+    assertEquals(0, firstSent)
+    assertEquals(1, secondSent)
+    assertEquals(
+      1,
+      checkNotNull(sessionService.getSession(key)).events.count { it.author == Role.USER },
+    )
+  }
+
+  @Test
+  fun runLive_goAwayAfterTheCallerHungUpAndEverythingWasSent_endsTheRun() = runTest {
+    // The caller closed and the sender drained the queue, so a late go-away has nothing to resume.
+    val queue = LiveRequestQueue()
+    queue.close()
+    val first =
+      ScriptedConn("c0") {
+        it.closed.await()
+        emit(LlmResponse(goAway = LiveServerGoAway()))
+      }
+    val second = ScriptedConn("c1") { it.closed.await() }
+    val model = RecordingLiveModel(first, second)
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(1, model.connectCalls)
+  }
+
+  @Test
+  fun runLive_contextOnABranch_storesUserEventsWithoutABranch() = runBlocking {
+    // Live user events carry no branch, as ADK Python's live user events do not.
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "branch")
+    val connection = RecordingLiveConnection(listOf(LlmResponse(turnComplete = true)))
+    val agent = liveAgent(connection)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hi"))
+    queue.send(LiveRequest(stateDelta = mapOf("k" to "v")))
+    queue.close()
+    val context =
+      InvocationContext(
+          agent = agent,
+          session = sessionService.createSession(key),
+          sessionService = sessionService,
+          branch = "root.child",
+        )
+        .apply { frameworkData.liveRequestQueue = queue }
+
+    agent.runLive(context).toList()
+
+    val userEvents =
+      checkNotNull(sessionService.getSession(key)).events.filter { it.author == Role.USER }
+    assertEquals(2, userEvents.size)
+    assertTrue(userEvents.all { it.branch == null })
+  }
+
   private class ScriptedTurnFailure : RuntimeException("the turn failed")
 
   private class TeardownFailure : RuntimeException("teardown failed")
 }
+
+/** The connections a live run opens before giving up: the first plus `MAX_RECONNECT_ATTEMPTS`. */
+private const val MAX_LIVE_CONNECTS = 6
