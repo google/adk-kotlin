@@ -753,39 +753,32 @@ class AbstractRunnerTest {
     assertEquals("mid", result.name)
   }
 
+  /**
+   * A peer transfer that `disallowTransferToPeers` rejected stays in history; the next turn still
+   * goes to the agent that tried it, as in Python, which has no such check when picking the agent.
+   */
   @Test
-  fun findAgentToRun_withDisallowTransferToPeers_throwsException() = runTest {
-    val sub1 = DummyAgent("sub1", disallowTransferToPeers = true)
-    val sub2 = DummyAgent("sub2")
-    val rootAgent = DummyAgent("root", subAgents = listOf(sub1, sub2))
+  fun findAgentToRun_afterRejectedPeerTransfer_returnsTheTransferringAgent() = runBlocking {
+    val sub1 = LlmAgent(name = "sub1", model = DummyModel("model"), disallowTransferToPeers = true)
+    val sub2 = LlmAgent(name = "sub2", model = DummyModel("model"))
+    val rootAgent =
+      LlmAgent(name = "root", model = DummyModel("model"), subAgents = listOf(sub1, sub2))
     val runner = TestRunner(rootAgent)
 
-    val event1 =
-      Event(
-        author = "sub1",
-        actions = EventActions(transferToAgent = "sub2"),
-        invocationId = "inv-1",
-      )
-    val event2 = Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1")
-
-    val session =
-      runner.sessionService.createSession(SessionKey("InMemoryRunner", "user", "session"))
-    val unused1 = runner.sessionService.appendEvent(session, event1)
-    val unused2 = runner.sessionService.appendEvent(session, event2)
-
-    val updatedSession =
-      runner.sessionService.getSession(SessionKey("InMemoryRunner", "user", "session"))!!
-    val context =
-      InvocationContext(
-        session = updatedSession,
-        runConfig = null,
-        agent = rootAgent,
-        invocationId = "inv-1",
-        sessionService = runner.sessionService,
+    val events =
+      listOf(
+        Event(
+          author = "sub1",
+          actions = EventActions(transferToAgent = "sub2"),
+          invocationId = "inv-1",
+        ),
+        Event(author = Role.USER, content = userMessage("Hi"), invocationId = "inv-1"),
       )
 
-    assertFailsWith<IllegalArgumentException> { runner.callFindAgentToRun(context, rootAgent) }
-      .also { assertEquals("Agent 'sub1' is not allowed to transfer to peer 'sub2'.", it.message) }
+    val result =
+      runner.callFindAgentToRun(contextWith(runner, rootAgent, events, "inv-1"), rootAgent)
+
+    assertEquals("sub1", result.name)
   }
 
   @Test

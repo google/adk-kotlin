@@ -55,14 +55,15 @@ import kotlinx.coroutines.flow.flow
  * @property subAgents List of sub-agents.
  * @property beforeAgentCallbacks List of callbacks to run before the agent executes.
  * @property afterAgentCallbacks List of callbacks to run after the agent executes.
- * @property disallowTransferToParent When `true`, the framework will not route the next user turn
- *   back to this agent after the parent transfers control to it; instead the next turn falls back
- *   to the root agent. Set this on utility sub-agents the parent calls and returns from
- *   (translators, summarizers, classifiers). Leave at the default `false` for sub-agents that
- *   should keep handling follow-up turns directly (e.g. billing, support).
- * @property disallowTransferToPeers When `true`, prevents this agent from transferring sideways to
- *   a peer agent under the same parent. Typically set together with [disallowTransferToParent] on
- *   one-shot utility agents. Violations are surfaced by the runner as `IllegalArgumentException`.
+ * @property disallowTransferToParent When `true`, the run fails with [IllegalArgumentException] if
+ *   this agent transfers to its parent, and the next user turn after the parent transfers to this
+ *   agent goes to an earlier agent, usually the parent, instead of staying here. Set this on
+ *   utility sub-agents the parent calls and returns from (translators, summarizers, classifiers);
+ *   leave it `false` for sub-agents that should keep handling follow-up turns (e.g. billing,
+ *   support).
+ * @property disallowTransferToPeers When `true`, the run fails with [IllegalArgumentException] if
+ *   this agent transfers to a peer under the same parent. Typically set together with
+ *   [disallowTransferToParent] on one-shot utility agents.
  */
 abstract class BaseAgent(
   name: String,

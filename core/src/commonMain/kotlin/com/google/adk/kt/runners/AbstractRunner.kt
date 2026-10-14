@@ -916,8 +916,6 @@ abstract class AbstractRunner : Runner {
         // An author no longer in the agent tree falls through to the history scan, as in Python.
         val agentToRun = rootAgent.findAgent(matchingCall.author)
         if (agentToRun != null) {
-          validatePeerTransfer(agentToRun, matchingCall.actions.transferToAgent, rootAgent)
-
           return agentToRun
         }
       }
@@ -943,9 +941,6 @@ abstract class AbstractRunner : Runner {
       }
 
       val agentToRun = rootAgent.findAgent(event.author) ?: continue
-
-      // Peer transfer validation.
-      validatePeerTransfer(agentToRun, event.actions.transferToAgent, rootAgent)
 
       // Check for transferability up the tree.
       if (isTransferableAcrossAgentTree(agentToRun)) {
@@ -993,20 +988,6 @@ abstract class AbstractRunner : Runner {
       current = current.parentAgent
     }
     return true
-  }
-
-  private fun validatePeerTransfer(agent: BaseAgent, targetName: String?, rootAgent: BaseAgent) {
-    if (!agent.disallowTransferToPeers) return
-
-    if (targetName != null && targetName != agent.name) {
-      val targetAgent = rootAgent.findAgent(targetName)
-      val parent = agent.parentAgent
-      if (parent != null && targetAgent?.parentAgent?.name == parent.name) {
-        throw IllegalArgumentException(
-          "Agent '${agent.name}' is not allowed to transfer to peer '$targetName'."
-        )
-      }
-    }
   }
 
   /**

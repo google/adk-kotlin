@@ -18,6 +18,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.TransferToAgentTool
@@ -100,16 +101,18 @@ internal fun offeredTransferTargets(agent: BaseAgent, context: InvocationContext
   if (context.liveRequestQueue != null) emptyList() else findTransferTargets(agent)
 
 /**
- * Returns the agents [agent] may transfer control to: its sub-agents, and (when permitted) its
- * parent and peers. Requests read it through [offeredTransferTargets].
+ * Returns the agents [agent] may transfer control to: its sub-agents and, when its parent is an
+ * [LlmAgent], that parent and its other children unless disallowed. Requests read this list through
+ * [offeredTransferTargets], and a turn rejects a transfer to any other agent.
  */
 internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
   val targets = buildList {
     // Sub-agents are always potential targets.
     addAll(agent.subAgents)
 
+    // Only an LlmAgent parent routes by transfer; any other parent decides which child runs.
     val parent = agent.parentAgent
-    if (parent != null) {
+    if (parent is LlmAgent) {
       // Parent agent is a potential target if allowed.
       if (!agent.disallowTransferToParent) {
         add(parent)
