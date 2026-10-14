@@ -351,6 +351,19 @@ private constructor(
 
   companion object {
     /**
+     * Runs [node] on [nodeInput] as a root activation of [context] outside any graph, sending every
+     * event to [eventSink], and returns the context of its final attempt. Unlike [runRoot], a node
+     * failure is recorded on the returned context rather than thrown.
+     */
+    suspend fun runDetached(
+      node: Node,
+      context: InvocationContext,
+      eventSink: EventSink,
+      nodeInput: Any?,
+    ): Context =
+      NodeRunner(node = node, invocationContext = context, eventSink = eventSink).run(nodeInput)
+
+    /**
      * Runs [node] as the root of [context], streaming the events it (and any nested graph) emits.
      *
      * Each non-partial event suspends the emitting node until the downstream collector has

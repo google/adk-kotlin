@@ -20,6 +20,7 @@ import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Schema
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
@@ -84,6 +85,31 @@ internal class ValueCodec<T>(val kType: KType) {
    */
   @Suppress("UNCHECKED_CAST") fun coerce(value: Any?, what: String): T = coerceAny(value, what) as T
 
+  /**
+   * Returns [value] as a [T] like [coerce], and otherwise reads it as the JSON form of a [T], such
+   * as a model's tool arguments, so a map becomes a class and a JSON number the declared number
+   * type. Failures throw [NodeInputValidationException] naming [what], not [value].
+   */
+  fun decode(value: Any?, what: String): T {
+    try {
+      return coerce(value, what)
+    } catch (e: NodeInputValidationException) {
+      if (serializer == null || value == null || !isJsonNative(value)) throw e
+    }
+    return try {
+      explicitNullsJson.decodeFromJsonElement(serializer, anyToJsonElement(value))
+    } catch (e: IllegalArgumentException) {
+      throw notDecodable(what)
+    } catch (e: IllegalStateException) {
+      // The contextual serializer for `Any` rejects a null this way.
+      throw notDecodable(what)
+    }
+  }
+
+  /** The decode failure, without a cause, since the cause's message can quote the value. */
+  private fun notDecodable(what: String) =
+    NodeInputValidationException("validation error: $what is not a valid $kType.")
+
   private fun coerceAny(value: Any?, what: String): Any? {
     if (value == null) {
       if (kType.isMarkedNullable) return null
@@ -128,6 +154,26 @@ internal class ValueCodec<T>(val kType: KType) {
     return value
   }
 }
+
+/**
+ * Whether [value] is plain JSON data: a string, number, boolean, null, or a list or map of them.
+ * The number types are those `anyToJsonElement` writes.
+ */
+internal fun isJsonNative(value: Any?): Boolean =
+  when (value) {
+    null,
+    is String,
+    is Boolean,
+    is Int,
+    is Long,
+    is Double,
+    is Float,
+    is Short,
+    is Byte -> true
+    is Map<*, *> -> value.all { (key, entry) -> key is String && isJsonNative(entry) }
+    is List<*> -> value.all { isJsonNative(it) }
+    else -> false
+  }
 
 /** [adkJson] that writes a required `null` property, so a class keeps every field it requires. */
 @OptIn(FrameworkInternalApi::class)

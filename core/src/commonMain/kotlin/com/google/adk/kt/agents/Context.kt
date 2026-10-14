@@ -486,6 +486,19 @@ open class Context(
   val hasProducedOutput: Boolean
     get() = requireNodeState().hasProducedOutput
 
+  /**
+   * Whether this finished activation is a [Workflow] or [Node.waitForOutput] node that ended with
+   * no output and no agent transfer, which a caller reads as still waiting rather than done.
+   */
+  @ExperimentalWorkflowApi
+  internal val isWaitingForOutput: Boolean
+    get() {
+      val node = requireNodeState().node
+      return !hasProducedOutput &&
+        actions.transferToAgent == null &&
+        (node is Workflow || node.waitForOutput)
+    }
+
   /** The routes this node selected, read by the scheduler to pick the outgoing edges. */
   @ExperimentalWorkflowApi
   var routes: List<Route>?
@@ -617,14 +630,7 @@ open class Context(
       throw NodeInterruptedException()
     }
     // raiseOnWait: a workflow or wait-for-output child left without an output aborts this run.
-    if (
-      raiseOnWait &&
-        !childState.hasProducedOutput &&
-        childContext.actions.transferToAgent == null &&
-        (childState.node is Workflow || childState.node.waitForOutput)
-    ) {
-      throw NodeInterruptedException()
-    }
+    if (raiseOnWait && childContext.isWaitingForOutput) throw NodeInterruptedException()
     return childState.output
   }
 

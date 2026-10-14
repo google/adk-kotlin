@@ -165,6 +165,19 @@ private constructor(
     return input
   }
 
+  /**
+   * Whether this node takes a message or an event, which JSON data such as tool arguments is not.
+   */
+  internal val takesFrameworkInput: Boolean
+    get() = inputType.classifier in FRAMEWORK_TYPES
+
+  /** Returns [value], the JSON form a model sends when it calls this node as a tool, as an [I]. */
+  internal fun decodeInput(value: Any?): I = inputCodec.decode(value, "input of node '$name'")
+
+  /** Returns the JSON form of [output], so a tool can answer a model with it. */
+  internal fun encodeOutput(output: Any?): Any? =
+    outputCodec.schemaForm(output, "output of node '$name'")
+
   /** Checks the JSON form of [output] against an explicit [outputSchema] and returns [output]. */
   override fun validateOutput(output: Any?): Any? {
     if (explicitOutputSchema != null) {

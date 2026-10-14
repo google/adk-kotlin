@@ -118,6 +118,9 @@ abstract class BaseNode(
     return SchemaUtils.validateValue(nodeInput, schema, "input of node '$name'").getOrThrow()
   }
 
+  /** Runs [validateInput] for a caller outside the node hierarchy, such as a tool. */
+  internal fun checkInput(nodeInput: Any?): Any? = validateInput(nodeInput)
+
   /** Checks [output] against [outputSchema], if there is one, and returns it. */
   protected open fun validateOutput(output: Any?): Any? {
     val schema = outputSchema ?: return output

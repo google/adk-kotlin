@@ -128,4 +128,69 @@ class ValueCodecTest {
       assertFalse("secret" in message)
     }
   }
+
+  @Test
+  fun decode_jsonData_becomesTheDeclaredType() {
+    // Act
+    val query = codec<CodecQuery>().decode(mapOf("project" to "p", "maxResults" to 3L), "input")
+    val numbers = codec<List<Int>>().decode(listOf(1L, 2L), "input")
+    val counts = codec<Map<String, Int>>().decode(mapOf("a" to 1L), "input")
+
+    // Assert
+    assertEquals(CodecQuery("p", 3), query)
+    assertEquals(listOf(1, 2), numbers)
+    assertEquals(mapOf("a" to 1), counts)
+  }
+
+  @Test
+  fun decode_valueThatIsNotJsonData_isCoerced() {
+    // Arrange
+    val query = CodecQuery("p")
+
+    // Act
+    val decoded = codec<CodecQuery>().decode(query, "input")
+    val unit = codec<Unit>().decode(null, "input")
+
+    // Assert
+    assertSame(query, decoded)
+    assertEquals(Unit, unit)
+  }
+
+  @Test
+  fun decode_invalidJsonData_failsWithoutQuotingTheValue() {
+    // Act
+    val error =
+      assertFailsWith<NodeInputValidationException> {
+        codec<CodecQuery>()
+          .decode(mapOf("project" to "secret-project", "maxResults" to "x"), "input")
+      }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "input is not a valid")
+    assertFalse("secret" in error.message.orEmpty())
+  }
+
+  @Test
+  fun decode_valuesAlreadyOfTheType_keepTheirNumberTypes() {
+    // Arrange
+    val input = mapOf<String, Any?>("n" to 5)
+
+    // Act
+    val decoded = codec<Map<String, Any?>>().decode(input, "input")
+
+    // Assert
+    assertSame(input, decoded)
+  }
+
+  @Test
+  fun decode_nullInNonNullAnySlot_failsValidation() {
+    // Act
+    val error =
+      assertFailsWith<NodeInputValidationException> {
+        codec<Map<String, Any>>().decode(mapOf("a" to null), "input")
+      }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "input")
+  }
 }
