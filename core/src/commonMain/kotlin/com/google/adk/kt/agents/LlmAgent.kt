@@ -14,12 +14,15 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
+
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.AfterModelCallback
 import com.google.adk.kt.callbacks.AfterToolCallback
@@ -42,16 +45,24 @@ import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.OutputSchemaProcessor
 import com.google.adk.kt.processors.RequestConfirmationProcessor
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
+import com.google.adk.kt.workflow.NodeInfo
+import com.google.adk.kt.workflow.WorkflowConfigurationException
+import com.google.adk.kt.workflow.parseModelOutput
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.transformWhile
 
 /**
  * LLM-based Agent.
@@ -102,13 +113,13 @@ import kotlinx.coroutines.flow.onEach
  * @property afterToolCallbacks List of callbacks to run after each tool call.
  * @property inputSchema The input schema of the agent.
  * @property outputSchema The schema the agent's final response must conform to. Only top-level
- *   object schemas are supported (matching the Java ADK; the Python ADK additionally supports
- *   list/primitive output schemas). When set, the agent asks the model to return JSON matching this
- *   schema and validates the final response against it before saving it to [outputKey]. If the
- *   agent also has tools (including the framework's `transfer_to_agent` tool when sub-agents/peers
- *   are reachable), the schema is applied directly on models that support a response schema
- *   together with tools; on models that do not (e.g. Gemini 2.x), the framework falls back to a
- *   `set_model_response` tool to collect the structured output.
+ *   object schemas are supported, but a workflow node run also accepts list and primitive schemas
+ *   when the model applies the schema directly. When set, the agent asks the model to return JSON
+ *   matching this schema and validates the final response against it before saving it to
+ *   [outputKey]. If the agent also has tools (including the framework's `transfer_to_agent` tool
+ *   when sub-agents/peers are reachable), the schema is applied directly on models that support a
+ *   response schema together with tools; on models that do not (e.g. Gemini 2.x), the framework
+ *   falls back to a `set_model_response` tool to collect the structured output.
  * @property outputKey The key in session state to store the final text response of the agent. When
  *   set, the agent's concatenated text output (excluding parts marked as thoughts) is written to
  *   `event.actions.stateDelta[outputKey]` on each final-response event, which the session service
@@ -120,7 +131,12 @@ import kotlinx.coroutines.flow.onEach
  *   history. Set to [IncludeContents.NONE] to exclude prior history; the model then receives only
  *   the current turn (the most recent user input or other-agent reply, plus any tool
  *   calls/responses produced within that turn). The system instruction and tools are preserved in
- *   both modes.
+ *   both modes. As a single-turn workflow node, the agent runs without history unless this is set
+ *   explicitly.
+ * @property mode How this agent converses as a workflow node or a sub-agent. Null means
+ *   [AgentMode.CHAT] as a sub-agent or the invocation root, and [AgentMode.SINGLE_TURN] as a
+ *   standalone workflow node. A [AgentMode.TASK] agent gains a `finish_task` tool, and a task or
+ *   single-turn sub-agent is offered to its parent as a tool rather than as a transfer target.
  * @property maxSteps The maximum number of steps this agent runs within a single invocation, where
  *   a step is one model call plus any tool calls or transfers it triggers. Once the cap is reached
  *   the agent stops emitting further events, even if it has not yet produced a final response.
@@ -141,7 +157,7 @@ class LlmAgent(
   afterAgentCallbacks: List<AfterAgentCallback> = emptyList(),
   disallowTransferToParent: Boolean = false,
   disallowTransferToPeers: Boolean = false,
-  val tools: List<BaseTool> = emptyList(),
+  tools: List<BaseTool> = emptyList(),
   val toolsets: List<Toolset> = emptyList(),
   val generateContentConfig: GenerateContentConfig? = null,
   val instruction: Instruction? = null,
@@ -150,13 +166,14 @@ class LlmAgent(
   val afterModelCallbacks: List<AfterModelCallback> = emptyList(),
   val beforeToolCallbacks: List<BeforeToolCallback> = emptyList(),
   val afterToolCallbacks: List<AfterToolCallback> = emptyList(),
-  @OptIn(ExperimentalWorkflowApi::class) override val inputSchema: Schema? = null,
-  @OptIn(ExperimentalWorkflowApi::class) override val outputSchema: Schema? = null,
+  override val inputSchema: Schema? = null,
+  override val outputSchema: Schema? = null,
   val outputKey: String? = null,
   val onModelErrorCallbacks: List<OnModelErrorCallback> = emptyList(),
   val onToolErrorCallbacks: List<OnToolErrorCallback> = emptyList(),
-  val includeContents: IncludeContents = IncludeContents.DEFAULT,
+  includeContents: IncludeContents? = null,
   val maxSteps: Int? = null,
+  val mode: AgentMode? = null,
 ) :
   BaseAgent(
     name = name,
@@ -167,11 +184,37 @@ class LlmAgent(
     disallowTransferToParent = disallowTransferToParent,
     disallowTransferToPeers = disallowTransferToPeers,
   ) {
+  val includeContents: IncludeContents = includeContents ?: IncludeContents.DEFAULT
+  /**
+   * Whether [includeContents] was set explicitly, so a single-turn node uses it instead of NONE.
+   */
+  internal val includeContentsExplicit: Boolean = includeContents != null
+
+  /**
+   * The tools available to this agent: the configured ones, plus `finish_task` for a task agent and
+   * a tool for each task or single-turn sub-agent.
+   */
+  val tools: List<BaseTool> = buildList {
+    addAll(tools)
+    if (mode == AgentMode.TASK) add(FinishTaskTool(this@LlmAgent))
+    for (subAgent in subAgents) {
+      when ((subAgent as? LlmAgent)?.mode) {
+        AgentMode.SINGLE_TURN -> add(SingleTurnAgentTool(subAgent))
+        AgentMode.TASK -> add(TaskAgentTool(subAgent))
+        else -> {} // A chat sub-agent is a transfer target, not a tool.
+      }
+    }
+  }
 
   /** Always true, so a resumed agent node shows its model the answers to its long-running calls. */
   @ExperimentalWorkflowApi
   override val rerunOnResume: Boolean
     get() = true
+
+  // Chat and task nodes stay open across turns until they produce an output.
+  @ExperimentalWorkflowApi
+  override val waitForOutput: Boolean
+    get() = defaultMode() != AgentMode.SINGLE_TURN
 
   /**
    * Controls how prior conversation history is included in this agent's model request.
@@ -268,7 +311,237 @@ class LlmAgent(
   override fun runLiveImpl(context: InvocationContext): Flow<Event> =
     LlmAgentTurn(this, context, systemBeforeTurnProcessors, systemAfterTurnProcessors)
       .executeLive()
-      .onEach { maybeSaveOutputToState(it) }
+      .onEach { maybeSaveOutputToState(it, context) }
+
+  /**
+   * Runs this agent as a graph node in its [AgentMode]: a single turn on the node input, a chat
+   * that runs its task sub-agents, or a task that ends with `finish_task`.
+   */
+  @ExperimentalWorkflowApi
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> =
+    when (nodeMode(context.invocationContext)) {
+      AgentMode.SINGLE_TURN -> runSingleTurn(context, nodeInput)
+      AgentMode.CHAT -> runChat(context)
+      AgentMode.TASK -> runTask(context, nodeInput)
+    }
+
+  /** This agent's mode when [mode] is unset: chat as a sub-agent, single-turn otherwise. */
+  internal fun defaultMode(): AgentMode =
+    mode ?: if (parentAgent != null) AgentMode.CHAT else AgentMode.SINGLE_TURN
+
+  /**
+   * The mode this agent runs in as a node: any per-run override set for this agent (a runner sets
+   * chat for an invocation root), else [defaultMode].
+   */
+  private fun nodeMode(context: InvocationContext): AgentMode =
+    context.frameworkData.modeOverrideFor(this) ?: defaultMode()
+
+  /**
+   * Returns [context]'s invocation context for this agent's run in [mode], with [update] applied to
+   * the framework data. The mode is keyed to this agent, the node's isolation scope also reaches
+   * its sub-agents, and the node context lets this agent's tools run sub-agents as child nodes.
+   */
+  private fun agentContext(
+    context: Context,
+    mode: AgentMode,
+    update: (ContextFrameworkData) -> ContextFrameworkData = { it },
+  ): InvocationContext {
+    val ic = context.invocationContext
+    return ic.copy(
+      frameworkData =
+        update(
+          ic.frameworkData.copy(
+            agentModeOverride = AgentModeOverride(agent = this, mode = mode),
+            nodeContext = context,
+            nodePath = context.nodePath,
+            isolationScope = context.isolationScope,
+          )
+        )
+    )
+  }
+
+  /**
+   * Runs one turn on [nodeInput], fed to the agent as a user turn. The agent runs history-free
+   * unless [includeContents] was explicitly configured, sees only session events in the node's
+   * isolation scope, and its final model turn is the node's output.
+   */
+  private fun runSingleTurn(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    context.eventAuthor = name
+    val injected = injectNodeInput(context, nodeInput)
+    val agentContext =
+      agentContext(context, AgentMode.SINGLE_TURN) { data ->
+        data.copy(singleTurnNodeAgent = this@LlmAgent)
+      }
+    try {
+      runAsync(agentContext).collect { event ->
+        if (event.author.isNotEmpty()) context.eventAuthor = event.author
+        emit(markOutputIfFinalTurn(event))
+      }
+    } finally {
+      // The input is for this run only, so later nodes on the branch do not see it.
+      if (injected != null) context.invocationContext.session.events.remove(injected)
+    }
+  }
+
+  /**
+   * Works on a delegated task until `finish_task` succeeds. A failed call's error reaches the
+   * model, which retries; the succeeding call's arguments become the node's output and [outputKey]
+   * value. The node input, when given, is the task's opening user turn if no delegating call
+   * carries it.
+   */
+  private fun runTask(context: Context, nodeInput: Any?): Flow<Any?> {
+    val finishTool = tools.filterIsInstance<FinishTaskTool>().first()
+    val agentContext = agentContext(context, AgentMode.TASK)
+    val taskContext =
+      agentContext.copy(
+        userContent = nodeInput?.let(::nodeInputToUserContent) ?: agentContext.userContent
+      )
+    var finishArgs: Map<String, Any?>? = null
+    return runAsync(taskContext).transformWhile { event ->
+      if (event.author.isNotEmpty()) context.eventAuthor = event.author
+      val finishCall =
+        if (event.partial) null
+        else event.functionCalls().firstOrNull { it.name == FinishTaskTool.NAME }
+      val args = finishArgs
+      when {
+        finishCall != null -> {
+          finishArgs = finishCall.args
+          emit(event)
+          true
+        }
+        args != null && FinishTaskTool.isTerminalResponse(event) -> {
+          val output = finishTool.outputOf(args)
+          val key = outputKey?.takeIf { it.isNotEmpty() }
+          if (key != null && output != null) context.updateState(key, output)
+          emit(event.copy(output = output))
+          false
+        }
+        else -> {
+          emit(event)
+          true
+        }
+      }
+    }
+  }
+
+  /**
+   * Holds a conversation that runs its task sub-agents. Each task delegation runs the task agent as
+   * a child node in the call's own isolation scope and answers the call with the task's output; the
+   * agent then continues with that answer.
+   */
+  private fun runChat(context: Context): Flow<Any?> = flow {
+    val toolsByName = tools.associateBy { it.name }
+    // A delegation left unanswered by an earlier turn is resumed first.
+    for (call in unresolvedTaskDelegations(context.session.events, name, toolsByName)) {
+      emitTaskResponse(context, call)
+    }
+    while (true) {
+      var delegations = emptyList<FunctionCall>()
+      // Long-running calls of this turn that no response has answered yet.
+      val pending = mutableSetOf<String>()
+      emitAll(
+        runAsync(agentContext(context, AgentMode.CHAT)).transformWhile { event ->
+          if (event.author.isNotEmpty()) context.eventAuthor = event.author
+          pending += event.longRunningToolIds
+          event.functionResponses().forEach { response -> response.id?.let(pending::remove) }
+          if (delegations.isNotEmpty()) {
+            // Keep this turn's tool responses, but stop before the model starts another round.
+            val branch = context.invocationContext.branch
+            if (startsModelRound(event, branch)) return@transformWhile false
+            emit(event)
+            return@transformWhile !isOwnStep(event, branch) || event.functionResponses().isEmpty()
+          }
+          emit(event)
+          delegations = taskDelegationsIn(event, toolsByName)
+          delegations.isEmpty() || hasEagerToolCalls(event, toolsByName)
+        }
+      )
+      if (delegations.isEmpty()) return@flow
+      for (call in delegations) emitTaskResponse(context, call)
+      // A long-running call from the same turn is still unanswered, so the turn pauses here.
+      if (pending.isNotEmpty()) return@flow
+    }
+  }
+
+  /** Runs the task agent a delegation [call] names and emits the response that answers the call. */
+  private suspend fun FlowCollector<Any?>.emitTaskResponse(context: Context, call: FunctionCall) {
+    val callId = checkNotNull(call.id) { "A task delegation call must have an id." }
+    val target =
+      rootAgent.findAgent(call.name)
+        ?: throw WorkflowConfigurationException("Task target agent '${call.name}' not found.")
+    val output =
+      context.runNode(
+        target,
+        nodeInput = call.args,
+        runId = callId,
+        useSubBranch = true,
+        overrideIsolationScope = callId,
+        raiseOnWait = true,
+      )
+    context.eventAuthor = Role.USER
+    emit(taskResponseEvent(call, output))
+    context.eventAuthor = name
+  }
+
+  /**
+   * Whether [event] starts a new model round on [branch] rather than finishing the current step.
+   */
+  private fun startsModelRound(event: Event, branch: String?): Boolean =
+    isOwnStep(event, branch) &&
+      event.content?.role == Role.MODEL &&
+      event.functionCalls().none { it.name == FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME }
+
+  /** Whether [event] is this agent's own step on [branch], not one from a run on a sub-branch. */
+  private fun isOwnStep(event: Event, branch: String?): Boolean =
+    event.author == name && event.branch == branch
+
+  /**
+   * Feeds the node's input to the agent as its user turn: the user message for a first node, or the
+   * predecessor's output. Skipped on resume and for a null input. Returns the injected event, or
+   * null.
+   */
+  private fun injectNodeInput(context: Context, nodeInput: Any?): Event? {
+    if (nodeInput == null || context.resumeInputs.isNotEmpty()) return null
+    val ic = context.invocationContext
+    val event =
+      Event(
+        invocationId = ic.invocationId,
+        author = Role.USER,
+        content = nodeInputToUserContent(nodeInput),
+        branch = ic.branch,
+        nodeInfo = NodeInfo(path = context.nodePath),
+        isolationScope = context.isolationScope,
+      )
+    ic.session.events.add(event)
+    return event
+  }
+
+  /**
+   * Attaches the node output to [event] when it is this agent's final model turn, and sets
+   * [NodeInfo.messageAsOutput] when no [outputSchema] is configured.
+   */
+  private fun markOutputIfFinalTurn(event: Event): Event {
+    val content = event.content
+    if (event.author != name) return event
+    if (event.functionCalls().isNotEmpty() || event.partial || content == null) return event
+    if (content.role != Role.MODEL) return event
+    val output = outputValueOf(content)
+    if (outputSchema != null) return event.copy(output = output)
+    return event.copy(
+      output = output,
+      nodeInfo = (event.nodeInfo ?: NodeInfo()).copy(messageAsOutput = true),
+    )
+  }
+
+  /**
+   * Parses the model response text in [content] against [outputSchema], or returns the raw text
+   * when no [outputSchema] is configured.
+   */
+  private fun outputValueOf(content: Content): Any? {
+    val text = content.text()
+    val schema = outputSchema ?: return text
+    return parseModelOutput(schema, text)
+  }
 
   override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
     val agentState = context.agentStates[name]
@@ -298,7 +571,7 @@ class LlmAgent(
     var shouldPause = false
     var transferred = false
     executeTurns(context).collect { event ->
-      maybeSaveOutputToState(event)
+      maybeSaveOutputToState(event, context)
       emit(event)
       if (context.shouldPauseInvocation(event)) {
         shouldPause = true
@@ -381,6 +654,8 @@ class LlmAgent(
    *   `set_model_response` workaround instead validates strictly and propagates a tool execution
    *   error (failing the invocation if unrecovered) rather than saving best-effort text (see
    *   [com.google.adk.kt.tools.SetModelResponseTool.run]).
+   * - On a single-turn workflow node run, the text is parsed with [parseModelOutput], and a schema
+   *   mismatch saves nothing.
    *
    * NOTE on long-running tool events: when an event contains text alongside a long-running function
    * call (i.e. [Event.longRunningToolIds] is non-empty), Kotlin's [Event.isFinalResponse] returns
@@ -388,12 +663,14 @@ class LlmAgent(
    * `Event.finalResponse()` returns `false` for the same shape (it has no long-running-tool special
    * case), so it would not save. Kotlin intentionally follows Python here.
    */
-  private fun maybeSaveOutputToState(event: Event) {
+  private fun maybeSaveOutputToState(event: Event, context: InvocationContext) {
     if (event.author != name) {
       logger.debug { "Skipping output save for agent $name: event authored by ${event.author}" }
       return
     }
     val outputKey = outputKey?.takeIf { it.isNotEmpty() } ?: return
+    // A task agent's output comes from `finish_task`, not from a text turn.
+    if (mode == AgentMode.TASK) return
     if (!event.isFinalResponse) return
     val parts = event.content?.parts ?: return
 
@@ -404,20 +681,24 @@ class LlmAgent(
 
     val result = textParts.joinToString(separator = "") { it.text.orEmpty() }
 
+    val nodeRun = context.frameworkData.singleTurnNodeAgent === this
+    val schema = outputSchema
     val output: Any =
-      if (outputSchema != null) {
+      when {
+        schema == null -> result
         // An empty/whitespace result is an empty final stream chunk; do not parse it as JSON.
-        if (result.isBlank()) return
-        SchemaUtils.validateOutputSchema(result, outputSchema).getOrElse { cause ->
-          // The cause's message can quote the model's output, so only its type is logged.
-          logger.error {
-            "LlmAgent output for outputKey '$outputKey' did not match the outputSchema " +
-              "(${cause::class.simpleName}). Saving raw output to state."
+        result.isBlank() -> return
+        // A mismatch saves nothing; markOutputIfFinalTurn fails the node on the final model turn.
+        nodeRun -> runCatching { parseModelOutput(schema, result) }.getOrNull() ?: return
+        else ->
+          SchemaUtils.validateOutputSchema(result, schema).getOrElse { cause ->
+            // The cause's message can quote the model's output, so only its type is logged.
+            logger.error {
+              "LlmAgent output for outputKey '$outputKey' did not match the outputSchema " +
+                "(${cause::class.simpleName}). Saving raw output to state."
+            }
+            result
           }
-          result
-        }
-      } else {
-        result
       }
     event.actions.stateDelta[outputKey] = output
   }
@@ -450,8 +731,9 @@ class LlmAgent(
     private var outputKey: String? = null
     private var onModelErrorCallbacks: List<OnModelErrorCallback> = emptyList()
     private var onToolErrorCallbacks: List<OnToolErrorCallback> = emptyList()
-    private var includeContents: IncludeContents = IncludeContents.DEFAULT
+    private var includeContents: IncludeContents? = null
     private var maxSteps: Int? = null
+    private var mode: AgentMode? = null
 
     fun name(name: String): Builder = apply { this.name = name }
 
@@ -539,6 +821,8 @@ class LlmAgent(
 
     fun maxSteps(maxSteps: Int?): Builder = apply { this.maxSteps = maxSteps }
 
+    fun mode(mode: AgentMode?): Builder = apply { this.mode = mode }
+
     fun build(): LlmAgent =
       LlmAgent(
         name = checkNotNull(name) { "LlmAgent.Builder requires name to be set." },
@@ -565,6 +849,7 @@ class LlmAgent(
         onToolErrorCallbacks = onToolErrorCallbacks,
         includeContents = includeContents,
         maxSteps = maxSteps,
+        mode = mode,
       )
   }
 
@@ -592,3 +877,15 @@ internal fun CallbackContext.requireLlmAgent(): LlmAgent {
   }
   return agent
 }
+
+/**
+ * Converts a node's input into a user-role [Content]: re-tags a [Content] as user, formats a map or
+ * list as JSON text, and converts any other value with `toString`.
+ */
+private fun nodeInputToUserContent(value: Any): Content =
+  when (value) {
+    is Content -> value.copy(role = Role.USER)
+    is Map<*, *>,
+    is List<*> -> Content.fromText(Role.USER, anyToJsonElement(value).toString())
+    else -> Content.fromText(Role.USER, value.toString())
+  }

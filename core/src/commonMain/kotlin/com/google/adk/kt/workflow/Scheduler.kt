@@ -17,7 +17,9 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
@@ -206,6 +208,7 @@ internal class Scheduler(
             resumeInputs = interception.resumeInputs,
             useSubBranch = trigger.useSubBranch,
             overrideBranch = trigger.branch,
+            overrideIsolationScope = taskScopeFor(nodeName, runId),
           )
           .run(trigger.input)
       }
@@ -293,6 +296,14 @@ internal class Scheduler(
         )
       )
   }
+
+  /** A task agent's isolation scope: its own node path, which keeps its conversation apart. */
+  private fun taskScopeFor(nodeName: String, runId: String): String? =
+    if ((graph.node(nodeName) as? LlmAgent)?.mode == AgentMode.TASK) {
+      Context.buildNodePath(context.nodePath, nodeName, runId)
+    } else {
+      null
+    }
 
   private fun enqueueSuccessorNodeTriggers(nodeName: String, childContext: Context) {
     val successors = graph.nodesTriggeredBy(nodeName, childContext.routes)

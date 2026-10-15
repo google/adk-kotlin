@@ -439,3 +439,25 @@ internal fun findUserMessageForInvocation(events: List<Event>, invocationId: Str
   }
   return null
 }
+
+/**
+ * Parses model text [output] against [schema], stripping a wrapping code fence and decoding JSON.
+ * If that fails and [schema] accepts a string, returns the raw text. Blank text returns null.
+ */
+internal fun parseModelOutput(schema: Schema, output: String): Any? {
+  if (output.isBlank()) return null
+  val parsed =
+    SchemaUtils.readJson(stripJsonCodeFence(output)).mapCatching {
+      SchemaUtils.validateValue(it, schema).getOrThrow()
+    }
+  return if (parsed.isFailure && SchemaUtils.acceptsString(schema)) output else parsed.getOrThrow()
+}
+
+private val FENCE_LANGUAGE = Regex("^[A-Za-z0-9_]*[ \t]*\n?")
+
+private fun stripJsonCodeFence(text: String): String {
+  val trimmed = text.trim()
+  if (trimmed.length < 6 || !trimmed.startsWith("```") || !trimmed.endsWith("```")) return text
+  val inner = trimmed.substring(3, trimmed.length - 3)
+  return inner.replaceFirst(FENCE_LANGUAGE, "").trim().ifEmpty { inner.trim() }
+}

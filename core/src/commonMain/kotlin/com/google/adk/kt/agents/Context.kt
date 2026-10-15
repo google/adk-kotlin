@@ -106,6 +106,7 @@ open class Context(
    * @param childRuns Runs of this node's children, shared by concurrent calls and later attempts.
    */
   @ExperimentalWorkflowApi
+  @OptIn(FrameworkInternalApi::class)
   internal constructor(
     invocationContext: InvocationContext,
     node: Node,
@@ -119,6 +120,7 @@ open class Context(
     nodePath: String? = null,
     childRunIds: ChildRunIds = ChildRunIds(),
     childRuns: ChildRuns = ChildRuns(),
+    isolationScope: String? = null,
   ) : this(invocationContext, actions) {
     this.parent = parent
     this.runId = runId
@@ -143,6 +145,14 @@ open class Context(
         outputForAncestors = outputForAncestors,
         childRunIds = childRunIds,
         childRuns = childRuns,
+        // A root activation takes the invocation's scope.
+        isolationScope =
+          isolationScope
+            ?: if (parentState != null) {
+              parentState.isolationScope
+            } else {
+              invocationContext.frameworkData.isolationScope
+            },
       )
   }
 
@@ -508,6 +518,14 @@ open class Context(
     get() = requireNodeState().interruptIds.toSet()
 
   /**
+   * The scope that limits which session events an agent in this activation sees, or null when
+   * unscoped. Inherited from the parent unless the node was started with an override.
+   */
+  @ExperimentalWorkflowApi
+  internal val isolationScope: String?
+    get() = requireNodeState().isolationScope
+
+  /**
    * Executes [node] as a child of this node activation and returns its output.
    *
    * Child events are recorded under `<thisNodePath>/<node.name>@<runId>`. If [node] fails, this
@@ -530,6 +548,9 @@ open class Context(
    *   and successors receive it.
    * @param useSubBranch When `true`, runs [node] on a sub-branch `<branch>.<node.name>@<runId>`.
    * @param overrideBranch Branch for [node] to run on instead of this node's branch.
+   * @param overrideIsolationScope Isolation scope for [node] to run in instead of this node's
+   *   scope. When `null`, an [AgentMode.TASK] child of a node activation runs in a scope named by
+   *   its own node path.
    * @param raiseOnWait When `true` and [node] is a [Workflow] or sets [Node.waitForOutput] but
    *   finishes without an output, aborts this node's run like an interrupt, without recording one:
    *   this node completes with any output it already produced, or else waits only if it sets
@@ -554,6 +575,7 @@ open class Context(
     useAsOutput: Boolean = false,
     useSubBranch: Boolean = false,
     overrideBranch: String? = null,
+    overrideIsolationScope: String? = null,
     raiseOnWait: Boolean = false,
   ): Any? {
     val ns = requireNodeState()
@@ -573,6 +595,7 @@ open class Context(
       useAsOutput = useAsOutput,
       useSubBranch = useSubBranch,
       overrideBranch = overrideBranch,
+      overrideIsolationScope = overrideIsolationScope,
       raiseOnWait = raiseOnWait,
     )
   }
@@ -591,6 +614,7 @@ open class Context(
     useAsOutput: Boolean = false,
     useSubBranch: Boolean = false,
     overrideBranch: String? = null,
+    overrideIsolationScope: String? = null,
     raiseOnWait: Boolean = false,
   ): Any? {
     val ns = requireNodeState()
@@ -609,6 +633,7 @@ open class Context(
           useAsOutput = useAsOutput,
           useSubBranch = useSubBranch,
           overrideBranch = overrideBranch,
+          overrideIsolationScope = overrideIsolationScope,
         )
       } catch (e: Exception) {
         if (delegatesOutput) ns.releaseOutputDelegation()
@@ -656,6 +681,7 @@ open class Context(
     useAsOutput: Boolean = false,
     useSubBranch: Boolean = false,
     overrideBranch: String? = null,
+    overrideIsolationScope: String? = null,
   ): Context {
     // A dispatched child is not in the static graph that Workflow validates, so check it here.
     validateNodeName(node.name)
@@ -683,7 +709,16 @@ open class Context(
     }
     try {
       val childContext =
-        runChild(node, input, id, childKey, useAsOutput, useSubBranch, overrideBranch)
+        runChild(
+          node,
+          input,
+          id,
+          childKey,
+          useAsOutput,
+          useSubBranch,
+          overrideBranch,
+          overrideIsolationScope,
+        )
       if (!currentCoroutineContext().isActive) {
         // The child swallowed this node's cancellation and did not finish, so waiters run it.
         ns.childRuns.release(childKey, run)
@@ -709,6 +744,7 @@ open class Context(
     useAsOutput: Boolean,
     useSubBranch: Boolean,
     overrideBranch: String?,
+    overrideIsolationScope: String?,
   ): Context {
     val recovered = recoveredChildren[childKey]
     val interception =
@@ -729,6 +765,12 @@ open class Context(
         resumeInputs = interception.resumeInputs,
         useSubBranch = useSubBranch,
         overrideBranch = overrideBranch,
+        // A task agent works in a scope of its own unless the caller picks one.
+        overrideIsolationScope =
+          overrideIsolationScope
+            ?: buildNodePath(nodePath, node.name, id).takeIf {
+              (node as? LlmAgent)?.mode == AgentMode.TASK
+            },
       )
       .run(input, validateInput = false)
   }
@@ -791,6 +833,8 @@ internal class NodeExecutionState(
   val outputForAncestors: List<String> = emptyList(),
   private val childRunIds: ChildRunIds = ChildRunIds(),
   val childRuns: ChildRuns = ChildRuns(),
+  /** The isolation scope stamped on this activation's events; null when unscoped. */
+  val isolationScope: String? = null,
 ) {
   /** Node paths this activation's output satisfies: [nodePath] followed by [outputForAncestors]. */
   val outputFor: List<String> = listOf(nodePath) + outputForAncestors
