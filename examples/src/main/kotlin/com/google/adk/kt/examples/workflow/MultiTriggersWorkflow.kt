@@ -25,6 +25,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.emit
 import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
@@ -57,8 +58,8 @@ object MultiTriggersWorkflow {
 
   /** Reports the output of whichever predecessor triggered this run. */
   private val sendMessage =
-    node<Any?, Content>("send_message") { _, input ->
-      Content.fromText(Role.MODEL, "Triggered for input: $input")
+    node<Any?, Unit>("send_message") { _, input ->
+      emit(Content.fromText(Role.MODEL, "Triggered for input: $input"))
     }
 }
 

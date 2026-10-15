@@ -196,7 +196,12 @@ private constructor(
     suspend fun run(nodeInput: Any?, validateInput: Boolean): Context {
       val cancelledNodePaths = context.invocationContext.frameworkData.cancelledNodePaths
       try {
-        runAttempt(nodeInput, validateInput)
+        try {
+          runAttempt(nodeInput, validateInput)
+        } catch (e: NodeInterruptedException) {
+          // The node asked for input; a request that fails to send fails this node.
+          dispatch((e.request ?: throw e).toEvent())
+        }
         flushPending()
       } catch (e: NodeInterruptedException) {
         // A dispatched child paused, or raiseOnWait aborted the run. Any interrupt ids are already

@@ -55,10 +55,13 @@ class GraphValidationException(message: String) : IllegalArgumentException(messa
 class WorkflowConfigurationException(message: String) : IllegalArgumentException(message)
 
 /**
- * Aborts a dispatching node when a child node pauses for input. Extends [Throwable] rather than
- * [Exception] so `catch (Exception)` in user code does not swallow it.
+ * Ends a node's run while it waits for input: thrown by [requestInput] with its [request], or when
+ * a dispatched child pauses. Extends [Throwable] rather than [Exception] so `catch (Exception)` in
+ * user code does not swallow it.
  */
-internal class NodeInterruptedException : Throwable("Node interrupted.")
+@OptIn(ExperimentalWorkflowApi::class)
+internal class NodeInterruptedException(val request: RequestInput? = null) :
+  Throwable("Node interrupted.")
 
 /**
  * Thrown by [com.google.adk.kt.agents.Context.runNode] when the dispatched child fails: [error] is

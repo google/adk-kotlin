@@ -28,6 +28,7 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.emit
 import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import java.util.Base64
@@ -48,22 +49,24 @@ object MessageWorkflow {
       chain(Start, sendString, sendMultimodal, multipleMessages, streamSentence)
     }
 
-  /** Sends one message: a node that returns [Content] sends it as a message, with no output. */
+  /** Sends one message with `emit`; a returned value would be the node's output instead. */
   private val sendString =
-    node<Any?, Content>("send_string") { _, _ ->
-      Content.fromText(Role.MODEL, "#1 This is a simple string message.")
+    node<Any?, Unit>("send_string") { _, _ ->
+      emit(Content.fromText(Role.MODEL, "#1 This is a simple string message."))
     }
 
   private val sendMultimodal =
-    node<Any?, Content>("send_multimodal") { _, _ ->
+    node<Any?, Unit>("send_multimodal") { _, _ ->
       val image = Blob(mimeType = "image/png", data = Base64.getDecoder().decode(RED_SQUARE_PNG))
-      Content(
-        role = Role.MODEL,
-        parts =
-          listOf(
-            Part(text = "#2 Here is a multi-modal message with an inline image (red square):"),
-            Part(inlineData = image),
-          ),
+      emit(
+        Content(
+          role = Role.MODEL,
+          parts =
+            listOf(
+              Part(text = "#2 Here is a multi-modal message with an inline image (red square):"),
+              Part(inlineData = image),
+            ),
+        )
       )
     }
 

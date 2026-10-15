@@ -39,8 +39,8 @@ import kotlinx.coroutines.flow.Flow
  *   route, instead of completing when its run completes.
  * @property config The node's retry policy and execution timeout.
  * @property inputSchema Validates the node's input before it runs.
- * @property outputSchema Validates the output value the node emits. A value assigned to
- *   `Context.output` and a message-as-output event's content are not checked.
+ * @property outputSchema Validates the output value the node emits. A value set with
+ *   `Context.setOutput` and a message-as-output event's content are not checked.
  * @property stateSchema Declares the state keys the node uses. Child nodes inherit it unless they
  *   declare their own.
  */
@@ -85,8 +85,11 @@ interface Node {
    * The user-facing implementation of the node's execution logic.
    *
    * Emits any of:
-   * - A raw output value (e.g. String, Int, a data class, List, Map), which becomes this node's
-   *   output and is normalized into an [Event][com.google.adk.kt.events.Event] by the engine.
+   * - A raw output value, which becomes this node's output and is normalized into an
+   *   [Event][com.google.adk.kt.events.Event] by the engine. A persistent session saves it only if
+   *   it is JSON-native (a map, list, string, number, boolean, null, or `JsonElement`) or a
+   *   [Content][com.google.adk.kt.types.Content]; for a typed value, call [Context.setOutput],
+   *   which writes its JSON form.
    * - A [RequestInput], which the engine normalizes into an `adk_request_input` interrupt event
    *   that pauses the graph until the user answers.
    * - An [Event][com.google.adk.kt.events.Event], which passes through directly (useful for

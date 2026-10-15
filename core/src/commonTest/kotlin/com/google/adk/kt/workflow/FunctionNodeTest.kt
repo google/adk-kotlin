@@ -40,6 +40,7 @@ import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.jvm.JvmInline
 import kotlin.reflect.typeOf
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -52,8 +53,11 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 private val startMessage = Content.fromText(Role.USER, "start")
@@ -85,10 +89,46 @@ private data class UserProfileDomain(val userId: String, val tier: String)
 
 @Serializable private data class UserProfile(val id: String, val age: Int)
 
+@Serializable private data class AccountProfile(val userId: String, val tier: String)
+
 @Serializable private data class TicketQuery(val project: String, val maxResults: Int = 5)
 
 @Serializable
 private data class OrderRequest(val item: String, val quantity: Int, val unitPrice: Double)
+
+@Serializable @JvmInline private value class PortUserId(val id: String)
+
+@Serializable private data class PortOrder(val id: String, val note: String?, val quantity: Int = 1)
+
+@Serializable private data class PortProfile(val userId: String, val tier: String = "free")
+
+@Serializable private data class PortReading(val type: String, val value: Double)
+
+@Serializable
+private enum class PortStatus {
+  @SerialName("shipped") SHIPPED
+}
+
+@Serializable private data class PortBox<T>(val item: T)
+
+/** Outputs an order through `Context.setOutput`. */
+private class PortOrderWriter(override val name: String) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    context.setOutput(PortOrder(id = "o1", note = null))
+  }
+}
+
+/** Outputs a class without a serializer through `Context.setOutput`. */
+private class PortPlainWriter(override val name: String) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    context.setOutput(UserProfileDomain("u1", "gold"))
+  }
+}
+
+@Serializable
+private sealed interface PortShape {
+  @Serializable data class Circle(val r: Double) : PortShape
+}
 
 class FunctionNodeTest {
 
@@ -125,7 +165,7 @@ class FunctionNodeTest {
     assertEquals(typeOf<Int>(), wordCount.outputType)
     assertEquals(Schema(type = Type.STRING), wordCount.inputSchema)
     assertEquals(Schema(type = Type.INTEGER), wordCount.outputSchema)
-    assertEquals(3, events.last { it.output != null }.output)
+    assertEquals(3L, events.last { it.output != null }.output)
   }
 
   @Test
@@ -162,7 +202,7 @@ class FunctionNodeTest {
   }
 
   @Test
-  fun node_emitsProgressEventsAndReturnsOutput_preservesOutputTypeAndStampsAuthor() {
+  fun node_emitsProgressEventsAndReturnsOutput_encodesTheOutputAndStampsAuthor() {
     // Arrange
     val streamChunks =
       node("stream_chunks") { context, text: String ->
@@ -190,7 +230,7 @@ class FunctionNodeTest {
     assertEquals(listOf("Processing a", "Processing b"), progressEvents.map { it.content?.text() })
     assertEquals(listOf("wf", "wf"), progressEvents.map { it.author })
     val outputEvent = events.last { it.output != null }
-    assertEquals(2, outputEvent.output)
+    assertEquals(2L, outputEvent.output)
     assertEquals(2, outputEvent.actions.stateDelta["processed_count"])
   }
 
@@ -199,27 +239,27 @@ class FunctionNodeTest {
   @Test
   fun node_wrongOrNullInput_throwsValueFreeNodeInputValidationException() {
     // Arrange
-    val domainConsumer = node("domain_consumer") { _, profile: UserProfileDomain -> profile.userId }
+    val orderConsumer = node("order_consumer") { _, order: PortOrder -> order.id }
     val listConsumer = node("list_consumer") { _, xs: List<Int> -> xs.sum() }
     val countConsumer = node("count_consumer") { _, n: Int -> n }
     val nullableConsumer = node("nullable_consumer") { _, s: String? -> s ?: "fallback" }
 
     // Act
-    val domainError =
-      assertFailsWith<NodeInputValidationException> { runOutputs(domainConsumer, secret) }
+    val orderError =
+      assertFailsWith<NodeInputValidationException> { runOutputs(orderConsumer, secret) }
     val listError =
       assertFailsWith<NodeInputValidationException> { runOutputs(listConsumer, listOf(1, secret)) }
-    val quotedNumberError =
-      assertFailsWith<NodeInputValidationException> { runOutputs(countConsumer, "42") }
+    val wordError =
+      assertFailsWith<NodeInputValidationException> { runOutputs(countConsumer, "forty-two") }
     val nullError =
       assertFailsWith<NodeInputValidationException> { runOutputs(countConsumer, null) }
     val nullableOutputs = runOutputs(nullableConsumer, null)
 
     // Assert
-    assertFalse(secret in domainError.message.orEmpty())
+    assertFalse(secret in orderError.message.orEmpty())
     assertFalse(secret in listError.message.orEmpty())
     assertContains(listError.message.orEmpty(), "input of node 'list_consumer'[1]")
-    assertContains(quotedNumberError.message.orEmpty(), "expected kotlin.Int, but got String")
+    assertContains(wordError.message.orEmpty(), "input of node 'count_consumer' does not match")
     assertContains(
       nullError.message.orEmpty(),
       "input of node 'count_consumer' does not accept null",
@@ -273,13 +313,29 @@ class FunctionNodeTest {
   }
 
   @Test
-  fun node_contentReturn_persistsMessageEventWithoutNodeOutput() {
+  fun node_emitsContent_sendsAMessageBeforeTheOutput() {
     // Arrange
-    val produceContent =
-      node<Any?, Content>("produce_content") { _, _ ->
-        Content.fromText(Role.MODEL, "cached answer")
+    val count =
+      node<Any?, Int>("count") { _, _ ->
+        emit(Content.fromText(Role.MODEL, "counting"))
+        3
       }
-    val afterReply = node("after_reply") { _, reply: Content? -> reply?.text() ?: "no input" }
+
+    // Act
+    val events = runWorkflowThroughRunner(Workflow("wf", listOf(Edge(Start, count))))
+
+    // Assert
+    assertEquals(listOf("counting", null), events.map { it.content?.text() })
+    assertEquals(listOf(null, 3L), events.map { it.output })
+  }
+
+  /** Makes a returned [Content] the node's output, which a successor typed `Content` receives. */
+  @Test
+  fun node_contentReturn_isTheNodeOutput() {
+    // Arrange
+    val answer = Content.fromText(Role.MODEL, "cached answer")
+    val produceContent = node<Any?, Content>("produce_content") { _, _ -> answer }
+    val afterReply = node("after_reply") { _, reply: Content -> reply.text() }
     val workflow =
       Workflow(
         name = "wf",
@@ -289,20 +345,32 @@ class FunctionNodeTest {
 
     // Act
     val events = runner.runEvents()
-    val messageEvent =
+    val outputEvent =
       runner.session().events.single { it.nodeInfo?.path == "wf@1/produce_content@1" }
-    val roundTripped =
-      adkJson.decodeFromString(
-        Event.serializer(),
-        adkJson.encodeToString(Event.serializer(), messageEvent),
-      )
 
     // Assert
-    assertEquals(Content.fromText(Role.MODEL, "cached answer"), messageEvent.content)
-    assertNull(messageEvent.output)
-    assertFalse(messageEvent.nodeInfo?.messageAsOutput == true)
-    assertEquals(messageEvent.content, roundTripped.content)
-    assertEquals("no input", events.last { it.output != null }.output)
+    assertEquals(answer, outputEvent.output)
+    assertNull(outputEvent.content)
+    assertEquals("cached answer", events.last { it.output != null }.output)
+  }
+
+  /** Outputs the list of the items' returned [Content]s. */
+  @Test
+  fun parallelNode_contentItems_outputsTheList() {
+    // Arrange
+    val names = node<Any?, List<String>>("names") { _, _ -> listOf("a", "b") }
+    val greet =
+      parallelNode("greet") { _, name: String -> Content.fromText(Role.MODEL, "hi $name") }
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, names), Edge(names, greet)))
+
+    // Act
+    val events = runWorkflowThroughRunner(workflow)
+
+    // Assert
+    assertEquals(
+      listOf(Content.fromText(Role.MODEL, "hi a"), Content.fromText(Role.MODEL, "hi b")),
+      events.single { it.nodeInfo?.path == "wf@1/greet@1" && it.output != null }.output,
+    )
   }
 
   @Test
@@ -360,7 +428,7 @@ class FunctionNodeTest {
     assertEquals(Type.OBJECT, inferredInput.inputSchema?.type)
     assertEquals(listOf("u1"), inferredOutputs)
     assertEquals(listOf("u2"), explicitProfileOutputs)
-    assertEquals(listOf(TicketQuery("ADK")), matchingOutputs)
+    assertEquals(listOf(mapOf("project" to "ADK", "maxResults" to 5L)), matchingOutputs)
     assertContains(outputError.message.orEmpty(), "output of node 'wrong_output'")
   }
 
@@ -418,6 +486,68 @@ class FunctionNodeTest {
     assertEquals(listOf("a, b"), joined)
   }
 
+  @Test
+  fun node_resumeShapedInputs_decodeToTypedValues() {
+    // Arrange
+    val describe = node("describe") { _, profile: UserProfile -> "${profile.id}:${profile.age}" }
+    val sum = node("sum") { _, xs: List<Int> -> xs.sum() }
+    val double = node("double") { _, x: Int -> x * 2 }
+
+    // Act
+    val profile = runOutputs(describe, mapOf("id" to "u1", "age" to 3L))
+    val total = runOutputs(sum, listOf(1L, 2L))
+    val doubled = runOutputs(double, 21L)
+    val quoted = runOutputs(double, "21")
+
+    // Assert
+    assertEquals(listOf("u1:3"), profile)
+    assertEquals(listOf(3L), total)
+    assertEquals(listOf(42L), doubled)
+    // A quoted number decodes into a numeric port, as pydantic reads it.
+    assertEquals(listOf(42L), quoted)
+  }
+
+  // -- End-to-end workflows --
+
+  @Test
+  fun workflow_parallelFanOutAndJoinNode_aggregatesTheJsonFormsOfTheOutputs() {
+    // Arrange
+    val seed = node<Any?, String>("seed") { _, _ -> "admin_alice" }
+    val fetchProfile =
+      node("fetch_profile") { _, userId: String -> AccountProfile(userId = userId, tier = "gold") }
+    val fetchQuota =
+      node("fetch_quota") { _, userId: String -> if (userId.startsWith("admin_")) 10_000 else 100 }
+    val joinFetches = JoinNode(name = "join_fetches")
+    val buildReport =
+      node("build_report") { _, joined: Map<String, Any?> ->
+        val profile = joined["fetch_profile"] as Map<*, *>
+        val quota = joined["fetch_quota"] as Long
+        "User ${profile["userId"]} (tier=${profile["tier"]}) has quota=$quota"
+      }
+    val accountWorkflow =
+      Workflow(
+        name = "account_workflow",
+        edges =
+          listOf(
+            Edge(Start, seed),
+            Edge(seed, fetchProfile),
+            Edge(seed, fetchQuota),
+            Edge(fetchProfile, joinFetches),
+            Edge(fetchQuota, joinFetches),
+            Edge(joinFetches, buildReport),
+          ),
+      )
+
+    // Act
+    val events = runWorkflowThroughRunner(accountWorkflow)
+
+    // Assert
+    assertEquals(
+      "User admin_alice (tier=gold) has quota=10000",
+      events.last { it.output != null }.output,
+    )
+  }
+
   // -- Parallel worker FunctionNode builders --
 
   @Test
@@ -449,17 +579,16 @@ class FunctionNodeTest {
     // Assert
     assertEquals(typeOf<List<Int>>(), doubleItems.inputType)
     assertEquals(typeOf<List<Int>>(), doubleItems.outputType)
-    val intArray = Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER))
-    assertEquals(intArray, doubleItems.inputSchema)
-    assertEquals(intArray, doubleItems.outputSchema)
+    assertNull(doubleItems.inputSchema)
+    assertNull(doubleItems.outputSchema)
     assertTrue(doubleItems.rerunOnResume)
     assertNull(doubleItems.maxParallelWorkers)
     assertEquals(typeOf<Int>(), doubleItems.itemNode?.inputType)
     assertEquals(typeOf<Int>(), doubleItems.itemNode?.outputType)
     assertEquals(Schema(type = Type.INTEGER), doubleItems.itemNode?.inputSchema)
     assertEquals(Schema(type = Type.INTEGER), doubleItems.itemNode?.outputSchema)
-    assertEquals(listOf(10, 20, 30), listEvents.last { it.output != null }.output)
-    assertEquals(listOf(70), singleEvents.last { it.output != null }.output)
+    assertEquals(listOf(10L, 20L, 30L), listEvents.last { it.output != null }.output)
+    assertEquals(listOf(70L), singleEvents.last { it.output != null }.output)
   }
 
   @Test
@@ -496,8 +625,27 @@ class FunctionNodeTest {
     assertEquals(listOf("PLAIN"), textEvents.last { it.output != null }.output)
     assertEquals(listOf("""{"a":1}"""), objectEvents.last { it.output != null }.output)
     assertEquals(listOf("a", "b"), anyEvents.last { it.output != null }.output)
-    assertEquals(listOf(2), mixedEvents.last { it.output != null }.output)
-    assertEquals(listOf(10), wholeEvents.last { it.output != null }.output)
+    assertEquals(listOf(2L), mixedEvents.last { it.output != null }.output)
+    assertEquals(listOf(10L), wholeEvents.last { it.output != null }.output)
+  }
+
+  @Test
+  fun parallelNode_jsonMessageAfterStart_decodesEachItemIntoItsType() {
+    // Arrange
+    val quantities = parallelNode("quantities") { _, line: OrderRequest -> line.quantity }
+    val workflow = Workflow(name = "quantities_wf", edges = listOf(Edge(Start, quantities)))
+    val message =
+      Content.fromText(
+        Role.USER,
+        """[{"item":"Book","quantity":2,"unitPrice":10.0},""" +
+          """{"item":"Pen","quantity":"3","unitPrice":1.5}]""",
+      )
+
+    // Act
+    val events = runWorkflowThroughRunner(workflow, message)
+
+    // Assert
+    assertEquals(listOf(2L, 3L), events.last { it.output != null }.output)
   }
 
   @Test
@@ -610,7 +758,7 @@ class FunctionNodeTest {
     val events = runWorkflowThroughRunner(workflow)
 
     // Assert
-    assertEquals(listOf(10, 20), events.last { it.output != null }.output)
+    assertEquals(listOf(10L, 20L), events.last { it.output != null }.output)
     assertEquals(3, itemRuns.load())
   }
 
@@ -736,6 +884,23 @@ class FunctionNodeTest {
   }
 
   @Test
+  fun workflow_parallelNodeOfEvents_outputsTheOutputsOnTheItemEvents() {
+    // Arrange
+    val seed = node<Any?, List<Int>>("seed") { _, _ -> listOf(1, 2) }
+    val wrap = parallelNode<Int, Event>("wrap") { _, x -> Event(output = x * 10) }
+    val workflow = Workflow(name = "events_wf", edges = listOf(Edge(Start, seed), Edge(seed, wrap)))
+
+    // Act
+    val events = runWorkflowThroughRunner(workflow)
+
+    // Assert
+    assertEquals(
+      listOf(10, 20),
+      events.single { it.nodeInfo?.path == "events_wf@1/wrap@1" && it.output != null }.output,
+    )
+  }
+
+  @Test
   fun parallelNode_nonPositiveMaxParallelWorkers_throwsWorkflowConfigurationException() {
     // Arrange
     val singleFn = node("single") { _, x: Int -> x }
@@ -753,6 +918,354 @@ class FunctionNodeTest {
     // Assert
     assertEquals("maxParallelWorkers must be at least 1.", zeroError.message)
     assertEquals("maxParallelWorkers must be at least 1.", negativeError.message)
+  }
+
+  // -- Round trips through typed ports --
+
+  /**
+   * Returns what a node typed [T] receives from a predecessor that returns [value]: live, and from
+   * the predecessor's event after a JSON round trip, as from a reloaded session.
+   */
+  private inline fun <reified T> receivedThroughNodes(value: T): Pair<Any?, Any?> {
+    val received = mutableListOf<Any?>()
+    val produce = node<Any?, T>("produce") { _, _ -> value }
+    val consume = node<T, Unit>("consume") { _, input -> received += input }
+    val runner = runnerFor(Workflow("wf", listOf(Edge(Start, produce), Edge(produce, consume))))
+    val unused = runner.runEvents()
+    val produced = runner.session().events.singleOrNull { it.nodeInfo?.path == "wf@1/produce@1" }
+    val unusedOutputs = runOutputs(consume, produced?.let { reloaded(it).output })
+    return received[0] to received[1]
+  }
+
+  private fun reloaded(event: Event): Event =
+    adkJson.decodeFromString(Event.serializer(), adkJson.encodeToString(Event.serializer(), event))
+
+  @Test
+  fun typedPorts_supportedTypes_arriveEqualLiveAndAfterAReload() {
+    // Arrange
+    val order = PortOrder(id = "o1", note = null)
+
+    // Act
+    val cases: List<Pair<String, Pair<Any?, Pair<Any?, Any?>>>> =
+      listOf(
+        "Int, a Long after a reload" to (1 to receivedThroughNodes(1)),
+        "String" to ("a" to receivedThroughNodes("a")),
+        "enum with @SerialName" to (PortStatus.SHIPPED to receivedThroughNodes(PortStatus.SHIPPED)),
+        "value class" to (PortUserId("u1") to receivedThroughNodes(PortUserId("u1"))),
+        "data class with a required null" to (order to receivedThroughNodes(order)),
+        "List of data classes" to (listOf(order) to receivedThroughNodes(listOf(order))),
+        "Map<Int, data class>, keyed by strings" to
+          (mapOf(1 to order) to receivedThroughNodes(mapOf(1 to order))),
+        "Box<Int>" to (PortBox(1) to receivedThroughNodes(PortBox(1))),
+        "sealed port" to
+          (PortShape.Circle(1.0) to receivedThroughNodes<PortShape>(PortShape.Circle(1.0))),
+      )
+    val bytes = receivedThroughNodes(byteArrayOf(1, 2, 3))
+    val bytesOutput =
+      runOutputs(node<Any?, ByteArray>("bytes") { _, _ -> byteArrayOf(1, 2, 3) }, null)
+
+    // Assert
+    for ((case, result) in cases) {
+      val (expected, received) = result
+      assertEquals(expected, received.first, "$case, live")
+      assertEquals(expected, received.second, "$case, after a reload")
+    }
+    assertEquals(listOf<Byte>(1, 2, 3), (bytes.first as ByteArray).toList())
+    assertEquals(listOf<Byte>(1, 2, 3), (bytes.second as ByteArray).toList())
+    assertEquals(listOf<Any?>("AQID"), bytesOutput)
+  }
+
+  @Test
+  fun node_portTypeWithoutASerializer_failsWhenBuiltUnlessItNeedsNone() {
+    // Act
+    val inputError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<UserProfileDomain, String>("plain_in") { _, profile -> profile.userId }
+      }
+    val parallelInputError =
+      assertFailsWith<WorkflowConfigurationException> {
+        parallelNode<UserProfileDomain, String>("plain_in_items") { _, profile -> profile.userId }
+      }
+    val starInputError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Map<String, *>, Int>("star_in") { _, fields -> fields.size }
+      }
+    val nodeError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Any?, UserProfileDomain>("plain") { _, _ -> UserProfileDomain("u1", "gold") }
+      }
+    val parallelError =
+      assertFailsWith<WorkflowConfigurationException> {
+        parallelNode<Int, UserProfileDomain>("plain_items") { _, _ ->
+          UserProfileDomain("u1", "gold")
+        }
+      }
+    val interfaceError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Any?, CharSequence>("text") { _, _ -> "hi" }
+      }
+    val nullableInterfaceError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Any?, CharSequence?>("maybe_text") { _, _ -> null }
+      }
+    val numberError =
+      assertFailsWith<WorkflowConfigurationException> { node<Any?, Number>("number") { _, _ -> 1 } }
+    val requestError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Any?, RequestInput>("ask") { _, _ -> RequestInput(message = "?") }
+      }
+    val built =
+      listOf(
+        node<PortOrder, PortOrder>("order") { _, order -> order },
+        node<Content, Content>("content") { _, message -> message },
+        node<Any?, Any?>("any") { _, _ -> null },
+        node<Unit, Unit>("unit") { _, _ -> },
+        node<Event, Event>("event") { _, event -> event },
+      )
+
+    // Assert
+    assertContains(inputError.message.orEmpty(), "node 'plain_in' has input type")
+    assertContains(inputError.message.orEmpty(), "or use Any for a JSON-native value")
+    assertContains(parallelInputError.message.orEmpty(), "node 'plain_in_items' has input type")
+    assertContains(starInputError.message.orEmpty(), "node 'star_in' has input type")
+    assertContains(nodeError.message.orEmpty(), "node 'plain' has output type")
+    assertContains(
+      nodeError.message.orEmpty(),
+      "which has no usable serializer. Mark it @Serializable",
+    )
+    assertContains(parallelError.message.orEmpty(), "node 'plain_items' has output type")
+    assertContains(interfaceError.message.orEmpty(), "node 'text' has output type")
+    assertContains(nullableInterfaceError.message.orEmpty(), "node 'maybe_text' has output type")
+    assertContains(numberError.message.orEmpty(), "node 'number' has output type")
+    assertContains(requestError.message.orEmpty(), "node 'ask' has output type")
+    assertEquals(listOf("order", "content", "any", "unit", "event"), built.map { it.name })
+  }
+
+  @Test
+  fun node_nestedPortTypeThatCannotTravelAsJson_failsWhenBuiltOnlyIfItCannotTravelAsJson() {
+    // Act
+    val interfaceListError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Any?, List<CharSequence>>("texts") { _, _ -> listOf("hi") }
+      }
+    val byteListError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Any?, List<ByteArray>>("chunks") { _, _ -> listOf(byteArrayOf(1)) }
+      }
+    val byteMapError =
+      assertFailsWith<WorkflowConfigurationException> {
+        node<Map<String, ByteArray>, Int>("blobs") { _, blobs -> blobs.size }
+      }
+    val built =
+      listOf(
+        node<Any?, ByteArray>("bytes") { _, _ -> byteArrayOf(1) },
+        node<List<PortOrder>, Map<String, List<Long>>>("totals") { _, _ -> emptyMap() },
+        node<List<Content>, List<Any?>>("messages") { _, _ -> emptyList() },
+      )
+
+    // Assert
+    assertContains(interfaceListError.message.orEmpty(), "node 'texts' has output type")
+    assertContains(interfaceListError.message.orEmpty(), "which has no usable serializer")
+    assertContains(byteListError.message.orEmpty(), "node 'chunks' has output type")
+    assertContains(byteListError.message.orEmpty(), "only a top-level ByteArray is supported")
+    assertContains(byteMapError.message.orEmpty(), "node 'blobs' has input type")
+    assertContains(byteMapError.message.orEmpty(), "only a top-level ByteArray is supported")
+    assertEquals(listOf("bytes", "totals", "messages"), built.map { it.name })
+  }
+
+  @Test
+  fun typedPorts_sealedInput_decodesAParentTypedOutputAndNamesTheFixForASubclassTypedOne() {
+    // Arrange: only a producer typed with the sealed parent writes the class discriminator.
+    val parentTyped = node<Any?, PortShape>("parent_typed") { _, _ -> PortShape.Circle(1.0) }
+    val subclassTyped =
+      node<Any?, PortShape.Circle>("subclass_typed") { _, _ -> PortShape.Circle(1.0) }
+    val consume = node<PortShape, PortShape>("consume") { _, shape -> shape }
+    val parentJson = runOutputs(parentTyped, null).single()
+    val subclassJson = runOutputs(subclassTyped, null).single()
+
+    // Act
+    val decoded = runOutputs(consume, parentJson).single()
+    val error = assertFailsWith<NodeInputValidationException> { runOutputs(consume, subclassJson) }
+
+    // Assert
+    assertEquals(parentJson, decoded)
+    assertContains(error.message.orEmpty(), "input of node 'consume' does not match")
+    assertContains(error.message.orEmpty(), "(node<_, ")
+    assertContains(error.message.orEmpty(), "so the class discriminator is written")
+  }
+
+  @Test
+  fun typedPorts_classWithTypeAndValueFields_mismatchNamesNoDiscriminator() {
+    // Arrange: fields named like a sealed descriptor's elements.
+    val consume = node<PortReading, Unit>("consume") { _, _ -> }
+
+    // Act
+    val error =
+      assertFailsWith<NodeInputValidationException> { runOutputs(consume, mapOf("type" to "t")) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "input of node 'consume' does not match")
+    assertFalse("discriminator" in error.message.orEmpty())
+  }
+
+  @Test
+  fun outputs_classWithADefaultValuedField_keepTheFieldAndPassASchemaRequiringIt() {
+    // Arrange
+    val requiresQuantity =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "id" to Schema(type = Type.STRING),
+            "note" to Schema(type = Type.STRING, nullable = true),
+            "quantity" to Schema(type = Type.INTEGER),
+          ),
+        required = listOf("quantity"),
+      )
+    val order =
+      node<Any?, PortOrder>("order", outputSchema = requiresQuantity) { _, _ ->
+        PortOrder(id = "o1", note = null)
+      }
+
+    // Act
+    val output = runOutputs(order, null).single()
+
+    // Assert
+    assertEquals(mapOf("id" to "o1", "note" to null, "quantity" to 1L), output)
+  }
+
+  @Test
+  fun outputs_classWithADefaultValuedField_reachAJoinNodeSuccessorWithTheField() {
+    // Arrange
+    val received = mutableListOf<Any?>()
+    val profile = node<Any?, PortProfile>("profile") { _, _ -> PortProfile(userId = "alice") }
+    val other = node<Any?, String>("other") { _, _ -> "x" }
+    val join = JoinNode("join")
+    val after = node<Any?, Unit>("after") { _, input -> received += input }
+    val workflow =
+      Workflow(
+        "wf",
+        listOf(
+          Edge(Start, profile),
+          Edge(Start, other),
+          Edge(profile, join),
+          Edge(other, join),
+          Edge(join, after),
+        ),
+      )
+
+    // Act
+    val unused = runnerFor(workflow).runEvents()
+
+    // Assert
+    assertEquals(
+      mapOf("profile" to mapOf("userId" to "alice", "tier" to "free"), "other" to "x"),
+      received.single(),
+    )
+  }
+
+  @Test
+  fun nodeBody_emittingAnEventWithAnOutput_failsAtTheNode() {
+    // Arrange
+    val emits =
+      node<Any?, String>("emits") { _, _ ->
+        emit(Event(output = "x"))
+        "y"
+      }
+    val emitsMessageOutput =
+      node<Any?, Unit>("emits_message_output") { _, _ ->
+        val message = Content.fromText(Role.MODEL, "hi")
+        emit(Event(content = message, nodeInfo = NodeInfo(messageAsOutput = true)))
+      }
+
+    // Act
+    val error = assertFailsWith<IllegalArgumentException> { runOutputs(emits, null) }
+    val messageError =
+      assertFailsWith<IllegalArgumentException> { runOutputs(emitsMessageOutput, null) }
+
+    // Assert
+    assertEquals(
+      "node 'emits' emitted an Event with an output; return the value instead and put state " +
+        "changes in ctx.updateState or the event's actions.",
+      error.message,
+    )
+    assertContains(messageError.message.orEmpty(), "node 'emits_message_output' emitted an Event")
+  }
+
+  @Test
+  fun nodeBody_emittingActionsOnly_landsTheStateDeltaAndReturnsTheOutput() {
+    // Arrange
+    val step =
+      node<Any?, String>("step") { _, _ ->
+        emit(Event(actions = EventActions(stateDelta = mutableMapOf("k" to "v"))))
+        "done"
+      }
+    val runner = runnerFor(Workflow("wf", listOf(Edge(Start, step))))
+
+    // Act
+    val events = runner.runEvents()
+
+    // Assert
+    assertEquals("v", runner.session().state["k"])
+    assertEquals("done", events.single { it.output != null }.output)
+  }
+
+  // -- Set and untyped outputs --
+
+  @Test
+  fun nodeBody_settingAnOutput_failsAtTheNode() {
+    // Arrange
+    val sets =
+      node<Any?, String?>("sets") { ctx, _ ->
+        ctx.setOutput("x")
+        null
+      }
+
+    // Act
+    val error = assertFailsWith<IllegalStateException> { runOutputs(sets, null) }
+
+    // Assert
+    assertEquals("node 'sets' called setOutput; return the value instead.", error.message)
+  }
+
+  @Test
+  fun untypedOutputs_takeTheirSavedFormOrFailAtTheNode() {
+    // Arrange
+    val anyJson = node<Any?, Any?>("any_json") { _, _ -> mapOf("n" to 1) }
+    val keyedByInt = node<Any?, Any?>("keyed_by_int") { _, _ -> mapOf(1 to "a") }
+    val anyClass = node<Any?, Any?>("any_class") { _, _ -> PortOrder(id = "o1", note = null) }
+
+    // Act
+    val jsonOutput = runOutputs(anyJson, null).single()
+    val keyedOutput = runOutputs(keyedByInt, null).single()
+    val classError = assertFailsWith<IllegalArgumentException> { runOutputs(anyClass, null) }
+
+    // Assert
+    assertEquals(mapOf("n" to 1L), jsonOutput)
+    // A session saves a map key as a string, so the output reads as one at once.
+    assertEquals(mapOf("1" to "a"), keyedOutput)
+    assertContains(classError.message.orEmpty(), "output of node 'any_class' has no JSON form")
+  }
+
+  @Test
+  fun customNode_setOutput_reachesATypedSuccessorLiveAndAfterAReloadAndNeedsASerializer() {
+    // Arrange
+    val received = mutableListOf<PortOrder>()
+    val consume = node<PortOrder, Unit>("consume") { _, order -> received += order }
+    val writer = PortOrderWriter("writer")
+    val runner = runnerFor(Workflow("wf", listOf(Edge(Start, writer), Edge(writer, consume))))
+    val plainRunner = runnerFor(Workflow("wf", listOf(Edge(Start, PortPlainWriter("plain")))))
+
+    // Act
+    val unusedEvents = runner.runEvents()
+    val saved = runner.session().events.single { it.nodeInfo?.path == "wf@1/writer@1" }
+    val unusedOutputs = runOutputs(consume, reloaded(saved).output)
+    val plainError = assertFailsWith<IllegalArgumentException> { plainRunner.runEvents() }
+
+    // Assert
+    assertEquals(List(2) { PortOrder(id = "o1", note = null) }, received)
+    assertContains(plainError.message.orEmpty(), "output of node 'plain' has type")
+    assertContains(plainError.message.orEmpty(), "Mark it @Serializable.")
   }
 
   // -- Node name validation --

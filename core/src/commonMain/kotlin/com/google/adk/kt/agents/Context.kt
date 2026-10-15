@@ -34,6 +34,7 @@ import com.google.adk.kt.types.Schema
 import com.google.adk.kt.workflow.BranchPath
 import com.google.adk.kt.workflow.DynamicNodeFailedException
 import com.google.adk.kt.workflow.EventSink
+import com.google.adk.kt.workflow.FunctionNode
 import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.NodeExecutionFailure
 import com.google.adk.kt.workflow.NodeInterruptedException
@@ -41,13 +42,17 @@ import com.google.adk.kt.workflow.NodeRunner
 import com.google.adk.kt.workflow.OutputState
 import com.google.adk.kt.workflow.ResumeScan
 import com.google.adk.kt.workflow.Route
+import com.google.adk.kt.workflow.ValueCodec
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.schemaForm
 import com.google.adk.kt.workflow.validateInput
 import com.google.adk.kt.workflow.validateNodeName
 import com.google.adk.kt.workflow.validateRunId
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.reflect.KType
+import kotlin.reflect.typeOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
@@ -309,6 +314,33 @@ open class Context(
   }
 
   /**
+   * Sets this node's [output] to [value]'s JSON form under [T]'s serializer, or to a `Content` or
+   * `Event` as it is, so a successor typed [T] reads it back, live and after a session reload. Can
+   * be called at most once per activation.
+   *
+   * @throws IllegalArgumentException if [T] has no serializer or [value] has no JSON form.
+   * @throws IllegalStateException if an output was already produced or delegated, or if called from
+   *   a `node {}` body, whose return value is its output.
+   */
+  @ExperimentalWorkflowApi
+  // typeOf<T>() is a compiler intrinsic and does not require kotlin-reflect.
+  @Suppress("KotlinReflectNeeded")
+  inline fun <reified T : Any> setOutput(value: T) {
+    setEncodedOutput(value, typeOf<T>())
+  }
+
+  @ExperimentalWorkflowApi
+  @PublishedApi
+  internal fun setEncodedOutput(value: Any, kType: KType) {
+    val ns = requireNodeState()
+    val node = ns.node
+    check(node !is FunctionNode<*, *>) {
+      "node '${node.name}' called setOutput; return the value instead."
+    }
+    ns.produceOutput(ValueCodec<Any?>(kType).schemaForm(value, "output of node '${node.name}'"))
+  }
+
+  /**
    * Requests the current LLM agent to stop after the current step completes.
    *
    * Scope is exactly this LLM agent: the per-step loop in [LlmAgent.executeTurns] exits after the
@@ -476,16 +508,14 @@ open class Context(
     }
 
   /**
-   * The node's output value. Can be set at most once per activation. Assigning `null` before any
-   * output is a no-op.
-   *
-   * @throws IllegalStateException if an output was already produced, or if this node delegated its
-   *   output via `useAsOutput`.
+   * The node's output value, or `null` if none was produced. Unlike Python's public `ctx.output`
+   * setter, and like Go, node code cannot assign it: a node outputs by returning a value, emitting
+   * one, or calling [setOutput].
    */
   @ExperimentalWorkflowApi
   var output: Any?
     get() = requireNodeState().output
-    set(value) {
+    internal set(value) {
       requireNodeState().produceOutput(value)
     }
 

@@ -20,18 +20,27 @@ import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import kotlin.reflect.KClass
 import kotlin.reflect.KType
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.StructureKind
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 
 /**
- * Converts values to [kType] where they enter typed code, such as a node input. A value that is
- * already a [T] passes through, checked element by element for a collection or map.
+ * Reads a value as a [T] where it enters typed code, such as a node input, and writes a [T] as its
+ * JSON form. A value that already is a [T] passes through, converted element by element for a
+ * collection or map; anything else is decoded from its JSON form with [kType]'s serializer. A
+ * [Content] is not a JSON form, so it reaches only a port typed `Content` or `Any`.
  */
 @OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
 internal class ValueCodec<T>(val kType: KType) {
@@ -57,11 +66,18 @@ internal class ValueCodec<T>(val kType: KType) {
   /**
    * Returns the JSON form of [value] as a [T] under [kType]'s serializer: plain maps, lists, and
    * scalars, with a `ByteArray` as base64 and an `Any` value only if it is JSON-native. Throws
-   * [IllegalArgumentException], naming [what] and not [value], when there is no JSON form.
+   * [IllegalArgumentException], naming [what] and not [value], when [value] is not a [T] or has no
+   * JSON form.
    */
   fun encode(value: Any?, what: String): Any? {
     if (value == null) return null
-    val typed = coerce(value, what)
+    val typed =
+      try {
+        coerce(value, what)
+      } catch (e: NodeInputValidationException) {
+        // A value of another type is a bad output, not a bad node input.
+        throw IllegalArgumentException(e.message, e)
+      }
     val serializer =
       jsonSerializer
         ?: throw IllegalArgumentException(
@@ -69,7 +85,7 @@ internal class ValueCodec<T>(val kType: KType) {
         )
     val element =
       try {
-        explicitNullsJson.encodeToJsonElement(serializer, typed)
+        outputJson.encodeToJsonElement(serializer, typed)
       } catch (e: IllegalArgumentException) {
         // Also catches SerializationException; its message can quote the value, so no cause.
         throw IllegalArgumentException("$what has no JSON form as $kType.")
@@ -96,8 +112,24 @@ internal class ValueCodec<T>(val kType: KType) {
     if (classifier == null) return value
     if (classifier.isInstance(value)) {
       val coerced = coerceElements(value, what)
-      // A collection rebuilt around converted elements must still be a [T].
+      // A rebuilt collection of another class falls through to decoding.
       if (coerced === value || classifier.isInstance(coerced)) return coerced
+    }
+    val serializer = jsonSerializer
+    if (serializer != null && value !is Content) {
+      return try {
+        adkJson.decodeFromJsonElement(serializer, jsonOf(value))
+      } catch (e: IllegalArgumentException) {
+        // Also catches SerializationException; its message can quote the value, so no cause.
+        val hint =
+          if (serializer.descriptor.isSealedForm()) {
+            " Declare the producing node's output as $kType (node<_, $kType>) so the class " +
+              "discriminator is written."
+          } else {
+            ""
+          }
+        throw NodeInputValidationException("validation error: $what does not match $kType.$hint")
+      }
     }
     val actualTypeName = value::class.simpleName ?: "unknown"
     throw NodeInputValidationException(
@@ -129,9 +161,34 @@ internal class ValueCodec<T>(val kType: KType) {
   }
 }
 
-/** [adkJson] that writes a required `null` property, so a class keeps every field it requires. */
+/** The JSON element of a JSON-shaped value, reading any collection as an array. */
 @OptIn(FrameworkInternalApi::class)
-private val explicitNullsJson: Json = Json(adkJson) { explicitNulls = true }
+private fun jsonOf(value: Any?): JsonElement =
+  when (value) {
+    is Map<*, *> -> JsonObject(value.entries.associate { (k, v) -> k.toString() to jsonOf(v) })
+    is Collection<*> -> JsonArray(value.map { jsonOf(it) })
+    else -> anyToJsonElement(value)
+  }
+
+/**
+ * [adkJson] that writes every property, `null` and default values included, so a value on either
+ * port keeps its class's shape, also when an explicit schema checks it.
+ */
+@OptIn(FrameworkInternalApi::class)
+private val outputJson: Json =
+  Json(adkJson) {
+    explicitNulls = true
+    encodeDefaults = true
+  }
+
+/**
+ * Whether this is a sealed type's descriptor: the class discriminator and the value, not a class.
+ */
+private fun SerialDescriptor.isSealedForm(): Boolean =
+  kind != StructureKind.CLASS &&
+    elementsCount == 2 &&
+    getElementName(0) == "type" &&
+    getElementName(1) == "value"
 
 /** The codecs of a map type's key and value, or null when [kType] has no such argument. */
 @OptIn(ExperimentalWorkflowApi::class)

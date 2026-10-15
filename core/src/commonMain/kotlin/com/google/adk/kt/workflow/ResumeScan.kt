@@ -38,6 +38,9 @@ import kotlinx.serialization.json.decodeFromJsonElement
  */
 internal class RecoveredNode {
   var output: Any? = null
+
+  /** Whether [output] is a message-as-output event's content rather than an event's `output`. */
+  var outputIsMessage: Boolean = false
   var errorCode: String? = null
   var route: List<Route>? = null
   var branch: String? = null
@@ -228,6 +231,7 @@ internal object ResumeScan {
 
       if (eventOutput != null) {
         node.output = eventOutput
+        node.outputIsMessage = event.output == null
         if (event.output != null) node.branch = event.branch
       }
       event.actions.route?.let { node.route = it }
@@ -307,7 +311,13 @@ internal object ResumeScan {
     if (output != null || recovered.route != null || transfer != null) {
       return Interception(
         shouldRun = false,
-        output = if (output is Content) processRehydratedOutput(node, output) else output,
+        // A message's content stands for its text; a Content output stays a Content.
+        output =
+          if (recovered.outputIsMessage && output is Content) {
+            processRehydratedOutput(node, output)
+          } else {
+            output
+          },
         route = recovered.route,
         branch = branch,
         transferToAgent = transfer,

@@ -31,6 +31,7 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import kotlin.jvm.JvmStatic
+import kotlin.jvm.JvmSynthetic
 import kotlinx.serialization.json.encodeToJsonElement
 
 /**
@@ -109,6 +110,28 @@ data class RequestInput(
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
   }
 }
+
+/**
+ * From a node's body, asks the user for input and ends the run; the node runner sends the request.
+ * The answer becomes the node's output as saved, so match [responseSchema] to the output type.
+ * `catch (e: Exception)` misses the throw; catching it with `runCatching` cancels the request.
+ */
+@ExperimentalWorkflowApi
+@JvmSynthetic
+fun requestInput(
+  interruptId: String = Uuid.random(),
+  message: String? = null,
+  payload: Any? = null,
+  responseSchema: Schema? = null,
+): Nothing =
+  throw NodeInterruptedException(
+    RequestInput(
+      interruptId = interruptId,
+      message = message,
+      payload = payload,
+      responseSchema = responseSchema,
+    )
+  )
 
 /** Converts this request into a long-running `adk_request_input` model [Event]. */
 internal fun RequestInput.toEvent(): Event {

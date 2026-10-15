@@ -31,6 +31,7 @@ import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.emit
 import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
@@ -66,7 +67,7 @@ object MessageTriageWorkflow {
 
   /** Returns a node that tells the user the message is being handled. */
   private fun responder(name: String, reply: String): Node =
-    node<Any?, Content>(name) { _, _ -> Content.fromText(Role.MODEL, reply) }
+    node<Any?, Unit>(name) { _, _ -> emit(Content.fromText(Role.MODEL, reply)) }
 }
 
 /** Runs the workflow on one message and prints each reply. Needs `GOOGLE_API_KEY`. */
