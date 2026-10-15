@@ -18,6 +18,7 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
@@ -145,6 +146,23 @@ class OutputSchemaProcessorTest {
     val result = OutputSchemaProcessor().process(contextFor(agent), LlmRequest())
 
     assertTrue(result.toolsDict.any { it.name == SetModelResponseTool.NAME })
+  }
+
+  @Test
+  fun process_outputSchemaUnderWorkflowAgentOnGemini2_returnsRequestUnchanged() = runBlocking {
+    // A workflow parent adds no transfer targets, so this child has no tool to work around.
+    val agent =
+      LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"), outputSchema = outputSchema)
+    val unused =
+      SequentialAgent(
+        name = "parent",
+        subAgents = listOf(agent, LlmAgent(name = "peer", model = DummyModel("gemini-2.0-flash"))),
+      )
+    val request = LlmRequest()
+
+    val result = OutputSchemaProcessor().process(contextFor(agent), request)
+
+    assertEquals(request, result)
   }
 
   @OptIn(ExperimentalLiveApi::class)

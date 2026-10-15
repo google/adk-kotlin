@@ -39,6 +39,7 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -400,6 +401,47 @@ class LlmAgentTest {
     val endStateEvents = events.filter { it.actions.endOfAgent }
     assertEquals(1, endStateEvents.size)
     assertEquals("test-agent", endStateEvents[0].author)
+  }
+
+  /**
+   * On resume, a transfer resolves the caller's own declared target, not a same-named agent that a
+   * tree-wide search reaches first, mirroring ADK Python's `__get_agent_to_run`.
+   */
+  @Test
+  fun runAsync_resumingTransferToDuplicateName_resumesTheDeclaredTarget() = runBlocking {
+    val declaredShared =
+      DummyAgent("shared", onRunAsync = { emit(createEvent("shared", "declared-ran")) })
+    val undeclaredShared =
+      DummyAgent("shared", onRunAsync = { emit(createEvent("shared", "undeclared-ran")) })
+    val caller = LlmAgent(name = "caller", subAgents = listOf(declaredShared), model = testModel)
+    val otherBranch = DummyAgent("other_branch", subAgents = listOf(undeclaredShared))
+    // Constructing root wires the parent links.
+    val unused = LlmAgent(name = "root", subAgents = listOf(otherBranch, caller), model = testModel)
+    val context = resumableContextAfterTransfer(caller, transferTo = "shared")
+
+    val events = caller.runAsync(context).toList()
+
+    assertEquals(listOf("shared" to "declared-ran"), simplifyEvents(events))
+  }
+
+  /**
+   * On resume, a transfer to an agent that is in the tree but not declared still resumes that
+   * agent, as Python's `__get_agent_to_run` falls back to a tree-wide search. Only a new transfer
+   * is limited to declared targets.
+   */
+  @Test
+  fun runAsync_resumingTransferToUndeclaredAgentInTree_resumesIt() = runBlocking {
+    val elsewhere =
+      DummyAgent("elsewhere", onRunAsync = { emit(createEvent("elsewhere", "elsewhere-ran")) })
+    val caller = LlmAgent(name = "caller", model = testModel)
+    val otherBranch = DummyAgent("other_branch", subAgents = listOf(elsewhere))
+    // Constructing root wires the parent links.
+    val unused = LlmAgent(name = "root", subAgents = listOf(otherBranch, caller), model = testModel)
+    val context = resumableContextAfterTransfer(caller, transferTo = "elsewhere")
+
+    val events = caller.runAsync(context).toList()
+
+    assertEquals(listOf("elsewhere" to "elsewhere-ran"), simplifyEvents(events))
   }
 
   @Test
@@ -1295,5 +1337,36 @@ class LlmAgentTest {
       author = author,
       content = Content(parts = listOf(Part(text = text))),
     )
+  }
+
+  /**
+   * Returns a resumable context for [caller] whose history ends with [caller]'s `transfer_to_agent`
+   * response to [transferTo], so running [caller] resumes that transfer.
+   */
+  private suspend fun resumableContextAfterTransfer(
+    caller: LlmAgent,
+    transferTo: String,
+  ): InvocationContext {
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context =
+      InvocationContext(
+        agent = caller,
+        session = session,
+        runConfig = null,
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+      )
+    context.agentStates[caller.name] = TypedData.MapValue(emptyMap())
+    session.events.add(
+      Event(
+        id = Uuid.random(),
+        invocationId = context.invocationId,
+        author = caller.name,
+        branch = context.branch,
+        content = userFunctionResponse(name = TRANSFER_TO_AGENT_TOOL_NAME, id = "transfer-1"),
+        actions = EventActions(transferToAgent = transferTo),
+      )
+    )
+    return context
   }
 }

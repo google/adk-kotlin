@@ -42,7 +42,14 @@ Adding the same agent instance to two `subAgents` lists throws. Build a fresh in
 
 ## Structured output and tools interact
 
-Some models cannot combine a response schema with tools, so an agent with `outputSchema` and any tool may answer through an internal `set_model_response` tool, which behaves slightly differently (explicit nulls dropped, validation failures are errors). "Any tool" includes the implicit `transfer_to_agent`, which an agent gets when it has sub-agents, or a parent, unless both `disallowTransferToParent` and `disallowTransferToPeers` are set. Keep structured-output agents tool-free, and set both flags when they are sub-agents.
+Some models cannot combine a response schema with tools, so an agent with
+`outputSchema` and any tool may answer through an internal `set_model_response`
+tool, which behaves slightly differently (explicit nulls dropped, validation
+failures are errors). "Any tool" includes the implicit `transfer_to_agent`,
+which an agent gets when it has sub-agents, or an `LlmAgent` parent, unless both
+`disallowTransferToParent` and `disallowTransferToPeers` are set. Keep
+structured-output agents tool-free, and set both flags when their parent is an
+`LlmAgent`.
 
 ## Tools inherit the caller's dispatcher
 

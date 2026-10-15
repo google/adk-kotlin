@@ -38,6 +38,7 @@ import com.google.adk.kt.models.toTracePayload
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.createFinalModelResponseEvent
+import com.google.adk.kt.processors.findTransferTargets
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
 import com.google.adk.kt.processors.getStructuredModelResponse
 import com.google.adk.kt.serialization.adkJson
@@ -1303,9 +1304,16 @@ internal class LlmAgentTurn(
         }
         return@let
       }
+      require(agentName != agent.name) { "Agent '${agent.name}' cannot transfer to itself." }
+      // Declared targets only, so the model cannot reach any other agent in the tree.
       val targetAgent =
-        agent.rootAgent.findAgent(agentName)
-          ?: throw IllegalArgumentException("Agent '$agentName' not found in the agent tree.")
+        requireNotNull(findTransferTargets(agent).firstOrNull { it.name == agentName }) {
+          if (agent.rootAgent.findAgent(agentName) == null) {
+            "Agent '${agent.name}' requested a transfer to an agent that is not in the agent tree."
+          } else {
+            "Agent '${agent.name}' is not allowed to transfer to the requested agent."
+          }
+        }
       emitAll(targetAgent.runAsync(context))
     }
   }

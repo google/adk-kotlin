@@ -16,10 +16,15 @@
 
 package com.google.adk.kt.processors
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LoopAgent
+import com.google.adk.kt.agents.ParallelAgent
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
@@ -298,6 +303,105 @@ class AgentTransferProcessorTest {
   }
 
   @Test
+  fun processRequest_underSequentialAgentParent_offersNoTransfer() = runBlocking {
+    val processedRequest = processRequestForSubAgentUnder {
+      SequentialAgent(name = "parent", subAgents = it)
+    }
+
+    assertNull(processedRequest.config.systemInstruction)
+    assertTrue(processedRequest.config.tools.isNullOrEmpty())
+  }
+
+  @Test
+  fun processRequest_underParallelAgentParent_offersNoTransfer() = runBlocking {
+    val processedRequest = processRequestForSubAgentUnder {
+      ParallelAgent(name = "parent", subAgents = it)
+    }
+
+    assertNull(processedRequest.config.systemInstruction)
+    assertTrue(processedRequest.config.tools.isNullOrEmpty())
+  }
+
+  @Test
+  fun processRequest_underLoopAgentParent_offersNoTransfer() = runBlocking {
+    val processedRequest = processRequestForSubAgentUnder {
+      LoopAgent(name = "parent", subAgents = it)
+    }
+
+    assertNull(processedRequest.config.systemInstruction)
+    assertTrue(processedRequest.config.tools.isNullOrEmpty())
+  }
+
+  @Test
+  fun processRequest_underCustomAgentParent_offersNoTransfer() = runBlocking {
+    val processedRequest = processRequestForSubAgentUnder {
+      DummyAgent(name = "parent", subAgents = it)
+    }
+
+    assertNull(processedRequest.config.systemInstruction)
+    assertTrue(processedRequest.config.tools.isNullOrEmpty())
+  }
+
+  @Test
+  fun processRequest_underWorkflowAgentParent_offersOnlyItsOwnSubAgents() = runBlocking {
+    val processedRequest =
+      processRequestForSubAgentUnder(
+        subAgents =
+          listOf(LlmAgent(name = "child", description = "Child agent", model = DummyModel("child")))
+      ) {
+        SequentialAgent(name = "parent", subAgents = it)
+      }
+
+    val declaration =
+      processedRequest.config.tools
+        ?.flatMap { it.functionDeclarations.orEmpty() }
+        ?.firstOrNull { it.name == TRANSFER_TO_AGENT_TOOL_NAME }
+    assertNotNull(declaration)
+    assertEquals(listOf("child"), declaration.parameters?.properties?.get("agent_name")?.enum)
+  }
+
+  @Test
+  fun processRequest_underWorkflowAgentParent_stillNamesTheParentInTheInstruction() = runBlocking {
+    val processedRequest =
+      processRequestForSubAgentUnder(
+        subAgents =
+          listOf(LlmAgent(name = "child", description = "Child agent", model = DummyModel("child")))
+      ) {
+        SequentialAgent(name = "parent", subAgents = it)
+      }
+
+    val instructionText =
+      processedRequest.config.systemInstruction
+        ?.parts
+        ?.mapNotNull { it.text }
+        ?.joinToString("\n")
+        .orEmpty()
+    // As in ADK Python, the last line still names the parent, although it is not a target.
+    val expectedInstruction =
+      """
+      |You have a list of other agents to transfer to:
+      |
+      |Agent name: child
+      |Agent description: Child agent
+      |
+      |If you are the best to answer the question according to your description,
+      |you can answer it.
+      |
+      |If another agent is better for answering the question according to its
+      |description, call `transfer_to_agent` function to transfer the question to that
+      |agent. When transferring, do not generate any text other than the function
+      |call.
+      |
+      |**NOTE**: the only available agents for `transfer_to_agent` function are
+      |`child`.
+      |
+      |If neither you nor the other agents are best for the question, transfer to your parent agent parent.
+      """
+        .trimMargin()
+    assertEquals(expectedInstruction, instructionText)
+  }
+
+  @Test
   fun processRequest_duplicateTargets_throwsException() = runTest {
     val subAgentA = LlmAgent(name = "A", description = "Sub agent A", model = DummyModel("subA"))
     val peerAgentA = LlmAgent(name = "A", description = "Peer agent A", model = DummyModel("peerA"))
@@ -350,5 +454,30 @@ class AgentTransferProcessorTest {
     val agentNameSchema = declaration.parameters?.properties?.get("agent_name")
     assertNotNull(agentNameSchema)
     assertEquals(listOf("sub1", "sub2"), agentNameSchema.enum)
+  }
+
+  /**
+   * Processes a request for `sub`, with [subAgents] as its sub-agents, under the parent that
+   * [buildParent] builds from `sub` and a peer.
+   */
+  private suspend fun processRequestForSubAgentUnder(
+    subAgents: List<BaseAgent> = emptyList(),
+    buildParent: (List<BaseAgent>) -> BaseAgent,
+  ): LlmRequest {
+    val subAgent =
+      LlmAgent(
+        name = "sub",
+        description = "Sub agent",
+        model = DummyModel("sub"),
+        subAgents = subAgents,
+      )
+    val unused =
+      buildParent(
+        listOf(
+          subAgent,
+          LlmAgent(name = "peer", description = "Peer agent", model = DummyModel("peer")),
+        )
+      )
+    return AgentTransferProcessor().process(testInvocationContext(agent = subAgent), LlmRequest())
   }
 }
