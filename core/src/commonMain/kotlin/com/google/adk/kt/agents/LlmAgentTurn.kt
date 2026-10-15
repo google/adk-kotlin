@@ -1294,19 +1294,23 @@ internal class LlmAgentTurn(
     // SequentialAgent/LoopAgent (or any workflow agent that doesn't itself emit a transfer back)
     // would leave the parent unable to resume.
 
-    // If a tool requested a transfer to another agent, execute that agent's loop.
-    functionResponseEvent?.actions?.transferToAgent?.let { agentName ->
-      // Live transfer is not supported on this path; a live run must not run the target turn-based.
-      if (context.liveRequestQueue != null) {
-        logger.warn {
-          "A live run can't transfer to another agent yet, so it stays with ${agent.name}."
+    // If a tool requested a transfer to another agent, execute that agent's loop unless this agent
+    // runs in a chat node's transfer loop.
+    if (!agent.runsInChatLoop(context)) {
+      functionResponseEvent?.actions?.transferToAgent?.let { agentName ->
+        // Live transfer is not supported on this path; a live run must not run the target
+        // turn-based.
+        if (context.liveRequestQueue != null) {
+          logger.warn {
+            "A live run can't transfer to another agent yet, so it stays with ${agent.name}."
+          }
+          return@let
         }
-        return@let
+        val targetAgent =
+          agent.rootAgent.findAgent(agentName)
+            ?: throw IllegalArgumentException("Agent '$agentName' not found in the agent tree.")
+        emitAll(targetAgent.runAsync(context))
       }
-      val targetAgent =
-        agent.rootAgent.findAgent(agentName)
-          ?: throw IllegalArgumentException("Agent '$agentName' not found in the agent tree.")
-      emitAll(targetAgent.runAsync(context))
     }
   }
 
