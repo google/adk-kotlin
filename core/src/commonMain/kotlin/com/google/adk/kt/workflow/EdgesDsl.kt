@@ -330,15 +330,13 @@ class RouteMapBuilder internal constructor(private val from: Node) {
   fun on(route: Boolean): RouteMapEntry = on(Route.Flag(route))
 
   /** Starts an entry for [route]; [RouteMapEntry.then] completes it. */
-  fun on(route: Route): RouteMapEntry =
-    RouteMapEntry(this, listOf(route)).also { pendingEntries += it }
+  fun on(route: Route): RouteMapEntry = start(listOf(route))
 
   /**
    * Starts an entry whose edge fires once when the source node emits any of [routes] (built with
    * [anyOf]); [RouteMapEntry.then] completes it.
    */
-  fun on(routes: RouteSet): RouteMapEntry =
-    RouteMapEntry(this, routes.routes).also { pendingEntries += it }
+  fun on(routes: RouteSet): RouteMapEntry = start(routes.routes)
 
   /**
    * Leads to [node] when the source node emits this string as a [Route.Tag]; short for
@@ -456,15 +454,24 @@ class RouteMapBuilder internal constructor(private val from: Node) {
     add(node, entry.routes)
   }
 
+  /** Starts an entry for [routes], failing once [EdgesBuilder.route] has collected the map. */
+  private fun start(routes: List<Route>): RouteMapEntry {
+    checkNotBuilt()
+    return RouteMapEntry(this, routes).also { pendingEntries += it }
+  }
+
   /**
    * Adds an edge to [node] for [routes], failing once [EdgesBuilder.route] has collected the map.
    */
   private fun add(node: Node, routes: List<Route>) {
-    check(!built) {
-      "The routing map of node '${from.name}' was already built; complete its entries inside" +
-        " route { }."
-    }
+    checkNotBuilt()
     edges += Edge(from, node, routes)
+  }
+
+  private fun checkNotBuilt() {
+    check(!built) {
+      "The routing map of node '${from.name}' was already built; add its entries inside route { }."
+    }
   }
 }
 
