@@ -13,11 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:OptIn(ExperimentalWorkflowApi::class)
+
 package com.google.adk.kt.processors
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.GenerateContentConfig
@@ -30,7 +34,8 @@ import com.google.adk.kt.types.LiveConnectConfig
  * [LlmAgent.outputSchema] that [appliesOutputSchemaDirectly] (no tools, or a model that supports a
  * response schema together with tools), the schema is applied as the request's response schema
  * (with a JSON response MIME type). Otherwise the schema is handled via the [OutputSchemaProcessor]
- * workaround.
+ * workaround. A [AgentMode.TASK] agent gets no response schema, since `finish_task` carries its
+ * structured output.
  */
 internal class BasicRequestProcessor : LlmRequestProcessor {
   override suspend fun process(
@@ -43,7 +48,7 @@ internal class BasicRequestProcessor : LlmRequestProcessor {
     val baseConfig = agent.generateContentConfig ?: GenerateContentConfig()
     val config =
       agent.outputSchema
-        ?.takeIf { agent.appliesOutputSchemaDirectly(context) }
+        ?.takeIf { agent.mode != AgentMode.TASK && agent.appliesOutputSchemaDirectly(context) }
         ?.let { outputSchema ->
           baseConfig.copy(responseSchema = outputSchema, responseMimeType = "application/json")
         } ?: baseConfig

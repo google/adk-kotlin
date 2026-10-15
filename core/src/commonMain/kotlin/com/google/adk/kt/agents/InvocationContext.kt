@@ -620,19 +620,11 @@ data class InvocationContext(
             recoveredResult
           }
 
-      // A long-running tool returning `Unit` defers: suppress the FR event so the function-call
-      // event (which carries `longRunningToolIds`, hence is the turn's final response) ends the
-      // turn
-      // instead of re-invoking the model with an empty payload -- otherwise a tool that keeps
-      // requesting input (e.g. request_input) loops. Every other value is emitted as a response.
-      // Done before `runAfterToolCallbacks` to avoid wrapping `Unit` as `{result: Unit}`. See
-      // [BaseTool.isLongRunning].
-      if (tool.isLongRunning && toolResult === Unit) {
+      // A long-running or deferring tool's `Unit` means no response yet, so skip the callbacks.
+      if ((tool.isLongRunning || tool.defersResponse) && toolResult === Unit) {
         return@withSpan null
       }
-      // A regular tool's `Unit`, or a `null` leaked by a Java tool that breaks the non-null `run`
-      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires the
-      // response to be a map. Only a long-running tool's `Unit` defers (handled above).
+      // Wrap a regular tool's `Unit` or a `null` leaked by a Java tool as `{"result": null}`.
       if (toolResult === Unit || (toolResult as Any?) == null) {
         toolResult = mapOf(BaseTool.RESULT_KEY to null)
       }
@@ -906,7 +898,34 @@ data class ContextFrameworkData(
    * Per-invocation scratch data shared across the invocation's callbacks and its sub-agent/branch
    * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
    */
-  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
+  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf(),
+  /**
+   * The agent this context copy runs as a single-turn workflow node. Keyed to that agent, so
+   * sub-agents and transfer targets that inherit the copy are not single-turn. The agent runs
+   * history-free unless it sets [LlmAgent.includeContents], and a schema mismatch in its output
+   * saves nothing to [LlmAgent.outputKey].
+   */
+  @FrameworkInternalApi val singleTurnNodeAgent: BaseAgent? = null,
+  /**
+   * The workflow node path the agent runs at, or `null` outside a workflow. The contents processor
+   * uses it to hide user turns that other nodes injected.
+   */
+  @FrameworkInternalApi val nodePath: String? = null,
+  /**
+   * The isolation scope the contents processor filters session events by: only events stamped with
+   * this exact scope reach the model, so `null` sees only unscoped events.
+   */
+  @FrameworkInternalApi val isolationScope: String? = null,
+  /**
+   * The mode a workflow node wrapper runs one agent in, keyed to that agent like
+   * [singleTurnNodeAgent]; `null` outside a node run.
+   */
+  @FrameworkInternalApi val agentModeOverride: AgentModeOverride? = null,
+  /**
+   * The workflow node activation an agent node runs under, so its tools can run a sub-agent as a
+   * child node there; `null` outside a node run.
+   */
+  @FrameworkInternalApi val nodeContext: Context? = null,
 ) {
   /**
    * The user's input on a live run, set by whatever opens it, and `null` on a turn-based one.
@@ -940,6 +959,22 @@ data class ContextFrameworkData(
 @JvmSynthetic
 internal fun RunConfig.forNewLiveSession(): RunConfig =
   copy(sessionResumption = sessionResumption?.copy(handle = null))
+
+/**
+ * The mode a workflow node wrapper runs [agent] in, keyed to that agent so it does not leak to
+ * sub-agents or transfer targets when the invocation context is copied down. The type is public
+ * only because it is a [ContextFrameworkData] property type; its members are
+ * [FrameworkInternalApi].
+ */
+data class AgentModeOverride(
+  @FrameworkInternalApi val agent: BaseAgent,
+  @FrameworkInternalApi val mode: AgentMode,
+)
+
+/** The mode override set for [agent], or null when none is. */
+@OptIn(FrameworkInternalApi::class)
+internal fun ContextFrameworkData.modeOverrideFor(agent: BaseAgent): AgentMode? =
+  agentModeOverride?.takeIf { it.agent === agent }?.mode
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

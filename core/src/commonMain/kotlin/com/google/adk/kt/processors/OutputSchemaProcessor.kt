@@ -13,10 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:OptIn(ExperimentalWorkflowApi::class)
+
 package com.google.adk.kt.processors
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.canUseOutputSchemaWithTools
@@ -54,6 +58,8 @@ internal class OutputSchemaProcessor : LlmRequestProcessor {
   ): LlmRequest {
     val agent = context.agent as? LlmAgent ?: return request
     val outputSchema = agent.outputSchema ?: return request
+    // A task agent reports its structured output through `finish_task` instead.
+    if (agent.mode == AgentMode.TASK) return request
 
     // When the schema is applied directly to the request config by BasicRequestProcessor, this
     // processor is a no-op.

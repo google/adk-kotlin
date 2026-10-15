@@ -67,6 +67,13 @@ abstract class BaseTool(
     return llmRequest.appendTools(listOf(this))
   }
 
+  /**
+   * Whether a `Unit` result means another component answers the call later, so no function response
+   * is emitted for it. Unlike [isLongRunning], the call is not marked long-running.
+   */
+  internal open val defersResponse: Boolean
+    get() = false
+
   override fun close() {}
 
   companion object {
