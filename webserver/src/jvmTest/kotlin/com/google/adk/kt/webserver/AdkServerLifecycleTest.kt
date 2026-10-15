@@ -18,11 +18,13 @@ package com.google.adk.kt.webserver
 
 import com.google.adk.kt.webserver.dev.AdkDevServer
 import com.google.common.truth.Truth.assertThat
+import io.ktor.server.application.Application
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.URI
 import java.net.URISyntaxException
 import java.util.Collections
@@ -203,6 +205,56 @@ class AdkServerLifecycleTest {
     }
   }
 
+  @Test
+  fun apiServer_loopbackBind_servesOnlyThisMachineAndAllowedHosts() {
+    assertGuardsTheHost { config -> AdkApiServer(config) }
+  }
+
+  @Test
+  fun devServer_loopbackBind_servesOnlyThisMachineAndAllowedHosts() {
+    assertGuardsTheHost { config -> AdkDevServer(config) }
+  }
+
+  @Test
+  fun subclassInstallingThePublicModule_servesOnlyThisMachineAndAllowedHosts() {
+    assertGuardsTheHost { config ->
+      object : AdkApiServer(config) {
+        override fun configure(application: Application) {
+          application.adkApiModule(config)
+        }
+      }
+    }
+  }
+
+  /** On a loopback bind, a listed host is served and any other, like a rebound page's, gets 403. */
+  private fun assertGuardsTheHost(createServer: (AdkServerConfig) -> AdkApiServer) {
+    val port = freePort()
+    val server = createServer(testConfig(port).copy(allowedHosts = setOf("app.example")))
+    try {
+      server.start()
+      // Also a control: this request names 127.0.0.1, so it is served.
+      awaitHealthy(port)
+
+      val listed = rawGet(port, "/health", host = "app.example")
+      val refused = rawGet(port, "/health", host = "evil.example:$port")
+
+      assertThat(listed).startsWith("HTTP/1.1 200 ")
+      assertThat(refused).startsWith("HTTP/1.1 403 ")
+      assertThat(refused).endsWith("Forbidden: host not allowed")
+    } finally {
+      server.stop()
+    }
+  }
+
+  /** The whole response to a GET naming [host], which [HttpURLConnection] refuses to set. */
+  private fun rawGet(port: Int, path: String, host: String): String =
+    Socket("127.0.0.1", port).use { socket ->
+      socket.soTimeout = READ_TIMEOUT_MILLIS
+      val request = "GET $path HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n"
+      socket.getOutputStream().write(request.toByteArray())
+      socket.getInputStream().readBytes().decodeToString()
+    }
+
   private fun newServer(port: Int) = AdkApiServer(testConfig(port))
 
   private fun testConfig(port: Int) =
@@ -284,6 +336,7 @@ class AdkServerLifecycleTest {
     const val SHUTDOWN_TIMEOUT_MILLIS = 10_000L
     const val POLL_INTERVAL_MILLIS = 50L
     const val CONNECT_TIMEOUT_MILLIS = 1_000
+    const val READ_TIMEOUT_MILLIS = 5_000
     const val RACING_THREADS = 8
     const val DEV_ONLY_PATH = "/apps/mock-agent/eval_sets"
     const val NANOS_PER_MILLI = 1_000_000L

@@ -209,6 +209,7 @@ class AdkServerConfigTest {
     assertThat(config.plugins).isEmpty()
     assertThat(config.webUiEnabled).isNull()
     assertThat(config.includeAppInfo).isNull()
+    assertThat(config.allowedHosts).isEmpty()
   }
 
   @Test
@@ -229,6 +230,7 @@ class AdkServerConfigTest {
         .captureMessageContent(true)
         .webUiEnabled(true)
         .includeAppInfo(true)
+        .allowedHosts(setOf("app.example"))
         .build()
 
     assertThat(config.agentLoader).isSameInstanceAs(loader)
@@ -240,11 +242,19 @@ class AdkServerConfigTest {
     assertThat(config.captureMessageContent).isTrue()
     assertThat(config.webUiEnabled).isTrue()
     assertThat(config.includeAppInfo).isTrue()
+    assertThat(config.allowedHosts).containsExactly("app.example")
   }
 
   @Test
   fun builder_requiresSessionAndArtifactServices() {
     assertThrows(IllegalStateException::class.java) { AdkServerConfig.builder().build() }
+  }
+
+  @Test
+  fun constructor_originInAllowedHosts_throws() {
+    assertThrows(IllegalArgumentException::class.java) {
+      AdkServerConfig.inMemory(FakeAgent()).copy(allowedHosts = setOf("https://app.example"))
+    }
   }
 
   @Test
@@ -267,6 +277,7 @@ class AdkServerConfigTest {
         webUiEnabled = true,
         camelCaseEnforced = true,
         includeAppInfo = true,
+        allowedHosts = setOf("app.example"),
       )
 
     assertThat(config.toBuilder().build()).isEqualTo(config.copy())
