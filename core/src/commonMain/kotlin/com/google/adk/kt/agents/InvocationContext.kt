@@ -906,7 +906,19 @@ data class ContextFrameworkData(
    * Per-invocation scratch data shared across the invocation's callbacks and its sub-agent/branch
    * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
    */
-  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
+  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf(),
+  /**
+   * The agent this context copy runs as a single-turn workflow node. Keyed to that agent, so
+   * sub-agents and transfer targets that inherit the copy are not single-turn. The agent runs
+   * history-free unless it sets [LlmAgent.includeContents], and a schema mismatch in its output
+   * saves nothing to [LlmAgent.outputKey].
+   */
+  @FrameworkInternalApi val singleTurnNodeAgent: BaseAgent? = null,
+  /**
+   * The workflow node path the agent runs at, or `null` outside a workflow. The contents processor
+   * uses it to hide user turns that other nodes injected.
+   */
+  @FrameworkInternalApi val nodePath: String? = null,
 ) {
   /**
    * The user's input on a live run, set by whatever opens it, and `null` on a turn-based one.

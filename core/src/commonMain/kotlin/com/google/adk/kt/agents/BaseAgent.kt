@@ -296,7 +296,10 @@ abstract class BaseAgent(
    * node's output and its author is tracked; the node runner stamps each event's path.
    */
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    runAsync(context.invocationContext).collect { event ->
+    val ic = context.invocationContext
+    @OptIn(FrameworkInternalApi::class)
+    val agentContext = ic.copy(frameworkData = ic.frameworkData.copy(nodePath = context.nodePath))
+    runAsync(agentContext).collect { event ->
       if (event.author.isNotEmpty()) context.eventAuthor = event.author
       emit(event)
     }
