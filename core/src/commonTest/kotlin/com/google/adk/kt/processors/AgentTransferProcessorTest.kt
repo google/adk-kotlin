@@ -18,6 +18,9 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LoopAgent
+import com.google.adk.kt.agents.ParallelAgent
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
@@ -137,7 +140,7 @@ class AgentTransferProcessorTest {
 
   @OptIn(ExperimentalLiveApi::class)
   @Test
-  fun processRequest_onALiveRun_offersNoTransfer() = runBlocking {
+  fun processRequest_onALiveRun_offersTransfer() = runBlocking {
     val context =
       testInvocationContext(
           agent =
@@ -153,8 +156,148 @@ class AgentTransferProcessorTest {
 
     val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
 
-    assertNull(processedRequest.config.systemInstruction)
-    assertTrue(processedRequest.config.tools.isNullOrEmpty())
+    assertNotNull(processedRequest.config.systemInstruction)
+    assertTrue(
+      processedRequest.config.tools.orEmpty().any {
+        it.functionDeclarations.orEmpty().any { fd -> fd.name == TRANSFER_TO_AGENT_TOOL_NAME }
+      }
+    )
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun processRequest_onALiveRun_offersASequentialAgentButNotLoopOrParallel() = runBlocking {
+    // A live run offers only the agent types that run live: an LlmAgent or a SequentialAgent.
+    val context =
+      testInvocationContext(
+          agent =
+            LlmAgent(
+              name = "root",
+              description = "Root agent",
+              model = DummyModel("root"),
+              subAgents =
+                listOf(
+                  LlmAgent(name = "live_sub", description = "Live sub", model = DummyModel("live")),
+                  SequentialAgent(
+                    name = "sequence",
+                    subAgents =
+                      listOf(LlmAgent(name = "step", description = "s", model = DummyModel("step"))),
+                  ),
+                  LoopAgent(
+                    name = "loop",
+                    subAgents =
+                      listOf(LlmAgent(name = "lstep", description = "l", model = DummyModel("l"))),
+                  ),
+                  ParallelAgent(
+                    name = "parallel",
+                    subAgents =
+                      listOf(LlmAgent(name = "pstep", description = "p", model = DummyModel("p"))),
+                  ),
+                ),
+            )
+        )
+        .apply { frameworkData.liveRequestQueue = LiveRequestQueue() }
+
+    val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
+
+    val instructions =
+      processedRequest.config.systemInstruction?.parts.orEmpty().joinToString { it.text.orEmpty() }
+    assertTrue("live_sub" in instructions, "the live LlmAgent target should be offered")
+    assertTrue("sequence" in instructions, "a SequentialAgent should be offered on a live run")
+    assertTrue("loop" !in instructions, "a LoopAgent must not be offered on a live run")
+    assertTrue("parallel" !in instructions, "a ParallelAgent must not be offered on a live run")
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun processRequest_onALiveRun_doesNotOfferALoopParent() = runBlocking {
+    // A LoopAgent parent cannot run live; the sub-agent is there so instructions are built at all.
+    val helper = LlmAgent(name = "helper", description = "Helper", model = DummyModel("helper"))
+    val worker =
+      LlmAgent(
+        name = "worker",
+        description = "Worker",
+        model = DummyModel("worker"),
+        subAgents = listOf(helper),
+      )
+    val unused = LoopAgent(name = "loop", subAgents = listOf(worker))
+    val context =
+      testInvocationContext(agent = worker).apply {
+        frameworkData.liveRequestQueue = LiveRequestQueue()
+      }
+
+    val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
+
+    val instructions =
+      processedRequest.config.systemInstruction?.parts.orEmpty().joinToString { it.text.orEmpty() }
+    assertTrue("helper" in instructions, "the live sub-agent should be offered")
+    assertTrue(
+      "transfer to your parent agent" !in instructions,
+      "a loop parent must not be offered on a live run",
+    )
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun processRequest_onALiveRun_stepOfASequence_isOfferedNeitherItsSequenceNorItsPeers() =
+    runBlocking {
+      // A live step reaches only its own sub-agents, not its sequence or a peer, as in Python.
+      val child = LlmAgent(name = "child", description = "c", model = DummyModel("c"))
+      val step1 =
+        LlmAgent(
+          name = "step1",
+          description = "s1",
+          model = DummyModel("s1"),
+          subAgents = listOf(child),
+        )
+      val step2 = LlmAgent(name = "step2", description = "s2", model = DummyModel("s2"))
+      val unused = SequentialAgent(name = "sequence", subAgents = listOf(step1, step2))
+      val context =
+        testInvocationContext(agent = step1).apply {
+          frameworkData.liveRequestQueue = LiveRequestQueue()
+        }
+
+      val processedRequest = AgentTransferProcessor().process(context, LlmRequest())
+
+      val instructions =
+        processedRequest.config.systemInstruction?.parts.orEmpty().joinToString {
+          it.text.orEmpty()
+        }
+      assertTrue("child" in instructions, "the step's own sub-agent should be offered")
+      assertTrue("sequence" !in instructions, "the parent sequence must not be offered")
+      assertTrue("step2" !in instructions, "a peer step must not be offered")
+      assertTrue("transfer to your parent agent" !in instructions)
+    }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun processRequest_onALiveRun_stepWithDuplicateSubAgentNames_throws() = runBlocking {
+    val step =
+      LlmAgent(
+        name = "step",
+        description = "s",
+        model = DummyModel("s"),
+        subAgents =
+          listOf(
+            LlmAgent(name = "x", description = "x1", model = DummyModel("x1")),
+            LlmAgent(name = "x", description = "x2", model = DummyModel("x2")),
+          ),
+      )
+    val unused = SequentialAgent(name = "sequence", subAgents = listOf(step))
+    val context =
+      testInvocationContext(agent = step).apply {
+        frameworkData.liveRequestQueue = LiveRequestQueue()
+      }
+
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        AgentTransferProcessor().process(context, LlmRequest())
+      }
+
+    assertEquals(
+      "Duplicate agent names found in transfer targets: x. Agent names must be unique within reachable transfer scope.",
+      error.message,
+    )
   }
 
   @Test

@@ -626,6 +626,70 @@ class GeminiLiveConnectionTest {
     )
   }
 
+  /** The user's unfinished "hi", then a frame that interrupts the model with [interrupting]. */
+  private fun heardThenInterrupted(interrupting: SdkLiveServerContent) =
+    RecordingSessionHandle(
+      listOf(
+        SdkLiveServerMessage(
+          serverContent = SdkLiveServerContent(inputTranscription = SdkTranscription(text = "hi"))
+        ),
+        SdkLiveServerMessage(serverContent = interrupting),
+      )
+    )
+
+  // LlmAgentTurn.receiveTurns relies on this order to skip the finished copy of stored speech.
+  @Test
+  fun receive_interruptedWithModelContent_emitsTheContentBeforeTheFlushedTranscription() =
+    runBlocking {
+      val audio = SdkPart(inlineData = SdkBlob(mimeType = "audio/pcm", data = ByteArray(8)))
+      val handle =
+        heardThenInterrupted(
+          SdkLiveServerContent(
+            modelTurn = SdkContent(role = "model", parts = listOf(audio)),
+            interrupted = true,
+          )
+        )
+
+      val responses = connection(handle).receive().toList()
+
+      val cutOff = responses.indexOfFirst { it.content != null && it.interrupted }
+      val flushed = responses.indexOfFirst { it.inputTranscription?.finished == true }
+      assertTrue(cutOff in 0 until flushed, "cut-off reply at $cutOff, flush at $flushed")
+    }
+
+  @Test
+  fun receive_interruptedWithGrounding_emitsTheGroundingBeforeTheFlushedTranscription() =
+    runBlocking {
+      val grounding =
+        SdkGroundingMetadata(
+          groundingChunks = listOf(SdkGroundingChunk(web = SdkGroundingChunkWeb(title = "t"))),
+          groundingSupports = listOf(SdkGroundingSupport(groundingChunkIndices = listOf(0))),
+        )
+      val handle =
+        heardThenInterrupted(
+          SdkLiveServerContent(groundingMetadata = grounding, interrupted = true)
+        )
+
+      val responses = connection(handle).receive().toList()
+
+      val grounded = responses.indexOfFirst { it.groundingMetadata != null }
+      val flushed = responses.indexOfFirst { it.inputTranscription?.finished == true }
+      assertTrue(grounded in 0 until flushed, "grounding at $grounded, flush at $flushed")
+    }
+
+  @Test
+  fun receive_bareInterruption_emitsTheMarkerAfterTheFlushedTranscription() = runBlocking {
+    val handle = heardThenInterrupted(SdkLiveServerContent(interrupted = true))
+
+    val responses = connection(handle).receive().toList()
+
+    val flushed = responses.indexOfFirst { it.inputTranscription?.finished == true }
+    val marker = responses.indexOfFirst {
+      it.interrupted && it.content == null && it.inputTranscription == null
+    }
+    assertTrue(flushed in 0 until marker, "flush at $flushed, marker at $marker")
+  }
+
   @Test
   fun receive_serverMarksTheChunkFinished_flushesWithoutWaiting() = runBlocking {
     val handle =
