@@ -20,7 +20,6 @@ package com.google.adk.kt.examples.workflow
 
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
-import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
@@ -28,6 +27,7 @@ import com.google.adk.kt.workflow.NodeConfig
 import com.google.adk.kt.workflow.RetryConfig
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.emit
 import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlin.random.Random
@@ -51,15 +51,15 @@ object RetryWorkflow {
       config = NodeConfig(retryConfig = RetryConfig(maxAttempts = 5, initialDelay = 1.seconds)),
     ) { context, _ ->
       val attempt = "Getting weather... attempt ${context.attemptCount}"
-      emit(Event(content = Content.fromText(Role.MODEL, attempt)))
+      emit(Content.fromText(Role.MODEL, attempt))
       if (Random.nextDouble() < 0.7) throw HttpException(500, "Internal Server Error")
       "sunny"
     }
 
   /** Reports the weather the lookup returned. */
   private val reportWeather =
-    node<String, Content>("report_weather") { _, weather ->
-      Content.fromText(Role.MODEL, "The weather is $weather")
+    node<String, Unit>("report_weather") { _, weather ->
+      emit(Content.fromText(Role.MODEL, "The weather is $weather"))
     }
 }
 

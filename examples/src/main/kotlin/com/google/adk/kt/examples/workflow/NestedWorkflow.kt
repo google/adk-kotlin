@@ -22,7 +22,6 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
-import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.runners.InMemoryRunner
@@ -31,6 +30,7 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.JoinNode
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.emit
 import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
@@ -68,7 +68,7 @@ object NestedWorkflow {
       val year = Regex("""\b\d{4}\b""").find(message.text())?.value
       if (year == null) {
         val reply = "Please provide a valid 4-digit year (e.g., 1955)."
-        emit(Event(content = Content.fromText(Role.MODEL, reply)))
+        emit(Content.fromText(Role.MODEL, reply))
         throw IllegalArgumentException("Invalid year format.")
       }
       context.updateState("year", year)
@@ -76,12 +76,12 @@ object NestedWorkflow {
 
   /** Combines both branches' answers, which [LlmAgent] nodes leave in state rather than output. */
   private val aggregateResults =
-    node<Any?, Content>("aggregate_results") { context, _ ->
+    node<Any?, Unit>("aggregate_results") { context, _ ->
       val message =
         "# Year: ${context.state["year"]}\n\n" +
           "## Famous Person Bio:\n\n${context.state["bio"]}\n\n" +
           "## Historical Event:\n\n${context.state["historical_event"]}"
-      Content.fromText(Role.MODEL, message)
+      emit(Content.fromText(Role.MODEL, message))
     }
 }
 

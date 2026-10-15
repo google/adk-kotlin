@@ -45,8 +45,8 @@ import kotlinx.coroutines.flow.flow
  *   waits forever, which is a graph-authoring error.
  * @property config The node's retry policy and execution timeout.
  * @property inputSchema Validates the node's input before it runs.
- * @property outputSchema Validates the output value the node emits. A value assigned to
- *   `Context.output` and a message-as-output event's content are not checked.
+ * @property outputSchema Validates the output value the node emits. A value set with
+ *   `Context.setOutput` and a message-as-output event's content are not checked.
  * @property stateSchema Declares the state keys the node uses. Child nodes inherit it unless they
  *   declare their own.
  */

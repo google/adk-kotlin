@@ -51,6 +51,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -70,6 +71,8 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
 /** Asks the user for input, which suspends the graph. */
 private class Ask(override val name: String, private val request: RequestInput) : Node {
@@ -942,6 +945,78 @@ private fun fanOutWorkflow(fanOut: Node): Workflow {
 private val COUNT_SCHEMA =
   Schema(type = Type.OBJECT, properties = mapOf("count" to Schema(type = Type.INTEGER)))
 
+@Serializable private data class TimeOffRequest(val days: Int, val reason: String)
+
+@Serializable
+private data class TimeOffDecision(
+  val approved: Boolean,
+  @SerialName("approved_days") val approvedDays: Int? = null,
+)
+
+/** The manager's answer schema, matching [TimeOffDecision]. */
+private val TIME_OFF_DECISION_SCHEMA =
+  Schema(
+    type = Type.OBJECT,
+    properties =
+      mapOf(
+        "approved" to Schema(type = Type.BOOLEAN),
+        "approved_days" to Schema(type = Type.INTEGER, nullable = true),
+      ),
+    required = listOf("approved"),
+  )
+
+/**
+ * A time-off workflow that approves a request of at most one day and asks a manager otherwise, then
+ * reports the decision. A node stands in for the LLM agent that extracts the request.
+ */
+private fun timeOffWorkflow(days: Int): Workflow {
+  val processRequest =
+    node<Any?, TimeOffRequest>("process_request") { ctx, _ ->
+      val request = TimeOffRequest(days = days, reason = "family trip")
+      ctx.updateState("request", mapOf("days" to request.days, "reason" to request.reason))
+      request
+    }
+  val evaluateRequest =
+    node<TimeOffRequest, TimeOffDecision>("evaluate_request") { _, request ->
+      if (request.days <= 1) {
+        TimeOffDecision(approved = true)
+      } else {
+        requestInput(
+          interruptId = "manager_approval",
+          message = "Please review this time off request.",
+          payload = mapOf("days" to request.days, "reason" to request.reason),
+          responseSchema = TIME_OFF_DECISION_SCHEMA,
+        )
+      }
+    }
+  val processDecision =
+    node<TimeOffDecision, Unit>("process_decision") { ctx, decision ->
+      val requested = ((ctx.state["request"] as Map<*, *>)["days"] as Number).toInt()
+      val text =
+        if (decision.approved) {
+          "Time Off Approved! ${decision.approvedDays ?: requested} out of $requested days granted."
+        } else {
+          "Time Off Denied."
+        }
+      emit(Content.fromText(Role.MODEL, text))
+    }
+  return Workflow(
+    name = "wf",
+    edges =
+      listOf(
+        Edge(Start, processRequest),
+        Edge(processRequest, evaluateRequest),
+        Edge(evaluateRequest, processDecision),
+      ),
+  )
+}
+
+/** The text of the message `process_decision` sent in [this] turn's events. */
+private fun List<Event>.decisionMessage(): String? =
+  singleOrNull { it.nodeInfo?.path == "wf@1/process_decision@1" && it.content != null }
+    ?.content
+    ?.text()
+
 class WorkflowHitlTest {
 
   @Test
@@ -1003,6 +1078,385 @@ class WorkflowHitlTest {
     // Assert
     val replyEvent = events.single { it.nodeInfo?.path == "wf@1/reply@1" }
     assertEquals(mapOf("received" to details), replyEvent.output)
+  }
+
+  @Test
+  fun requestInput_returnedFromABody_failsAndPointsToRequestInput() {
+    // Arrange: an Any? output type would accept the request as a value.
+    val ask = node<Any?, Any?>("ask") { _, _ -> RequestInput(interruptId = "ask_1") }
+
+    // Act
+    val (events, error) =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask))))
+        .failingTurn(userMessage("go"))
+
+    // Assert
+    assertTrue(error is IllegalArgumentException, "expected a misuse error, got $error")
+    assertContains(error.message.orEmpty(), "call requestInput(...)")
+    assertTrue(events.none { e -> e.functionCalls().isNotEmpty() })
+  }
+
+  @Test
+  fun requestInput_typedNode_asksAndPassesTheTypedAnswerToItsSuccessor() {
+    // Arrange: three days need the manager's approval.
+    val session = WorkflowSession(timeOffWorkflow(days = 3))
+
+    // Act
+    val asked = session.turn(userMessage("I need three days off for a family trip"))
+    val decided =
+      session.turn(answer("manager_approval", mapOf("approved" to true, "approved_days" to 2L)))
+
+    // Assert: the first turn asks and stops; the answer then reaches process_decision as a
+    // TimeOffDecision.
+    val call = asked.flatMap { it.functionCalls() }.single()
+    assertEquals("manager_approval", call.id)
+    assertEquals("Please review this time off request.", call.args[RequestInput.MESSAGE_KEY])
+    assertEquals(mapOf("days" to 3, "reason" to "family trip"), call.args[RequestInput.PAYLOAD_KEY])
+    assertNotNull(call.args[RequestInput.RESPONSE_SCHEMA_KEY])
+    assertNull(asked.decisionMessage())
+    assertEquals("Time Off Approved! 2 out of 3 days granted.", decided.decisionMessage())
+  }
+
+  @Test
+  fun requestInput_deniedAnswer_reachesTheSuccessor() {
+    // Arrange
+    val session = WorkflowSession(timeOffWorkflow(days = 5))
+    session.advance(userMessage("I need five days off"))
+
+    // Act
+    val decided = session.turn(answer("manager_approval", mapOf("approved" to false)))
+
+    // Assert
+    assertEquals("Time Off Denied.", decided.decisionMessage())
+  }
+
+  @Test
+  fun requestInput_oneDayRequest_approvesWithoutAsking() {
+    // Act: one day is approved without the manager.
+    val events = WorkflowSession(timeOffWorkflow(days = 1)).turn(userMessage("One day off, please"))
+
+    // Assert
+    assertTrue(events.none { e -> e.functionCalls().isNotEmpty() })
+    assertEquals("Time Off Approved! 1 out of 1 days granted.", events.decisionMessage())
+  }
+
+  @Test
+  fun requestInput_afterEmittedContent_sendsTheMessageThenAsks() {
+    // Arrange
+    val ask =
+      node<Any?, String>("ask") { _, _ ->
+        emit(Content.fromText(Role.MODEL, "Checking"))
+        requestInput(interruptId = "ask_1", message = "Approve?")
+      }
+    val reply = CaptureInput("reply")
+
+    // Act
+    val events =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask), Edge(ask, reply))))
+        .turn(userMessage("go"))
+
+    // Assert: a message, then the request; the node outputs nothing and its successor waits.
+    val askEvents = events.filter { it.nodeInfo?.path == "wf@1/ask@1" }
+    assertEquals("Checking", askEvents.first().content?.text())
+    assertEquals("ask_1", askEvents.last().functionCalls().single().id)
+    assertTrue(askEvents.none { it.output != null })
+    assertTrue(events.none { it.nodeInfo?.path == "wf@1/reply@1" })
+  }
+
+  @Test
+  fun requestInput_answerThatDoesNotDecode_failsTheSuccessorsInputCheck() {
+    // Arrange: an answer with no schema, so only the successor's typed input checks it.
+    val ask = node<Any?, TimeOffDecision>("ask") { _, _ -> requestInput(interruptId = "ask_1") }
+    val decide = node<TimeOffDecision, Unit>("decide") { _, _ -> }
+    val session =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask), Edge(ask, decide))))
+    session.advance(userMessage("go"))
+
+    // Act
+    val (events, error) = session.failingTurn(answer("ask_1", mapOf("result" to "yes")))
+
+    // Assert
+    assertTrue(error is NodeInputValidationException, "expected the successor's check, got $error")
+    assertEquals("wf@1/decide@1", events.single { it.errorCode != null }.nodeInfo?.path)
+  }
+
+  @Test
+  fun requestInput_insideRunCatching_cancelsTheRequest() {
+    // Arrange: the body swallows the throw that ends its run and returns a fallback.
+    val ask =
+      node<Any?, String>("ask") { _, _ ->
+        val unused = runCatching { requestInput(interruptId = "ask_1") }
+        "fallback"
+      }
+    val reply = CaptureInput("reply")
+    val session =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask), Edge(ask, reply))))
+
+    // Act
+    val events = session.turn(userMessage("go"))
+
+    // Assert: no request is sent, and the fallback reaches the successor.
+    assertTrue(events.all { it.functionCalls().isEmpty() })
+    assertEquals(
+      mapOf("received" to "fallback"),
+      events.single { it.nodeInfo?.path == "wf@1/reply@1" }.output,
+    )
+  }
+
+  @Test
+  fun requestInput_customNode_asksAndCompletesWithTheAnswer() {
+    // Arrange: a custom node asks from its own flow.
+    val ask =
+      object : Node {
+        override val name = "ask"
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          requestInput(interruptId = "ask_c", message = "Name?")
+        }
+      }
+    val reply = CaptureInput("reply")
+    val session =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask), Edge(ask, reply))))
+
+    // Act
+    val asked = session.turn(userMessage("go"))
+    val answered = session.turn(answer("ask_c", mapOf("result" to "Ada")))
+
+    // Assert
+    val call = asked.flatMap { it.functionCalls() }.single()
+    assertEquals("ask_c", call.id)
+    assertEquals("Name?", call.args[RequestInput.MESSAGE_KEY])
+    assertEquals(
+      mapOf("received" to "Ada"),
+      answered.single { it.nodeInfo?.path == "wf@1/reply@1" }.output,
+    )
+  }
+
+  @Test
+  fun requestInput_insideCatchException_endsTheRunAndAsks() {
+    // Arrange: the throw that ends the run is not an Exception, so this catch does not see it.
+    var bodyContinued = false
+    val ask =
+      node<Any?, String>("ask") { _, _ ->
+        try {
+          requestInput(interruptId = "ask_1")
+        } catch (e: Exception) {
+          bodyContinued = true
+          "fallback"
+        }
+      }
+    val reply = CaptureInput("reply")
+    val session =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask), Edge(ask, reply))))
+
+    // Act
+    val asked = session.turn(userMessage("go"))
+    val answered = session.turn(answer("ask_1", mapOf("result" to "yes")))
+
+    // Assert
+    assertFalse(bodyContinued)
+    assertTrue(asked.none { it.nodeInfo?.path == "wf@1/reply@1" })
+    assertEquals(
+      mapOf("received" to "yes"),
+      answered.single { it.nodeInfo?.path == "wf@1/reply@1" }.output,
+    )
+  }
+
+  @Test
+  fun requestInput_parallelNodeItem_pausesAndCompletesTheListWithTheAnswer() {
+    // Arrange: item 2 asks while items 1 and 3 return.
+    val runs = mutableMapOf<Long, Int>()
+    val worker =
+      parallelNode<Long, String>("worker") { _, item ->
+        runs[item] = (runs[item] ?: 0) + 1
+        if (item == 2L) requestInput(interruptId = "ask_2") else "done-$item"
+      }
+    val session = WorkflowSession(fanOutWorkflow(worker))
+
+    // Act
+    val asked = session.turn(userMessage("go"))
+    val runsBeforeAnswer = runs.toMap()
+    val answered = session.turn(answer("ask_2", mapOf("result" to "two")))
+
+    // Assert: every item runs in the first turn, the list waits for the answer, and no item body
+    // runs twice.
+    val requestPath = asked.single { it.functionCalls().isNotEmpty() }.nodeInfo?.path.orEmpty()
+    assertTrue(requestPath.substringAfterLast('/').startsWith("worker@"), requestPath)
+    assertTrue(asked.none { it.nodeInfo?.path == "wf@1/reply@1" })
+    assertEquals(mapOf(1L to 1, 2L to 1, 3L to 1), runsBeforeAnswer)
+    assertEquals(listOf("done-1", "two", "done-3"), answered.replyInput())
+    assertEquals(mapOf(1L to 1, 2L to 1, 3L to 1), runs)
+  }
+
+  @Test
+  fun requestInput_nodeWithRetryPolicy_asksWithoutRetrying() {
+    // Arrange
+    var runs = 0
+    val ask =
+      node<Any?, String>(
+        "ask",
+        config =
+          NodeConfig(retryConfig = RetryConfig(maxAttempts = 3, initialDelay = Duration.ZERO)),
+      ) { _, _ ->
+        runs += 1
+        requestInput(interruptId = "ask_1")
+      }
+    val session = WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask))))
+
+    // Act
+    val events = session.turn(userMessage("go"))
+
+    // Assert
+    assertEquals(1, runs)
+    assertTrue(events.any { "ask_1" in it.longRunningToolIds })
+  }
+
+  @Test
+  fun requestInput_rootNode_completesWithTheAnswer() {
+    // Arrange
+    val ask = node<Any?, TimeOffDecision>("ask") { _, _ -> requestInput(interruptId = "ask_1") }
+    val session = WorkflowSession(ask)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("approved" to true)))
+
+    // Assert
+    assertEquals(mapOf("approved" to true), events.single { it.output != null }.output)
+  }
+
+  @Test
+  fun requestInput_afterStateUpdate_requestCarriesTheStateDelta() {
+    // Arrange
+    val ask =
+      node<Any?, String>("ask") { ctx, _ ->
+        ctx.updateState("asked", true)
+        requestInput(interruptId = "ask_1")
+      }
+
+    // Act
+    val events =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask))))
+        .turn(userMessage("go"))
+
+    // Assert
+    val request = events.single { e -> e.functionCalls().any { it.id == "ask_1" } }
+    assertEquals(true, request.actions.stateDelta["asked"])
+  }
+
+  @Test
+  fun requestInput_dispatchedChild_pausesTheCallerUntilAnswered() {
+    // Arrange: the caller dispatches a typed node that asks.
+    val child = node<Any?, String>("child") { _, _ -> requestInput(interruptId = "child_ask") }
+    val caller = DispatchAsk("caller", child)
+    val reply = CaptureInput("reply")
+    val session =
+      WorkflowSession(
+        Workflow(name = "wf", edges = listOf(Edge(Start, caller), Edge(caller, reply)))
+      )
+
+    // Act
+    val asked = session.turn(userMessage("go"))
+    val answered = session.turn(answer("child_ask", mapOf("result" to "yes")))
+
+    // Assert: one request, sent by the child, not by the caller.
+    val requestPath = asked.single { it.functionCalls().isNotEmpty() }.nodeInfo?.path.orEmpty()
+    assertTrue(requestPath.substringAfterLast('/').startsWith("child@"), requestPath)
+    assertTrue(asked.none { it.nodeInfo?.path == "wf@1/reply@1" })
+    assertEquals(
+      mapOf("received" to "yes"),
+      answered.single { it.nodeInfo?.path == "wf@1/reply@1" }.output,
+    )
+  }
+
+  @Test
+  fun requestInput_requestThatCannotBeSent_failsTheAskingNode() {
+    // Arrange: a schema default that is not JSON-native cannot be written into the request.
+    val ask =
+      node<Any?, String>("ask") { _, _ ->
+        requestInput(interruptId = "ask_1", responseSchema = Schema(default = Any()))
+      }
+
+    // Act
+    val (events, error) =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask))))
+        .failingTurn(userMessage("go"))
+
+    // Assert: the asking node reports the failure on its own error event.
+    assertContains(error.message.orEmpty(), "AnySerializer")
+    assertTrue(events.any { it.nodeInfo?.path == "wf@1/ask@1" && it.errorCode != null })
+    assertTrue(events.none { it.functionCalls().isNotEmpty() })
+  }
+
+  @Test
+  fun requestInput_nodeWithTimeout_waitsInsteadOfFailing() {
+    // Arrange
+    val ask =
+      node<Any?, String>("ask", config = NodeConfig(timeout = 5000.milliseconds)) { _, _ ->
+        requestInput(interruptId = "ask_1")
+      }
+    val reply = CaptureInput("reply")
+    val session =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask), Edge(ask, reply))))
+
+    // Act
+    val asked = session.turn(userMessage("go"))
+    val answered = session.turn(answer("ask_1", mapOf("result" to "yes")))
+
+    // Assert
+    assertTrue(asked.none { it.errorCode != null })
+    assertEquals(
+      mapOf("received" to "yes"),
+      answered.single { it.nodeInfo?.path == "wf@1/reply@1" }.output,
+    )
+  }
+
+  @Test
+  fun requestInput_rerunOnResume_rerunsTheBodyWithTheAnswer() {
+    // Arrange: the body asks on its first run and uses the answer when it runs again.
+    val review =
+      node<Any?, String>("review", rerunOnResume = true) { ctx, _ ->
+        val answer =
+          ctx.resumeInputs["human_review"]
+            ?: requestInput(interruptId = "human_review", message = "Approve?")
+        "review: $answer"
+      }
+    val session = WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, review))))
+    session.advance(userMessage("draft"))
+
+    // Act
+    val events = session.turn(answer("human_review", mapOf("result" to "approve")))
+
+    // Assert
+    assertEquals(
+      "review: approve",
+      events.single { it.nodeInfo?.path == "wf@1/review@1" && it.output != null }.output,
+    )
+  }
+
+  /** Replays a [Content] output as a [Content], so a successor that runs again receives it. */
+  @Test
+  fun resume_contentOutputBeforeTheInterrupt_reachesARerunSuccessorAsContent() {
+    // Arrange: review asks on its first run and reads draft's replayed output when it runs again.
+    val drafted = Content.fromText(Role.MODEL, "hello")
+    val draft = node<Any?, Content>("draft") { _, _ -> drafted }
+    val review =
+      node<Content, Content>("review", rerunOnResume = true) { ctx, draftContent ->
+        ctx.resumeInputs["human_review"] ?: requestInput(interruptId = "human_review")
+        draftContent
+      }
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, draft), Edge(draft, review)))
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("human_review", mapOf("result" to "approve")))
+
+    // Assert
+    assertEquals(
+      drafted,
+      events.firstOrNull { it.nodeInfo?.path == "wf@1/review@1" && it.output != null }?.output,
+    )
   }
 
   @Test
@@ -1912,7 +2366,7 @@ class WorkflowHitlTest {
     // Assert: item 1 replays, item 2 runs again, and item 3 runs for the first time.
     assertEquals(mapOf(1 to 1, 2 to 2, 3 to 1), runs)
     assertEquals(
-      listOf(10, 20, 30),
+      listOf(10L, 20L, 30L),
       events.single { it.nodeInfo?.path == "wf@1/sub@1/items@1" && it.output != null }.output,
     )
   }
@@ -2537,7 +2991,7 @@ class WorkflowHitlTest {
         .failingTurn(userMessage("go"))
 
     // Assert: the caller applies the child's own value-free input check.
-    assertEquals(3, events.single { it.nodeInfo?.path == "wf@1/ok@1" && it.output != null }.output)
+    assertEquals(3L, events.single { it.nodeInfo?.path == "wf@1/ok@1" && it.output != null }.output)
     assertTrue(error is NodeInputValidationException, "expected the node's own check, got $error")
     assertFalse("s3cret" in error.message.orEmpty())
   }
@@ -2821,5 +3275,20 @@ class WorkflowHitlTest {
 
     // Assert
     assertContains(error.message!!, "Validation failed for rehydrated output against schema")
+  }
+
+  @Test
+  fun requestInput_unitNode_answerBecomesTheOutput() {
+    // Arrange
+    val ask = node<Any?, Unit>("ask") { _, _ -> requestInput(interruptId = "ask_u") }
+    val session = WorkflowSession(Workflow("wf", listOf(Edge(Start, ask))))
+
+    // Act
+    val asked = session.turn(userMessage("go"))
+    val answered = session.turn(answer("ask_u", mapOf("result" to "yes")))
+
+    // Assert: the answer is the output as saved, though the node returns Unit.
+    assertEquals("ask_u", asked.flatMap { it.functionCalls() }.single().id)
+    assertEquals("yes", answered.single { it.nodeInfo?.path == "wf@1/ask@1" }.output)
   }
 }
