@@ -40,6 +40,8 @@ import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.createFinalModelResponseEvent
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
 import com.google.adk.kt.processors.getStructuredModelResponse
+import com.google.adk.kt.processors.liveTransferTargets
+import com.google.adk.kt.processors.offersTaskCompletedTool
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
@@ -52,6 +54,7 @@ import com.google.adk.kt.telemetry.withSpan
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.GoogleSearchAgentTool
 import com.google.adk.kt.tools.GoogleSearchTool
+import com.google.adk.kt.tools.TaskCompletedTool.Companion.TASK_COMPLETED_TOOL_NAME
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.VertexAiSearchAgentTool
 import com.google.adk.kt.tools.VertexAiSearchTool
@@ -75,6 +78,8 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -94,8 +99,10 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.transform
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
@@ -121,6 +128,24 @@ internal class LlmAgentTurn(
 ) {
 
   /**
+   * Keeps the run's audio when `RunConfig.saveLiveBlob` asks for it; null records nothing. It is
+   * also null without an artifact service, which leaves nowhere to save a recording.
+   */
+  private val audioCache: AudioCacheManager? by lazy {
+    when {
+      context.runConfig?.saveLiveBlob != true -> null
+      context.artifactService == null -> {
+        logger.warn {
+          "RunConfig.saveLiveBlob is set but the run has no artifact service, so live audio is " +
+            "not recorded."
+        }
+        null
+      }
+      else -> AudioCacheManager(context)
+    }
+  }
+
+  /**
    * The request the send loop has taken off the queue but not yet written.
    *
    * Kept across reconnects because the unlimited channel preserves only requests still in the
@@ -131,10 +156,17 @@ internal class LlmAgentTurn(
   /**
    * The newest session resumption handle, or null when there is none; a reconnect resumes from it.
    *
-   * Held on this turn and never persisted, so a restart begins with a new turn and no handle.
-   * Without a handle, a dropped connection fails rather than silently starting a new conversation.
+   * Held on this turn and never persisted, so a restart or a transfer begins with a new turn and no
+   * handle. Without a handle, a dropped connection fails rather than silently starting a new
+   * conversation.
    */
   private val resumptionHandle = AtomicReference<String?>(null)
+
+  /**
+   * The transfer or `task_completed` the model asked for, kept so that a drop before the handover
+   * does not lose it.
+   */
+  private val pendingHandover = AtomicReference<PendingHandover?>(null)
 
   /**
    * A callback's reply to a blocked input, held until the collector confirms delivery so a drop
@@ -142,6 +174,12 @@ internal class LlmAgentTurn(
    * ADK Python enqueues the reply before waiting.
    */
   private val pendingBlockedReply = AtomicReference<Event?>(null)
+
+  /** Saves recordings for the connection being read; null between connections. */
+  private val recordingSaves = AtomicReference<RecordingSaves?>(null)
+
+  /** Whether the store timed out on the saves still running when the last connection ended. */
+  @Volatile private var storeTimedOut = false
 
   /**
    * Executes the turn logic and returns a flow of events.
@@ -254,7 +292,9 @@ internal class LlmAgentTurn(
    */
   private val canonicalDirectTools: List<BaseTool> by lazy {
     val tools = agent.tools + context.extraTools.values
-    if (tools.size + agent.toolsets.size <= 1) {
+    // The injected task_completed tool counts toward the limit too, as Python's len(tools) > 1.
+    val injectedToolCount = if (offersTaskCompletedTool(context)) 1 else 0
+    if (tools.size + agent.toolsets.size + injectedToolCount <= 1) {
       tools
     } else {
       tools.map { tool ->
@@ -276,7 +316,8 @@ internal class LlmAgentTurn(
    *
    * A connection that drops or retires resumes from the resumption handle when there is one;
    * without one, a server go-away continues in a fresh session and a drop fails the run. A blocked
-   * turn always continues in a fresh session.
+   * turn always continues in a fresh session, and a transfer hands the conversation to another
+   * agent that can run live.
    */
   fun executeLive(): Flow<Event> = flow {
     var turn = this@LlmAgentTurn
@@ -323,6 +364,8 @@ internal class LlmAgentTurn(
 
     var attempt = 0
     while (true) {
+      // A timeout at the last connection's end says nothing about this connection's saves.
+      storeTimedOut = false
       val handle = resumptionHandle.load()
       val attemptRequest = if (handle == null) request else request.resumingFrom(handle)
       // Null until the open returns, so the teardown can tell a failed open from a live connection.
@@ -368,6 +411,7 @@ internal class LlmAgentTurn(
             collector.emit(event)
             // Delivered, so a blocked reply no longer needs re-emitting after the attempt.
             if (event === pendingBlockedReply.load()) pendingBlockedReply.store(null)
+            pendingHandover.load()?.takeIf { it.event === event }?.delivered = true
           } catch (t: Throwable) {
             // Flow.trace's flowOn runs emit in the caller's context; only the caller throws here.
             collectorFailed = true
@@ -384,7 +428,7 @@ internal class LlmAgentTurn(
         if (collectorFailed || !dropped) throw e
         droppedBy = e
       } finally {
-        // The one teardown per connection, and it precedes any restart or reconnect.
+        // The one teardown per connection, and it precedes any restart, transfer or reconnect.
         val unused = close()
       }
       // The teardown is uninterruptible, so re-check before opening any further connection.
@@ -397,13 +441,53 @@ internal class LlmAgentTurn(
       pendingBlockedReply.exchange(null)?.let { collector.emit(it) }
 
       // A blocked turn starts a fresh session, as ADK Python's restart does; it is not a drop.
-      if (result.end == LiveTurnsEnd.BLOCKED) return true
+      if (result.end == LiveTurnsEnd.BLOCKED) {
+        // Save the audio heard before the block, so the next turn's recording starts clean.
+        saveRecordingsNow(flushUserAudio = false, flushModelAudio = true, "a blocked turn")
+          .forEach { collector.emit(it) }
+        return true
+      }
 
       val goAway = result.end == LiveTurnsEnd.GO_AWAY
       // Stop once the caller hung up, unless a go-away still has queued input left to drain.
       if (result.closedByCaller || (!goAway && queue.isClosed)) {
+        // Best effort: save what both sides said since the last turn ended, unlike ADK Python.
+        saveRecordingsNow(flushUserAudio = true, flushModelAudio = true, "close").forEach {
+          collector.emit(it)
+        }
         failure?.let { throw it }
         break
+      }
+
+      // A drop can end the attempt before the receive loop records the handover; take it from here.
+      val handover =
+        result.handover
+          ?: pendingHandover.exchange(null)?.also { lost ->
+            // A drop may have cut its emit short; the caller still sees it before the handover.
+            if (!lost.delivered) collector.emit(lost.event)
+          }
+      val transferTo = handover?.transferTo
+      // Transfer before the drop rethrow, so a drop during the handover still hands over.
+      transferTo?.let { agentName ->
+        // Save the audio so far, so the next agent does not save this agent's audio as its own.
+        saveRecordingsNow(flushUserAudio = true, flushModelAudio = true, "a transfer").forEach {
+          collector.emit(it)
+        }
+        val target =
+          if (agentName == agent.name) agent
+          else
+            liveTransferTargets(agent).firstOrNull { it.name == agentName }
+              ?: throw IllegalArgumentException("Transfer target is not allowed from this agent.")
+        collector.emitAll(target.runLive(context.forLiveChild(target)))
+        return false
+      }
+
+      // Any other handover is a task_completed, which ends the step.
+      if (handover != null) {
+        // Save the audio so far, so the next step does not save this step's audio as its own.
+        saveRecordingsNow(flushUserAudio = true, flushModelAudio = true, "a completed step")
+          .forEach { collector.emit(it) }
+        return false
       }
 
       // Without a handle a drop fails the run; a go-away continues in a fresh session below.
@@ -453,9 +537,9 @@ internal class LlmAgentTurn(
 
   /**
    * Pumps the caller's queue into [connection] while reading turns back out of it, until the caller
-   * closes the queue, the connection ends or retires, or a callback blocks the model's output or
-   * spoken input. Records how it stopped in [result]; the flow completes only once the sender has
-   * stopped.
+   * closes the queue, the connection ends or retires, a handover starts, or a callback blocks the
+   * model's output or spoken input. Records how it stopped in [result]; the flow completes only
+   * once the sender has stopped.
    */
   // Only the sender writes the connection; the turn and its caller append under one shared lock.
   @Suppress("UnsafeCoroutineCrossing")
@@ -473,7 +557,17 @@ internal class LlmAgentTurn(
           send(event to handled)
           handled.await()
         }
-        val receiver = async { receiveTurns(request, connection, queue, result, deliver) }
+        val saves = RecordingSaves(this, deliver)
+        recordingSaves.store(saves)
+        val receiver = async {
+          try {
+            receiveTurns(request, connection, queue, result, deliver)
+          } catch (e: Throwable) {
+            // A drop or error cancels this scope; let running saves deliver their recordings first.
+            if (e !is CancellationException && !saves.finish()) storeTimedOut = true
+            throw e
+          }
+        }
         /**
          * Writes [pending]; on a [LiveWriteFailure] it records the error when the turn was already
          * stored, then waits for `receiver` to end, and if it is still running after
@@ -522,6 +616,9 @@ internal class LlmAgentTurn(
         }
         // Joined so the sender has stopped before the caller restarts or reconnects.
         sender.cancelAndJoin()
+        // Recordings still saving go out before a transfer, restart, reconnect or the run's end.
+        if (!saves.finish()) storeTimedOut = true
+        recordingSaves.store(null)
       }
       .buffer(Channel.RENDEZVOUS)
       .transform { (event, handled) ->
@@ -542,6 +639,10 @@ internal class LlmAgentTurn(
   ) {
     // The model's output transcription so far in this turn, which the after-model callbacks screen.
     var spoken = ""
+    // The user's speech in this turn that the connection has not yet marked finished.
+    var unfinishedInput = ""
+    // Speech stored ahead of a tool call or screened output, so the connection's copy is skipped.
+    var storedInput: String? = null
     while (true) {
       var sawResponse = false
       var end: LiveTurnsEnd? = null
@@ -561,11 +662,52 @@ internal class LlmAgentTurn(
           if (response.turnComplete == true) {
             result.completedATurn = true
           }
-          spoken = spokenSoFar(spoken, response)
-          if (handleLiveResponse(request, response, spoken, queue, emitEvent)) {
-            end = LiveTurnsEnd.BLOCKED
-            return@takeWhile false
+          storedInput?.let { stored ->
+            val rest = response.finishedInputAfter(stored) ?: return@let
+            storedInput = null
+            unfinishedInput = ""
+            // The turn went on after the stored speech, so keep only what the user said after it.
+            if (
+              rest.isNotEmpty() &&
+                emitAsFinishedInput(request, rest, response, spoken, queue, emitEvent)
+            ) {
+              end = LiveTurnsEnd.BLOCKED
+              return@takeWhile false
+            }
+            return@takeWhile true
           }
+          // Cut-off audio or grounding comes before GeminiLiveConnection's finished copy, so wait.
+          val bareInterruption =
+            response.interrupted && response.content == null && response.groundingMetadata == null
+          if (response.turnComplete == true || bareInterruption) storedInput = null
+          spoken = spokenSoFar(spoken, response)
+          unfinishedInput = unfinishedInputSoFar(unfinishedInput, response)
+          // Store and screen the speech before a tool or an after-model callback runs.
+          if (
+            unfinishedInput.isNotEmpty() &&
+              (response.content?.hasFunctionCall() == true ||
+                afterModelCallbacksScreen(response, spoken))
+          ) {
+            val speech = unfinishedInput
+            unfinishedInput = ""
+            // A blocked question reaches no tool or after-model callback and ends the turn.
+            if (emitAsFinishedInput(request, speech, response, spoken, queue, emitEvent)) {
+              end = LiveTurnsEnd.BLOCKED
+              return@takeWhile false
+            }
+            storedInput = storedInput.orEmpty() + speech
+          }
+          val blocked = handleLiveResponse(request, response, spoken, queue, emitEvent)
+          pendingHandover.load()?.let { handover ->
+            // Recorded before the handover, so a drop during it still hands over.
+            result.handover = handover
+            handOverConnection(handover, queue)
+            end =
+              if (handover.transferTo != null) LiveTurnsEnd.TRANSFER
+              else LiveTurnsEnd.TASK_COMPLETED
+          }
+          // A handover beats a blocked input in the same response: any answer is already queued.
+          if (blocked && end == null) end = LiveTurnsEnd.BLOCKED
           end == null
         }
         .collect()
@@ -581,12 +723,54 @@ internal class LlmAgentTurn(
     }
   }
 
+  /**
+   * Emits the user's [speech] as the finished transcription the connection has not sent yet.
+   *
+   * @return whether a callback blocked it.
+   */
+  private suspend fun emitAsFinishedInput(
+    request: LlmRequest,
+    speech: String,
+    response: LlmResponse,
+    spoken: String,
+    queue: LiveRequestQueue,
+    emitEvent: suspend (Event) -> Unit,
+  ): Boolean {
+    val finishedInput =
+      LlmResponse(
+        inputTranscription = Transcription(text = speech, finished = true),
+        modelVersion = response.modelVersion,
+        liveSessionId = response.liveSessionId,
+      )
+    return handleLiveResponse(request, finishedInput, spoken, queue, emitEvent)
+  }
+
+  /** The user's unfinished speech in this turn, [unfinished], updated with [response]. */
+  private fun unfinishedInputSoFar(unfinished: String, response: LlmResponse): String {
+    val input = response.inputTranscription
+    return when {
+      input?.finished == true || response.turnComplete == true || response.interrupted -> ""
+      input != null -> unfinished + input.text.orEmpty()
+      else -> unfinished
+    }
+  }
+
   /** The turn's output transcription so far, [spoken], updated with [response]. */
   private fun spokenSoFar(spoken: String, response: LlmResponse): String {
     val turnSoFar = if (response.turnComplete == true || response.interrupted) "" else spoken
     val heard = response.outputTranscription ?: return turnSoFar
     return if (heard.finished == true) "" else turnSoFar + heard.text.orEmpty()
   }
+
+  /**
+   * Whether after-model callbacks screen [response], given the turn's output so far, [spoken].
+   * Every plugin counts, since each adds an after-model callback.
+   */
+  private fun afterModelCallbacksScreen(response: LlmResponse, spoken: String): Boolean =
+    response.outputTranscription != null &&
+      spoken.isNotEmpty() &&
+      (context.pluginManager.afterModelCallbacks.isNotEmpty() ||
+        agent.afterModelCallbacks.isNotEmpty())
 
   /**
    * Screens and emits one live [response], answering its tool calls through [queue].
@@ -601,7 +785,7 @@ internal class LlmAgentTurn(
     emitEvent: suspend (Event) -> Unit,
   ): Boolean {
     val callbackContext = CallbackContext(context)
-    if (response.outputTranscription != null && spoken.isNotEmpty()) {
+    if (afterModelCallbacksScreen(response, spoken)) {
       val blockedOutput = screenModelOutput(request, response, spoken, callbackContext)
       if (blockedOutput != null) {
         emitEvent(blockedOutput)
@@ -609,7 +793,25 @@ internal class LlmAgentTurn(
       }
     }
     emitLiveResponse(request, response, callbackContext) { event ->
+      val transferTo = event.actions.transferToAgent
+      // A transfer from any event of the response wins, so a task_completed never replaces it.
+      if (
+        transferTo != null ||
+          (event.signalsTaskCompleted() && pendingHandover.load()?.transferTo == null)
+      ) {
+        // Kept before the emit, so a drop mid-emit cannot lose it; runLiveSession emits it if lost.
+        pendingHandover.store(
+          PendingHandover(
+            // An answer to wait for only when there is one; a non-tool transfer has none.
+            event.content?.takeIf { c -> c.parts.any { it.functionResponse != null } },
+            event,
+            transferTo,
+          )
+        )
+      }
       emitEvent(event)
+      // Cut-off audio is left out; audio on a turnComplete response is flushed with this turn.
+      if (!response.interrupted) cacheModelAudio(event)
       sendToolResponse(queue, event)
     }
     val heard = response.inputTranscription
@@ -636,6 +838,34 @@ internal class LlmAgentTurn(
   private fun restartedTurn(): LlmAgentTurn {
     val restartContext = context.copy(runConfig = context.runConfig?.forNewLiveSession())
     return LlmAgentTurn(agent, restartContext, requestProcessors, responseProcessors)
+  }
+
+  /**
+   * Gives the model's turn time to finish before the connection is handed over, on a transfer or a
+   * `task_completed` end of a live sequential step.
+   *
+   * The [handover]'s tool answer queues behind whatever the caller sent first, so this waits up to
+   * [TRANSFER_ANSWER_TIMEOUT] for the sender to write it to this connection rather than leave it
+   * for the next one, then pauses for [TRANSFER_HANDOVER_DELAY] or [TASK_COMPLETION_DELAY] as ADK
+   * Python does. Both waits end early if the caller closes the queue, since nothing follows a
+   * hang-up.
+   */
+  // The queue is only ever awaited here, never written, so the cross-coroutine read is safe.
+  @Suppress("UnsafeCoroutineCrossing")
+  private suspend fun handOverConnection(handover: PendingHandover, queue: LiveRequestQueue) {
+    if (handover.answer != null) {
+      val wrote =
+        withTimeoutOrNull(TRANSFER_ANSWER_TIMEOUT) {
+          select {
+            handover.written.onAwait { true }
+            queue.closed.onAwait { false }
+          }
+        }
+      if (wrote == null) logger.warn { "The tool answer was not sent before the handover." }
+    }
+    val pause = if (handover.transferTo != null) TRANSFER_HANDOVER_DELAY else TASK_COMPLETION_DELAY
+    // The pause lets the model's turn settle, unless the caller has already hung up.
+    withTimeoutOrNull(pause) { queue.closed.await() }
   }
 
   /**
@@ -670,7 +900,7 @@ internal class LlmAgentTurn(
    * later or resumed run sees what it is replying to.
    *
    * Partial content is skipped as superseded, and function responses reach the session by their own
-   * path. Realtime audio is spoken over the connection, not recorded as a user turn.
+   * path. Realtime audio is not stored here; `saveLiveBlob` records it through the audio cache.
    */
   private suspend fun persistUserTurn(
     liveRequest: LiveRequest,
@@ -680,7 +910,7 @@ internal class LlmAgentTurn(
   ): Boolean {
     if (input.partial || answersTools) return false
     if (context.sessionService == null) return false
-    appendToSession(
+    context.appendLiveEvent(
       Event(
         invocationId = context.invocationId,
         author = Role.USER,
@@ -702,36 +932,14 @@ internal class LlmAgentTurn(
         actions = EventActions(stateDelta = delta.toMutableMap()),
       )
     // Like a user turn, a delta still waiting for the lock is dropped if the run ends or restarts.
-    appendToSession(event)
-  }
-
-  /**
-   * Appends [event] to the session under the invocation's append lock, which the caller also takes
-   * for its own appends; nothing is emitted while the lock is held. The wait for the lock has no
-   * timeout of its own: the holder's append is already bounded, and a timeout on the wait would not
-   * end a stuck run any sooner.
-   */
-  private suspend fun appendToSession(event: Event) {
-    val sessionService = context.sessionService
-    if (sessionService == null) {
-      logger.warn { "A live session event was dropped: the context has no session service." }
-      return
-    }
-    context.sessionAppendLock.withLock {
-      // Non-cancellable so a committed append is not repeated; a timeout still fails the run.
-      withContext(NonCancellable) {
-        withTimeoutOrNull(SESSION_APPEND_TIMEOUT) {
-          val unused = sessionService.appendEvent(context.session, event)
-        } ?: error("A live session append did not finish in $SESSION_APPEND_TIMEOUT.")
-      }
-    }
+    context.appendLiveEvent(event)
   }
 
   /** Saves a continuing callback's state and artifact writes on an event of their own. */
   private suspend fun saveCallbackWrites(callbackContext: CallbackContext) {
     val actions = callbackContext.eventActions
     if (actions.stateDelta.isEmpty() && actions.artifactDelta.isEmpty()) return
-    appendToSession(createModelResponseEvent().copy(actions = actions.snapshot()))
+    context.appendLiveEvent(createModelResponseEvent().copy(actions = actions.snapshot()))
   }
 
   /**
@@ -759,6 +967,8 @@ internal class LlmAgentTurn(
 
     // Skipped on a replay, so a re-sent request does not record the same user turn twice.
     if (!pending.persisted) {
+      // Cached just before the send, as Python does.
+      if (input is RealtimeInput.Audio) audioCache?.cacheInput(input.blob)
       val storedTurn =
         input is ContentInput &&
           content != null &&
@@ -800,6 +1010,10 @@ internal class LlmAgentTurn(
               }
           }
         sendingToConnection { connection.sendContent(toSend, input.partial) }
+        val handover = pendingHandover.load()
+        if (handover?.answer == sent) {
+          val unused = handover.written.complete(Unit)
+        }
       }
       null -> {}
     }
@@ -846,6 +1060,120 @@ internal class LlmAgentTurn(
   }
 
   /**
+   * Records the model's audio, so a completed turn can be written out as one artifact.
+   *
+   * Reading the emitted event rather than the raw response records what the response processors
+   * produced, which is what the caller heard and what ADK Python records.
+   */
+  private suspend fun cacheModelAudio(event: Event) {
+    val cache = audioCache ?: return
+    event.content?.parts?.forEach { part -> part.inlineData?.let { cache.cacheOutput(it) } }
+  }
+
+  /**
+   * Saves the requested caches now, outside any connection, for a blocked turn, a close, a transfer
+   * or a completed step. It waits at most [RecordingSaves.SAVE_TIMEOUT], and skips the save when
+   * the store already timed out at this connection's end, so a stuck store holds the run for one
+   * timeout, not two, and costs the recording rather than the run; [where] names the moment in the
+   * log.
+   */
+  private suspend fun saveRecordingsNow(
+    flushUserAudio: Boolean,
+    flushModelAudio: Boolean,
+    where: String,
+  ): List<Event> {
+    val cache = audioCache ?: return emptyList()
+    // Taken first, so the audio leaves the caches even when it is not saved.
+    val taken = cache.take(flushUserAudio, flushModelAudio)
+    if (taken.input.isEmpty() && taken.output.isEmpty()) return emptyList()
+    if (storeTimedOut) {
+      logger.error { "Dropped live audio at $where: the artifact store already timed out." }
+      return emptyList()
+    }
+    val saved = withTimeoutOrNull(RecordingSaves.SAVE_TIMEOUT) { cache.write(taken) }
+    if (saved == null) {
+      logger.error {
+        "Dropped live audio still saving at $where after ${RecordingSaves.SAVE_TIMEOUT}."
+      }
+    }
+    return saved.orEmpty()
+  }
+
+  /**
+   * Writes the recorded audio out when a turn ends, emitting one event per recording after the
+   * control event. An interruption flushes only the model's side, since the caller is mid-sentence.
+   *
+   * The control event goes out first, as in ADK Go, so a slow artifact save cannot delay a
+   * barge-in; ADK Python waits for the save and, when it saved a recording, drops the control
+   * event.
+   */
+  private suspend fun flushAudioOnControlEvent(
+    response: LlmResponse,
+    emitEvent: suspend (Event) -> Unit,
+  ) {
+    val cache = audioCache ?: return
+    val flushUserAudio =
+      when {
+        response.interrupted -> false
+        response.turnComplete == true -> true
+        else -> return
+      }
+    // Taken now, so the turn ends here; the save runs in the background when a connection is read.
+    val taken = cache.take(flushUserAudio = flushUserAudio, flushModelAudio = true)
+    val saves = recordingSaves.load()
+    if (saves != null && saves.isActive) saves.start(cache, taken)
+    else for (event in cache.write(taken)) emitEvent(event)
+  }
+
+  /**
+   * Saves recordings off the receive loop, so a slow artifact store delays no other event. Each
+   * recording is delivered once saved, in turn order; [finish] waits a bounded time for the rest.
+   */
+  private class RecordingSaves(
+    private val scope: CoroutineScope,
+    private val deliver: suspend (Event) -> Unit,
+  ) {
+    // Started only from the receive loop, and read by [finish] once that loop has stopped.
+    private val jobs = mutableListOf<Job>()
+
+    // The caches lock, writes go to the artifact service, and taken audio never changes.
+    @Suppress("UnsafeCoroutineCrossing")
+    fun start(cache: AudioCacheManager, taken: AudioCacheManager.TakenAudio) {
+      val previous = jobs.lastOrNull()
+      jobs += scope.launch {
+        val recordings = cache.write(taken)
+        // A later turn's save can finish first; its recording still waits for this one.
+        previous?.join()
+        for (recording in recordings) deliver(recording)
+      }
+    }
+
+    /** Whether recordings can still be started here; false once this connection's scope ended. */
+    val isActive: Boolean
+      get() = scope.isActive
+
+    /** Waits a bounded time for the rest; returns false if the store did not finish in time. */
+    suspend fun finish(): Boolean {
+      val running = jobs.filter { it.isActive }
+      if (running.isEmpty()) return true
+      if (withTimeoutOrNull(SAVE_TIMEOUT) { running.joinAll() } == null) {
+        val dropped = running.count { it.isActive }
+        logger.error {
+          "Dropped $dropped live audio recording(s) still saving after $SAVE_TIMEOUT."
+        }
+        running.forEach { it.cancel() }
+        return false
+      }
+      return true
+    }
+
+    companion object {
+      /** How long to wait for recordings still saving before moving on without them. */
+      val SAVE_TIMEOUT = 10.seconds
+    }
+  }
+
+  /**
    * Runs one live response through the response processors and tool calls, as ADK Python's live
    * postprocessing does; the model callbacks run only where [receiveTurns] calls them.
    */
@@ -861,6 +1189,7 @@ internal class LlmAgentTurn(
         .withActionsFrom(callbackContext)
     // Live runs record no call_llm span, as in ADK Python.
     processModelResponse(request, response, baseEvent, span = NoOpSpan, emitEvent = emitEvent)
+    flushAudioOnControlEvent(response, emitEvent)
   }
 
   /**
@@ -1296,13 +1625,8 @@ internal class LlmAgentTurn(
 
     // If a tool requested a transfer to another agent, execute that agent's loop.
     functionResponseEvent?.actions?.transferToAgent?.let { agentName ->
-      // Live transfer is not supported on this path; a live run must not run the target turn-based.
-      if (context.liveRequestQueue != null) {
-        logger.warn {
-          "A live run can't transfer to another agent yet, so it stays with ${agent.name}."
-        }
-        return@let
-      }
+      // Live runs hand over to the target in `runLiveSession`, so they skip this path.
+      if (context.liveRequestQueue != null) return@let
       val targetAgent =
         agent.rootAgent.findAgent(agentName)
           ?: throw IllegalArgumentException("Agent '$agentName' not found in the agent tree.")
@@ -1353,17 +1677,17 @@ private val logger = LoggerFactory.getLogger(LlmAgentTurn::class)
  */
 private val CONNECTION_TEARDOWN_TIMEOUT = 10.seconds
 
-/** How long a live session append may take before failing the run. */
-private val SESSION_APPEND_TIMEOUT = 10.seconds
-
 /**
  * How the receive loop of one connection stopped: the connection or the caller closed it, a
- * callback blocked the model's output or spoken input, or the server announced a go-away.
+ * callback blocked the model's output or spoken input, the server announced a go-away, the model
+ * handed the conversation to another agent, or a live sequential step signalled `task_completed`.
  */
 private enum class LiveTurnsEnd {
   CLOSED,
   BLOCKED,
   GO_AWAY,
+  TRANSFER,
+  TASK_COMPLETED,
 }
 
 /**
@@ -1373,6 +1697,8 @@ private enum class LiveTurnsEnd {
  *   thrown failure, and leaves this at [LiveTurnsEnd.CLOSED].
  * @property completedATurn whether the connection delivered at least one turn-complete, which marks
  *   a healthy session and resets the reconnect budget.
+ * @property handover the transfer or `task_completed` that ended the loop, or null; recorded before
+ *   the handover so a drop during it still hands over or ends the step rather than resuming.
  * @property closedByCaller whether the sender drained the caller's closed queue, after which
  *   nothing is resumed.
  * @property writeFailure the error of a failed write of a turn already stored in the session, or of
@@ -1384,6 +1710,7 @@ private enum class LiveTurnsEnd {
 private class LiveAttemptResult {
   @Volatile var end: LiveTurnsEnd = LiveTurnsEnd.CLOSED
   @Volatile var completedATurn: Boolean = false
+  @Volatile var handover: PendingHandover? = null
   @Volatile var closedByCaller: Boolean = false
   @Volatile var writeFailure: Throwable? = null
   @Volatile var outlivedWriteFailure: Boolean = false
@@ -1408,6 +1735,66 @@ private data class PendingSend(
   val screened: Content?,
   val storedTurn: Boolean = false,
 )
+
+/**
+ * A handover the model asked for: a transfer to [transferTo], or, when that is null, a
+ * `task_completed` response, which ends the agent's live run (in a sequence, the step). It holds
+ * the tool's [answer], the [event] that carries it, and the signal the sender completes once it has
+ * written that answer.
+ */
+private class PendingHandover(val answer: Content?, val event: Event, val transferTo: String?) {
+  val written = CompletableDeferred<Unit>()
+
+  /** Whether [event] reached the caller; if not, it is emitted before the handover. */
+  @Volatile var delivered = false
+}
+
+/**
+ * How long a handover waits for its `transfer_to_agent` or `task_completed` answer to reach this
+ * connection.
+ *
+ * The answer queues behind the caller's earlier input, so a backlog of audio can delay it; past the
+ * bound the handover goes ahead anyway and the answer goes to the next connection, whereas ADK
+ * Python never waits for the answer.
+ */
+private val TRANSFER_ANSWER_TIMEOUT = 5.seconds
+
+/**
+ * How long the old connection stays open after a transfer's answer, the figure ADK Python holds in
+ * `DEFAULT_TRANSFER_AGENT_DELAY`.
+ *
+ * Nothing is read from it meanwhile, so anything the model streams during the pause is dropped with
+ * the connection, as in ADK Python.
+ */
+private val TRANSFER_HANDOVER_DELAY = 1.seconds
+
+/**
+ * How long a live sequential step's connection stays open after its `task_completed` answer, the
+ * figure ADK Python holds in `DEFAULT_TASK_COMPLETION_DELAY`; as after a transfer, anything the
+ * model streams meanwhile is dropped.
+ */
+private val TASK_COMPLETION_DELAY = 1.seconds
+
+/**
+ * Whether this event carries a `task_completed` function response. The model may call it alongside
+ * other tools, whose responses merge into one event, so every response is scanned, not just the
+ * first (parity with ADK Python).
+ */
+@JvmSynthetic
+internal fun Event.signalsTaskCompleted(): Boolean =
+  functionResponses().any { it.name == TASK_COMPLETED_TOOL_NAME }
+
+/**
+ * The rest of a finished transcription that starts with the already stored [speech], or null when
+ * this response is not one; the connection sends such a transcription on its own.
+ */
+private fun LlmResponse.finishedInputAfter(speech: String): String? {
+  val text = inputTranscription?.takeIf { it.finished == true }?.text ?: return null
+  val alone =
+    copy(inputTranscription = null, partial = false, modelVersion = null, liveSessionId = null) ==
+      LlmResponse()
+  return if (alone && text.startsWith(speech)) text.removePrefix(speech).trimStart() else null
+}
 
 /**
  * Span over the history a live run sends at connect, which no `call_llm` span covers; named as in
