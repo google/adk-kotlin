@@ -445,3 +445,20 @@ internal fun List<FunctionCall>.getLongRunningFunctionIds(
   }
   return longRunningToolIds
 }
+
+/** The ids of the function calls these events record, skipping empty ones as ADK Python does. */
+internal fun List<Event>.functionCallIds(): Set<String> =
+  flatMapTo(mutableSetOf()) { event ->
+    event.functionCalls().mapNotNull { call -> call.id?.takeIf { it.isNotEmpty() } }
+  }
+
+/**
+ * Whether [branch] ends in the `<tool>@<function call id>` segment a streaming tool delivers its
+ * messages on, for a call in [toolCallIds]. A segment naming [agentName] is that agent's own branch
+ * when it runs as a tool, so it never counts, as in ADK Python.
+ */
+internal fun isToolBranch(branch: String, agentName: String, toolCallIds: Set<String>): Boolean {
+  val leaf = branch.substringAfterLast('.')
+  val at = leaf.lastIndexOf('@')
+  return at >= 0 && leaf.substring(at + 1) in toolCallIds && leaf.substring(0, at) != agentName
+}
