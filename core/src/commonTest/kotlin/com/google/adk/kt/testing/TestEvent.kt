@@ -19,6 +19,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
 import com.google.adk.kt.events.ToolConfirmation
+import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
 
@@ -154,4 +155,13 @@ fun compactionEvent(
       ),
     usageMetadata = promptTokenCount?.let { UsageMetadata(promptTokenCount = it) },
     timestamp = timestamp,
+  )
+
+/** An event one millisecond after the session's last update, with [stateDelta]. */
+fun Session.nextEvent(stateDelta: Map<String, Any> = emptyMap()): Event =
+  Event(
+    author = "agent",
+    invocationId = "inv",
+    actions = EventActions(stateDelta = stateDelta.toMutableMap()),
+    timestamp = lastUpdateTime.toEpochMilliseconds() + 1,
   )

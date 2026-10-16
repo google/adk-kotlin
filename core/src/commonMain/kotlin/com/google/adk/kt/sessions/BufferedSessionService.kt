@@ -20,7 +20,10 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.retry.retry
 import kotlin.coroutines.CoroutineContext
 import kotlin.jvm.JvmOverloads
+import kotlin.time.TimeSource
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 /**
  * A [SessionService] that persists writes in the background: [appendEvent] updates the live session
@@ -49,7 +52,7 @@ import kotlinx.coroutines.runBlocking
  *   cannot complete until [close]. An `Error` in a write stops the service and fails like an
  *   uncaught child coroutine, canceling a parent job that is not a supervisor and reaching the
  *   context's exception handler or the platform default.
- * @param config How failed writes are retried.
+ * @param config How failed writes are retried, and whether a read cache serves [getSession].
  */
 class BufferedSessionService
 @JvmOverloads
@@ -61,31 +64,47 @@ constructor(
   // Not `by delegate`: a new SessionService member gets its default here until overridden.
 
   private val retryPolicy = config.retryPolicy
-  private val writers = SessionWriteBuffer(context, persist = ::persist)
+  private val buffer =
+    SessionWriteBuffer(
+      context,
+      persist = ::persist,
+      cache = config.cacheConfig?.let { SessionCache(it, TimeSource.Monotonic) },
+    )
 
   override suspend fun createSession(key: SessionKey, state: Map<String, Any>?): Session {
     // The store may give a new session the app: and user: state that other sessions changed.
-    writers.awaitWritesSeenBy(key)
-    return delegate.createSession(key, state)
+    buffer.awaitWritesSeenBy(key)
+    try {
+      return delegate.createSession(key, state)
+    } finally {
+      // A create that fails may still have stored the session and its app: and user: seeds.
+      withContext(NonCancellable) {
+        buffer.dropCached(key, SharedStateScope.changedBy(key, state.orEmpty().keys))
+      }
+    }
   }
 
   override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {
-    writers.awaitWritesSeenBy(key)
-    return delegate.getSession(key, config)
+    // A filtered read goes to the store, which filters events its own way.
+    if (config != null || key.id == null) {
+      buffer.awaitWritesSeenBy(key)
+      return delegate.getSession(key, config)
+    }
+    return buffer.getOrRead(key) { delegate.getSession(key, config = null) }
   }
 
   override suspend fun listSessions(appName: String, userId: String): ListSessionsResponse {
-    writers.awaitWritesListedFor(appName, userId)
+    buffer.awaitWritesListedFor(appName, userId)
     return delegate.listSessions(appName, userId)
   }
 
   override suspend fun listEvents(key: SessionKey): ListEventsResponse {
-    writers.awaitWritesOf(key)
+    buffer.awaitWritesOf(key)
     return delegate.listEvents(key)
   }
 
   override suspend fun closeSession(session: Session) {
-    writers.awaitWritesOf(session.key)
+    buffer.awaitWritesOf(session.key)
     delegate.closeSession(session)
   }
 
@@ -97,15 +116,20 @@ constructor(
    * leaving a failure that [flush] reports.
    */
   override suspend fun deleteSession(key: SessionKey) {
-    writers.flush(key)
-    delegate.deleteSession(key)
+    buffer.flush(key)
+    try {
+      delegate.deleteSession(key)
+    } finally {
+      // A read that ran while the store deleted the session may have cached it.
+      withContext(NonCancellable) { buffer.dropCached(key) }
+    }
   }
 
   override suspend fun appendEvent(session: Session, event: Event): Event {
     if (event.partial) return event
     requireNotNull(session.key.id) { "BufferedSessionService requires a session id." }
     // The interface default updates the live session only; the store is not involved.
-    return writers.append(session) { super.appendEvent(session, event) }
+    return buffer.append(session) { super.appendEvent(session, event) }
   }
 
   /**
@@ -115,9 +139,9 @@ constructor(
    * the session whose write failed reports it on an append, flush or delete.
    */
   override suspend fun flush(key: SessionKey?) {
-    if (key == null) return writers.flushAll { delegate.flush() }
+    if (key == null) return buffer.flushAll { delegate.flush() }
     requireNotNull(key.id) { "flush requires a session id." }
-    writers.flush(key) { delegate.flush(key) }
+    buffer.flush(key) { delegate.flush(key) }
   }
 
   /**
@@ -126,7 +150,7 @@ constructor(
    * calling thread, so do not call it on the Android main thread or on a thread the writes need.
    */
   override fun close() {
-    runBlocking { writers.close { delegate.flush() } }
+    runBlocking { buffer.close { delegate.flush() } }
   }
 
   /** The store gets only the key and the version the write replaces; delivery is at least once. */

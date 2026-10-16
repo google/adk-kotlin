@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.sessions
 
-import com.google.adk.kt.collections.concurrentMutableListOf
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
 import kotlin.time.Clock
@@ -61,7 +60,7 @@ class InMemorySessionService : SessionService {
       sessionIndex.getOrPut(UserKey(key.appName, key.userId)) { mutableSetOf() }.add(sessionKey)
 
       // Create a mutable copy and merge global state into it before returning.
-      mergeWithGlobalState(key.appName, key.userId, copySession(newSession))
+      mergeWithGlobalState(key.appName, key.userId, newSession.detachedCopy())
     }
   }
 
@@ -72,7 +71,7 @@ class InMemorySessionService : SessionService {
       // Filter with non-mutating operations and build the copy from the result: the copy's event
       // list is concurrent (CopyOnWriteArrayList), which does not support in-place removeAll /
       // subList clearing.
-      val sessionCopy = copySession(storedSession, filterEvents(storedSession.events, config))
+      val sessionCopy = storedSession.detachedCopy(filterEvents(storedSession.events, config))
 
       mergeWithGlobalState(key.appName, key.userId, sessionCopy)
     }
@@ -83,7 +82,7 @@ class InMemorySessionService : SessionService {
       val sessionCopies =
         sessionIndex[indexKey].orEmpty().mapNotNull { sessionKey ->
           sessions[sessionKey]?.let { originalSession ->
-            val copy = copySessionWithoutEvent(originalSession)
+            val copy = originalSession.detachedCopy(events = emptyList())
             mergeWithGlobalState(appName, userId, copy)
           }
         }
@@ -178,26 +177,6 @@ class InMemorySessionService : SessionService {
       userState.getOrPut(UserKey(key.appName, key.userId)) { mutableMapOf() }[name] = value
     }
     return scoped.sessionState
-  }
-
-  private fun copySession(original: Session, events: List<Event> = original.events): Session {
-    return Session(
-      key = original.key,
-      state = State(initialState = original.state),
-      // Keep the copy's event list concurrent too (toMutableList() would return a plain ArrayList),
-      // so a caller iterating it while the runner appends does not hit a CME.
-      events = concurrentMutableListOf<Event>().apply { addAll(events) },
-      lastUpdateTime = original.lastUpdateTime,
-    )
-  }
-
-  private fun copySessionWithoutEvent(original: Session): Session {
-    return Session(
-      key = original.key,
-      state = State(initialState = original.state),
-      events = concurrentMutableListOf<Event>(),
-      lastUpdateTime = original.lastUpdateTime,
-    )
   }
 
   /**
