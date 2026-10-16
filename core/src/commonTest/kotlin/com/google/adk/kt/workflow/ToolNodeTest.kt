@@ -35,7 +35,13 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
+import com.google.adk.kt.tools.GoogleMapsTool
+import com.google.adk.kt.tools.GoogleSearchTool
+import com.google.adk.kt.tools.PreloadMemoryTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.UrlContextTool
+import com.google.adk.kt.tools.VertexAiRagRetrieval
+import com.google.adk.kt.tools.VertexAiSearchTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
@@ -634,6 +640,29 @@ class ToolNodeTest {
     // Assert
     assertContains(error.message.orEmpty(), "must not contain")
     assertEquals("lookup", tool.asNode(name = "lookup").name)
+  }
+
+  @Test
+  fun asNode_toolWithoutLocalImplementation_isRejected() {
+    // Arrange
+    val tools =
+      listOf(
+        GoogleSearchTool(),
+        GoogleMapsTool(),
+        UrlContextTool(),
+        VertexAiSearchTool(dataStoreId = "projects/p/locations/l/collections/c/dataStores/d"),
+        VertexAiRagRetrieval(name = "rag", description = "rag"),
+        PreloadMemoryTool(),
+      )
+
+    // Act and assert
+    for (tool in tools) {
+      val error =
+        assertFailsWith<IllegalArgumentException>("asNode() accepted '${tool.name}'") {
+          tool.asNode()
+        }
+      assertContains(error.message.orEmpty(), "use that agent as the node")
+    }
   }
 
   @Test

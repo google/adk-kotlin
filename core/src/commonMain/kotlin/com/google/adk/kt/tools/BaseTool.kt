@@ -56,6 +56,10 @@ abstract class BaseTool(
    */
   abstract suspend fun run(context: ToolContext, args: Map<String, Any?>): Any
 
+  /** `false` for a tool that only shapes the model request and has no local [run]. */
+  internal open val hasLocalImplementation: Boolean
+    get() = true
+
   /**
    * Processes the LLM request before it is sent.
    *
