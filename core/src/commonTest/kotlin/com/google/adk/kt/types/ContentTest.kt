@@ -18,6 +18,7 @@ package com.google.adk.kt.types
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
@@ -124,5 +125,14 @@ class ContentTest {
 
     assertEquals("visible", content.text(" "))
     assertEquals("visible reason", content.text(" ", includeThoughts = true))
+  }
+
+  @Test
+  fun hasFunctionCall_trueOnlyWhenAPartCarriesOne() {
+    val call = Part(functionCall = FunctionCall(name = "t"))
+
+    assertTrue(Content(parts = listOf(Part(text = "a"), call)).hasFunctionCall())
+    assertFalse(Content(parts = listOf(Part(text = "a"))).hasFunctionCall())
+    assertFalse(Content().hasFunctionCall())
   }
 }

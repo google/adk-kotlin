@@ -42,6 +42,7 @@ import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.OutputSchemaProcessor
 import com.google.adk.kt.processors.RequestConfirmationProcessor
+import com.google.adk.kt.processors.TaskCompletionProcessor
 import com.google.adk.kt.processors.findTransferTargets
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.Toolset
@@ -208,6 +209,7 @@ class LlmAgent(
       ContentsProcessor(),
       ContextCacheRequestProcessor(),
       AgentTransferProcessor(),
+      TaskCompletionProcessor(),
       OutputSchemaProcessor(),
     )
 
@@ -260,11 +262,11 @@ class LlmAgent(
    * Runs this agent over a live connection.
    *
    * A live run is one continuous conversation rather than a sequence of steps, so unlike
-   * [runAsyncImpl] it has no step loop or step cap: it keeps the conversation going until the
-   * caller closes the queue or a connection ends with nothing to resume, reconnecting after a
-   * server go-away or a resumable drop. Like [runAsyncImpl], it saves a non-partial final text to
-   * [outputKey]; its after-model callbacks see only the output transcription so far, and any change
-   * they make restarts the session.
+   * [runAsyncImpl] it has no step loop or step cap: it runs until the caller closes the queue, its
+   * `task_completed` tool ends it, or a connection ends with nothing to resume, reconnecting after
+   * a server go-away or a resumable drop and handing over to another agent on a transfer. Like
+   * [runAsyncImpl], it saves a non-partial final text to [outputKey]; its after-model callbacks see
+   * only the output transcription so far, and any change they make restarts the session.
    */
   @OptIn(ExperimentalLiveApi::class)
   override fun runLiveImpl(context: InvocationContext): Flow<Event> =
@@ -400,6 +402,8 @@ class LlmAgent(
     }
     val outputKey = outputKey?.takeIf { it.isNotEmpty() } ?: return
     if (!event.isFinalResponse) return
+    // A streaming tool's message is user content, not the agent's output, as in ADK Python.
+    if (event.content?.role == Role.USER) return
     val parts = event.content?.parts ?: return
 
     // An empty `parts` list is handled by the `textParts.isEmpty()` guard below (filtering an empty

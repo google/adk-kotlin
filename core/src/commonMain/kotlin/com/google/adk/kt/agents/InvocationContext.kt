@@ -153,7 +153,10 @@ data class InvocationContext(
   val agentStates: MutableMap<String, TypedData> = concurrentMutableMapOf(),
   /** The end of agent status for each agent in this invocation. */
   val endOfAgents: MutableMap<String, Boolean> = concurrentMutableMapOf(),
-  /** Extra tools injected dynamically during invocation (e.g., by SequentialAgent). */
+  /**
+   * Tools that each [LlmAgent] run under this context offers in addition to its own
+   * [LlmAgent.tools]. Contexts copied for sub-agents share this map, so its tools reach them too.
+   */
   val extraTools: MutableMap<String, BaseTool> = concurrentMutableMapOf(),
   /**
    * Framework-internal per-invocation data (see [ContextFrameworkData]). Kept as a dedicated holder
@@ -274,6 +277,16 @@ data class InvocationContext(
    */
   internal fun forAgent(childAgent: BaseAgent): InvocationContext =
     this.copy(agent = childAgent, node = null)
+
+  /**
+   * Returns a context for [childAgent] taking over a live conversation from this one.
+   *
+   * The session and [liveRequestQueue] carry over, but the run config's resumption handle does not:
+   * it names this agent's live session, and the child would resume into it. ADK Python clears it on
+   * transfer too.
+   */
+  internal fun forLiveChild(childAgent: BaseAgent): InvocationContext =
+    forAgent(childAgent).copy(runConfig = runConfig?.forNewLiveSession())
 
   /**
    * Creates a new InvocationContext for a child agent, derived from this context. Appends the given
@@ -506,12 +519,22 @@ data class InvocationContext(
    * @return A single merged [Event] containing all responses and actions, or `null` if no tools
    *   executed.
    */
-  @Suppress("UnsafeCoroutineCrossing")
   suspend fun handleFunctionCalls(
     functionCalls: List<FunctionCall>,
     tools: Map<String, BaseTool>,
     filters: Set<String> = emptySet(),
     toolConfirmations: Map<String, ToolConfirmation>? = null,
+  ): Event? =
+    handleFunctionCallsWith(functionCalls, tools, filters, toolConfirmations, DEFAULT_TOOL_RUNNER)
+
+  /** As [handleFunctionCalls], running each resolved tool through [toolRunner]. */
+  @Suppress("UnsafeCoroutineCrossing")
+  internal suspend fun handleFunctionCallsWith(
+    functionCalls: List<FunctionCall>,
+    tools: Map<String, BaseTool>,
+    filters: Set<String> = emptySet(),
+    toolConfirmations: Map<String, ToolConfirmation>? = null,
+    toolRunner: ToolRunner,
   ): Event? = coroutineScope {
     // Filter function calls
     val filteredCalls =
@@ -528,7 +551,12 @@ data class InvocationContext(
       filteredCalls
         .map { functionCall ->
           async {
-            executeSingleFunctionCall(functionCall, tools, toolConfirmations?.get(functionCall.id))
+            executeSingleFunctionCall(
+              functionCall,
+              tools,
+              toolConfirmations?.get(functionCall.id),
+              toolRunner,
+            )
           }
         }
         .awaitAll()
@@ -574,6 +602,7 @@ data class InvocationContext(
     functionCall: FunctionCall,
     tools: Map<String, BaseTool>,
     toolConfirmation: ToolConfirmation? = null,
+    toolRunner: ToolRunner = DEFAULT_TOOL_RUNNER,
   ): Event? {
     val resolvedTool = tools[functionCall.name]
     // The placeholder lets the tool callbacks answer a call the registry could not resolve.
@@ -606,7 +635,7 @@ data class InvocationContext(
       var toolResult: Any =
         replacement
           ?: try {
-            tool.run(toolContext, currentArgs)
+            toolRunner(tool, toolContext, currentArgs)
           } catch (e: CancellationException) {
             // CancellationException is an Exception in Kotlin; rethrow before recovery sees it.
             throw e
@@ -722,21 +751,7 @@ data class InvocationContext(
       id = eventId,
       invocationId = this.invocationId,
       author = this.agent.name,
-      content =
-        Content(
-          role = Role.USER,
-          parts =
-            listOf(
-              Part(
-                functionResponse =
-                  FunctionResponse(
-                    name = tool.name,
-                    response = toFinalResponseMap(toolResult),
-                    id = toolContext.functionCallId,
-                  )
-              )
-            ),
-        ),
+      content = buildFunctionResponseContent(tool.name, toolContext.functionCallId, toolResult),
       actions = toolContext.actions,
       branch = this.branch,
     )
@@ -816,22 +831,6 @@ data class InvocationContext(
       is CallbackChoice.Break -> return result.value
       is CallbackChoice.Continue -> return null
     }
-  }
-
-  /**
-   * Coerces an arbitrary tool payload into the `Map<String, Any?>` shape required by both
-   * [FunctionResponse.response] and the after-tool callback pipeline:
-   * - A payload that is already a [Map] keeps its string-keyed entries, including `null` values
-   *   (e.g. `{"result": null}`); only non-string keys are dropped.
-   * - Any other value is wrapped in a single-entry `{ RESULT_KEY -> value }` map (the spec requires
-   *   the response to be a dict).
-   *
-   * Centralizing this rule means [buildResponseEvent] and [runAfterToolCallbacks] don't need to
-   * each implement the wrap-and-cast step.
-   */
-  private fun toFinalResponseMap(payload: Any?): Map<String, Any?> {
-    val map = if (payload is Map<*, *>) payload else mapOf(BaseTool.RESULT_KEY to payload)
-    return buildMap { for ((key, value) in map) if (key is String) put(key, value) }
   }
 
   /**
@@ -917,6 +916,17 @@ data class ContextFrameworkData(
   @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
 
   /**
+   * Live audio the caller has sent since the last flush.
+   *
+   * Filled only through [AudioCacheManager], when [RunConfig.saveLiveBlob] is set. It lives on the
+   * context rather than in the manager, so a turn restarted on a new connection keeps one
+   * recording; a transfer or a completed step saves it before the next agent runs.
+   */
+  internal val inputRealtimeCache: RealtimeCache = RealtimeCache()
+  /** The audio the model has spoken since the last flush. See [inputRealtimeCache]. */
+  internal val outputRealtimeCache: RealtimeCache = RealtimeCache()
+
+  /**
    * Serializes a live run's appends to [InvocationContext.session] (contexts made with
    * [InvocationContext.copy] share this lock). The turn and its caller both append to that same
    * object under it, because a session service can reject overlapping appends. Never emit while
@@ -940,6 +950,38 @@ data class ContextFrameworkData(
 @JvmSynthetic
 internal fun RunConfig.forNewLiveSession(): RunConfig =
   copy(sessionResumption = sessionResumption?.copy(handle = null))
+
+/** Runs one resolved tool call and returns its result, so a live run can stream a returned Flow. */
+internal typealias ToolRunner =
+  suspend (tool: BaseTool, context: ToolContext, args: Map<String, Any?>) -> Any
+
+/** Calls [BaseTool.run] as is; every run but a live one uses it. */
+@get:JvmSynthetic
+internal val DEFAULT_TOOL_RUNNER: ToolRunner = { tool, context, args -> tool.run(context, args) }
+
+/**
+ * Returns [payload] as a function-response map: a [Map] keeps its string-keyed entries, and any
+ * other value goes under [BaseTool.RESULT_KEY].
+ */
+@JvmSynthetic
+internal fun toFinalResponseMap(payload: Any?): Map<String, Any?> {
+  val map = if (payload is Map<*, *>) payload else mapOf(BaseTool.RESULT_KEY to payload)
+  return buildMap { for ((key, value) in map) if (key is String) put(key, value) }
+}
+
+/** Returns a user [Content] that answers call [callId] to [name] with [payload] as its response. */
+@JvmSynthetic
+internal fun buildFunctionResponseContent(name: String, callId: String?, payload: Any?): Content =
+  Content(
+    role = Role.USER,
+    parts =
+      listOf(
+        Part(
+          functionResponse =
+            FunctionResponse(name = name, response = toFinalResponseMap(payload), id = callId)
+        )
+      ),
+  )
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only
