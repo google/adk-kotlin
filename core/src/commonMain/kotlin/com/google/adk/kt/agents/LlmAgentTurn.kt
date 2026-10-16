@@ -107,7 +107,6 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
@@ -133,15 +132,15 @@ internal class LlmAgentTurn(
 ) {
 
   /**
-   * Keeps the run's audio when `RunConfig.saveLiveBlob` asks for it; null records nothing. It is
-   * also null without an artifact service, which leaves nowhere to save a recording.
+   * Keeps the run's audio when `LiveRunConfig.saveLiveBlob` asks for it; null records nothing. It
+   * is also null without an artifact service, which leaves nowhere to save a recording.
    */
   private val audioCache: AudioCacheManager? by lazy {
     when {
-      context.runConfig?.saveLiveBlob != true -> null
+      context.runConfig?.live?.saveLiveBlob != true -> null
       context.artifactService == null -> {
         logger.warn {
-          "RunConfig.saveLiveBlob is set but the run has no artifact service, so live audio is " +
+          "LiveRunConfig.saveLiveBlob is set but the run has no artifact service, so live audio is " +
             "not recorded."
         }
         null
@@ -944,7 +943,7 @@ internal class LlmAgentTurn(
   ): Boolean {
     if (input.partial || answersTools) return false
     if (context.sessionService == null) return false
-    appendToSession(
+    context.appendLiveEvent(
       Event(
         invocationId = context.invocationId,
         author = Role.USER,
@@ -966,36 +965,14 @@ internal class LlmAgentTurn(
         actions = EventActions(stateDelta = delta.toMutableMap()),
       )
     // Like a user turn, a delta still waiting for the lock is dropped if the run ends or restarts.
-    appendToSession(event)
-  }
-
-  /**
-   * Appends [event] to the session under the invocation's append lock, which the caller also takes
-   * for its own appends; nothing is emitted while the lock is held. The wait for the lock has no
-   * timeout of its own: the holder's append is already bounded, and a timeout on the wait would not
-   * end a stuck run any sooner.
-   */
-  private suspend fun appendToSession(event: Event) {
-    val sessionService = context.sessionService
-    if (sessionService == null) {
-      logger.warn { "A live session event was dropped: the context has no session service." }
-      return
-    }
-    context.sessionAppendLock.withLock {
-      // Non-cancellable so a committed append is not repeated; a timeout still fails the run.
-      withContext(NonCancellable) {
-        withTimeoutOrNull(SESSION_APPEND_TIMEOUT) {
-          val unused = sessionService.appendEvent(context.session, event)
-        } ?: error("A live session append did not finish in $SESSION_APPEND_TIMEOUT.")
-      }
-    }
+    context.appendLiveEvent(event)
   }
 
   /** Saves a continuing callback's state and artifact writes on an event of their own. */
   private suspend fun saveCallbackWrites(callbackContext: CallbackContext) {
     val actions = callbackContext.eventActions
     if (actions.stateDelta.isEmpty() && actions.artifactDelta.isEmpty()) return
-    appendToSession(createModelResponseEvent().copy(actions = actions.snapshot()))
+    context.appendLiveEvent(createModelResponseEvent().copy(actions = actions.snapshot()))
   }
 
   /**
@@ -1821,9 +1798,6 @@ private val logger = LoggerFactory.getLogger(LlmAgentTurn::class)
  */
 private val CONNECTION_TEARDOWN_TIMEOUT = 10.seconds
 
-/** How long a live session append may take before failing the run. */
-private val SESSION_APPEND_TIMEOUT = 10.seconds
-
 /**
  * How the receive loop of one connection stopped: the connection or the caller closed it, a
  * callback blocked the model's output or spoken input, the server announced a go-away, the model
@@ -1938,7 +1912,8 @@ private val TASK_COMPLETION_DELAY = 1.seconds
  * other tools, whose responses merge into one event, so every response is scanned, not just the
  * first (parity with ADK Python).
  */
-private fun Event.signalsTaskCompleted(): Boolean =
+@JvmSynthetic
+internal fun Event.signalsTaskCompleted(): Boolean =
   functionResponses().any { it.name == TASK_COMPLETED_TOOL_NAME }
 
 /**
