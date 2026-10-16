@@ -74,11 +74,16 @@ internal class OutputSchemaProcessor : LlmRequestProcessor {
  *
  * Besides the agent's own tools it counts the `transfer_to_agent` tool that
  * [AgentTransferProcessor] attaches whenever the request offers a transfer (see
- * [offeredTransferTargets]), since Gemini 2.x can't combine that tool with a response schema
- * either. This is stricter than ADK Python and Java, which inspect only the agent's declared tools.
+ * [offeredTransferTargets]) and the `task_completed` tool that [TaskCompletionProcessor] attaches
+ * to a live sequential step (see [offersTaskCompletedTool]), since Gemini 2.x can't combine either
+ * with a response schema. Counting `transfer_to_agent` is stricter than ADK Python and Java, which
+ * inspect only the declared tools.
  */
 internal fun LlmAgent.hasToolsForOutputSchemaGating(context: InvocationContext): Boolean =
-  tools.isNotEmpty() || toolsets.isNotEmpty() || offeredTransferTargets(this, context).isNotEmpty()
+  tools.isNotEmpty() ||
+    toolsets.isNotEmpty() ||
+    offeredTransferTargets(this, context).isNotEmpty() ||
+    offersTaskCompletedTool(context)
 
 /**
  * Whether [LlmAgent.outputSchema] can be applied directly to the request config instead of via the
