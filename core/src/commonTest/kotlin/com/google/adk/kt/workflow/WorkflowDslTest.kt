@@ -731,6 +731,29 @@ class WorkflowDslTest {
   }
 
   @Test
+  fun route_entryStartedAfterTheMapIsBuilt_throws() {
+    // Arrange
+    val a = StubNode("a")
+    val b = StubNode("b")
+    lateinit var routes: RouteMapBuilder
+
+    // Act
+    val error =
+      assertFailsWith<IllegalStateException> {
+        edges {
+          a.route {
+            routes = this
+            on("x") then b
+          }
+          val unused = routes.on("late")
+        }
+      }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "routing map of node 'a' was already built")
+  }
+
+  @Test
   fun on_withoutThen_throws() {
     // Arrange
     val a = StubNode("a")
