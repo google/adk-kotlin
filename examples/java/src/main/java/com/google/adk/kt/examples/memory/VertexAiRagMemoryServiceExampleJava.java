@@ -22,13 +22,15 @@ import com.google.adk.kt.callbacks.AfterAgentCallback;
 import com.google.adk.kt.callbacks.BeforeModelCallback;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.Choices;
+import com.google.adk.kt.interop.CompletableFutureMemoryService;
+import com.google.adk.kt.interop.CompletableFutureSessionService;
 import com.google.adk.kt.interop.FutureCallbacks;
 import com.google.adk.kt.interop.PublisherRunner;
-import com.google.adk.kt.memory.MemoryService;
 import com.google.adk.kt.memory.VertexAiRagMemoryService;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.runners.InMemoryRunner;
+import com.google.adk.kt.sessions.InMemorySessionService;
 import com.google.adk.kt.sessions.Session;
 import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.tools.PreloadMemoryTool;
@@ -39,8 +41,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
-import kotlinx.coroutines.Dispatchers;
-import kotlinx.coroutines.reactor.MonoKt;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 
@@ -49,11 +49,12 @@ import reactor.core.publisher.Flux;
  *
  * <p>The memory service is wired into the {@link InMemoryRunner}, and the agent uses it from both
  * ends: {@link PreloadMemoryTool} injects relevant memories into the prompt at the start of each
- * turn, and an after-agent callback calls {@code CallbackContext.addSessionToMemory} to write the
- * conversation back for recall in future sessions.
+ * turn, and an after-agent callback writes the conversation back through it for recall in future
+ * sessions.
  *
- * <p>{@code createSession} and {@code addSessionToMemory} are Kotlin suspend functions, so the
- * kotlinx-coroutines-reactor {@code mono} builder calls them.
+ * <p>The session and memory services have Kotlin suspend methods, so the example holds them as a
+ * {@link CompletableFutureSessionService} and a {@link CompletableFutureMemoryService}, and gives
+ * the runner the wrapped services.
  *
  * <p>Authentication uses Application Default Credentials ({@code gcloud auth application-default
  * login}).
@@ -88,12 +89,13 @@ public final class VertexAiRagMemoryServiceExampleJava {
     String location = envOrDefault("GOOGLE_CLOUD_LOCATION", "us-central1");
     String modelLocation = envOrDefault("GOOGLE_CLOUD_MODEL_LOCATION", "global");
 
-    MemoryService memoryService =
-        VertexAiRagMemoryService.builder()
-            .project(project)
-            .location(location)
-            .ragCorpus(ragCorpus)
-            .build();
+    CompletableFutureMemoryService memoryService =
+        CompletableFutureMemoryService.of(
+            VertexAiRagMemoryService.builder()
+                .project(project)
+                .location(location)
+                .ragCorpus(ragCorpus)
+                .build());
 
     BaseAgent agent =
         LlmAgent.builder()
@@ -106,23 +108,19 @@ public final class VertexAiRagMemoryServiceExampleJava {
                     + " conversations and use them to personalize your responses. Answer briefly.")
             .tools(new PreloadMemoryTool())
             .beforeModelCallbacks(List.of(reportMemoryInjection()))
-            .afterAgentCallbacks(List.of(storeSessionToMemory()))
+            .afterAgentCallbacks(List.of(storeSessionToMemory(memoryService)))
             .build();
 
+    CompletableFutureSessionService sessionService =
+        CompletableFutureSessionService.of(new InMemorySessionService());
     InMemoryRunner inMemoryRunner =
         InMemoryRunner.builder()
             .agent(agent)
             .appName(APP_NAME)
-            .memoryService(memoryService)
+            .sessionService(sessionService.asKotlinSessionService())
+            .memoryService(memoryService.asKotlinMemoryService())
             .build();
-    Session created =
-        MonoKt.<Session>mono(
-                Dispatchers.getDefault(),
-                (scope, continuation) ->
-                    inMemoryRunner
-                        .getSessionService()
-                        .createSession(new SessionKey(APP_NAME, USER_ID, null), null, continuation))
-            .block();
+    Session created = sessionService.createSession(new SessionKey(APP_NAME, USER_ID, null)).join();
     String sessionId = Objects.requireNonNull(created.getKey().getId());
     PublisherRunner runner = PublisherRunner.of(inMemoryRunner);
 
@@ -154,6 +152,8 @@ public final class VertexAiRagMemoryServiceExampleJava {
             + " (after indexing) with the `short` argument to watch PreloadMemoryTool recall it in"
             + " a new session.");
     runner.close();
+    sessionService.close();
+    memoryService.close();
     System.exit(0);
   }
 
@@ -177,14 +177,13 @@ public final class VertexAiRagMemoryServiceExampleJava {
   }
 
   /** Writes the finished turn back to memory; the returned future completes once it is written. */
-  private static AfterAgentCallback storeSessionToMemory() {
+  private static AfterAgentCallback storeSessionToMemory(
+      CompletableFutureMemoryService memoryService) {
     return FutureCallbacks.afterAgent(
         context ->
-            MonoKt.mono(
-                    Dispatchers.getDefault(),
-                    (scope, continuation) -> context.addSessionToMemory(continuation))
-                .thenReturn(Choices.<Content>proceed())
-                .toFuture());
+            memoryService
+                .addSessionToMemory(context.getInvocationContext().getSession())
+                .thenApply(unused -> Choices.<Content>proceed()));
   }
 
   private static String requireEnv(String name) {

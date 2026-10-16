@@ -31,16 +31,16 @@ import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.examples.longrunning.LongRunningToolDemoSupportJava.ChangeDestinationTool;
 import com.google.adk.kt.examples.longrunning.LongRunningToolDemoSupportJava.ScriptedNavModel;
+import com.google.adk.kt.interop.CompletableFutureSessionService;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.runners.InMemoryRunner;
+import com.google.adk.kt.sessions.InMemorySessionService;
 import com.google.adk.kt.sessions.Session;
 import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.FunctionCall;
 import com.google.adk.kt.types.Role;
 import java.util.List;
-import kotlinx.coroutines.Dispatchers;
-import kotlinx.coroutines.reactor.MonoKt;
 import reactor.core.publisher.Flux;
 
 /**
@@ -73,7 +73,13 @@ public final class ResumableValueLongRunningToolDemoAgentJava {
             .rootAgent(agent)
             .resumabilityConfig(new ResumabilityConfig(true))
             .build();
-    InMemoryRunner inMemoryRunner = InMemoryRunner.builder().app(app).build();
+    CompletableFutureSessionService sessionService =
+        CompletableFutureSessionService.of(new InMemorySessionService());
+    InMemoryRunner inMemoryRunner =
+        InMemoryRunner.builder()
+            .app(app)
+            .sessionService(sessionService.asKotlinSessionService())
+            .build();
     PublisherRunner runner = PublisherRunner.of(inMemoryRunner);
 
     System.out.println("=== Resumable long-running tool demo (value return continues) ===");
@@ -103,6 +109,7 @@ public final class ResumableValueLongRunningToolDemoAgentJava {
     if (resumableCall == null || invocationId == null) {
       System.out.println("No live long-running call; nothing to resume.");
       runner.close();
+      sessionService.close();
       return;
     }
     System.out.println(
@@ -126,23 +133,14 @@ public final class ResumableValueLongRunningToolDemoAgentJava {
             .block();
     printEvents("turn 2 (resumed by invocationId with the device result)", turn2);
 
-    // getSession is a Kotlin suspend function; kotlinx-coroutines-reactor's mono builder calls it.
     Session session =
-        MonoKt.<Session>mono(
-                Dispatchers.getDefault(),
-                (scope, continuation) ->
-                    inMemoryRunner
-                        .getSessionService()
-                        .getSession(
-                            new SessionKey(APP_NAME, DEMO_USER_ID, DEMO_SESSION_ID),
-                            null,
-                            continuation))
-            .block();
+        sessionService.getSession(new SessionKey(APP_NAME, DEMO_USER_ID, DEMO_SESSION_ID)).join();
     System.out.println(
         "Stored session now has "
             + (session == null ? 0 : session.getEvents().size())
             + " events.");
     runner.close();
+    sessionService.close();
     System.exit(0);
   }
 

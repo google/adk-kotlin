@@ -158,6 +158,11 @@ with `CompletableFuture` and Reactive Streams `Publisher`:
     `Publisher<Event>`, which adapts in one line to RxJava
     (`Flowable.fromPublisher(...)`), Reactor (`Flux.from(...)`), or Spring
     WebFlux.
+-   **`CompletableFutureSessionService`, `CompletableFutureArtifactService`, and
+    `CompletableFutureMemoryService`** wrap a session, artifact, or memory
+    service so that each call returns a `CompletableFuture`, which Reactor
+    adapts with `Mono.fromFuture(...)`. Closing a wrapper also closes the
+    service it wraps.
 -   **`BaseFutureTool`, `BaseFutureToolset`, `BaseFuturePlugin`,
     `BasePublisherModel`**, and the `BaseFuture*` session, memory, and artifact
     services let you implement ADK extension points in Java by overriding

@@ -23,6 +23,7 @@ import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.BaseFutureMemoryService;
 import com.google.adk.kt.interop.BasePublisherModel;
 import com.google.adk.kt.interop.Choices;
+import com.google.adk.kt.interop.CompletableFutureMemoryService;
 import com.google.adk.kt.interop.FutureCallbacks;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.memory.MemoryEntry;
@@ -42,8 +43,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
-import kotlinx.coroutines.Dispatchers;
-import kotlinx.coroutines.reactor.MonoKt;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -54,9 +53,9 @@ import reactor.core.publisher.Mono;
  * subclass for a {@link CompletableFuture}. This store does naive keyword matching.
  *
  * <p>{@code main} shows the typical usage: the custom service is configured on an {@link
- * InMemoryRunner}, and an agent run writes its session back to memory through it (from an
- * after-agent callback that calls {@code addSessionToMemory}). The service logs each write, so
- * persistence is visible without any direct search back into the service.
+ * InMemoryRunner}, and an after-agent callback writes the agent run's session back to memory
+ * through a {@link CompletableFutureMemoryService}. The service logs each write, so persistence is
+ * visible without searching the service directly.
  */
 public final class FutureMemoryServiceDemoJava {
 
@@ -114,23 +113,19 @@ public final class FutureMemoryServiceDemoJava {
     }
   }
 
-  /**
-   * Writes the finished session back to the invocation's (custom) memory service. {@code
-   * addSessionToMemory} is a Kotlin suspend function, so the kotlinx-coroutines-reactor {@code
-   * mono} builder calls it.
-   */
-  private static AfterAgentCallback storeSessionToMemory() {
+  /** Writes the finished session back to {@code memoryService}. */
+  private static AfterAgentCallback storeSessionToMemory(
+      CompletableFutureMemoryService memoryService) {
     return FutureCallbacks.afterAgent(
         context ->
-            MonoKt.mono(
-                    Dispatchers.getDefault(),
-                    (scope, continuation) -> context.addSessionToMemory(continuation))
-                .thenReturn(Choices.<Content>proceed())
-                .toFuture());
+            memoryService
+                .addSessionToMemory(context.getInvocationContext().getSession())
+                .thenApply(unused -> Choices.<Content>proceed()));
   }
 
   public static void main(String[] args) {
-    InMemoryDemoMemoryService service = new InMemoryDemoMemoryService();
+    CompletableFutureMemoryService memoryService =
+        CompletableFutureMemoryService.of(new InMemoryDemoMemoryService());
     String appName = "demo-app";
     String userId = "demo-user";
 
@@ -140,11 +135,15 @@ public final class FutureMemoryServiceDemoJava {
             .name("memory_agent")
             .model(new EchoModel())
             .instruction("Chat with the user.")
-            .afterAgentCallbacks(List.of(storeSessionToMemory()))
+            .afterAgentCallbacks(List.of(storeSessionToMemory(memoryService)))
             .build();
     PublisherRunner runner =
         PublisherRunner.of(
-            InMemoryRunner.builder().agent(agent).appName(appName).memoryService(service).build());
+            InMemoryRunner.builder()
+                .agent(agent)
+                .appName(appName)
+                .memoryService(memoryService.asKotlinMemoryService())
+                .build());
 
     // RxJava users can adapt the same Publisher with Flowable.fromPublisher(eventStream).
     Publisher<Event> eventStream =
