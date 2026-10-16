@@ -79,15 +79,15 @@ private fun LiveConnectConfig.foldSamplingFrom(config: GenerateContentConfig): L
  */
 private fun LiveConnectConfig.applyRunConfig(runConfig: RunConfig): LiveConnectConfig =
   copy(
-    responseModalities = runConfig.responseModalities.ifEmpty { null },
-    speechConfig = runConfig.speechConfig,
-    outputAudioTranscription = runConfig.outputAudioTranscription,
-    inputAudioTranscription = runConfig.inputAudioTranscription,
-    realtimeInputConfig = runConfig.realtimeInputConfig,
-    explicitVadSignal = runConfig.explicitVadSignal,
-    translationConfig = runConfig.translationConfig,
-    enableAffectiveDialog = runConfig.enableAffectiveDialog,
-    proactivity = runConfig.proactivity,
-    sessionResumption = runConfig.sessionResumption,
-    contextWindowCompression = runConfig.contextWindowCompression,
+    responseModalities = runConfig.live.responseModalities.ifEmpty { null },
+    speechConfig = runConfig.live.speechConfig,
+    outputAudioTranscription = runConfig.live.outputAudioTranscription,
+    inputAudioTranscription = runConfig.live.inputAudioTranscription,
+    realtimeInputConfig = runConfig.live.realtimeInputConfig,
+    explicitVadSignal = runConfig.live.explicitVadSignal,
+    translationConfig = runConfig.live.translationConfig,
+    enableAffectiveDialog = runConfig.live.enableAffectiveDialog,
+    proactivity = runConfig.live.proactivity,
+    sessionResumption = runConfig.live.sessionResumption,
+    contextWindowCompression = runConfig.live.contextWindowCompression,
   )

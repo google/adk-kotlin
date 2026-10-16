@@ -272,7 +272,8 @@ class LlmAgent(
   override fun runLiveImpl(context: InvocationContext): Flow<Event> =
     LlmAgentTurn(this, context, systemBeforeTurnProcessors, systemAfterTurnProcessors)
       .executeLive()
-      .onEach { maybeSaveOutputToState(it) }
+      // A streaming tool's message goes to the caller, never to outputKey, as in ADK Python.
+      .onEach { if (it.content?.role != Role.USER) maybeSaveOutputToState(it) }
 
   override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
     val agentState = context.agentStates[name]

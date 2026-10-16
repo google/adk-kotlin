@@ -19,10 +19,16 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.appendLiveEvent
+import com.google.adk.kt.agents.boundedFlush
 import com.google.adk.kt.agents.findAgent
+import com.google.adk.kt.agents.flushLiveSession
+import com.google.adk.kt.agents.signalsTaskCompleted
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
@@ -35,6 +41,8 @@ import com.google.adk.kt.callbacks.runOnUserMessageCallbacksPipeline
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.applyRewinds
+import com.google.adk.kt.events.functionCallIds
+import com.google.adk.kt.events.isToolBranch
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.memory.MemoryService
@@ -65,6 +73,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
@@ -184,18 +193,9 @@ abstract class AbstractRunner : Runner {
     return flow {
         val key = SessionKey(appName, userId, sessionId)
         val session = sessionService.getSession(key) ?: sessionService.createSession(key)
-
-        // Errors are fatal and canceled runs stop, so neither gets the end-of-run flush.
-        try {
+        runThenFlush(flush = { sessionService.flush(session.key) }) {
           runInvocation(session, invocationId, newMessage, stateDelta, runConfig)
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Exception) {
-          flushAfterFailure(session.key, e)
-          throw e
         }
-        // Like compaction, a failed flush here is not a run error, so plugins are not notified.
-        sessionService.flush(session.key)
       }
       .trace("invocation", parent = parentContext)
   }
@@ -218,32 +218,104 @@ abstract class AbstractRunner : Runner {
       return
     }
 
-    // `catch` sees only failures from the run itself (upstream), not a downstream collector error
-    // or cancellation, then re-raises unchanged after notifying plugins. Mirrors ADK Python
-    // `on_run_error_callback` (`_exec_with_plugin`) and ADK Java `onRunErrorCallback`:
-    // notification-only, the error is never suppressed.
-    emitAll(
-      runAgentWithPlugins(context).catch { error ->
-        if (error is CancellationException) throw error
-        runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
-        throw error
-      }
-    )
+    emitAll(runAgentWithPlugins(context).notifyingRunError(context))
 
     // Compaction runs after a successful invocation; like Python, a compaction failure is not a run
     // error, so it stays outside the notification above.
     runPostInvocationCompaction(session)
   }
 
-  /** Flushes [key] after the run failed with [failure], attaching a flush failure to it. */
-  private suspend fun flushAfterFailure(key: SessionKey, failure: Exception) {
+  /**
+   * Runs [run] and flushes the session with [flush] when it finishes. On an `Exception`, still
+   * flushes and attaches any flush failure as suppressed before rethrowing; skips the flush on
+   * cancellation or `Error`.
+   */
+  private suspend inline fun runThenFlush(noinline flush: suspend () -> Unit, run: () -> Unit) {
     try {
-      sessionService.flush(key)
+      run()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      flushAfterFailure(e, flush)
+      throw e
+    }
+    // A failed end-of-run flush is not a run error, so plugins are not notified.
+    flush()
+  }
+
+  /** Flushes with [flush] after the run failed with [failure], attaching a flush failure to it. */
+  private suspend fun flushAfterFailure(failure: Exception, flush: suspend () -> Unit) {
+    try {
+      flush()
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       failure.addSuppressed(e)
     }
+  }
+
+  /**
+   * Runs the agent live as [Runner.runLive] describes. Flushes [sessionService] once per turn, when
+   * the turn completes or hands over to another agent or step, and when the run completes or fails;
+   * each flush is bounded, so a stuck session service fails the run instead of hanging it.
+   */
+  @ExperimentalLiveApi
+  override fun runLive(
+    userId: String,
+    sessionId: String,
+    liveRequestQueue: LiveRequestQueue,
+    runConfig: RunConfig?,
+  ): Flow<Event> {
+    // Captured here, as in runAsync: the cold flow may be collected on another thread later.
+    val parentContext = currentTelemetryContext()
+    return flow {
+        // A node-rooted runner has no live path yet, where ADK Python runs `_run_node_live`.
+        if (root !is BaseAgent) {
+          throw UnsupportedOperationException("A node-rooted runner cannot run live yet")
+        }
+        // No up-front live check: `Model.connect` or the agent's runLive refuses, as in Python.
+        val key = SessionKey(appName, userId, sessionId)
+        val session = sessionService.getSession(key) ?: sessionService.createSession(key)
+        runThenFlush(flush = { sessionService.boundedFlush(session.key) }) {
+          val context = createLiveInvocationContext(session, liveRequestQueue, runConfig)
+          emitAll(runAgentWithPlugins(context, isLiveCall = true).notifyingRunError(context))
+        }
+      }
+      // ADK Python opens no live invocation span; keep agent spans in the caller's trace.
+      .flowOn(parentContext.asContextElement())
+  }
+
+  /**
+   * Builds the [InvocationContext] for a live run, choosing the agent from session history as
+   * [runAsync] does. Unlike [createInvocationContext], it takes no initial message and appends
+   * nothing: live input arrives on the queue.
+   */
+  private suspend fun createLiveInvocationContext(
+    session: Session,
+    liveRequestQueue: LiveRequestQueue,
+    runConfig: RunConfig?,
+  ): InvocationContext {
+    // No run config means the defaults, as in ADK Python, and those transcribe both sides.
+    val effectiveRunConfig = runConfig ?: RunConfig()
+    warnIfTransferLacksTranscription(effectiveRunConfig)
+    val context =
+      InvocationContext(
+        session = session,
+        runConfig = effectiveRunConfig,
+        agent = agent,
+        node = node,
+        invocationId = newInvocationId(),
+        artifactService = artifactService,
+        memoryService = memoryService,
+        sessionService = sessionService,
+        pluginManager = pluginManager,
+        resumabilityConfig = resumabilityConfig,
+        eventsCompactionConfig = eventsCompactionConfig,
+        contextCacheConfig = contextCacheConfig,
+      )
+    // Copies share frameworkData by reference, so the routed context carries the queue too.
+    context.frameworkData.liveRequestQueue = liveRequestQueue
+    return routeToAgentToRun(context)
   }
 
   /**
@@ -610,7 +682,11 @@ abstract class AbstractRunner : Runner {
    * @param context The current [InvocationContext].
    * @return A [Flow] of [Event]s generated during the execution.
    */
-  protected fun runAgentWithPlugins(context: InvocationContext): Flow<Event> {
+  protected fun runAgentWithPlugins(context: InvocationContext): Flow<Event> =
+    runAgentWithPlugins(context, isLiveCall = false)
+
+  /** Runs the resolved root with plugins, live when [isLiveCall]; see [store]. */
+  private fun runAgentWithPlugins(context: InvocationContext, isLiveCall: Boolean): Flow<Event> {
     return flow {
       // 1. Run beforeRun callback
       val beforeResult = runBeforeRunCallbacksPipeline(pluginManager.beforeRunCallbacks, context)
@@ -626,26 +702,18 @@ abstract class AbstractRunner : Runner {
                 content = beforeResult.value,
               ),
             )
-          val shouldAppendEvent = true
-          if (shouldAppendEvent) {
-            appendAndFlushIfFinal(context, earlyExitEvent)
-          }
+          store(context, earlyExitEvent, isLiveCall)
           emit(earlyExitEvent)
         }
         is CallbackChoice.Continue -> {
           // 2. Dispatch to the resolved root rather than the runner's root `agent`: on a follow-up
           // user turn, `findAgentToRun` may have selected a sub-agent based on the prior turn's
           // history (see `findAgentToRun` below for the selection rules).
-          runRoot(context).collect { event ->
-            val isLiveCall = false
+          runRoot(context, isLiveCall).collect { event ->
             // Persist the post-callback event so the session matches what the caller received.
             val finalEvent = processEventWithPluginCallbacks(context, event)
-            if (!isLiveCall) {
-              if (event.partial == false) {
-                appendAndFlushIfFinal(context, finalEvent)
-              }
-            }
-
+            store(context, finalEvent, isLiveCall)
+            // Emit outside the lock so a slow caller never stalls the live turn's own appends.
             emit(finalEvent)
           }
         }
@@ -654,6 +722,66 @@ abstract class AbstractRunner : Runner {
       val unused = runAfterRunCallbacksPipeline(pluginManager.afterRunCallbacks, context)
     }
   }
+
+  /**
+   * Notifies `onRunError` plugins when the run itself fails, then rethrows the failure unchanged,
+   * matching ADK Python and Java. A downstream collector's error never reaches it, and cancellation
+   * is rethrown without notifying.
+   */
+  private fun Flow<Event>.notifyingRunError(context: InvocationContext): Flow<Event> =
+    catch { error ->
+      if (error is CancellationException) throw error
+      runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
+      throw error
+    }
+
+  /**
+   * Appends [event] to the session unless it is partial or a live run's event carries inline audio,
+   * video, or image. [runAsync] flushes a final response; [runLive] flushes only an event that ends
+   * a turn ([endsLiveTurn]). A live run goes through [appendLiveEvent] and [flushLiveSession],
+   * which share the live turn's lock and time out if the session service hangs. Other inline data
+   * and the `fileData` references [com.google.adk.kt.agents.LiveRunConfig.saveLiveBlob] produces
+   * are still stored.
+   */
+  private suspend fun store(context: InvocationContext, event: Event, isLiveCall: Boolean) {
+    // A partial event is superseded by its whole, so it is never stored, as in ADK Python.
+    if (event.partial) return
+    if (isLiveCall) {
+      // Inline media stays out of the session, but a turn it ends is still flushed.
+      if (!event.hasInlineMedia()) context.appendLiveEvent(event)
+      if (event.endsLiveTurn()) context.flushLiveSession()
+    } else {
+      appendAndFlushIfFinal(context, event)
+    }
+  }
+
+  /** Warns, as ADK Python does, that a transfer may lack context while a transcription is off. */
+  private fun warnIfTransferLacksTranscription(runConfig: RunConfig) {
+    // The root, not `agent`, which differs from it when the App's root is a node.
+    if ((root as? BaseAgent)?.subAgents.isNullOrEmpty()) return
+    val live = runConfig.live
+    if (live.inputAudioTranscription == null || live.outputAudioTranscription == null) {
+      logger.warn {
+        "Audio transcription is disabled while sub-agents are configured; agent transfer may not " +
+          "work properly without transcription context."
+      }
+    }
+  }
+
+  /**
+   * Whether this live event ends a turn: the model's turn-complete, or a transfer or
+   * `task_completed` response, which hands the conversation over without one. An interruption is
+   * not an end: the turn-complete that follows it is.
+   */
+  private fun Event.endsLiveTurn(): Boolean =
+    turnComplete || actions.transferToAgent != null || signalsTaskCompleted()
+
+  /** Whether a part carries audio, video or image inline rather than as an artifact reference. */
+  private fun Event.hasInlineMedia(): Boolean =
+    content?.parts?.any { part ->
+      val mimeType = part.inlineData?.mimeType ?: return@any false
+      listOf("audio/", "video/", "image/").any { mimeType.startsWith(it, ignoreCase = true) }
+    } == true
 
   /**
    * Handles new user content by running plugins and appending events to the session.
@@ -698,6 +826,7 @@ abstract class AbstractRunner : Runner {
         .let { applyRunConfigCustomMetadata(it, context.runConfig) }
         .withBranchFromMatchingCall(currentContext)
 
+    // A live run stores user input from the turn as it arrives, so only turn-based runs call this.
     val unused = sessionService.appendEvent(context.session, event)
 
     return currentContext
@@ -756,18 +885,23 @@ abstract class AbstractRunner : Runner {
         // Run callbacks and append user message to session
         handleNewUserContent(it, newMessage, stateDelta)
       }
-      .let { context ->
-        // Find the unit to run in this invocation
-        val unitToRun = selectAgentToRun(context)
-        // A sub-agent continued from an earlier turn runs on the branch it last ran on.
-        val branch =
-          if (unitToRun is BaseAgent && unitToRun !== root) {
-            resumeBranch(applyRewinds(context.session.events), invocationId = null, unitToRun)
-          } else {
-            null
-          }
-        context.withRoot(unitToRun).copy(branch = branch)
+      .let { routeToAgentToRun(it) }
+  }
+
+  /**
+   * Returns [context] rooted on the unit chosen from session history, so a follow-up can land on
+   * the sub-agent that handled the previous turn. A routed sub-agent runs on the branch it last ran
+   * on, read from history with rewinds applied, as ADK Python does.
+   */
+  private suspend fun routeToAgentToRun(context: InvocationContext): InvocationContext {
+    val unitToRun = selectAgentToRun(context)
+    val branch =
+      if (unitToRun is BaseAgent && unitToRun !== root) {
+        resumeBranch(applyRewinds(context.session.events), invocationId = null, unitToRun)
+      } else {
+        null
       }
+    return context.withRoot(unitToRun).copy(branch = branch)
   }
 
   /**
@@ -859,13 +993,17 @@ abstract class AbstractRunner : Runner {
     invocationId: String?,
     resumeAgent: BaseAgent,
   ): String? {
+    // A streaming tool's message carries the agent's name on its own branch, so it is skipped.
+    val toolCallIds = events.functionCallIds()
     for (event in events.asReversed()) {
+      val branch = event.branch
       if (
         (invocationId == null || event.invocationId == invocationId) &&
           event.author == resumeAgent.name &&
-          !event.branch.isNullOrEmpty()
+          !branch.isNullOrEmpty() &&
+          !isToolBranch(branch, resumeAgent.name, toolCallIds)
       ) {
-        return event.branch
+        return branch
       }
     }
     return null
@@ -876,10 +1014,10 @@ abstract class AbstractRunner : Runner {
    * (a [Workflow][com.google.adk.kt.workflow.Workflow] or a standalone node) runs through
    * [NodeRunner].
    */
-  @OptIn(ExperimentalWorkflowApi::class)
-  private fun runRoot(context: InvocationContext): Flow<Event> =
+  @OptIn(ExperimentalWorkflowApi::class, ExperimentalLiveApi::class)
+  private fun runRoot(context: InvocationContext, isLiveCall: Boolean): Flow<Event> =
     when (val root = context.node ?: context.agent) {
-      is BaseAgent -> root.runAsync(context)
+      is BaseAgent -> if (isLiveCall) root.runLive(context) else root.runAsync(context)
       else -> NodeRunner.runRoot(root, context)
     }
 
