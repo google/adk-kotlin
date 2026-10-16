@@ -80,7 +80,8 @@ abstract class FunctionTool(
    * @return The tool's response, conventionally a `Map<String, Any>` whose values are JSON-native.
    *   Non-map values are wrapped under [BaseTool.RESULT_KEY]. Return `mapOf(ERROR_KEY to
    *   "<message>")` to signal an LLM-visible error. From a long-running tool, return `Unit` to
-   *   defer the response; see [BaseTool.isLongRunning].
+   *   defer the response; see [BaseTool.isLongRunning]. Return a [kotlinx.coroutines.flow.Flow] to
+   *   stream results in a live run; see [BaseTool.run].
    */
   abstract suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any
 

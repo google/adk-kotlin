@@ -17,6 +17,8 @@ package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.telemetry.noop.NoOpTracer
@@ -180,6 +182,31 @@ class TelemetryTest {
     }
   }
 
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun runLive_capturesCallerSpanEagerly_soAgentSpanNestsUnderIt() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+      val runner = InMemoryRunner(LiveNoopAgent(), appName = "telemetryapp")
+      val hostSpan = provider.get("host").spanBuilder("host").startSpan()
+      val queue = LiveRequestQueue()
+      queue.close()
+
+      // Captured at the runLive call; with no live invocation span, the agent span nests under it.
+      val flow = hostSpan.makeCurrent().use { runner.runLive(userId = "u", sessionId = "s", queue) }
+      runBlocking { flow.collect {} }
+      hostSpan.end()
+
+      val agent = exported.single { it.name == "invoke_agent liveNoopAgent" }
+      assertThat(agent.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
+      assertThat(agent.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
+    } finally {
+      provider.close()
+    }
+  }
+
   private fun tracerProvider(sink: MutableList<SpanData>): SdkTracerProvider =
     SdkTracerProvider.builder()
       .addSpanProcessor(SimpleSpanProcessor.create(recordingExporter(sink)))
@@ -200,5 +227,13 @@ class TelemetryTest {
   /** Minimal agent that emits no events; used to exercise the runner's span wiring. */
   private class NoopAgent : BaseAgent(name = "noopAgent") {
     override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
+  }
+
+  /** Minimal agent that ends its live run at once; used to exercise the runner's span wiring. */
+  private class LiveNoopAgent : BaseAgent(name = "liveNoopAgent") {
+    override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
+
+    @OptIn(ExperimentalLiveApi::class)
+    override fun runLiveImpl(context: InvocationContext): Flow<Event> = flow {}
   }
 }
