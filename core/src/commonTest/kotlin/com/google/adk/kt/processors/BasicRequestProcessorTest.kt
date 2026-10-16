@@ -19,7 +19,9 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LoopAgent
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyModel
@@ -141,14 +143,43 @@ class BasicRequestProcessorTest {
 
   @OptIn(ExperimentalLiveApi::class)
   @Test
-  fun run_withOutputSchemaAndSubAgents_gemini2ModelOnALiveRun_setsResponseSchema() = runBlocking {
-    // A live run isn't offered transfer_to_agent, so the sub-agents don't count as tools.
+  fun run_withOutputSchemaAndSubAgents_gemini2ModelOnALiveRun_doesNotSetResponseSchema() =
+    runBlocking {
+      // Live runs offer transfer_to_agent too, so the schema goes to the workaround.
+      val agent =
+        LlmAgent(
+          name = "parent",
+          model = DummyModel("gemini-2.0-flash"),
+          outputSchema = outputSchema,
+          subAgents = listOf(LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"))),
+        )
+      val context =
+        InvocationContext(session = testSession(), runConfig = null, agent = agent).apply {
+          frameworkData.liveRequestQueue = LiveRequestQueue()
+        }
+
+      val request = BasicRequestProcessor().process(context, LlmRequest())
+
+      assertNull(request.config.responseSchema)
+      assertNull(request.config.responseMimeType)
+    }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun run_withOutputSchemaAndAWorkflowSubAgentOnALiveRun_setsResponseSchema() = runBlocking {
+    // A LoopAgent has no live run, so it is not offered and the schema applies directly.
     val agent =
       LlmAgent(
         name = "parent",
         model = DummyModel("gemini-2.0-flash"),
         outputSchema = outputSchema,
-        subAgents = listOf(LlmAgent(name = "child", model = DummyModel("gemini-2.0-flash"))),
+        subAgents =
+          listOf(
+            LoopAgent(
+              name = "workflow",
+              subAgents = listOf(LlmAgent(name = "step", model = DummyModel("gemini-2.0-flash"))),
+            )
+          ),
       )
     val context =
       InvocationContext(session = testSession(), runConfig = null, agent = agent).apply {
@@ -159,6 +190,24 @@ class BasicRequestProcessorTest {
 
     assertEquals(outputSchema, request.config.responseSchema)
     assertEquals("application/json", request.config.responseMimeType)
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun run_withOutputSchemaOnALiveSequentialStep_doesNotSetResponseSchema() = runBlocking {
+    // A live step is offered task_completed, which Gemini 2.x can't combine with a response schema.
+    val step =
+      LlmAgent(name = "step", model = DummyModel("gemini-2.0-flash"), outputSchema = outputSchema)
+    val unused = SequentialAgent(name = "workflow", subAgents = listOf(step))
+    val context =
+      InvocationContext(session = testSession(), runConfig = null, agent = step).apply {
+        frameworkData.liveRequestQueue = LiveRequestQueue()
+      }
+
+    val request = BasicRequestProcessor().process(context, LlmRequest())
+
+    assertNull(request.config.responseSchema)
+    assertNull(request.config.responseMimeType)
   }
 
   @Test

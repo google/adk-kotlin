@@ -45,6 +45,9 @@ data class Content(
    */
   internal fun hasUserRole(): Boolean = role.equals(Role.USER, ignoreCase = true)
 
+  /** Returns whether any [Part] carries a function call. */
+  internal fun hasFunctionCall(): Boolean = parts.any { it.functionCall != null }
+
   companion object {
     /** Creates a [Content] with the given [role] containing a single text [Part] of [text]. */
     @JvmStatic
