@@ -761,6 +761,680 @@ class SchemaUtilsTest {
     assertIs<IllegalArgumentException>(result.exceptionOrNull())
   }
 
+  private val integer = Schema(type = Type.INTEGER)
+
+  private val string = Schema(type = Type.STRING)
+
+  private val intOrString = Schema(anyOf = listOf(integer, string))
+
+  private val color = Schema(type = Type.STRING, enum = listOf("red"))
+
+  private val colors = Schema(type = Type.STRING, enum = listOf("red", "blue"))
+
+  private val idOnly =
+    Schema(type = Type.OBJECT, properties = mapOf("id" to string), required = listOf("id"))
+
+  private val idAndNote =
+    Schema(
+      type = Type.OBJECT,
+      properties = mapOf("id" to string, "note" to string),
+      required = listOf("id"),
+    )
+
+  private val objectWithA =
+    Schema(type = Type.OBJECT, properties = mapOf("a" to string), required = listOf("a"))
+
+  private val idWithAnyOfA = idOnly.copy(anyOf = listOf(objectWithA))
+
+  // -- fitsInto --
+
+  @Test
+  fun fitsInto_everySourceShapeIntoEveryTargetShape_matchesTheAssignabilityTable() {
+    // Arrange
+    val shapes =
+      mapOf(
+        "integer" to integer,
+        "number" to Schema(type = Type.NUMBER),
+        "untyped" to Schema(),
+        "integer or string" to intOrString,
+        "red" to color,
+        "nullable integer" to integer.copy(nullable = true),
+        "open object" to idOnly,
+        "closed object" to idOnly.copy(additionalProperties = false),
+        "integer list" to Schema(type = Type.ARRAY, items = integer),
+      )
+    // Each source maps to the targets it fits.
+    val expected =
+      mapOf(
+        "integer" to setOf("integer", "number", "untyped", "integer or string", "nullable integer"),
+        "number" to setOf("number", "untyped"),
+        "untyped" to shapes.keys,
+        "integer or string" to setOf("untyped", "integer or string"),
+        "red" to setOf("untyped", "integer or string", "red"),
+        "nullable integer" to setOf("untyped", "nullable integer"),
+        "open object" to setOf("untyped", "open object", "closed object"),
+        "closed object" to setOf("untyped", "open object", "closed object"),
+        "integer list" to setOf("untyped", "integer list"),
+      )
+
+    // Act
+    val actual = shapes.mapValues { (_, source) ->
+      shapes.filterValues { source.fitsInto(it) }.keys
+    }
+
+    // Assert
+    assertEquals(expected, actual)
+  }
+
+  @Test
+  fun fitsInto_numbers_integerWidensToNumberOnly() {
+    assertTrue(integer.fitsInto(Schema(type = Type.NUMBER)))
+    assertFalse(Schema(type = Type.NUMBER).fitsInto(integer))
+  }
+
+  @Test
+  fun fitsInto_nullable_fitsOnlyATargetThatTakesNull() {
+    // Arrange
+    val nullableInteger = integer.copy(nullable = true)
+    val integerOrNull = Schema(anyOf = listOf(integer, Schema(type = Type.NULL)))
+    val nullableIntOrString = intOrString.copy(nullable = true)
+
+    // Act / Assert
+    assertFalse(nullableInteger.fitsInto(integer))
+    assertTrue(nullableInteger.fitsInto(integerOrNull))
+    assertFalse(nullableInteger.fitsInto(intOrString))
+    assertTrue(nullableInteger.fitsInto(nullableIntOrString))
+    assertFalse(nullableIntOrString.fitsInto(intOrString))
+    assertTrue(nullableIntOrString.fitsInto(Schema()))
+    assertTrue(
+      nullableIntOrString.fitsInto(
+        Schema(anyOf = listOf(integer, string, Schema(type = Type.NULL)))
+      )
+    )
+    assertTrue(Schema(type = Type.NULL).fitsInto(nullableIntOrString))
+    assertFalse(Schema(type = Type.NULL).fitsInto(intOrString))
+    assertTrue(
+      Schema(anyOf = listOf(integer, Schema(type = Type.INTEGER, nullable = true)))
+        .fitsInto(nullableInteger)
+    )
+  }
+
+  @Test
+  fun fitsInto_typedParentThatIsNotNullable_rejectsNullWhateverItsAlternativesSay() {
+    // Arrange
+    val nullableThroughAnyOf =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("n" to Schema(type = Type.INTEGER, anyOf = listOf(integer.copy(nullable = true)))),
+      )
+
+    // Act / Assert
+    assertTrue(
+      nullableThroughAnyOf.fitsInto(Schema(type = Type.OBJECT, properties = mapOf("n" to integer)))
+    )
+    assertFalse(
+      integer
+        .copy(nullable = true)
+        .fitsInto(Schema(type = Type.INTEGER, anyOf = listOf(integer, Schema(type = Type.NULL))))
+    )
+  }
+
+  @Test
+  fun fitsInto_typedSource_staysWithinTheTargetEnum() {
+    assertTrue(color.fitsInto(colors))
+    assertFalse(colors.fitsInto(color))
+    assertFalse(string.fitsInto(color))
+    assertFalse(string.fitsInto(Schema(enum = listOf("red"))))
+    assertTrue(color.fitsInto(Schema(enum = listOf("red", "blue"))))
+    assertFalse(colors.fitsInto(Schema(enum = listOf("red"))))
+    // The target's enum holds beside its `anyOf`.
+    assertFalse(string.fitsInto(Schema(anyOf = listOf(string), enum = listOf("red"))))
+    assertTrue(color.fitsInto(Schema(anyOf = listOf(string), enum = listOf("red"))))
+  }
+
+  @Test
+  fun fitsInto_untypedSource_fitsAnyTargetButAnEmptyUnion() {
+    assertTrue(Schema().fitsInto(integer))
+    assertTrue(Schema().fitsInto(Schema(enum = listOf("red"))))
+    assertFalse(Schema().fitsInto(Schema(anyOf = emptyList())))
+  }
+
+  @Test
+  fun fitsInto_untypedEnum_fitsWhenEachValueAndItsLiteralDo() {
+    assertFalse(Schema(enum = listOf("red")).fitsInto(integer))
+    assertTrue(Schema(enum = listOf("red")).fitsInto(string))
+    // "1" also spells the number 1, and "true" the boolean, which a string schema rejects.
+    assertFalse(Schema(enum = listOf("1")).fitsInto(string))
+    assertFalse(Schema(enum = listOf("true")).fitsInto(string))
+    assertTrue(Schema(enum = listOf("a", "1")).fitsInto(intOrString))
+    assertFalse(Schema(enum = listOf("green")).fitsInto(color))
+    assertTrue(Schema(enum = listOf("green")).fitsInto(Schema(enum = listOf("green", "red"))))
+  }
+
+  @Test
+  fun fitsInto_objects_checkRequiredDeclaredAndExtraKeys() {
+    assertTrue(idAndNote.fitsInto(idOnly))
+    assertFalse(idOnly.copy(properties = mapOf("id" to integer)).fitsInto(idOnly))
+    assertFalse(idOnly.fitsInto(idAndNote.copy(required = listOf("id", "note"))))
+    assertFalse(idAndNote.fitsInto(idOnly.copy(additionalProperties = false)))
+    assertFalse(idAndNote.fitsInto(idOnly.copy(additionalProperties = integer)))
+    assertTrue(idAndNote.fitsInto(idOnly.copy(additionalProperties = string)))
+    assertTrue(idAndNote.fitsInto(idOnly.copy(additionalProperties = mapOf("type" to "STRING"))))
+    assertFalse(idAndNote.fitsInto(idOnly.copy(additionalProperties = mapOf("type" to "INTEGER"))))
+    assertFalse(
+      Schema(type = Type.OBJECT, additionalProperties = string)
+        .fitsInto(Schema(type = Type.OBJECT, additionalProperties = integer))
+    )
+    assertTrue(
+      Schema(type = Type.OBJECT, additionalProperties = integer)
+        .fitsInto(Schema(type = Type.OBJECT, additionalProperties = Schema(type = Type.NUMBER)))
+    )
+    // An open map declares no keys, so it is checked at run time.
+    assertTrue(Schema(type = Type.OBJECT).fitsInto(idOnly.copy(additionalProperties = false)))
+    assertTrue(
+      Schema(type = Type.OBJECT, additionalProperties = true)
+        .fitsInto(idOnly.copy(additionalProperties = false))
+    )
+  }
+
+  /** A closed target rejects a key the source requires and keys an untyped union declares. */
+  @Test
+  fun fitsInto_closedTarget_rejectsRequiredUndeclaredKeysAndUntypedUnionKeys() {
+    // Arrange
+    val string = Schema(type = Type.STRING)
+    val idOnly =
+      Schema(type = Type.OBJECT, properties = mapOf("id" to string), required = listOf("id"))
+    val closedIdOnly = idOnly.copy(additionalProperties = false)
+    val requiresId = Schema(type = Type.OBJECT, required = listOf("id"))
+    val closedEmpty = Schema(type = Type.OBJECT, additionalProperties = false)
+    val closedNote =
+      Schema(type = Type.OBJECT, properties = mapOf("note" to string), additionalProperties = false)
+    val untypedUnion = Schema(properties = mapOf("a" to string), anyOf = listOf(idOnly))
+
+    // Act / Assert
+    assertFalse(requiresId.fitsInto(closedEmpty))
+    assertFalse(requiresId.fitsInto(closedNote))
+    assertTrue(requiresId.fitsInto(closedIdOnly.copy(required = null)))
+    assertFalse(untypedUnion.fitsInto(closedIdOnly))
+    assertFalse(untypedUnion.copy(type = Type.OBJECT).fitsInto(closedIdOnly))
+    assertTrue(Schema(anyOf = listOf(idOnly)).fitsInto(closedIdOnly))
+  }
+
+  /** A source that declares keys without properties is checked by those keys. */
+  @Test
+  fun fitsInto_sourceWithKeysButNoProperties_checksItsKeys() {
+    // Arrange
+    val closedEmpty = Schema(type = Type.OBJECT, additionalProperties = false)
+    val requiresId = Schema(type = Type.OBJECT, required = listOf("id"))
+    val requiresNote = Schema(type = Type.OBJECT, required = listOf("note"))
+
+    // Act / Assert
+    assertFalse(closedEmpty.fitsInto(idOnly))
+    assertFalse(requiresId.fitsInto(requiresNote))
+    assertTrue(Schema(type = Type.OBJECT).fitsInto(idOnly))
+    assertTrue(closedEmpty.fitsInto(Schema(type = Type.OBJECT)))
+    // A key the target declares and requires must be declared too; one it only requires need not.
+    assertFalse(requiresId.fitsInto(idOnly))
+    assertTrue(requiresId.copy(properties = emptyMap()).fitsInto(requiresId))
+  }
+
+  @Test
+  fun fitsInto_untypedTarget_stillChecksTheKeysOrItemsItDeclares() {
+    assertTrue(idOnly.fitsInto(Schema(properties = mapOf("id" to string))))
+    assertTrue(idOnly.copy(nullable = true).fitsInto(Schema(properties = mapOf("id" to string))))
+    assertFalse(idOnly.fitsInto(Schema(required = listOf("note"))))
+    assertFalse(Schema(type = Type.ARRAY, items = string).fitsInto(Schema(items = integer)))
+  }
+
+  @Test
+  fun fitsInto_arrays_checkItemsWhenBothDeclareThem() {
+    assertFalse(
+      Schema(type = Type.ARRAY, items = string).fitsInto(Schema(type = Type.ARRAY, items = integer))
+    )
+    assertTrue(
+      Schema(type = Type.ARRAY, items = idAndNote)
+        .fitsInto(Schema(type = Type.ARRAY, items = idOnly))
+    )
+    assertTrue(Schema(type = Type.ARRAY).fitsInto(Schema(type = Type.ARRAY, items = integer)))
+  }
+
+  @Test
+  fun fitsInto_unionSource_needsItsOwnPartAndEveryBranchToFit() {
+    // Arrange
+    val kindString = Schema(type = Type.OBJECT, properties = mapOf("kind" to string))
+    val kindEnumOnly =
+      kindString.copy(
+        anyOf =
+          listOf(
+            Schema(type = Type.OBJECT, properties = mapOf("kind" to Schema(enum = listOf("a"))))
+          )
+      )
+    val closedIdOnly = idOnly.copy(additionalProperties = false)
+    val optionalA = idWithAnyOfA.copy(nullable = true)
+
+    // Act / Assert
+    assertFalse(intOrString.fitsInto(integer))
+    assertTrue(kindEnumOnly.fitsInto(kindString))
+    assertFalse(Schema(type = Type.OBJECT, anyOf = listOf(objectWithA)).fitsInto(closedIdOnly))
+    assertFalse(idWithAnyOfA.fitsInto(closedIdOnly))
+    assertFalse(
+      Schema(type = Type.OBJECT, properties = mapOf("a" to string), anyOf = listOf(idOnly))
+        .fitsInto(closedIdOnly)
+    )
+    assertFalse(
+      Schema(type = Type.ARRAY, anyOf = listOf(Schema(type = Type.ARRAY, items = string)))
+        .fitsInto(Schema(type = Type.ARRAY, items = integer))
+    )
+    assertFalse(Schema(required = listOf("id"), anyOf = listOf(integer)).fitsInto(string))
+    // An untyped branch of an untyped union takes null.
+    assertFalse(Schema(anyOf = listOf(integer, Schema())).fitsInto(integer))
+    assertFalse(
+      Schema(type = Type.INTEGER, anyOf = listOf(Schema(type = Type.NUMBER, enum = listOf("2.0"))))
+        .fitsInto(Schema(type = Type.INTEGER, enum = listOf("2.0")))
+    )
+    assertFalse(
+      Schema(
+          type = Type.OBJECT,
+          properties = mapOf("n" to Schema(anyOf = listOf(integer))),
+          anyOf = listOf(Schema(type = Type.OBJECT, properties = mapOf("n" to string))),
+        )
+        .fitsInto(Schema(type = Type.OBJECT, properties = mapOf("n" to string)))
+    )
+    // A branch that is the target itself fits it, nullable and all.
+    assertTrue(Schema(anyOf = listOf(optionalA, Schema(type = Type.NULL))).fitsInto(optionalA))
+  }
+
+  @Test
+  fun fitsInto_untypedBranch_takesItsUnionsType() {
+    assertTrue(Schema(type = Type.INTEGER, anyOf = listOf(Schema())).fitsInto(integer))
+    assertFalse(
+      Schema(type = Type.OBJECT, anyOf = listOf(Schema(required = listOf("id"))))
+        .fitsInto(Schema(type = Type.OBJECT, required = listOf("note")))
+    )
+    assertFalse(
+      Schema(type = Type.STRING, anyOf = listOf(Schema())).fitsInto(idOnly.copy(nullable = true))
+    )
+  }
+
+  /** An untyped union with no keys or items of its own is checked by its branches alone. */
+  @Test
+  fun fitsInto_untypedUnionOfEnums_fitsAWiderEnumOnly() {
+    // Arrange
+    val colors = Schema(type = Type.STRING, enum = listOf("red", "blue"))
+    val red = Schema(type = Type.STRING, enum = listOf("red"))
+    val green = Schema(type = Type.STRING, enum = listOf("green"))
+
+    // Act / Assert
+    assertTrue(Schema(anyOf = listOf(red)).fitsInto(colors))
+    assertTrue(Schema(anyOf = listOf(red, colors)).fitsInto(colors))
+    assertFalse(Schema(anyOf = listOf(red, green)).fitsInto(colors))
+  }
+
+  @Test
+  fun fitsInto_unionTarget_needsOneBranchAndItsOwnPart() {
+    assertTrue(integer.fitsInto(intOrString))
+    assertTrue(integer.fitsInto(Schema(type = Type.INTEGER, anyOf = listOf(integer, string))))
+    assertFalse(integer.fitsInto(Schema(type = Type.STRING, anyOf = listOf(integer))))
+    assertTrue(
+      idOnly.fitsInto(Schema(type = Type.OBJECT, anyOf = listOf(Schema(required = listOf("id")))))
+    )
+    assertFalse(
+      idOnly.fitsInto(Schema(type = Type.OBJECT, anyOf = listOf(Schema(required = listOf("note")))))
+    )
+    assertFalse(
+      idOnly.fitsInto(
+        Schema(
+          type = Type.OBJECT,
+          required = listOf("note"),
+          anyOf = listOf(Schema(type = Type.OBJECT)),
+        )
+      )
+    )
+    assertFalse(
+      Schema(type = Type.ARRAY, items = string)
+        .fitsInto(
+          Schema(type = Type.ARRAY, items = integer, anyOf = listOf(Schema(type = Type.ARRAY)))
+        )
+    )
+  }
+
+  /** Only identity lets a union fit itself: its own part need not fit one of its alternatives. */
+  @Test
+  fun fitsInto_identicalUnion_fitsItself() {
+    // Arrange
+    val kindAOrB =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("kind" to Schema(type = Type.STRING, enum = listOf("a", "b"))),
+        anyOf = listOf(Schema(type = Type.OBJECT, properties = mapOf("kind" to string))),
+      )
+    val integerAnyOfNumber = Schema(type = Type.INTEGER, anyOf = listOf(Schema(type = Type.NUMBER)))
+    val numberAnyOfInteger = Schema(type = Type.NUMBER, anyOf = listOf(integer))
+    val bothEnums =
+      Schema(
+        type = Type.STRING,
+        enum = listOf("a", "b"),
+        anyOf = listOf(Schema(type = Type.STRING, enum = listOf("b", "c"))),
+      )
+
+    // Act / Assert
+    assertTrue(idWithAnyOfA.fitsInto(idWithAnyOfA))
+    assertTrue(kindAOrB.fitsInto(kindAOrB))
+    assertTrue(integerAnyOfNumber.fitsInto(integerAnyOfNumber))
+    assertTrue(numberAnyOfInteger.fitsInto(numberAnyOfInteger))
+    assertTrue(bothEnums.fitsInto(bothEnums))
+  }
+
+  @Test
+  fun readJson_readsAnyJsonAndRejectsTextThatIsNotJsonWithoutQuotingIt() {
+    assertEquals(
+      mapOf("a" to listOf(1L, true)),
+      SchemaUtils.readJson("""{"a": [1, true]}""").getOrThrow(),
+    )
+    assertEquals("x", SchemaUtils.readJson("\"x\"").getOrThrow())
+    assertEquals(null, SchemaUtils.readJson("null").getOrThrow())
+    // The JSON parser alone takes an unquoted word as a literal.
+    for (notJson in
+      listOf(
+        "hello world",
+        "hello",
+        """{"a": hello}""",
+        "NaN",
+        "TRUE",
+        "007",
+        "+5",
+        ".5",
+        "1.",
+        "1d",
+        "0x1p3",
+        """{"a": 007}""",
+      )) {
+      assertEquals(
+        "validation error: value is not valid JSON.",
+        SchemaUtils.readJson(notJson).exceptionOrNull()?.message,
+      )
+    }
+  }
+
+  @Test
+  fun acceptsString_seesAStringTypeDirectlyOrInAnAlternative() {
+    assertTrue(SchemaUtils.acceptsString(Schema(type = Type.STRING)))
+    assertTrue(SchemaUtils.acceptsString(Schema(anyOf = listOf(Schema(type = Type.STRING)))))
+    assertFalse(SchemaUtils.acceptsString(Schema(type = Type.INTEGER)))
+  }
+
+  // -- inferSchema --
+
+  @Test
+  fun inferSchema_scalarTypes_mapsToPrimitiveSchemas() {
+    // Arrange
+    val types =
+      listOf(
+        typeOf<String>(),
+        typeOf<Int?>(),
+        typeOf<Short>(),
+        typeOf<Double>(),
+        typeOf<Boolean>(),
+        typeOf<Number>(),
+        typeOf<CharSequence>(),
+        typeOf<Char>(),
+        typeOf<ByteArray?>(),
+      )
+
+    // Act
+    val schemas = types.map { SchemaUtils.inferSchema(it) }
+
+    // Assert
+    assertEquals(
+      listOf(
+        Schema(type = Type.STRING),
+        Schema(type = Type.INTEGER, nullable = true),
+        Schema(type = Type.INTEGER),
+        Schema(type = Type.NUMBER),
+        Schema(type = Type.BOOLEAN),
+        Schema(type = Type.NUMBER),
+        Schema(type = Type.STRING),
+        Schema(type = Type.STRING),
+        Schema(type = Type.STRING, nullable = true),
+      ),
+      schemas,
+    )
+  }
+
+  @Test
+  fun inferSchema_collectionTypes_mapToArray() {
+    // Arrange
+    val types =
+      listOf(
+        typeOf<List<String>>(),
+        typeOf<MutableList<String>>(),
+        typeOf<ArrayList<String>>(),
+        typeOf<Array<String>>(),
+        typeOf<Collection<String>>(),
+        typeOf<Set<String>>(),
+      )
+
+    // Act
+    val schemas = types.map { SchemaUtils.inferSchema(it) }
+    val anyItems = SchemaUtils.inferSchema(typeOf<List<Any?>>())
+
+    // Assert
+    val stringArray = Schema(type = Type.ARRAY, items = Schema(type = Type.STRING))
+    assertEquals(List(types.size) { stringArray }, schemas)
+    assertEquals(Schema(type = Type.ARRAY), anyItems)
+  }
+
+  @Test
+  fun inferSchema_mapTypes_mapToObjectWithoutProperties() {
+    // Act
+    val anyValues = SchemaUtils.inferSchema(typeOf<Map<String, Any?>>())
+    val intValues = SchemaUtils.inferSchema(typeOf<Map<String, Int>>())
+
+    // Assert
+    assertEquals(Schema(type = Type.OBJECT), anyValues)
+    assertEquals(Schema(type = Type.OBJECT), intValues)
+  }
+
+  @Test
+  fun inferSchema_serializableClass_infersPropertiesAndRequiresThoseWithoutDefaults() {
+    // Act
+    val schema = SchemaUtils.inferSchema(typeOf<CustomerOrder?>())
+
+    // Assert
+    val address =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("street" to Schema(type = Type.STRING), "zip_code" to Schema(type = Type.STRING)),
+        required = listOf("street", "zip_code"),
+        additionalProperties = false,
+      )
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "id" to Schema(type = Type.INTEGER),
+            "note" to Schema(type = Type.STRING, nullable = true),
+            "express" to Schema(type = Type.BOOLEAN),
+            "coupon" to Schema(type = Type.STRING, nullable = true),
+            "address" to address,
+          ),
+        required = listOf("id", "coupon", "address"),
+        additionalProperties = false,
+        nullable = true,
+      ),
+      schema,
+    )
+  }
+
+  @Test
+  fun inferSchema_forOutput_requiresEveryFieldAtEveryLevel() {
+    // Act
+    val output = SchemaUtils.inferSchema(typeOf<List<Box<CustomerOrder>>>(), forOutput = true)
+    val input = SchemaUtils.inferSchema(typeOf<List<Box<CustomerOrder>>>())
+
+    // Assert
+    val outputOrder = checkNotNull(output?.items?.properties?.get("item"))
+    val inputOrder = checkNotNull(input?.items?.properties?.get("item"))
+    assertEquals(listOf("id", "note", "express", "coupon", "address"), outputOrder.required)
+    assertEquals(listOf("id", "coupon", "address"), inputOrder.required)
+  }
+
+  @Test
+  fun inferSchema_enumGenericAndValueClass_infersFromTheirDescriptors() {
+    // Act
+    val enumSchema = SchemaUtils.inferSchema(typeOf<OrderStatus>())
+    val boxSchema = SchemaUtils.inferSchema(typeOf<Box<Int>>())
+    val valueClassSchema = SchemaUtils.inferSchema(typeOf<OrderId>())
+
+    // Assert
+    assertEquals(Schema(type = Type.STRING, enum = listOf("open", "shipped")), enumSchema)
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("item" to Schema(type = Type.INTEGER)),
+        required = listOf("item"),
+        additionalProperties = false,
+      ),
+      boxSchema,
+    )
+    assertEquals(Schema(type = Type.STRING), valueClassSchema)
+  }
+
+  @Test
+  fun inferSchema_nestedGenericOfTheSameClass_isNotACycle() {
+    // Act
+    val nestedBox = SchemaUtils.inferSchema(typeOf<Box<Box<Int>>>())
+    val nestedPair = SchemaUtils.inferSchema(typeOf<Pair<Pair<Int, Int>, String>>())
+
+    // Assert
+    val intBox =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("item" to Schema(type = Type.INTEGER)),
+        required = listOf("item"),
+        additionalProperties = false,
+      )
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("item" to intBox),
+        required = listOf("item"),
+        additionalProperties = false,
+      ),
+      nestedBox,
+    )
+    val intPair =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("first" to Schema(type = Type.INTEGER), "second" to Schema(type = Type.INTEGER)),
+        required = listOf("first", "second"),
+        additionalProperties = false,
+      )
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("first" to intPair, "second" to Schema(type = Type.STRING)),
+        required = listOf("first", "second"),
+        additionalProperties = false,
+      ),
+      nestedPair,
+    )
+  }
+
+  @Test
+  fun inferSchema_fieldWithoutDescribableShape_isUnconstrained() {
+    // Act
+    val schema = SchemaUtils.inferSchema(typeOf<Payload>())
+
+    // Assert
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("id" to Schema(type = Type.STRING), "extra" to Schema()),
+        required = listOf("id", "extra"),
+        additionalProperties = false,
+      ),
+      schema,
+    )
+  }
+
+  @Test
+  fun inferSchema_jsonPrimitiveAndJsonNull_areUnconstrained() {
+    // Act
+    val topLevel =
+      listOf(typeOf<JsonPrimitive>(), typeOf<JsonPrimitive?>(), typeOf<JsonNull>()).map {
+        SchemaUtils.inferSchema(it)
+      }
+    val field = SchemaUtils.inferSchema(typeOf<Reading>())
+
+    // Assert
+    assertEquals(listOf(null, null, null), topLevel)
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("value" to Schema()),
+        required = listOf("value"),
+        additionalProperties = false,
+      ),
+      field,
+    )
+  }
+
+  @Test
+  fun inferSchema_typesWithoutDescribableShape_returnNull() {
+    // Arrange
+    val types =
+      listOf(
+        typeOf<Any>(),
+        typeOf<Any?>(),
+        typeOf<Unit>(),
+        typeOf<Nothing?>(),
+        typeOf<Shape>(),
+        typeOf<List<*>>(),
+        typeOf<Map<String, *>>(),
+        typeOf<TreeNode>(),
+        typeOf<LinkedItem>(),
+        typeOf<UserProfileDomain>(),
+      )
+
+    // Act
+    val schemas = types.map { SchemaUtils.inferSchema(it) }
+
+    // Assert
+    assertEquals(List(types.size) { null }, schemas)
+  }
+
+  @Test
+  fun inferSchema_inferredSchemas_acceptJsonFormsOfTheirValues() {
+    // Arrange
+    val order =
+      CustomerOrder(id = 7, coupon = "SAVE10", address = ShippingAddress("Main St", "00-001"))
+    val samples =
+      listOf(
+        typeOf<String>() to "a",
+        typeOf<Long>() to 1L,
+        typeOf<Number>() to 1.5,
+        typeOf<Set<Int>>() to setOf(1, 2),
+        typeOf<OrderStatus>() to "shipped",
+        typeOf<CustomerOrder>() to anyJson(order),
+      )
+
+    // Act
+    val results = samples.map { (type, value) ->
+      ValueCoercer.coerceValue(value, checkNotNull(SchemaUtils.inferSchema(type)), "value")
+    }
+
+    // Assert
+    assertTrue(results.all { it.isSuccess })
+  }
+
+  private fun anyJson(value: CustomerOrder): Any? =
+    jsonElementToAny(adkJson.encodeToJsonElement(CustomerOrder.serializer(), value))
+
   @Test
   fun validateValue_mapIsCheckedAndReturnedUnchanged() {
     assertEquals(
@@ -815,7 +1489,7 @@ class SchemaUtilsTest {
   }
 
   /** Returns the failure message for [value], checking that it never quotes [secret]. */
-  private fun failureMessage(value: Any?, schema: Schema): String {
+  private fun validateValueFailureMessage(value: Any?, schema: Schema): String {
     val error = SchemaUtils.validateValue(value, schema, "input of node 'n'").exceptionOrNull()
     assertIs<IllegalArgumentException>(error)
     assertEquals(null, error.cause)
@@ -837,15 +1511,15 @@ class SchemaUtilsTest {
     assertEquals(
       prefix +
         "Value arg: count type does not match value schema: Schema(type=OBJECT, properties=[count])",
-      failureMessage(mapOf("count" to secret), countSchema),
+      validateValueFailureMessage(mapOf("count" to secret), countSchema),
     )
     assertEquals(
       prefix + "Value args does not contain required name",
-      failureMessage(mapOf<String, Any?>(), person),
+      validateValueFailureMessage(mapOf<String, Any?>(), person),
     )
     assertEquals(
       prefix + "Value schema does not describe an object: Schema(type=INTEGER)",
-      failureMessage(mapOf("count" to secret), Schema(type = Type.INTEGER)),
+      validateValueFailureMessage(mapOf("count" to secret), Schema(type = Type.INTEGER)),
     )
   }
 
@@ -854,7 +1528,7 @@ class SchemaUtilsTest {
     assertEquals(
       "validation error: input of node 'n' does not match its schema: " +
         "it has a key the schema does not declare",
-      failureMessage(mapOf("count" to 1, secret to 2), countSchema),
+      validateValueFailureMessage(mapOf("count" to 1, secret to 2), countSchema),
     )
   }
 
@@ -866,273 +1540,12 @@ class SchemaUtilsTest {
 
     assertEquals(
       "validation error: input of node 'n' does not match its schema.",
-      failureMessage(secret, Schema(type = Type.INTEGER)),
+      validateValueFailureMessage(secret, Schema(type = Type.INTEGER)),
     )
-    assertContains(failureMessage(listOf(secret), nested), "schema is too complex to validate")
-  }
-
-  @Test
-  fun readJson_readsAnyJsonAndRejectsTextThatIsNotJsonWithoutQuotingIt() {
-    assertEquals(
-      mapOf("a" to listOf(1L, true)),
-      SchemaUtils.readJson("""{"a": [1, true]}""").getOrThrow(),
+    assertContains(
+      validateValueFailureMessage(listOf(secret), nested),
+      "schema is too complex to validate",
     )
-    assertEquals("x", SchemaUtils.readJson("\"x\"").getOrThrow())
-    assertEquals(null, SchemaUtils.readJson("null").getOrThrow())
-    // The JSON parser alone takes an unquoted word as a literal.
-    for (notJson in listOf("hello world", "hello", """{"a": hello}""", "NaN")) {
-      assertEquals(
-        "validation error: value is not valid JSON.",
-        SchemaUtils.readJson(notJson).exceptionOrNull()?.message,
-      )
-    }
-  }
-
-  @Test
-  fun acceptsString_seesAStringTypeDirectlyOrInAnAlternative() {
-    assertTrue(SchemaUtils.acceptsString(Schema(type = Type.STRING)))
-    assertTrue(SchemaUtils.acceptsString(Schema(anyOf = listOf(Schema(type = Type.STRING)))))
-    assertFalse(SchemaUtils.acceptsString(Schema(type = Type.INTEGER)))
-  }
-
-  // -- inferSchema --
-
-  @Test
-  fun inferSchema_scalarTypes_mapsToPrimitiveSchemas() {
-    // Arrange
-    val types =
-      listOf(
-        typeOf<String>(),
-        typeOf<Int?>(),
-        typeOf<Short>(),
-        typeOf<Double>(),
-        typeOf<Boolean>(),
-        typeOf<Number>(),
-        typeOf<CharSequence>(),
-        typeOf<Char>(),
-      )
-
-    // Act
-    val schemas = types.map { SchemaUtils.inferSchema(it) }
-
-    // Assert
-    assertEquals(
-      listOf(
-        Schema(type = Type.STRING),
-        Schema(type = Type.INTEGER, nullable = true),
-        Schema(type = Type.INTEGER),
-        Schema(type = Type.NUMBER),
-        Schema(type = Type.BOOLEAN),
-        Schema(type = Type.NUMBER),
-        Schema(type = Type.STRING),
-        Schema(type = Type.STRING),
-      ),
-      schemas,
-    )
-  }
-
-  @Test
-  fun inferSchema_collectionTypes_mapToArray() {
-    // Arrange
-    val types =
-      listOf(
-        typeOf<List<String>>(),
-        typeOf<MutableList<String>>(),
-        typeOf<ArrayList<String>>(),
-        typeOf<Array<String>>(),
-        typeOf<Collection<String>>(),
-        typeOf<Set<String>>(),
-      )
-
-    // Act
-    val schemas = types.map { SchemaUtils.inferSchema(it) }
-    val anyItems = SchemaUtils.inferSchema(typeOf<List<Any?>>())
-
-    // Assert
-    val stringArray = Schema(type = Type.ARRAY, items = Schema(type = Type.STRING))
-    assertEquals(List(types.size) { stringArray }, schemas)
-    assertEquals(Schema(type = Type.ARRAY), anyItems)
-  }
-
-  @Test
-  fun inferSchema_mapTypes_mapToObjectWithoutProperties() {
-    // Act
-    val anyValues = SchemaUtils.inferSchema(typeOf<Map<String, Any?>>())
-    val intValues = SchemaUtils.inferSchema(typeOf<Map<String, Int>>())
-
-    // Assert
-    assertEquals(Schema(type = Type.OBJECT), anyValues)
-    assertEquals(Schema(type = Type.OBJECT), intValues)
-  }
-
-  @Test
-  fun inferSchema_serializableClass_infersPropertiesAndRequiresThoseWithoutDefaults() {
-    // Act
-    val schema = SchemaUtils.inferSchema(typeOf<CustomerOrder?>())
-
-    // Assert
-    val address =
-      Schema(
-        type = Type.OBJECT,
-        properties =
-          mapOf("street" to Schema(type = Type.STRING), "zip_code" to Schema(type = Type.STRING)),
-        required = listOf("street", "zip_code"),
-      )
-    assertEquals(
-      Schema(
-        type = Type.OBJECT,
-        properties =
-          mapOf(
-            "id" to Schema(type = Type.INTEGER),
-            "note" to Schema(type = Type.STRING, nullable = true),
-            "express" to Schema(type = Type.BOOLEAN),
-            "coupon" to Schema(type = Type.STRING, nullable = true),
-            "address" to address,
-          ),
-        required = listOf("id", "coupon", "address"),
-        nullable = true,
-      ),
-      schema,
-    )
-  }
-
-  @Test
-  fun inferSchema_enumGenericAndValueClass_infersFromTheirDescriptors() {
-    // Act
-    val enumSchema = SchemaUtils.inferSchema(typeOf<OrderStatus>())
-    val boxSchema = SchemaUtils.inferSchema(typeOf<Box<Int>>())
-    val valueClassSchema = SchemaUtils.inferSchema(typeOf<OrderId>())
-
-    // Assert
-    assertEquals(Schema(type = Type.STRING, enum = listOf("open", "shipped")), enumSchema)
-    assertEquals(
-      Schema(
-        type = Type.OBJECT,
-        properties = mapOf("item" to Schema(type = Type.INTEGER)),
-        required = listOf("item"),
-      ),
-      boxSchema,
-    )
-    assertEquals(Schema(type = Type.STRING), valueClassSchema)
-  }
-
-  @Test
-  fun inferSchema_nestedGenericOfTheSameClass_isNotACycle() {
-    // Act
-    val nestedBox = SchemaUtils.inferSchema(typeOf<Box<Box<Int>>>())
-    val nestedPair = SchemaUtils.inferSchema(typeOf<Pair<Pair<Int, Int>, String>>())
-
-    // Assert
-    val intBox =
-      Schema(
-        type = Type.OBJECT,
-        properties = mapOf("item" to Schema(type = Type.INTEGER)),
-        required = listOf("item"),
-      )
-    assertEquals(
-      Schema(type = Type.OBJECT, properties = mapOf("item" to intBox), required = listOf("item")),
-      nestedBox,
-    )
-    val intPair =
-      Schema(
-        type = Type.OBJECT,
-        properties =
-          mapOf("first" to Schema(type = Type.INTEGER), "second" to Schema(type = Type.INTEGER)),
-        required = listOf("first", "second"),
-      )
-    assertEquals(
-      Schema(
-        type = Type.OBJECT,
-        properties = mapOf("first" to intPair, "second" to Schema(type = Type.STRING)),
-        required = listOf("first", "second"),
-      ),
-      nestedPair,
-    )
-  }
-
-  @Test
-  fun inferSchema_fieldWithoutDescribableShape_isUnconstrained() {
-    // Act
-    val schema = SchemaUtils.inferSchema(typeOf<Payload>())
-
-    // Assert
-    assertEquals(
-      Schema(
-        type = Type.OBJECT,
-        properties = mapOf("id" to Schema(type = Type.STRING), "extra" to Schema()),
-        required = listOf("id", "extra"),
-      ),
-      schema,
-    )
-  }
-
-  @Test
-  fun inferSchema_jsonPrimitiveAndJsonNull_areUnconstrained() {
-    // Act
-    val topLevel =
-      listOf(typeOf<JsonPrimitive>(), typeOf<JsonPrimitive?>(), typeOf<JsonNull>()).map {
-        SchemaUtils.inferSchema(it)
-      }
-    val field = SchemaUtils.inferSchema(typeOf<Reading>())
-
-    // Assert
-    assertEquals(listOf(null, null, null), topLevel)
-    assertEquals(
-      Schema(
-        type = Type.OBJECT,
-        properties = mapOf("value" to Schema()),
-        required = listOf("value"),
-      ),
-      field,
-    )
-  }
-
-  @Test
-  fun inferSchema_typesWithoutDescribableShape_returnNull() {
-    // Arrange
-    val types =
-      listOf(
-        typeOf<Any>(),
-        typeOf<Any?>(),
-        typeOf<Unit>(),
-        typeOf<Nothing?>(),
-        typeOf<Shape>(),
-        typeOf<List<*>>(),
-        typeOf<Map<String, *>>(),
-        typeOf<TreeNode>(),
-        typeOf<LinkedItem>(),
-        typeOf<UserProfileDomain>(),
-      )
-
-    // Act
-    val schemas = types.map { SchemaUtils.inferSchema(it) }
-
-    // Assert
-    assertEquals(List(types.size) { null }, schemas)
-  }
-
-  @Test
-  fun inferSchema_inferredSchemas_acceptJsonFormsOfTheirValues() {
-    // Arrange
-    val order =
-      CustomerOrder(id = 7, coupon = "SAVE10", address = ShippingAddress("Main St", "00-001"))
-    val samples =
-      listOf(
-        typeOf<String>() to "a",
-        typeOf<Long>() to 1L,
-        typeOf<Number>() to 1.5,
-        typeOf<Set<Int>>() to setOf(1, 2),
-        typeOf<OrderStatus>() to "shipped",
-        typeOf<CustomerOrder>() to anyJson(order),
-      )
-
-    // Act
-    val results = samples.map { (type, value) ->
-      SchemaUtils.validateValue(value, checkNotNull(SchemaUtils.inferSchema(type)), "value")
-    }
-
-    // Assert
-    assertTrue(results.all { it.isSuccess })
   }
 
   @Test
@@ -1148,7 +1561,4 @@ class SchemaUtilsTest {
     // Assert
     assertTrue(result.isSuccess)
   }
-
-  private fun anyJson(value: CustomerOrder): Any? =
-    jsonElementToAny(adkJson.encodeToJsonElement(CustomerOrder.serializer(), value))
 }

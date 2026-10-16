@@ -19,6 +19,7 @@ package com.google.adk.kt
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -35,17 +36,10 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.serializerOrNull
 
-/**
- * Utility class for validating schemas.
- *
- * A schema that declares no type constrains nothing, so any value satisfies it. A schema that
- * carries `anyOf` is satisfied only when the value matches one of the alternatives, and that holds
- * alongside whatever else the schema declares.
- */
+/** Utility class for validating and inferring schemas. */
 object SchemaUtils {
 
   /**
@@ -56,10 +50,10 @@ object SchemaUtils {
    * millions of combinations in a handful of them. A real schema tries a few dozen alternatives, so
    * this leaves generous room while keeping the worst case in milliseconds.
    */
-  private const val MAX_UNION_CHECKS = 1000
+  internal const val MAX_UNION_CHECKS = 1000
 
   /** The union alternatives still available to one validation, shared across its recursion. */
-  private class UnionBudget {
+  internal class UnionBudget {
     private var remaining = MAX_UNION_CHECKS
 
     /** Takes one alternative from the budget, or reports that none is left. */
@@ -76,7 +70,7 @@ object SchemaUtils {
    * A distinct type so the reason survives being passed back up: the caller reports a type mismatch
    * for a property, which this is not, and relabelling it would hide the real cause.
    */
-  private class SchemaTooComplexException(message: String) : IllegalArgumentException(message)
+  internal class SchemaTooComplexException(message: String) : IllegalArgumentException(message)
 
   private fun tooComplex(argsName: String): Result<Unit> =
     Result.failure(
@@ -188,8 +182,7 @@ object SchemaUtils {
    * A schema that declares no type constrains nothing, so it can; one that declares `OBJECT`
    * obviously can; one that declares any other type cannot, whatever else it says.
    */
-  private fun Schema.canDescribeAMap(): Boolean =
-    type == null || type == Type.OBJECT || type == Type.TYPE_UNSPECIFIED
+  private fun Schema.canDescribeAMap(): Boolean = declaredType == null || type == Type.OBJECT
 
   /**
    * How to name a schema in a validation error.
@@ -368,6 +361,10 @@ object SchemaUtils {
     )
   }
 
+  /** Returns [value] as [schema] reads it; a null passes every schema, as no output upstream. */
+  internal fun checkedValue(value: Any?, schema: Schema, what: String): Any? =
+    if (value == null) null else ValueCoercer.coerceValue(value, schema, what).getOrThrow()
+
   /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
   internal fun acceptsString(schema: Schema): Boolean =
     schema.type == Type.STRING || schema.anyOf.orEmpty().any { acceptsString(it) }
@@ -390,6 +387,12 @@ object SchemaUtils {
     return Result.success(jsonElementToAny(element))
   }
 
+  /** A JSON integer literal without a fractional or exponent part. */
+  internal val JSON_INTEGER = Regex("""-?(0|[1-9]\d*)""")
+
+  /** A JSON number literal, which has no plus sign, extra leading zero, whitespace or suffix. */
+  internal val JSON_NUMBER = Regex("""-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?""")
+
   private fun isStrictJson(element: JsonElement): Boolean =
     when (element) {
       is JsonObject -> element.values.all { isStrictJson(it) }
@@ -397,24 +400,29 @@ object SchemaUtils {
       is JsonPrimitive ->
         element is JsonNull ||
           element.isString ||
-          element.booleanOrNull != null ||
-          element.doubleOrNull?.isFinite() == true
+          element.content.toBooleanStrictOrNull() != null ||
+          (JSON_NUMBER.matches(element.content) && element.doubleOrNull?.isFinite() == true)
     }
 
   /**
-   * Infers a [Schema] for the JSON form of [kType] from its serializer's descriptor, so it covers
-   * every `@Serializable` type. Returns `null` when the type has no serializer or its shape cannot
-   * be described, such as `Any`, `Unit`, `JsonPrimitive`, `JsonNull`, a star projection, or a
-   * polymorphic class.
+   * Infers a [Schema] for the JSON form of [kType] from its serializer, or `null` when it has none
+   * or its shape cannot be described, such as `Any`, `Unit` or a polymorphic class. With
+   * [forOutput], every class field is required; a field marked `@EncodeDefault(NEVER)` is the
+   * exception this misses.
    */
   @OptIn(FrameworkInternalApi::class)
-  internal fun inferSchema(kType: KType): Schema? {
+  internal fun inferSchema(kType: KType, forOutput: Boolean = false): Schema? {
     val nullable = if (kType.isMarkedNullable) true else null
     return when (kType.classifier) {
       // Neither has a serializer, but a value of either has a JSON form.
       Number::class -> Schema(type = Type.NUMBER, nullable = nullable)
       CharSequence::class -> Schema(type = Type.STRING, nullable = nullable)
-      else -> serializerFor(kType)?.descriptor?.let { schemaOf(it, kType.isMarkedNullable) }
+      // A port carries a ByteArray as base64 text.
+      ByteArray::class -> Schema(type = Type.STRING, nullable = nullable)
+      else ->
+        serializerFor(kType)?.descriptor?.let {
+          schemaOf(it, kType.isMarkedNullable, forOutput = forOutput)
+        }
     }
   }
 
@@ -429,15 +437,15 @@ object SchemaUtils {
     }
 
   /**
-   * Maps [descriptor] to the [Schema] of its JSON form, or returns `null` when that form is
-   * unconstrained or cannot be described. A list whose elements cannot be described still maps to
-   * an array, a map to an object, and a class field to an unconstrained schema.
+   * Maps [descriptor] to the [Schema] of its JSON form, or `null` when that form is unconstrained
+   * or cannot be described. A list of undescribable elements still maps to an array, a map to an
+   * object, and a class field to an unconstrained schema; [forOutput] works as in [inferSchema].
    */
-  internal fun schemaOf(
+  private fun schemaOf(
     descriptor: SerialDescriptor,
     nullable: Boolean,
-    visited: MutableSet<SerialDescriptor> = mutableSetOf(),
-  ): Schema? = describe(descriptor, nullable, visited).takeUnless { it === CYCLE }
+    forOutput: Boolean = false,
+  ): Schema? = SchemaInference(forOutput).describe(descriptor, nullable).takeUnless { it === CYCLE }
 
   /** Marks a type that contains itself; it propagates up so the whole type has no schema. */
   private val CYCLE = Schema()
@@ -449,72 +457,249 @@ object SchemaUtils {
       JsonNull.serializer().descriptor.serialName,
     )
 
-  private fun describe(
-    descriptor: SerialDescriptor,
-    nullable: Boolean,
-    visited: MutableSet<SerialDescriptor>,
-  ): Schema? {
-    val isNullable = nullable || descriptor.isNullable
-    if (descriptor.isInline) {
-      return describe(descriptor.getElementDescriptor(0), isNullable, visited)
-    }
-    if (descriptor.serialName.removeSuffix("?") in UNDESCRIBED_JSON_TYPES) return null
-    val nullableFlag = if (isNullable) true else null
-    return when (descriptor.kind) {
-      PrimitiveKind.STRING,
-      PrimitiveKind.CHAR -> Schema(type = Type.STRING, nullable = nullableFlag)
-      PrimitiveKind.INT,
-      PrimitiveKind.LONG,
-      PrimitiveKind.SHORT,
-      PrimitiveKind.BYTE -> Schema(type = Type.INTEGER, nullable = nullableFlag)
-      PrimitiveKind.FLOAT,
-      PrimitiveKind.DOUBLE -> Schema(type = Type.NUMBER, nullable = nullableFlag)
-      PrimitiveKind.BOOLEAN -> Schema(type = Type.BOOLEAN, nullable = nullableFlag)
-      SerialKind.ENUM ->
-        Schema(
-          type = Type.STRING,
-          enum = List(descriptor.elementsCount) { descriptor.getElementName(it) },
-          nullable = nullableFlag,
-        )
-      StructureKind.LIST -> {
-        val items = describe(descriptor.getElementDescriptor(0), nullable = false, visited)
-        if (items === CYCLE) CYCLE
-        else Schema(type = Type.ARRAY, items = items, nullable = nullableFlag)
+  /**
+   * One [schemaOf] walk, tracking the classes it is inside; [forOutput] works as in [inferSchema].
+   */
+  private class SchemaInference(private val forOutput: Boolean) {
+    private val visited = mutableSetOf<SerialDescriptor>()
+
+    fun describe(descriptor: SerialDescriptor, nullable: Boolean): Schema? {
+      val isNullable = nullable || descriptor.isNullable
+      if (descriptor.isInline) return describe(descriptor.getElementDescriptor(0), isNullable)
+      if (descriptor.serialName.removeSuffix("?") in UNDESCRIBED_JSON_TYPES) return null
+      val nullableFlag = if (isNullable) true else null
+      return when (descriptor.kind) {
+        PrimitiveKind.STRING,
+        PrimitiveKind.CHAR -> Schema(type = Type.STRING, nullable = nullableFlag)
+        PrimitiveKind.INT,
+        PrimitiveKind.LONG,
+        PrimitiveKind.SHORT,
+        PrimitiveKind.BYTE -> Schema(type = Type.INTEGER, nullable = nullableFlag)
+        PrimitiveKind.FLOAT,
+        PrimitiveKind.DOUBLE -> Schema(type = Type.NUMBER, nullable = nullableFlag)
+        PrimitiveKind.BOOLEAN -> Schema(type = Type.BOOLEAN, nullable = nullableFlag)
+        SerialKind.ENUM ->
+          Schema(
+            type = Type.STRING,
+            enum = List(descriptor.elementsCount) { descriptor.getElementName(it) },
+            nullable = nullableFlag,
+          )
+        StructureKind.LIST -> {
+          val items = describe(descriptor.getElementDescriptor(0), nullable = false)
+          if (items === CYCLE) CYCLE
+          else Schema(type = Type.ARRAY, items = items, nullable = nullableFlag)
+        }
+        StructureKind.MAP -> Schema(type = Type.OBJECT, nullable = nullableFlag)
+        StructureKind.CLASS -> classSchemaOf(descriptor, nullableFlag)
+        // No shape to describe; this also keeps the recursive JsonElement descriptor finite.
+        else -> null
       }
-      StructureKind.MAP -> Schema(type = Type.OBJECT, nullable = nullableFlag)
-      StructureKind.CLASS -> classSchemaOf(descriptor, nullableFlag, visited)
-      // No shape to describe; returning here also keeps the recursive JsonElement descriptor
-      // finite.
-      else -> null
+    }
+
+    private fun classSchemaOf(descriptor: SerialDescriptor, nullable: Boolean?): Schema? {
+      // Generated descriptors compare type arguments, so Box<Box<Int>> is not mistaken for a cycle.
+      if (!visited.add(descriptor)) return CYCLE
+      try {
+        val properties = mutableMapOf<String, Schema>()
+        val required = mutableListOf<String>()
+        for (i in 0 until descriptor.elementsCount) {
+          val name = descriptor.getElementName(i)
+          val property = describe(descriptor.getElementDescriptor(i), nullable = false)
+          if (property === CYCLE) return CYCLE
+          // A field with no describable shape, such as a JsonElement, is unconstrained.
+          properties[name] = property ?: Schema()
+          if (forOutput || !descriptor.isElementOptional(i)) required += name
+        }
+        return Schema(
+          type = Type.OBJECT,
+          properties = properties,
+          required = required.ifEmpty { null },
+          nullable = nullable,
+          additionalProperties = false,
+        )
+      } finally {
+        visited.remove(descriptor)
+      }
     }
   }
+}
 
-  private fun classSchemaOf(
-    descriptor: SerialDescriptor,
-    nullable: Boolean?,
-    visited: MutableSet<SerialDescriptor>,
-  ): Schema? {
-    // Generated descriptors compare type arguments, so Box<Box<Int>> is not mistaken for a cycle.
-    if (!visited.add(descriptor)) return CYCLE
-    try {
-      val properties = mutableMapOf<String, Schema>()
-      val required = mutableListOf<String>()
-      for (i in 0 until descriptor.elementsCount) {
-        val elementDescriptor = descriptor.getElementDescriptor(i)
-        val property = describe(elementDescriptor, nullable = false, visited)
-        if (property === CYCLE) return CYCLE
-        // A field with no describable shape, such as a JsonElement, is unconstrained.
-        properties[descriptor.getElementName(i)] = property ?: Schema()
-        if (!descriptor.isElementOptional(i)) required += descriptor.getElementName(i)
-      }
-      return Schema(
-        type = Type.OBJECT,
-        properties = properties,
-        required = required.ifEmpty { null },
-        nullable = nullable,
-      )
-    } finally {
-      visited.remove(descriptor)
+/**
+ * Returns whether an output of this schema can be wired into an input expecting [target].
+ *
+ * Examples that fit:
+ * - Same type (`STRING` -> `STRING`), or `INTEGER` widening to `NUMBER`.
+ * - A narrower enum into a wider one (`["red"]` -> `["red", "blue"]` or `STRING`).
+ * - An object with at least the target's required properties (`{id, note}` -> `{id}`).
+ * - A single type into an `anyOf` that includes it (`INTEGER` -> `anyOf[INTEGER, STRING]`).
+ * - An unconstrained schema (no `type`, e.g. `Schema()`, an open `OBJECT` with no `properties`, or
+ *   an `ARRAY` with no `items`), which passes static validation and is checked at runtime.
+ *
+ * Examples that do not fit:
+ * - Incompatible types (`STRING` -> `INTEGER`, or `NUMBER` narrowing to `INTEGER`).
+ * - Nullable source into a non-nullable target (`INTEGER?` -> `INTEGER`).
+ * - Object missing a property that [target] requires, or carrying a property that violates
+ *   `target.additionalProperties = false`.
+ * - An `anyOf` schema where some branch does not fit [target] (`anyOf[INTEGER, STRING]` ->
+ *   `INTEGER`).
+ */
+internal fun Schema.fitsInto(target: Schema): Boolean {
+  // 1. Identical schemas always fit (including an `anyOf` schema compared against itself).
+  if (this == target) return true
+
+  // 2. Source (`this`) has `anyOf`: its own top-level constraints and EVERY branch in `this.anyOf`
+  //    must fit into `target`.
+  if (anyOf != null) return sourceAnyOfFitsInto(anyOf, target)
+
+  // 3. Source can produce null, so `target` must accept null.
+  if ((nullable == true || type == Type.NULL) && !target.acceptsNull()) return false
+
+  // 4. Source is strictly NULL, and `target` accepts null.
+  if (type == Type.NULL) return true
+
+  // 5. Nullability is satisfied; check the remaining non-null constraints.
+  if (nullable == true) return copy(nullable = null).fitsInto(target)
+
+  // 6. Source has no declared type, but restricts values to an `enum`: every enum entry must fit.
+  if (declaredType == null && enum != null) return enumFitsInto(enum, target)
+
+  // 7. Target has `anyOf`: source (`this`) must satisfy `target`'s top-level constraints and fit
+  //    into AT LEAST ONE branch of `target.anyOf`.
+  if (target.anyOf != null) {
+    return fitsInto(target.copy(anyOf = null)) && target.anyOf.any { fitsInto(it) }
+  }
+
+  // 8. Any other source with no declared type (e.g. `Schema()`) is checked at runtime.
+  if (declaredType == null) return true
+
+  // 9. Target restricts values to an `enum`: source must declare an `enum` within `target.enum`.
+  if (target.enum != null && (enum == null || !target.enum.containsAll(enum))) return false
+
+  // 10. Both schemas declare a type: they must match (or widen `INTEGER` -> `NUMBER`).
+  if (
+    target.declaredType != null &&
+      target.type != type &&
+      !(type == Type.INTEGER && target.type == Type.NUMBER)
+  ) {
+    return false
+  }
+
+  // 11. For arrays and objects, recursively check element and property schemas.
+  return when (type) {
+    Type.ARRAY -> target.items == null || items == null || items.fitsInto(target.items)
+    Type.OBJECT -> objectFitsInto(target)
+    else -> true
+  }
+}
+
+/**
+ * Checks whether a source schema (`this`) that declares `anyOf` [alternatives] fits into [target].
+ *
+ * Since the source can produce a value from any branch in [alternatives], BOTH the source's own
+ * top-level constraints (without `anyOf`) AND every branch in [alternatives] must fit into
+ * [target].
+ */
+private fun Schema.sourceAnyOfFitsInto(alternatives: List<Schema>, target: Schema): Boolean {
+  val takesNull = acceptsNull()
+  if (takesNull && !target.acceptsNull()) return false
+  // If the parent schema rejects null (e.g. `type = STRING, nullable = false`), strip `NULL` and
+  // `nullable` from the branches so only their non-null values are checked.
+  val branches =
+    if (takesNull) alternatives
+    else alternatives.filter { it.type != Type.NULL }.map { it.copy(nullable = null) }
+  // An untyped union admits only its branches' values, so own keys or items take their common
+  // type. An own part with no keys or items constrains nothing beyond the branches.
+  val commonType =
+    branches.filter { it.type != Type.NULL }.map { it.impliedType() }.distinct().singleOrNull()
+  val ownType =
+    if (declaredType == null && impliedType() != null && commonType != null) commonType else type
+  val own = copy(anyOf = null, type = ownType, nullable = if (takesNull) true else nullable)
+  val parentHasType = declaredType != null
+  return own.fitsInto(target) &&
+    branches.all { branch ->
+      // A branch inside `anyOf` that omits `type` (e.g. `{required: ["id"]}` under a `type =
+      // OBJECT` parent) inherits the parent's `type`.
+      val branchWithType =
+        if (branch.declaredType == null && parentHasType) {
+          branch.copy(type = type)
+        } else {
+          branch
+        }
+      branchWithType.fitsInto(target)
+    }
+}
+
+/** Whether each value of [enum], and the literal it spells such as 1 for "1", fits [target]. */
+private fun enumFitsInto(enum: List<String>, target: Schema): Boolean = enum.all { value ->
+  val literal = SchemaUtils.readJson(value).getOrNull()?.takeIf { it !is String }
+  listOfNotNull(value, literal).all { ValueCoercer.coerceValue(it, target).isSuccess }
+}
+
+/**
+ * Whether this schema accepts `null`: when `nullable = true`, `type = NULL`, or when `type` is
+ * unspecified without an `enum` (and, if `anyOf` is present, at least one branch accepts `null`).
+ */
+private fun Schema.acceptsNull(): Boolean =
+  nullable == true ||
+    type == Type.NULL ||
+    (declaredType == null && enum == null && (anyOf?.any { it.acceptsNull() } ?: true))
+
+/** This schema's type, or null when it declares none. */
+internal val Schema.declaredType: Type?
+  get() = type.takeUnless { it == Type.TYPE_UNSPECIFIED }
+
+/** Whether this schema constrains an object's keys; `additionalProperties = true` does not. */
+internal fun Schema.declaresKeys(): Boolean =
+  properties != null ||
+    required != null ||
+    (additionalProperties != null && additionalProperties != true)
+
+/** This schema's type, or for an untyped schema the shape its keys or items describe. */
+private fun Schema.impliedType(): Type? =
+  declaredType
+    ?: when {
+      declaresKeys() -> Type.OBJECT
+      items != null -> Type.ARRAY
+      else -> null
+    }
+
+/** The schema `additionalProperties` gives each undeclared key: a [Schema], or a JSON object. */
+@OptIn(FrameworkInternalApi::class)
+internal fun Schema.extraSchema(): Schema? =
+  when (val extras = additionalProperties) {
+    is Schema -> extras
+    is Map<*, *> -> adkJson.decodeFromJsonElement(Schema.serializer(), anyToJsonElement(extras))
+    else -> null
+  }
+
+private fun Schema.objectFitsInto(target: Schema): Boolean {
+  // An open object schema with no key constraints is checked at runtime.
+  if (!declaresKeys()) return true
+  val given = properties.orEmpty()
+  val wanted = target.properties.orEmpty()
+  val targetRequired = target.required.orEmpty()
+  // Every key required by `target` must also be required by this schema, and declared if `target`
+  // declares its schema.
+  if (!required.orEmpty().containsAll(targetRequired)) return false
+  if (targetRequired.any { it in wanted && it !in given }) return false
+  val targetExtras = target.additionalProperties
+  // A key this schema requires must be one a closed target accepts.
+  if (targetExtras == false && required.orEmpty().any { it !in wanted }) return false
+  val targetExtraSchema = target.extraSchema()
+  val sourceExtraSchema = extraSchema()
+  if (
+    sourceExtraSchema != null &&
+      targetExtraSchema != null &&
+      !sourceExtraSchema.fitsInto(targetExtraSchema)
+  ) {
+    return false
+  }
+  return given.all { (name, property) ->
+    val declared = wanted[name]
+    when {
+      declared != null -> property.fitsInto(declared)
+      targetExtras == false -> false
+      else -> targetExtraSchema == null || property.fitsInto(targetExtraSchema)
     }
   }
 }

@@ -276,6 +276,21 @@ class ToolNodeTest {
   }
 
   @Test
+  fun run_literalThatIsNotStrictJson_failsTheNode() {
+    // Arrange
+    val node = ToolNodeEchoTool("mock_tool").asNode()
+
+    // Act
+    val accepted = runToolAfter("""{"enabled": true}""", node)
+    val error =
+      assertFailsWith<IllegalArgumentException> { runToolAfter("""{"enabled": TRUE}""", node) }
+
+    // Assert
+    assertEquals(mapOf("enabled" to true), accepted.outputAt("wf@1/mock_tool@1"))
+    assertContains(error.message.orEmpty(), "but got text that is not a JSON object")
+  }
+
+  @Test
   fun run_jsonScalarText_failsTheNode() {
     // Act
     val error =

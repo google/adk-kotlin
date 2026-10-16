@@ -365,7 +365,7 @@ internal class Scheduler(
       val schema = workflow.outputSchema
       val side = "output of workflow '${workflow.name}'"
       context.output =
-        if (schema == null) output else SchemaUtils.validateValue(output, schema, side).getOrThrow()
+        if (schema == null) output else SchemaUtils.checkedValue(output, schema, side)
       // Validation can read a Content as JSON null, which is no output; the terminal node's raw
       // output then no longer counts for delegating ancestors either.
       val state = context.requireNodeState()
