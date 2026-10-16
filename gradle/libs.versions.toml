@@ -27,6 +27,7 @@ google-mlkit-genai = "1.0.0-beta3"
 google-services = "4.4.4"
 google-truth = "1.4.5"
 gradle-test-retry = "1.6.5"
+jackson = "2.18.3"
 jspecify = "1.0.0"
 junit = "4.13.2"
 kotlin = "2.3.21"
@@ -92,6 +93,7 @@ google-genai-kotlin = { module = "com.google.genai:google-genai-kotlin", version
 google-gson = { module = "com.google.code.gson:gson", version.ref = "google-gson" }
 google-mlkit-genai-prompt = { module = "com.google.mlkit:genai-prompt", version.ref = "google-mlkit-genai" }
 google-truth = { module = "com.google.truth:truth", version.ref = "google-truth" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
 junit = { module = "junit:junit", version.ref = "junit" }
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
