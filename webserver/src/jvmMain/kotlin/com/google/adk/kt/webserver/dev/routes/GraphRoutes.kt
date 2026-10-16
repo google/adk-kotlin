@@ -24,6 +24,7 @@ import com.google.adk.kt.webserver.dev.appGraphOf
 import com.google.adk.kt.webserver.dev.graphNodeOf
 import com.google.adk.kt.webserver.dev.plotGraph
 import com.google.adk.kt.webserver.loaders.ServedApps
+import com.google.adk.kt.webserver.routes.queryBooleanOrNull
 import com.google.adk.kt.workflow.Node
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -201,18 +202,6 @@ private val BUILD_GRAPH_PATHS =
 
 private val BUILD_GRAPH_IMAGE_PATHS =
   listOf("/dev/apps/{appName}/build_graph_image", "/dev/build_graph_image/{appName}")
-
-private val TRUE_QUERY_VALUES = setOf("1", "on", "t", "true", "y", "yes")
-
-private val FALSE_QUERY_VALUES = setOf("0", "off", "f", "false", "n", "no")
-
-/** Parses [value] as a case-insensitive boolean query parameter, or returns null if invalid. */
-private fun queryBooleanOrNull(value: String): Boolean? =
-  when (value.lowercase()) {
-    in TRUE_QUERY_VALUES -> true
-    in FALSE_QUERY_VALUES -> false
-    else -> null
-  }
 
 /**
  * DOT source for one graph, under the `dotSrc` key the Dev UI reads.
