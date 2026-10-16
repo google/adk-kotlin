@@ -578,7 +578,8 @@ class LlmAgentTurnTest {
     // The server already holds a resumed session's history, as ADK Python assumes.
     val connection = RecordingLiveConnection(listOf(turnComplete()))
     val agent = liveAgent(connection)
-    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+    val runConfig =
+      RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")))
     // The caller handle makes a clean close reconnect now, so the caller closes to end the run.
     val queue = LiveRequestQueue()
     queue.close()
@@ -727,7 +728,8 @@ class LlmAgentTurnTest {
     try {
       val connection = RecordingLiveConnection(listOf(turnComplete()))
       val agent = liveAgent(connection)
-      val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+      val runConfig =
+        RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")))
       // The caller handle makes a clean close reconnect now, so the caller closes to end the run.
       val queue = LiveRequestQueue()
       queue.close()
@@ -1305,7 +1307,12 @@ class LlmAgentTurnTest {
             ),
         )
       val runConfig =
-        RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1", transparent = true))
+        RunConfig(
+          live =
+            LiveRunConfig(
+              sessionResumption = SessionResumptionConfig(handle = "h-1", transparent = true)
+            )
+        )
 
       val events = agent.runLive(liveContextFor(agent, runConfig = runConfig)).toList()
 
@@ -1772,7 +1779,10 @@ class LlmAgentTurnTest {
         queue,
         session = sessionService.createSession(key),
         sessionService = sessionService,
-        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+        runConfig =
+          RunConfig(
+            live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+          ),
       )
 
     agent.runLive(context).toList()
@@ -1825,7 +1835,10 @@ class LlmAgentTurnTest {
         queue,
         session = sessionService.createSession(key),
         sessionService = sessionService,
-        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+        runConfig =
+          RunConfig(
+            live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+          ),
       )
 
     agent.runLive(context).toList()
@@ -2232,7 +2245,11 @@ class LlmAgentTurnTest {
       )
     val agent = liveAgent(connection)
     val context =
-      liveContextFor(agent, runConfig = RunConfig(saveLiveBlob = true), artifactService = artifacts)
+      liveContextFor(
+        agent,
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
+        artifactService = artifacts,
+      )
 
     val events = agent.runLive(context).toList()
 
@@ -2251,7 +2268,8 @@ class LlmAgentTurnTest {
       RealtimeInput.Audio(Blob(mimeType = "audio/pcm;rate=16000", data = byteArrayOf(9)))
     )
     queue.close()
-    val context = liveContextFor(agent, queue, runConfig = RunConfig(saveLiveBlob = true))
+    val context =
+      liveContextFor(agent, queue, runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)))
 
     val unused = agent.runLive(context).toList()
 
@@ -2552,7 +2570,8 @@ class LlmAgentTurnTest {
     val connection = RecordingLiveConnection(listOf(turnComplete()))
     val model = RecordingLiveModel(connection)
     val agent = LlmAgent(name = "live_agent", description = "A live agent.", model = model)
-    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+    val runConfig =
+      RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")))
     // The caller handle makes a clean close reconnect now, so the caller closes to end the run.
     val queue = LiveRequestQueue()
     queue.close()
@@ -3256,7 +3275,7 @@ class LlmAgentTurnTest {
       val context =
         liveContextFor(
           agent,
-          runConfig = RunConfig(saveLiveBlob = true),
+          runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
           artifactService = artifacts,
         )
 
@@ -3453,7 +3472,10 @@ class LlmAgentTurnTest {
     val child = LlmAgent(name = "child", description = "c", model = childModel)
     val parentModel = RecordingLiveModel(parentConn)
     val parent = LlmAgent(name = "parent", model = parentModel, subAgents = listOf(child))
-    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "parent-h"))
+    val runConfig =
+      RunConfig(
+        live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "parent-h"))
+      )
 
     parent.runLive(liveContextFor(parent, queue, runConfig = runConfig)).toList()
 
@@ -4487,7 +4509,10 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+        runConfig =
+          RunConfig(
+            live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+          ),
       )
 
     val events = agent.runLive(context).toList()
@@ -4608,7 +4633,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -4643,7 +4668,7 @@ class LlmAgentTurnTest {
       val context =
         liveContextFor(
           agent,
-          runConfig = RunConfig(saveLiveBlob = true),
+          runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
           artifactService = artifacts,
         )
 
@@ -4685,7 +4710,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         parent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -4738,7 +4763,7 @@ class LlmAgentTurnTest {
         liveContextFor(
           parent,
           queue,
-          runConfig = RunConfig(saveLiveBlob = true),
+          runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
           artifactService = artifacts,
         )
 
@@ -4780,7 +4805,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         LiveRequestQueue(),
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = slowArtifactService(),
       )
     var interruptedAt = -1L
@@ -4817,7 +4842,11 @@ class LlmAgentTurnTest {
     val agent =
       LlmAgent(name = "LiveAgent", model = model, afterModelCallbacks = listOf(blockSecret()))
     val context =
-      liveContextFor(agent, runConfig = RunConfig(saveLiveBlob = true), artifactService = artifacts)
+      liveContextFor(
+        agent,
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
+        artifactService = artifacts,
+      )
 
     val events = agent.runLive(context).toList()
 
@@ -4869,7 +4898,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -4922,7 +4951,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -4962,7 +4991,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = store,
       )
 
@@ -4993,7 +5022,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -5037,7 +5066,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -5071,7 +5100,7 @@ class LlmAgentTurnTest {
         liveContextFor(
           agent,
           queue,
-          runConfig = RunConfig(saveLiveBlob = true),
+          runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
           // The caller's audio saves first; the model's save then never finishes.
           artifactService = SaveHookArtifactService(artifacts) { if (it == 1) awaitCancellation() },
         )
@@ -5102,7 +5131,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         LiveRequestQueue(),
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = slowArtifactService(),
       )
     var heardAt = -1L
@@ -5142,8 +5171,11 @@ class LlmAgentTurnTest {
         queue,
         runConfig =
           RunConfig(
-            saveLiveBlob = true,
-            sessionResumption = SessionResumptionConfig(handle = "h-1"),
+            live =
+              LiveRunConfig(
+                saveLiveBlob = true,
+                sessionResumption = SessionResumptionConfig(handle = "h-1"),
+              )
           ),
         artifactService = slowArtifactService(artifacts),
       )
@@ -5184,8 +5216,11 @@ class LlmAgentTurnTest {
         queue,
         runConfig =
           RunConfig(
-            saveLiveBlob = true,
-            sessionResumption = SessionResumptionConfig(handle = "h-1"),
+            live =
+              LiveRunConfig(
+                saveLiveBlob = true,
+                sessionResumption = SessionResumptionConfig(handle = "h-1"),
+              )
           ),
         artifactService = slowArtifactService(artifacts),
       )
@@ -5218,7 +5253,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -5251,7 +5286,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = hungArtifactService(),
       )
 
@@ -5281,7 +5316,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         // The first save is the slow one, so finishing order alone would put it second.
         artifactService = slowArtifactService(artifacts, listOf(1_500, 100)),
       )
@@ -5319,7 +5354,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         parent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = slowArtifactService(),
       )
 
@@ -5360,7 +5395,7 @@ class LlmAgentTurnTest {
         liveContextFor(
           agent,
           queue,
-          runConfig = RunConfig(saveLiveBlob = true),
+          runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
           artifactService = uncancellableHungArtifactService(),
         )
 
@@ -5390,7 +5425,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = uncancellableHungArtifactService(),
       )
 
@@ -5427,7 +5462,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         parent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = hungArtifactService(),
       )
 
@@ -5455,7 +5490,7 @@ class LlmAgentTurnTest {
     val context =
       liveContextFor(
         agent,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = hungArtifactService(),
       )
 
@@ -5496,7 +5531,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         parent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = SaveHookArtifactService(artifacts) { if (it == 0) awaitCancellation() },
       )
 
@@ -5533,7 +5568,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = hungArtifactService(),
       )
 
@@ -5567,7 +5602,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = SaveHookArtifactService(artifacts) { if (it == 0) awaitCancellation() },
       )
 
@@ -5605,7 +5640,7 @@ class LlmAgentTurnTest {
         liveContextFor(
           agent,
           queue,
-          runConfig = RunConfig(saveLiveBlob = true),
+          runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
           artifactService = SaveHookArtifactService(artifacts) { if (it == 1) awaitCancellation() },
         )
 
@@ -5654,7 +5689,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         parent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = hungArtifactService(),
       )
 
@@ -5693,7 +5728,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         parent,
         queue,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = slowArtifactService(artifacts, listOf(6_000, 0)),
       )
 
@@ -5720,7 +5755,7 @@ class LlmAgentTurnTest {
       liveContextFor(
         agent,
         LiveRequestQueue(),
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = slowArtifactService(),
       )
 
@@ -5763,7 +5798,7 @@ class LlmAgentTurnTest {
     val context =
       liveContextFor(
         sequence,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = SaveHookArtifactService(artifacts) { if (it == 0) awaitCancellation() },
       )
 
@@ -5806,7 +5841,7 @@ class LlmAgentTurnTest {
     val context =
       liveContextFor(
         sequence,
-        runConfig = RunConfig(saveLiveBlob = true),
+        runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
         artifactService = artifacts,
       )
 
@@ -5858,7 +5893,7 @@ class LlmAgentTurnTest {
       val context =
         liveContextFor(
           sequence,
-          runConfig = RunConfig(saveLiveBlob = true),
+          runConfig = RunConfig(live = LiveRunConfig(saveLiveBlob = true)),
           artifactService = artifacts,
         )
 
@@ -5927,8 +5962,11 @@ class LlmAgentTurnTest {
         queue,
         runConfig =
           RunConfig(
-            saveLiveBlob = true,
-            sessionResumption = SessionResumptionConfig(handle = "h-1"),
+            live =
+              LiveRunConfig(
+                saveLiveBlob = true,
+                sessionResumption = SessionResumptionConfig(handle = "h-1"),
+              )
           ),
         artifactService = artifacts,
       )
@@ -6418,7 +6456,10 @@ class LlmAgentTurnTest {
         subAgents = listOf(sequentialStep("step1", step1Model), sequentialStep("step2", step2Model)),
       )
     // The caller's handle names the caller's own session, so no step may resume from it.
-    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-caller"))
+    val runConfig =
+      RunConfig(
+        live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-caller"))
+      )
 
     sequence.runLive(liveContextFor(sequence, runConfig = runConfig)).toList()
 
@@ -7571,7 +7612,8 @@ class LlmAgentTurnTest {
     // An empty handle names no session to resume, so the run starts fresh and sends history.
     val connection = RecordingLiveConnection(listOf(turnComplete()))
     val agent = liveAgent(connection)
-    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = ""))
+    val runConfig =
+      RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "")))
 
     agent
       .runLive(liveContextFor(agent, session = sessionWithEarlierMessage(), runConfig = runConfig))
@@ -7685,7 +7727,8 @@ class LlmAgentTurnTest {
           flow {}
       }
     val agent = LlmAgent(name = "live_agent", model = model)
-    val runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+    val runConfig =
+      RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")))
 
     val outcome = runCatching {
       agent.runLive(liveContextFor(agent, queue, runConfig = runConfig)).toList()
@@ -7724,7 +7767,10 @@ class LlmAgentTurnTest {
         queue,
         session = sessionService.createSession(key),
         sessionService = sessionService,
-        runConfig = RunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1")),
+        runConfig =
+          RunConfig(
+            live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-1"))
+          ),
       )
 
     agent.runLive(context).toList()
