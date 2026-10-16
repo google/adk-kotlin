@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.BeforeToolCallbacksResult
@@ -930,6 +931,17 @@ data class ContextFrameworkData(
   @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
 
   /**
+   * Live audio the caller has sent since the last flush.
+   *
+   * Filled only through [AudioCacheManager], when [LiveRunConfig.saveLiveBlob] is set. It lives on
+   * the context rather than in the manager, so a turn restarted on a new connection keeps one
+   * recording; a transfer or a completed step saves it before the next agent runs.
+   */
+  internal val inputRealtimeCache: RealtimeCache = RealtimeCache()
+  /** The audio the model has spoken since the last flush. See [inputRealtimeCache]. */
+  internal val outputRealtimeCache: RealtimeCache = RealtimeCache()
+
+  /**
    * Serializes a live run's appends to [InvocationContext.session] (contexts made with
    * [InvocationContext.copy] share this lock). The turn and its caller both append to that same
    * object under it, because a session service can reject overlapping appends. Never emit while
@@ -951,8 +963,9 @@ data class ContextFrameworkData(
  * `@JvmSynthetic` hides the top-level internal function from Java callers.
  */
 @JvmSynthetic
+@OptIn(ExperimentalLiveApi::class)
 internal fun RunConfig.forNewLiveSession(): RunConfig =
-  copy(sessionResumption = sessionResumption?.copy(handle = null))
+  copy(live = live.copy(sessionResumption = live.sessionResumption?.copy(handle = null)))
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

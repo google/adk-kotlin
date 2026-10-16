@@ -18,7 +18,9 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
+import com.google.adk.kt.agents.LiveRunConfig
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LoopAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
@@ -166,7 +168,7 @@ class BasicRequestProcessorTest {
   @OptIn(ExperimentalLiveApi::class)
   @Test
   fun run_withOutputSchemaAndAWorkflowSubAgentOnALiveRun_setsResponseSchema() = runBlocking {
-    // A workflow sub-agent is not offered live, so the schema applies directly without a tool.
+    // A LoopAgent has no live run, so it is not offered and the schema applies directly.
     val agent =
       LlmAgent(
         name = "parent",
@@ -174,7 +176,7 @@ class BasicRequestProcessorTest {
         outputSchema = outputSchema,
         subAgents =
           listOf(
-            SequentialAgent(
+            LoopAgent(
               name = "workflow",
               subAgents = listOf(LlmAgent(name = "step", model = DummyModel("gemini-2.0-flash"))),
             )
@@ -189,6 +191,24 @@ class BasicRequestProcessorTest {
 
     assertEquals(outputSchema, request.config.responseSchema)
     assertEquals("application/json", request.config.responseMimeType)
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun run_withOutputSchemaOnALiveSequentialStep_doesNotSetResponseSchema() = runBlocking {
+    // A live step is offered task_completed, which Gemini 2.x can't combine with a response schema.
+    val step =
+      LlmAgent(name = "step", model = DummyModel("gemini-2.0-flash"), outputSchema = outputSchema)
+    val unused = SequentialAgent(name = "workflow", subAgents = listOf(step))
+    val context =
+      InvocationContext(session = testSession(), runConfig = null, agent = step).apply {
+        frameworkData.liveRequestQueue = LiveRequestQueue()
+      }
+
+    val request = BasicRequestProcessor().process(context, LlmRequest())
+
+    assertNull(request.config.responseSchema)
+    assertNull(request.config.responseMimeType)
   }
 
   @Test
@@ -222,10 +242,11 @@ class BasicRequestProcessorTest {
     assertEquals(AudioTranscriptionConfig(), request.liveConnectConfig.inputAudioTranscription)
   }
 
+  @OptIn(ExperimentalLiveApi::class)
   @Test
   fun run_withPopulatedRunConfig_copiesEveryLiveField() = runBlocking {
-    val runConfig =
-      RunConfig(
+    val settings =
+      LiveRunConfig(
         responseModalities = listOf(Modality.AUDIO),
         speechConfig = SpeechConfig(languageCode = "en-US"),
         outputAudioTranscription = AudioTranscriptionConfig(languageCodes = listOf("en-US")),
@@ -239,29 +260,31 @@ class BasicRequestProcessorTest {
         sessionResumption = SessionResumptionConfig(handle = "resumption-handle"),
         contextWindowCompression = ContextWindowCompressionConfig(triggerTokens = 1024L),
       )
+    val runConfig = RunConfig(live = settings)
     val agent = LlmAgent(name = "test", model = DummyModel("gemini-2.0-flash-live"))
     val context = InvocationContext(session = testSession(), runConfig = runConfig, agent = agent)
 
     val live = BasicRequestProcessor().process(context, LlmRequest()).liveConnectConfig
 
-    assertEquals(runConfig.responseModalities, live.responseModalities)
-    assertEquals(runConfig.speechConfig, live.speechConfig)
-    assertEquals(runConfig.outputAudioTranscription, live.outputAudioTranscription)
-    assertEquals(runConfig.inputAudioTranscription, live.inputAudioTranscription)
-    assertEquals(runConfig.realtimeInputConfig, live.realtimeInputConfig)
-    assertEquals(runConfig.explicitVadSignal, live.explicitVadSignal)
-    assertEquals(runConfig.translationConfig, live.translationConfig)
-    assertEquals(runConfig.enableAffectiveDialog, live.enableAffectiveDialog)
-    assertEquals(runConfig.proactivity, live.proactivity)
-    assertEquals(runConfig.sessionResumption, live.sessionResumption)
-    assertEquals(runConfig.contextWindowCompression, live.contextWindowCompression)
+    assertEquals(settings.responseModalities, live.responseModalities)
+    assertEquals(settings.speechConfig, live.speechConfig)
+    assertEquals(settings.outputAudioTranscription, live.outputAudioTranscription)
+    assertEquals(settings.inputAudioTranscription, live.inputAudioTranscription)
+    assertEquals(settings.realtimeInputConfig, live.realtimeInputConfig)
+    assertEquals(settings.explicitVadSignal, live.explicitVadSignal)
+    assertEquals(settings.translationConfig, live.translationConfig)
+    assertEquals(settings.enableAffectiveDialog, live.enableAffectiveDialog)
+    assertEquals(settings.proactivity, live.proactivity)
+    assertEquals(settings.sessionResumption, live.sessionResumption)
+    assertEquals(settings.contextWindowCompression, live.contextWindowCompression)
   }
 
+  @OptIn(ExperimentalLiveApi::class)
   @Test
   fun run_withAnyLiveModel_passesRequestedResponseModalitiesThrough() = runBlocking {
     // As in ADK Python: the list is passed through on every model, so a model that cannot answer in
     // text refuses the setup instead of silently answering in audio.
-    val runConfig = RunConfig(responseModalities = listOf(Modality.TEXT))
+    val runConfig = RunConfig(live = LiveRunConfig(responseModalities = listOf(Modality.TEXT)))
     val agent = LlmAgent(name = "test", model = DummyModel(MODEL))
     val context = InvocationContext(session = testSession(), runConfig = runConfig, agent = agent)
 
@@ -280,10 +303,11 @@ class BasicRequestProcessorTest {
     assertEquals(LiveConnectConfig(), request.liveConnectConfig)
   }
 
+  @OptIn(ExperimentalLiveApi::class)
   @Test
   fun run_withAnyLiveModel_leavesEmptyResponseModalitiesUnset() = runBlocking {
     // Empty means no preference, so it stays unset; the server's audio default applies.
-    val runConfig = RunConfig(responseModalities = emptyList())
+    val runConfig = RunConfig(live = LiveRunConfig(responseModalities = emptyList()))
     val agent = LlmAgent(name = "test", model = DummyModel("gemini-3.0-flash-live-preview"))
     val context = InvocationContext(session = testSession(), runConfig = runConfig, agent = agent)
 

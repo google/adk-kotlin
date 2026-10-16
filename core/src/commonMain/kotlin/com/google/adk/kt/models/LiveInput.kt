@@ -88,3 +88,9 @@ sealed interface RealtimeInput : LiveInput {
    */
   @ExperimentalLiveApi data object AudioStreamEnd : RealtimeInput
 }
+
+/**
+ * The format assumed for live audio input that has no mime type: 16-bit PCM at 16 kHz, as
+ * [RealtimeInput.Audio] describes. ADK Go defaults to plain `audio/pcm`.
+ */
+internal const val DEFAULT_AUDIO_INPUT_MIME_TYPE = "audio/pcm;rate=16000"
