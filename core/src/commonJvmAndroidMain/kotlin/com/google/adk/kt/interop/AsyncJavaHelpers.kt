@@ -17,14 +17,20 @@
 package com.google.adk.kt.interop
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.runners.EarlyStopOnCancellation
 import com.google.errorprone.annotations.CheckReturnValue
 import java.util.concurrent.CompletableFuture
 import java.util.function.Consumer
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow as asFlowFromIterable
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.future.future
+import kotlinx.coroutines.job
 import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactive.asPublisher
 import kotlinx.coroutines.runBlocking
@@ -99,13 +105,16 @@ object AsyncJavaHelpers {
   }
 
   /**
-   * Exposes [flow] as a [Publisher]. Elements must be non-null; Reactive Streams forbids null. For
+   * Exposes [flow] as a [Publisher] of non-null elements, since Reactive Streams forbids null; for
    * a single value, use [async] and `Mono.fromFuture(...)` instead.
+   *
+   * Canceling the subscription to a runner's events is an early stop, so afterRun plugin callbacks
+   * still run, as with [PublisherRunner.runAsync].
    */
   @AdkJavaInteropApi
   @CheckReturnValue
   @JvmStatic
-  fun <T : Any> asPublisher(flow: Flow<T>): Publisher<T> = flow.asPublisher()
+  fun <T : Any> asPublisher(flow: Flow<T>): Publisher<T> = flow.asEarlyStopPublisher()
 
   /** Adapts [publisher] to a [Flow], for feeding an Rx or Reactor source into the ADK. */
   @AdkJavaInteropApi
@@ -123,4 +132,12 @@ object AsyncJavaHelpers {
   @JvmStatic
   fun <T : Any> publisherOf(items: Iterable<T>): Publisher<T> =
     items.asFlowFromIterable().asPublisher()
+}
+
+/** Exposes [this] as a [Publisher] whose canceled subscription a runner treats as an early stop. */
+internal fun <T : Any> Flow<T>.asEarlyStopPublisher(): Publisher<T> {
+  val upstream = this
+  // flowOn without a dispatcher keeps the run in the subscription's coroutine and job.
+  return flow { emitAll(upstream.flowOn(EarlyStopOnCancellation(currentCoroutineContext().job))) }
+    .asPublisher()
 }

@@ -54,6 +54,10 @@ interface Runner : AutoCloseable {
   /**
    * Main entry method to run the agent in this runner asynchronously.
    *
+   * Stopping early, for example with `first()`, still runs the afterRun plugin callbacks. If
+   * `buffer()` or `flowOn(<dispatcher>)` runs the flow in another coroutine, stopping early cancels
+   * the run instead, which skips them.
+   *
    * @param userId The user ID of the session.
    * @param sessionId The session ID of the session.
    * @param invocationId The invocation ID of the session, set this to resume an interrupted

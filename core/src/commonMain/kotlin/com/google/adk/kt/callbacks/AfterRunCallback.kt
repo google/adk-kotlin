@@ -18,10 +18,12 @@ package com.google.adk.kt.callbacks
 
 import com.google.adk.kt.agents.InvocationContext
 
-/** Callback executed after an ADK runner run has completed. */
+/**
+ * Callback executed after an ADK runner run has completed or its caller stopped collecting early.
+ */
 interface AfterRunCallback : Callback {
   /**
-   * Invoked after the runner run has finished.
+   * Invoked after the runner run has finished, or after the caller stopped collecting early.
    *
    * @param invocationContext The context for the entire invocation.
    */

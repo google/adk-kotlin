@@ -82,24 +82,28 @@ interface Plugin : AutoCloseable {
   suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event = event
 
   /**
-   * Callback executed after the ADK runner completes its execution.
+   * Callback executed after the ADK runner completes its execution, or after the caller stops
+   * collecting early (for example `first()`, `take(n)` or a canceled `PublisherRunner`
+   * subscription) or its collector throws.
    *
-   * Ideal for final logging, telemetry reporting, or cleanup after a successful or failed run.
+   * It does not run when the run fails (see [onRunError]) or is canceled in any other way. If it
+   * fails after the caller stopped, the failure goes to [onRunError] instead of being thrown.
    *
    * @param invocationContext The context for the entire invocation.
    */
   suspend fun afterRun(invocationContext: InvocationContext) {}
 
   /**
-   * Callback executed when an unhandled error escapes the ADK runner run.
+   * Callback executed when the ADK runner run fails, or when [afterRun] fails after the caller
+   * stopped collecting early.
    *
-   * Notification-only: the error is always re-raised to the caller after every plugin has been
-   * notified, so this hook is for logging, telemetry, or cleanup, not recovery. It must not attempt
-   * to suppress the error, and a failure thrown from it is logged and does not stop the remaining
-   * plugins from being notified.
+   * Notification-only, for logging, telemetry, or cleanup: the run's error is re-raised to the
+   * caller once every plugin has been notified, but an [afterRun] failure after an early stop is
+   * not. A failure thrown from this hook is logged and does not stop the remaining plugins from
+   * being notified.
    *
    * @param invocationContext The context for the entire invocation.
-   * @param error The error that escaped the run.
+   * @param error The run's error, or the [afterRun] failure.
    */
   suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {}
 

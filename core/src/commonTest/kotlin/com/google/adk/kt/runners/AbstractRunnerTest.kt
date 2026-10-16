@@ -34,8 +34,10 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
+import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -65,12 +67,20 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 
 class AbstractRunnerTest {
 
@@ -191,9 +201,14 @@ class AbstractRunnerTest {
         override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow { throw failure }
       }
     var captured: Throwable? = null
+    var afterRuns = 0
     val recordingPlugin =
       object : Plugin {
         override val name = "error_recording_plugin"
+
+        override suspend fun afterRun(invocationContext: InvocationContext) {
+          afterRuns++
+        }
 
         override suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {
           captured = error
@@ -212,6 +227,7 @@ class AbstractRunnerTest {
     // The original error is re-raised unchanged, and the plugin was notified with that same error.
     assertEquals("boom", thrown.message)
     assertSame(failure, captured)
+    assertEquals(0, afterRuns)
   }
 
   @Test
@@ -261,7 +277,7 @@ class AbstractRunnerTest {
   }
 
   @Test
-  fun runAsync_downstreamCollectorFailure_doesNotNotifyOnRunError() = runTest {
+  fun runAsync_downstreamCollectorFailure_runsAfterRunWithoutNotifyingOnRunError() = runTest {
     // Parity with ADK Python (source of truth): onRunError covers the run itself, not a failure in
     // the caller's collector. A downstream collector exception must propagate without being
     // reported to plugins as a run error.
@@ -272,9 +288,14 @@ class AbstractRunnerTest {
         }
       }
     var notified = false
+    var afterRuns = 0
     val recordingPlugin =
       object : Plugin {
         override val name = "error_recording_plugin"
+
+        override suspend fun afterRun(invocationContext: InvocationContext) {
+          afterRuns++
+        }
 
         override suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {
           notified = true
@@ -295,6 +316,7 @@ class AbstractRunnerTest {
 
     assertSame(collectorFailure, thrown)
     assertFalse(notified, "a downstream collector failure must not trigger onRunError")
+    assertEquals(1, afterRuns)
   }
 
   @Test
@@ -366,6 +388,329 @@ class AbstractRunnerTest {
   }
 
   @Test
+  fun runAsync_collectorTakesTheFirstEvent_runsAfterRunOnce() = runBlocking {
+    // A caller that stops early ends the run cleanly, as ADK Python does on GeneratorExit.
+    val plugin = AfterRunRecorder()
+
+    val first = runnerWith(emitter(), plugin).runAsync("user", "s", newMessage = go()).first()
+
+    assertEquals("e0", first.content?.parts?.single()?.text)
+    assertEquals(1, plugin.afterRuns)
+    assertEquals(emptyList(), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_collectorTakesSomeEvents_runsAfterRunOnce() = runBlocking {
+    val plugin = AfterRunRecorder()
+
+    val events =
+      runnerWith(emitter(), plugin).runAsync("user", "s", newMessage = go()).take(2).toList()
+
+    assertEquals(2, events.size)
+    assertEquals(1, plugin.afterRuns)
+    assertEquals(emptyList(), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_collectorTakesTheBeforeRunEvent_runsAfterRunOnce() = runBlocking {
+    val plugin = AfterRunRecorder(beforeRunContent = modelMessage("halted"))
+
+    val first = runnerWith(emitter(), plugin).runAsync("user", "s", newMessage = go()).first()
+
+    assertEquals("halted", first.content?.parts?.single()?.text)
+    assertEquals(1, plugin.afterRuns)
+    assertEquals(emptyList(), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_collectorThrowsThroughAChannelInTheAgent_runsAfterRunOnce() = runBlocking {
+    // Crossing the agent's channel, coroutines may rethrow a copy of the caller's exception.
+    val plugin = AfterRunRecorder()
+    val agent =
+      DummyAgent("emitter") { context ->
+        emitAll(channelFlow { repeat(3) { i -> send(emitterEvent(context, "e$i")) } })
+      }
+
+    val thrown =
+      assertFailsWith<IllegalStateException> {
+        runnerWith(agent, plugin).runAsync("user", "s", newMessage = go()).collect {
+          throw IllegalStateException("caller boom", IllegalStateException("inner"))
+        }
+      }
+
+    assertEquals("caller boom", thrown.message)
+    assertEquals(1, plugin.afterRuns)
+    assertEquals(emptyList(), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_agentWrapsTheCallersException_skipsAfterRunAndNotifiesOnRunError() = runBlocking {
+    // A wrapper the agent throws replaces the caller's exception, so the run failed.
+    val plugin = AfterRunRecorder()
+    val agent =
+      DummyAgent("emitter") { context ->
+        try {
+          emit(emitterEvent(context, "e0"))
+        } catch (e: IllegalStateException) {
+          throw IllegalStateException(e)
+        }
+      }
+
+    val callerFailure = IllegalStateException("caller boom")
+    val thrown =
+      assertFailsWith<IllegalStateException> {
+        runnerWith(agent, plugin).runAsync("user", "s", newMessage = go()).collect {
+          throw callerFailure
+        }
+      }
+
+    assertSame(callerFailure, thrown.cause)
+    assertSame(callerFailure, thrown.suppressedExceptions.single())
+    assertEquals(0, plugin.afterRuns)
+    assertEquals(listOf<Throwable>(thrown), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_agentCleanupFailsAfterAnEarlyStop_skipsAfterRunAndNotifiesOnRunError() =
+    runBlocking {
+      // A failure that replaces the caller's stop is a failed run, as in ADK Python.
+      val cleanupFailure = IllegalStateException("cleanup boom")
+      val plugin = AfterRunRecorder()
+      val agent =
+        DummyAgent("emitter") { context ->
+          try {
+            emit(emitterEvent(context, "e0"))
+            emit(emitterEvent(context, "e1"))
+          } finally {
+            throw cleanupFailure
+          }
+        }
+
+      val thrown =
+        assertFailsWith<IllegalStateException> {
+          runnerWith(agent, plugin).runAsync("user", "s", newMessage = go()).first()
+        }
+
+      assertSame(cleanupFailure, thrown)
+      assertEquals(0, plugin.afterRuns)
+      assertEquals(listOf<Throwable>(cleanupFailure), plugin.runErrors)
+    }
+
+  @Test
+  fun runAsync_collectingScopeCanceled_skipsAfterRun() = runBlocking {
+    // Unlike ADK Python, a cancel in the caller's collector skips afterRun, so it holds up nothing.
+    val plugin = AfterRunRecorder()
+    val runner = runnerWith(emitter(), plugin)
+
+    // yield() throws the cancellation out of emit, so the runner must tell it apart from a stop.
+    launch {
+        runner.runAsync("user", "s", newMessage = go()).collect {
+          cancel()
+          yield()
+        }
+      }
+      .join()
+
+    assertEquals(0, plugin.afterRuns)
+    assertEquals(emptyList(), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_collectorThrowsAfterTheScopeIsCanceled_skipsAfterRun() = runBlocking {
+    // The cancellation came first, so the caller's exception does not make it a stop.
+    val plugin = AfterRunRecorder()
+    val runner = runnerWith(emitter(), plugin)
+    var thrown: Throwable? = null
+
+    launch {
+        try {
+          runner.runAsync("user", "s", newMessage = go()).collect {
+            cancel()
+            throw IllegalStateException("caller boom")
+          }
+        } catch (e: IllegalStateException) {
+          thrown = e
+        }
+      }
+      .join()
+
+    assertEquals("caller boom", thrown?.message)
+    assertEquals(0, plugin.afterRuns)
+    assertEquals(emptyList(), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_scopeCanceledDuringAfterRunAfterAStop_cutsAfterRunShort() = runBlocking {
+    // As in ADK Python, a cancel interrupts afterRun after a stop; unlike Python, the caller keeps
+    // its exception.
+    var collecting: Job? = null
+    val plugin =
+      AfterRunRecorder(
+        onAfterRun = {
+          collecting?.cancel()
+          yield()
+        }
+      )
+    val runner = runnerWith(emitter(), plugin)
+    var thrown: Throwable? = null
+
+    collecting = launch {
+      try {
+        runner.runAsync("user", "s", newMessage = go()).collect {
+          throw IllegalStateException("caller boom")
+        }
+      } catch (e: IllegalStateException) {
+        thrown = e
+      }
+    }
+    collecting.join()
+
+    assertEquals("caller boom", thrown?.message)
+    assertEquals(0, plugin.afterRuns)
+  }
+
+  @Test
+  fun runAsync_afterRunFailsWhileTheScopeIsCanceled_notifiesOnRunError() = runBlocking {
+    val failure = IllegalStateException("after boom")
+    var collecting: Job? = null
+    val plugin = AfterRunRecorder(afterRunFailure = failure, onAfterRun = { collecting?.cancel() })
+    val runner = runnerWith(emitter(), plugin)
+    var thrown: Throwable? = null
+
+    collecting = launch {
+      try {
+        runner.runAsync("user", "s", newMessage = go()).collect {}
+      } catch (e: IllegalStateException) {
+        thrown = e
+      }
+    }
+    collecting.join()
+
+    assertSame(failure, thrown)
+    assertEquals(listOf<Throwable>(failure), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_agentCleanupFailsAfterTheScopeIsCanceled_notifiesOnRunError() = runBlocking {
+    // A failure that replaces a cancellation is a failed run too, as in ADK Python.
+    val cleanupFailure = IllegalStateException("cleanup boom")
+    val plugin = AfterRunRecorder()
+    val agent =
+      DummyAgent("emitter") { context ->
+        try {
+          emit(emitterEvent(context, "e0"))
+          emit(emitterEvent(context, "e1"))
+        } finally {
+          throw cleanupFailure
+        }
+      }
+    // Its flush would throw in the canceled run, so the runner must not flush after the failure.
+    val runner =
+      InMemoryRunner(
+        app = App(appName = "app", rootAgent = agent, plugins = listOf(plugin)),
+        sessionService = SuspendingFlushSessionService(),
+      )
+    var thrown: Throwable? = null
+
+    launch {
+        try {
+          runner.runAsync("user", "s", newMessage = go()).collect {
+            cancel()
+            yield()
+          }
+        } catch (e: IllegalStateException) {
+          thrown = e
+        }
+      }
+      .join()
+
+    assertSame(cleanupFailure, thrown)
+    assertEquals(0, plugin.afterRuns)
+    assertEquals(listOf<Throwable>(cleanupFailure), plugin.runErrors)
+  }
+
+  @Test
+  fun runAsync_completes_runsAfterRunOnce() = runBlocking {
+    val plugin = AfterRunRecorder()
+
+    val events = runnerWith(emitter(), plugin).runAsync("user", "s", newMessage = go()).toList()
+
+    assertEquals(3, events.size)
+    assertEquals(1, plugin.afterRuns)
+  }
+
+  @Test
+  fun runAsync_afterRunFailsAfterAnEarlyStop_notifiesOnRunErrorWithoutMaskingTheStop() =
+    runBlocking {
+      val failure = IllegalStateException("after boom")
+      val plugin = AfterRunRecorder(afterRunFailure = failure)
+
+      val first = runnerWith(emitter(), plugin).runAsync("user", "s", newMessage = go()).first()
+
+      assertEquals("e0", first.content?.parts?.single()?.text)
+      assertEquals(listOf<Throwable>(failure), plugin.runErrors)
+    }
+
+  @Test
+  fun runAsync_afterRunThrowsCancellationAfterAnEarlyStop_keepsTheStop() = runBlocking {
+    val plugin = AfterRunRecorder(afterRunFailure = CancellationException("plugin canceled"))
+
+    val first = runnerWith(emitter(), plugin).runAsync("user", "s", newMessage = go()).first()
+
+    assertEquals("e0", first.content?.parts?.single()?.text)
+    assertEquals(emptyList(), plugin.runErrors)
+  }
+
+  /** A session service whose flush suspends, so it throws in a canceled coroutine. */
+  private class SuspendingFlushSessionService : SessionService by InMemorySessionService() {
+    override suspend fun flush(key: SessionKey?) {
+      yield()
+    }
+  }
+
+  /**
+   * Counts afterRun calls and records onRunError errors, which it gets only after suspending.
+   * beforeRun ends the run with [beforeRunContent]; afterRun calls [onAfterRun] before counting.
+   */
+  private class AfterRunRecorder(
+    private val afterRunFailure: Throwable? = null,
+    private val beforeRunContent: Content? = null,
+    private val onAfterRun: suspend () -> Unit = {},
+  ) : Plugin {
+    override val name = "after_run_recorder"
+    var afterRuns = 0
+    val runErrors = mutableListOf<Throwable>()
+
+    override suspend fun beforeRun(
+      invocationContext: InvocationContext
+    ): CallbackChoice<Unit, Content> =
+      beforeRunContent?.let { CallbackChoice.Break(it) } ?: CallbackChoice.Continue(Unit)
+
+    override suspend fun afterRun(invocationContext: InvocationContext) {
+      onAfterRun()
+      afterRuns++
+      if (afterRunFailure != null) throw afterRunFailure
+    }
+
+    override suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {
+      yield()
+      runErrors += error
+    }
+  }
+
+  /** An agent that emits "e0", "e1" and "e2". */
+  private fun emitter(): DummyAgent =
+    DummyAgent("emitter") { context -> repeat(3) { i -> emit(emitterEvent(context, "e$i")) } }
+
+  private fun emitterEvent(context: InvocationContext, text: String) =
+    Event(invocationId = context.invocationId, author = "emitter", content = modelMessage(text))
+
+  private fun runnerWith(agent: BaseAgent, plugin: Plugin) =
+    InMemoryRunner(App(appName = "app", rootAgent = agent, plugins = listOf(plugin)))
+
+  private fun go() = userMessage("go")
+
+  @Test
   fun runAsync_whenRunCancelled_doesNotNotifyOnRunError() = runTest {
     // The run's error catch explicitly excludes CancellationException, so a cancelled run
     // propagates unchanged and never reaches onRunError, which is for genuine run failures only.
@@ -376,9 +721,14 @@ class AbstractRunnerTest {
         }
       }
     var notified = false
+    var afterRuns = 0
     val recordingPlugin =
       object : Plugin {
         override val name = "error_recording_plugin"
+
+        override suspend fun afterRun(invocationContext: InvocationContext) {
+          afterRuns++
+        }
 
         override suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {
           notified = true
@@ -396,6 +746,7 @@ class AbstractRunnerTest {
 
     assertEquals("run cancelled", thrown.message)
     assertFalse(notified, "a cancelled run must not trigger onRunError")
+    assertEquals(0, afterRuns)
   }
 
   @Test

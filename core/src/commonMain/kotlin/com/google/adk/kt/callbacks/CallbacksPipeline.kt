@@ -235,7 +235,7 @@ internal suspend fun runAfterRunCallbacksPipeline(
  *
  * Notification-only and best-effort: every callback is invoked in order regardless of return value,
  * and a callback that throws is logged and skipped so the remaining callbacks still run. The error
- * being reported is never suppressed here; the caller re-raises it after this pipeline returns.
+ * being reported is never suppressed here; the caller decides whether to re-raise it.
  */
 internal suspend fun runOnRunErrorCallbacksPipeline(
   callbacks: Iterable<OnRunErrorCallback>,

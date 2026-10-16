@@ -18,14 +18,15 @@ package com.google.adk.kt.callbacks
 
 import com.google.adk.kt.agents.InvocationContext
 
-/** Callback executed when an unhandled error escapes an ADK runner run. */
+/** Callback executed when an ADK runner run fails. */
 interface OnRunErrorCallback : Callback {
   /**
-   * Invoked when the run failed, before the error is re-raised to the caller. Notification-only:
-   * the error always propagates regardless of what this callback does.
+   * Invoked when the run fails, before the error is re-raised, and when afterRun fails after the
+   * caller stopped collecting early; that failure is not raised. Notification-only: what this
+   * callback does never changes whether the error propagates.
    *
    * @param invocationContext The context for the entire invocation.
-   * @param error The error that escaped the run.
+   * @param error The run's error, or the afterRun failure.
    */
   suspend fun call(invocationContext: InvocationContext, error: Throwable)
 

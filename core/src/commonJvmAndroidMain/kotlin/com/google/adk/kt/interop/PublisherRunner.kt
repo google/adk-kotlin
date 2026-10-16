@@ -31,7 +31,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.future.future
-import kotlinx.coroutines.reactive.asPublisher
 import org.reactivestreams.Publisher
 
 /**
@@ -55,6 +54,9 @@ class PublisherRunner private constructor(private val delegate: Runner) : AutoCl
 
   /**
    * Runs the agent, streaming its events. Set [invocationId] to resume an interrupted invocation.
+   *
+   * Canceling the subscription before the last event is an early stop: afterRun plugin callbacks
+   * still run, may start on the thread that calls `cancel()`, and may finish after it returns.
    */
   @JvmOverloads
   fun runAsync(
@@ -74,7 +76,7 @@ class PublisherRunner private constructor(private val delegate: Runner) : AutoCl
         stateDelta = stateDelta,
         runConfig = runConfig,
       )
-      .asPublisher()
+      .asEarlyStopPublisher()
 
   /**
    * Rewinds the session to before [rewindBeforeInvocationId]; see [Runner.rewindAsync]. The

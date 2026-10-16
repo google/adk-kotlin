@@ -153,7 +153,10 @@ abstract class BaseFuturePlugin(private val pluginName: String) : Plugin {
   protected open fun afterRunAsync(invocationContext: InvocationContext): CompletableFuture<Void?> =
     CompletableFuture.completedFuture(null)
 
-  /** Observe a run that failed with [error]; notification-only, the error still propagates. */
+  /**
+   * Observe a run that failed with [error], or an afterRun failure after the caller stopped early;
+   * notification-only, so it cannot change whether [error] is raised.
+   */
   protected open fun onRunErrorAsync(
     invocationContext: InvocationContext,
     error: Throwable,

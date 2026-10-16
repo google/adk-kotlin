@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.ParallelAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.findAgent
@@ -59,14 +60,22 @@ import com.google.adk.kt.workflow.NodeRunner
 import com.google.adk.kt.workflow.ToolNode
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.findUserMessageForInvocation
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 /** An abstract base class for [Runner] implementations that provides common orchestration logic. */
 abstract class AbstractRunner : Runner {
@@ -156,10 +165,9 @@ abstract class AbstractRunner : Runner {
    * Main entry method to run the agent in this runner.
    *
    * Flushes [sessionService] after appending each final response and before emitting it, and when
-   * the run completes or fails with an exception, but not when it is canceled (including by a
-   * collector that stops early) or fails with an [Error]. A failed flush is thrown, or attached as
-   * suppressed if the run already failed; an end-of-run flush can fail only after the last event
-   * was emitted.
+   * the run completes or fails with an exception, but not when it is canceled, its collector stops
+   * early, or it fails with an [Error]. A failed flush is thrown, or attached as suppressed if the
+   * run already failed; an end-of-run flush can fail only after the last event was emitted.
    *
    * @param userId The user ID of the session.
    * @param sessionId The session ID of the session.
@@ -191,7 +199,8 @@ abstract class AbstractRunner : Runner {
         } catch (e: CancellationException) {
           throw e
         } catch (e: Exception) {
-          flushAfterFailure(session.key, e)
+          // In a canceled run a suspending flush would throw, replacing the failure.
+          if (currentCoroutineContext().isActive) flushAfterFailure(session.key, e)
           throw e
         }
         // Like compaction, a failed flush here is not a run error, so plugins are not notified.
@@ -218,20 +227,10 @@ abstract class AbstractRunner : Runner {
       return
     }
 
-    // `catch` sees only failures from the run itself (upstream), not a downstream collector error
-    // or cancellation, then re-raises unchanged after notifying plugins. Mirrors ADK Python
-    // `on_run_error_callback` (`_exec_with_plugin`) and ADK Java `onRunErrorCallback`:
-    // notification-only, the error is never suppressed.
-    emitAll(
-      runAgentWithPlugins(context).catch { error ->
-        if (error is CancellationException) throw error
-        runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
-        throw error
-      }
-    )
+    emitAll(runAgentWithPlugins(context))
 
     // Compaction runs after a successful invocation; like Python, a compaction failure is not a run
-    // error, so it stays outside the notification above.
+    // error, so plugins are not notified of it.
     runPostInvocationCompaction(session)
   }
 
@@ -607,51 +606,137 @@ abstract class AbstractRunner : Runner {
   /**
    * Runs the agent with the registered plugins.
    *
+   * The afterRun callbacks run when the run completes, and also when the caller stops collecting
+   * early or its collector throws; they do not run when the run fails or is canceled in any other
+   * way. A failure from the run goes to the onRunError callbacks before it is rethrown, and an
+   * afterRun failure after an early stop goes there instead of being thrown.
+   *
    * @param context The current [InvocationContext].
    * @return A [Flow] of [Event]s generated during the execution.
    */
   protected fun runAgentWithPlugins(context: InvocationContext): Flow<Event> {
     return flow {
-      // 1. Run beforeRun callback
-      val beforeResult = runBeforeRunCallbacksPipeline(pluginManager.beforeRunCallbacks, context)
-      when (beforeResult) {
-        is CallbackChoice.Break -> {
-          context.isEndOfInvocation = true
-          val earlyExitEvent =
-            processEventWithPluginCallbacks(
-              context,
-              Event(
-                invocationId = context.invocationId,
-                author = Role.MODEL,
-                content = beforeResult.value,
-              ),
-            )
-          val shouldAppendEvent = true
-          if (shouldAppendEvent) {
-            appendAndFlushIfFinal(context, earlyExitEvent)
-          }
-          emit(earlyExitEvent)
-        }
-        is CallbackChoice.Continue -> {
-          // 2. Dispatch to the resolved root rather than the runner's root `agent`: on a follow-up
-          // user turn, `findAgentToRun` may have selected a sub-agent based on the prior turn's
-          // history (see `findAgentToRun` below for the selection rules).
-          runRoot(context).collect { event ->
-            val isLiveCall = false
-            // Persist the post-callback event so the session matches what the caller received.
-            val finalEvent = processEventWithPluginCallbacks(context, event)
-            if (!isLiveCall) {
-              if (event.partial == false) {
-                appendAndFlushIfFinal(context, finalEvent)
-              }
-            }
-
-            emit(finalEvent)
-          }
+      var callerException: Throwable? = null
+      var callerStopped = false
+      suspend fun emitEvent(event: Event) {
+        try {
+          emit(event)
+        } catch (e: Throwable) {
+          // Only what the caller throws before any cancellation of the job is a stop.
+          callerException = e
+          callerStopped = currentCoroutineContext().isActive
+          throw e
         }
       }
-      // 4. Run afterRun callback
-      val unused = runAfterRunCallbacksPipeline(pluginManager.afterRunCallbacks, context)
+      try {
+        emitRunEvents(context, ::emitEvent)
+      } catch (e: Throwable) {
+        throw endInterruptedRun(context, callerException, callerStopped, e)
+      }
+      try {
+        runAfterRunCallbacksPipeline(pluginManager.afterRunCallbacks, context)
+      } catch (e: Throwable) {
+        if (e !is CancellationException) notifyRunError(context, e)
+        throw e
+      }
+    }
+  }
+
+  /** Whether the caller canceled the job it marked with [EarlyStopOnCancellation]. */
+  private suspend fun isCanceledByCaller(): Boolean =
+    currentCoroutineContext()[EarlyStopOnCancellation]?.job?.isCancelled == true
+
+  /**
+   * Finishes a run that ended with [cause] instead of completing, and returns what to rethrow. Runs
+   * afterRun if [cause] is the caller's stop or the caller's cancellation, and otherwise reports a
+   * [cause] that is neither a cancellation nor [callerException] to onRunError.
+   */
+  private suspend fun endInterruptedRun(
+    context: InvocationContext,
+    callerException: Throwable?,
+    callerStopped: Boolean,
+    cause: Throwable,
+  ): Throwable {
+    val canceledByCaller = isCanceledByCaller()
+    val fromCaller = callerException != null && cause.isSameExceptionAs(callerException)
+    val stopped =
+      (callerStopped && fromCaller) || (cause is CancellationException && canceledByCaller)
+    try {
+      when {
+        // Only a canceled subscription needs the shield; its job is canceled before afterRun.
+        stopped ->
+          withContext(if (canceledByCaller) NonCancellable else EmptyCoroutineContext) {
+            runAfterRunAfterEarlyStop(context)
+          }
+        cause !is CancellationException && !fromCaller -> notifyRunError(context, cause)
+      }
+    } catch (e: CancellationException) {
+      if (e !== cause) cause.addSuppressed(e)
+    }
+    if (callerException == null || fromCaller) return cause
+    // As with kotlinx's `catch`, a later cancellation never replaces what the caller threw.
+    if (cause is CancellationException) return callerException.also { it.addSuppressed(cause) }
+    return cause.also { it.addSuppressed(callerException) }
+  }
+
+  /** Reports [error] to the onRunError callbacks, shielded only if the job is already canceled. */
+  private suspend fun notifyRunError(context: InvocationContext, error: Throwable) {
+    withContext(if (currentCoroutineContext().isActive) EmptyCoroutineContext else NonCancellable) {
+      runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
+    }
+  }
+
+  /** Runs afterRun after the caller stopped or canceled the run; a failure goes to onRunError. */
+  private suspend fun runAfterRunAfterEarlyStop(context: InvocationContext) {
+    try {
+      runAfterRunCallbacksPipeline(pluginManager.afterRunCallbacks, context)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      // Not raised, so it cannot mask the caller's stop, as in ADK Python.
+      notifyRunError(context, e)
+    }
+  }
+
+  /** Runs the beforeRun callbacks and then the agent, passing each event to [emitEvent]. */
+  private suspend fun emitRunEvents(
+    context: InvocationContext,
+    emitEvent: suspend (Event) -> Unit,
+  ) {
+    val beforeResult = runBeforeRunCallbacksPipeline(pluginManager.beforeRunCallbacks, context)
+    when (beforeResult) {
+      is CallbackChoice.Break -> {
+        context.isEndOfInvocation = true
+        val earlyExitEvent =
+          processEventWithPluginCallbacks(
+            context,
+            Event(
+              invocationId = context.invocationId,
+              author = Role.MODEL,
+              content = beforeResult.value,
+            ),
+          )
+        val shouldAppendEvent = true
+        if (shouldAppendEvent) {
+          appendAndFlushIfFinal(context, earlyExitEvent)
+        }
+        emitEvent(earlyExitEvent)
+      }
+      is CallbackChoice.Continue -> {
+        // A follow-up turn runs the sub-agent `findAgentToRun` picked, not always the root agent.
+        runRoot(context).collect { event ->
+          val isLiveCall = false
+          // Persist the post-callback event so the session matches what the caller received.
+          val finalEvent = processEventWithPluginCallbacks(context, event)
+          if (!isLiveCall) {
+            if (event.partial == false) {
+              appendAndFlushIfFinal(context, finalEvent)
+            }
+          }
+
+          emitEvent(finalEvent)
+        }
+      }
     }
   }
 
@@ -881,7 +966,14 @@ abstract class AbstractRunner : Runner {
     when (val root = context.node ?: context.agent) {
       is BaseAgent -> root.runAsync(context)
       else -> NodeRunner.runRoot(root, context)
-    }
+    }.let { if (hidesEarlyStop) it.flowOn(EarlyStopOnCancellation(job = null)) else it }
+
+  /**
+   * Under an LlmAgent, ParallelAgent or node root, nested runs treat the caller's cancel as a plain
+   * one.
+   */
+  private val hidesEarlyStop: Boolean
+    get() = root is LlmAgent || root is ParallelAgent || root !is BaseAgent
 
   /**
    * Picks which agent handles this turn. A follow-up turn can land on a sub-agent chosen from the
@@ -1057,4 +1149,23 @@ abstract class AbstractRunner : Runner {
       return config.copy(summarizer = LlmEventSummarizer(model))
     }
   }
+}
+
+/**
+ * Names [job] as the caller's own job: canceling it is an early stop, so the runner still runs the
+ * afterRun callbacks. A Java publisher sets it per subscription; a null [job] marks nothing.
+ */
+internal class EarlyStopOnCancellation(val job: Job?) : AbstractCoroutineContextElement(Key) {
+  companion object Key : CoroutineContext.Key<EarlyStopOnCancellation>
+}
+
+/**
+ * Whether this is [other], or a copy coroutines rethrew to recover a stack trace: same class and
+ * message, caused by [other] or by what [other] itself copies.
+ */
+private fun Throwable.isSameExceptionAs(other: Throwable): Boolean {
+  if (this === other) return true
+  val cause = cause
+  if (cause == null || this::class != other::class) return false
+  return (cause === other || cause === other.cause) && message == other.message
 }
