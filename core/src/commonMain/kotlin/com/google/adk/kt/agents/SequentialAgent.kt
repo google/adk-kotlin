@@ -17,12 +17,14 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.logging.LoggerFactory
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 
 /**
@@ -100,6 +102,20 @@ class SequentialAgent(
       // ParallelAgent observes completion; mirrors Python sequential_agent.py.
       context.setAgentState(name, endOfAgent = true)
       emitEndOfAgent(context)
+    }
+  }
+
+  /**
+   * Runs the sub-agents live in order, one at a time, each on its own connection with no resumption
+   * handle. A live run has no natural end, so each [LlmAgent] step is offered a `task_completed`
+   * tool to signal it is done; calling it ends that step and the next takes over.
+   */
+  @OptIn(ExperimentalLiveApi::class)
+  override fun runLiveImpl(context: InvocationContext): Flow<Event> = flow {
+    for ((index, subAgent) in subAgents.withIndex()) {
+      // A hang-up skips the later steps; the first still sends what the caller queued before it.
+      if (index > 0 && context.liveRequestQueue?.isClosed == true) return@flow
+      emitAll(subAgent.runLive(context.forLiveChild(subAgent)))
     }
   }
 

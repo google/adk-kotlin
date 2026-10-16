@@ -25,7 +25,9 @@ import com.google.adk.kt.testing.userEvent
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
 import com.google.adk.kt.types.ToolType
@@ -243,6 +245,38 @@ class HistoryRewriterProcessorTest {
 
     assertEquals(1, contents.size)
     assertEquals("Real question.", contents[0].parts[0].text)
+  }
+
+  // A saveLiveBlob recording is an internal artifact:// reference that no model can resolve.
+  @Test
+  fun rewrite_liveRecordingReferences_areLeftOut() {
+    fun recording(kind: String) =
+      Part(
+        fileData =
+          FileData(
+            fileUri =
+              "artifact://app/user/session/_adk_live/adk_live_audio_storage_${kind}_1.pcm#0",
+            mimeType = "audio/pcm",
+          )
+      )
+    val events =
+      listOf(
+        userEvent("Book a table."),
+        Event(
+          author = "user",
+          content = Content(role = Role.USER, parts = listOf(recording("input"))),
+        ),
+        modelPartEvent(recording("output"), "other_agent"),
+        modelPartEvent(recording("output"), "agent"),
+      )
+
+    val contents =
+      HistoryRewriterProcessor().rewrite(events, agentName = "agent", currentBranch = null)
+
+    assertEquals(
+      listOf("Book a table."),
+      contents.flatMap { content -> content.parts.map { it.text } },
+    )
   }
 
   // The signature carrier the aggregator emits carries no text to attribute, so the other-agent

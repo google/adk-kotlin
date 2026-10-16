@@ -19,6 +19,7 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.TransferToAgentTool
@@ -125,6 +126,11 @@ internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
     }
   }
 
+  return requireUniqueNames(targets)
+}
+
+/** Returns [targets], which must not repeat an agent name within the reachable transfer scope. */
+private fun requireUniqueNames(targets: List<BaseAgent>): List<BaseAgent> {
   val uniqueTargets = targets.distinctBy { it.name }
   require(uniqueTargets.size == targets.size) {
     val duplicateNames = targets.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
@@ -134,8 +140,18 @@ internal fun findTransferTargets(agent: BaseAgent): List<BaseAgent> {
 }
 
 /**
- * Returns the [findTransferTargets] a live run can hand over to: only [LlmAgent]s, the one built-in
- * agent type that runs live.
+ * Returns the agents a live run can hand over to: the live-capable types, an [LlmAgent] or a
+ * [SequentialAgent]. A LoopAgent or ParallelAgent has no live run (in ADK Python either), so
+ * neither is offered, but a SequentialAgent with such a step is, and throws on reaching that step.
+ *
+ * When [agent]'s parent is not an [LlmAgent] (e.g. [agent] is a step of a workflow), neither the
+ * parent nor the peers are offered, so a step cannot nest its own sequence or drop into a peer;
+ * mirrors ADK Python `_get_transfer_targets`, which adds them only for an LlmAgent parent.
  */
-internal fun liveTransferTargets(agent: BaseAgent): List<BaseAgent> =
-  findTransferTargets(agent).filter { it is LlmAgent }
+// Only live runs drop the parent and peers; turn-based runs still offer them under any parent.
+internal fun liveTransferTargets(agent: BaseAgent): List<BaseAgent> {
+  val targets =
+    if (agent.parentAgent is LlmAgent) findTransferTargets(agent)
+    else requireUniqueNames(agent.subAgents)
+  return targets.filter { it is LlmAgent || it is SequentialAgent }
+}

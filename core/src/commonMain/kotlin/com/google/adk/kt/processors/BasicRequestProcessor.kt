@@ -18,6 +18,7 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.GenerateContentConfig
@@ -77,17 +78,20 @@ private fun LiveConnectConfig.foldSamplingFrom(config: GenerateContentConfig): L
  * Applied for every request, live or not, as ADK Python does; a non-live request simply never reads
  * the result. Every setting passes through on every model and the server decides what it accepts.
  */
-private fun LiveConnectConfig.applyRunConfig(runConfig: RunConfig): LiveConnectConfig =
-  copy(
-    responseModalities = runConfig.responseModalities.ifEmpty { null },
-    speechConfig = runConfig.speechConfig,
-    outputAudioTranscription = runConfig.outputAudioTranscription,
-    inputAudioTranscription = runConfig.inputAudioTranscription,
-    realtimeInputConfig = runConfig.realtimeInputConfig,
-    explicitVadSignal = runConfig.explicitVadSignal,
-    translationConfig = runConfig.translationConfig,
-    enableAffectiveDialog = runConfig.enableAffectiveDialog,
-    proactivity = runConfig.proactivity,
-    sessionResumption = runConfig.sessionResumption,
-    contextWindowCompression = runConfig.contextWindowCompression,
+@OptIn(ExperimentalLiveApi::class)
+private fun LiveConnectConfig.applyRunConfig(runConfig: RunConfig): LiveConnectConfig {
+  val live = runConfig.live
+  return copy(
+    responseModalities = live.responseModalities.ifEmpty { null },
+    speechConfig = live.speechConfig,
+    outputAudioTranscription = live.outputAudioTranscription,
+    inputAudioTranscription = live.inputAudioTranscription,
+    realtimeInputConfig = live.realtimeInputConfig,
+    explicitVadSignal = live.explicitVadSignal,
+    translationConfig = live.translationConfig,
+    enableAffectiveDialog = live.enableAffectiveDialog,
+    proactivity = live.proactivity,
+    sessionResumption = live.sessionResumption,
+    contextWindowCompression = live.contextWindowCompression,
   )
+}
