@@ -15,7 +15,9 @@
  */
 package com.google.adk.kt.models
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionResponse
@@ -41,6 +43,7 @@ class GeminiLiveSendTest {
   private class RecordingSession : LiveSessionHandle {
     val calls = mutableListOf<String>()
     val sentTurns = mutableListOf<List<SdkContent>>()
+    val sentAudio = mutableListOf<SdkBlob>()
 
     override fun receive(): Flow<SdkLiveServerMessage> = emptyFlow()
 
@@ -57,6 +60,7 @@ class GeminiLiveSendTest {
       activityStart: SdkActivityStart?,
       activityEnd: SdkActivityEnd?,
     ) {
+      audio?.let { sentAudio.add(it) }
       calls.add("realtimeText($text)")
     }
 
@@ -134,6 +138,17 @@ class GeminiLiveSendTest {
     val parts = turns.single().parts.orEmpty()
     assertThat(parts.mapNotNull { it.text }).containsExactly("look at these")
     assertThat(parts.mapNotNull { it.fileData?.fileUri }).containsExactly(gcsUri)
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun sendRealtime_audioWithoutMimeType_goesAsSixteenKilohertzPcm(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+
+    connection.sendRealtime(RealtimeInput.Audio(Blob(data = "pcm".encodeToByteArray())))
+
+    // Gemini closes the session on audio with no mime type, so it gets the default input format.
+    assertThat(session.sentAudio.single().mimeType).isEqualTo("audio/pcm;rate=16000")
   }
 
   @Test
