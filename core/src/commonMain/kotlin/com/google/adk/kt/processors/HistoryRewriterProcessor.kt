@@ -19,6 +19,8 @@ import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.artifacts.isAdkLiveArtifact
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
+import com.google.adk.kt.events.functionCallIds
+import com.google.adk.kt.events.isToolBranch
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.tools.TransferToAgentTool
 import com.google.adk.kt.types.Content
@@ -41,17 +43,19 @@ internal class HistoryRewriterProcessor {
     currentBranch: String?,
     includeContents: IncludeContents = IncludeContents.DEFAULT,
   ): List<Content> {
+    // A tool's own messages sit on a `<tool>@<call id>` branch named by a recorded call id.
+    val toolCallIds = events.functionCallIds()
     val workingEvents =
       when (includeContents) {
         IncludeContents.DEFAULT -> events
-        IncludeContents.NONE -> getCurrentTurnEvents(events, agentName, currentBranch)
+        IncludeContents.NONE -> getCurrentTurnEvents(events, agentName, currentBranch, toolCallIds)
       }
 
     val rewindFilteredEvents = applyRewinds(workingEvents)
 
     // Filter raw events
     val rawFilteredEvents = rewindFilteredEvents.filter {
-      shouldIncludeEventInContext(currentBranch, it)
+      shouldIncludeEventInContext(currentBranch, it, agentName, toolCallIds)
     }
 
     // Replace each compaction event with its summary and drop the raw events it covers.
@@ -352,27 +356,31 @@ internal class HistoryRewriterProcessor {
     events: List<Event>,
     agentName: String,
     currentBranch: String?,
+    toolCallIds: Set<String>,
   ): List<Event> {
     // A posted-back result continues its call's turn, so the turn reaches back to that call.
-    val callIds =
-      events.flatMapTo(mutableSetOf()) { event -> event.functionCalls().mapNotNull { it.id } }
     val unmatchedResultIds = mutableSetOf<String>()
     for (i in events.indices.reversed()) {
       unmatchedResultIds.removeAll(events[i].functionCalls().mapNotNull { it.id })
       val isSubmittedResult = isSubmittedToolResult(events[i])
       if (isSubmittedResult) {
         events[i].functionResponses().mapNotNullTo(unmatchedResultIds) {
-          it.id?.takeIf(callIds::contains)
+          it.id?.takeIf(toolCallIds::contains)
         }
       }
       if (unmatchedResultIds.isNotEmpty() || isSubmittedResult || isDirectTransfer(events[i])) {
         continue
       }
-      if (!isCurrentTurnBoundary(events[i], agentName, currentBranch)) continue
-      val start = runStart(events, i, currentBranch)
+      if (!isCurrentTurnBoundary(events[i], agentName, currentBranch, toolCallIds)) continue
+      val start = runStart(events, i, agentName, currentBranch, toolCallIds)
       // A blank spoken run is dropped by the merge, so it cannot start the turn.
       val kind = transcriptionKind(events[i])
-      if (kind != null && runText(events, start, i, kind, currentBranch).isBlank()) continue
+      if (
+        kind != null &&
+          runText(events, start, i, kind, agentName, currentBranch, toolCallIds).isBlank()
+      ) {
+        continue
+      }
       return events.subList(start, events.size)
     }
     return emptyList()
@@ -397,10 +405,16 @@ internal class HistoryRewriterProcessor {
    * Returns where the transcription run that ends at [end] starts, so the current turn keeps all of
    * a spoken turn rather than its last chunk. Events left out of the context do not break the run.
    */
-  private fun runStart(events: List<Event>, end: Int, currentBranch: String?): Int {
+  private fun runStart(
+    events: List<Event>,
+    end: Int,
+    agentName: String,
+    currentBranch: String?,
+    toolCallIds: Set<String>,
+  ): Int {
     var start = end
     for (i in end - 1 downTo 0) {
-      if (!shouldIncludeEventInContext(currentBranch, events[i])) continue
+      if (!shouldIncludeEventInContext(currentBranch, events[i], agentName, toolCallIds)) continue
       if (!continuesTranscriptionRun(events[i], events[start])) break
       start = i
     }
@@ -413,11 +427,13 @@ internal class HistoryRewriterProcessor {
     start: Int,
     end: Int,
     kind: TranscriptionKind,
+    agentName: String,
     currentBranch: String?,
+    toolCallIds: Set<String>,
   ): String =
     (start..end)
       .map { events[it] }
-      .filter { shouldIncludeEventInContext(currentBranch, it) }
+      .filter { shouldIncludeEventInContext(currentBranch, it, agentName, toolCallIds) }
       .joinToString("") { kind.textOf(it) }
 
   /**
@@ -435,8 +451,9 @@ internal class HistoryRewriterProcessor {
     event: Event,
     agentName: String,
     currentBranch: String?,
+    toolCallIds: Set<String>,
   ): Boolean {
-    if (!shouldIncludeEventInContext(currentBranch, event)) return false
+    if (!shouldIncludeEventInContext(currentBranch, event, agentName, toolCallIds)) return false
     if (event.author == Role.USER) return true
     return isOtherAgentReply(agentName, event) &&
       (transcriptionKind(event) != null || presentOtherAgentMessage(event) != null)
@@ -528,9 +545,15 @@ internal class HistoryRewriterProcessor {
    * outcome the framework applies itself), request_input carries a free-form answer the model must
    * read to continue. Matches Python, Java, and Go ADK.
    */
-  private fun shouldIncludeEventInContext(currentBranch: String?, event: Event): Boolean {
+  private fun shouldIncludeEventInContext(
+    currentBranch: String?,
+    event: Event,
+    agentName: String,
+    toolCallIds: Set<String>,
+  ): Boolean {
     return !(containsEmptyContent(event) ||
       !isEventBelongsToBranch(currentBranch, event) ||
+      isToolSubBranchEvent(currentBranch, event, agentName, toolCallIds) ||
       isAdkFrameworkEvent(event) ||
       isAuthEvent(event) ||
       isRequestConfirmationEvent(event))
@@ -616,6 +639,23 @@ internal class HistoryRewriterProcessor {
     return event.content?.parts?.any { part ->
       part.functionCall?.name == functionName || part.functionResponse?.name == functionName
     } ?: false
+  }
+
+  /**
+   * Whether [event] sits on a `<tool>@<call id>` branch below [currentBranch] for a call in
+   * [toolCallIds], excluding [agentName]'s own branch when run as a tool. The caller sees these
+   * events, while the model receives only the tool's response.
+   */
+  private fun isToolSubBranchEvent(
+    currentBranch: String?,
+    event: Event,
+    agentName: String,
+    toolCallIds: Set<String>,
+  ): Boolean {
+    val segments = event.branch?.takeIf { it.isNotEmpty() }?.split('.') ?: return false
+    val base = currentBranch?.takeIf { it.isNotEmpty() }?.split('.').orEmpty()
+    if (segments.size <= base.size || segments.subList(0, base.size) != base) return false
+    return segments.drop(base.size).any { isToolBranch(it, agentName, toolCallIds) }
   }
 
   /**

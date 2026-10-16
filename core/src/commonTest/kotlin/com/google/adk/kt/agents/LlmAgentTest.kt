@@ -562,6 +562,24 @@ class LlmAgentTest {
   }
 
   @Test
+  fun runAsync_withOutputKey_savesAFinalResponseWhateverItsRole() = runTest {
+    // Only a live run keeps a tool's user-role message out of outputKey, as in ADK Python.
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = Content(role = "user", parts = listOf(Part(text = "Saved"))))),
+      )
+    val agent = LlmAgent(name = "test-agent", model = model, outputKey = "myOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals("Saved", events.single().actions.stateDelta["myOutput"])
+  }
+
+  @Test
   fun runAsync_withOutputKey_concatenatesMultipleTextParts() = runTest {
     val multiPartContent = modelMessage(Part(text = "Part 1."), Part(text = " Part 2."))
     val model =

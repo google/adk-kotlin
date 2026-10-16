@@ -519,12 +519,21 @@ data class InvocationContext(
    * @return A single merged [Event] containing all responses and actions, or `null` if no tools
    *   executed.
    */
-  @Suppress("UnsafeCoroutineCrossing")
   suspend fun handleFunctionCalls(
     functionCalls: List<FunctionCall>,
     tools: Map<String, BaseTool>,
     filters: Set<String> = emptySet(),
     toolConfirmations: Map<String, ToolConfirmation>? = null,
+  ): Event? = handleFunctionCallsWith(functionCalls, tools, filters, toolConfirmations.orEmpty())
+
+  /** As [handleFunctionCalls], running each resolved tool through [toolRunner]. */
+  @Suppress("UnsafeCoroutineCrossing")
+  internal suspend fun handleFunctionCallsWith(
+    functionCalls: List<FunctionCall>,
+    tools: Map<String, BaseTool>,
+    filters: Set<String> = emptySet(),
+    toolConfirmations: Map<String, ToolConfirmation> = emptyMap(),
+    toolRunner: ToolRunner = DEFAULT_TOOL_RUNNER,
   ): Event? = coroutineScope {
     // Filter function calls
     val filteredCalls =
@@ -541,7 +550,12 @@ data class InvocationContext(
       filteredCalls
         .map { functionCall ->
           async {
-            executeSingleFunctionCall(functionCall, tools, toolConfirmations?.get(functionCall.id))
+            executeSingleFunctionCall(
+              functionCall,
+              tools,
+              toolConfirmations[functionCall.id],
+              toolRunner,
+            )
           }
         }
         .awaitAll()
@@ -587,6 +601,7 @@ data class InvocationContext(
     functionCall: FunctionCall,
     tools: Map<String, BaseTool>,
     toolConfirmation: ToolConfirmation? = null,
+    toolRunner: ToolRunner = DEFAULT_TOOL_RUNNER,
   ): Event? {
     val resolvedTool = tools[functionCall.name]
     // The placeholder lets the tool callbacks answer a call the registry could not resolve.
@@ -619,7 +634,7 @@ data class InvocationContext(
       var toolResult: Any =
         replacement
           ?: try {
-            tool.run(toolContext, currentArgs)
+            toolRunner(tool, toolContext, currentArgs)
           } catch (e: CancellationException) {
             // CancellationException is an Exception in Kotlin; rethrow before recovery sees it.
             throw e
@@ -832,22 +847,6 @@ data class InvocationContext(
   }
 
   /**
-   * Coerces an arbitrary tool payload into the `Map<String, Any?>` shape required by both
-   * [FunctionResponse.response] and the after-tool callback pipeline:
-   * - A payload that is already a [Map] keeps its string-keyed entries, including `null` values
-   *   (e.g. `{"result": null}`); only non-string keys are dropped.
-   * - Any other value is wrapped in a single-entry `{ RESULT_KEY -> value }` map (the spec requires
-   *   the response to be a dict).
-   *
-   * Centralizing this rule means [buildResponseEvent] and [runAfterToolCallbacks] don't need to
-   * each implement the wrap-and-cast step.
-   */
-  private fun toFinalResponseMap(payload: Any?): Map<String, Any?> {
-    val map = if (payload is Map<*, *>) payload else mapOf(BaseTool.RESULT_KEY to payload)
-    return buildMap { for ((key, value) in map) if (key is String) put(key, value) }
-  }
-
-  /**
    * Converts a tool-call args or tool-response payload (JSON-native maps/lists/primitives) into a
    * [JsonElement] via the shared `adkJson` serializer, so tool span payloads serialize identically
    * on every platform.
@@ -932,8 +931,8 @@ data class ContextFrameworkData(
   /**
    * Live audio the caller has sent since the last flush.
    *
-   * Filled only through [AudioCacheManager], when [RunConfig.saveLiveBlob] is set. It lives on the
-   * context rather than in the manager, so a turn restarted on a new connection keeps one
+   * Filled only through [AudioCacheManager], when [LiveRunConfig.saveLiveBlob] is set. It lives on
+   * the context rather than in the manager, so a turn restarted on a new connection keeps one
    * recording; a transfer or a completed step saves it before the next agent runs.
    */
   internal val inputRealtimeCache: RealtimeCache = RealtimeCache()
@@ -963,7 +962,25 @@ data class ContextFrameworkData(
  */
 @JvmSynthetic
 internal fun RunConfig.forNewLiveSession(): RunConfig =
-  copy(sessionResumption = sessionResumption?.copy(handle = null))
+  copy(live = live.copy(sessionResumption = live.sessionResumption?.copy(handle = null)))
+
+/** Runs one resolved tool call and returns its result, so a live run can stream a returned Flow. */
+internal typealias ToolRunner =
+  suspend (tool: BaseTool, context: ToolContext, args: Map<String, Any?>) -> Any
+
+/** Calls [BaseTool.run] as is; every run but a live one uses it. */
+@get:JvmSynthetic
+internal val DEFAULT_TOOL_RUNNER: ToolRunner = { tool, context, args -> tool.run(context, args) }
+
+/**
+ * Returns [payload] as a function-response map: a [Map] keeps its string-keyed entries, and any
+ * other value goes under [BaseTool.RESULT_KEY].
+ */
+@JvmSynthetic
+internal fun toFinalResponseMap(payload: Any?): Map<String, Any?> {
+  val map = if (payload is Map<*, *>) payload else mapOf(BaseTool.RESULT_KEY to payload)
+  return buildMap { for ((key, value) in map) if (key is String) put(key, value) }
+}
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only
