@@ -37,8 +37,9 @@ import org.reactivestreams.Publisher
 /**
  * Java-friendly wrapper around a [Runner]. A run is exposed as a Reactive Streams [Publisher] of
  * events, so Java callers never touch `Flow`; collect it with `AsyncJavaHelpers.collect`/`forEach`
- * or any Reactive Streams consumer. Session management is not a runner concern -- reach the session
- * service via `asKotlinRunner().sessionService` (or wrap it in a `BaseFutureSessionService`).
+ * or any Reactive Streams consumer. Session management is not a runner concern: to call the session
+ * service from Java, create it wrapped in a [CompletableFutureSessionService] and build the runner
+ * with the wrapper's `asKotlinSessionService()`.
  */
 @AdkJavaInteropApi
 class PublisherRunner private constructor(private val delegate: Runner) : AutoCloseable {

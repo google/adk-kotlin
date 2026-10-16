@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.annotations.Param;
 import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.interop.CompletableFutureSessionService;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
@@ -36,8 +37,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
-import kotlinx.coroutines.Dispatchers;
-import kotlinx.coroutines.reactor.MonoKt;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 
@@ -51,8 +50,8 @@ import reactor.core.publisher.Flux;
  * through the managed session service.
  *
  * <p>The Vertex service assigns the session id, so the session is created up front and its id is
- * reused for the run. {@code createSession} is a Kotlin suspend function, so the
- * kotlinx-coroutines-reactor {@code mono} builder calls it.
+ * reused for the run. {@code createSession} is a Kotlin suspend function, so the example holds the
+ * service as a {@link CompletableFutureSessionService} and gives the runner the wrapped service.
  *
  * <p>Authentication uses Application Default Credentials ({@code gcloud auth application-default
  * login}).
@@ -107,12 +106,13 @@ public final class VertexAiSessionServiceExampleJava {
     String location = locationEnv == null || locationEnv.isBlank() ? "us-central1" : locationEnv;
 
     // Pin the reasoning engine at construction; the session key's app name is then just a label.
-    VertexAiSessionService sessionService =
-        VertexAiSessionService.builder()
-            .project(project)
-            .location(location)
-            .reasoningEngineId(reasoningEngineId)
-            .build();
+    CompletableFutureSessionService sessionService =
+        CompletableFutureSessionService.of(
+            VertexAiSessionService.builder()
+                .project(project)
+                .location(location)
+                .reasoningEngineId(reasoningEngineId)
+                .build());
     String appName = "weather-app";
     BaseAgent agent =
         LlmAgent.builder()
@@ -127,19 +127,13 @@ public final class VertexAiSessionServiceExampleJava {
             InMemoryRunner.builder()
                 .agent(agent)
                 .appName(appName)
-                .sessionService(sessionService)
+                .sessionService(sessionService.asKotlinSessionService())
                 .build());
 
     String userId = "demo-user";
     // Session management is a SessionService concern, not the runner's. The Vertex service assigns
     // the session id, so create the session first and reuse its id.
-    Session created =
-        MonoKt.<Session>mono(
-                Dispatchers.getDefault(),
-                (scope, continuation) ->
-                    sessionService.createSession(
-                        new SessionKey(appName, userId, null), null, continuation))
-            .block();
+    Session created = sessionService.createSession(new SessionKey(appName, userId, null)).join();
     String sessionId = Objects.requireNonNull(created.getKey().getId());
 
     // RxJava users can adapt the same Publisher with Flowable.fromPublisher(eventStream).
