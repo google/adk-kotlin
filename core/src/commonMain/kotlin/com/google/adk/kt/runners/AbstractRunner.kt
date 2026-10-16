@@ -805,6 +805,8 @@ abstract class AbstractRunner : Runner {
             // Persist the post-callback event so the session matches what the caller received.
             val finalEvent = processEventWithPluginCallbacks(context, event)
             store(context, finalEvent, liveRun)
+            // Releases a typed live turn waiting on this event, without waiting for the caller.
+            liveRun?.finishStore()
             emit(finalEvent)
           }
         }

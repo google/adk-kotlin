@@ -113,6 +113,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 
@@ -767,20 +768,32 @@ internal class LlmAgentTurn(
     result: LiveAttemptResult,
   ): Flow<Event> =
     channelFlow {
-        // Returns once the caller has handled the event, so neither loop runs ahead of the caller.
-        val deliver: suspend (Event) -> Unit = { event ->
-          val delivery = Delivery(event)
+        // Returns once the caller has handled it, so no loop's events queue up ahead of the caller.
+        suspend fun handOver(delivery: Delivery) {
           send(delivery)
           delivery.handled.await()
         }
+        val deliver: suspend (Event) -> Unit = { event -> handOver(Delivery(event)) }
         val saves = RecordingSaves(this, deliver)
         recordingSaves.store(saves)
         // A transport drop the sender saw, kept so it surfaces after the saves finish instead of
         // cancelling the scope and its in-flight saves; read once the sender has joined below.
         var sendDrop: Throwable? = null
+        // Completes once the receiver's latest event is stored.
+        val answerStored = AtomicReference<CompletableDeferred<Unit>?>(null)
+        // Whether an input already went out on this connection; only the sender touches it.
+        var inputSent = false
         val receiver = async {
           try {
-            receiveTurns(request, connection, queue, result, deliver)
+            receiveTurns(request, connection, queue, result) { event ->
+              val delivery = Delivery(event)
+              answerStored.store(delivery.stored)
+              try {
+                handOver(delivery)
+              } finally {
+                val unused = delivery.stored.complete(Unit)
+              }
+            }
           } catch (e: Throwable) {
             // A handover cut short stops its streams first; the saves below can take seconds.
             if (pendingHandover.load() != null) liveTools?.stopRunning()
@@ -797,7 +810,16 @@ internal class LlmAgentTurn(
          */
         suspend fun sendOrReplay(pending: PendingSend): Boolean {
           try {
+            val input = pending.request.input
+            // Only a typed turn adds a turn to the session, so only it waits behind the answer.
+            val storesTurn = input is ContentInput && !input.partial && !input.answersTools
+            if (inputSent && !pending.persisted && storesTurn) {
+              // Lets an answer already arriving reach the runner, then waits until it is stored.
+              yield()
+              answerStored.load()?.await()
+            }
             writeRequest(request, connection, pending, deliver)
+            if (input != null) inputSent = true
             return true
           } catch (e: LiveWriteFailure) {
             // A turn the session already stored must reach the model, or the run fails with it.
@@ -876,7 +898,14 @@ internal class LlmAgentTurn(
       .transform { delivery ->
         // A producer that claimed it puts it back, so its tool waits for the later delivery.
         if (delivery.claim()) {
-          emit(delivery.event)
+          // Completed by the runner once stored, or by the emit's return when there is no runner.
+          liveRun().storeWatch = delivery.stored
+          try {
+            emit(delivery.event)
+          } finally {
+            liveRun().storeWatch = null
+            val unused = delivery.stored.complete(Unit)
+          }
           delivery.handled.complete(Unit)
         }
       }
@@ -1328,8 +1357,7 @@ internal class LlmAgentTurn(
     val liveRequest = pending.request
     val input = liveRequest.input
     val original = (input as? ContentInput)?.content
-    // A ContentInput's parts are non-empty and all tool answers or none, so the first tells which.
-    val answersTools = original?.parts?.first()?.functionResponse != null
+    val answersTools = (input as? ContentInput)?.answersTools == true
     // Content without a role is the user's, as in ADK Python; tool answers keep theirs unset.
     val content =
       if (original?.role == null && !answersTools) original?.copy(role = Role.USER) else original
@@ -2185,7 +2213,8 @@ private class LiveAttemptResult {
 private class LiveWriteFailure(override val cause: Throwable) : Exception(cause)
 
 /**
- * One event on its way to the caller, with the signal that the caller has handled it.
+ * One event on its way to the caller, with the signals that it is stored and that the caller has
+ * handled it.
  *
  * The emitter and a producer whose send was cancelled can both see it; whichever claims it first
  * owns it, so it is delivered once.
@@ -2195,6 +2224,8 @@ private class Delivery(
   val event: Event,
   val handled: CompletableDeferred<Unit> = CompletableDeferred(),
 ) {
+  val stored = CompletableDeferred<Unit>()
+
   private val claimed = AtomicBoolean(false)
 
   fun claim(): Boolean = claimed.compareAndSet(false, true)
@@ -2382,6 +2413,10 @@ private fun LlmRequest.resumingFrom(handle: String): LlmRequest =
             ?: SessionResumptionConfig(handle = handle)
       )
   )
+
+/** Whether this input answers the model's tool calls; its parts are all tool answers or none. */
+private val ContentInput.answersTools: Boolean
+  get() = content.parts.first().functionResponse != null
 
 /**
  * A sealed class representing either a [LlmRequest] or a [LlmResponse].
