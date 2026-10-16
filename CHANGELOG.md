@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.5.0](https://github.com/google/adk-kotlin/compare/v1.4.0...v1.5.0) (2026-10-16)
+
+
+### Features
+
+* add parallel worker fan-out to workflow nodes ([282c68a](https://github.com/google/adk-kotlin/commit/282c68ad8f80f56acd68177bd4b85bd707cac9cd))
+* **auth:** add an internal serializer for API key and HTTP credentials ([a8ee84c](https://github.com/google/adk-kotlin/commit/a8ee84c5fdb0720e05217cbe6acf69c28486fcc8))
+* **auth:** add AuthConfig ([c01be47](https://github.com/google/adk-kotlin/commit/c01be471d16242ebce053b6fab0fa8c3248083bc))
+* **auth:** add AuthScheme with API key and HTTP schemes ([855aed0](https://github.com/google/adk-kotlin/commit/855aed0db3ef39afae32afdb961f4adc9c496205))
+* **auth:** add the OAuth2 scheme ([68d89e7](https://github.com/google/adk-kotlin/commit/68d89e7374b93caabe73d9635afc422b642da446))
+* **auth:** add the OpenID Connect schemes ([d93eb79](https://github.com/google/adk-kotlin/commit/d93eb795fc8358052190e6f4e2801e3391933845))
+* let a typed workflow node body ask for human input with requestInput ([af8ad2c](https://github.com/google/adk-kotlin/commit/af8ad2c02bec0b1eeeb38b255b892b8b83a97984))
+* **live:** add RunConfig.saveLiveBlob to record live audio as artifacts ([29694fa](https://github.com/google/adk-kotlin/commit/29694fa80641c2798b1d6bf4a1b7e90fbc38e27b))
+* **live:** persist user turns and resume live runs across connections ([f18c62c](https://github.com/google/adk-kotlin/commit/f18c62cc929e20af5726e3bd8c0fce3ab61e0cdc))
+* **live:** run SequentialAgent in live mode ([c65cc1b](https://github.com/google/adk-kotlin/commit/c65cc1bc137fe247839500f34bda6b3e2efc0891))
+* **live:** support transfer_to_agent in live runs ([2a087fd](https://github.com/google/adk-kotlin/commit/2a087fd1e9c7622bf96b026ad70f4472e4c39b14))
+* reject a workflow node output that has no JSON form at the node ([c40cc40](https://github.com/google/adk-kotlin/commit/c40cc409e127b6011e42106c26a32e5cc82769e8))
+* replay finished workflow children when a node retries ([7b26476](https://github.com/google/adk-kotlin/commit/7b2647603dc0c9f27e2103cbdfbc51de3602d141))
+* **sessions:** add BufferedSessionService to persist session writes in the background ([1fc0124](https://github.com/google/adk-kotlin/commit/1fc01247a9a19c73b2122f96431142c48300a978))
+* typed workflow node outputs travel as JSON, with Context.setOutput ([8b21add](https://github.com/google/adk-kotlin/commit/8b21add4ed3e992254b1502ddb0d52c6695d9762))
+
+
+### Bug Fixes
+
+* keep model output out of LlmAgent's outputSchema mismatch log ([bd056b2](https://github.com/google/adk-kotlin/commit/bd056b2a7d4d4c05a14735688a9bf8c477b6d96c))
+* keep temp: state for the rest of an invocation in workflows ([a995844](https://github.com/google/adk-kotlin/commit/a99584486f4db51f0715dae18d6a89f05701da47))
+* **live:** screen the user's speech before any tool call runs ([b55f16d](https://github.com/google/adk-kotlin/commit/b55f16d7b8167c77d804b36150908bd43c321d2c))
+* make the experimental Workflow.runAsync internal so workflows run only through a Runner ([d9dfe23](https://github.com/google/adk-kotlin/commit/d9dfe230822cd6cc5aa5fd93ad8979c349735bce))
+* restrict transfer_to_agent to sub-agents, parent, and peers ([70b9409](https://github.com/google/adk-kotlin/commit/70b9409cb132ea09b2b66f6f587ee4133855accf))
+* run Vertex AI session and memory services on Ktor's OkHttp engine ([9897bab](https://github.com/google/adk-kotlin/commit/9897bab39f0840a97fd1561b1a9fc6c5b78f5dba))
+* **sessions:** complete buffered writes in order when BufferedSessionService stops ([68ce04d](https://github.com/google/adk-kotlin/commit/68ce04dac10281cf582416d7f1bf2d1af08bac47))
+
 ## [1.4.0](https://github.com/google/adk-kotlin/compare/v1.3.0...v1.4.0) (2026-10-14)
 
 
