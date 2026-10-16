@@ -68,9 +68,10 @@ enum class StreamingMode {
 /**
  * Configs for runtime behavior of agents.
  *
- * Properties from [responseModalities] onwards apply only to a live connection, which is configured
- * once when it opens and cannot be changed per turn. They only take effect through the experimental
- * live API.
+ * Properties from [responseModalities] to [contextWindowCompression] configure a live connection,
+ * set once when it opens and not changed per turn; [saveLiveBlob] instead tells ADK to record the
+ * conversation's audio and never reaches the connection. They only take effect through the
+ * experimental live API.
  *
  * @property streamingMode Streaming mode, NONE, SSE or BIDI.
  * @property maxLlmCalls Limit on the total number of LLM calls per run. A positive value is
@@ -94,6 +95,10 @@ enum class StreamingMode {
  * @property proactivity Whether the model may decline to respond to a prompt.
  * @property sessionResumption Configuration of the session resumption mechanism.
  * @property contextWindowCompression Keeps the session's context below a given length.
+ * @property saveLiveBlob Whether to save the live input and output audio as artifacts, each
+ *   referenced from an event the run emits. ADK never deletes these recordings, not even with the
+ *   session, so prefer an artifact service backed by durable storage over an in-memory one for
+ *   anything but short sessions.
  */
 data class RunConfig
 @JvmOverloads
@@ -112,6 +117,7 @@ constructor(
   val proactivity: ProactivityConfig? = null,
   val sessionResumption: SessionResumptionConfig? = null,
   val contextWindowCompression: ContextWindowCompressionConfig? = null,
+  val saveLiveBlob: Boolean = false,
 ) {
   init {
     require(maxLlmCalls != Int.MAX_VALUE) { "maxLlmCalls should be less than Int.MAX_VALUE." }
@@ -144,6 +150,7 @@ constructor(
       .proactivity(proactivity)
       .sessionResumption(sessionResumption)
       .contextWindowCompression(contextWindowCompression)
+      .saveLiveBlob(saveLiveBlob)
 
   /**
    * Fluent builder for [RunConfig], provided primarily for Java callers. Any property left unset
@@ -166,6 +173,7 @@ constructor(
     private var proactivity: ProactivityConfig? = null
     private var sessionResumption: SessionResumptionConfig? = null
     private var contextWindowCompression: ContextWindowCompressionConfig? = null
+    private var saveLiveBlob: Boolean = false
 
     fun streamingMode(streamingMode: StreamingMode): Builder = apply {
       this.streamingMode = streamingMode
@@ -223,6 +231,8 @@ constructor(
       contextWindowCompression: ContextWindowCompressionConfig?
     ): Builder = apply { this.contextWindowCompression = contextWindowCompression }
 
+    fun saveLiveBlob(saveLiveBlob: Boolean): Builder = apply { this.saveLiveBlob = saveLiveBlob }
+
     fun build(): RunConfig =
       RunConfig(
         streamingMode = streamingMode,
@@ -239,6 +249,7 @@ constructor(
         proactivity = proactivity,
         sessionResumption = sessionResumption,
         contextWindowCompression = contextWindowCompression,
+        saveLiveBlob = saveLiveBlob,
       )
   }
 
