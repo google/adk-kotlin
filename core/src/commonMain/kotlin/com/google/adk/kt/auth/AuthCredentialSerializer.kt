@@ -19,6 +19,9 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -64,13 +67,15 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
     @JsonNames("auth_type") val authType: Type,
     @JsonNames("api_key") val apiKey: JsonSecret? = null,
     val http: Http? = null,
+    val oauth2: OAuth2? = null,
   ) {
     fun toCredential(): AuthCredential =
       when (authType) {
         Type.API_KEY -> AuthCredential.ApiKey(apiKey)
         Type.HTTP -> http.required("http").toHttp()
-        Type.OAUTH2,
-        Type.OPEN_ID_CONNECT,
+        Type.OAUTH2 -> oauth2.required("oauth2").toOAuth2(AuthCredential.OAuth2.Variant.OAUTH2)
+        Type.OPEN_ID_CONNECT ->
+          oauth2.required("oauth2").toOAuth2(AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT)
         Type.SERVICE_ACCOUNT ->
           throw SerializationException(
             "Reading this credential type from JSON is not supported yet."
@@ -95,7 +100,14 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
         when (credential) {
           is AuthCredential.ApiKey -> Wire(Type.API_KEY, apiKey = credential.apiKey)
           is AuthCredential.Http -> Wire(Type.HTTP, http = Http(credential))
-          is AuthCredential.OAuth2,
+          is AuthCredential.OAuth2 ->
+            Wire(
+              when (credential.variant) {
+                AuthCredential.OAuth2.Variant.OAUTH2 -> Type.OAUTH2
+                AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT -> Type.OPEN_ID_CONNECT
+              },
+              oauth2 = OAuth2(credential),
+            )
           is AuthCredential.ServiceAccount ->
             throw SerializationException(
               "Writing this credential type as JSON is not supported yet."
@@ -132,5 +144,80 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
       fun toCredentials(): AuthCredential.Http.Credentials =
         AuthCredential.Http.Credentials(username, password, token)
     }
+  }
+
+  /** Python's `OAuth2Auth`, shared by the `oauth2` and `openIdConnect` kinds. */
+  @Serializable
+  private class OAuth2(
+    @JsonNames("client_id") val clientId: String? = null,
+    @JsonNames("client_secret") val clientSecret: JsonSecret? = null,
+    @JsonNames("auth_uri") val authUri: String? = null,
+    val nonce: String? = null,
+    val state: String? = null,
+    @JsonNames("redirect_uri") val redirectUri: String? = null,
+    @JsonNames("auth_response_uri") val authResponseUri: JsonSecret? = null,
+    @JsonNames("auth_code") val authCode: JsonSecret? = null,
+    @JsonNames("access_token") val accessToken: JsonSecret? = null,
+    @JsonNames("refresh_token") val refreshToken: JsonSecret? = null,
+    @JsonNames("id_token") val idToken: JsonSecret? = null,
+    // Python keeps whole seconds.
+    @JsonNames("expires_at") val expiresAt: Long? = null,
+    @JsonNames("expires_in") val expiresIn: Long? = null,
+    val audience: String? = null,
+    val prompt: String? = null,
+    @JsonNames("code_verifier") val codeVerifier: JsonSecret? = null,
+    @JsonNames("code_challenge_method") val codeChallengeMethod: String? = null,
+    // Python writes the default too, and reads a missing value as the default rather than null.
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    @JsonNames("token_endpoint_auth_method")
+    val tokenEndpointAuthMethod: AuthCredential.OAuth2.TokenEndpointAuthMethod? =
+      AuthCredential.OAuth2.TokenEndpointAuthMethod.CLIENT_SECRET_BASIC,
+  ) {
+    constructor(
+      oauth2: AuthCredential.OAuth2
+    ) : this(
+      clientId = oauth2.clientId,
+      clientSecret = oauth2.clientSecret,
+      authUri = oauth2.authUri,
+      nonce = oauth2.nonce,
+      state = oauth2.state,
+      redirectUri = oauth2.redirectUri,
+      authResponseUri = oauth2.authResponseUri,
+      authCode = oauth2.authCode,
+      accessToken = oauth2.accessToken,
+      refreshToken = oauth2.refreshToken,
+      idToken = oauth2.idToken,
+      // Any fraction of a second is dropped.
+      expiresAt = oauth2.expiresAt?.epochSeconds,
+      expiresIn = oauth2.expiresIn?.inWholeSeconds,
+      audience = oauth2.audience,
+      prompt = oauth2.prompt,
+      codeVerifier = oauth2.codeVerifier,
+      codeChallengeMethod = oauth2.codeChallengeMethod,
+      tokenEndpointAuthMethod = oauth2.tokenEndpointAuthMethod,
+    )
+
+    fun toOAuth2(variant: AuthCredential.OAuth2.Variant): AuthCredential.OAuth2 =
+      AuthCredential.OAuth2(
+        variant = variant,
+        clientId = clientId,
+        clientSecret = clientSecret,
+        authUri = authUri,
+        nonce = nonce,
+        state = state,
+        redirectUri = redirectUri,
+        authResponseUri = authResponseUri,
+        authCode = authCode,
+        accessToken = accessToken,
+        refreshToken = refreshToken,
+        idToken = idToken,
+        expiresAt = expiresAt?.let(Instant::fromEpochSeconds),
+        expiresIn = expiresIn?.seconds,
+        audience = audience,
+        prompt = prompt,
+        codeVerifier = codeVerifier,
+        codeChallengeMethod = codeChallengeMethod,
+        tokenEndpointAuthMethod = tokenEndpointAuthMethod,
+      )
   }
 }
