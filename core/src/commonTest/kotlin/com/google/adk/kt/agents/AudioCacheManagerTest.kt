@@ -33,7 +33,7 @@ import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
-/** Covers the recording that `RunConfig.saveLiveBlob` turns on. */
+/** Covers the recording that `LiveRunConfig.saveLiveBlob` turns on. */
 class AudioCacheManagerTest {
 
   private val artifacts = InMemoryArtifactService()
