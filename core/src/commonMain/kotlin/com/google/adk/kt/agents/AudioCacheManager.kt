@@ -72,7 +72,7 @@ internal class RealtimeCache {
 
 /**
  * Collects a live run's audio and writes it to the artifact service a turn at a time, as
- * [RunConfig.saveLiveBlob] asks.
+ * [LiveRunConfig.saveLiveBlob] asks.
  *
  * Chunks accumulate on the context's [RealtimeCache]s. When a turn ends, [flush] joins each side's
  * chunks into one artifact and returns an event that references it.

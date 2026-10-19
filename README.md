@@ -157,7 +157,9 @@ with `CompletableFuture` and Reactive Streams `Publisher`:
 -   **`PublisherRunner`** wraps a runner and streams events as a
     `Publisher<Event>`, which adapts in one line to RxJava
     (`Flowable.fromPublisher(...)`), Reactor (`Flux.from(...)`), or Spring
-    WebFlux.
+    WebFlux; `runLive` (experimental) does the same for a live conversation,
+    which ends when its `LiveRequestQueue` is closed or the model ends the
+    session.
 -   **`BaseFutureTool`, `BaseFutureToolset`, `BaseFuturePlugin`,
     `BasePublisherModel`**, and the `BaseFuture*` session, memory, and artifact
     services let you implement ADK extension points in Java by overriding
