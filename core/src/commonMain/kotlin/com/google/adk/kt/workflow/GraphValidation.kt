@@ -19,12 +19,13 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.fitsInto
 
 /**
  * Checks a graph is runnable, throwing [GraphValidationException] on the first problem.
  *
- * Every rule here rejects a graph that would otherwise fail confusingly at run time, or not fail at
- * all: a node nothing reaches never runs, and an unconditional cycle never terminates.
+ * It rejects an unreachable node, an unconditional cycle, and an edge where some value its source
+ * admits does not fit its target's input schema.
  */
 internal fun validateGraph(nodes: List<Node>, edges: List<Edge>) {
   val nodeNames = validateUniqueNames(nodes)
@@ -34,6 +35,7 @@ internal fun validateGraph(nodes: List<Node>, edges: List<Edge>) {
   validateNoDuplicateEdges(edges)
   validateDefaultRoutes(edges)
   validateNoUnconditionalCycles(edges, nodeNames)
+  validateStaticSchemas(edges)
 }
 
 private fun fail(message: String): Nothing =
@@ -149,4 +151,18 @@ private fun validateNoUnconditionalCycles(edges: List<Edge>, nodeNames: Set<Stri
   }
 
   for (name in nodeNames) if (name !in done) visit(name)
+}
+
+/**
+ * Rejects an edge whose source output schema and target input schema are both set and some value
+ * the source admits does not fit the target, as [fitsInto] decides.
+ */
+private fun validateStaticSchemas(edges: List<Edge>) {
+  for (edge in edges) {
+    val output = edge.from.outputSchema ?: continue
+    val input = edge.to.inputSchema ?: continue
+    if (!output.fitsInto(input)) {
+      fail("Schema mismatch on edge ${edge.from.name} -> ${edge.to.name}.")
+    }
+  }
 }

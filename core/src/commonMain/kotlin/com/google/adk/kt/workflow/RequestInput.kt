@@ -49,7 +49,8 @@ import kotlinx.serialization.json.encodeToJsonElement
  * @property payload Additional structured data for rendering the request.
  * @property responseSchema Optional schema used to validate the user's response. Non-object
  *   responses are unwrapped from the `result` key and parsed from JSON unless the schema accepts a
- *   string.
+ *   string. The answer is checked and saved with the same rules as a node input; a null answer
+ *   fails unless the schema admits null.
  */
 @ExperimentalWorkflowApi
 data class RequestInput(
@@ -116,10 +117,10 @@ data class RequestInput(
 }
 
 /**
- * From a node's body, asks the user for input and ends the run, so a body asks at most once per
- * run. With `rerunOnResume = true` the body reruns and reads the answer from
- * `ctx.resumeInputs[interruptId]`; `ctx.resumeInputs[id] ?: requestInput(id)` asks again on a null
- * answer. Otherwise the answer is the node's output, so pass [responseSchema] to check it.
+ * From a node's body, asks the user for input once per run and ends it. With `rerunOnResume = true`
+ * the body reruns and reads the answer from `ctx.resumeInputs[interruptId]`; `ctx.resumeInputs[id]
+ * ?: requestInput(id)` asks again on a null answer [responseSchema] allows. Otherwise the answer,
+ * checked against any [responseSchema], is the node's output.
  *
  * Catching the throw (`runCatching`, `catch (t: Throwable)`) cancels the request, and the rest of
  * the body runs; `catch (e: Exception)` misses it. The receiver keeps it out of code that has no

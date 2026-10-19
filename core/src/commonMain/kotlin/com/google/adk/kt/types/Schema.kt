@@ -40,12 +40,11 @@ import kotlinx.serialization.Serializable
  *   accepts only `int32` or `int64` for [Type.INTEGER] and [Type.NUMBER], and `enum` or `date-time`
  *   for [Type.STRING]; it rejects a declaration carrying any other value.
  * @property nullable Whether the value may be null.
- * @property default The value to assume when the property is absent. Must be JSON-native -- a
- *   `String`, number, `Boolean`, `Map` or `List` -- since anything else fails to serialize.
- *   Serializing a [Schema] that sets this needs a `Json` whose `serializersModule` carries a
- *   contextual serializer for `Any`; a plain `Json` throws. JSON also has a single number type, so
- *   a numeric default that crosses a JSON boundary comes back as whatever Kotlin type the reader
- *   picks, not necessarily the one it was written as.
+ * @property default The value to assume when the property is absent; workflow checks do not fill it
+ *   in, and a Kotlin class port uses its own defaults. It must be JSON-native (a `String`, number,
+ *   `Boolean`, `Map` or `List`), and serializing it needs a `Json` with a contextual serializer for
+ *   `Any`. A numeric default that crosses a JSON boundary may come back as another Kotlin number
+ *   type.
  * @property anyOf The value must validate against at least one of these subschemas.
  * @property title A title for the schema.
  * @property pattern A regular expression the value must match. Applicable only if `type` is
@@ -63,8 +62,8 @@ import kotlinx.serialization.Serializable
  * @property maxProperties The most allowed properties. Applicable only if `type` is [Type.OBJECT].
  * @property additionalProperties Whether an object may have properties [properties] does not
  *   declare: `null` or `true` allows them, `false` rejects them, and a [Schema] must match each.
- *   Applicable only if `type` is [Type.OBJECT]. Tool and model schemas ignore it, and a [Schema]
- *   value reads back from JSON as a `Map`.
+ *   Applicable only if `type` is [Type.OBJECT]. Workflow checks read it, tool and model schemas
+ *   ignore it; a [Schema] value reads back from JSON as a `Map`.
  */
 @Serializable
 data class Schema

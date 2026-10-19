@@ -62,6 +62,10 @@ class WorkflowSchemaTest {
     val triggers = mapOf("a" to mapOf("count" to 1), "b" to null)
 
     assertEquals(mapOf("count" to 1), node.validateInput(mapOf("count" to 1)))
+    assertEquals(
+      mapOf<String, Any>("count" to 3L, "extra" to 1),
+      node.validateInput(mapOf("count" to "3", "extra" to 1)),
+    )
     assertEquals("raw", SchemaEcho("plain").validateInput("raw"))
     assertEquals(triggers, join.validateInput(triggers))
     assertRejects("validation error: input of node 'echo' does not match its schema: ") {
@@ -106,21 +110,21 @@ class WorkflowSchemaTest {
     // Assert
     assertEquals(mapOf("count" to 1), events.last { it.output != null }.output)
     assertRejects(
-      "validation error: input of node 'c' does not match its schema: Value arg: count"
+      "validation error: input of node 'c' does not match its schema: 'count' is not an integer"
     ) {
       runWorkflow(badInput)
     }
     assertRejects(
-      "validation error: output of node 'n' does not match its schema: Value arg: count"
+      "validation error: output of node 'n' does not match its schema: 'count' is not an integer"
     ) {
       runWorkflow(badOutput)
     }
-    assertRejects("validation error: output of node 'n' does not match its schema.") {
+    assertRejects(
+      "validation error: output of node 'n' does not match its schema: the value is not"
+    ) {
       runWorkflow(badScalarOutput)
     }
-    assertRejects(
-      "validation error: output of workflow 'wf' does not match its schema: Value arg"
-    ) {
+    assertRejects("validation error: output of workflow 'wf' does not match its schema: 'count'") {
       runWorkflow(badWorkflowOutput)
     }
   }
@@ -183,18 +187,24 @@ class WorkflowSchemaTest {
     val box = runWorkflow(writing("box", mapOf("count" to 1)))
     val removed = runWorkflow(writing("count", State.REMOVED))
     val scoped = runWorkflow(writing("app:any", "raw"))
+    val quoted = runWorkflow(writing("count", "3"))
+    val whole = runWorkflow(writing("count", 100.0))
 
     // Assert
     assertEquals(mapOf("count" to 1), box.written("box"))
+    assertEquals(3L, quoted.written("count"))
+    assertEquals(100L, whole.written("count"))
     assertEquals(State.REMOVED, removed.written("count"))
     assertEquals("raw", scoped.written("app:any"))
     assertRejects("validation error: state key 'other' is not declared") {
       runWorkflow(writing("other", 1))
     }
-    assertRejects("validation error: state key 'count' does not match its schema.") {
+    assertRejects(
+      "validation error: state key 'count' does not match its schema: the value is not"
+    ) {
       runWorkflow(writing("count", secret))
     }
-    assertRejects("validation error: state key 'box' does not match its schema: Value arg: count") {
+    assertRejects("validation error: state key 'box' does not match its schema: 'count' is not") {
       runWorkflow(writing("box", mapOf("count" to secret)))
     }
   }
@@ -212,13 +222,21 @@ class WorkflowSchemaTest {
 
     // Act
     val events = runWorkflow(delta(1, merge = false))
+    val emitted = runWorkflow(delta("3", merge = false))
+    val merged = runWorkflow(delta("2", merge = true))
 
     // Assert
     assertEquals(1, events.first { "count" in it.actions.stateDelta }.actions.stateDelta["count"])
-    assertRejects("validation error: state key 'count' does not match its schema.") {
+    assertEquals(3L, emitted.first { "count" in it.actions.stateDelta }.actions.stateDelta["count"])
+    assertEquals(2L, merged.first { "count" in it.actions.stateDelta }.actions.stateDelta["count"])
+    assertRejects(
+      "validation error: state key 'count' does not match its schema: the value is not"
+    ) {
       runWorkflow(delta(secret, merge = false))
     }
-    assertRejects("validation error: state key 'count' does not match its schema.") {
+    assertRejects(
+      "validation error: state key 'count' does not match its schema: the value is not"
+    ) {
       runWorkflow(delta(secret, merge = true))
     }
   }

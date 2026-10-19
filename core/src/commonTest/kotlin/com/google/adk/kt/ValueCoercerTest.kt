@@ -313,4 +313,20 @@ class ValueCoercerTest {
     // Assert
     assertTrue(result.isSuccess)
   }
+
+  @Test
+  fun coerceValue_missingKeyWithADefault_staysMissing() {
+    // Arrange
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("limit" to Schema(type = Type.INTEGER, default = 10)),
+      )
+
+    // Act
+    val read = coerce(emptyMap<String, Any>(), schema)
+
+    // Assert
+    assertEquals(emptyMap<String, Any>(), read)
+  }
 }
