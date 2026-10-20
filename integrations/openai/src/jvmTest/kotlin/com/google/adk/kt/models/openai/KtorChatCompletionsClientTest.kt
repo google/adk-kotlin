@@ -238,6 +238,15 @@ class KtorChatCompletionsClientTest {
   }
 
   @Test
+  fun create_timeoutClosesTheConnectionWhileTheBodyStalls() {
+    // Declares a body it never sends.
+    val headers = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 64\r\n\r\n"
+    assertTimeoutClosesTheConnection(headers) {
+      val unused = it.create(request())
+    }
+  }
+
+  @Test
   fun createStream_timeoutClosesTheConnectionWhileHeadersAreLate() {
     assertTimeoutClosesTheConnection { it.createStream(request()).toList() }
   }
@@ -383,11 +392,9 @@ class KtorChatCompletionsClientTest {
 
   @Test
   fun create_cancellationClosesTheConnectionWhileTheResponseStalls() {
-    val closed = cancelAgainstAStalledServer {
+    assertCancellationClosesTheConnection {
       val unused = it.create(request())
     }
-
-    assertThat(closed).isTrue()
   }
 
   @Test
@@ -602,7 +609,7 @@ class KtorChatCompletionsClientTest {
   }
 
   @Test
-  fun createStream_doesNotRetryAfterTheFirstEvent() {
+  fun createStream_failsWithoutRetryWhenTheBodyIsCutAfterAnEvent() {
     ServerSocket(0).use { listener ->
       val connections = AtomicInteger()
       val firstEventSeen = CompletableFuture<Unit>()
@@ -630,7 +637,7 @@ class KtorChatCompletionsClientTest {
         )
       val received = mutableListOf<ChatCompletionResponse>()
 
-      val result = runCatching {
+      assertFailsWith<IOException> {
         runBlocking {
           withTimeout(10.seconds) {
             client.createStream(request()).collect {
@@ -644,8 +651,37 @@ class KtorChatCompletionsClientTest {
       // A retry would repeat output the caller has already seen.
       assertThat(received).isNotEmpty()
       assertThat(connections.get()).isEqualTo(1)
-      // Ktor 2's OkHttp engine can end a cut stream as if it were complete; Ktor 3 raises this.
-      result.exceptionOrNull()?.let { assertThat(it).isInstanceOf(IOException::class.java) }
+    }
+  }
+
+  @Test
+  fun createStream_failsWhenTheBodyIsCutWhileEventsAreBuffered() {
+    // Declares twice the body it sends, then drops the connection at once.
+    val body = "data: {\"choices\":[]}\n\n".repeat(2_000)
+    val response =
+      "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n" +
+        "content-length: ${body.length * 2}\r\n\r\n$body"
+    ServerSocket(0).use { listener ->
+      thread(isDaemon = true) {
+        while (true) {
+          val socket = runCatching { listener.accept() }.getOrNull() ?: break
+          socket.use {
+            readRequest(it.getInputStream())
+            it.getOutputStream().apply { write(response.toByteArray()) }.flush()
+          }
+        }
+      }
+      val client =
+        KtorChatCompletionsClient(
+          { emptyMap() },
+          HttpOptions(baseUrl = "http://localhost:${listener.localPort}"),
+          retryDelay = { _, _ -> Duration.ZERO },
+        )
+
+      // Only some attempts see the cut land inside a line read, between Ktor's checks.
+      repeat(200) {
+        assertFailsWith<IOException> { runBlocking { client.createStream(request()).collect {} } }
+      }
     }
   }
 
@@ -761,28 +797,54 @@ class KtorChatCompletionsClientTest {
   }
 
   @Test
-  fun createStream_cancellationReturnsPromptlyWhileTheBodyStalls() {
-    // Headers arrive at once, then the body stalls; Ktor 2's OkHttp engine may keep it open.
-    val headers =
-      "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n"
-    val unused =
-      cancelAgainstAStalledServer(headers, awaitClose = false) {
-        it.createStream(request()).toList()
-      }
+  fun createStream_acceptsCrAndCrlfLineEndings() {
+    server.enqueue(
+      sseResponse("data: {\"choices\":[]}\r\rdata: {\"choices\":[]}\r\n\r\ndata: [DONE]\r\r")
+    )
+
+    val chunks = runBlocking { client.createStream(request()).toList() }
+
+    assertThat(chunks).hasSize(2)
+  }
+
+  @Test
+  fun createStream_cancellationClosesTheConnectionWhileTheBodyStalls() {
+    // One event arrives, then the body stalls.
+    val event = "data: {\"choices\":[]}\n\n"
+    val response =
+      "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n" +
+        "${event.length.toString(16)}\r\n$event\r\n"
+    val firstEvent = CompletableFuture<Unit>()
+    assertCancellationClosesTheConnection(response, ready = firstEvent) {
+      it.createStream(request()).collect { firstEvent.complete(Unit) }
+    }
   }
 
   /**
-   * Runs [call] with a short timeout against a server that never answers, and checks that the
-   * timed-out attempt does not keep its connection open, since it is retried.
+   * Runs [call] with a short timeout against a server that sends [response] to each attempt and
+   * then stalls. Checks that every timed-out attempt closes its connection, so retries do not pile
+   * up.
    */
-  private fun assertTimeoutClosesTheConnection(call: suspend (KtorChatCompletionsClient) -> Unit) {
+  private fun assertTimeoutClosesTheConnection(
+    response: String = "",
+    call: suspend (KtorChatCompletionsClient) -> Unit,
+  ) {
     ServerSocket(0).use { listener ->
-      val closed = CompletableFuture.runAsync {
-        listener.accept().use { socket ->
-          // Returns, or fails with a reset, only once the client closes the connection.
-          runCatching {
-            val unused = socket.getInputStream().readAllBytes()
+      // The first attempt and its two retries.
+      val closed = CountDownLatch(3)
+      // One at a time, so an attempt the client leaves open blocks the ones after it.
+      thread(isDaemon = true) {
+        while (true) {
+          val socket = runCatching { listener.accept() }.getOrNull() ?: break
+          socket.use {
+            readRequest(it.getInputStream())
+            it.getOutputStream().apply { write(response.toByteArray()) }.flush()
+            // Returns, or fails with a reset, only once the client closes the connection.
+            runCatching {
+              val unused = it.getInputStream().readAllBytes()
+            }
           }
+          closed.countDown()
         }
       }
       val client =
@@ -797,20 +859,20 @@ class KtorChatCompletionsClientTest {
 
       assertFailsWith<HttpRequestTimeoutException> { runBlocking { call(client) } }
 
-      closed.get(5, TimeUnit.SECONDS)
+      assertThat(closed.await(5, TimeUnit.SECONDS)).isTrue()
     }
   }
 
   /**
-   * Cancels [call] once a server has its request, then sends [response] and stalls; checks that the
-   * caller gets control back at once and, if [awaitClose], returns whether the client then closed
-   * the connection.
+   * Runs [call] against a server that sends [response] and then stalls. Cancels it once the server
+   * has the request and [ready] is complete. Checks that the caller gets control back at once and
+   * that the client closes the connection.
    */
-  private fun cancelAgainstAStalledServer(
+  private fun assertCancellationClosesTheConnection(
     response: String = "",
-    awaitClose: Boolean = true,
+    ready: CompletableFuture<*> = CompletableFuture.completedFuture(Unit),
     call: suspend (KtorChatCompletionsClient) -> Unit,
-  ): Boolean {
+  ) {
     ServerSocket(0).use { listener ->
       val requestReceived = CompletableFuture<Socket>()
       val closed = CompletableFuture<Unit>()
@@ -838,17 +900,25 @@ class KtorChatCompletionsClientTest {
 
       runBlocking {
         val running = launch {
-          // Cancelling closes the socket, so the call can end with a SocketException instead.
-          val unusedResult = runCatching { call(client) }
+          // Cancelling can fail the call; an earlier failure fails the waits below at once.
+          val unusedResult =
+            runCatching { call(client) }
+              .onFailure {
+                requestReceived.completeExceptionally(it)
+                ready.completeExceptionally(it)
+              }
         }
         val unused = withTimeout(5.seconds) { requestReceived.await() }
+        val unusedReady = withTimeout(5.seconds) { ready.await() }
         val elapsed = measureTime { running.cancelAndJoin() }
         assertThat(elapsed.inWholeMilliseconds).isLessThan(5_000)
       }
 
-      val closedByClient = awaitClose && runCatching { closed.get(5, TimeUnit.SECONDS) }.isSuccess
-      requestReceived.getNow(null)?.close()
-      return closedByClient
+      try {
+        closed.get(5, TimeUnit.SECONDS)
+      } finally {
+        requestReceived.getNow(null)?.close()
+      }
     }
   }
 
