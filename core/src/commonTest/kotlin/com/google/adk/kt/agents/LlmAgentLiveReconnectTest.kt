@@ -19,9 +19,11 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.AfterModelCallback
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmRequest
@@ -44,13 +46,21 @@ import com.google.adk.kt.testing.goAway
 import com.google.adk.kt.testing.handleUpdate
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.storedBytes
 import com.google.adk.kt.testing.turnComplete
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.InteractionStatus
 import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.types.Transcription
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
@@ -58,6 +68,7 @@ import com.google.genai.kotlin.GenAiApiException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
@@ -68,6 +79,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -131,7 +143,10 @@ class LlmAgentLiveReconnectTest {
         inner.receive().collect { response ->
           // A real transport suspends here; emitting straight through would starve the send loop.
           yield()
-          emit(response)
+          // A server that has nothing more to say keeps the socket open without a frame.
+          if (response == STALL_MARKER) awaitCancellation()
+          // A model pausing mid-turn sends nothing for a while.
+          if (response == PAUSE_MARKER) delay(1_500.milliseconds) else emit(response)
           // Like Gemini 3.x, a turn that called a tool stays open until the answer arrives.
           if (response.content?.parts.orEmpty().any { it.functionCall != null }) {
             withTimeoutOrNull(5.seconds) { answered.await() }
@@ -180,11 +195,16 @@ class LlmAgentLiveReconnectTest {
     }
   }
 
-  /** Hands out one connection per connect, so a reconnect is observable. */
+  /**
+   * Hands out one connection per connect, so a reconnect is observable. [queue] is there for a test
+   * to pass to the run and reach from its event callbacks.
+   */
   private class ReconnectingLiveModel(
     private val scripts: List<ConnectionScript>,
     onSendRealtime: suspend () -> Unit = {},
+    onSendContent: suspend (Content) -> Unit = {},
     beforeSendDrop: suspend () -> Unit = {},
+    val queue: LiveRequestQueue = LiveRequestQueue(),
   ) : Model {
     override val name = "scripted-live"
 
@@ -220,6 +240,7 @@ class LlmAgentLiveReconnectTest {
         onSend = { index, message ->
           if (scriptEndsMidOutage || index < scripts.size) {
             if (message is RealtimeInput) onSendRealtime()
+            if (message is ContentInput) onSendContent(message.content)
             faults.getOrNull(index)?.apply(message)
           }
         },
@@ -284,6 +305,9 @@ class LlmAgentLiveReconnectTest {
 
   private fun toolCall(id: String) = modelFunctionCallResponse("get_weather", id = id)
 
+  /** How many times the agent's get_weather tool ran. */
+  private var weatherRuns = 0
+
   private fun text(value: String) = LlmResponse(content = modelMessage(value))
 
   private fun runnerFor(
@@ -298,7 +322,9 @@ class LlmAgentLiveReconnectTest {
           instruction = Instruction("be brief"),
           tools =
             listOf(
-              DummyTool(name = "get_weather", declares = true) { _, _ -> mapOf("tempF" to 72) }
+              DummyTool(name = "get_weather", declares = true) { _, _ ->
+                mapOf("tempF" to 72).also { weatherRuns++ }
+              }
             ),
           beforeModelCallbacks = beforeModelCallbacks,
         )
@@ -848,12 +874,883 @@ class LlmAgentLiveReconnectTest {
       .isEqualTo(listOf("only once"))
   }
 
+  @Test
+  fun runLive_goAwayWithTimeLeft_deliversTheRestOfTheTurnBeforeReconnecting(): Unit = runTest {
+    // The server leaves time to finish the turn; reconnecting at once would drop the rest of it.
+    val beforeReconnect = mutableListOf<Event>()
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("speaking"),
+            goAway(timeLeft = 5.seconds),
+            audio(),
+            turnComplete(),
+            STALL_MARKER,
+          )
+        ),
+        onEvent = { model, event -> if (model.connections.size == 1) beforeReconnect += event },
+      )
+
+    assertWithMessage("the model's audio after the go-away should reach the caller")
+      .that(
+        beforeReconnect.any { it.content?.parts?.any { part -> part.inlineData != null } == true }
+      )
+      .isTrue()
+    assertWithMessage("the end of the turn after the go-away should reach the caller")
+      .that(beforeReconnect.any { it.turnComplete })
+      .isTrue()
+    assertThat(resumptionHandles(run.model)).isEqualTo(listOf(null, "h-1"))
+    // The end of the turn ended the drain, so only the first reconnect's backoff came before it.
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_goAwayWithTimeLeftAndNoTurnEnd_reconnectsASecondBeforeTheTimeRunsOut(): Unit =
+    runTest {
+      val run =
+        runThenResume(
+          listOf(
+            listOf(
+              handleUpdate("h-1"),
+              text("speaking"),
+              goAway(timeLeft = 5.seconds),
+              audio(),
+              STALL_MARKER,
+            )
+          )
+        )
+
+      // The drain stops 1 s before the 5 s are up, then waits the first reconnect's backoff.
+      assertThat(run.resumedAt).isAtLeast(4_000L)
+      assertThat(run.resumedAt).isAtMost(4_250L)
+      assertNoConnectionLeaked(run.model, "a drain that ran out of time")
+    }
+
+  @Test
+  fun runLive_drainWithResumption_resumesFromTheHandleSentAfterTheTurn(): Unit = runTest {
+    // The server sends the handle that covers the turn only after it ends.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("speaking"),
+            goAway(timeLeft = 5.seconds),
+            turnComplete(),
+          ),
+          listOf(handleUpdate("h-2"), STALL_MARKER),
+        ),
+        config = RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig())),
+      )
+
+    assertThat(resumptionHandles(run.model)).isEqualTo(listOf(null, "h-2"))
+    // The handle ended the drain, so only the first reconnect's backoff came before the reconnect.
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_drainWithResumptionAndNoHandleAfterTheTurn_reconnectsSoonAfterIt(): Unit = runTest {
+    // A handle that never comes must not hold the user's input until the deadline.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("speaking"),
+            goAway(timeLeft = 30.seconds),
+            turnComplete(),
+          ),
+          listOf(STALL_MARKER),
+        ),
+        config = RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig())),
+      )
+
+    // The drain waits a second for the handle, then the first reconnect's backoff.
+    assertThat(run.resumedAt).isAtLeast(1_000L)
+    assertThat(run.resumedAt).isAtMost(1_250L)
+    assertThat(resumptionHandles(run.model)).isEqualTo(listOf(null, "h-1"))
+  }
+
+  @Test
+  fun runLive_goAwayBetweenTurns_reconnectsAtOnce(): Unit = runTest {
+    // With no turn to finish, a drain would only hold the user's next input.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(handleUpdate("h-1"), text("hi"), turnComplete()),
+          listOf(goAway(timeLeft = 30.seconds), STALL_MARKER),
+        )
+      )
+
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_goAwayWhileTheModelAwaitsAToolAnswer_reconnectsAtOnce(): Unit = runTest {
+    // The model waits for the answer, so its turn ends only once the next connection carries it.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(handleUpdate("h-1"), toolCall("c1"), goAway(timeLeft = 30.seconds), STALL_MARKER)
+        )
+      )
+
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_goAwayAfterABargeIn_reconnectsAtOnce(): Unit = runTest {
+    // The finished transcription that follows the cut-off audio flushes the turn, not reopens it.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            audio(),
+            audio().copy(interrupted = true),
+            LlmResponse(outputTranscription = Transcription(text = "cut", finished = true)),
+            goAway(timeLeft = 30.seconds),
+            STALL_MARKER,
+          )
+        )
+      )
+
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_interruptionDuringTheDrain_endsIt(): Unit = runTest {
+    // The interrupted model listens to input that the stopped sender holds, so waiting is futile.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("speaking"),
+            goAway(timeLeft = 30.seconds),
+            LlmResponse(interrupted = true),
+            STALL_MARKER,
+          )
+        )
+      )
+
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_goAwayDuringASlowSend_cutsItAndKeepsReading(): Unit = runTest {
+    // A send that hangs must not stop the reading; the cut chunk goes to the next connection.
+    var slowed = false
+    val model =
+      ReconnectingLiveModel(
+        listOf(
+          listOf(
+            listOf(
+              handleUpdate("h-1"),
+              text("speaking"),
+              goAway(timeLeft = 5.seconds),
+              text("finishing"),
+              turnComplete(),
+            )
+          ),
+          listOf(listOf(text("resumed"), turnComplete())),
+        ),
+        onSendRealtime = {
+          if (!slowed) {
+            slowed = true
+            delay(6.seconds)
+          }
+        },
+      )
+    model.queue.sendRealtime(
+      RealtimeInput.Audio(Blob(mimeType = "audio/pcm", data = byteArrayOf(7)))
+    )
+    var resumedAt: Long? = null
+
+    val unused =
+      runnerFor(model)
+        .runLive("u", "s", model.queue)
+        .onEach { if (it.hasText("resumed")) resumedAt = testScheduler.currentTime }
+        .toList()
+
+    assertThat(resumedAt).isAtMost(250L)
+    assertThat(model.connections[1].sentRealtime).hasSize(1)
+  }
+
+  @Test
+  fun runLive_goAwayDuringASlowScreen_keepsReadingAndReplaysTheInput(): Unit = runTest {
+    // The go-away stops a slow callback at once; the input screens again on the next connection.
+    var slowed = false
+    val slowScreening = BeforeModelCallback { _, request ->
+      if (!slowed) {
+        slowed = true
+        delay(6.seconds)
+      }
+      CallbackChoice.Continue(request)
+    }
+    val model =
+      ReconnectingLiveModel(
+        listOf(
+          listOf(
+            listOf(
+              handleUpdate("h-1"),
+              text("speaking"),
+              goAway(timeLeft = 5.seconds),
+              STALL_MARKER,
+            )
+          ),
+          listOf(listOf(text("resumed"), turnComplete())),
+        )
+      )
+    val runner = runnerFor(model, beforeModelCallbacks = listOf(slowScreening))
+    model.queue.sendContent(userMessage("first"))
+    var resumedAt: Long? = null
+
+    val unused =
+      runner
+        .runLive("u", "s", model.queue)
+        .onEach { if (it.hasText("resumed")) resumedAt = testScheduler.currentTime }
+        .toList()
+
+    assertThat(resumedAt).isAtLeast(4_000L)
+    assertThat(resumedAt).isAtMost(4_250L)
+    assertThat(model.connections[1].sentTexts()).isEqualTo(listOf("first"))
+    assertWithMessage("the input should be stored once")
+      .that(storedUserTexts(runner))
+      .isEqualTo(listOf("first"))
+  }
+
+  @Test
+  fun runLive_inputQueuedDuringTheDrain_goesToTheNextConnectionOnce(): Unit = runTest {
+    // Input sent to the connection that is going away would start a turn it cannot finish.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("speaking"),
+            goAway(timeLeft = 5.seconds),
+            text("finishing"),
+            turnComplete(),
+          )
+        ),
+        onEvent = { model, event ->
+          if (event.hasText("finishing")) model.queue.sendContent(userMessage("queued"))
+        },
+      )
+
+    assertThat(run.model.connections[0].sentTexts()).isEmpty()
+    assertThat(run.model.connections[1].sentTexts()).isEqualTo(listOf("queued"))
+    assertWithMessage("the input should be stored once")
+      .that(storedUserTexts(run.runner))
+      .isEqualTo(listOf("queued"))
+  }
+
+  @Test
+  fun runLive_goAwayDuringASend_cutsItAndReplaysItOnceOnTheResumedSession(): Unit = runTest {
+    // The go-away stops the sender mid-send, so the reading goes on and the send is redone.
+    var screened = 0
+    val counting = BeforeModelCallback { _, request ->
+      if (request.contents.any { content -> content.parts.any { it.text == "first" } }) screened++
+      CallbackChoice.Continue(request)
+    }
+    val run =
+      runWithASendAtTheGoAway(
+        listOf(handleUpdate("h-1"), text("speaking"), goAway(timeLeft = 5.seconds), turnComplete()),
+        beforeModelCallbacks = listOf(counting),
+      )
+
+    assertThat(run.resumedAt).isAtMost(250L)
+    assertThat(run.model.connections[0].sentTexts()).isEqualTo(listOf("first"))
+    assertThat(run.model.connections[1].sentTexts()).isEqualTo(listOf("first", "second"))
+    assertWithMessage("each input should be stored once")
+      .that(storedUserTexts(run.runner))
+      .isEqualTo(listOf("first", "second"))
+    assertWithMessage("the cut input should be screened once").that(screened).isEqualTo(1)
+  }
+
+  @Test
+  fun runLive_goAwayDuringASendWithNoHandle_restartsWithTheNextInput(): Unit = runTest {
+    // The restarted turn reads the queue afresh, so the stopped sender must not take from it.
+    val run =
+      runWithASendAtTheGoAway(
+        listOf(text("speaking"), goAway(timeLeft = 5.seconds), text("finishing"), turnComplete())
+      )
+
+    assertThat(resumptionHandles(run.model)).isEqualTo(listOf(null, null))
+    assertThat(run.model.connections[1].sentTexts()).isEqualTo(listOf("second"))
+    assertWithMessage("the cut input was stored, so the fresh session's history has it")
+      .that(run.model.connections[1].sentHistory.single().flatMap { it.parts }.map { it.text })
+      .contains("first")
+    assertWithMessage("each input should be stored once")
+      .that(storedUserTexts(run.runner))
+      .isEqualTo(listOf("first", "second"))
+  }
+
+  @Test
+  fun runLive_responseInHandAtTheDeadline_stillReachesTheCaller(): Unit = runTest {
+    // The deadline waits for a response being handled, here one a slow callback screens.
+    val slowScreening = AfterModelCallback { _, response ->
+      if (response.outputTranscription?.text == "slow") delay(3.seconds)
+      response
+    }
+    val model =
+      ReconnectingLiveModel(
+        listOf(
+          listOf(
+            listOf(
+              handleUpdate("h-1"),
+              text("speaking"),
+              goAway(timeLeft = 2.seconds),
+              LlmResponse(outputTranscription = Transcription(text = "slow")),
+              STALL_MARKER,
+            )
+          ),
+          listOf(listOf(text("resumed"), turnComplete())),
+        )
+      )
+    val agent =
+      LlmAgent(name = "live_agent", model = model, afterModelCallbacks = listOf(slowScreening))
+
+    val events = InMemoryRunner(agent = agent).runLive("u", "s", model.queue).toList()
+
+    assertWithMessage("the response screened past the deadline should reach the caller")
+      .that(events.any { it.outputTranscription?.text == "slow" })
+      .isTrue()
+  }
+
+  @Test
+  fun runLive_dropDuringTheDrainWithNoHandle_restartsFresh(): Unit = runTest {
+    // After a go-away the session ends anyway, so a drop before the turn ends is not a failure.
+    val (runner, model) =
+      runnerFor(
+        listOf(listOf(text("speaking"), goAway(timeLeft = 5.seconds), DROP_MARKER)),
+        listOf(listOf(text("fresh"), turnComplete())),
+      )
+
+    val events = runner.runLive("u", "s", model.queue).toList()
+
+    assertThat(resumptionHandles(model)).isEqualTo(listOf(null, null))
+    assertWithMessage("the fresh session should carry on")
+      .that(events.any { it.hasText("fresh") })
+      .isTrue()
+  }
+
+  @Test
+  fun runLive_hangUpDuringTheDrain_endsItAtOnce(): Unit = runTest {
+    // Nothing follows a hang-up, so the drain does not wait out the time left.
+    val unused =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("speaking"),
+            goAway(timeLeft = 30.seconds),
+            text("bye"),
+            STALL_MARKER,
+          )
+        ),
+        onEvent = { model, event -> if (event.hasText("bye")) model.queue.close() },
+      )
+
+    // Only the first reconnect's backoff follows the hang-up.
+    assertThat(testScheduler.currentTime).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_toolCallDuringTheDrain_runsOnlyWhenCalledAgainOnTheNextConnection(): Unit = runTest {
+    // A handle after the call would resume a session waiting on it, so the one before is used.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            // Answered before the go-away, so the fake server holds no later call's turn open.
+            toolCall("c0"),
+            handleUpdate("h-1"),
+            text("checking"),
+            goAway(timeLeft = 5.seconds),
+            toolCall("c1"),
+            text("more"),
+            turnComplete(),
+            handleUpdate("h-2"),
+          )
+        ),
+        config = RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig())),
+        resumed = listOf(toolCall("c2"), text("resumed"), turnComplete()),
+      )
+
+    assertWithMessage("the call read during the drain should not reach the caller")
+      .that(run.events.none { event -> event.functionCalls().any { it.id == "c1" } })
+      .isTrue()
+    assertWithMessage("only the calls made outside the drain should be answered")
+      .that(
+        run.model.connections
+          .flatMap { it.sentContent }
+          .flatMap { it.parts }
+          .mapNotNull { it.functionResponse?.id }
+      )
+      .isEqualTo(listOf("c0", "c2"))
+    assertThat(resumptionHandles(run.model)).isEqualTo(listOf(null, "h-1"))
+    // The drain ended at the turn's end without waiting for a handle, then the backoff.
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  @Test
+  fun runLive_toolCallDuringTheDrainWithNoHandle_runsItAndLeavesTheAnswerToTheFreshSession(): Unit =
+    runTest {
+      // Nothing resumes from before the call, so it runs here and the fresh history ends with it.
+      val run =
+        runThenResume(
+          listOf(
+            listOf(text("checking"), goAway(timeLeft = 5.seconds), toolCall("c1"), STALL_MARKER)
+          )
+        )
+
+      assertThat(weatherRuns).isEqualTo(1)
+      assertWithMessage("the answer goes only in the fresh history, never on a connection")
+        .that(
+          run.model.connections
+            .flatMap { it.sentContent }
+            .flatMap { it.parts }
+            .filter { it.functionResponse != null }
+        )
+        .isEmpty()
+      assertThat(resumptionHandles(run.model)).isEqualTo(listOf(null, null))
+      val last = run.model.connections[1].sentHistory.single().last()
+      assertThat(last.role).isEqualTo(Role.USER)
+      assertThat(last.parts.mapNotNull { it.functionResponse?.id }).isEqualTo(listOf("c1"))
+    }
+
+  @Test
+  fun runLive_streamingCallDuringTheDrain_isDroppedWithOrWithoutAHandle(): Unit = runTest {
+    // Its answer would start the stream on a connection that is going away.
+    for (beforeGoAway in listOf(listOf(handleUpdate("h-1")), emptyList())) {
+      var streams = 0
+      val model =
+        ReconnectingLiveModel(
+          listOf(
+            listOf(
+              beforeGoAway +
+                listOf(
+                  text("watching"),
+                  goAway(timeLeft = 5.seconds),
+                  modelFunctionCallResponse("monitor", id = "s1"),
+                  turnComplete(),
+                )
+            ),
+            listOf(listOf(text("resumed"), turnComplete())),
+          )
+        )
+      val agent =
+        LlmAgent(name = "live_agent", model = model, tools = listOf(StreamingTool { streams++ }))
+
+      val events = InMemoryRunner(agent = agent).runLive("u", "s", model.queue).toList()
+
+      assertWithMessage("a handle held: ${beforeGoAway.isNotEmpty()}").that(streams).isEqualTo(0)
+      assertWithMessage("a handle held: ${beforeGoAway.isNotEmpty()}")
+        .that(events.none { event -> event.functionCalls().any { it.id == "s1" } })
+        .isTrue()
+    }
+  }
+
+  @Test
+  fun runLive_streamingAndRegularCallDuringTheDrainWithNoHandle_runsOnlyTheRegularOne(): Unit =
+    runTest {
+      var streams = 0
+      val both =
+        LlmResponse(
+          content =
+            modelMessage(
+              Part(functionCall = FunctionCall(name = "monitor", args = emptyMap(), id = "s1")),
+              Part(functionCall = FunctionCall(name = "get_weather", args = emptyMap(), id = "c1")),
+            )
+        )
+      val model =
+        ReconnectingLiveModel(
+          listOf(
+            listOf(listOf(text("checking"), goAway(timeLeft = 5.seconds), both, STALL_MARKER)),
+            listOf(listOf(text("resumed"), turnComplete())),
+          )
+        )
+      val weather =
+        DummyTool(name = "get_weather", declares = true) { _, _ ->
+          mapOf("tempF" to 72).also { weatherRuns++ }
+        }
+      val agent =
+        LlmAgent(
+          name = "live_agent",
+          model = model,
+          tools = listOf(weather, StreamingTool { streams++ }),
+        )
+
+      val events = InMemoryRunner(agent = agent).runLive("u", "s", model.queue).toList()
+
+      assertThat(weatherRuns).isEqualTo(1)
+      assertThat(streams).isEqualTo(0)
+      assertWithMessage("the streaming call should not reach the caller")
+        .that(events.none { event -> event.functionCalls().any { it.id == "s1" } })
+        .isTrue()
+      assertWithMessage("the answer goes only in the fresh history, never on a connection")
+        .that(
+          model.connections
+            .flatMap { it.sentContent }
+            .flatMap { it.parts }
+            .filter { it.functionResponse != null }
+        )
+        .isEmpty()
+      val last = model.connections[1].sentHistory.single().last()
+      assertThat(last.role).isEqualTo(Role.USER)
+      assertThat(last.parts.mapNotNull { it.functionResponse?.id }).isEqualTo(listOf("c1"))
+    }
+
+  @Test
+  fun runLive_modelTalksOnAfterACallDuringTheDrain_keepsReadingTheTurn(): Unit = runTest {
+    // A call the model talks past, as a non-blocking one, leaves the rest of its turn to read.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            // Answered before the go-away, so the fake server holds no later call's turn open.
+            toolCall("c0"),
+            // Held, so the call read during the drain is dropped.
+            handleUpdate("h-1"),
+            text("checking"),
+            goAway(timeLeft = 5.seconds),
+            toolCall("c1"),
+            text("meanwhile"),
+            // Past the call's one second, which the model's talking on has already cleared.
+            PAUSE_MARKER,
+            text("after"),
+            turnComplete(),
+          )
+        )
+      )
+
+    assertWithMessage("speech after the call should reach the caller before the reconnect")
+      .that(run.events.any { it.hasText("after") })
+      .isTrue()
+    assertWithMessage("only the call before the go-away should run").that(weatherRuns).isEqualTo(1)
+  }
+
+  @Test
+  fun runLive_silenceAfterACallDuringTheDrain_endsItASecondLater(): Unit = runTest {
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            toolCall("c0"),
+            text("checking"),
+            goAway(timeLeft = 5.seconds),
+            toolCall("c1"),
+            // Neither is content: a transcript may trail the call, and the turn may wait on it.
+            LlmResponse(outputTranscription = Transcription(text = "ther", finished = false)),
+            LlmResponse(turnComplete = true, interactionStatus = InteractionStatus.IN_PROGRESS),
+            STALL_MARKER,
+          )
+        )
+      )
+
+    assertThat(run.resumedAt).isAtLeast(1_000L)
+    assertThat(run.resumedAt).isAtMost(1_250L)
+  }
+
+  @Test
+  fun runLive_goAwayWithoutTimeLeft_stopsReadingAtOnce(): Unit = runTest {
+    assertStopsReadingAtOnce(goAway())
+  }
+
+  @Test
+  fun runLive_goAwayWithOneSecondLeft_stopsReadingAtOnce(): Unit = runTest {
+    // The drain keeps one second in hand, so this leaves it no time.
+    assertStopsReadingAtOnce(goAway(timeLeft = 1.seconds))
+  }
+
+  @Test
+  fun runLive_goAwayWithoutTimeLeftDuringTheDrain_stopsReadingAtOnce(): Unit = runTest {
+    // A later notice that leaves no time overrides the drain an earlier one started.
+    val run =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("speaking"),
+            goAway(timeLeft = 5.seconds),
+            goAway(),
+            text("cut off"),
+            turnComplete(),
+          )
+        )
+      )
+
+    assertWithMessage("nothing after the second notice should be read")
+      .that(run.events.none { it.hasText("cut off") })
+      .isTrue()
+  }
+
+  @Test
+  fun runLive_transferDuringTheDrain_handsOverOnlyWhenCalledAgainOnTheNextConnection(): Unit =
+    runTest {
+      // A transfer is a call too, so the parent hands over once the model makes it again.
+      var parentConnects = 0
+      var parentConnectsAtHandover: Int? = null
+      val childModel =
+        DummyLiveModel.perConnection(
+          listOf(listOf(Respond(text("child")), EndStream)),
+          onConnect = { parentConnectsAtHandover = parentConnects },
+        )
+      val parentModel =
+        DummyLiveModel.perConnection(
+          listOf(
+            listOf(
+              Respond(handleUpdate("h-1")),
+              Respond(text("transferring")),
+              Respond(goAway(timeLeft = 30.seconds)),
+              Respond(modelTransferToAgentResponse("child")),
+              EndStream,
+            ),
+            listOf(Respond(modelTransferToAgentResponse("child")), EndStream),
+          ),
+          afterScripts = listOf(EndStream),
+          onConnect = { parentConnects++ },
+        )
+      val child = LlmAgent(name = "child", description = "c", model = childModel)
+      val parent = LlmAgent(name = "parent", model = parentModel, subAgents = listOf(child))
+
+      val unused = InMemoryRunner(agent = parent).runLive("u", "s", LiveRequestQueue()).toList()
+
+      assertThat(parentConnectsAtHandover).isEqualTo(2)
+      assertThat(childModel.connections).hasSize(1)
+    }
+
+  @Test
+  fun runLive_transferDuringTheDrainWithNoHandle_handsOverAtOnce(): Unit = runTest {
+    // With nothing to resume from, the transfer runs on the connection going away.
+    var parentConnects = 0
+    var childConnectedAt: Long? = null
+    val childModel =
+      DummyLiveModel.perConnection(
+        listOf(listOf(Respond(text("child")), EndStream)),
+        onConnect = { childConnectedAt = testScheduler.currentTime },
+      )
+    val parentModel =
+      DummyLiveModel.perConnection(
+        listOf(
+          listOf(
+            Respond(text("transferring")),
+            Respond(goAway(timeLeft = 30.seconds)),
+            Respond(modelTransferToAgentResponse("child")),
+            EndStream,
+          )
+        ),
+        afterScripts = listOf(EndStream),
+        onConnect = { parentConnects++ },
+      )
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent = LlmAgent(name = "parent", model = parentModel, subAgents = listOf(child))
+
+    val unused = InMemoryRunner(agent = parent).runLive("u", "s", LiveRequestQueue()).toList()
+
+    assertThat(parentConnects).isEqualTo(1)
+    assertThat(childConnectedAt).isLessThan(1_000L)
+    assertWithMessage("the answer should not go to the connection that is going away")
+      .that(parentModel.connections.single().sent.filterIsInstance<ContentInput>())
+      .isEmpty()
+    assertWithMessage("nor to the child")
+      .that(
+        childModel.connections.single().sent.filterIsInstance<ContentInput>().flatMap {
+          it.content.parts.mapNotNull { part -> part.functionResponse }
+        }
+      )
+      .isEmpty()
+  }
+
+  @Test
+  fun runLive_callbackTransferDuringTheDrain_handsOverWithoutTheSettlePause(): Unit = runTest {
+    // The drain closes this connection anyway, so the child skips the settle pause.
+    var childConnectedAt: Long? = null
+    val childModel =
+      DummyLiveModel.perConnection(
+        listOf(listOf(Respond(text("child")), EndStream)),
+        onConnect = { childConnectedAt = testScheduler.currentTime },
+      )
+    val parentModel =
+      DummyLiveModel.perConnection(
+        listOf(
+          listOf(
+            Respond(handleUpdate("h-1")),
+            Respond(text("talking")),
+            Respond(goAway(timeLeft = 30.seconds)),
+            Respond(LlmResponse(outputTranscription = Transcription(text = "over"))),
+            EndStream,
+          )
+        ),
+        afterScripts = listOf(EndStream),
+      )
+    val transferring = AfterModelCallback { context, response ->
+      context.eventActions.transferToAgent = "child"
+      response
+    }
+    val child = LlmAgent(name = "child", description = "c", model = childModel)
+    val parent =
+      LlmAgent(
+        name = "parent",
+        model = parentModel,
+        subAgents = listOf(child),
+        afterModelCallbacks = listOf(transferring),
+      )
+
+    val unused = InMemoryRunner(agent = parent).runLive("u", "s", LiveRequestQueue()).toList()
+
+    assertThat(childConnectedAt).isLessThan(1_000L)
+    assertWithMessage("a callback's transfer has no tool answer to pass on")
+      .that(
+        childModel.connections.single().sent.filterIsInstance<ContentInput>().flatMap {
+          it.content.parts.mapNotNull { part -> part.functionResponse }
+        }
+      )
+      .isEmpty()
+  }
+
+  @Test
+  fun runLive_turnStillInProgressDuringTheDrain_keepsReadingUntilTheModelIsDone(): Unit = runTest {
+    // A turn completed while the interaction is still in progress means more output follows.
+    val beforeReconnect = mutableListOf<Event>()
+    val unused =
+      runThenResume(
+        listOf(
+          listOf(
+            handleUpdate("h-1"),
+            text("thinking"),
+            goAway(timeLeft = 5.seconds),
+            LlmResponse(turnComplete = true, interactionStatus = InteractionStatus.IN_PROGRESS),
+          ),
+          listOf(text("follow-up"), turnComplete()),
+        ),
+        onEvent = { model, event -> if (model.connections.size == 1) beforeReconnect += event },
+      )
+
+    assertWithMessage("output after an in-progress turn end should arrive before the reconnect")
+      .that(beforeReconnect.any { it.hasText("follow-up") })
+      .isTrue()
+  }
+
+  /**
+   * The result of [runThenResume]: its runner, model and events, and when the resumed turn came.
+   */
+  private class ResumedRun(
+    val runner: InMemoryRunner,
+    val model: ReconnectingLiveModel,
+    val events: List<Event>,
+    /** The test time at which "resumed" reached the caller, or null if it never did. */
+    val resumedAt: Long?,
+  )
+
+  /**
+   * Runs [first] on the first connection and a resumed turn on the second, passing each event to
+   * [onEvent] as it reaches the caller.
+   */
+  private suspend fun TestScope.runThenResume(
+    first: ConnectionScript,
+    config: RunConfig? = null,
+    resumed: ScriptedTurn = listOf(text("resumed"), turnComplete()),
+    onEvent: suspend (model: ReconnectingLiveModel, event: Event) -> Unit = { _, _ -> },
+  ): ResumedRun {
+    val model = ReconnectingLiveModel(listOf(first, listOf(resumed)))
+    val runner = runnerFor(model)
+    var resumedAt: Long? = null
+    val events =
+      runner
+        .runLive("u", "s", model.queue, config)
+        .onEach {
+          if (it.hasText("resumed") && resumedAt == null) resumedAt = testScheduler.currentTime
+          onEvent(model, it)
+        }
+        .toList()
+    return ResumedRun(runner, model, events, resumedAt)
+  }
+
+  /**
+   * Queues "first" and "second", sending "first" slowly once so [script]'s go-away lands mid-send.
+   */
+  private suspend fun TestScope.runWithASendAtTheGoAway(
+    script: ScriptedTurn,
+    beforeModelCallbacks: List<BeforeModelCallback> = emptyList(),
+  ): ResumedRun {
+    var slowed = false
+    val model =
+      ReconnectingLiveModel(
+        listOf(listOf(script), listOf(listOf(text("resumed"), turnComplete()))),
+        onSendContent = { content ->
+          if (!slowed && content.parts.any { it.text == "first" }) {
+            slowed = true
+            delay(500.milliseconds)
+          }
+        },
+      )
+    val runner = runnerFor(model, beforeModelCallbacks)
+    model.queue.sendContent(userMessage("first"))
+    model.queue.sendContent(userMessage("second"))
+    var resumedAt: Long? = null
+    val events =
+      runner
+        .runLive("u", "s", model.queue)
+        .onEach {
+          if (it.hasText("resumed") && resumedAt == null) resumedAt = testScheduler.currentTime
+        }
+        .toList()
+    return ResumedRun(runner, model, events, resumedAt)
+  }
+
+  /** Asserts that nothing after [notice] is read and the reconnect waits only the first backoff. */
+  private suspend fun TestScope.assertStopsReadingAtOnce(notice: LlmResponse) {
+    val run =
+      runThenResume(
+        listOf(
+          listOf(handleUpdate("h-1"), text("speaking"), notice, text("cut off"), turnComplete())
+        )
+      )
+
+    assertWithMessage("nothing after the go-away should be read")
+      .that(run.events.none { it.hasText("cut off") })
+      .isTrue()
+    assertThat(run.resumedAt).isAtMost(250L)
+  }
+
+  /** A tool the framework knows streams, calling [onRun] each time it runs. */
+  @OptIn(FrameworkInternalApi::class)
+  private class StreamingTool(private val onRun: () -> Unit) :
+    BaseTool("monitor", "Streams updates.") {
+    override val isStreaming: Boolean = true
+
+    override fun declaration(): FunctionDeclaration = FunctionDeclaration(name, description)
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
+      onRun()
+      return flow<String> { awaitCancellation() }
+    }
+  }
+
+  /** The model's speech as one audio chunk. */
+  private fun audio() =
+    LlmResponse(
+      content =
+        modelMessage(
+          Part(inlineData = Blob(mimeType = "audio/pcm;rate=24000", data = byteArrayOf(1)))
+        )
+    )
+
+  private fun Event.hasText(value: String) = content?.parts?.singleOrNull()?.text == value
+
   companion object {
-    // Scripted sentinels the connection turns into failures, so a test can express one.
+    // Scripted sentinels the connection turns into failures, a stall or a pause, for tests to use.
     private val DROP_MARKER = LlmResponse(errorMessage = "__scripted_transport_drop__")
     private val SEND_FAILURE_MARKER = LlmResponse(errorMessage = "__scripted_send_failure__")
     private val AUTH_FAILURE_MARKER = LlmResponse(errorMessage = "__scripted_auth_failure__")
     private val SEND_DROP_MARKER = LlmResponse(errorMessage = "__scripted_send_drop__")
     private val SEND_CANCEL_MARKER = LlmResponse(errorMessage = "__scripted_send_cancel__")
+    private val STALL_MARKER = LlmResponse(errorMessage = "__scripted_stall__")
+    private val PAUSE_MARKER = LlmResponse(errorMessage = "__scripted_pause__")
   }
 }
