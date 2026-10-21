@@ -227,7 +227,13 @@ class GcsArtifactService(private val bucketName: String, private val storageClie
         }
         .sorted()
     } catch (e: StorageException) {
-      emptyList()
+      if (e.code == 404) {
+        emptyList()
+      } else {
+        // GCS exception messages embed the blob prefix, and thus userId, sessionId and filename,
+        // which must not reach the logs. Report only the status code, without the throwable.
+        throw IllegalStateException("Failed to list artifact versions from GCS (HTTP ${e.code})")
+      }
     }
   }
 }
