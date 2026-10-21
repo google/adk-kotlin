@@ -23,6 +23,7 @@ import java.nio.file.Path
 import kotlin.io.path.writeText
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -253,6 +254,64 @@ class NewFileSystemSourceTest {
     val exception = result.exceptionOrNull()
     assertThat(exception).isInstanceOf(SkillSourceException::class.java)
     assertThat(exception!!.message).contains("Skill nonexistent not found")
+  }
+
+  @Test
+  fun loadInstructions_pathTraversalSkillName_returnsFailure() = runTest {
+    val escapedDirName = "escaped_skills_${System.nanoTime()}"
+    createSkill(parent = tempDir.parent, dirName = escapedDirName, instructions = "secret")
+    try {
+      val result = source.loadInstructions("../$escapedDirName")
+
+      assertThat(result.isFailure).isTrue()
+      val exception = result.exceptionOrNull()
+      assertThat(exception).isInstanceOf(SkillSourceException::class.java)
+      assertThat(exception!!.message).contains("Invalid skill name")
+    } finally {
+      tempDir.parent.resolve(escapedDirName).toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun loadFrontmatter_absoluteSkillName_returnsFailure() = runTest {
+    val skillDir = createSkill(dirName = "skill1")
+
+    val result = source.loadFrontmatter(skillDir.toAbsolutePath().toString())
+
+    assertThat(result.isFailure).isTrue()
+    val exception = result.exceptionOrNull()
+    assertThat(exception).isInstanceOf(SkillSourceException::class.java)
+    assertThat(exception!!.message).contains("Invalid skill name")
+  }
+
+  @Test
+  fun loadInstructions_symlinkEscapeSkillName_returnsFailure() = runTest {
+    val outsideDir = Files.createTempDirectory("outside_skills")
+    createSkill(parent = outsideDir, dirName = "linked", instructions = "secret")
+    val link = tempDir.resolve("linked")
+    var symlinksSupported = true
+    try {
+      Files.createSymbolicLink(link, outsideDir.resolve("linked"))
+    } catch (e: UnsupportedOperationException) {
+      symlinksSupported = false
+    } catch (e: java.io.IOException) {
+      symlinksSupported = false
+    } catch (e: SecurityException) {
+      symlinksSupported = false
+    }
+    try {
+      assumeTrue("Symbolic links are not supported on this platform", symlinksSupported)
+
+      val result = source.loadInstructions("linked")
+
+      assertThat(result.isFailure).isTrue()
+      val exception = result.exceptionOrNull()
+      assertThat(exception).isInstanceOf(SkillSourceException::class.java)
+      assertThat(exception!!.message).contains("Invalid skill name")
+    } finally {
+      Files.deleteIfExists(link)
+      outsideDir.toFile().deleteRecursively()
+    }
   }
 
   @Test
