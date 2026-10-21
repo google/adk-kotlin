@@ -919,15 +919,47 @@ data class ContextFrameworkData(
    * Per-invocation scratch data shared across the invocation's callbacks and its sub-agent/branch
    * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
    */
-  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
+  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf(),
+  /** State that every copy of this holder shares, including one made with [copy]. */
+  @FrameworkInternalApi val sharedState: FrameworkSharedState = FrameworkSharedState(),
+  /**
+   * The agent this context copy runs as a single-turn workflow node. Keyed to that agent, so
+   * sub-agents and transfer targets that inherit the copy are not single-turn. The agent runs
+   * history-free unless it sets [LlmAgent.includeContents], and a schema mismatch in its output
+   * saves nothing to [LlmAgent.outputKey].
+   */
+  @FrameworkInternalApi val singleTurnNodeAgent: BaseAgent? = null,
 ) {
   /**
    * The user's input on a live run, set by whatever opens it, and `null` on a turn-based one.
    *
-   * A body property, so it stays off every public signature; contexts derived with
-   * [InvocationContext.copy] share this holder and so the same queue.
+   * Kept in [sharedState], so it stays off every public signature and every context copy shares the
+   * same queue.
    */
-  @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
+  @OptIn(FrameworkInternalApi::class)
+  internal var liveRequestQueue: LiveRequestQueue?
+    get() = sharedState.liveRequestQueue
+    set(value) {
+      sharedState.liveRequestQueue = value
+    }
+
+  /**
+   * Serializes a live run's appends to [InvocationContext.session] (every context copy shares this
+   * lock). The turn and its caller both append to that same object under it, because a session
+   * service can reject overlapping appends. Never emit while holding it, because the collector can
+   * deadlock: append, release, then emit.
+   */
+  @OptIn(FrameworkInternalApi::class)
+  internal val sessionAppendLock: Mutex
+    get() = sharedState.sessionAppendLock
+
+  /**
+   * Paths of workflow nodes cancelled mid-run in this turn. Their events show progress rather than
+   * a result, so a retry runs them again.
+   */
+  @OptIn(FrameworkInternalApi::class)
+  internal val cancelledNodePaths: MutableMap<String, Unit>
+    get() = sharedState.cancelledNodePaths
 
   /**
    * Live audio the caller has sent since the last flush.
@@ -936,22 +968,25 @@ data class ContextFrameworkData(
    * the context rather than in the manager, so a turn restarted on a new connection keeps one
    * recording; a transfer or a completed step saves it before the next agent runs.
    */
-  internal val inputRealtimeCache: RealtimeCache = RealtimeCache()
+  @OptIn(FrameworkInternalApi::class)
+  internal val inputRealtimeCache: RealtimeCache
+    get() = sharedState.inputRealtimeCache
+
   /** The audio the model has spoken since the last flush. See [inputRealtimeCache]. */
-  internal val outputRealtimeCache: RealtimeCache = RealtimeCache()
+  @OptIn(FrameworkInternalApi::class)
+  internal val outputRealtimeCache: RealtimeCache
+    get() = sharedState.outputRealtimeCache
+}
 
-  /**
-   * Serializes a live run's appends to [InvocationContext.session] (contexts made with
-   * [InvocationContext.copy] share this lock). The turn and its caller both append to that same
-   * object under it, because a session service can reject overlapping appends. Never emit while
-   * holding it, because the collector can deadlock: append, release, then emit.
-   */
+/**
+ * The state every copy of a [ContextFrameworkData] shares. The type is public only because it is a
+ * [ContextFrameworkData] constructor-property type; its constructor and members are non-public.
+ */
+class FrameworkSharedState internal constructor() {
+  @Volatile internal var liveRequestQueue: LiveRequestQueue? = null
+  internal val inputRealtimeCache = RealtimeCache()
+  internal val outputRealtimeCache = RealtimeCache()
   internal val sessionAppendLock = Mutex()
-
-  /**
-   * Paths of workflow nodes cancelled mid-run in this turn. Their events show progress rather than
-   * a result, so a retry runs them again.
-   */
   internal val cancelledNodePaths: MutableMap<String, Unit> = concurrentMutableMapOf()
 }
 

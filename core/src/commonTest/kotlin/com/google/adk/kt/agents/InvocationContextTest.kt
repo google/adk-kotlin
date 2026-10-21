@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -52,6 +54,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -1546,5 +1549,21 @@ class InvocationContextTest {
     assertNull(context.node)
     assertEquals("root.other", copied.branch)
     assertEquals("inv-1", copied.invocationId)
+  }
+
+  @Test
+  @OptIn(FrameworkInternalApi::class, ExperimentalLiveApi::class)
+  fun frameworkDataCopy_sharesTheLockCancelledPathsAndLiveQueue() {
+    // Arrange
+    val data = ContextFrameworkData()
+    data.liveRequestQueue = LiveRequestQueue()
+
+    // Act
+    val copied = data.copy()
+
+    // Assert
+    assertSame(data.sessionAppendLock, copied.sessionAppendLock)
+    assertSame(data.cancelledNodePaths, copied.cancelledNodePaths)
+    assertSame(data.liveRequestQueue, copied.liveRequestQueue)
   }
 }

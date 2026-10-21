@@ -13,11 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:OptIn(FrameworkInternalApi::class)
+
 package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmRequest
@@ -35,8 +38,10 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.workflow.NodeInfo
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertEquals
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -1387,6 +1392,47 @@ class ContentsProcessorTest {
       .inOrder()
   }
 
+  @Test
+  fun process_singleTurnNodeWithoutExplicitIncludeContents_sendsCurrentTurnOnly() = runBlocking {
+    val context =
+      createLlmAgentTestContext(userEvent("a"), modelEvent("b"), userEvent("c")).let {
+        it.copy(frameworkData = it.frameworkData.copy(singleTurnNodeAgent = it.agent))
+      }
+
+    val request = ContentsProcessor().process(context, LlmRequest())
+
+    assertThat(request.contents.map { it.parts[0].text }).isEqualTo(listOf("c"))
+  }
+
+  @Test
+  fun process_singleTurnNodeWithExplicitIncludeContents_keepsHistory() = runBlocking {
+    val context =
+      createLlmAgentTestContext(
+          userEvent("a"),
+          modelEvent("b"),
+          userEvent("c"),
+          includeContents = IncludeContents.DEFAULT,
+        )
+        .let { it.copy(frameworkData = it.frameworkData.copy(singleTurnNodeAgent = it.agent)) }
+
+    val request = ContentsProcessor().process(context, LlmRequest())
+
+    assertThat(request.contents.map { it.parts[0].text }).containsExactly("a", "b", "c").inOrder()
+  }
+
+  @Test
+  fun process_singleTurnNodeKeyedToAnotherAgent_keepsHistory() = runBlocking {
+    val otherAgent = LlmAgent(name = "other", model = DummyModel("test-model"))
+    val context =
+      createLlmAgentTestContext(userEvent("a"), modelEvent("b"), userEvent("c")).let {
+        it.copy(frameworkData = it.frameworkData.copy(singleTurnNodeAgent = otherAgent))
+      }
+
+    val request = ContentsProcessor().process(context, LlmRequest())
+
+    assertThat(request.contents).hasSize(3)
+  }
+
   // Helpers
 
   private suspend fun createTestContext(
@@ -1411,6 +1457,9 @@ class ContentsProcessorTest {
   private fun userEvent(text: String) = Event(author = "user", content = userMessage(text))
 
   private fun modelEvent(text: String) = Event(author = "testAgent", content = modelMessage(text))
+
+  private fun nodeInputEvent(text: String, path: String) =
+    Event(author = "user", content = userMessage(text), nodeInfo = NodeInfo(path = path))
 
   private fun functionCallEvent(vararg calls: Pair<String, String>) =
     Event(
@@ -1446,7 +1495,7 @@ class ContentsProcessorTest {
     vararg events: Event,
     branch: String? = null,
     agentName: String = "testAgent",
-    includeContents: IncludeContents = IncludeContents.DEFAULT,
+    includeContents: IncludeContents? = null,
   ): InvocationContext {
     val sessionService = InMemorySessionService()
     val session = sessionService.createSession(SessionKey("app", "u1", "s1"))

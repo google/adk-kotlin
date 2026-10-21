@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.TransferToAgentTool
@@ -45,13 +46,20 @@ internal class AgentTransferProcessor : LlmRequestProcessor {
       return request
     }
 
-    val transferInstructions = buildTransferInstructions(agent, targets)
     val transferTool = TransferToAgentTool(targets.map { it.name })
+    // A single-turn agent keeps the tool but is not told to hand the question over.
+    if (runsDelegated(context)) return request.appendTools(listOf(transferTool))
+    val transferInstructions = buildTransferInstructions(agent, targets)
 
     return request
       .appendInstructions(Content(parts = listOf(Part(text = transferInstructions))))
       .appendTools(listOf(transferTool))
   }
+
+  /** Whether the agent of [context] runs as a single-turn workflow node. */
+  @OptIn(FrameworkInternalApi::class)
+  private fun runsDelegated(context: InvocationContext): Boolean =
+    context.frameworkData.singleTurnNodeAgent === context.agent
 
   private fun buildTargetAgentsInfo(targetAgent: BaseAgent) =
     """|Agent name: ${targetAgent.name}

@@ -1149,6 +1149,47 @@ class SchemaUtilsTest {
     assertTrue(result.isSuccess)
   }
 
+  @Test
+  fun parseModelOutput_jsonNullForANonNullableSchema_fails() {
+    // Arrange
+    val schema = Schema(type = Type.OBJECT, properties = mapOf("n" to Schema(type = Type.INTEGER)))
+
+    // Act
+    val result = runCatching { SchemaUtils.parseModelOutput(schema, "null") }
+
+    // Assert
+    assertContains(result.exceptionOrNull()?.message.orEmpty(), "validation error")
+  }
+
+  @Test
+  fun parseModelOutput_jsonNullForANullableSchema_returnsNull() {
+    // Arrange
+    val schema = Schema(type = Type.OBJECT, nullable = true)
+
+    // Act
+    val result = SchemaUtils.parseModelOutput(schema, "null")
+
+    // Assert
+    assertEquals(null, result)
+  }
+
+  @Test
+  fun parseModelOutput_jsonNullForSchemasThatAcceptNull_returnsNull() {
+    // Arrange: each schema accepts null without `nullable`.
+    val schemas =
+      listOf(
+        Schema(anyOf = listOf(Schema(type = Type.OBJECT), Schema(type = Type.NULL))),
+        Schema(type = Type.NULL),
+        Schema(),
+      )
+
+    // Act
+    val results = schemas.map { runCatching { SchemaUtils.parseModelOutput(it, "null") } }
+
+    // Assert
+    assertEquals(List(schemas.size) { Result.success(null) }, results)
+  }
+
   private fun anyJson(value: CustomerOrder): Any? =
     jsonElementToAny(adkJson.encodeToJsonElement(CustomerOrder.serializer(), value))
 }
