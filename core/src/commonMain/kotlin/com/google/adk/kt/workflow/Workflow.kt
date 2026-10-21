@@ -30,16 +30,21 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
 /**
- * A graph of nodes, and a [Node] itself, so graphs nest: a workflow drops into another workflow
- * wherever an ordinary node goes.
+ * A graph of nodes, and a [Node] itself so graphs nest, assembled and validated on construction
+ * (throwing [GraphValidationException] if malformed) and run concurrently as predecessors finish.
  *
- * Running it schedules nodes as their predecessors complete, so independent branches run
- * concurrently and a chain runs in order. The graph is assembled and validated when the workflow is
- * constructed, so a malformed graph throws [GraphValidationException] here rather than at run time.
+ * On resume, finished nodes and children run on this workflow's own context (such as a sibling
+ * handoff target) replay in the order they first finished, paused, or were answered, so each
+ * successor's recorded run gets the input it took. A replay that waits over 15 seconds (behind a
+ * slow rerun of a finished nested workflow, or a child on this context that a replayed node skips)
+ * fails with an unretried [NodeExecutionException] named `WorkflowInvariantException`.
  *
  * @property edges The edges of the graph, which [edges][com.google.adk.kt.workflow.edges] or the
  *   [workflow] DSL can declare. A workflow with no edges runs nothing and produces nothing.
- * @property maxConcurrency The most nodes to run at once. Null does not limit.
+ * @property maxConcurrency The most nodes to run at once, not counting nodes that replay on resume,
+ *   including a replayed handoff whose agent then runs again. A running node calling `runNode` on
+ *   this workflow's context still holds its slot while waiting for replay order. Null does not
+ *   limit.
  * @property config The workflow's own retry policy and execution timeout, applied whether it runs
  *   as the root of an invocation or nested inside another graph. A workflow reports a child's
  *   failure rather than raising, so its retry policy re-runs the graph on a child failure; a retry

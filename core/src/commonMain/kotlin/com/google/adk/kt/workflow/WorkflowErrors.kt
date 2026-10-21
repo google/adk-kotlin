@@ -52,6 +52,12 @@ class NodeInputValidationException
 @JvmOverloads
 constructor(message: String, cause: Throwable? = null) : NodeExecutionException(message, cause)
 
+/**
+ * The runtime reached a state it should prevent, such as a replay that no longer follows history.
+ */
+@OptIn(ExperimentalWorkflowApi::class)
+internal class WorkflowInvariantException(message: String) : NodeExecutionException(message)
+
 /** A workflow graph failed validation. Raised when the graph is built, not when it runs. */
 @ExperimentalWorkflowApi
 class GraphValidationException(message: String) : IllegalArgumentException(message)

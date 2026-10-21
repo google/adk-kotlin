@@ -115,6 +115,20 @@ internal fun resolveTransferTarget(
 }
 
 /**
+ * Returns the peer agent [targetName] names when [current] may hand off to it on its own parent
+ * context, or null when [targetName] resolves to [current] itself, a sub-agent, the parent, a
+ * non-transfer agent, or an unrelated agent.
+ */
+internal fun resolveSiblingTransferTarget(targetName: String, current: BaseAgent): BaseAgent? {
+  if (targetName == current.name) return null
+  if (current.subAgents.any { it.name == targetName }) return null
+  val parent = current.parentAgent ?: return null
+  if (parent.name == targetName || current.disallowTransferToPeers) return null
+  val sibling = parent.subAgents.firstOrNull { it.name == targetName } ?: return null
+  return sibling.takeIf { it.isTransferTarget() }
+}
+
+/**
  * Throws if [agent] runs as a tool, as a task or single-turn agent does, rather than by transfer.
  */
 private fun requireTransferTarget(agent: BaseAgent) {

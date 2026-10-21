@@ -41,12 +41,13 @@ import kotlin.time.Duration.Companion.milliseconds
  *   jitter)`. Zero removes randomness.
  * @property exceptions Simple class names of failures to retry on, such as "NodeTimeoutException",
  *   matched exactly with no subclass matching. A failure is retried when it matches this list or
- *   [exceptionClasses], and any failure is retried when both are null; a
- *   [WorkflowConfigurationException] is never retried, even when listed.
+ *   [exceptionClasses], and any failure is retried when both are null. A
+ *   [WorkflowConfigurationException], or the `WorkflowInvariantException` of a replay that timed
+ *   out, is never retried, even when listed.
  * @property exceptionClasses Failure types to retry on, each also matching its subclasses. A
  *   failure is retried when it matches this list or [exceptions], and any failure is retried when
- *   both are null. A [WorkflowConfigurationException] is never retried, even when its class is
- *   listed.
+ *   both are null. A [WorkflowConfigurationException], or the `WorkflowInvariantException` of a
+ *   replay that timed out, is never retried, even when matched by a listed class.
  */
 @ExperimentalWorkflowApi
 data class RetryConfig(
@@ -74,7 +75,9 @@ data class RetryConfig(
    * has budget left and raised a type this config retries.
    */
   internal fun shouldRetry(error: Throwable, attemptCount: Int): Boolean {
-    if (attemptCount >= maxAttempts || error is WorkflowConfigurationException) return false
+    // A retry cannot fix a configuration or a replay that no longer follows history.
+    if (attemptCount >= maxAttempts) return false
+    if (error is WorkflowConfigurationException || error is WorkflowInvariantException) return false
     if (exceptions == null && exceptionClasses == null) return true
     return errorTypeName(error) in exceptions.orEmpty() ||
       exceptionClasses.orEmpty().any { it.isInstance(error) }

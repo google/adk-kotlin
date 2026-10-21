@@ -67,9 +67,50 @@ internal class RecoveredNode {
   /** Whether the user replied to one of those tasks after the node's last direct event. */
   var replyToNestedTaskSinceLastEvent: Boolean = false
 
+  /**
+   * The node's place among its siblings in the order they first finished, paused, or were answered
+   * in this invocation, counting its descendants' interrupts and delegated outputs; null if none.
+   */
+  var sequenceIndex: Int? = null
+    private set
+
+  /** Whether [sequenceIndex] marks where the node finished. */
+  private var sequenceCompleted = false
+
+  /**
+   * Whether the node's place is where it last paused or was answered, not where it finished. It
+   * gives that place up when it runs again.
+   */
+  val placeIsPause: Boolean
+    get() = sequenceIndex != null && !sequenceCompleted
+
   /** Interrupt IDs raised by this node that have not yet been answered. */
   val unresolved: Set<String>
     get() = interruptIds - resolvedResponses.keys
+
+  /** Marks this node finished at [index] unless it already finished earlier. */
+  fun recordFinish(index: Int) {
+    if (!sequenceCompleted) {
+      sequenceIndex = index
+      sequenceCompleted = true
+    }
+  }
+
+  /** Moves this node to [index] where it paused, even if it finished earlier. */
+  fun recordPause(index: Int) {
+    sequenceIndex = index
+    sequenceCompleted = false
+  }
+
+  /** Drops an unfinished node's place so later replays do not wait for it. */
+  fun clearUnfinishedPlace() {
+    if (!sequenceCompleted) sequenceIndex = null
+  }
+
+  /** Moves a node whose place is not a finish to [index], where its answer arrived. */
+  fun recordAnswerPlace(index: Int) {
+    if (placeIsPause) sequenceIndex = index
+  }
 
   /** Records [answer] to [interruptId]; what the node emitted before asking is not its result. */
   fun recordAnswer(interruptId: String, answer: Any?) {
@@ -78,6 +119,13 @@ internal class RecoveredNode {
     resolvedResponses[interruptId] = answer
   }
 }
+
+/** Returns the keys of [recovered] that have a place, in that order. */
+internal fun replayOrder(recovered: Map<String, RecoveredNode>): List<String> =
+  recovered.entries
+    .filter { it.value.sequenceIndex != null }
+    .sortedBy { it.value.sequenceIndex }
+    .map { it.key }
 
 /**
  * Replay decision and recovered data for a previously visited node. [interrupts] are the node's
@@ -167,6 +215,9 @@ internal object ResumeScan {
 
     private val childPrefix = BranchPath.childNodePath(basePath, "")
 
+    /** The next [RecoveredNode.sequenceIndex] to hand out. */
+    private var nextSequenceIndex = 0
+
     /** Attributes [event] to its owner and records what it says about that node. */
     fun recordNodeEvent(event: Event) {
       event.functionCalls().mapNotNullTo(callIds) { it.id }
@@ -181,6 +232,7 @@ internal object ResumeScan {
       // Order matters: the finish check reads the error state and the interrupts raised here.
       recordOutcome(event, isDirect, ownerPath, node)
       val raisedAny = recordRaisedInterrupts(event, node, isDirect)
+      recordSequence(event, isDirect, ownerPath, node, raisedAny)
       if (!isDirect) {
         event.isolationScope?.let(node.nestedScopes::add)
       } else {
@@ -230,7 +282,11 @@ internal object ResumeScan {
           interruptOwner[id]?.let { listOf(it to id) } ?: interruptsMatchingBranch(event.branch)
         if (targets.isEmpty()) continue
         val answer = validateAnswer(schemas[id], response.response, id)
-        for ((node, interruptId) in targets) node.recordAnswer(interruptId, answer)
+        for ((node, interruptId) in targets) {
+          node.recordAnswer(interruptId, answer)
+          // Its answer becomes its output only now, so its successors take it in this place.
+          node.recordAnswerPlace(nextSequenceIndex++)
+        }
       }
     }
 
@@ -269,8 +325,7 @@ internal object ResumeScan {
       ownerPath: String,
       node: RecoveredNode,
     ) {
-      val eventOutput =
-        event.output ?: event.content?.takeIf { event.nodeInfo?.messageAsOutput == true }
+      val eventOutput = event.nodeOutput
       val isDelegated =
         eventOutput != null && event.nodeInfo?.outputFor?.contains(ownerPath) == true
       if (!isDirect && !isDelegated) return
@@ -287,15 +342,45 @@ internal object ResumeScan {
         node.branch = event.branch
       }
       // A result or later non-error event clears an error; an error drops the attempt's result.
-      val hasResult =
-        eventOutput != null || event.actions.route != null || event.actions.transferToAgent != null
-      if (hasResult || event.errorCode == null) {
+      if (event.hasResult() || event.errorCode == null) {
         node.errorCode = null
       } else {
         node.output = null
         node.route = null
         node.transferToAgent = null
         node.errorCode = event.errorCode
+      }
+    }
+
+    /**
+     * Places [node] on its first terminal outcome or latest pause, dropping an unfinished place on
+     * an error without a result or on a bare transfer with no open interrupts. A result while still
+     * waiting on the user counts as a pause.
+     */
+    private fun recordSequence(
+      event: Event,
+      isDirect: Boolean,
+      ownerPath: String,
+      node: RecoveredNode,
+      raisedInterrupt: Boolean,
+    ) {
+      // A descendant's delegated output or interrupt also counts.
+      val delegated = event.nodeInfo?.outputFor?.contains(ownerPath) == true
+      if (!isDirect && !delegated && !raisedInterrupt) return
+      // A bare transfer takes no place and drops an earlier pause once all interrupts are answered.
+      val terminal = event.hasTerminalOutcome()
+      if (!terminal && event.errorCode == null && !raisedInterrupt) {
+        if (event.actions.transferToAgent != null && node.unresolved.isEmpty()) {
+          node.clearUnfinishedPlace()
+        }
+        return
+      }
+      val hasResult = terminal || event.actions.transferToAgent != null
+      when {
+        raisedInterrupt || (hasResult && node.unresolved.isNotEmpty()) ->
+          node.recordPause(nextSequenceIndex++)
+        hasResult -> node.recordFinish(nextSequenceIndex++)
+        else -> node.clearUnfinishedPlace()
       }
     }
 
@@ -468,6 +553,16 @@ internal object ResumeScan {
     }
   }
 }
+
+/** The node output carried by this event, if any. */
+private val Event.nodeOutput: Any?
+  get() = output ?: content?.takeIf { nodeInfo?.messageAsOutput == true }
+
+/** Whether this event carries a terminal outcome (output or route). */
+private fun Event.hasTerminalOutcome(): Boolean = nodeOutput != null || actions.route != null
+
+/** Whether this event carries a node's output, route, or transfer. */
+private fun Event.hasResult(): Boolean = hasTerminalOutcome() || actions.transferToAgent != null
 
 /** Decodes a response [Schema] from an interrupt event's `response_schema` argument. */
 private fun readSchema(value: Any?): Schema? =
