@@ -27,44 +27,43 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import org.junit.Test
 
-/** Expected results are ADK Python's for the same input, unless a test's comment says otherwise. */
 @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
 class AuthCredentialSerializerTest {
 
   @Test
   fun decode_apiKeyNotString_throws() {
-    assertMalformed("""{"authType": "apiKey", "apiKey": 123}""")
+    assertMalformed("""{"authType": "API_KEY", "apiKey": 123}""")
   }
 
   @Test
   fun decode_apiKeyNull_readsNoKey() {
-    assertEquals(AuthCredential.ApiKey(), decode("""{"authType": "apiKey", "apiKey": null}"""))
+    assertEquals(AuthCredential.ApiKey(), decode("""{"authType": "API_KEY", "apiKey": null}"""))
   }
 
   @Test
   fun decode_apiKeyWithSnakeCaseNames_readsThem() {
     assertEquals(
       AuthCredential.ApiKey(Secret("sk-123")),
-      decode("""{"auth_type": "apiKey", "api_key": "sk-123"}"""),
+      decode("""{"auth_type": "API_KEY", "api_key": "sk-123"}"""),
     )
   }
 
   @Test
   fun decode_httpHeaderNotString_throws() {
     assertMalformed(
-      """{"authType": "http", "http": {"scheme": "bearer", "credentials": {},
+      """{"authType": "HTTP", "http": {"scheme": "bearer", "credentials": {},
         "additionalHeaders": {"X-Count": 1}}}"""
     )
   }
 
   @Test
-  fun decode_httpWithSnakeCaseNamesAndNulls_readsThem() {
+  fun decode_httpWithSnakeCaseNames_readsThem() {
     assertEquals(
       AuthCredential.Http.basic("user", "pass")
         .copy(additionalHeaders = mapOf("X-Key" to Secret("value"))),
       decode(
-        """{"auth_type": "http", "http": {"scheme": "basic",
-          "credentials": {"username": "user", "password": "pass", "token": null},
+        """{"auth_type": "HTTP", "http": {"scheme": "basic",
+          "credentials": {"username": "user", "password": "pass"},
           "additional_headers": {"X-Key": "value"}}}"""
       ),
     )
@@ -72,26 +71,26 @@ class AuthCredentialSerializerTest {
 
   @Test
   fun decode_httpWithoutCredentials_throws() {
-    assertMalformed("""{"authType": "http", "http": {"scheme": "bearer"}}""")
+    assertMalformed("""{"authType": "HTTP", "http": {"scheme": "bearer"}}""")
   }
 
   @Test
   fun decode_httpWithoutPayload_throws() {
-    // Python accepts this, but an Http credential needs a scheme and credentials.
-    val error = assertFailsWith<SerializationException> { decode("""{"authType": "http"}""") }
+    // An Http credential needs a scheme and credentials.
+    val error = assertFailsWith<SerializationException> { decode("""{"authType": "HTTP"}""") }
 
     assertEquals("An auth credential has no http payload.", error.message)
   }
 
   @Test
   fun decode_httpWithoutScheme_throws() {
-    assertMalformed("""{"authType": "http", "http": {"credentials": {"token": "t"}}}""")
+    assertMalformed("""{"authType": "HTTP", "http": {"credentials": {"token": "t"}}}""")
   }
 
   @Test
   fun decode_malformedInput_throwsWithoutQuotingIt() {
     // The decoder's own message quotes the input, which here holds an API key.
-    assertMalformed("""{"authType": "apiKey", "apiKey": "sk-123", "http": 1}""")
+    assertMalformed("""{"authType": "API_KEY", "apiKey": "sk-123", "http": 1}""")
   }
 
   @Test
@@ -101,9 +100,8 @@ class AuthCredentialSerializerTest {
 
   @Test
   fun decode_oauth2_throwsUntilSupported() {
-    // Python reads this; ADK Kotlin throws until OAuth2 support lands.
     val error =
-      assertFailsWith<SerializationException> { decode("""{"authType": "oauth2", "oauth2": {}}""") }
+      assertFailsWith<SerializationException> { decode("""{"authType": "OAUTH2", "oauth2": {}}""") }
 
     assertEquals("Reading this credential type from JSON is not supported yet.", error.message)
   }
@@ -115,11 +113,10 @@ class AuthCredentialSerializerTest {
 
   @Test
   fun decode_unmodeledFields_dropsThem() {
-    // Python keeps these fields and writes them back; ADK Kotlin drops them, as elsewhere.
     assertEquals(
       AuthCredential.Http.bearer("t"),
       decode(
-        """{"authType": "http", "apiKey": "k", "resourceRef": "r", "z": 3,
+        """{"authType": "HTTP", "apiKey": "k", "resourceRef": "r", "z": 3,
           "http": {"scheme": "bearer", "credentials": {"token": "t", "x": 1}, "y": 2}}"""
       ),
     )
@@ -127,13 +124,13 @@ class AuthCredentialSerializerTest {
 
   @Test
   fun encode_apiKeyWithoutKey_writesAuthTypeOnly() {
-    assertEquals(json("""{"authType": "apiKey"}"""), encode(AuthCredential.ApiKey()))
+    assertEquals(json("""{"authType": "API_KEY"}"""), encode(AuthCredential.ApiKey()))
   }
 
   @Test
   fun encode_apiKey_writesAuthTypeAndKey() {
     assertEquals(
-      json("""{"authType": "apiKey", "apiKey": "sk-123"}"""),
+      json("""{"authType": "API_KEY", "apiKey": "sk-123"}"""),
       encode(AuthCredential.ApiKey(Secret("sk-123"))),
     )
   }
@@ -146,7 +143,7 @@ class AuthCredentialSerializerTest {
 
     assertEquals(
       json(
-        """{"authType": "http", "http": {"scheme": "basic",
+        """{"authType": "HTTP", "http": {"scheme": "basic",
           "credentials": {"username": "user", "password": "pass"},
           "additionalHeaders": {"X-Key": "value"}}}"""
       ),
@@ -157,14 +154,13 @@ class AuthCredentialSerializerTest {
   @Test
   fun encode_http_writesPayloadWithoutNulls() {
     assertEquals(
-      json("""{"authType": "http", "http": {"scheme": "bearer", "credentials": {"token": "t"}}}"""),
+      json("""{"authType": "HTTP", "http": {"scheme": "bearer", "credentials": {"token": "t"}}}"""),
       encode(AuthCredential.Http.bearer("t")),
     )
   }
 
   @Test
   fun encode_oauth2_throwsUntilSupported() {
-    // Python writes this; ADK Kotlin throws until OAuth2 support lands.
     val error = assertFailsWith<SerializationException> { encode(AuthCredential.OAuth2()) }
 
     assertEquals("Writing this credential type as JSON is not supported yet.", error.message)

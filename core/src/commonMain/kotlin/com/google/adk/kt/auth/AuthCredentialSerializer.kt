@@ -20,7 +20,6 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import kotlinx.serialization.KSerializer
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -29,8 +28,9 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonNames
 
 /**
- * Reads and writes an [AuthCredential] in ADK Python's JSON format. Output uses Python's camelCase
- * names; input also takes its snake_case names, which a dump without aliases writes.
+ * Reads and writes an [AuthCredential] as a JSON object: `authType` names the kind, such as
+ * `API_KEY`, and the kind's field holds its payload. Input also takes each multi-word field's
+ * snake_case name, as the server's request bodies do.
  */
 internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
   override val descriptor: SerialDescriptor = Wire.serializer().descriptor
@@ -56,8 +56,8 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
     }
 
   /**
-   * Python's `AuthCredential`: the kind in [authType], and the payload in that kind's field, which
-   * is `oauth2` for OpenID Connect.
+   * The credential's JSON object: the kind in [authType], and the payload in that kind's field,
+   * which is `oauth2` for OpenID Connect.
    */
   @Serializable
   private class Wire(
@@ -77,17 +77,16 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
           )
       }
 
-    // Python accepts a missing payload but can't use it; an API key's payload may be absent.
+    // Only an API key's payload may be absent; the other kinds can't be built without theirs.
     private fun <P : Any> P?.required(field: String): P =
       this ?: throw SerializationException("An auth credential has no $field payload.")
 
-    @Serializable
     enum class Type {
-      @SerialName("apiKey") API_KEY,
-      @SerialName("http") HTTP,
-      @SerialName("oauth2") OAUTH2,
-      @SerialName("openIdConnect") OPEN_ID_CONNECT,
-      @SerialName("serviceAccount") SERVICE_ACCOUNT,
+      API_KEY,
+      HTTP,
+      OAUTH2,
+      OPEN_ID_CONNECT,
+      SERVICE_ACCOUNT,
     }
 
     companion object {
@@ -104,7 +103,6 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
     }
   }
 
-  /** Python's `HttpAuth`. */
   @Serializable
   private class Http(
     val scheme: String,
@@ -118,7 +116,6 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
     fun toHttp(): AuthCredential.Http =
       AuthCredential.Http(scheme, credentials.toCredentials(), additionalHeaders)
 
-    /** Python's `HttpCredentials`. */
     @Serializable
     class Credentials(
       val username: String? = null,
