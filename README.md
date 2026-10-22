@@ -114,16 +114,24 @@ documentation & samples:
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.tools.GoogleSearchTool
 
 val rootAgent = LlmAgent(
     name = "search_assistant",
     description = "An assistant that can search the web.",
-    model = Gemini(name = "gemini-3.1-flash-lite-preview"),
+    model = Gemini(
+        name = "gemini-3.8-flash",
+        vertexCredentials = VertexCredentials(location = "global"),
+    ),
     instruction = Instruction("You are a helpful assistant. Answer user questions using Google Search when needed."),
     tools = listOf(GoogleSearchTool())
 )
 ```
+
+The agent calls Gemini on Vertex AI with Application Default Credentials
+(`gcloud auth application-default login`) and the project from
+`GOOGLE_CLOUD_PROJECT`.
 
 GenAI SDK based `Gemini` currently prevents usage of `API_KEY` and
 `GoogleCredentials` on Android. Use Firebase AI instead.
@@ -138,13 +146,15 @@ agent in Java:
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.GoogleSearchTool;
 
 BaseAgent rootAgent =
     LlmAgent.builder()
         .name("search_assistant")
         .description("An assistant that can search the web.")
-        .model(new Gemini("gemini-3.1-flash-lite-preview"))
+        .model(
+            new Gemini("gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
         .instruction(
             "You are a helpful assistant. Answer user questions using Google Search when needed.")
         .tools(GoogleSearchTool.builder().build())
@@ -296,7 +306,7 @@ deployment which cannot change code can still turn the UI off.
 To try a few of this repository's own agents rather than your own:
 
 ```
-GOOGLE_API_KEY=... ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
+GOOGLE_CLOUD_PROJECT=my-project ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
 ```
 
 <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
@@ -316,6 +326,11 @@ the `examples` directory of this repository.
     side, including the on-device (LiteRT-LM, ML Kit) and cloud (Firebase AI)
     agents described in
     [On-device and Cloud Agents on Android](#-on-device-and-cloud-agents-on-android).
+
+The JVM and Java examples call Gemini on Vertex AI, except those that show
+API-key authentication. Sign in with Application Default Credentials
+(`gcloud auth application-default login`) and set `GOOGLE_CLOUD_PROJECT` to your
+Google Cloud project before running them.
 
 ## 🤝 Contributing
 

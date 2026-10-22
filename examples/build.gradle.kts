@@ -53,6 +53,7 @@ dependencies {
 }
 
 // Convenience task to run the BigQuery Analytics Demo sample, e.g.:
+//   export GOOGLE_CLOUD_PROJECT=my-gcp-project
 //   export BIGQUERY_PROJECT_ID=my-gcp-project
 //   export BIGQUERY_DATASET_ID=my_dataset
 //   ./gradlew :google-adk-kotlin-examples:runBigQueryAnalyticsDemo
@@ -79,7 +80,7 @@ tasks.register<JavaExec>("runSpringAiToolsDemo") {
 }
 
 // Convenience task to serve a sample of the example agents over HTTP, e.g.:
-//   GOOGLE_API_KEY=... ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
+//   GOOGLE_CLOUD_PROJECT=my-project ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
 // then browse http://localhost:8080/dev-ui and pick an agent.
 tasks.register<JavaExec>("runServer") {
   group = "application"

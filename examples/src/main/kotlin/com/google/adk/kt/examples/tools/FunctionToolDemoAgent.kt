@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.tools.ToolContext
 import kotlin.random.Random
 import kotlinx.coroutines.delay
@@ -158,7 +159,11 @@ object FunctionToolDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "hitchhikers_guide_bot",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """

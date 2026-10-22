@@ -24,6 +24,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
@@ -36,7 +37,7 @@ import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * A port of the message-triage graph from the ADK docs: an agent labels a message as a bug, a
@@ -70,9 +71,15 @@ object MessageTriageWorkflow {
     node<Any?, Unit>(name) { _, _ -> emit(Content.fromText(Role.MODEL, reply)) }
 }
 
-/** Runs the workflow on one message and prints each reply. Needs `GOOGLE_API_KEY`. */
+/**
+ * Runs the workflow on one message and prints each reply. Needs `GOOGLE_CLOUD_PROJECT` and
+ * Application Default Credentials.
+ */
 fun main() = runBlocking {
-  val workflow = MessageTriageWorkflow.create(Gemini(name = MODEL_NAME))
+  val workflow =
+    MessageTriageWorkflow.create(
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
+    )
   val runner = InMemoryRunner(app = App(appName = "routing_workflow", rootNode = workflow))
   val message =
     Content.fromText(Role.USER, "The app crashes when I open my order, and my parcel is late.")

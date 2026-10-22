@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.interop.BaseFutureSkillSource;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.skills.Frontmatter;
 import com.google.adk.kt.skills.SkillSourceException;
 import com.google.adk.kt.tools.SkillToolset;
@@ -42,7 +43,9 @@ public final class CustomSkillSourceDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("field_guide")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are a friendly field guide who helps identify things in nature.

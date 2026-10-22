@@ -58,7 +58,7 @@ import org.springframework.ai.tool.metadata.ToolMetadata
  *   ./gradlew :google-adk-kotlin-examples:runSpringAiToolsDemo
  * ```
  */
-private const val MODEL = "gemini-flash-latest"
+private const val MODEL = "gemini-3.8-flash"
 
 fun main() =
   runBlocking<Unit> {

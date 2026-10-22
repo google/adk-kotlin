@@ -168,9 +168,9 @@ private class NavigateToTool :
 }
 
 /**
- * A deterministic scripted [Model] so the demo runs without an API key: it requests
+ * A deterministic scripted [Model] so the demo runs without credentials: it requests
  * [NavigateToTool] for a user message and returns a plain-text confirmation once a tool result (or
- * the resumed device result) is present. Swap in a real `Gemini(name = ...)` model to drive the
+ * the resumed device result) is present. Swap in a real `Gemini` model on Vertex AI to drive the
  * same flow with an LLM.
  */
 private class ScriptedNavPlannerModel : Model {

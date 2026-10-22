@@ -20,6 +20,8 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
 /**
  * How a service expects a tool to authenticate, such as with an API key, an HTTP credential or
@@ -46,10 +48,11 @@ sealed interface AuthScheme {
 
     /** Where an API key is sent. */
     @ExperimentalAuthApi
+    @Serializable
     enum class Location {
-      QUERY,
-      HEADER,
-      COOKIE,
+      @SerialName("query") QUERY,
+      @SerialName("header") HEADER,
+      @SerialName("cookie") COOKIE,
     }
 
     /**

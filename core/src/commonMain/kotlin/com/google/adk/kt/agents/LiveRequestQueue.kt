@@ -66,6 +66,11 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
    */
   private val _closed = CompletableDeferred<Unit>()
 
+  // Each set of call ids is skipped until its mark, queued behind their answers, is received.
+  private class Discard(val callIds: Set<String>, val mark: LiveRequest = LiveRequest())
+
+  private val discards = AtomicReference<List<Discard>>(emptyList())
+
   /** Whether the caller has closed the queue. */
   internal val isClosed: Boolean
     get() = _closed.isCompleted
@@ -76,14 +81,41 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
 
   /**
    * Returns the next request in send order, or null after [close] once every request sent before it
-   * has been returned. A caller can cancel a call and start the next one without waiting for it to
-   * finish: calls run one at a time, and a request the channel had already handed to the cancelled
-   * call is returned by the next one, so none is lost or reordered. A returned request never has
-   * [LiveRequest.close] set, and one whose [LiveRequest.input] is null carries only a
-   * [LiveRequest.stateDelta], which may be empty.
+   * has been returned, skipping the answers [discardAnswersTo] dropped. Calls run one at a time, so
+   * a caller can cancel one and start the next without waiting, and a request the cancelled call
+   * had already taken is returned by the next one. A returned request never has [LiveRequest.close]
+   * set, and one whose [LiveRequest.input] is null carries only a [LiveRequest.stateDelta], which
+   * may be empty.
    */
-  internal suspend fun receiveRequest(): LiveRequest? = receiving.withLock {
-    redelivery.exchange(null) ?: channel.receiveCatching().getOrNull()
+  internal suspend fun receiveRequest(): LiveRequest? = receiving.withLock { nextKeptRequest() }
+
+  private suspend fun nextKeptRequest(): LiveRequest? {
+    while (true) {
+      val request = redelivery.exchange(null) ?: channel.receiveCatching().getOrNull()
+      val passed = discards.load().find { it.mark === request }
+      when {
+        passed != null -> discards.mutate { it - passed }
+        request == null || !isDiscarded(request) -> return request
+      }
+    }
+  }
+
+  private fun isDiscarded(request: LiveRequest): Boolean {
+    val parts = (request.input as? ContentInput)?.content?.parts ?: return false
+    val ids = discards.load().flatMapTo(mutableSetOf()) { it.callIds }
+    return request.stateDelta.isEmpty() && parts.all { it.functionResponse?.id in ids }
+  }
+
+  /**
+   * Skips the already queued requests made only of answers to [callIds], so a stopped stream
+   * reaches no connection. Answers sent afterwards are kept, even under a reused call id.
+   */
+  internal fun discardAnswersTo(callIds: Collection<String>) {
+    if (callIds.isEmpty()) return
+    val discard = Discard(callIds.toSet())
+    discards.mutate { it + discard }
+    // Fails only once closed, when nothing new is queued, so the discard can stay.
+    val unused = channel.trySend(discard.mark)
   }
 
   /**

@@ -24,6 +24,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.tools.GoogleSearchTool
@@ -40,7 +41,7 @@ import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * A research workflow built with the workflow DSL. A planner fans out to two researchers that
@@ -101,9 +102,15 @@ object ResearchWorkflow {
     }
 }
 
-/** Runs the workflow on one question and prints the published brief. Needs `GOOGLE_API_KEY`. */
+/**
+ * Runs the workflow on one question and prints the published brief. Needs `GOOGLE_CLOUD_PROJECT`
+ * and Application Default Credentials.
+ */
 fun main() = runBlocking {
-  val workflow = ResearchWorkflow.create(Gemini(name = MODEL_NAME))
+  val workflow =
+    ResearchWorkflow.create(
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
+    )
   val runner = InMemoryRunner(app = App(appName = "research", rootNode = workflow))
   val question = Content.fromText(Role.USER, "Should a small team adopt Kotlin Multiplatform?")
   runner.runAsync(userId = "user", sessionId = "session", newMessage = question).collect { event ->

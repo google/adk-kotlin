@@ -29,7 +29,7 @@ import com.google.auth.oauth2.GoogleCredentials
  * fresh one before each request.
  */
 object ChatCompletionsVertexDemo {
-  private const val MODEL = "google/gemini-3.1-flash-lite"
+  private const val MODEL = "google/gemini-3.8-flash"
 
   private val project: String? = System.getenv("GOOGLE_CLOUD_PROJECT")
 

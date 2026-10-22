@@ -31,7 +31,7 @@ import kotlin.random.Random
 import kotlin.system.exitProcess
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /** A single tool the agent can call, exposed to the model via the `@Tool` KSP processor. */
 class WeatherTools {

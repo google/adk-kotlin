@@ -6,16 +6,21 @@
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 
 val rootAgent =
   LlmAgent(
     name = "hello_agent",
-    model = Gemini(name = "<gemini model id>"),
+    model =
+      Gemini(
+        name = "<gemini model id>",
+        vertexCredentials = VertexCredentials(location = "global"),
+      ),
     instruction = Instruction("You greet the user and solve math problems."),
   )
 ```
 
-`Gemini(name)` without an API key reads `GOOGLE_API_KEY` or `GEMINI_API_KEY` from the environment. On Android the GenAI SDK accepts neither API keys nor Google credentials; use the Firebase AI model or an on-device model there. Any `Model` implementation works as `model`.
+`vertexCredentials` runs the model on Vertex AI with Application Default Credentials (`gcloud auth application-default login`) and the project from `GOOGLE_CLOUD_PROJECT`. Without it, `Gemini(name)` calls the Gemini API with `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Prefer ADC because an API key is a long-lived secret. On Android, the GenAI SDK accepts neither API keys nor Google credentials; use the Firebase AI model or an on-device model there. Any `Model` implementation works as `model`.
 
 Beyond `name`, `model` and `instruction`, the `LlmAgent` parameters you will use most are `description` (what a parent's model reads when deciding to transfer), `tools`, `toolsets`, `subAgents`, `outputKey` and `outputSchema`. The constructor in `agents/LlmAgent.kt` has the full list. Always pass arguments by name.
 

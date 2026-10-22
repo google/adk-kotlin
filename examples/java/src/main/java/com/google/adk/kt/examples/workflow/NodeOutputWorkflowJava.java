@@ -24,6 +24,7 @@ import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
 import com.google.adk.kt.types.Schema;
@@ -44,7 +45,7 @@ import reactor.core.publisher.Mono;
  */
 public final class NodeOutputWorkflowJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
   private static final String TOPIC_KEY = "topic_details";
 
   /** Builds the workflow, with the agent on {@code model}. */
@@ -66,10 +67,11 @@ public final class NodeOutputWorkflowJava {
 
   /**
    * Runs the workflow on one topic and prints what each node produced. Needs {@code
-   * GOOGLE_API_KEY}.
+   * GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
    */
   public static void main(String[] args) {
-    Workflow workflow = create(new Gemini(MODEL_NAME));
+    Workflow workflow =
+        create(new Gemini(MODEL_NAME, VertexCredentials.builder().location("global").build()));
     PublisherRunner runner =
         PublisherRunner.inMemory(App.builder().appName("node_output").rootNode(workflow).build());
     Content message = Content.fromText(Role.USER, "cyberpunk future");

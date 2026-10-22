@@ -21,13 +21,13 @@ import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.appfunctions.AppFunctionException
 import androidx.appfunctions.AppFunctionManager
+import androidx.appfunctions.metadata.AppFunctionName
 import androidx.appfunctions.AppFunctionSearchSpec
 import androidx.appfunctions.AppFunctionState
 import androidx.appfunctions.ExecuteAppFunctionRequest
 import androidx.appfunctions.ExecuteAppFunctionResponse
 import androidx.appfunctions.metadata.AppFunctionAppMetadata
 import androidx.appfunctions.metadata.AppFunctionMetadata
-import androidx.appfunctions.metadata.AppFunctionName
 import androidx.appfunctions.metadata.AppFunctionPackageMetadata
 import com.google.adk.kt.agents.ReadonlyContext
 import com.google.adk.kt.annotations.ExperimentalAppFunctionsFeature

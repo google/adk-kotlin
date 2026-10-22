@@ -24,6 +24,7 @@ import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.sessions.State;
 import com.google.adk.kt.tools.GoogleSearchTool;
 import com.google.adk.kt.types.Content;
@@ -49,7 +50,7 @@ import reactor.core.publisher.Mono;
  */
 public final class ResearchWorkflowJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
 
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(Model model) {
@@ -83,10 +84,12 @@ public final class ResearchWorkflowJava {
   }
 
   /**
-   * Runs the workflow on one question and prints the published brief. Needs {@code GOOGLE_API_KEY}.
+   * Runs the workflow on one question and prints the published brief. Needs {@code
+   * GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
    */
   public static void main(String[] args) {
-    Workflow workflow = create(new Gemini(MODEL_NAME));
+    Workflow workflow =
+        create(new Gemini(MODEL_NAME, VertexCredentials.builder().location("global").build()));
     PublisherRunner runner =
         PublisherRunner.inMemory(App.builder().appName("research").rootNode(workflow).build());
     Content question =

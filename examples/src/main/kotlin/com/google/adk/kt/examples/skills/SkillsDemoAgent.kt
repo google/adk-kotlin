@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.skills
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.skills.NewFileSystemSource
 import com.google.adk.kt.tools.SkillToolset
 import java.net.JarURLConnection
@@ -45,7 +46,11 @@ object SkillsDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "wizard_apprentice",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       // The `instruction` determines the agent's persona.
       instruction =
         Instruction(

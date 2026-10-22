@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.tools
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.tools.AgentTool
 
 /**
@@ -44,7 +45,11 @@ object AgentToolDemoAgent {
       name = "chief_engineer",
       description =
         "The Chief Engineer of the USS Enterprise. Handles technical, warp drive, and theoretical engineering problems.",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """
@@ -67,7 +72,11 @@ object AgentToolDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "captain_kirk",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """

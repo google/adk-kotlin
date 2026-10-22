@@ -23,6 +23,7 @@ import com.google.adk.kt.events.ToolConfirmation;
 import com.google.adk.kt.interop.BaseFutureTool;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.BaseTool;
 import com.google.adk.kt.tools.ToolContext;
 import com.google.adk.kt.types.FunctionDeclaration;
@@ -102,7 +103,9 @@ public final class HitlDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("ship_computer")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are the AI computer of an interstellar exploration vessel.

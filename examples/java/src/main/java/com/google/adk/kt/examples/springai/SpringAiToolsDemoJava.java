@@ -40,7 +40,7 @@ import org.springframework.ai.tool.function.FunctionToolCallback;
  */
 public final class SpringAiToolsDemoJava {
 
-  private static final String MODEL = "gemini-flash-latest";
+  private static final String MODEL = "gemini-3.8-flash";
 
   private static GoogleGenAiChatModel chatModel() {
     String location = System.getenv("GOOGLE_CLOUD_LOCATION");

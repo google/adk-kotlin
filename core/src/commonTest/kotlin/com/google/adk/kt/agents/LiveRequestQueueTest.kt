@@ -21,6 +21,7 @@ package com.google.adk.kt.agents
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.RealtimeInput
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.FunctionCall
@@ -360,6 +361,19 @@ class LiveRequestQueueTest {
     queue.close()
 
     assertEquals(emptyMap(), queue.receiveAll().single().stateDelta)
+  }
+
+  @Test
+  fun discardAnswersTo_sameIdAnsweredAfterTheStop_isStillReceived(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+
+    queue.sendContent(userFunctionResponse("monitor", "c1", mapOf("n" to 1)))
+    queue.discardAnswersTo(listOf("c1"))
+    queue.sendContent(userFunctionResponse("monitor", "c1", mapOf("n" to 2)))
+    queue.close()
+
+    val received = queue.receiveAll().map { assertIs<ContentInput>(it.input).content }
+    assertEquals(listOf(userFunctionResponse("monitor", "c1", mapOf("n" to 2))), received)
   }
 }
 

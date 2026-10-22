@@ -22,6 +22,7 @@ import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -35,7 +36,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * Interactive end-to-end demo of sliding-window context compaction.
@@ -45,9 +46,10 @@ private const val MODEL_NAME = "gemini-3.1-flash-lite"
  * watch the conversation history grow and then collapse into a single summary once compaction kicks
  * in (configured here to compact every two turns).
  *
- * If `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) is set, it talks to a real Gemini model. Otherwise it
- * falls back to canned replies so the compaction behavior is still fully demonstrable offline. Type
- * `exit` (or an empty line) to quit; a summary of the stored session events is printed on exit.
+ * If `GOOGLE_CLOUD_PROJECT` is set, it talks to a real Gemini model on Vertex AI, using Application
+ * Default Credentials. Otherwise it falls back to canned replies so the compaction behavior is
+ * still fully demonstrable offline. Type `exit` (or an empty line) to quit; a summary of the stored
+ * session events is printed on exit.
  */
 private class PrintingModel(private val label: String, private val delegate: Model) : Model {
   override val name: String = delegate.name
@@ -63,19 +65,22 @@ private class PrintingModel(private val label: String, private val delegate: Mod
 }
 
 /**
- * A [Model] that ignores the prompt and always returns [reply]; used when no API key is available.
+ * A [Model] that ignores the prompt and always returns [reply]; used when no Google Cloud project
+ * is set.
  */
 private class CannedModel(override val name: String, private val reply: String) : Model {
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
     flowOf(LlmResponse(content = Content.fromText(Role.MODEL, reply)))
 }
 
-private fun hasApiKey(): Boolean =
-  !System.getenv("GEMINI_API_KEY").isNullOrBlank() ||
-    !System.getenv("GOOGLE_API_KEY").isNullOrBlank()
+private fun hasCloudProject(): Boolean = !System.getenv("GOOGLE_CLOUD_PROJECT").isNullOrBlank()
 
 private fun realOrCanned(cannedName: String, cannedReply: String): Model =
-  if (hasApiKey()) Gemini(name = MODEL_NAME) else CannedModel(cannedName, cannedReply)
+  if (hasCloudProject()) {
+    Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
+  } else {
+    CannedModel(cannedName, cannedReply)
+  }
 
 fun main(): Unit = runBlocking {
   val agentModel = PrintingModel("AGENT LLM", realOrCanned("agent", "(canned) Here is an answer."))
@@ -102,10 +107,8 @@ fun main(): Unit = runBlocking {
   val sessionId = "demo-session"
 
   println("Sliding-window compaction demo. Type a message; 'exit' or an empty line quits.")
-  if (!hasApiKey()) {
-    println(
-      "(No GEMINI_API_KEY/GOOGLE_API_KEY set -- using canned replies; compaction still works.)"
-    )
+  if (!hasCloudProject()) {
+    println("(No GOOGLE_CLOUD_PROJECT set -- using canned replies; compaction still works.)")
   }
 
   val scanner = Scanner(System.`in`)

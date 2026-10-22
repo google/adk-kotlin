@@ -24,6 +24,7 @@ import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.artifacts.ArtifactService;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.tools.BaseTool;
 import com.google.adk.kt.tools.ToolContext;
@@ -122,7 +123,9 @@ public final class ReportGeneratorAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("report_generator")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               "You are a report generating assistant. When asked to write a report, gather the"
                   + " necessary info, format it perfectly, save it using the `save_report` tool,"

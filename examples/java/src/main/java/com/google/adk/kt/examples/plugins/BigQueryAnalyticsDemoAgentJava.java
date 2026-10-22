@@ -22,6 +22,7 @@ import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.plugins.agentanalytics.BigQueryAgentAnalyticsPlugin;
 import com.google.adk.kt.plugins.agentanalytics.BigQueryLoggerConfig;
 import com.google.adk.kt.tools.GoogleSearchTool;
@@ -45,7 +46,9 @@ public final class BigQueryAnalyticsDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("analytics_assistant")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               "You are a helpful research assistant. Your interactions and events are logged to"
                   + " BigQuery for analytics.")
@@ -81,6 +84,7 @@ public final class BigQueryAnalyticsDemoAgentJava {
       System.out.println(
           "Missing required environment variables!\n\n"
               + "Please set the following environment variables:\n"
+              + "  export GOOGLE_CLOUD_PROJECT=<YOUR_GCP_PROJECT_ID> (for Gemini on Vertex AI)\n"
               + "  export BIGQUERY_PROJECT_ID=<YOUR_GCP_PROJECT_ID>\n"
               + "  export BIGQUERY_DATASET_ID=<YOUR_BIGQUERY_DATASET_ID>\n"
               + "  export BIGQUERY_TABLE_NAME=<YOUR_TABLE_NAME> (optional, defaults to"

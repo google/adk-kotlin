@@ -529,6 +529,22 @@ class HistoryRewriterProcessorTest {
     )
   }
 
+  // Call ids come from the whole session, so an earlier call still hides its tool's messages.
+  @Test
+  fun rewrite_includeContentsNone_toolEventWhoseCallCameBeforeTheTurn_staysOut() {
+    val events =
+      listOf(
+        userEvent("Watch GOOG."),
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "c1")),
+        userEvent("And AAPL?"),
+        Event(author = "agent", branch = "monitor@c1", content = userMessage("watching")),
+      )
+
+    val contents = rewrite(events, includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("user" to "And AAPL?"), turns(contents))
+  }
+
   @Test
   fun rewrite_includeContentsNone_trailingEmptyChunk_keepsTheTurn() {
     val events = listOf(heard("Hello."), heard(""))

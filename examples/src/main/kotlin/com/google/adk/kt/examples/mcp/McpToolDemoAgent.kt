@@ -21,8 +21,10 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.tools.mcp.McpConnectionParameters
 import com.google.adk.kt.tools.mcp.McpToolset
+import com.google.auth.oauth2.GoogleCredentials
 
 /**
  * Example agent demonstrating the use of MCP (Model Context Protocol) tools.
@@ -32,10 +34,10 @@ import com.google.adk.kt.tools.mcp.McpToolset
  * `get_documents`) on first use and exposes them to the model, so the agent declares no tools of
  * its own.
  *
- * The server authenticates each request with an `X-Goog-Api-Key` header. Set
- * `DEVELOPERKNOWLEDGE_API_KEY` to a Developer Knowledge API key, or reuse `GEMINI_API_KEY` if that
- * key is enabled for the Developer Knowledge API too. See
- * https://developers.google.com/knowledge/mcp for how to enable the API and create a key.
+ * The server authenticates with Application Default Credentials: before each tool discovery and
+ * call, `headerProvider` sends a valid access token and the project from `GOOGLE_CLOUD_PROJECT`.
+ * That project must have the Developer Knowledge API enabled. See
+ * https://developers.google.com/knowledge/mcp for how to enable it.
  *
  * `answer_query` is capped at 50 requests per day per project; the server asks callers to fall back
  * to `search_documents` once that returns 429.
@@ -45,6 +47,15 @@ import com.google.adk.kt.tools.mcp.McpToolset
  * the example leaves that off.
  */
 object McpToolDemoAgent {
+  private val project: String =
+    System.getenv("GOOGLE_CLOUD_PROJECT")?.takeUnless { it.isBlank() }
+      ?: error("Set GOOGLE_CLOUD_PROJECT.")
+
+  private val credentials by lazy {
+    GoogleCredentials.getApplicationDefault()
+      .createScoped("https://www.googleapis.com/auth/cloud-platform")
+  }
+
   init {
     println("MU-TH-UR 6000 ONLINE. ALL SYSTEMS NOMINAL.")
     println("INITIATING DEVELOPER KNOWLEDGE INTERFACE PROTOCOL. QUERY AWAY.")
@@ -54,7 +65,11 @@ object McpToolDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "mcp_assistant",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """
@@ -82,21 +97,18 @@ object McpToolDemoAgent {
           McpToolset.McpToolsetConfig(
               streamableHttpConnectionParams =
                 McpConnectionParameters.StreamableHttp(
-                  url = "https://developerknowledge.googleapis.com/mcp",
-                  headers =
-                    mapOf(
-                      "X-Goog-Api-Key" to
-                        (System.getenv("DEVELOPERKNOWLEDGE_API_KEY")?.takeUnless { it.isBlank() }
-                          ?: System.getenv("GEMINI_API_KEY")?.takeUnless { it.isBlank() }
-                          ?: error(
-                            "Set DEVELOPERKNOWLEDGE_API_KEY, or GEMINI_API_KEY if that key is " +
-                              "also enabled for the Developer Knowledge API. See " +
-                              "https://developers.google.com/knowledge/mcp."
-                          ))
-                    ),
+                  url = "https://developerknowledge.googleapis.com/mcp"
                 )
             )
-            .toToolset()
+            .toToolset(
+              headerProvider = {
+                credentials.refreshIfExpired()
+                mapOf(
+                  "Authorization" to "Bearer ${credentials.accessToken.tokenValue}",
+                  "X-Goog-User-Project" to project,
+                )
+              }
+            )
         ),
     )
 }

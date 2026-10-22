@@ -41,6 +41,8 @@ import com.google.adk.kt.callbacks.runOnUserMessageCallbacksPipeline
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.applyRewinds
+import com.google.adk.kt.events.functionCallIds
+import com.google.adk.kt.events.isToolBranch
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.memory.MemoryService
@@ -988,13 +990,17 @@ abstract class AbstractRunner : Runner {
     invocationId: String?,
     resumeAgent: BaseAgent,
   ): String? {
+    // A streaming tool's message carries the agent's name on its own branch, so it is skipped.
+    val toolCallIds = events.functionCallIds()
     for (event in events.asReversed()) {
+      val branch = event.branch
       if (
         (invocationId == null || event.invocationId == invocationId) &&
           event.author == resumeAgent.name &&
-          !event.branch.isNullOrEmpty()
+          !branch.isNullOrEmpty() &&
+          !isToolBranch(branch, resumeAgent.name, toolCallIds)
       ) {
-        return event.branch
+        return branch
       }
     }
     return null

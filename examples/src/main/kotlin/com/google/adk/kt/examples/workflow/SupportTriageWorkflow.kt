@@ -26,6 +26,7 @@ import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
@@ -39,7 +40,7 @@ import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * A support-triage workflow built with the workflow DSL. A classifier labels the request, a routing
@@ -83,10 +84,13 @@ object SupportTriageWorkflow {
 
 /**
  * Runs the workflow on one request from a signed-in customer and prints what each node said. Needs
- * `GOOGLE_API_KEY`.
+ * `GOOGLE_CLOUD_PROJECT` and Application Default Credentials.
  */
 fun main() = runBlocking {
-  val workflow = SupportTriageWorkflow.create(Gemini(name = MODEL_NAME))
+  val workflow =
+    SupportTriageWorkflow.create(
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
+    )
   val runner = InMemoryRunner(app = App(appName = "support_triage", rootNode = workflow))
   val request = Content.fromText(Role.USER, "I was charged twice for my subscription this month.")
   // The support app knows who is signed in, so it passes the account ID as session state.

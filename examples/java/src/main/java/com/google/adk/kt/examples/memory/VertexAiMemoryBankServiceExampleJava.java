@@ -72,7 +72,7 @@ import reactor.core.publisher.Flux;
  */
 public final class VertexAiMemoryBankServiceExampleJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
   private static final String APP_NAME = "memory-bank-example";
   private static final String USER_ID = "demo-user";
 

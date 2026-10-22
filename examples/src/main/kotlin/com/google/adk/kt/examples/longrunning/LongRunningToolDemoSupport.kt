@@ -88,9 +88,9 @@ internal class ChangeDestinationTool(private val respondImmediately: Boolean = t
 }
 
 /**
- * A deterministic scripted [Model] so the demos run without an API key: the first call requests the
- * [ChangeDestinationTool], and every later call returns a plain-text confirmation. Swap in a real
- * `Gemini(name = ...)` model (with an API key) to drive the same flow with an LLM.
+ * A deterministic scripted [Model] so the demos run without credentials: the first call requests
+ * the [ChangeDestinationTool], and every later call returns a plain-text confirmation. Swap in a
+ * real `Gemini` model on Vertex AI to drive the same flow with an LLM.
  */
 internal class ScriptedNavModel : Model {
   override val name: String = "scripted-nav-model"

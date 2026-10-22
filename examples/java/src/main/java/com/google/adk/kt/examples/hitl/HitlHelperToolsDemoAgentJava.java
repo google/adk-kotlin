@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.hitl;
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.GetUserChoiceTool;
 import com.google.adk.kt.tools.RequestInputTool;
 
@@ -33,7 +34,9 @@ public final class HitlHelperToolsDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("trip_planner")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are a travel-planning assistant.

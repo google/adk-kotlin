@@ -26,6 +26,7 @@ import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 
@@ -78,7 +79,11 @@ object CallbacksAndObserversDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "alice",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """You are Alice, exploring a very strange and nonsensical digital Wonderland.

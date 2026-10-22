@@ -115,8 +115,8 @@ final class LongRunningToolDemoSupportJava {
   }
 
   /**
-   * A deterministic scripted model so the demos run without an API key: the first call requests the
-   * {@link ChangeDestinationTool}, and every later call returns a plain-text confirmation.
+   * A deterministic scripted model so the demos run without credentials: the first call requests
+   * the {@link ChangeDestinationTool}, and every later call returns a plain-text confirmation.
    */
   static final class ScriptedNavModel extends BasePublisherModel {
     private int invocations = 0;

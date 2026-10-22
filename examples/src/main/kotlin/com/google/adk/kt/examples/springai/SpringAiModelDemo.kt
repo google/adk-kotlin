@@ -26,16 +26,16 @@ import org.springframework.ai.google.genai.GoogleGenAiChatOptions
 /**
  * Example agent driven by a Spring AI `ChatModel` through [SpringAiModel].
  *
- * Any Spring AI chat provider works; this wraps the Google GenAI provider using a Gemini API key
- * from the `GOOGLE_API_KEY` environment variable. To use OpenAI, Anthropic, Ollama, or Vertex,
- * build that provider's `ChatModel` instead and pass it to [SpringAiModel].
+ * Any Spring AI chat provider works; this wraps the Google GenAI provider on Vertex AI, using
+ * Application Default Credentials and the project named by `GOOGLE_CLOUD_PROJECT`. To use OpenAI,
+ * Anthropic, or Ollama, build that provider's `ChatModel` instead and pass it to [SpringAiModel].
  */
 object SpringAiModelDemo {
-  private const val MODEL = "gemini-flash-latest"
+  private const val MODEL = "gemini-3.8-flash"
 
   private val chatModel: GoogleGenAiChatModel =
     GoogleGenAiChatModel.builder()
-      .genAiClient(Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build())
+      .genAiClient(Client.builder().vertexAI(true).location("global").build())
       .options(GoogleGenAiChatOptions.builder().model(MODEL).build())
       .build()
 

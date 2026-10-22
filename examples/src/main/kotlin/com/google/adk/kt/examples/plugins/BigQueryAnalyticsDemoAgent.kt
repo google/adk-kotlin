@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.plugins.agentanalytics.BigQueryAgentAnalyticsPlugin
 import com.google.adk.kt.plugins.agentanalytics.BigQueryLoggerConfig
 import com.google.adk.kt.runners.InMemoryRunner
@@ -64,7 +65,11 @@ object BigQueryAnalyticsDemoAgent {
   val rootAgent: BaseAgent =
     LlmAgent(
       name = "analytics_assistant",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           "You are a helpful research assistant. Your interactions and events are logged to BigQuery for analytics."
@@ -78,17 +83,23 @@ fun main() {
   val datasetId = System.getenv("BIGQUERY_DATASET_ID")
   val tableName = System.getenv("BIGQUERY_TABLE_NAME") ?: "agent_events"
 
-  if (projectId.isNullOrBlank() || datasetId.isNullOrBlank()) {
+  if (
+    System.getenv("GOOGLE_CLOUD_PROJECT").isNullOrBlank() ||
+      projectId.isNullOrBlank() ||
+      datasetId.isNullOrBlank()
+  ) {
     println(
       """
       |Missing required environment variables!
       |
       |Please set the following environment variables:
+      |  export GOOGLE_CLOUD_PROJECT=<YOUR_GCP_PROJECT_ID> (for Gemini on Vertex AI)
       |  export BIGQUERY_PROJECT_ID=<YOUR_GCP_PROJECT_ID>
       |  export BIGQUERY_DATASET_ID=<YOUR_BIGQUERY_DATASET_ID>
       |  export BIGQUERY_TABLE_NAME=<YOUR_TABLE_NAME> (optional, defaults to 'agent_events')
       |
       |Example:
+      |  export GOOGLE_CLOUD_PROJECT=my-gcp-project
       |  export BIGQUERY_PROJECT_ID=my-gcp-project
       |  export BIGQUERY_DATASET_ID=agent_analytics
       |  ./gradlew :google-adk-kotlin-examples:runBigQueryAnalyticsDemo

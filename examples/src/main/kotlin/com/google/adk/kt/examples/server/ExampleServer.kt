@@ -74,7 +74,7 @@ private class ExampleServerCommand : CliktCommand(name = "example-server") {
       .flag()
 
   override fun run() {
-    // Built here so --help needs no API key: constructing a Gemini agent requires one.
+    // Built here so --help needs no Google Cloud project: constructing a Gemini agent requires one.
     val config =
       AdkServerConfig(
         appLoader =

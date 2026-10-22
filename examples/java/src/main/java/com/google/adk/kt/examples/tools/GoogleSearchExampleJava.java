@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.tools;
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.GoogleSearchTool;
 
 /** Example agent that answers factual questions with the {@code google_search} tool. */
@@ -27,7 +28,9 @@ public final class GoogleSearchExampleJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("google_search_example")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               "You are a helpful assistant. Use the google_search tool to answer factual or"
                   + " time-sensitive questions.")

@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class ChatCompletionsVertexDemoJava {
 
-  private static final String MODEL = "google/gemini-3.1-flash-lite";
+  private static final String MODEL = "google/gemini-3.8-flash";
   private static final String PROJECT = System.getenv("GOOGLE_CLOUD_PROJECT");
 
   private static final AtomicReference<GoogleCredentials> credentials = new AtomicReference<>();

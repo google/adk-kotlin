@@ -25,6 +25,7 @@ import com.google.adk.kt.interop.Choices;
 import com.google.adk.kt.interop.FutureCallbacks;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.BaseTool;
 import java.util.List;
 import java.util.Map;
@@ -89,7 +90,9 @@ public final class CallbacksAndObserversDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("alice")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are Alice, exploring a very strange and nonsensical digital Wonderland.

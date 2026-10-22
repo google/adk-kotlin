@@ -31,6 +31,10 @@ import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.wholeText
 import com.google.common.truth.Truth.assertWithMessage
 import kotlin.test.Test
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 
@@ -174,5 +178,40 @@ class LlmAgentLiveTransferTest {
       .that(tree.childModel.connections.size)
       .isEqualTo(2)
     tree.childModel.connections.forEach { it.assertAllWaitsMet() }
+  }
+
+  @Test
+  fun runLive_transferWhileAToolStreams_stopsItBeforeTheChildConnects(): Unit = runTest {
+    var childConnectionsWhenStopped: Int? = null
+    val childModel = DummyLiveModel(listOf(wholeText("sunny"), EndStream))
+    val ticker =
+      flow {
+          while (true) {
+            emit("tick")
+            delay(50.milliseconds)
+          }
+        }
+        .onCompletion { childConnectionsWhenStopped = childModel.connections.size }
+    val model =
+      DummyLiveModel(
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          awaitToolResponse(),
+          Respond(modelTransferToAgentResponse("weather_agent")),
+          EndStream,
+        )
+      )
+    val child = LlmAgent(name = "weather_agent", model = childModel)
+    val tools = listOf(DummyTool(name = "monitor") { _, _ -> ticker })
+    val parent = LlmAgent(name = "router", model = model, subAgents = listOf(child), tools = tools)
+    val unused = InMemoryRunner(agent = parent).runLive("u", "s", LiveRequestQueue()).toList()
+
+    assertWithMessage("the stream should stop before the child connects")
+      .that(childConnectionsWhenStopped)
+      .isEqualTo(0)
+    val heard = childModel.connections.flatMap { it.sent }.filterIsInstance<ContentInput>()
+    assertWithMessage("the child should get no answer for the parent's call")
+      .that(heard.none { it.content.parts.any { p -> p.functionResponse?.id == "c1" } })
+      .isTrue()
   }
 }

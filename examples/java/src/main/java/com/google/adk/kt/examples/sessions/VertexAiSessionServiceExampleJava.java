@@ -69,7 +69,7 @@ import reactor.core.publisher.Flux;
  */
 public final class VertexAiSessionServiceExampleJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
 
   /**
    * A single tool the agent can call, built from an annotated method by {@link ReflectiveTools}

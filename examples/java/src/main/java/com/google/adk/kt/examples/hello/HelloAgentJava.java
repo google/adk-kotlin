@@ -19,14 +19,22 @@ package com.google.adk.kt.examples.hello;
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 
-/** Example hello agent, demonstrating the fundamentals of building an agent with the ADK. */
+/**
+ * Example hello agent, demonstrating the fundamentals of building an agent with the ADK.
+ *
+ * <p>With no project or credentials set, {@link VertexCredentials} falls back to {@code
+ * GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
+ */
 public final class HelloAgentJava {
 
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("hello_agent")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           // The instruction defines the agent's persona and primary behavior.
           .instruction("You always greet the user with \"Hello\" and try to solve math problems.")
           .build();

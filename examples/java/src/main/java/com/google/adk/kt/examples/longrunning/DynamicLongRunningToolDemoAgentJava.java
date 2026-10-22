@@ -221,7 +221,7 @@ public final class DynamicLongRunningToolDemoAgentJava {
   }
 
   /**
-   * A deterministic scripted model so the demo runs without an API key: it requests {@link
+   * A deterministic scripted model so the demo runs without credentials: it requests {@link
    * NavigateToTool} for a user message and returns a plain-text confirmation once a tool result (or
    * the resumed device result) is present.
    */

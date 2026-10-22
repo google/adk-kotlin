@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 
 /**
  * Tools available to the [HitlDemoAgent]. The KSP `@Tool` processor generates a `FunctionTool`
@@ -56,7 +57,7 @@ class ShipComputerTools {
  * true` so that the framework pauses agent execution and requests human confirmation before
  * executing a potentially destructive or high-risk tool (here, `initiateWarpJump`).
  *
- * The agent is configured to use the Gemini API for inference, behaving like a ship's computer
+ * The agent is configured to use Gemini on Vertex AI for inference, behaving like a ship's computer
  * equipped with the tools defined in [ShipComputerTools].
  *
  * ## How it works
@@ -79,7 +80,11 @@ object HitlDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "ship_computer",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """

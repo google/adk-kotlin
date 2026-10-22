@@ -19,20 +19,28 @@ package com.google.adk.kt.examples.hello
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 
 /**
  * Example hello agent using the Kotlin ADK implementation.
  *
  * This agent demonstrates the fundamental principles of building an agent with the ADK:
  * 1. Defining the [LlmAgent] with a specific model and behavior (instructions).
- * 2. Using any model configuration (here, [Gemini]).
+ * 2. Using any model configuration (here, [Gemini] on Vertex AI).
+ *
+ * With no project or credentials set, [VertexCredentials] falls back to `GOOGLE_CLOUD_PROJECT` and
+ * Application Default Credentials.
  */
 object HelloAgent {
   @JvmField
   val rootAgent =
     LlmAgent(
       name = "hello_agent",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       // The instruction defines the agent's persona and primary behavior.
       instruction =
         Instruction("You always greet the user with \"Hello\" and try to solve math problems."),

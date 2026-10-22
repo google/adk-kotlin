@@ -36,7 +36,7 @@ import reactor.core.publisher.Mono;
  * Demonstrates implementing a {@link com.google.adk.kt.models.Model} from Java via {@link
  * BasePublisherModel}. The engine's {@code generateContent} returns a Kotlin {@code Flow}; the base
  * lets Java return a Reactive Streams {@link Publisher} instead. This fake model just echoes the
- * user's last message, so the whole agent runs offline (no API key).
+ * user's last message, so the whole agent runs offline (no credentials).
  */
 public final class PublisherModelDemoJava {
 

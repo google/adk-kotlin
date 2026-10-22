@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools.appfunctions
 
+import androidx.appfunctions.metadata.AppFunctionName
 import androidx.appfunctions.metadata.AppFunctionAllOfTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionArrayTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionBooleanTypeMetadata
@@ -27,7 +28,6 @@ import androidx.appfunctions.metadata.AppFunctionDoubleTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionIntTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionLongTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionMetadata
-import androidx.appfunctions.metadata.AppFunctionName
 import androidx.appfunctions.metadata.AppFunctionObjectTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionOneOfTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionPackageMetadata

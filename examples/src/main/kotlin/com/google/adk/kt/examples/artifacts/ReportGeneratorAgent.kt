@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.artifacts.GcsArtifactService
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.tools.ToolContext
@@ -109,7 +110,11 @@ object ReportGeneratorAgent {
   val rootAgent =
     LlmAgent(
       name = "report_generator",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           "You are a report generating assistant. When asked to write a report, gather the necessary info, format it perfectly, save it using the `save_report` tool, and then read it back using the `read_report` tool to verify the content you just saved."

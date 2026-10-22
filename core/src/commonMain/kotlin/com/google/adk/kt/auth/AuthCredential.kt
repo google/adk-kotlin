@@ -24,6 +24,8 @@ import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
 /**
  * A credential that a tool uses to call a service: an [ApiKey], an [Http] credential, an [OAuth2]
@@ -307,11 +309,12 @@ sealed interface AuthCredential {
 
     /** The way an OAuth2 client authenticates to the token endpoint (RFC 7591 section 2). */
     @ExperimentalAuthApi
+    @Serializable
     enum class TokenEndpointAuthMethod {
-      CLIENT_SECRET_BASIC,
-      CLIENT_SECRET_POST,
-      CLIENT_SECRET_JWT,
-      PRIVATE_KEY_JWT,
+      @SerialName("client_secret_basic") CLIENT_SECRET_BASIC,
+      @SerialName("client_secret_post") CLIENT_SECRET_POST,
+      @SerialName("client_secret_jwt") CLIENT_SECRET_JWT,
+      @SerialName("private_key_jwt") PRIVATE_KEY_JWT,
     }
 
     /**

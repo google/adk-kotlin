@@ -26,6 +26,7 @@ import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -42,7 +43,7 @@ import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * An order-processing workflow with fraud review, built with the workflow DSL. Nested fraud and
@@ -86,9 +87,14 @@ object OrderProcessingWorkflow {
 
 /**
  * Runs the workflow on three orders and prints what each step and agent did. Needs
- * `GOOGLE_API_KEY`.
+ * `GOOGLE_CLOUD_PROJECT` and Application Default Credentials.
  */
-fun main() = runSampleOrders(OrderProcessingWorkflow.create(Gemini(name = MODEL_NAME)))
+fun main() =
+  runSampleOrders(
+    OrderProcessingWorkflow.create(
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
+    )
+  )
 
 /** Runs [workflow] on three sample orders and prints what each step and agent did. */
 internal fun runSampleOrders(workflow: Workflow) = runBlocking {

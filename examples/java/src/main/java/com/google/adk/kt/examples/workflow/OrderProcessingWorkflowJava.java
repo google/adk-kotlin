@@ -27,6 +27,7 @@ import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.ToolContext;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
@@ -55,7 +56,7 @@ import reactor.core.publisher.Mono;
  */
 public final class OrderProcessingWorkflowJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
   private static final String RISK_KEY = "risk";
   private static final String FINANCE_KEY = "finance_review";
   private static final String COMPLIANCE_KEY = "compliance_review";
@@ -227,10 +228,11 @@ public final class OrderProcessingWorkflowJava {
 
   /**
    * Runs the workflow on three orders and prints what each step and agent did. Needs {@code
-   * GOOGLE_API_KEY}.
+   * GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
    */
   public static void main(String[] args) {
-    Workflow workflow = create(new Gemini(MODEL_NAME));
+    Workflow workflow =
+        create(new Gemini(MODEL_NAME, VertexCredentials.builder().location("global").build()));
     PublisherRunner runner =
         PublisherRunner.inMemory(
             App.builder().appName("order_processing").rootNode(workflow).build());

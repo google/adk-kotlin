@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.skills
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.skills.Frontmatter
 import com.google.adk.kt.skills.SkillSource
 import com.google.adk.kt.skills.SkillSourceException
@@ -38,7 +39,11 @@ object CustomSkillSourceDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "field_guide",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """

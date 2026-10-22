@@ -32,7 +32,7 @@ import com.google.adk.kt.types.Role
 import kotlin.system.exitProcess
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 private const val APP_NAME = "rag-memory-example"
 private const val USER_ID = "demo-user"

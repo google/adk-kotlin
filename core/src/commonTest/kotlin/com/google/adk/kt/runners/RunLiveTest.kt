@@ -34,7 +34,10 @@ import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.models.LiveConnection
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
@@ -46,8 +49,10 @@ import com.google.adk.kt.testing.DummyLiveStep
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
 import com.google.adk.kt.testing.DummyLiveStep.Respond
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.audioFrame
 import com.google.adk.kt.testing.inputTranscription
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.outputTranscriptionStep
@@ -62,26 +67,32 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.LiveConnectConfig
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Modality
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.workflow.Node
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import com.google.genai.kotlin.GenAiApiException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 
 /** Covers the live entry point on the runner and the agent contract underneath it. */
 class RunLiveTest {
@@ -693,6 +704,37 @@ class RunLiveTest {
   }
 
   @Test
+  fun runLive_routedSubAgentWhoseLastBranchIsAToolMessage_restoresNoBranch(): Unit = runBlocking {
+    // A streaming tool's message under the agent's name is not the agent's own branch.
+    val childModel = DummyLiveModel(simpleAudioTurn())
+    val child = LlmAgent(name = "child", model = childModel)
+    val root =
+      LlmAgent(name = "root", model = turnOnlyModel("root-model"), subAgents = listOf(child))
+    val runner = InMemoryRunner(agent = root)
+    val session = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+    for (event in
+      listOf(
+        Event(
+          author = "child",
+          content = modelMessage(Part(functionCall = FunctionCall(name = "monitor", id = "c1"))),
+        ),
+        Event(author = "child", branch = "monitor@c1", content = userMessage("watching")),
+      )) {
+      val unused = runner.sessionService.appendEvent(session, event)
+    }
+
+    val events = runLiveWith(runner)
+
+    val childEvents = events.filter { it.author == "child" }
+    assertWithMessage("the routed agent should have run").that(childEvents).isNotEmpty()
+    assertThat(childEvents.map { it.branch }.distinct()).containsExactly(null)
+    val history = childModel.connectRequests.single().contents
+    assertWithMessage("the tool's message should stay out of the routed agent's history")
+      .that(history.flatMap { it.parts }.mapNotNull { it.text })
+      .doesNotContain("watching")
+  }
+
+  @Test
   fun runLive_routedSubAgentWhoseBranchedTurnWasRewound_restoresNoBranch(): Unit = runBlocking {
     // As in ADK Python, the branch comes from history with rewinds applied.
     val child = LlmAgent(name = "child", model = DummyLiveModel(simpleAudioTurn()))
@@ -1294,5 +1336,208 @@ class RunLiveTest {
     assertWithMessage("the session is created before the model is asked to connect")
       .that(runner.sessionService.getSession(SessionKey(runner.appName, "u", "s")))
       .isNotNull()
+  }
+
+  @Test
+  fun runLive_streamingToolEmitsAfterItsConnectionEnded_deliversTheEventBeforeTheRunEnds(): Unit =
+    runBlocking {
+      val closing = CompletableDeferred<Unit>()
+      val tool =
+        DummyTool(name = "monitor") { _, _ ->
+          flow {
+            closing.await()
+            emit(Event(content = modelMessage("bye")))
+            awaitCancellation()
+          }
+        }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer") { it.answers("c1", pendingAnswer) },
+          DummyLiveStep.EndStream,
+        )
+      val model = DummyLiveModel(script)
+      // The tool emits while the run closes the ended connection, after the turn stopped reading.
+      val closingModel =
+        object : Model by model {
+          override suspend fun connect(request: LlmRequest): LiveConnection {
+            val connection = model.connect(request)
+            return object : LiveConnection by connection {
+              override suspend fun closeSession() {
+                closing.complete(Unit)
+                yield()
+                connection.closeSession()
+              }
+            }
+          }
+        }
+      val agent = LlmAgent(name = "live_agent", model = closingModel, tools = listOf(tool))
+
+      val events =
+        InMemoryRunner(agent = agent).runLive("u", "s", LiveRequestQueue(), RunConfig()).toList()
+
+      assertThat(events.count { it.branch == "monitor@c1" }).isEqualTo(1)
+    }
+
+  @Test
+  fun runLive_streamingToolEmitsAnEventThenAValue_sendsTheValueOnceTheCallerHasTheEvent(): Unit =
+    runBlocking {
+      val value = mapOf("result" to "300")
+      val tool =
+        DummyTool(name = "monitor") { _, _ ->
+          flowOf(Event(content = modelMessage("watching")), "300")
+        }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the value") { it.answers("c1", value) },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val agent = LlmAgent(name = "live_agent", model = model, tools = listOf(tool))
+      val queue = LiveRequestQueue()
+      var sentWhileHandling: Boolean? = null
+
+      val unused =
+        InMemoryRunner(agent = agent)
+          .runLive("u", "s", queue, RunConfig())
+          .onEach { event ->
+            if (event.branch == "monitor@c1") {
+              // Gives a tool that runs ahead time to send its value before the caller is done.
+              delay(50.milliseconds)
+              sentWhileHandling =
+                model.connections.flatMap { it.sent }.any { it.answers("c1", value) }
+            }
+            if (event.turnComplete) queue.close()
+          }
+          .toList()
+
+      assertThat(sentWhileHandling).isFalse()
+    }
+
+  @Test
+  fun runLive_dropWhileAToolEventWaitsForTheCaller_deliversItOnceOnTheNextConnection(): Unit =
+    runBlocking {
+      val value = mapOf("result" to "300")
+      val toolGo = CompletableDeferred<Unit>()
+      val first =
+        listOf(
+          resumptionHandle("h1"),
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer") { it.answers("c1", pendingAnswer) },
+          Respond(LlmResponse(content = modelMessage("ok"))),
+          AwaitSent("the caller's note") { it.isText("noted") },
+        )
+      val second =
+        listOf(
+          AwaitSent("the value") { it.answers("c1", value) },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      // The note's write drops the connection while the caller still holds the model's "ok".
+      val model =
+        DummyLiveModel.perConnection(listOf(first, second), onSend = dropOnWriteOf("noted"))
+      val agent =
+        LlmAgent(name = "live_agent", model = model, tools = listOf(watchingTool(toolGo, "300")))
+      val queue = LiveRequestQueue()
+      var connectionsAtDelivery = 0
+      var valueSentBeforeDelivery: Boolean? = null
+
+      val events =
+        InMemoryRunner(agent = agent)
+          .runLive("u", "s", queue, RunConfig())
+          .onEach { event ->
+            if (event.content?.parts?.any { it.text == "ok" } == true) {
+              // The tool's event now waits for the caller, who is still busy with this one.
+              toolGo.complete(Unit)
+              queue.sendContent(userMessage("noted"))
+              delay(100.milliseconds)
+            }
+            if (event.branch == "monitor@c1") {
+              connectionsAtDelivery = model.connections.size
+              valueSentBeforeDelivery =
+                model.connections.flatMap { it.sent }.any { it.answers("c1", value) }
+            }
+            if (event.turnComplete) queue.close()
+          }
+          .toList()
+
+      assertThat(events.count { it.branch == "monitor@c1" }).isEqualTo(1)
+      assertThat(connectionsAtDelivery).isEqualTo(2)
+      assertThat(valueSentBeforeDelivery).isFalse()
+    }
+
+  @Test
+  fun runLive_streamingToolEmitsAnEvent_leavesTheAgentsOutputKeyUnset(): Unit = runBlocking {
+    val tool =
+      DummyTool(name = "monitor") { _, _ ->
+        flowOf(Event(content = modelMessage("watching")), "300")
+      }
+    val script =
+      listOf(
+        Respond(modelFunctionCallResponse("monitor", id = "c1")),
+        AwaitSent("the value") { it.answers("c1", mapOf("result" to "300")) },
+        Respond(LlmResponse(turnComplete = true)),
+      )
+    val agent =
+      LlmAgent(
+        name = "live_agent",
+        model = DummyLiveModel(script),
+        tools = listOf(tool),
+        outputKey = "out",
+      )
+    val runner = InMemoryRunner(agent = agent)
+    val queue = LiveRequestQueue()
+
+    val events =
+      runner
+        .runLive("u", "s", queue, RunConfig())
+        .onEach { if (it.turnComplete) queue.close() }
+        .toList()
+
+    assertThat(events.count { it.branch == "monitor@c1" }).isEqualTo(1)
+    val session = runner.sessionService.getSession(SessionKey(runner.appName, "u", "s"))
+    assertWithMessage("a tool's message to the caller is not the agent's output")
+      .that(session?.state?.get("out"))
+      .isNull()
+  }
+
+  companion object {
+    private val pendingAnswer =
+      mapOf("status" to "The function is running asynchronously and the results are pending.")
+
+    private fun resumptionHandle(handle: String) =
+      Respond(
+        LlmResponse(
+          liveSessionResumptionUpdate =
+            LiveServerSessionResumptionUpdate(newHandle = handle, resumable = true)
+        )
+      )
+
+    /** Once [start] completes, sends the caller "watching", then [value] to the model. */
+    private fun watchingTool(start: CompletableDeferred<Unit>, value: String) =
+      DummyTool(name = "monitor") { _, _ ->
+        flow {
+          start.await()
+          emit(Event(content = modelMessage("watching")))
+          emit(value)
+          awaitCancellation()
+        }
+      }
+
+    /** Drops the first connection when the caller's [text] is written to it. */
+    private fun dropOnWriteOf(text: String): suspend (Int, Any) -> Unit = { connection, message ->
+      if (connection == 0 && message.isText(text)) {
+        throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+      }
+    }
+
+    private fun Any.isText(text: String): Boolean =
+      this is ContentInput && content.parts.any { it.text == text }
+
+    private fun Any.answers(callId: String, response: Map<String, Any?>): Boolean =
+      this is ContentInput &&
+        content.parts.any { part ->
+          part.functionResponse?.id == callId && part.functionResponse.response == response
+        }
   }
 }

@@ -46,6 +46,11 @@ import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.telemetry.Tracer
+import com.google.adk.kt.testing.DummyLiveModel
+import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
+import com.google.adk.kt.testing.DummyLiveStep.EndStream
+import com.google.adk.kt.testing.DummyLiveStep.Fail
+import com.google.adk.kt.testing.DummyLiveStep.Respond
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.DummyTracer
@@ -106,6 +111,7 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -126,6 +132,274 @@ import org.junit.Assert.assertSame
 import org.junit.Test
 
 class LlmAgentTurnTest {
+
+  @Test
+  fun runLive_dropLosesAStreamsPendingAnswer_anIdenticalCallAfterTheReconnectStartsIt(): Unit =
+    runBlocking {
+      val monitorRan = CompletableDeferred<Unit>()
+      val slowRan = CompletableDeferred<Unit>()
+      var streams = 0
+      val monitor =
+        DummyTool(name = "monitor") { _, _ ->
+          monitorRan.complete(Unit)
+          flow {
+            streams++
+            emit("300")
+            awaitCancellation()
+          }
+        }
+      // Holds the response's answers back until a send drops the connection.
+      val slow =
+        DummyTool(name = "slow") { _, _ ->
+          slowRan.complete(Unit)
+          awaitCancellation()
+        }
+      val pending =
+        mapOf("status" to "The function is running asynchronously and the results are pending.")
+      val first =
+        listOf(
+          Respond(
+            LlmResponse(
+              liveSessionResumptionUpdate =
+                LiveServerSessionResumptionUpdate(newHandle = "h1", resumable = true)
+            )
+          ),
+          Respond(
+            LlmResponse(
+              content =
+                Content(
+                  Role.MODEL,
+                  listOf(
+                    Part(
+                      functionCall = FunctionCall(name = "monitor", args = emptyMap(), id = "c1")
+                    ),
+                    Part(functionCall = FunctionCall(name = "slow", args = emptyMap(), id = "s1")),
+                  ),
+                )
+            )
+          ),
+        )
+      val second =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c2")),
+          AwaitSent("the pending answer") { it.answers("c2", pending) },
+          AwaitSent("the value") { it.answers("c2", mapOf("result" to "300")) },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model =
+        DummyLiveModel.perConnection(
+          listOf(first, second),
+          name = "gemini-3.8-live",
+          onSend = { connection, message ->
+            if (connection == 0 && message is ContentInput) {
+              throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+            }
+          },
+        )
+      val runner =
+        InMemoryRunner(
+          agent = LlmAgent(name = "agent", model = model, tools = listOf(monitor, slow))
+        )
+      val queue = LiveRequestQueue()
+
+      launch {
+        monitorRan.await()
+        slowRan.await()
+        queue.sendContent(Content(Role.USER, listOf(Part(text = "hello"))))
+      }
+      val unused =
+        runner
+          .runLive("u", "s", queue, RunConfig())
+          .onEach { if (it.turnComplete) queue.close() }
+          .toList()
+
+      model.connections[1].assertAllWaitsMet()
+      assertEquals(1, streams)
+    }
+
+  @Test
+  fun runLive_connectionDropsWhileAToolStreams_deliversWhatItSendsAcrossTheDropOnce(): Unit =
+    runBlocking {
+      val reconnecting = CompletableDeferred<Unit>()
+      val tool =
+        DummyTool(name = "monitor") { _, _ ->
+          flow {
+            reconnecting.await()
+            emit(Event(content = Content(Role.MODEL, listOf(Part(text = "still watching")))))
+            emit("300")
+            awaitCancellation()
+          }
+        }
+      val pending =
+        mapOf("status" to "The function is running asynchronously and the results are pending.")
+      val first =
+        listOf(
+          Respond(
+            LlmResponse(
+              liveSessionResumptionUpdate =
+                LiveServerSessionResumptionUpdate(newHandle = "h1", resumable = true)
+            )
+          ),
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer") { it.answers("c1", pending) },
+          Fail(GenAiApiException(1006, "ConnectionClosed", "socket closed")),
+        )
+      val second =
+        listOf(
+          AwaitSent("the value") { it.answers("c1", mapOf("result" to "300")) },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model =
+        DummyLiveModel.perConnection(
+          listOf(first, second),
+          name = "gemini-3.8-live",
+          onConnect = { if (it == 1) reconnecting.complete(Unit) },
+        )
+      val runner =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+      val queue = LiveRequestQueue()
+
+      val events =
+        runner
+          .runLive("u", "s", queue, RunConfig())
+          .onEach { if (it.turnComplete) queue.close() }
+          .toList()
+
+      assertEquals(1, events.count { it.branch == "monitor@c1" })
+      assertEquals(
+        1,
+        model.connections.flatMap { it.sent }.count { it.answers("c1", mapOf("result" to "300")) },
+      )
+    }
+
+  @Test
+  fun runLive_goAwayWithoutAHandle_streamsAToolCalledOnTheNewSession(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    val pending =
+      mapOf("status" to "The function is running asynchronously and the results are pending.")
+    val second =
+      listOf(
+        Respond(modelFunctionCallResponse("monitor", id = "c1")),
+        AwaitSent("the pending answer") { it.answers("c1", pending) },
+        AwaitSent("the value") { it.answers("c1", mapOf("result" to "300")) },
+        Respond(LlmResponse(turnComplete = true)),
+      )
+    // A go-away without a handle restarts the turn on a new session.
+    val model = DummyLiveModel.perConnection(listOf(listOf(Respond(goAway())), second))
+    val tools = listOf(DummyTool(name = "monitor") { _, _ -> flowOf("300") })
+    val agent = LlmAgent(name = "agent", model = model, tools = tools)
+
+    agent
+      .runLive(liveContextFor(agent, queue))
+      .onEach { if (it.turnComplete) queue.close() }
+      .toList()
+
+    model.connections.forEach { it.assertAllWaitsMet() }
+  }
+
+  @Test
+  fun runLive_dropBeforeTheTransferIsRecorded_stopsTheStreamBeforeTheChildHearsIt(): Unit =
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val childConn = ScriptedConn("child") { it.closed.await() }
+      val childHeard = mutableListOf<String>()
+      childConn.onSendContent = { content ->
+        content.parts.mapNotNullTo(childHeard) { it.functionResponse?.id }
+      }
+      val childModel = RecordingLiveModel(childConn, onConnect = { queue.close() })
+      val started = CompletableDeferred<Unit>()
+      val closing = CompletableDeferred<Unit>()
+      var childConnectsWhenStopped: Int? = null
+      val monitor =
+        DummyTool(name = "monitor") { _, _ ->
+          flow {
+            started.complete(Unit)
+            try {
+              // Ticks only once the dropped connection's slow teardown starts.
+              closing.await()
+              while (true) {
+                emit("tick")
+                delay(20.milliseconds)
+              }
+            } finally {
+              childConnectsWhenStopped = childModel.connectCalls
+            }
+          }
+        }
+      val parentConn =
+        ScriptedConn("parent") {
+          emit(modelFunctionCallResponse("monitor", id = "c1"))
+          started.await()
+          emit(transferWithHeardInput())
+          it.closed.await()
+        }
+      // The transfer answer's write drops the connection while the heard input is still screened.
+      parentConn.onSendContent = { content ->
+        if (content.parts.any { it.functionResponse?.id == "t1" }) throw connectionDrop()
+      }
+      parentConn.onClose = {
+        closing.complete(Unit)
+        delay(200.milliseconds)
+      }
+      val child = LlmAgent(name = "child", description = "c", model = childModel)
+      val parent =
+        LlmAgent(
+          name = "parent",
+          model = RecordingLiveModel(parentConn),
+          subAgents = listOf(child),
+          tools = listOf(monitor),
+          beforeModelCallbacks = listOf(slowScreening()),
+        )
+
+      parent.runLive(liveContextFor(parent, queue)).toList()
+
+      assertEquals(1, childModel.connectCalls)
+      assertEquals("the stream should stop before the child connects", 0, childConnectsWhenStopped)
+      assertEquals("the child heard the parent's stream", emptyList<String>(), childHeard)
+    }
+
+  @Test
+  fun runLive_freshSessionAfterAToolEvent_leavesTheEventOutOfItsHistory(): Unit = runBlocking {
+    val tool =
+      DummyTool(name = "monitor") { _, _ ->
+        flow {
+          emit(Event(content = Content(Role.MODEL, listOf(Part(text = "watching")))))
+          emit("300")
+          awaitCancellation()
+        }
+      }
+    val first =
+      listOf(
+        Respond(modelFunctionCallResponse("monitor", id = "c1")),
+        AwaitSent("the value") { it.answers("c1", mapOf("result" to "300")) },
+        Respond(LlmResponse(goAway = LiveServerGoAway(timeLeft = null))),
+      )
+    val second = listOf(Respond(LlmResponse(turnComplete = true)))
+    val model = DummyLiveModel.perConnection(listOf(first, second), name = "gemini-3.8-live")
+    val runner =
+      InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+    val queue = LiveRequestQueue()
+
+    val events =
+      runner
+        .runLive("u", "s", queue, RunConfig())
+        .onEach { if (it.turnComplete) queue.close() }
+        .toList()
+
+    assertEquals(1, events.count { it.branch == "monitor@c1" })
+    val history = model.connectRequests[1].contents.flatMap { it.parts }
+    assertTrue(history.any { it.functionCall?.id == "c1" }, "the history should keep the call")
+    assertTrue(
+      history.mapNotNull { it.text }.none { "watching" in it },
+      "the tool's event should stay out of the model's history",
+    )
+  }
+
+  private fun Any.answers(callId: String, response: Map<String, Any?>): Boolean =
+    this is ContentInput &&
+      content.parts.any {
+        it.functionResponse?.id == callId && it.functionResponse.response == response
+      }
 
   /**
    * Root `MissionControl` transfers to sub-agent `HeartOfGold`, which calls a tool and then
@@ -6368,6 +6642,70 @@ class LlmAgentTurnTest {
       "waited the answer bound though the answer was written (${step2AtMs}ms)",
     )
   }
+
+  @Test
+  fun runLive_sequentialStepEndsOnTaskCompleted_stopsItsStreamsBeforeTheNextStep(): Unit =
+    runBlocking {
+      val tick = mapOf("result" to "tick")
+      val ticker =
+        DummyTool(name = "ticker") { _, _ ->
+          flow {
+            while (true) {
+              emit("tick")
+              delay(50.milliseconds)
+            }
+          }
+        }
+      val step1Model =
+        DummyLiveModel(
+          listOf(
+            Respond(modelFunctionCallResponse("ticker", id = "c1")),
+            AwaitSent("the first tick") { it.answers("c1", tick) },
+            Respond(taskCompletedCall("tc1")),
+          )
+        )
+      val step2Model = DummyLiveModel(listOf(EndStream))
+      val sequence =
+        SequentialAgent(
+          name = "sequence",
+          subAgents =
+            listOf(
+              LlmAgent(
+                name = "step1",
+                description = "A sequential step.",
+                model = step1Model,
+                tools = listOf(ticker),
+              ),
+              LlmAgent(name = "step2", description = "A sequential step.", model = step2Model),
+            ),
+        )
+      val runner = InMemoryRunner(agent = sequence)
+
+      val unused = runner.runLive("u", "s", LiveRequestQueue()).toList()
+
+      step1Model.connections.forEach { it.assertAllWaitsMet() }
+      val step1Sent = step1Model.connections.single().sent
+      val completedAt = step1Sent.indexOfFirst { message ->
+        (message as? ContentInput)?.content?.parts?.any {
+          it.functionResponse?.name == "task_completed"
+        } == true
+      }
+      assertTrue(completedAt >= 0, "the task_completed answer never reached the connection")
+      // Streams stop before the step's closing pause, so nothing is sent during it.
+      assertTrue(
+        step1Sent.drop(completedAt + 1).none { it.answers("c1", tick) },
+        "the stream kept sending after task_completed",
+      )
+      assertTrue(
+        step2Model.connections
+          .flatMap { it.sent }
+          .none { message ->
+            (message as? ContentInput)?.content?.parts?.any { it.functionResponse?.id == "c1" } ==
+              true
+          },
+        "the next step heard the previous step's stream",
+      )
+    }
 
   @Test
   fun runLive_sequentialStep_taskCompletedAmongParallelCalls_endsTheStep() = runTest {

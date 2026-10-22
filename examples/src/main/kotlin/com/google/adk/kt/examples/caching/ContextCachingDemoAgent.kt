@@ -25,6 +25,7 @@ import com.google.adk.kt.annotations.ExperimentalContextCachingFeature
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.HttpOptions
@@ -33,10 +34,10 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
-// A short TTL so the demo can force an expiry (and observe re-creation) without a long wait.
-private val CACHE_TTL = 20.seconds
+// The shortest TTL Vertex AI accepts, so the demo can force an expiry and observe re-creation.
+private val CACHE_TTL = 60.seconds
 
 // 0-based turn index after which the demo pauses long enough for the cache to expire.
 private const val EXPIRY_AFTER_TURN = 2
@@ -124,9 +125,7 @@ private val PROMPTS =
     "What is the July average temperature for Puerto Brisa?",
   )
 
-private fun hasApiKey(): Boolean =
-  !System.getenv("GEMINI_API_KEY").isNullOrBlank() ||
-    !System.getenv("GOOGLE_API_KEY").isNullOrBlank()
+private fun hasCloudProject(): Boolean = !System.getenv("GOOGLE_CLOUD_PROJECT").isNullOrBlank()
 
 /** Classifies a turn's cache metadata relative to the previously seen active cache name. */
 private fun cacheStatus(cache: CacheMetadata, previousActiveName: String?): String =
@@ -158,14 +157,14 @@ private fun cacheStatus(cache: CacheMetadata, previousActiveName: String?): Stri
  *
  * Exact turn-by-turn behavior depends on model latency.
  *
- * Cache creation happens on the Gemini backend, so this requires `GEMINI_API_KEY` or
- * `GOOGLE_API_KEY` to be set; without one the demo explains what is needed and exits.
+ * Caches are created on Vertex AI, so this needs `GOOGLE_CLOUD_PROJECT` and Application Default
+ * Credentials; without the project the demo explains what is needed and exits.
  */
 fun main(): Unit = runBlocking {
-  if (!hasApiKey()) {
+  if (!hasCloudProject()) {
     println(
-      "Set GEMINI_API_KEY or GOOGLE_API_KEY to run this demo. Context caches are created on the " +
-        "Gemini backend, so a real API key is required to observe the feature."
+      "Set GOOGLE_CLOUD_PROJECT to run this demo. Context caches are created on Vertex AI, so a " +
+        "real project with Application Default Credentials is required to observe the feature."
     )
     return@runBlocking
   }
@@ -176,7 +175,8 @@ fun main(): Unit = runBlocking {
       rootAgent =
         LlmAgent(
           name = "weather_assistant",
-          model = Gemini(name = MODEL_NAME),
+          model =
+            Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global")),
           instruction = Instruction(WEATHER_REFERENCE),
         ),
       // Enabling this config turns on context caching for every agent in the app.

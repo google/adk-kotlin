@@ -25,16 +25,16 @@ import org.springframework.ai.google.genai.GoogleGenAiChatOptions;
 
 /**
  * Java port of the Spring AI model demo. Wraps a Spring AI {@code ChatModel} with {@link
- * SpringAiModel}; swap the {@code ChatModel} to use any other Spring AI provider.
+ * SpringAiModel}; the {@code ChatModel} calls Gemini on Vertex AI in the project named by {@code
+ * GOOGLE_CLOUD_PROJECT}. Swap the {@code ChatModel} to use any other Spring AI provider.
  */
 public final class SpringAiModelDemoJava {
 
-  private static final String MODEL = "gemini-flash-latest";
+  private static final String MODEL = "gemini-3.8-flash";
 
   private static final GoogleGenAiChatModel CHAT_MODEL =
       GoogleGenAiChatModel.builder()
-          .genAiClient(
-              Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build())
+          .genAiClient(Client.builder().vertexAI(true).location("global").build())
           .options(GoogleGenAiChatOptions.builder().model(MODEL).build())
           .build();
 

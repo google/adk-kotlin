@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalEnvironmentApi
 import com.google.adk.kt.environment.LocalEnvironment
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.ReplRunner
 import com.google.adk.kt.tools.environment.EnvironmentToolset
 
@@ -37,7 +38,11 @@ object LocalEnvironmentDemoAgent {
   val rootAgent =
     LlmAgent(
       name = "local_environment_agent",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """

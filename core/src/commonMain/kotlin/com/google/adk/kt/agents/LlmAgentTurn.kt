@@ -68,6 +68,7 @@ import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.types.UsageMetadata
 import com.google.genai.kotlin.GenAiApiException
+import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmSynthetic
@@ -122,6 +123,8 @@ import kotlinx.serialization.json.encodeToJsonElement
  * @property context The current invocation context.
  * @property requestProcessors The pipeline of request processors to run before model call.
  * @property responseProcessors The pipeline of response processors to run after model call.
+ * @property liveTools The live run's streaming tools, set by [executeLive] on the turns it runs;
+ *   null otherwise.
  */
 @OptIn(ExperimentalAtomicApi::class)
 internal class LlmAgentTurn(
@@ -129,6 +132,7 @@ internal class LlmAgentTurn(
   private val context: InvocationContext,
   private val requestProcessors: List<LlmRequestProcessor>,
   private val responseProcessors: List<LlmResponseProcessor>,
+  private val liveTools: LiveStreamingTools? = null,
 ) {
 
   /**
@@ -327,14 +331,47 @@ internal class LlmAgentTurn(
    * turn always continues in a fresh session, and a transfer hands the conversation to another
    * agent that can run live.
    */
+  // finishLiveRun stops the tools under NonCancellable, so the finally's stop survives.
+  @Suppress("SuspendInFinally")
   fun executeLive(): Flow<Event> = flow {
-    var turn = this@LlmAgentTurn
-    // Restarting in a loop keeps repeated restarts from nesting flows.
-    while (turn.runLiveSession(this) && !turn.context.isEndOfInvocation) {
-      turn = turn.restartedTurn()
+    // One set per run, so streaming tools outlive reconnects and restarts but not the run itself.
+    val tools =
+      context.liveRequestQueue?.let { queue ->
+        LiveStreamingTools(queue, agent.name, context.invocationId, currentCoroutineContext())
+      }
+    var turn = LlmAgentTurn(agent, context, requestProcessors, responseProcessors, tools)
+    var ended = false
+    try {
+      // Restarting in a loop keeps repeated restarts from nesting flows.
+      while (turn.runLiveSession(this) && !turn.context.isEndOfInvocation) {
+        turn = turn.restartedTurn()
+      }
+      // Each restart runs on a copy, so an invocation one of them ended has to end here too.
+      if (turn.context.isEndOfInvocation) context.isEndOfInvocation = true
+      ended = true
+    } finally {
+      finishLiveRun(tools, ended)
     }
-    // Each restart runs on a copy, so an invocation one of them ended has to end here too.
-    if (turn.context.isEndOfInvocation) context.isEndOfInvocation = true
+  }
+
+  /**
+   * Stops the run's streaming [tools] however the run ended. After a normal end ([ended]), it first
+   * hands the caller what the tools sent.
+   */
+  @Suppress("SuspendInFinally") // close runs under NonCancellable itself.
+  private suspend fun FlowCollector<Event>.finishLiveRun(
+    tools: LiveStreamingTools?,
+    ended: Boolean,
+  ) {
+    if (tools == null) return
+    try {
+      if (ended) {
+        tools.stopAll()
+        for (event in tools.drainEvents()) emit(event)
+      }
+    } finally {
+      tools.close()
+    }
   }
 
   /**
@@ -369,6 +406,7 @@ internal class LlmAgentTurn(
 
     var attempt = 0
     while (true) {
+      liveTools?.onBeforeConnect()
       // A timeout at the last connection's end says nothing about this connection's saves.
       storeTimedOut = false
       val handle = resumptionHandle.load()
@@ -582,9 +620,9 @@ internal class LlmAgentTurn(
     channelFlow {
         // Returns once the caller has handled the event, so neither loop runs ahead of the caller.
         val deliver: suspend (Event) -> Unit = { event ->
-          val handled = CompletableDeferred<Unit>()
-          send(event to handled)
-          handled.await()
+          val delivery = Delivery(event)
+          send(delivery)
+          delivery.handled.await()
         }
         val saves = RecordingSaves(this, deliver)
         recordingSaves.store(saves)
@@ -595,6 +633,8 @@ internal class LlmAgentTurn(
           try {
             receiveTurns(request, connection, queue, result, deliver)
           } catch (e: Throwable) {
+            // A handover cut short stops its streams first; the saves below can take seconds.
+            if (pendingHandover.load() != null) liveTools?.stopAll()
             // A drop or error cancels this scope; let running saves deliver their recordings first.
             if (e !is CancellationException && !saves.finish()) storeTimedOut = true
             throw e
@@ -646,6 +686,26 @@ internal class LlmAgentTurn(
           // A close that timed out may never end the connection's receive, so stop reading too.
           if (!closedInTime) receiver.cancel()
         }
+        // Streaming tools' messages join the turn's events in arrival order.
+        val toolEvents =
+          if (liveTools == null) {
+            null
+          } else {
+            launch {
+              while (true) {
+                val next = liveTools.nextEvent()
+                val delivery = Delivery(next.event, next.handled)
+                try {
+                  send(delivery)
+                  delivery.handled.await()
+                } catch (e: CancellationException) {
+                  // Unclaimed means the emitter never took it, sent or not, so it goes back.
+                  if (delivery.claim()) liveTools.putBack(next)
+                  throw e
+                }
+              }
+            }
+          }
 
         try {
           receiver.await()
@@ -655,6 +715,7 @@ internal class LlmAgentTurn(
         }
         // Joined so the sender has stopped before the caller restarts or reconnects.
         sender.cancelAndJoin()
+        toolEvents?.cancelAndJoin()
         // Recordings still saving go out before a transfer, restart, reconnect or the run's end.
         if (!saves.finish()) storeTimedOut = true
         recordingSaves.store(null)
@@ -663,9 +724,12 @@ internal class LlmAgentTurn(
         sendDrop?.let { throw it }
       }
       .buffer(Channel.RENDEZVOUS)
-      .transform { (event, handled) ->
-        emit(event)
-        handled.complete(Unit)
+      .transform { delivery ->
+        // A producer that claimed it puts it back, so its tool waits for the later delivery.
+        if (delivery.claim()) {
+          emit(delivery.event)
+          delivery.handled.complete(Unit)
+        }
       }
 
   /**
@@ -745,6 +809,8 @@ internal class LlmAgentTurn(
                 emitAsFinishedInput(request, unfinishedInput, response, spoken, queue, emitEvent)
               unfinishedInput = ""
             }
+            // Stopped before the handover, so this agent's streams reach no other agent.
+            liveTools?.stopAll()
             handOverConnection(handover, queue)
             end =
               if (handover.transferTo != null) LiveTurnsEnd.TRANSFER
@@ -871,7 +937,7 @@ internal class LlmAgentTurn(
    */
   private fun restartedTurn(): LlmAgentTurn {
     val restartContext = context.copy(runConfig = context.runConfig?.forNewLiveSession())
-    return LlmAgentTurn(agent, restartContext, requestProcessors, responseProcessors)
+    return LlmAgentTurn(agent, restartContext, requestProcessors, responseProcessors, liveTools)
   }
 
   /**
@@ -1087,10 +1153,11 @@ internal class LlmAgentTurn(
    * A live model may hold the turn open until the answer arrives. Once the caller has closed the
    * queue the answer is dropped, as it is in ADK Python.
    */
-  private fun sendToolResponse(queue: LiveRequestQueue, event: Event) {
+  private suspend fun sendToolResponse(queue: LiveRequestQueue, event: Event) {
     val content = event.content ?: return
     if (content.parts.none { it.functionResponse != null }) return
     queue.sendContent(content)
+    liveTools?.onAnswersQueued(content)
   }
 
   /**
@@ -1765,7 +1832,11 @@ internal class LlmAgentTurn(
     val functionResponseEvent =
       functionCalls
         .takeIf { it.isNotEmpty() }
-        ?.let { context.handleFunctionCalls(it, tools) }
+        ?.let { calls ->
+          // A live run runs tools through its streaming tools, so a returned Flow streams.
+          val runner: ToolRunner = if (liveTools == null) DEFAULT_TOOL_RUNNER else liveTools::run
+          context.handleFunctionCallsWith(calls, tools, toolRunner = runner)
+        }
         // A live answer names the session its call came from, as in ADK Python.
         ?.copy(liveSessionId = actionEvent.liveSessionId)
 
@@ -1837,6 +1908,22 @@ private class LiveAttemptResult {
 
 /** A connection write failure other than cancellation or a recoverable transport drop. */
 private class LiveWriteFailure(override val cause: Throwable) : Exception(cause)
+
+/**
+ * One event on its way to the caller, with the signal that the caller has handled it.
+ *
+ * The emitter and a producer whose send was cancelled can both see it; whichever claims it first
+ * owns it, so it is delivered once.
+ */
+@OptIn(ExperimentalAtomicApi::class)
+private class Delivery(
+  val event: Event,
+  val handled: CompletableDeferred<Unit> = CompletableDeferred(),
+) {
+  private val claimed = AtomicBoolean(false)
+
+  fun claim(): Boolean = claimed.compareAndSet(false, true)
+}
 
 /**
  * A request taken off the queue, whether its session writes have run, and the content the

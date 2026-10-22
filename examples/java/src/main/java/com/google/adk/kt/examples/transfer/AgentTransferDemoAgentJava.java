@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.transfer;
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 
 /** A creative and funny demo showcasing agent-to-agent transfer using a NASA theme. */
 public final class AgentTransferDemoAgentJava {
@@ -30,7 +31,9 @@ public final class AgentTransferDemoAgentJava {
               "The International Space Station. A veteran outpost, continuously occupied since"
                   + " 2000. Handles questions about long-term space living, microgravity"
                   + " experiments, and space station maintenance.")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are the International Space Station (ISS). You are a veteran of space exploration, having been continuously occupied since November 2, 2000.
@@ -46,7 +49,9 @@ public final class AgentTransferDemoAgentJava {
           .description(
               "The planned space station in orbit around the Moon. Handles questions about the"
                   + " Artemis program, lunar orbit, and deep space exploration preparation.")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are the Lunar Gateway, the future space station that will orbit the Moon in a Near-Rectilinear Halo Orbit (NRHO).
@@ -63,7 +68,9 @@ public final class AgentTransferDemoAgentJava {
           .description(
               "The Chinese Space Station. Handles questions about its modular design, robotic arm,"
                   + " and its own science experiments.")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are Tiangong, the Chinese Space Station. You were completed in 2022 and have a distinct T-shaped configuration.
@@ -80,7 +87,9 @@ public final class AgentTransferDemoAgentJava {
               "The central router for space station queries. Routes to ISS, LunarGateway, or"
                   + " Tiangong based on the topic.")
           .subAgents(issAgent, gatewayAgent, tiangongAgent)
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are Mission Control. You are the central hub for all communications with space stations.

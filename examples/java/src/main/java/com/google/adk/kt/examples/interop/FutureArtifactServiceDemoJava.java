@@ -135,7 +135,7 @@ public final class FutureArtifactServiceDemoJava {
     }
   }
 
-  /** A minimal offline model returning a fixed reply, so the run needs no API key. */
+  /** A minimal offline model returning a fixed reply, so the run needs no credentials. */
   private static final class EchoModel extends BasePublisherModel {
     EchoModel() {
       super("echo-model");

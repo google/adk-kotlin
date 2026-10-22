@@ -22,6 +22,7 @@ import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -34,7 +35,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /** Token count that triggers compaction, and how many recent events are kept raw. */
 private const val TOKEN_THRESHOLD = 50
@@ -50,9 +51,9 @@ private const val EVENT_RETENTION_SIZE = 2
  * prints every prompt, so you can watch the history grow and then collapse into a summary once the
  * threshold is crossed.
  *
- * The prompt token count comes from the model's reported usage metadata. Requires `GEMINI_API_KEY`
- * or `GOOGLE_API_KEY` to be set. Type `exit` (or an empty line) to quit; a summary of the stored
- * session events is printed on exit.
+ * The prompt token count comes from the model's reported usage metadata. Requires
+ * `GOOGLE_CLOUD_PROJECT` and Application Default Credentials. Type `exit` (or an empty line) to
+ * quit; a summary of the stored session events is printed on exit.
  */
 private class LabeledPrintingModel(private val label: String, private val delegate: Model) : Model {
   override val name: String = delegate.name
@@ -68,8 +69,16 @@ private class LabeledPrintingModel(private val label: String, private val delega
 }
 
 fun main() = runBlocking {
-  val agentModel = LabeledPrintingModel("AGENT LLM", Gemini(name = MODEL_NAME))
-  val summarizerModel = LabeledPrintingModel("SUMMARIZER LLM", Gemini(name = MODEL_NAME))
+  val agentModel =
+    LabeledPrintingModel(
+      "AGENT LLM",
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global")),
+    )
+  val summarizerModel =
+    LabeledPrintingModel(
+      "SUMMARIZER LLM",
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global")),
+    )
 
   val app =
     App(

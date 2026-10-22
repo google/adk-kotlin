@@ -24,6 +24,7 @@ import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.CacheMetadata;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.HttpOptions;
 import com.google.adk.kt.types.Part;
@@ -38,16 +39,18 @@ import reactor.core.publisher.Flux;
  * <p>Several turns share one large weather reference as the system instruction. The TTL is short
  * and the demo pauses once, so the cache can be seen expiring and being re-created.
  *
- * <p>Requires {@code GEMINI_API_KEY} or {@code GOOGLE_API_KEY}, since caches are created on the
- * Gemini backend.
+ * <p>Requires {@code GOOGLE_CLOUD_PROJECT} and Application Default Credentials, since caches are
+ * created on Vertex AI.
  */
 @ExperimentalContextCachingFeature
 public final class ContextCachingDemoAgentJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
 
-  /** A short TTL so the demo can force an expiry (and observe re-creation) without a long wait. */
-  private static final long CACHE_TTL_MILLIS = 20_000L;
+  /**
+   * The shortest TTL Vertex AI accepts, so the demo can force an expiry and observe re-creation.
+   */
+  private static final long CACHE_TTL_MILLIS = 60_000L;
 
   /** 0-based turn index after which the demo pauses long enough for the cache to expire. */
   private static final int EXPIRY_AFTER_TURN = 2;
@@ -63,10 +66,11 @@ public final class ContextCachingDemoAgentJava {
           "What is the July average temperature for Puerto Brisa?");
 
   public static void main(String[] args) throws InterruptedException {
-    if (!hasApiKey()) {
+    if (!hasCloudProject()) {
       System.out.println(
-          "Set GEMINI_API_KEY or GOOGLE_API_KEY to run this demo. Context caches are created on"
-              + " the Gemini backend, so a real API key is required to observe the feature.");
+          "Set GOOGLE_CLOUD_PROJECT to run this demo. Context caches are created on Vertex AI, so"
+              + " a real project with Application Default Credentials is required to observe the"
+              + " feature.");
       return;
     }
 
@@ -78,7 +82,9 @@ public final class ContextCachingDemoAgentJava {
             .rootAgent(
                 LlmAgent.builder()
                     .name("weather_assistant")
-                    .model(new Gemini(MODEL_NAME))
+                    .model(
+                        new Gemini(
+                            MODEL_NAME, VertexCredentials.builder().location("global").build()))
                     .instruction(weatherReference)
                     .build())
             // Enabling this config turns on context caching for every agent in the app.
@@ -184,13 +190,9 @@ public final class ContextCachingDemoAgentJava {
     return builder.toString();
   }
 
-  private static boolean hasApiKey() {
-    return !isNullOrBlank(System.getenv("GEMINI_API_KEY"))
-        || !isNullOrBlank(System.getenv("GOOGLE_API_KEY"));
-  }
-
-  private static boolean isNullOrBlank(String value) {
-    return value == null || value.isBlank();
+  private static boolean hasCloudProject() {
+    String project = System.getenv("GOOGLE_CLOUD_PROJECT");
+    return project != null && !project.isBlank();
   }
 
   /** Classifies a turn's cache metadata relative to the previously seen active cache name. */

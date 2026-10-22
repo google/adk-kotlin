@@ -53,7 +53,7 @@ For `Unresolved reference` to a generated tool, check in order: the KSP plugin i
 
 ### Credentials
 
-`Gemini` without an explicit key reads `GOOGLE_API_KEY` or `GEMINI_API_KEY`, and `Claude` reads `ANTHROPIC_API_KEY`; `ChatCompletions` reads `OPENAI_BASE_URL` when no base URL is passed, and `OPENAI_API_KEY` when neither a key nor a base URL is passed. Vertex AI takes explicit credentials. On Android, use the Firebase AI module instead of API keys.
+Prefer Vertex AI with Application Default Credentials (ADC) over API keys, which are long-lived secrets. `Gemini` and `Claude` take `vertexCredentials = VertexCredentials(location = "global")`, which reads the project from `GOOGLE_CLOUD_PROJECT` and credentials from ADC (`gcloud auth application-default login`). Without it, `Gemini` reads `GOOGLE_API_KEY` or `GEMINI_API_KEY`, and `Claude` reads `ANTHROPIC_API_KEY`. `ChatCompletions` reads `OPENAI_BASE_URL` when no base URL is passed, and `OPENAI_API_KEY` when neither a key nor a base URL is passed. On Android, use the Firebase AI module instead of API keys.
 
 ## Contributor setup
 

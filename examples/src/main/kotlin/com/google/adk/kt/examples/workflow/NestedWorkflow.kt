@@ -24,6 +24,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
@@ -35,7 +36,7 @@ import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * A port of adk-python's `nested_workflow` sample: for the year the user names, a nested workflow
@@ -85,9 +86,15 @@ object NestedWorkflow {
     }
 }
 
-/** Runs the workflow on one year and prints each reply. Needs `GOOGLE_API_KEY`. */
+/**
+ * Runs the workflow on one year and prints each reply. Needs `GOOGLE_CLOUD_PROJECT` and Application
+ * Default Credentials.
+ */
 fun main() = runBlocking {
-  val workflow = NestedWorkflow.create(Gemini(name = MODEL_NAME))
+  val workflow =
+    NestedWorkflow.create(
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
+    )
   val runner = InMemoryRunner(app = App(appName = "nested_workflow", rootNode = workflow))
   val message = Content.fromText(Role.USER, "1984")
   runner.runAsync(userId = "user", sessionId = "session", newMessage = message).collect { event ->

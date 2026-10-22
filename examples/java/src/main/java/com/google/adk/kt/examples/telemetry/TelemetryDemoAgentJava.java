@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.BaseTool;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.common.CompletableResultCode;
@@ -94,7 +95,8 @@ public final class TelemetryDemoAgentJava {
 
     return LlmAgent.builder()
         .name("telemetry-agent")
-        .model(new Gemini("gemini-3.1-flash-lite"))
+        .model(
+            new Gemini("gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
         .instruction(
             """
             You are a helpful assistant that demonstrates telemetry.

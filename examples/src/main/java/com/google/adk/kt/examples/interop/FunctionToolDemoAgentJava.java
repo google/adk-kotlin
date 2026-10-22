@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.annotations.Param;
 import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.ToolContext;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -144,7 +145,9 @@ public final class FunctionToolDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("hitchhikers_guide_bot")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are a helpful assistant themed around "The Hitchhiker's Guide to the Galaxy".

@@ -27,6 +27,7 @@ import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.LlmRequest;
 import com.google.adk.kt.models.LlmResponse;
 import com.google.adk.kt.models.Model;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.sessions.InMemorySessionService;
 import com.google.adk.kt.sessions.Session;
@@ -48,13 +49,13 @@ import reactor.core.publisher.Mono;
  * <p>Both the agent's model and the compaction summarizer's model are wrapped in a {@link
  * PrintingModel} that prints every prompt, so you can watch the history grow and then collapse into
  * a single summary once compaction kicks in (configured here to compact every two turns). If {@code
- * GEMINI_API_KEY} (or {@code GOOGLE_API_KEY}) is set it talks to a real Gemini model; otherwise it
- * falls back to canned replies so the behavior is still demonstrable offline. Type {@code exit} (or
- * an empty line) to quit.
+ * GOOGLE_CLOUD_PROJECT} is set it talks to a real Gemini model on Vertex AI, using Application
+ * Default Credentials; otherwise it falls back to canned replies so the behavior is still
+ * demonstrable offline. Type {@code exit} (or an empty line) to quit.
  */
 public final class CompactionDemoAgentJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
   private static final String APP_NAME = "compaction_demo";
   private static final String USER_ID = "demo-user";
   private static final String SESSION_ID = "demo-session";
@@ -90,7 +91,9 @@ public final class CompactionDemoAgentJava {
     }
   }
 
-  /** Ignores the prompt and always returns a fixed reply; used when no API key is available. */
+  /**
+   * Ignores the prompt and always returns a fixed reply; used when no Google Cloud project is set.
+   */
   private static final class CannedModel extends BasePublisherModel {
     private final String reply;
 
@@ -105,12 +108,15 @@ public final class CompactionDemoAgentJava {
     }
   }
 
-  private static boolean hasApiKey() {
-    return !isBlank(System.getenv("GEMINI_API_KEY")) || !isBlank(System.getenv("GOOGLE_API_KEY"));
+  private static boolean hasCloudProject() {
+    String project = System.getenv("GOOGLE_CLOUD_PROJECT");
+    return project != null && !project.isBlank();
   }
 
   private static Model realOrCanned(String cannedName, String cannedReply) {
-    return hasApiKey() ? new Gemini(MODEL_NAME) : new CannedModel(cannedName, cannedReply);
+    return hasCloudProject()
+        ? new Gemini(MODEL_NAME, VertexCredentials.builder().location("global").build())
+        : new CannedModel(cannedName, cannedReply);
   }
 
   public static void main(String[] args) {
@@ -135,10 +141,9 @@ public final class CompactionDemoAgentJava {
             .build();
     System.out.println(
         "Sliding-window compaction demo. Type a message; 'exit' or an empty line quits.");
-    if (!hasApiKey()) {
+    if (!hasCloudProject()) {
       System.out.println(
-          "(No GEMINI_API_KEY/GOOGLE_API_KEY set -- using canned replies; compaction still"
-              + " works.)");
+          "(No GOOGLE_CLOUD_PROJECT set -- using canned replies; compaction still works.)");
     }
 
     try (CompletableFutureSessionService sessionService =
@@ -200,10 +205,6 @@ public final class CompactionDemoAgentJava {
         System.out.println("  [" + i + "] " + description);
       }
     }
-  }
-
-  private static boolean isBlank(String value) {
-    return value == null || value.isBlank();
   }
 
   private CompactionDemoAgentJava() {}

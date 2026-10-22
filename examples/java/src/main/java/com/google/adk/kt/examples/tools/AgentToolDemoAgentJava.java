@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.tools;
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.AgentTool;
 
 /**
@@ -34,7 +35,9 @@ public final class AgentToolDemoAgentJava {
           .description(
               "The Chief Engineer of the USS Enterprise. Handles technical, warp drive, and"
                   + " theoretical engineering problems.")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are Montgomery "Scotty" Scott, the Chief Engineer of the USS Enterprise.
@@ -47,7 +50,9 @@ public final class AgentToolDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("captain_kirk")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are Captain James T. Kirk of the USS Enterprise.

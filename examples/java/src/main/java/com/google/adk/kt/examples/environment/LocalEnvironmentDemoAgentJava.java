@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.environment.LocalEnvironment;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.runners.ReplRunner;
 import com.google.adk.kt.tools.environment.EnvironmentToolset;
 import java.util.Set;
@@ -37,7 +38,9 @@ public final class LocalEnvironmentDemoAgentJava {
   public static final BaseAgent rootAgent =
       LlmAgent.builder()
           .name("local_environment_agent")
-          .model(new Gemini("gemini-3.1-flash-lite"))
+          .model(
+              new Gemini(
+                  "gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
           .instruction(
               """
               You are a command-line assistant with a scratch workspace directory.

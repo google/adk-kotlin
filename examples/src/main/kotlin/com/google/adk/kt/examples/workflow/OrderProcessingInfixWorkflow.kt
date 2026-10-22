@@ -21,11 +21,12 @@ package com.google.adk.kt.examples.workflow
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.workflow
 
-private const val MODEL_NAME = "gemini-3.1-flash-lite"
+private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * The order-processing workflow from [OrderProcessingWorkflow], with edges declared using the
@@ -71,6 +72,11 @@ object OrderProcessingInfixWorkflow {
 
 /**
  * Runs the workflow on three orders and prints what each step and agent did. Needs
- * `GOOGLE_API_KEY`.
+ * `GOOGLE_CLOUD_PROJECT` and Application Default Credentials.
  */
-fun main() = runSampleOrders(OrderProcessingInfixWorkflow.create(Gemini(name = MODEL_NAME)))
+fun main() =
+  runSampleOrders(
+    OrderProcessingInfixWorkflow.create(
+      Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
+    )
+  )

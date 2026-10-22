@@ -27,6 +27,7 @@ import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.LlmRequest;
 import com.google.adk.kt.models.LlmResponse;
 import com.google.adk.kt.models.Model;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.sessions.InMemorySessionService;
 import com.google.adk.kt.sessions.Session;
@@ -48,12 +49,13 @@ import reactor.core.publisher.Flux;
  * {@link #TOKEN_THRESHOLD}, compacts everything older than the last {@link #EVENT_RETENTION_SIZE}
  * events into a single summary while keeping the recent events raw. Both models are wrapped in a
  * {@link LabeledPrintingModel} that prints every prompt so you can watch the threshold trigger. The
- * token count comes from the model's usage metadata, so this demo requires {@code GEMINI_API_KEY}
- * or {@code GOOGLE_API_KEY}. Type {@code exit} (or an empty line) to quit.
+ * token count comes from the model's usage metadata, so this demo requires {@code
+ * GOOGLE_CLOUD_PROJECT} and Application Default Credentials. Type {@code exit} (or an empty line)
+ * to quit.
  */
 public final class TokenThresholdCompactionDemoAgentJava {
 
-  private static final String MODEL_NAME = "gemini-3.1-flash-lite";
+  private static final String MODEL_NAME = "gemini-3.8-flash";
   private static final String APP_NAME = "token_threshold_compaction_demo";
   private static final String USER_ID = "demo-user";
   private static final String SESSION_ID = "demo-session";
@@ -95,8 +97,14 @@ public final class TokenThresholdCompactionDemoAgentJava {
   }
 
   public static void main(String[] args) {
-    Model agentModel = new LabeledPrintingModel("AGENT LLM", new Gemini(MODEL_NAME));
-    Model summarizerModel = new LabeledPrintingModel("SUMMARIZER LLM", new Gemini(MODEL_NAME));
+    Model agentModel =
+        new LabeledPrintingModel(
+            "AGENT LLM",
+            new Gemini(MODEL_NAME, VertexCredentials.builder().location("global").build()));
+    Model summarizerModel =
+        new LabeledPrintingModel(
+            "SUMMARIZER LLM",
+            new Gemini(MODEL_NAME, VertexCredentials.builder().location("global").build()));
 
     App app =
         App.builder()

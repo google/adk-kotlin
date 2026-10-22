@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.transfer
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.Gemini
+import com.google.adk.kt.models.VertexCredentials
 
 /** A creative and funny demo showcasing agent-to-agent transfer using a NASA theme. */
 object AgentTransferDemoAgent {
@@ -29,7 +30,11 @@ object AgentTransferDemoAgent {
       name = "ISS",
       description =
         "The International Space Station. A veteran outpost, continuously occupied since 2000. Handles questions about long-term space living, microgravity experiments, and space station maintenance.",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """
@@ -48,7 +53,11 @@ object AgentTransferDemoAgent {
       name = "LunarGateway",
       description =
         "The planned space station in orbit around the Moon. Handles questions about the Artemis program, lunar orbit, and deep space exploration preparation.",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """
@@ -68,7 +77,11 @@ object AgentTransferDemoAgent {
       name = "Tiangong",
       description =
         "The Chinese Space Station. Handles questions about its modular design, robotic arm, and its own science experiments.",
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """
@@ -88,7 +101,11 @@ object AgentTransferDemoAgent {
       description =
         "The central router for space station queries. Routes to ISS, LunarGateway, or Tiangong based on the topic.",
       subAgents = listOf(issAgent, gatewayAgent, tiangongAgent),
-      model = Gemini(name = "gemini-3.1-flash-lite"),
+      model =
+        Gemini(
+          name = "gemini-3.8-flash",
+          vertexCredentials = VertexCredentials(location = "global"),
+        ),
       instruction =
         Instruction(
           """

@@ -19,8 +19,12 @@ package com.google.adk.kt.examples.mcp;
 import com.google.adk.kt.agents.BaseAgent;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.models.Gemini;
+import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.tools.mcp.McpConnectionParameters;
 import com.google.adk.kt.tools.mcp.McpToolset;
+import com.google.auth.oauth2.GoogleCredentials;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Map;
 
 /**
@@ -28,9 +32,9 @@ import java.util.Map;
  *
  * <p>The agent connects to the Google Developer Knowledge MCP server over the Streamable HTTP
  * transport; {@link McpToolset} discovers the server's tools on first use and exposes them to the
- * model, so the agent declares no tools of its own. Set {@code DEVELOPERKNOWLEDGE_API_KEY} (or
- * reuse {@code GEMINI_API_KEY} if that key is enabled for the Developer Knowledge API). See
- * https://developers.google.com/knowledge/mcp.
+ * model, so the agent declares no tools of its own. The server authenticates with an Application
+ * Default Credentials access token and the project from {@code GOOGLE_CLOUD_PROJECT}. That project
+ * must have the Developer Knowledge API enabled; see https://developers.google.com/knowledge/mcp.
  */
 public final class McpToolDemoAgentJava {
 
@@ -51,7 +55,7 @@ public final class McpToolDemoAgentJava {
             .streamableHttpConnectionParams(
                 McpConnectionParameters.StreamableHttp.builder()
                     .url("https://developerknowledge.googleapis.com/mcp")
-                    .headers(Map.of("X-Goog-Api-Key", requireApiKey()))
+                    .headers(authHeaders())
                     .build())
             .build()
             .toToolset();
@@ -61,23 +65,35 @@ public final class McpToolDemoAgentJava {
     // interop item), and this port omits it.
     return LlmAgent.builder()
         .name("mcp_assistant")
-        .model(new Gemini("gemini-3.1-flash-lite"))
+        .model(
+            new Gemini("gemini-3.8-flash", VertexCredentials.builder().location("global").build()))
         .instruction(INSTRUCTION)
         .toolsets(toolset)
         .build();
   }
 
-  private static String requireApiKey() {
-    String key = System.getenv("DEVELOPERKNOWLEDGE_API_KEY");
-    if (key == null || key.isBlank()) {
-      key = System.getenv("GEMINI_API_KEY");
+  /**
+   * Returns the server's auth headers. The access token expires after an hour and is not refreshed
+   * per call, because {@code headerProvider} is a Kotlin suspend function with no Java adapter yet.
+   */
+  private static Map<String, String> authHeaders() {
+    String project = System.getenv("GOOGLE_CLOUD_PROJECT");
+    if (project == null || project.isBlank()) {
+      throw new IllegalStateException("Set GOOGLE_CLOUD_PROJECT.");
     }
-    if (key == null || key.isBlank()) {
-      throw new IllegalStateException(
-          "Set DEVELOPERKNOWLEDGE_API_KEY, or GEMINI_API_KEY if that key is also enabled for the"
-              + " Developer Knowledge API. See https://developers.google.com/knowledge/mcp.");
+    try {
+      GoogleCredentials credentials =
+          GoogleCredentials.getApplicationDefault()
+              .createScoped("https://www.googleapis.com/auth/cloud-platform");
+      credentials.refreshIfExpired();
+      return Map.of(
+          "Authorization",
+          "Bearer " + credentials.getAccessToken().getTokenValue(),
+          "X-Goog-User-Project",
+          project);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
-    return key;
   }
 
   private McpToolDemoAgentJava() {}
