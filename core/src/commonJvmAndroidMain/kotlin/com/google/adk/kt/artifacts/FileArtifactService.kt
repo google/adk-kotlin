@@ -53,6 +53,10 @@ import kotlinx.serialization.SerializationException
  * filename, so nested names such as `images/photo.png` create nested directories; absolute paths
  * and names that traverse outside the storage scope (e.g. `../secret`) are rejected.
  *
+ * Saving an artifact whose final path segment is `metadata.json` is rejected in any casing,
+ * including trailing dots or spaces. Existing artifacts with that name remain readable and
+ * deletable.
+ *
  * Versions are 0-based and increase monotonically. A version is published atomically by staging its
  * payload and metadata in a temporary directory and renaming it into place, so concurrent readers
  * only ever observe complete versions (payload and metadata together). Writes to the same artifact
@@ -90,6 +94,9 @@ class FileArtifactService(private val baseDir: String) : ArtifactService {
       require(data.isNotEmpty()) { "Saveable artifact data must be non-empty." }
 
       val artifactDir = resolveArtifactDir(sessionKey, filename)
+      require(!artifactDir.name.trimEnd(' ', '.').equals(METADATA_FILE_NAME, ignoreCase = true)) {
+        "Artifact filename '$filename' is reserved for the metadata document."
+      }
       lockFor(artifactDir).withLock {
         val versionsDir = versionsDir(artifactDir)
         val nextVersion = (listVersionsOnDisk(artifactDir).lastOrNull() ?: -1) + 1
