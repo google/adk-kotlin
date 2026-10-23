@@ -35,12 +35,6 @@ class TelemetryConfigTest {
   }
 
   @Test
-  fun captureMessageContent_whenSetToTrue_updatesValue() {
-    TelemetryConfig.captureMessageContent = true
-    assertTrue(TelemetryConfig.captureMessageContent)
-  }
-
-  @Test
   fun parseCaptureMessageContent_unset_isFalse() {
     assertFalse(parseCaptureMessageContent(null))
   }

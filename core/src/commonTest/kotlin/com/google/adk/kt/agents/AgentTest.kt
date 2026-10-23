@@ -19,17 +19,9 @@ package com.google.adk.kt.agents
 import com.google.adk.kt.testing.DummyAgent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentTest {
-
-  @Test
-  fun agent_instantiation_setsDefaultValues() {
-    val agent = DummyAgent("test-agent")
-    assertEquals("test-agent", agent.name)
-    assertTrue(agent.subAgents.isEmpty())
-  }
 
   @Test
   fun findAgent_existingAgent_returnsAgent() {

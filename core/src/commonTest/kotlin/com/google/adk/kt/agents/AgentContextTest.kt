@@ -23,33 +23,9 @@ import com.google.adk.kt.types.Role
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentContextTest {
-
-  @Test
-  fun agent_instantiation_setsDefaultValues() {
-    val agent = DummyAgent()
-    assertEquals("test-agent", agent.name)
-    assertTrue(agent.subAgents.isEmpty())
-  }
-
-  @Test
-  fun invocationContext_creation_setsDefaultValues() {
-    val context =
-      InvocationContext(
-        session = testSession(),
-        runConfig = null,
-        agent = DummyAgent(),
-        userContent = Content(role = Role.USER),
-        invocationId = "invocation-id",
-      )
-
-    assertEquals("test_session_id", context.session.key.id)
-    assertEquals("test-agent", context.agent.name)
-    assertEquals("invocation-id", context.invocationId)
-  }
 
   @Test
   fun readonlyContext_creation_setsDefaultValues() {

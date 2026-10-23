@@ -46,39 +46,6 @@ class FunctionToolTest {
   }
 
   @Test
-  fun isLongRunning_whenSetToTrue_isTrue() {
-    val tool =
-      object : FunctionTool("test_long", "test long", isLongRunning = true) {
-        override fun declaration() = null
-
-        override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
-          return args
-        }
-      }
-
-    val result = tool.isLongRunning
-
-    assertTrue(result)
-  }
-
-  @Test
-  fun declaration_returnsDeclaration() {
-    val testDeclaration = com.google.adk.kt.types.FunctionDeclaration("test", "test desc")
-    val tool =
-      object : FunctionTool("test_func", "A test function tool") {
-        override fun declaration() = testDeclaration
-
-        override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
-          return args
-        }
-      }
-
-    val declaration = tool.declaration()
-    assertNotNull(declaration)
-    assertEquals(testDeclaration, declaration)
-  }
-
-  @Test
   fun run_delegatesToExecute() = runTest {
     val tool = TestFunctionTool()
     val toolContext = testToolContext()

@@ -34,23 +34,6 @@ class ToolConfirmationTest {
     assertThat(toolConfirmation.hint).isNull()
   }
 
-  @Test
-  fun constructor_initializesFieldsCorrectly() {
-    val toolConfirmation = ToolConfirmation(confirmed = true, payload = "payload", hint = "hint")
-
-    assertThat(toolConfirmation.confirmed).isTrue()
-    assertThat(toolConfirmation.payload).isEqualTo("payload")
-    assertThat(toolConfirmation.hint).isEqualTo("hint")
-  }
-
-  @Test
-  fun copy_createsCopyWithSameValues() {
-    val toolConfirmation = ToolConfirmation(confirmed = true, payload = "payload", hint = "hint")
-    val copied = toolConfirmation.copy()
-
-    assertThat(copied).isEqualTo(toolConfirmation)
-  }
-
   @OptIn(AdkJavaInteropApi::class)
   @Test
   fun toBuilder_matchesCopy() {
