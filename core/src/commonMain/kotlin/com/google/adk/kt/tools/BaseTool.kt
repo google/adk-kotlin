@@ -56,9 +56,10 @@ abstract class BaseTool(
    *
    * In a live run, a returned [kotlinx.coroutines.flow.Flow] streams: the call is answered as
    * pending at once, each value then reaches the model as it arrives, and each emitted
-   * [com.google.adk.kt.events.Event] goes to the caller only. If the model makes a new call with
-   * the same arguments while the first flow is still streaming, that call is answered as already
-   * running and starts no second stream.
+   * [com.google.adk.kt.events.Event] goes to the caller only; the model stops the stream by calling
+   * a `stop_streaming(function_name)` or `stopStreaming(functionName)` tool you declare, whose body
+   * never runs. If the model makes a new call with the same arguments while the first flow is still
+   * streaming, that call is answered as already running and starts no second stream.
    */
   abstract suspend fun run(context: ToolContext, args: Map<String, Any?>): Any
 

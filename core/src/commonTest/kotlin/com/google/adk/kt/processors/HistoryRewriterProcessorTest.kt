@@ -893,6 +893,88 @@ class HistoryRewriterProcessorTest {
     )
   }
 
+  // A live stream's final answer is recorded long after the call's first answer.
+  @Test
+  fun rewrite_streamsFinalAnswer_replacesTheFirstAnswerAndKeepsTheTurnsAfter() {
+    val contents = rewrite(callAnsweredAgainAtTheEnd())
+
+    assertEquals(
+      listOf("monitor", "stopped", "Watching.", "Tell me a joke.", "Why did the chicken cross?"),
+      summaries(contents),
+    )
+  }
+
+  // As a child after a transfer sees its parent's record, which would otherwise start the turn.
+  @Test
+  fun rewrite_includeContentsNone_otherAgentsFinalAnswer_doesNotStartTheTurn() {
+    val events = callAnsweredAgainAtTheEnd(recordAuthor = "router")
+
+    val contents = rewrite(events, includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("Tell me a joke.", "Why did the chicken cross?"), summaries(contents))
+  }
+
+  @Test
+  fun rewrite_includeContentsNone_finalAnswerToACallInTheTurn_replacesItsAnswer() {
+    val events =
+      listOf(
+        userEvent("Watch gold."),
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "c1")),
+        Event(author = "agent", content = userFunctionResponse("monitor", "c1", status("pending"))),
+        Event(author = "agent", content = modelMessage("Watching.")),
+        finalAnswer("monitor", "c1"),
+      )
+
+    val contents = rewrite(events, includeContents = IncludeContents.NONE)
+
+    assertEquals(listOf("Watch gold.", "monitor", "stopped", "Watching."), summaries(contents))
+  }
+
+  // An unmarked later answer, such as a long-running tool's closing update, continues the call's
+  // turn, so the turns in between are dropped.
+  @Test
+  fun rewrite_unmarkedLaterAnswerToAnAnsweredCall_continuesTheCallsTurn() {
+    val contents = rewrite(callAnsweredAgainAtTheEnd(marked = false))
+
+    assertEquals(listOf("monitor", "stopped"), summaries(contents))
+  }
+
+  private fun callAnsweredAgainAtTheEnd(
+    recordAuthor: String = "agent",
+    marked: Boolean = true,
+  ): List<Event> =
+    listOf(
+      Event(author = "agent", content = modelFunctionCall("monitor", id = "c1")),
+      Event(author = "agent", content = userFunctionResponse("monitor", "c1", status("pending"))),
+      Event(author = "agent", content = modelMessage("Watching.")),
+      userEvent("Tell me a joke."),
+      Event(author = "agent", content = modelMessage("Why did the chicken cross?")),
+      finalAnswer("monitor", "c1", author = recordAuthor, marked = marked),
+    )
+
+  private fun status(value: String): Map<String, Any?> = mapOf("status" to value)
+
+  /**
+   * A live stream's final answer to [id], marked as a live run records it unless [marked] is false.
+   */
+  private fun finalAnswer(
+    name: String,
+    id: String,
+    author: String = "agent",
+    marked: Boolean = true,
+  ): Event =
+    Event(
+      author = author,
+      content = userFunctionResponse(name, id, status("stopped")),
+      customMetadata = mapOf(STREAM_FINAL_ANSWER_KEY to true).takeIf { marked },
+    )
+
+  /** Each content's single part: its text, called function's name, or answer's status. */
+  private fun summaries(contents: List<Content>): List<Any?> = contents.map { content ->
+    val part = content.parts.single()
+    part.text ?: part.functionCall?.name ?: part.functionResponse?.response?.get("status")
+  }
+
   private fun rewrite(
     events: List<Event>,
     agentName: String = "agent",
