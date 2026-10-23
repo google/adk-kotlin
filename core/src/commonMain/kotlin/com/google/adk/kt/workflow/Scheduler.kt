@@ -18,6 +18,7 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.NodeExecutionState
@@ -25,6 +26,7 @@ import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import kotlin.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -37,6 +39,7 @@ internal class Scheduler(
   private val workflow: Workflow,
   private val graph: Graph,
   private val context: Context,
+  replayTimeout: Duration = ReplaySequence.DEFAULT_TIMEOUT,
 ) {
   private val nodeStates = mutableMapOf<String, NodeState>()
   private val nodeOutputs = mutableMapOf<String, Any?>()
@@ -56,6 +59,16 @@ internal class Scheduler(
       context.nodePath,
       context.invocationContext.invocationId,
     )
+
+  /**
+   * Releases replayed nodes in the order they first finished, paused, or were answered, so their
+   * successors start in that order. Children run on this workflow's own context, such as an agent a
+   * node hands off to, share it.
+   */
+  private val replaySequence =
+    ReplaySequence(replayOrder(recovered), timeout = replayTimeout).also {
+      context.requireNodeState().childRuns.setReplaySequence(it)
+    }
 
   /** Nodes replayed from history in the current activation. */
   private val replayed = mutableSetOf<String>()
@@ -96,6 +109,12 @@ internal class Scheduler(
   private inner class Loop(private val scope: CoroutineScope) {
     private val running = linkedMapOf<String, Deferred<Context>>()
 
+    /** Running nodes started as replays, so they take no [Workflow.maxConcurrency] slot. */
+    private val replays = mutableSetOf<String>()
+
+    /** Blockers holding back queued replays under [Workflow.maxConcurrency]. */
+    private var heldBlockers: List<Deferred<Unit>> = emptyList()
+
     suspend fun drive() {
       while (true) {
         scheduleReady()
@@ -106,6 +125,7 @@ internal class Scheduler(
         // a failing sibling would have its successors started only to be cancelled. Python likewise
         // drains the FIRST_COMPLETED batch and stops on an error before scheduling.
         val batch = awaitCompletedBatch()
+        if (batch.isEmpty()) continue
         if (handleFailures(batch)) return
         handleCompletion(batch)
       }
@@ -129,49 +149,160 @@ internal class Scheduler(
     }
 
     /**
-     * Suspends for the next node to finish, then also takes any siblings already finished, dropping
-     * all of them from [running]. Returning the batch lets [drive] see a failure before it
-     * schedules the successors of a node that succeeded in the same window.
+     * Suspends for the next node to finish (or for a held replay's blocker to clear), then takes
+     * any siblings already finished, dropping all of them from [running]. Returning the batch lets
+     * [drive] see a failure before it schedules successors of a node that succeeded in the same
+     * window.
      */
     private suspend fun awaitCompletedBatch(): List<Pair<String, Context>> {
-      val batch = mutableListOf(awaitNextFinished())
+      val batch = mutableListOf<Pair<String, Context>>()
+      awaitNextFinishedOrUnblocked()?.let(batch::add)
       for (name in running.filterValues { it.isCompleted }.keys.toList()) {
         val task = running.remove(name) ?: continue
         batch.add(name to task.await())
       }
-      return batch
+      // Nodes that finished together are handled in their recorded order, then the rest.
+      return batch.sortedBy { (name, finished) -> recordedPlace(name, finished) ?: Int.MAX_VALUE }
     }
 
     /**
-     * Awaits the next node to finish, drops it from [running], and returns its name and context.
+     * The place in the replay order of [name], which ended as [finished], or null for a new run or
+     * a run after a pause, whose live output is not what its successors' recorded runs took.
      */
-    private suspend fun awaitNextFinished(): Pair<String, Context> {
+    private fun recordedPlace(name: String, finished: Context): Int? {
+      // A run on this workflow's context is the node itself or an agent it handed off to.
+      val key =
+        if (finished.parent === context) {
+          finished.nodePath.substringAfterLast('/')
+        } else {
+          BranchPath.segment(name, nodeStates.getValue(name).runId ?: return null)
+        }
+      val recoveredNode = recovered[key] ?: return null
+      if (!finished.requireNodeState().isReplay && recoveredNode.placeIsPause) return null
+      return recoveredNode.sequenceIndex
+    }
+
+    /**
+     * Awaits the next node to finish (dropping it from [running]) or a held replay's blocker to
+     * complete (returning null so [drive] re-checks the queue).
+     */
+    private suspend fun awaitNextFinishedOrUnblocked(): Pair<String, Context>? {
       // `select` is biased to registration order, and `running` preserves the order the nodes were
       // scheduled in, so two nodes finishing together are handled in a stable order.
       val finished =
-        select<Pair<String, Context>> { for ((name, task) in running) task.onAwait { name to it } }
-      running.keys.remove(finished.first)
+        select<Pair<String, Context>?> {
+          for ((name, task) in running) task.onAwait { name to it }
+          for (blocker in heldBlockers) blocker.onAwait { null }
+        }
+      if (finished != null) running.keys.remove(finished.first)
       return finished
     }
 
     private suspend fun scheduleReady() {
+      heldBlockers = emptyList()
       // As in Python ADK, no other node starts while a task node waits on the user.
-      if (hasWaitingTaskNode()) return
-      for (nodeName in triggerQueue.queuedNodeNames) {
-        if (nodeName in running) continue
-        val state = nodeStates[nodeName]
-        // One activation of a node at a time, so two triggers cannot race on its state. A node
-        // waiting on a user keeps its queue; one merely waiting for output may take the next
-        // trigger, which is how a join accumulates.
-        if (state != null) {
-          if (state.status == NodeStatus.RUNNING) continue
-          if (state.status == NodeStatus.WAITING && state.interrupts.isNotEmpty()) continue
-        }
-        if (workflow.maxConcurrency != null && running.size >= workflow.maxConcurrency) break
+      if (hasWaitingTaskNode()) {
+        // No successor starts either, so a replay must not wait for a node that cannot start.
+        replaySequence.releaseAll()
+        return
+      }
+      val limit = workflow.maxConcurrency
+      val held = mutableMapOf<String, Deferred<Unit>>()
+      while (true) {
+        var startedAny = false
+        held.clear()
+        for (nodeName in triggerQueue.queuedNodeNames) {
+          if (nodeName in running) continue
+          val state = nodeStates[nodeName]
+          // One activation of a node at a time, so two triggers cannot race on its state. A node
+          // waiting on a user keeps its queue; one merely waiting for output may take the next
+          // trigger, which is how a join accumulates.
+          if (state != null) {
+            if (state.status == NodeStatus.RUNNING) continue
+            if (state.status == NodeStatus.WAITING && state.interrupts.isNotEmpty()) continue
+          }
+          if (limit != null && deferIfBlocked(nodeName, limit, held)) continue
 
-        val trigger = triggerQueue.poll(nodeName) ?: continue
-        // A run, or a replay that completes a transfer, marks a new step; a plain replay does not.
-        if (start(nodeName, trigger)) emitCheckpoint()
+          val trigger = triggerQueue.poll(nodeName) ?: continue
+          // A run or completed transfer marks a new step; a plain replay does not.
+          if (start(nodeName, trigger)) emitCheckpoint()
+          startedAny = true
+        }
+        // A rerun after a pause advances synchronously, which may unblock a held replay right away.
+        if (!startedAny || held.isEmpty()) break
+      }
+      if (held.isNotEmpty() && running.isEmpty()) {
+        // Nothing running can release a held replay, so start one to surface the divergence.
+        val nodeName = held.keys.first()
+        val trigger = triggerQueue.poll(nodeName)
+        if (trigger != null && start(nodeName, trigger)) emitCheckpoint()
+        heldBlockers = held.values.drop(1).distinct()
+      } else {
+        heldBlockers = held.values.distinct()
+      }
+    }
+
+    /**
+     * Returns whether [nodeName] must wait under [limit], recording any sequence blocker in [held].
+     */
+    private fun deferIfBlocked(
+      nodeName: String,
+      limit: Int,
+      held: MutableMap<String, Deferred<Unit>>,
+    ): Boolean {
+      val childKey =
+        BranchPath.segment(nodeName, context.requireNodeState().peekChildRunId(nodeName))
+      val interception =
+        ResumeScan.intercept(
+          graph.node(nodeName),
+          recovered[childKey],
+          cancelledMidRun = context.isCancelledMidRun(childKey),
+        )
+      if (interception.shouldRun) {
+        return running.keys.count { it !in replays } >= limit
+      }
+      // Hold unreleased replays so a queued live node cannot time them out.
+      val blocker = firstBlockerFor(nodeName, childKey, interception) ?: return false
+      held[nodeName] = blocker
+      return true
+    }
+
+    /**
+     * First blocker holding back [nodeName]'s replay [firstKey], walking recorded sibling handoffs
+     * on this workflow's context while each hop would replay.
+     */
+    private fun firstBlockerFor(
+      nodeName: String,
+      firstKey: String,
+      firstInterception: Interception,
+    ): Deferred<Unit>? {
+      val siblingCounts = mutableMapOf(nodeName to 1)
+      var current: Node = graph.node(nodeName)
+      var key = firstKey
+      var interception = firstInterception
+      while (true) {
+        replaySequence.firstBlocker(key)?.let {
+          return it
+        }
+        if (replaySequence.isPending(key) || interception.interrupts.isNotEmpty()) return null
+        val transfer = interception.transferToAgent ?: return null
+        val agent = current as? BaseAgent ?: return null
+        val sibling = resolveSiblingTransferTarget(transfer, agent) ?: return null
+        val offset = siblingCounts.getOrElse(sibling.name) { 0 }
+        val runId =
+          (context.requireNodeState().peekChildRunId(sibling.name).toInt() + offset).toString()
+        siblingCounts[sibling.name] = offset + 1
+        key = BranchPath.segment(sibling.name, runId)
+        val hopRecovered = recovered[key] ?: return null
+        interception =
+          ResumeScan.intercept(
+            sibling,
+            hopRecovered,
+            dynamic = true,
+            cancelledMidRun = context.isCancelledMidRun(key),
+          )
+        if (interception.shouldRun) return null
+        current = sibling
       }
     }
 
@@ -181,6 +312,7 @@ internal class Scheduler(
     private fun start(nodeName: String, trigger: Trigger): Boolean {
       val runId = context.requireNodeState().nextChildRunId(nodeName)
       nodeStates[nodeName] = NodeState(status = NodeStatus.RUNNING, runId = runId)
+      replays.remove(nodeName)
 
       val node = graph.node(nodeName)
       val useAsOutput = nodeName in graph.terminalNodeNames
@@ -194,7 +326,7 @@ internal class Scheduler(
           cancelledMidRun = context.isCancelledMidRun(childKey),
         )
       // Follows an agent node's transfer_to_agent too.
-      fun dispatch(firstHop: Context?) = scope.async {
+      suspend fun dispatch(firstHop: Context?): Context =
         context.runGraphNode(
           node = node,
           nodeInput = trigger.input,
@@ -207,7 +339,6 @@ internal class Scheduler(
           openInterrupts = interception.interrupts,
           firstHop = firstHop,
         )
-      }
       if (recoveredNode != null && !interception.shouldRun) {
         val completesTransfer =
           interception.transferToAgent != null &&
@@ -217,6 +348,7 @@ internal class Scheduler(
         // output back, and a plain node fails.
         val followsTransfer = interception.transferToAgent != null
         if (!completesTransfer) replayed.add(nodeName)
+        replays.add(nodeName)
         val scheduled =
           scheduledInvocationContext(
             context.invocationContext,
@@ -227,11 +359,18 @@ internal class Scheduler(
           )
         val replayContext =
           ResumeScan.replayContext(context, scheduled, node, runId, useAsOutput, interception)
-        running[nodeName] =
-          if (followsTransfer) dispatch(firstHop = replayContext) else scope.async { replayContext }
+        running[nodeName] = scope.async {
+          replaySequence.awaitTurn(childKey)
+          if (!followsTransfer) return@async replayContext
+          // The replay itself is done, so it lets later replays go while the transfer runs on.
+          replaySequence.advance(childKey)
+          dispatch(firstHop = replayContext)
+        }
         return completesTransfer
       }
-      running[nodeName] = dispatch(firstHop = null)
+      // A node that runs again after it paused gives up its place, so later replays go at once.
+      if (recoveredNode?.placeIsPause == true) replaySequence.advance(childKey)
+      running[nodeName] = scope.async { dispatch(firstHop = null) }
       return true
     }
   }
@@ -242,6 +381,11 @@ internal class Scheduler(
 
   private suspend fun handleCompletion(nodeName: String, childContext: Context) {
     val state = nodeStates.getValue(nodeName)
+    state.runId?.let { replaySequence.advance(BranchPath.segment(nodeName, it)) }
+    // A handoff to a sibling runs on this workflow's context and defers advancing its final hop.
+    if (childContext.parent === context) {
+      replaySequence.advance(childContext.nodePath.substringAfterLast('/'))
+    }
     // A followed transfer whose last hop really ran is not a replay, even if the node was.
     val wasReplayed = replayed.remove(nodeName) && childContext.requireNodeState().isReplay
 

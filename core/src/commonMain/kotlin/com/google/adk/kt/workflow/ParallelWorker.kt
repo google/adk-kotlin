@@ -100,6 +100,8 @@ internal class ParallelWorker(private val worker: Node, private val maxParallelW
     val input = if (nodeInput is Content) unwrapContent(nodeInput) else nodeInput
     val items = if (input is List<*>) input else listOf(input)
     if (items.isEmpty()) return emptyList()
+    // Items collect in input order, so replay ordering can only deadlock maxParallelWorkers.
+    context.requireNodeState().childRuns.setReplaySequence(ReplaySequence(emptyList()))
     return FanOut(context, items).run().map { it.output }
   }
 

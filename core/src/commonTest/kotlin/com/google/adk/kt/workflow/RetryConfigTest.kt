@@ -58,6 +58,21 @@ class RetryConfigTest {
   }
 
   @Test
+  fun aWorkflowInvariantExceptionIsNeverRetried() {
+    val error = WorkflowInvariantException("replay diverged")
+
+    assertFalse(RetryConfig().shouldRetry(error, attemptCount = 1))
+    assertFalse(
+      RetryConfig(exceptions = listOf("WorkflowInvariantException"))
+        .shouldRetry(error, attemptCount = 1)
+    )
+    assertFalse(
+      RetryConfig(exceptionClasses = listOf(NodeExecutionException::class))
+        .shouldRetry(error, attemptCount = 1)
+    )
+  }
+
+  @Test
   fun exceptionClassesMatchListedClassesAndTheirSubclasses() {
     val config = RetryConfig(exceptionClasses = listOf(NodeExecutionException::class))
 

@@ -52,12 +52,14 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Answers each request with the next scripted turn, repeating the last, and records the requests.
@@ -216,6 +218,30 @@ private fun approvingCoordinator(model: Model, workerModel: Model, name: String 
     subAgents = listOf(taskAgent("worker", workerModel)),
     tools = listOf(DummyTool("approve", isLongRunning = true, onRun = { _, _ -> Unit })),
   )
+
+/** A coordinator with `approve`, a finishing `collector` task, and a confirming `worker` task. */
+private fun collectorAndConfirmingWorkerCoordinator(model: Model): LlmAgent {
+  val confirm = DummyTool("confirm", isLongRunning = true, onRun = { _, _ -> Unit })
+  val collector =
+    taskAgent("collector", ModeScriptedModel(call("finish_task", mapOf("result" to "collected"))))
+  val worker =
+    LlmAgent(
+      name = "worker",
+      model =
+        ModeScriptedModel(
+          call("confirm", emptyMap()),
+          call("finish_task", mapOf("result" to "done")),
+        ),
+      description = "Does worker.",
+      tools = listOf(confirm),
+      mode = AgentMode.TASK,
+    )
+  return coordinator(
+    model,
+    listOf(collector, worker),
+    tools = listOf(DummyTool("approve", isLongRunning = true, onRun = { _, _ -> Unit })),
+  )
+}
 
 /** A coordinator turn that calls `approve` and delegates to `worker`, then a closing reply. */
 private fun approveAndDelegateModel() =
@@ -1822,6 +1848,65 @@ class LlmAgentModeTest {
     assertTrue(answer.none { it.author == "worker" })
     assertEquals(2, workerModel.requests.size)
     assertTrue(reply.any { it.contentText() == "all done" })
+  }
+
+  @Test
+  fun runAsync_answerToACallBesideATaskThatAskedAfterAnotherFinished_leavesTheTaskWaiting(): Unit =
+    runBlocking {
+      // Arrange: one turn calls `approve`, delegates `collector` (finishes), then `worker` (asks).
+      val root =
+        collectorAndConfirmingWorkerCoordinator(
+          ModeScriptedModel(
+            calls(
+              "approve" to emptyMap(),
+              "collector" to mapOf("request" to "collect"),
+              "worker" to mapOf("request" to "do it"),
+            ),
+            text("all done"),
+          )
+        )
+      val runner = runnerFor(root, resumable = true)
+      val first = runner.send("go")
+      check(first.any { e -> e.functionCalls().any { it.name == "confirm" } }) { "worker must ask" }
+      val approvalId = first.flatMap { it.functionCalls() }.single { it.name == "approve" }.id
+
+      // Act
+      val answer =
+        withTimeout(5.seconds) {
+          runner.runAsync("u", "s", newMessage = approvalAnswer(approvalId)).toList()
+        }
+
+      // Assert: `worker` keeps waiting on `confirm`; the resume does not fail.
+      assertTrue(answer.none { it.errorCode != null })
+      assertTrue(answer.none { it.author == "worker" })
+    }
+
+  @Test
+  fun runAsync_answerToACallBesideATaskThatAskedAfterAnEarlierRoundsTask_leavesTheTaskWaiting():
+    Unit = runBlocking {
+    // Arrange: round one runs `collector`; round two calls `approve` and `worker`, which asks.
+    val root =
+      collectorAndConfirmingWorkerCoordinator(
+        ModeScriptedModel(
+          call("collector", mapOf("request" to "collect")),
+          calls("approve" to emptyMap(), "worker" to mapOf("request" to "do it")),
+          text("all done"),
+        )
+      )
+    val runner = runnerFor(root, resumable = true)
+    val first = runner.send("go")
+    check(first.any { e -> e.functionCalls().any { it.name == "confirm" } }) { "worker must ask" }
+    val approvalId = first.flatMap { it.functionCalls() }.single { it.name == "approve" }.id
+
+    // Act
+    val answer =
+      withTimeout(5.seconds) {
+        runner.runAsync("u", "s", newMessage = approvalAnswer(approvalId)).toList()
+      }
+
+    // Assert: `worker` keeps waiting on `confirm`; the resume does not fail.
+    assertTrue(answer.none { it.errorCode != null })
+    assertTrue(answer.none { it.author == "worker" })
   }
 
   @Test

@@ -22,6 +22,7 @@ import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.ReplaySequence
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
@@ -183,5 +184,21 @@ class ContextTest {
 
     assertEquals("temp-value", context.actions.stateDelta["temp:scratch"])
     assertEquals("temp-value", context.state["temp:scratch"])
+  }
+
+  @Test
+  fun getOrPutReplaySequence_callThatLosesTheRace_returnsTheOrderSetFirst() {
+    // Arrange: another call sets the order while this one builds its own.
+    val runs = ChildRuns()
+    val first = ReplaySequence(listOf("a@1"))
+
+    // Act
+    val result = runs.getOrPutReplaySequence {
+      val unused = runs.getOrPutReplaySequence { first }
+      ReplaySequence(listOf("b@1"))
+    }
+
+    // Assert
+    assertSame(first, result)
   }
 }

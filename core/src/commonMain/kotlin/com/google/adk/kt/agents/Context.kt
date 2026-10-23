@@ -47,11 +47,14 @@ import com.google.adk.kt.workflow.NodeExecutionFailure
 import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.adk.kt.workflow.NodeRunner
 import com.google.adk.kt.workflow.OutputState
+import com.google.adk.kt.workflow.RecoveredNode
+import com.google.adk.kt.workflow.ReplaySequence
 import com.google.adk.kt.workflow.ResumeScan
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.ValueCodec
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.followHandoffs
+import com.google.adk.kt.workflow.replayOrder
 import com.google.adk.kt.workflow.requireJsonForm
 import com.google.adk.kt.workflow.scheduledInvocationContext
 import com.google.adk.kt.workflow.schemaForm
@@ -643,8 +646,10 @@ open class Context(
    * @param runId Explicit run ID for [node]: at least one non-digit, and no `'/'`, `'@'`, or `'.'`.
    *   A child that already recorded an output under the same ID, in this activation, an earlier
    *   attempt, or an earlier turn, returns it without running again; one that finished without an
-   *   output may run again. When `null` or empty, the child gets the next number for its name,
-   *   which follows call order, so concurrent children need explicit IDs.
+   *   output may run again. On resume, a replayed child returns only after the sibling children
+   *   that first finished, paused, or were answered before it (except on an [LlmAgent] or a
+   *   parallel fan-out). When `null` or empty, the child gets the next number for its name, which
+   *   follows call order, so concurrent children need explicit IDs.
    * @param useAsOutput When `true`, delegates this node's output to [node]. The first output this
    *   node produces afterwards (such as returning [node]'s result) is dropped, even if [node]
    *   produces none. A second output fails this node. The claim is released only if [node] fails
@@ -673,6 +678,8 @@ open class Context(
    *   instead. A [parallelNode][com.google.adk.kt.workflow.parallelNode] checks each item instead,
    *   and a rejected item fails it.
    * @throws DynamicNodeFailedException if [node] fails; its `error` is the child's failure.
+   * @throws com.google.adk.kt.workflow.NodeExecutionException named `WorkflowInvariantException`
+   *   if, on resume, [node] waits over 15 seconds for nodes or children recorded ahead of it.
    */
   @CanIgnoreReturnValue
   @ExperimentalWorkflowApi
@@ -897,6 +904,7 @@ open class Context(
       useSubBranch,
       overrideBranch,
       overrideIsolationScope,
+      deferWorkflowFinalAdvance = true,
     )
   }
 
@@ -912,6 +920,7 @@ open class Context(
     useSubBranch: Boolean,
     overrideBranch: String?,
     overrideIsolationScope: String?,
+    deferWorkflowFinalAdvance: Boolean = false,
   ): Context =
     followHandoffs(node, first, parent = this) { agent, parent ->
       if (parent == null) {
@@ -928,6 +937,7 @@ open class Context(
           useSubBranch = useSubBranch,
           overrideBranch = overrideBranch,
           overrideIsolationScope = overrideIsolationScope,
+          deferFinalAdvance = deferWorkflowFinalAdvance && parent === this,
         )
       }
     }
@@ -945,32 +955,43 @@ open class Context(
     useSubBranch: Boolean,
     overrideBranch: String?,
     overrideIsolationScope: String?,
+    deferFinalAdvance: Boolean = false,
   ): Context {
     val childKey = BranchPath.segment(node.name, id)
+    val recovered = recoveredChildren[childKey]
     val interception =
       ResumeScan.intercept(
         node,
-        recoveredChildren[childKey],
+        recovered,
         dynamic = true,
         cancelledMidRun = isCancelledMidRun(childKey),
       )
-    if (!interception.shouldRun) {
-      val scheduled =
-        scheduledInvocationContext(invocationContext, overrideBranch, useSubBranch, node.name, id)
-      return ResumeScan.replayContext(this, scheduled, node, id, useAsOutput, interception)
-    }
-    return runChild(
-      node,
-      input,
-      id,
-      useAsOutput,
-      useSubBranch,
-      overrideBranch,
-      overrideIsolationScope,
-      resumeInputs = interception.resumeInputs,
-      openInterrupts = interception.interrupts,
-      validateInput = false,
-    )
+    val childContext =
+      if (!interception.shouldRun) {
+        replaySequence()?.awaitTurn(childKey)
+        val scheduled =
+          scheduledInvocationContext(invocationContext, overrideBranch, useSubBranch, node.name, id)
+        ResumeScan.replayContext(this, scheduled, node, id, useAsOutput, interception)
+      } else {
+        // A run after a pause gives up its place, so later replays go at once.
+        if (recovered?.placeIsPause == true) replaySequence()?.advance(childKey)
+        runChild(
+          node,
+          input,
+          id,
+          useAsOutput,
+          useSubBranch,
+          overrideBranch,
+          overrideIsolationScope,
+          resumeInputs = interception.resumeInputs,
+          openInterrupts = interception.interrupts,
+          validateInput = false,
+        )
+      }
+    // A final graph handoff advances in Scheduler.handleCompletion; a cancelled child holds place.
+    val deferred = deferFinalAdvance && childContext.actions.transferToAgent == null
+    if (!deferred && currentCoroutineContext().isActive) replaySequence()?.advance(childKey)
+    return childContext
   }
 
   /**
@@ -1028,6 +1049,19 @@ open class Context(
   internal fun isCancelledMidRun(childKey: String): Boolean =
     BranchPath.childNodePath(nodePath, childKey) in
       invocationContext.frameworkData.cancelledNodePaths
+
+  /**
+   * Returns the order this node's replayed children are released in, kept across its attempts, or
+   * null when unordered. A workflow's scheduler sets the order for each attempt.
+   */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private fun replaySequence(): ReplaySequence? {
+    // An agent runs again only the calls still open, so a finished child would hold them back.
+    if (requireNodeState().node is LlmAgent) return null
+    return requireNodeState().childRuns.getOrPutReplaySequence {
+      ReplaySequence(replayOrder(recoveredChildren, RecoveredNode::directSequenceIndex))
+    }
+  }
 
   /**
    * Reconstructed states of this activation's children from earlier turns or earlier attempts of
@@ -1247,6 +1281,9 @@ internal class NodeExecutionState(
   /** Returns the next run ID for a dynamically dispatched child named [name]. */
   fun nextChildRunId(name: String): String = childRunIds.next(name)
 
+  /** Returns the run ID [nextChildRunId] would return for [name], without taking it. */
+  fun peekChildRunId(name: String): String = childRunIds.peek(name)
+
   /**
    * Withdraws [recorded], a descendant's output, from every delegating ancestor that still holds
    * it, as when a workflow's schema reads its terminal output as no output.
@@ -1302,10 +1339,28 @@ internal class NodeExecutionState(
 
 /** Runs of a node's children keyed by `name@runId`, kept across the node's attempts. */
 // The mutex guards every access to byKey, and a run's Context is read only after it completes.
+@OptIn(ExperimentalAtomicApi::class)
 @Suppress("UnsafeCoroutineCrossing")
 internal class ChildRuns {
   private val mutex = Mutex()
   private val byKey = HashMap<String, CompletableDeferred<Context>>()
+  private val sequence = AtomicReference<ReplaySequence?>(null)
+
+  /** Sets the order the children replay in, as a workflow's scheduler does for each attempt. */
+  fun setReplaySequence(replaySequence: ReplaySequence) {
+    sequence.store(replaySequence)
+  }
+
+  /**
+   * Returns the order the children replay in, set from [create] by the first call that needs it.
+   */
+  fun getOrPutReplaySequence(create: () -> ReplaySequence): ReplaySequence {
+    sequence.load()?.let {
+      return it
+    }
+    val created = create()
+    return if (sequence.compareAndSet(null, created)) created else checkNotNull(sequence.load())
+  }
 
   /** Registers [run] under [key] and returns null, or returns the run already registered. */
   suspend fun claim(key: String, run: CompletableDeferred<Context>): CompletableDeferred<Context>? =
@@ -1339,4 +1394,7 @@ internal class ChildRunIds {
       if (counters.compareAndSet(current, current + (name to next))) return next.toString()
     }
   }
+
+  /** Returns the run ID [next] would return for [name], without taking it. */
+  fun peek(name: String): String = ((counters.load()[name] ?: 0) + 1).toString()
 }
