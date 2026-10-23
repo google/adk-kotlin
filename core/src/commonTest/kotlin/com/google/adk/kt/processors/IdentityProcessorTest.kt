@@ -14,10 +14,16 @@
  * limitations under the License.
  */
 
+@file:OptIn(FrameworkInternalApi::class, ExperimentalWorkflowApi::class)
+
 package com.google.adk.kt.processors
 
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.AgentModeOverride
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
@@ -81,6 +87,46 @@ class IdentityProcessorTest {
     assertEquals(
       "\n\nYou are an agent. Your internal name is \"test_agent\".",
       systemInstruction.parts[1].text,
+    )
+  }
+
+  @Test
+  fun process_singleTurnNode_returnsRequestUnchanged() = runBlocking {
+    val agent = LlmAgent(name = "test_agent", model = DummyModel("gemini"))
+    val context =
+      InvocationContext(session = testSession(), runConfig = null, agent = agent).let {
+        it.copy(
+          frameworkData =
+            it.frameworkData.copy(
+              agentModeOverride = AgentModeOverride(agent, AgentMode.SINGLE_TURN)
+            )
+        )
+      }
+
+    val processed = IdentityProcessor().process(context, LlmRequest())
+
+    assertNull(processed.config.systemInstruction)
+  }
+
+  @Test
+  fun process_singleTurnNodeKeyedToAnotherAgent_appendsIdentity() = runBlocking {
+    val agent = LlmAgent(name = "test_agent", model = DummyModel("gemini"))
+    val otherAgent = LlmAgent(name = "other", model = DummyModel("gemini"))
+    val context =
+      InvocationContext(session = testSession(), runConfig = null, agent = agent).let {
+        it.copy(
+          frameworkData =
+            it.frameworkData.copy(
+              agentModeOverride = AgentModeOverride(otherAgent, AgentMode.SINGLE_TURN)
+            )
+        )
+      }
+
+    val processed = IdentityProcessor().process(context, LlmRequest())
+
+    assertEquals(
+      "You are an agent. Your internal name is \"test_agent\".",
+      processed.config.systemInstruction?.parts?.firstOrNull()?.text,
     )
   }
 

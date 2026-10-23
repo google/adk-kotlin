@@ -17,6 +17,8 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.runsSingleTurn
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Content
@@ -27,15 +29,17 @@ import com.google.adk.kt.types.Role
  *
  * It appends a system instruction telling the model its internal [name][LlmAgent.name] and, when
  * present, its [description][LlmAgent.description], so the model can reason about who it is in
- * multi-agent setups.
+ * multi-agent setups. A single-turn agent gets no identity.
  */
 internal class IdentityProcessor : LlmRequestProcessor {
+  @OptIn(FrameworkInternalApi::class)
   override suspend fun process(
     context: InvocationContext,
     request: LlmRequest,
     emitEvent: suspend (Event) -> Unit,
   ): LlmRequest {
     val agent = context.agent as? LlmAgent ?: return request
+    if (context.frameworkData.runsSingleTurn(agent)) return request
 
     val identity = buildString {
       append("You are an agent. Your internal name is \"")

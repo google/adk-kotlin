@@ -18,6 +18,8 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 
 /**
@@ -34,6 +36,8 @@ internal fun validateGraph(nodes: List<Node>, edges: List<Edge>) {
   validateNoDuplicateEdges(edges)
   validateDefaultRoutes(edges)
   validateNoUnconditionalCycles(edges, nodeNames)
+  validateChatAgentWiring(edges)
+  validateChildNodeAgentNames(nodes)
 }
 
 private fun fail(message: String): Nothing =
@@ -149,4 +153,49 @@ private fun validateNoUnconditionalCycles(edges: List<Edge>, nodeNames: Set<Stri
   }
 
   for (name in nodeNames) if (name !in done) visit(name)
+}
+
+/**
+ * Rejects a sub-agent below a graph [LlmAgent] node, wrapped in a [parallelNode] or not, whose name
+ * can't be a node name: the workflow runs each of them, transfer target or tool, as a child node.
+ */
+private fun validateChildNodeAgentNames(nodes: List<Node>) {
+  for (node in nodes) {
+    val invalid = node.childNodeAgentNames().filterNot(::isValidNodeName).distinct().sorted()
+    if (invalid.isNotEmpty()) {
+      fail(
+        "Agents $invalid under graph node '${node.name}' run as nodes, so their names must not" +
+          " contain '.'."
+      )
+    }
+  }
+}
+
+/**
+ * Names of the agents that run as child nodes when this node runs, looking through a [parallelNode]
+ * wrapper. Only an [LlmAgent] runs its sub-agents as nodes; other agents run theirs inline.
+ */
+private fun Node.childNodeAgentNames(): List<String> =
+  when (this) {
+    is ParallelWorkerNode -> node.childNodeAgentNames()
+    is LlmAgent -> subAgents.flatMap { listOf(it.name) + it.childNodeAgentNames() }
+    else -> emptyList()
+  }
+
+/**
+ * Rejects a chat agent that follows any node but [Start]: it reads the conversation, so it cannot
+ * take a predecessor's output as its input. [Workflow] checks again when it runs, since a parent
+ * agent built after the graph can make a node a chat agent.
+ */
+internal fun validateChatAgentWiring(edges: List<Edge>) {
+  for (edge in edges) {
+    val agent = edge.to as? LlmAgent ?: continue
+    if (agent.defaultMode() != AgentMode.CHAT || edge.from.name == START_NODE_NAME) continue
+    fail(
+      "The agent '${agent.name}' has been added to the workflow with AgentMode.CHAT following" +
+        " node '${edge.from.name}'. This is not supported because chat-mode agents rely on" +
+        " conversational history (session events) and cannot consume direct node inputs from" +
+        " preceding nodes. Please change the agent's mode to AgentMode.SINGLE_TURN."
+    )
+  }
 }

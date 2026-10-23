@@ -75,7 +75,7 @@ internal fun checkMaxParallelWorkers(maxParallelWorkers: Int?) {
 }
 
 /** Node that fans [node] out over a list input. */
-internal class ParallelWorkerNode(private val node: Node, maxParallelWorkers: Int?) : Node {
+internal class ParallelWorkerNode(internal val node: Node, maxParallelWorkers: Int?) : Node {
   private val fanOut = ParallelWorker(node, maxParallelWorkers)
 
   override val name: String = node.name

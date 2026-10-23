@@ -18,7 +18,9 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.TypedData
@@ -299,11 +301,16 @@ private class MessageOutput(
   }
 }
 
-/** Pauses on a long-running call and asks to transfer to another agent in the same event. */
-private class TransferAfterInterrupt(override val name: String) : Node {
-  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+/**
+ * An agent that pauses on a long-running call and hands off to its sub-agent `other` in the same
+ * event.
+ */
+private class TransferAfterInterrupt(name: String) :
+  BaseAgent(name = name, subAgents = listOf(IdleAgent("other"))) {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
     emit(
       Event(
+        author = name,
         content =
           Content(
             role = Role.MODEL,
@@ -314,6 +321,11 @@ private class TransferAfterInterrupt(override val name: String) : Node {
       )
     )
   }
+}
+
+/** An agent that does nothing, as a transfer target. */
+private class IdleAgent(name: String) : BaseAgent(name = name) {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
 }
 
 /**

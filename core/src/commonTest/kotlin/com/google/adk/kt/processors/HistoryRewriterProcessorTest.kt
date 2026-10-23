@@ -26,6 +26,7 @@ import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolCall
@@ -893,6 +894,37 @@ class HistoryRewriterProcessorTest {
     )
   }
 
+  // Later steps pair responses with calls by id, so an idless response would fail the request.
+  @Test
+  fun rewrite_nodeRun_dropsAResponseWithoutAnId() {
+    val events =
+      listOf(
+        userEvent("Look it up."),
+        Event(author = "agent", content = modelFunctionCall("lookup")),
+        Event(author = "user", content = userFunctionResponse("lookup", id = null)),
+      )
+
+    val contents = rewriteAtNode(events)
+
+    assertEquals(listOf("Look it up.", "lookup"), partNames(contents))
+  }
+
+  @Test
+  fun rewrite_nodeRun_dropsOnlyTheOrphanedResponseOfAnEvent() {
+    val answered = Part(functionResponse = FunctionResponse(name = "lookup", id = "c1"))
+    val orphaned = Part(functionResponse = FunctionResponse(name = "stale", id = "c2"))
+    val events =
+      listOf(
+        userEvent("Look it up."),
+        Event(author = "agent", content = modelFunctionCall("lookup", id = "c1")),
+        Event(author = "user", content = userMessage(answered, orphaned)),
+      )
+
+    val contents = rewriteAtNode(events)
+
+    assertEquals(listOf("Look it up.", "lookup", "lookup"), partNames(contents))
+  }
+
   private fun rewrite(
     events: List<Event>,
     agentName: String = "agent",
@@ -917,5 +949,13 @@ class HistoryRewriterProcessorTest {
 
   private fun texts(contents: List<Content>): List<List<String?>> = contents.map { content ->
     content.parts.map { it.text }
+  }
+
+  private fun rewriteAtNode(events: List<Event>): List<Content> =
+    HistoryRewriterProcessor()
+      .rewrite(events, agentName = "agent", currentBranch = null, nodePath = "wf@1/agent@1")
+
+  private fun partNames(contents: List<Content>): List<String?> = contents.flatMap { content ->
+    content.parts.map { it.text ?: it.functionCall?.name ?: it.functionResponse?.name }
   }
 }

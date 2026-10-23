@@ -17,7 +17,9 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
@@ -149,6 +151,8 @@ internal class Scheduler(
     }
 
     private suspend fun scheduleReady() {
+      // As in Python ADK, no other node starts while a task node waits on the user.
+      if (hasWaitingTaskNode()) return
       for (nodeName in triggerQueue.queuedNodeNames) {
         if (nodeName in running) continue
         val state = nodeStates[nodeName]
@@ -185,30 +189,36 @@ internal class Scheduler(
           recoveredNode,
           cancelledMidRun = context.isCancelledMidRun(childKey),
         )
+      // Follows an agent node's transfer_to_agent too.
+      fun dispatch(firstHop: Context?) = scope.async {
+        context.runGraphNode(
+          node = node,
+          nodeInput = trigger.input,
+          runId = runId,
+          useAsOutput = useAsOutput,
+          useSubBranch = trigger.useSubBranch,
+          overrideBranch = trigger.branch,
+          overrideIsolationScope = taskScopeFor(nodeName, runId),
+          resumeInputs = interception.resumeInputs,
+          firstHop = firstHop,
+        )
+      }
       if (recoveredNode != null && !interception.shouldRun) {
         val completesTransfer =
           interception.transferToAgent != null &&
             recoveredNode.interruptIds.isNotEmpty() &&
             recoveredNode.unresolved.isEmpty()
+        // A recorded transfer hands off again: a paused target resumes, a finished one gives its
+        // output back, and a plain node fails.
+        val followsTransfer = interception.transferToAgent != null
         if (!completesTransfer) replayed.add(nodeName)
         val replayContext =
           ResumeScan.replayContext(context, node, runId, useAsOutput, interception)
-        running[nodeName] = scope.async { replayContext }
+        running[nodeName] =
+          if (followsTransfer) dispatch(firstHop = replayContext) else scope.async { replayContext }
         return completesTransfer
       }
-
-      running[nodeName] = scope.async {
-        NodeRunner(
-            node = node,
-            parent = context,
-            runId = runId,
-            useAsOutput = useAsOutput,
-            resumeInputs = interception.resumeInputs,
-            useSubBranch = trigger.useSubBranch,
-            overrideBranch = trigger.branch,
-          )
-          .run(trigger.input)
-      }
+      running[nodeName] = dispatch(firstHop = null)
       return true
     }
   }
@@ -293,6 +303,19 @@ internal class Scheduler(
         )
       )
   }
+
+  /** Whether a task agent node is waiting, which for a task means waiting on the user. */
+  private fun hasWaitingTaskNode(): Boolean = nodeStates.any { (name, state) ->
+    state.status == NodeStatus.WAITING && (graph.node(name) as? LlmAgent)?.mode == AgentMode.TASK
+  }
+
+  /** A task agent's isolation scope: its own node path, which keeps its conversation apart. */
+  private fun taskScopeFor(nodeName: String, runId: String): String? =
+    if ((graph.node(nodeName) as? LlmAgent)?.mode == AgentMode.TASK) {
+      Context.buildNodePath(context.nodePath, nodeName, runId)
+    } else {
+      null
+    }
 
   private fun enqueueSuccessorNodeTriggers(nodeName: String, childContext: Context) {
     val successors = graph.nodesTriggeredBy(nodeName, childContext.routes)

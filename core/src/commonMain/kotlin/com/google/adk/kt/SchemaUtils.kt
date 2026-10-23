@@ -368,6 +368,23 @@ object SchemaUtils {
     )
   }
 
+  /**
+   * Parses model text [output] against [schema] by decoding it as JSON; a JSON `null` fails unless
+   * [schema] accepts null. If that fails and [schema] accepts a string, returns the raw text. Blank
+   * text returns null.
+   */
+  internal fun parseModelOutput(schema: Schema, output: String): Any? {
+    if (output.isBlank()) return null
+    val parsed =
+      readJson(output).mapCatching {
+        require(it != null || matchType(null, schema, "Value", UnionBudget()).isSuccess) {
+          "validation error: value does not match its schema."
+        }
+        validateValue(it, schema).getOrThrow()
+      }
+    return if (parsed.isFailure && acceptsString(schema)) output else parsed.getOrThrow()
+  }
+
   /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
   internal fun acceptsString(schema: Schema): Boolean =
     schema.type == Type.STRING || schema.anyOf.orEmpty().any { acceptsString(it) }

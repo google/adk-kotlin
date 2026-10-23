@@ -14,10 +14,14 @@
  * limitations under the License.
  */
 
-@file:OptIn(com.google.adk.kt.annotations.ExperimentalContextCachingFeature::class)
+@file:OptIn(
+  com.google.adk.kt.annotations.ExperimentalContextCachingFeature::class,
+  com.google.adk.kt.annotations.ExperimentalWorkflowApi::class,
+)
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.agents.InvocationContext
@@ -29,6 +33,7 @@ import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
+import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -45,17 +50,23 @@ import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.MonotonicTimestampSessionService
 import com.google.adk.kt.testing.compactionEvent
 import com.google.adk.kt.testing.modelFunctionCall
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.RequestInputTool
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -1929,7 +1940,496 @@ class AbstractRunnerTest {
     )
     assertEquals(streamedEarlyExit, persisted.single { it.author == Role.MODEL })
   }
+
+  @Test
+  fun runAsync_plainRootLlmAgent_staysOnTheClassicFlow() = runBlocking {
+    // Arrange: a root with no mode and no task or single-turn sub-agents does not opt in.
+    val agent =
+      LlmAgent(
+        name = "assistant",
+        model = DummyModel.createSequential("m", listOf(LlmResponse(content = modelMessage("hi")))),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    // Act
+    val events = runner.runAsync("u", "s", newMessage = userMessage("hello")).toList()
+
+    // Assert: the classic flow stamps no node path.
+    assertTrue(events.isNotEmpty())
+    assertTrue(events.all { it.nodeInfo == null })
+  }
+
+  @Test
+  fun runAsync_plainLlmAgentPassedAsNode_runsOnTheNodePath() = runBlocking {
+    // Arrange
+    val agent =
+      LlmAgent(
+        name = "assistant",
+        model = DummyModel.createSequential("m", listOf(LlmResponse(content = modelMessage("hi")))),
+      )
+
+    // Act
+    val events = nodeRunner(agent).runAsync("u", "s", newMessage = userMessage("hello")).toList()
+
+    // Assert
+    assertEquals(listOf("assistant@1"), events.mapNotNull { it.nodeInfo?.path }.distinct())
+  }
+
+  @Test
+  fun constructor_modeInAgentRootTree_isRejected() {
+    // Arrange: a chat agent under a sequential root that is passed as an agent, not as a node.
+    val agent = LlmAgent(name = "a", mode = AgentMode.CHAT, model = DummyModel("m"))
+    val root = SequentialAgent(name = "pipeline", subAgents = listOf(agent))
+
+    // Act
+    val error = assertFailsWith<IllegalArgumentException> { InMemoryRunner(agent = root) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Agents [a] set a mode")
+  }
+
+  @Test
+  fun runAsync_chatRootLlmAgent_stampsNodePathAndPersistsErrorEventOnFailure() = runBlocking {
+    // Arrange
+    var calls = 0
+    val agent =
+      LlmAgent(
+        name = "assistant",
+        mode = AgentMode.CHAT,
+        model =
+          DummyModel("m") {
+            calls += 1
+            if (calls == 1) {
+              flowOf(LlmResponse(content = modelMessage("hello")))
+            } else {
+              flow { error("model boom") }
+            }
+          },
+      )
+    val runner = nodeRunner(agent)
+
+    // Act
+    val firstTurn =
+      runner
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+        .toList()
+    val error =
+      assertFailsWith<IllegalStateException> {
+        runner
+          .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("again"))
+          .toList()
+      }
+    val session =
+      assertNotNull(
+        runner.sessionService.getSession(SessionKey("InMemoryRunner", "user", "session"))
+      )
+
+    // Assert
+    assertEquals("assistant@1", firstTurn.single().nodeInfo?.path)
+    assertEquals("model boom", error.message)
+    val errorEvent = session.events.last()
+    assertEquals("assistant", errorEvent.author)
+    assertEquals("assistant@1", errorEvent.nodeInfo?.path)
+    assertEquals("IllegalStateException", errorEvent.errorCode)
+    assertEquals("model boom", errorEvent.errorMessage)
+  }
+
+  @Test
+  fun runAsync_functionResponseMixedWithText_throwsBeforeCallingModel() = runBlocking {
+    // Arrange
+    var calls = 0
+    val approve = DummyTool(name = "approve", isLongRunning = true, onRun = { _, _ -> Unit })
+    val agent =
+      LlmAgent(
+        name = "assistant",
+        mode = AgentMode.CHAT,
+        model =
+          DummyModel("m") {
+            calls += 1
+            flowOf(modelFunctionCallResponse("approve", id = "call-1"))
+          },
+        tools = listOf(approve),
+      )
+    val runner = nodeRunner(agent)
+    runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("go")).toList()
+    val mixed =
+      Content(
+        role = Role.USER,
+        parts =
+          listOf(
+            Part(
+              functionResponse =
+                FunctionResponse(
+                  id = "call-1",
+                  name = "approve",
+                  response = mapOf("status" to "approved"),
+                )
+            ),
+            Part(text = "and thanks"),
+          ),
+      )
+
+    // Act
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        runner.runAsync(userId = "user", sessionId = "session", newMessage = mixed).toList()
+      }
+
+    // Assert
+    assertEquals(
+      "Message cannot contain both function responses and text. Function responses resume an" +
+        " existing invocation while text starts a new one.",
+      error.message,
+    )
+    assertEquals(1, calls)
+  }
+
+  @Test
+  fun runAsync_chatRootAnswerOffItsRequestSchema_reachesTheModel() = runBlocking {
+    // Arrange: the agent asks for an integer and the user answers with text.
+    var calls = 0
+    val agent =
+      LlmAgent(
+        name = "assistant",
+        mode = AgentMode.CHAT,
+        model =
+          DummyModel("m") {
+            calls += 1
+            if (calls == 1) {
+              flowOf(
+                modelFunctionCallResponse(
+                  FunctionCall.REQUEST_INPUT_FUNCTION_CALL_NAME,
+                  mapOf(
+                    "message" to "How old are you?",
+                    "response_schema" to mapOf("type" to "INTEGER"),
+                  ),
+                  id = "ask-1",
+                )
+              )
+            } else {
+              flowOf(LlmResponse(content = modelMessage("Thanks.")))
+            }
+          },
+        tools = listOf(RequestInputTool()),
+      )
+    val runner =
+      InMemoryRunner(
+        App(
+          appName = "app",
+          rootNode = agent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
+    val first =
+      runner
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+        .toList()
+
+    // Act
+    val second =
+      runner
+        .runAsync(
+          userId = "user",
+          sessionId = "session",
+          invocationId = first.first().invocationId,
+          newMessage =
+            userFunctionResponse(
+              FunctionCall.REQUEST_INPUT_FUNCTION_CALL_NAME,
+              "ask-1",
+              mapOf("result" to "old"),
+            ),
+        )
+        .toList()
+
+    // Assert: the agent reads the answer itself, so the run goes on to the model.
+    assertEquals(2, calls)
+    assertTrue(second.any { event -> event.content?.parts.orEmpty().any { it.text == "Thanks." } })
+  }
+
+  @Test
+  fun runAsync_dottedRootLlmAgentName_runsOnNodePath() = runBlocking {
+    // Arrange
+    val sub =
+      LlmAgent(
+        name = "sub_1",
+        model =
+          DummyModel.createSequential("ms", listOf(modelTransferToAgentResponse("support.bot"))),
+      )
+    val agent =
+      LlmAgent(
+        name = "support.bot",
+        mode = AgentMode.CHAT,
+        model =
+          DummyModel.createSequential(
+            "m",
+            listOf(
+              modelTransferToAgentResponse("sub_1"),
+              LlmResponse(content = modelMessage("ready")),
+            ),
+          ),
+        subAgents = listOf(sub),
+      )
+    val dottedSub =
+      LlmAgent(
+        name = "billing.desk",
+        model = DummyModel("mb") { flowOf(LlmResponse(content = modelMessage("unused"))) },
+      )
+    var rootCalls = 0
+    val rootWithDottedSub =
+      LlmAgent(
+        name = "root",
+        mode = AgentMode.CHAT,
+        model =
+          DummyModel("mr") {
+            rootCalls += 1
+            flowOf(modelTransferToAgentResponse("billing.desk"))
+          },
+        subAgents = listOf(dottedSub),
+      )
+
+    // Act
+    val events =
+      nodeRunner(agent)
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+        .toList()
+    val childError =
+      assertFailsWith<IllegalArgumentException> {
+        nodeRunner(rootWithDottedSub)
+          .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+          .toList()
+      }
+
+    // Assert
+    assertEquals(
+      listOf("support.bot@1", "support.bot@1/sub_1@1", "support.bot@2"),
+      events.mapNotNull { it.nodeInfo?.path }.distinct(),
+    )
+    assertContains(childError.message.orEmpty(), "[billing.desk]")
+    assertEquals(0, rootCalls)
+  }
+
+  @Test
+  fun runAsync_chatRootFollowUpAtSubAgent_rebuildsAncestorPathForEachHop() = runBlocking {
+    // Arrange: the first turn hands off to sub_1, so the next turn starts there and hops on.
+    fun runnerWhereSub1Then(secondTurn: LlmResponse): InMemoryRunner {
+      val sub1 =
+        LlmAgent(
+          name = "sub_1",
+          model =
+            DummyModel.createSequential(
+              "m1",
+              listOf(LlmResponse(content = modelMessage("hi from sub_1")), secondTurn),
+            ),
+        )
+      val sub2 =
+        LlmAgent(
+          name = "sub_2",
+          model =
+            DummyModel.createSequential("m2", listOf(LlmResponse(content = modelMessage("sub_2")))),
+        )
+      val root =
+        LlmAgent(
+          name = "root",
+          mode = AgentMode.CHAT,
+          model =
+            DummyModel.createSequential(
+              "m0",
+              listOf(
+                modelTransferToAgentResponse("sub_1"),
+                LlmResponse(content = modelMessage("root again")),
+              ),
+            ),
+          subAgents = listOf(sub1, sub2),
+        )
+      return nodeRunner(root)
+    }
+    suspend fun secondTurnPaths(runner: InMemoryRunner): List<String> {
+      runner
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+        .toList()
+      return runner
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("more"))
+        .toList()
+        .mapNotNull { it.nodeInfo?.path }
+        .distinct()
+    }
+
+    // Act
+    val toSibling = secondTurnPaths(runnerWhereSub1Then(modelTransferToAgentResponse("sub_2")))
+    val toParent = secondTurnPaths(runnerWhereSub1Then(modelTransferToAgentResponse("root")))
+
+    // Assert
+    assertEquals(listOf("root@1/sub_1@1", "root@1/sub_2@1"), toSibling)
+    assertEquals(listOf("root@1/sub_1@1", "root@2"), toParent)
+  }
+
+  @Test
+  fun constructor_rootWithDottedAgentUnderSequentialAgent_isRejected() {
+    // Arrange: any agent in the tree of a root passed as a node can start a later turn as a node.
+    val step = LlmAgent(name = "x.y", model = DummyModel("ms"))
+    val root =
+      LlmAgent(
+        name = "root",
+        mode = AgentMode.CHAT,
+        model = DummyModel("mr"),
+        subAgents = listOf(SequentialAgent(name = "pipeline", subAgents = listOf(step))),
+      )
+
+    // Act
+    val error = assertFailsWith<IllegalArgumentException> { nodeRunner(root) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "[x.y]")
+  }
+
+  @Test
+  fun runAsync_chatRootAnswerToCustomSubAgent_runsSubAgentOnNodePath() = runBlocking {
+    // Arrange: the root hands off to a custom agent that waits on a long-running call.
+    val custom =
+      object : BaseAgent(name = "custom") {
+        override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+          val answered =
+            context.session.events.any { e -> e.functionResponses().any { it.id == "call-1" } }
+          val content =
+            if (answered) modelMessage("approved") else modelFunctionCall("approve", id = "call-1")
+          val longRunning = if (answered) emptySet() else setOf("call-1")
+          emit(
+            Event(
+              invocationId = context.invocationId,
+              author = name,
+              content = content,
+              longRunningToolIds = longRunning,
+            )
+          )
+        }
+      }
+    val root =
+      LlmAgent(
+        name = "root",
+        mode = AgentMode.CHAT,
+        model = DummyModel.createSequential("mr", listOf(modelTransferToAgentResponse("custom"))),
+        subAgents = listOf(custom),
+      )
+    val runner = nodeRunner(root)
+    val unused = runner.runAsync("user", "session", newMessage = userMessage("hi")).toList()
+
+    // Act
+    val events =
+      runner
+        .runAsync("user", "session", newMessage = userFunctionResponse("approve", id = "call-1"))
+        .toList()
+
+    // Assert: the answer resumes the custom agent as a node under the root.
+    val reply = events.single { it.author == "custom" && it.content != null }
+    assertEquals("approved", reply.content?.parts?.single()?.text)
+    assertEquals("root@1/custom@1", reply.nodeInfo?.path)
+  }
+
+  @Test
+  fun runAsync_chatRootTransferChain_runsEachHopAsNodeAndRejectsSelfOrUnrelated() = runBlocking {
+    // Arrange: cyclic transfer chain root -> sub_1 -> sub_2 -> root.
+    var rootAfterCallbacks = 0
+    val sub2 =
+      LlmAgent(
+        name = "sub_2",
+        model = DummyModel.createSequential("m2", listOf(modelTransferToAgentResponse("root"))),
+      )
+    val sub1 =
+      LlmAgent(
+        name = "sub_1",
+        model = DummyModel.createSequential("m1", listOf(modelTransferToAgentResponse("sub_2"))),
+      )
+    val root =
+      LlmAgent(
+        name = "root",
+        mode = AgentMode.CHAT,
+        model =
+          DummyModel.createSequential(
+            "m0",
+            listOf(
+              modelTransferToAgentResponse("sub_1"),
+              LlmResponse(content = modelMessage("done")),
+            ),
+          ),
+        subAgents = listOf(sub1, sub2),
+        inputSchema = Schema(type = Type.OBJECT),
+        afterAgentCallbacks =
+          listOf(
+            AfterAgentCallback {
+              rootAfterCallbacks += 1
+              CallbackChoice.Continue(Unit)
+            }
+          ),
+      )
+    val selfTarget =
+      LlmAgent(
+        name = "sub_1",
+        model = DummyModel.createSequential("ms", listOf(modelTransferToAgentResponse("sub_1"))),
+      )
+    val selfRoot =
+      LlmAgent(
+        name = "root",
+        mode = AgentMode.CHAT,
+        model = DummyModel.createSequential("mr", listOf(modelTransferToAgentResponse("sub_1"))),
+        subAgents = listOf(selfTarget),
+      )
+    val grandchild =
+      LlmAgent(
+        name = "sub_1_1",
+        model = DummyModel.createSequential("mg", listOf(modelTransferToAgentResponse("sub_2"))),
+      )
+    val unrelatedRoot =
+      LlmAgent(
+        name = "root",
+        mode = AgentMode.CHAT,
+        model = DummyModel.createSequential("mu", listOf(modelTransferToAgentResponse("sub_1"))),
+        subAgents =
+          listOf(
+            LlmAgent(
+              name = "sub_1",
+              model =
+                DummyModel.createSequential("m1", listOf(modelTransferToAgentResponse("sub_1_1"))),
+              subAgents = listOf(grandchild),
+            ),
+            LlmAgent(name = "sub_2", model = DummyModel("m2")),
+          ),
+      )
+
+    // Act
+    val events =
+      nodeRunner(root)
+        .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+        .toList()
+    val selfError =
+      assertFailsWith<IllegalArgumentException> {
+        nodeRunner(selfRoot)
+          .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+          .toList()
+      }
+    val unrelatedError =
+      assertFailsWith<IllegalArgumentException> {
+        nodeRunner(unrelatedRoot)
+          .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("hi"))
+          .toList()
+      }
+
+    // Assert
+    assertEquals(
+      listOf("root@1", "root@1/sub_1@1", "root@1/sub_2@1", "root@2"),
+      events.mapNotNull { it.nodeInfo?.path }.distinct(),
+    )
+    assertEquals(2, rootAfterCallbacks)
+    assertEquals("Agent 'sub_1' cannot transfer to itself.", selfError.message)
+    assertContains(
+      unrelatedError.message.orEmpty(),
+      "Cannot transfer from 'sub_1_1' to unrelated agent 'sub_2'.",
+    )
+  }
 }
+
+/** A runner whose root [agent] is passed as a node, so it runs on the node path with its modes. */
+private fun nodeRunner(agent: LlmAgent) =
+  InMemoryRunner(App(appName = "InMemoryRunner", rootNode = agent))
 
 /** A [DummyAgent] that emits one model [Event] tagged with the current invocation id per turn. */
 private fun echoAgent(name: String = "agent"): DummyAgent =

@@ -16,8 +16,11 @@
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.AgentModeOverride
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LiveRun
@@ -27,9 +30,11 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.boundedFlush
 import com.google.adk.kt.agents.findAgent
 import com.google.adk.kt.agents.openLiveRun
+import com.google.adk.kt.agents.runsAsTool
 import com.google.adk.kt.agents.signalsTaskCompleted
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -67,6 +72,7 @@ import com.google.adk.kt.workflow.NodeRunner
 import com.google.adk.kt.workflow.ToolNode
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.findUserMessageForInvocation
+import com.google.adk.kt.workflow.isValidNodeName
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -108,6 +114,9 @@ abstract class AbstractRunner : Runner {
    * The supplied [pluginManager] is closed by [close]. Two runners sharing one manager therefore
    * means closing either disables the other's plugins; construct it with
    * [PluginManager.skipClosingPlugins] set to prevent closing the plugins by this runner.
+   *
+   * @throws IllegalArgumentException if any agent in [agent]'s tree sets a mode, which needs the
+   *   root passed as a node.
    */
   constructor(
     appName: String,
@@ -128,6 +137,7 @@ abstract class AbstractRunner : Runner {
     this.resumabilityConfig = resumabilityConfig
     this.eventsCompactionConfig = null
     this.contextCacheConfig = null
+    requireRunnableRoot()
   }
 
   /**
@@ -140,6 +150,9 @@ abstract class AbstractRunner : Runner {
    *
    * [App.eventsCompactionConfig] is resolved at construction, failing fast if a default summarizer
    * is required but the root agent is not an [LlmAgent].
+   *
+   * @throws IllegalArgumentException if the root can't run: a single-turn root, a root passed as a
+   *   node whose agent tree has a name a node path can't carry, or a mode in an agent root's tree.
    */
   constructor(
     app: App,
@@ -157,8 +170,12 @@ abstract class AbstractRunner : Runner {
     this.pluginManager = PluginManager(app.plugins, skipClosingPlugins = skipClosingPlugins)
     this.resumabilityConfig = app.resumabilityConfig ?: ResumabilityConfig()
     this.eventsCompactionConfig =
-      resolveEventsCompactionConfig(app.rootAgent, app.eventsCompactionConfig)
+      resolveEventsCompactionConfig(
+        app.rootNode as? BaseAgent ?: app.rootAgent,
+        app.eventsCompactionConfig,
+      )
     this.contextCacheConfig = app.contextCacheConfig
+    requireRunnableRoot()
   }
 
   /**
@@ -564,6 +581,7 @@ abstract class AbstractRunner : Runner {
    * @param runConfig Configuration for the run.
    * @return A newly created [InvocationContext].
    */
+  @OptIn(FrameworkInternalApi::class)
   protected suspend fun createInvocationContext(
     session: Session,
     invocationId: String?,
@@ -572,11 +590,8 @@ abstract class AbstractRunner : Runner {
     runConfig: RunConfig?,
   ): InvocationContext {
     val isResumable = resumabilityConfig.isResumable
-    // Workflow and standalone node roots (`root !is BaseAgent`) reconstruct tool answers from
-    // session events sharing the calling `invocationId` in `NodeRunner`, so they always resolve
-    // function responses even when `isResumable` is false. `BaseAgent` roots only pause and resume
-    // invocations when `isResumable` is true.
-    val isNodeRoot = root !is BaseAgent
+    // A node-path root resolves function responses even when not resumable; other roots need it.
+    val isNodeRoot = runsOnNodePath
     if (isNodeRoot) requireNoTextWithFunctionResponses(newMessage)
     val resolvedInvocationId =
       if (isResumable || isNodeRoot) {
@@ -586,10 +601,18 @@ abstract class AbstractRunner : Runner {
       } else {
         invocationId
       }
+    // A message that no function response ties to an invocation continues a paused task.
+    val invocationIdToJoin =
+      resolvedInvocationId
+        ?: if (isNodeRoot && newMessage != null && !newMessage.hasIdentifiedFunctionResponses()) {
+          pausedTaskEvent(session.events)?.invocationId
+        } else {
+          null
+        }
 
     // `isResumable` enables stateful checkpointing (`agentState` / `endOfAgent` events) and
     // resuming without a new user message (`newMessage == null`). When `isResumable` is false, a
-    // node root still reuses `resolvedInvocationId` via `setupContextForNewInvocation` so the
+    // node root still reuses `invocationIdToJoin` via `setupContextForNewInvocation` so the
     // response event joins the calling invocation's history.
     if (isResumable && resolvedInvocationId != null) {
       return setupContextForResumedInvocation(
@@ -605,25 +628,27 @@ abstract class AbstractRunner : Runner {
       if (isResumable) "No new message provided and no resumable invocation to resume"
       else "No new message provided and session is not resumable"
     }
-    return setupContextForNewInvocation(
-      session,
-      resolvedInvocationId,
-      newMessage,
-      runConfig,
-      stateDelta,
-    )
+    val context =
+      setupContextForNewInvocation(session, invocationIdToJoin, newMessage, runConfig, stateDelta)
+    // A message that joins a paused task is the user's next turn there, not a replay of its first.
+    if (resolvedInvocationId != null || invocationIdToJoin == null) return context
+    return context.copy(frameworkData = context.frameworkData.copy(continuesPausedTask = true))
   }
 
   /**
    * Throws [IllegalArgumentException] if [newMessage] mixes identified function responses and text.
    */
   private fun requireNoTextWithFunctionResponses(newMessage: Content?) {
-    val parts = newMessage?.parts.orEmpty()
-    val hasResponses = parts.any { !it.functionResponse?.id.isNullOrEmpty() }
-    require(!hasResponses || parts.none { it.text != null }) {
+    val hasResponses = newMessage?.hasIdentifiedFunctionResponses() == true
+    require(!hasResponses || newMessage.parts.none { it.text != null }) {
       "Message cannot contain both function responses and text. Function responses resume an " +
         "existing invocation while text starts a new one."
     }
+  }
+
+  /** Whether this message carries a function response with an id, which ties it to a call. */
+  private fun Content.hasIdentifiedFunctionResponses(): Boolean = parts.any {
+    !it.functionResponse?.id.isNullOrEmpty()
   }
 
   /**
@@ -818,10 +843,12 @@ abstract class AbstractRunner : Runner {
           invocationId = currentContext.invocationId,
           author = Role.USER,
           content = currentContext.userContent,
+          // A reply while a task is paused belongs to that task's conversation.
+          isolationScope = pausedTaskEvent(context.session.events)?.isolationScope,
         )
         .apply { applyStateDelta(this, stateDelta) }
         .let { applyRunConfigCustomMetadata(it, context.runConfig) }
-        .withBranchFromMatchingCall(currentContext)
+        .withContextFromMatchingCall(currentContext)
 
     // A live run stores user input from the turn as it arrives, so only turn-based runs call this.
     val unused = sessionService.appendEvent(context.session, event)
@@ -841,9 +868,17 @@ abstract class AbstractRunner : Runner {
     }
   }
 
-  private suspend fun Event.withBranchFromMatchingCall(context: InvocationContext): Event =
-    context.findMatchingFunctionCall(this)?.branch?.let { branch -> this.copy(branch = branch) }
-      ?: this
+  /**
+   * Gives a function-response message the branch and isolation scope of the call it answers, so the
+   * answer lands in the history of the branch and scope the call was made in.
+   */
+  private suspend fun Event.withContextFromMatchingCall(context: InvocationContext): Event {
+    val call = context.findMatchingFunctionCall(this) ?: return this
+    return copy(
+      branch = call.branch ?: branch,
+      isolationScope = isolationScope ?: call.isolationScope,
+    )
+  }
 
   /**
    * Sets up an [InvocationContext] for a brand new invocation.
@@ -1007,23 +1042,107 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Runs whatever this invocation is rooted on. An agent runs its own lifecycle; any other [Node]
-   * (a [Workflow][com.google.adk.kt.workflow.Workflow] or a standalone node) runs through
-   * [NodeRunner].
+   * Whether [root] runs through [NodeRunner]: a non-agent node does, and so does an [LlmAgent]
+   * passed as the runner's [node], which may then use agent modes.
+   */
+  private val runsOnNodePath: Boolean
+    get() = root !is BaseAgent || node is LlmAgent
+
+  /**
+   * Runs whatever this invocation is rooted on. Any non-agent [Node] (a
+   * [Workflow][com.google.adk.kt.workflow.Workflow] or a standalone node) runs through
+   * [NodeRunner], and an agent as [runAgentRoot] decides.
    */
   @OptIn(ExperimentalWorkflowApi::class, ExperimentalLiveApi::class)
   private fun runRoot(context: InvocationContext, isLiveCall: Boolean): Flow<Event> =
     when (val root = context.node ?: context.agent) {
-      is BaseAgent -> if (isLiveCall) root.runLive(context) else root.runAsync(context)
+      is BaseAgent -> if (isLiveCall) root.runLive(context) else runAgentRoot(root, context)
       else -> NodeRunner.runRoot(root, context)
     }
+
+  /**
+   * Rejects, when the runner is built, a root that can't run. An agent root not passed as a node
+   * keeps the classic flow, so no agent in its tree may set a mode.
+   */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private fun requireRunnableRoot() {
+    val rootAgent = root as? BaseAgent ?: return
+    if (rootAgent is LlmAgent && runsOnNodePath) {
+      require(rootAgent.mode != AgentMode.SINGLE_TURN) {
+        "LlmAgent as root agent must have mode='chat' or 'task', but got mode='single_turn'."
+      }
+      requireNodeNamesInTree(rootAgent)
+      return
+    }
+    val agentsWithMode =
+      (listOf(rootAgent) + rootAgent.descendantAgents())
+        .filter { (it as? LlmAgent)?.mode != null }
+        .map { it.name }
+    require(agentsWithMode.isEmpty()) {
+      "Agents $agentsWithMode set a mode, which needs the root LlmAgent passed as a node, such as" +
+        " with App(rootNode = ...)."
+    }
+  }
+
+  /** Any agent in the tree can start a later turn as a node, so every name must fit a node path. */
+  private fun requireNodeNamesInTree(rootAgent: BaseAgent) {
+    val invalidNames =
+      rootAgent.descendantAgents().map { it.name }.filterNot(::isValidNodeName).distinct().sorted()
+    require(invalidNames.isEmpty()) {
+      "Sub-agents $invalidNames can run as workflow nodes, so their names must not contain '.'."
+    }
+  }
+
+  /**
+   * Runs an agent root. Under an [LlmAgent] passed as the runner's [node], the agent picked for
+   * this turn runs as a workflow node; any other agent root keeps its own lifecycle.
+   */
+  @OptIn(FrameworkInternalApi::class, ExperimentalWorkflowApi::class)
+  private fun runAgentRoot(agent: BaseAgent, context: InvocationContext): Flow<Event> {
+    val rootAgent = node as? LlmAgent ?: return agent.runAsync(context)
+    val mode = AgentModeOverride(agent = rootAgent, mode = rootAgent.mode ?: AgentMode.CHAT)
+    val nodeContext =
+      context.copy(frameworkData = context.frameworkData.copy(agentModeOverride = mode))
+    return NodeRunner.runRoot(agent, nodeContext)
+  }
+
+  private fun BaseAgent.descendantAgents(): List<BaseAgent> = subAgents.flatMap {
+    listOf(it) + it.descendantAgents()
+  }
 
   /**
    * Picks which agent handles this turn. A follow-up turn can land on a sub-agent chosen from the
    * prior turn's history; a node root has no agent tree, so it always runs itself.
    */
-  private suspend fun selectAgentToRun(context: InvocationContext): Node =
-    (root as? BaseAgent)?.let { findAgentToRun(context, it) } ?: root
+  @OptIn(ExperimentalWorkflowApi::class)
+  private suspend fun selectAgentToRun(context: InvocationContext): Node {
+    // A task root resumes its own delegations.
+    if ((root as? LlmAgent)?.mode == AgentMode.TASK) return root
+    return (root as? BaseAgent)?.let { findAgentToRun(context, it) } ?: root
+  }
+
+  /**
+   * Returns the latest event of the task still waiting on the user: the newest live event, left
+   * after rewinds, whose task has not finished since. A node path scope repeats in every
+   * invocation, so a terminal `finish_task` response closes only the events before it and the rest
+   * of its invocation.
+   */
+  private fun pausedTaskEvent(events: List<Event>): Event? {
+    val live = applyRewinds(events)
+    val lastFinish = mutableMapOf<String, IndexedValue<Event>>()
+    for (indexed in live.withIndex()) {
+      val scope = indexed.value.isolationScope ?: continue
+      if (FinishTaskTool.isTerminalResponse(indexed.value)) lastFinish[scope] = indexed
+    }
+    return live
+      .withIndex()
+      .lastOrNull { (index, event) ->
+        val scope = event.isolationScope ?: return@lastOrNull false
+        val finish = lastFinish[scope]
+        finish == null || (index > finish.index && event.invocationId != finish.value.invocationId)
+      }
+      ?.value
+  }
 
   /**
    * Finds the appropriate [BaseAgent] to run for the session in [context].
@@ -1051,7 +1170,7 @@ abstract class AbstractRunner : Runner {
         // An author no longer in the agent tree falls through to the history scan, as in Python.
         val agentToRun = rootAgent.findAgent(matchingCall.author)
         if (agentToRun != null) {
-          return agentToRun
+          return resolveTaskDelegator(agentToRun, rootAgent)
         }
       }
     }
@@ -1079,11 +1198,29 @@ abstract class AbstractRunner : Runner {
 
       // Check for transferability up the tree.
       if (isTransferableAcrossAgentTree(agentToRun)) {
-        return agentToRun
+        return resolveTaskDelegator(agentToRun, rootAgent)
       }
     }
 
     return rootAgent
+  }
+
+  /**
+   * Returns the agent that called the outermost task or single-turn agent [agent] runs inside, or
+   * [agent] when it runs in none, so that caller resumes it. Mirrors Python ADK's
+   * `_resolve_task_delegator`, and the ancestor authors Python's `_resolve_resumed_agent` uses for
+   * an interrupt inside a tool's sub-branch.
+   */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private fun resolveTaskDelegator(agent: BaseAgent, rootAgent: BaseAgent): BaseAgent {
+    var delegator = agent
+    var current = agent
+    while (current !== rootAgent) {
+      val parent = current.parentAgent ?: break
+      if ((current as? LlmAgent)?.mode.runsAsTool) delegator = parent
+      current = parent
+    }
+    return delegator
   }
 
   /**
