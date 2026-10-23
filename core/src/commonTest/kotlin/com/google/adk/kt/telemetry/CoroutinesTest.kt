@@ -26,6 +26,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -94,16 +95,27 @@ class CoroutinesTest {
   }
 
   @Test
-  fun inSpan_recordsExceptions() {
+  fun inSpan_blockThrows_recordsExceptionEndsSpanAndRethrows() {
     val exception = RuntimeException("Test exception")
-    try {
-      inSpan("error_span") { span ->
-        assertNotNull(span)
-        throw exception
-      }
-    } catch (e: Exception) {
-      assertEquals(exception, e)
+
+    val thrown = assertFailsWith<RuntimeException> { inSpan("error_span") { throw exception } }
+
+    assertSame(exception, thrown)
+    val span = tracer.recordedSpans.single()
+    assertEquals("error_span", span.name)
+    assertTrue(span.isEnded)
+    assertEquals(listOf<Throwable>(exception), span.recordedExceptions)
+  }
+
+  @Test
+  fun inSpan_blockCancelled_endsSpanWithoutRecordingTheCancellation() {
+    assertFailsWith<CancellationException> {
+      inSpan("cancelled_span") { throw CancellationException("cancelled") }
     }
+
+    val span = tracer.recordedSpans.single()
+    assertTrue(span.isEnded)
+    assertEquals(emptyList(), span.recordedExceptions)
   }
 
   @Test
@@ -206,6 +218,7 @@ class CoroutinesTest {
     assertSame(boom, thrown)
     val span = tracer.recordedSpans.single()
     assertTrue(span.isEnded)
+    assertEquals(listOf<Throwable>(boom), span.recordedExceptions)
   }
 
   @Test

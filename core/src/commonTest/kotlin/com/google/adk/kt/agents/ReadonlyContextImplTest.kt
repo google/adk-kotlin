@@ -50,7 +50,7 @@ class ReadonlyContextImplTest {
   }
 
   @Test
-  fun readonlyContext_state_isDefensiveCopy() {
+  fun readonlyContext_state_doesNotWriteThroughToSession() {
     val state = State(concurrentMutableMapOf<String, Any>().apply { put("key", "value") })
     val session =
       Session(
@@ -65,9 +65,10 @@ class ReadonlyContextImplTest {
         invocationId = "test-id",
       )
     val readonlyContext = context.toReadonlyContext()
-    val copyState = readonlyContext.state.toMutableMap()
 
-    copyState["key"] = "new-value"
+    // A caller that casts the view back to the session's State must not write through it.
+    val unused = (readonlyContext.state as? State)?.set("key", "new-value")
+
     assertEquals("value", context.session.state["key"])
   }
 
