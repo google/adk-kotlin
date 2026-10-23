@@ -67,6 +67,7 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.workflow.BranchPath
 import com.google.genai.kotlin.GenAiApiException
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
@@ -254,6 +255,13 @@ internal class LlmAgentTurn(
     // user-injected resume) does not pause; the model summarizes it instead.
     val events = context.getEvents(currentInvocation = true, currentBranch = true)
     val lastEvent = events.lastOrNull()
+    // A user answer on the sub-branch of a paused single-turn tool replays the call that opened it,
+    // as Python's `_is_sub_branch_answer` does.
+    val subBranchCall = lastEvent?.let { callThatOpenedBranchOf(it, events) }
+    if (subBranchCall != null) {
+      emitAll(handleActions(subBranchCall, getToolMap(request)))
+      return@flow
+    }
     if (context.isResumable && lastEvent != null && lastEvent.functionCalls().isNotEmpty()) {
       emitAll(handleActions(lastEvent, getToolMap(request)))
       return@flow
@@ -261,6 +269,41 @@ internal class LlmAgentTurn(
 
     // STAGES 3 & 4: Model Invocation & Post-processing
     invokeAndProcessModel(request).collect { emit(it) }
+  }
+
+  /**
+   * Returns the call event to replay when [answer] resumes a single-turn tool that paused, else
+   * null. For example, with this history:
+   * ```
+   * coordinator          calls helper (id c1) and lookup (id c2)
+   * coordinator.helper@c1 calls the long-running approve (id a1), so the turn pauses
+   * user                 answers approve on branch coordinator.helper@c1
+   * ```
+   *
+   * the answer's branch names `c1`, so this returns the coordinator's event cut to the calls with
+   * no response yet. Python replays every unanswered call on that event too.
+   */
+  private fun callThatOpenedBranchOf(answer: Event, events: List<Event>): Event? {
+    // Only a user's function response resumes a paused tool.
+    if (answer.author != Role.USER || answer.functionResponses().isEmpty()) return null
+    // A tool's sub-branch ends in `<tool>@<call id>`, so its run ids name the calls that opened it.
+    val runIds = BranchPath.runIds(answer.branch)
+    if (runIds.isEmpty()) return null
+    val callIndex = events.indexOfLast { event ->
+      event.author == agent.name && event.functionCalls().any { it.id in runIds }
+    }
+    if (callIndex < 0) return null
+    val callEvent = events[callIndex]
+    val content = callEvent.content ?: return null
+    // Calls answered after the call event are done; the rest run again.
+    val answeredIds =
+      events
+        .drop(callIndex + 1)
+        .flatMap { it.functionResponses() }
+        .mapNotNullTo(mutableSetOf()) { it.id }
+    val parts =
+      content.parts.filter { it.functionCall == null || it.functionCall.id !in answeredIds }
+    return callEvent.copy(content = content.copy(parts = parts))
   }
 
   private suspend fun prepareRequest(emitEvent: suspend (Event) -> Unit): RequestOrResponse {

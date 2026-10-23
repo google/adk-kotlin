@@ -17,6 +17,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
@@ -78,6 +79,22 @@ class LlmAgentTest {
     val agent = LlmAgent(name = "test_agent", model = testModel)
 
     assertEquals(IncludeContents.DEFAULT, agent.includeContents)
+  }
+
+  @Test
+  @OptIn(AdkJavaInteropApi::class)
+  fun builder_includeContents_isExplicitOnlyWhenSet() {
+    val unset = LlmAgent.builder().name("unset").model(testModel).build()
+    val set =
+      LlmAgent.builder()
+        .name("set")
+        .model(testModel)
+        .includeContents(IncludeContents.DEFAULT)
+        .build()
+
+    assertEquals(IncludeContents.DEFAULT, unset.includeContents)
+    assertFalse(unset.includeContentsExplicit)
+    assertTrue(set.includeContentsExplicit)
   }
 
   @Test
@@ -799,6 +816,58 @@ class LlmAgentTest {
     // The validated JSON is stored as a parsed map (mirrors Python/Java which save the parsed
     // structure rather than the raw string).
     assertEquals(mapOf("answer" to "42"), events[0].actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withOutputSchema_undeclaredKey_savesRawText() = runBlocking {
+    // Arrange: an undeclared schema key fails validation on agent output, so raw text is kept.
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("answer" to Schema(type = Type.STRING)))
+    val answer = "{\"answer\": \"42\", \"extra\": \"x\"}"
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage(answer))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Act
+    val events = agent.runAsync(context).toList()
+
+    // Assert
+    assertEquals(answer, events.single().actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withOutputSchema_nullForANonNullableProperty_savesRawText() = runBlocking {
+    // Arrange: a present null fails a non-nullable property, so the direct path keeps the text.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("answer" to Schema(type = Type.STRING), "note" to Schema(type = Type.STRING)),
+      )
+    val answer = "{\"answer\": \"42\", \"note\": null}"
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage(answer))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Act
+    val events = agent.runAsync(context).toList()
+
+    // Assert
+    assertEquals(answer, events.single().actions.stateDelta["result"])
   }
 
   @Test

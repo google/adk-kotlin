@@ -231,7 +231,11 @@ internal object ResumeScan {
         if (event.output != null) node.branch = event.branch
       }
       event.actions.route?.let { node.route = it }
-      event.actions.transferToAgent?.let { node.transferToAgent = it }
+      event.actions.transferToAgent?.let {
+        node.transferToAgent = it
+        // A transfer has no output, so keep its branch for a child target that resumes under it.
+        node.branch = event.branch
+      }
       // A result or later non-error event clears an error; an error drops the attempt's result.
       val hasResult =
         eventOutput != null || event.actions.route != null || event.actions.transferToAgent != null

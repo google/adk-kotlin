@@ -280,16 +280,18 @@ abstract class BaseAgent(
 
   /** Emits an end-of-agent event. */
   protected suspend fun FlowCollector<Event>.emitEndOfAgent(context: InvocationContext) {
-    val endStateEvent =
-      Event(
-        id = Uuid.random(),
-        invocationId = context.invocationId,
-        author = name,
-        branch = context.branch,
-        actions = EventActions(endOfAgent = true),
-      )
-    emit(endStateEvent)
+    emit(endOfAgentEvent(context))
   }
+
+  /** Returns the event that marks this agent as finished in [context]. */
+  internal fun endOfAgentEvent(context: InvocationContext): Event =
+    Event(
+      id = Uuid.random(),
+      invocationId = context.invocationId,
+      author = name,
+      branch = context.branch,
+      actions = EventActions(endOfAgent = true),
+    )
 
   /**
    * Runs this agent as a graph node by driving its [runAsync] lifecycle, so an agent placed in a
@@ -297,7 +299,18 @@ abstract class BaseAgent(
    * node's output and its author is tracked; the node runner stamps each event's path.
    */
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    runAsync(context.invocationContext).collect { event ->
+    val ic = context.invocationContext
+    // The agent and its sub-agents build their history from the node's path and isolation scope.
+    @OptIn(FrameworkInternalApi::class, ExperimentalWorkflowApi::class)
+    val agentContext =
+      ic.copy(
+        frameworkData =
+          ic.frameworkData.copy(
+            nodePath = context.nodePath,
+            isolationScope = context.isolationScope,
+          )
+      )
+    runAsync(agentContext).collect { event ->
       if (event.author.isNotEmpty()) context.eventAuthor = event.author
       emit(event)
     }

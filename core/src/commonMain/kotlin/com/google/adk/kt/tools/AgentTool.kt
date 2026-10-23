@@ -61,32 +61,9 @@ open class AgentTool(
   val propagateGroundingMetadata: Boolean = false,
 ) : BaseTool(name = agent.name, description = agent.description) {
 
-  private val inputSchema: Schema? by lazy { getInputSchema(agent) }
+  private val inputSchema: Schema? by lazy { inputSchemaOf(agent) }
 
-  /**
-   * Recursively finds the input schema from the first [LlmAgent] encountered in a depth-first
-   * traversal of the agent's sub-agents. Only the first sub-agent is considered at each level.
-   */
-  private fun getInputSchema(agent: BaseAgent): Schema? =
-    when {
-      agent is LlmAgent -> agent.inputSchema
-      agent.subAgents.isNotEmpty() -> getInputSchema(agent.subAgents.first())
-      else -> null
-    }
-
-  override fun declaration(): FunctionDeclaration {
-    return FunctionDeclaration(
-      name = name,
-      description = description,
-      parameters =
-        inputSchema
-          ?: Schema(
-            type = Type.OBJECT,
-            properties = mapOf(REQUEST_KEY to Schema(type = Type.STRING)),
-            required = listOf(REQUEST_KEY),
-          ),
-    )
-  }
+  override fun declaration(): FunctionDeclaration = agentToolDeclaration(inputSchema)
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): String {
     if (skipSummarization) {
@@ -213,9 +190,37 @@ open class AgentTool(
   companion object {
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
 
-    private const val REQUEST_KEY = "request"
+    internal const val REQUEST_KEY = "request"
 
     /** Temp state key under which propagated grounding metadata is stored. */
     private const val GROUNDING_METADATA_TEMP_KEY = "temp:_adk_grounding_metadata"
   }
 }
+
+/**
+ * Returns the declaration of a tool that runs an agent: [inputSchema] as its parameters, or a
+ * single required string `request` when the agent has none.
+ */
+internal fun BaseTool.agentToolDeclaration(inputSchema: Schema?): FunctionDeclaration =
+  FunctionDeclaration(
+    name = name,
+    description = description,
+    parameters =
+      inputSchema
+        ?: Schema(
+          type = Type.OBJECT,
+          properties = mapOf(AgentTool.REQUEST_KEY to Schema(type = Type.STRING)),
+          required = listOf(AgentTool.REQUEST_KEY),
+        ),
+  )
+
+/**
+ * Finds the input schema of the first [LlmAgent] in a depth-first walk of [agent] and its first
+ * sub-agent at each level, or null when there is none.
+ */
+internal fun inputSchemaOf(agent: BaseAgent): Schema? =
+  when {
+    agent is LlmAgent -> agent.inputSchema
+    agent.subAgents.isNotEmpty() -> inputSchemaOf(agent.subAgents.first())
+    else -> null
+  }

@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.BeforeToolCallbacksResult
@@ -647,19 +648,11 @@ data class InvocationContext(
             recoveredResult
           }
 
-      // A long-running tool returning `Unit` defers: suppress the FR event so the function-call
-      // event (which carries `longRunningToolIds`, hence is the turn's final response) ends the
-      // turn
-      // instead of re-invoking the model with an empty payload -- otherwise a tool that keeps
-      // requesting input (e.g. request_input) loops. Every other value is emitted as a response.
-      // Done before `runAfterToolCallbacks` to avoid wrapping `Unit` as `{result: Unit}`. See
-      // [BaseTool.isLongRunning].
-      if (tool.isLongRunning && toolResult === Unit) {
+      // A long-running tool's or a task delegation's `Unit` means no response yet; skip callbacks.
+      if ((tool.isLongRunning || tool is TaskAgentTool) && toolResult === Unit) {
         return@withSpan null
       }
-      // A regular tool's `Unit`, or a `null` leaked by a Java tool that breaks the non-null `run`
-      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires the
-      // response to be a map. Only a long-running tool's `Unit` defers (handled above).
+      // Wrap a regular tool's `Unit` or a `null` leaked by a Java tool as `{"result": null}`.
       if (toolResult === Unit || (toolResult as Any?) == null) {
         toolResult = mapOf(BaseTool.RESULT_KEY to null)
       }
@@ -917,22 +910,51 @@ data class ContextFrameworkData(
    * Per-invocation scratch data shared across the invocation's callbacks and its sub-agent/branch
    * context copies. Mirrors Java ADK's `InvocationContext.callbackContextData()`.
    */
-  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf()
+  @FrameworkInternalApi val callbackContextData: MutableMap<String, Any> = concurrentMutableMapOf(),
+  /**
+   * The workflow node path the agent runs at, or `null` outside a workflow. The contents processor
+   * uses it to keep the agent's history to its own node path.
+   */
+  @FrameworkInternalApi val nodePath: String? = null,
+  /**
+   * The isolation scope the contents processor filters session events by: only events stamped with
+   * this exact scope reach the model, so `null` sees only unscoped events.
+   */
+  @FrameworkInternalApi val isolationScope: String? = null,
+  /**
+   * The mode [LlmAgent.runNode] sets for the agent it runs, keyed to that agent so sub-agents and
+   * transfer targets that inherit the copy do not take it; `null` outside a node run.
+   */
+  @FrameworkInternalApi val agentModeOverride: AgentModeOverride? = null,
+  /**
+   * The workflow node activation an agent node runs under, so its tools can run a sub-agent as a
+   * child node there; `null` outside a node run.
+   */
+  @FrameworkInternalApi val nodeContext: Context? = null,
+  /**
+   * Whether the invocation's new message joined a paused task's invocation, so the message is the
+   * workflow's input rather than the invocation's first message.
+   */
+  @FrameworkInternalApi val continuesPausedTask: Boolean = false,
 ) {
   /**
    * The live run this invocation belongs to, set by [openLiveRun], or `null` on a turn-based
    * invocation.
    *
    * Declared as a body property so it stays off every public signature; contexts derived with
-   * [InvocationContext.copy] share this holder and therefore the same run.
+   * [InvocationContext.copy] share this holder and therefore the same run. A [copy] of the holder
+   * starts without one, so copy it only for a context that never runs live.
    */
   @Volatile internal var liveRun: LiveRun? = null
 
   /**
    * Paths of workflow nodes cancelled mid-run in this turn. Their events show progress rather than
-   * a result, so a retry runs them again.
+   * a result, so a retry runs them again. A [copy] of the holder starts with none.
    */
   internal val cancelledNodePaths: MutableMap<String, Unit> = concurrentMutableMapOf()
+
+  /** Run IDs of the nodes that run at the top of the invocation, beside its root node. */
+  internal val topLevelRunIds = ChildRunIds()
 }
 
 /**
@@ -962,6 +984,40 @@ internal fun toFinalResponseMap(payload: Any?): Map<String, Any?> {
   val map = if (payload is Map<*, *>) payload else mapOf(BaseTool.RESULT_KEY to payload)
   return buildMap { for ((key, value) in map) if (key is String) put(key, value) }
 }
+
+/**
+ * The mode a workflow node wrapper runs [agent] in, keyed to that agent so it does not leak to
+ * sub-agents or transfer targets when the invocation context is copied down. The type is public
+ * only because it is a [ContextFrameworkData] property type; its constructor and members are
+ * non-public.
+ */
+class AgentModeOverride
+internal constructor(internal val agent: BaseAgent, internal val mode: AgentMode) {
+  /** The steps [agent] has taken in this run, so `maxSteps` holds across its delegation rounds. */
+  internal var stepsTaken: Int = 0
+}
+
+/** The mode override set for [agent], or null when none is. */
+@OptIn(FrameworkInternalApi::class)
+internal fun ContextFrameworkData.modeOverrideFor(agent: BaseAgent): AgentMode? =
+  agentModeOverride?.takeIf { it.agent === agent }?.mode
+
+/**
+ * Whether a node runs [agent] single-turn: it runs history-free unless it sets
+ * [LlmAgent.includeContents], and a schema mismatch in its output saves nothing to
+ * [LlmAgent.outputKey]. As in Python, only a node placement does this.
+ */
+@OptIn(ExperimentalWorkflowApi::class)
+internal fun ContextFrameworkData.isSingleTurnNode(agent: BaseAgent): Boolean =
+  modeOverrideFor(agent) == AgentMode.SINGLE_TURN
+
+/**
+ * Whether [agent] runs single-turn by its node's mode override or else its own mode, which decides
+ * its identity prompt, as Python checks `mode` there.
+ */
+@OptIn(ExperimentalWorkflowApi::class)
+internal fun ContextFrameworkData.runsSingleTurn(agent: BaseAgent): Boolean =
+  (modeOverrideFor(agent) ?: (agent as? LlmAgent)?.mode) == AgentMode.SINGLE_TURN
 
 /**
  * Per-invocation LLM-call counter for enforcing [RunConfig.maxLlmCalls]. The type is public only

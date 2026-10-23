@@ -18,6 +18,7 @@ package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LiveRun
@@ -30,6 +31,7 @@ import com.google.adk.kt.agents.openLiveRun
 import com.google.adk.kt.agents.signalsTaskCompleted
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -564,6 +566,7 @@ abstract class AbstractRunner : Runner {
    * @param runConfig Configuration for the run.
    * @return A newly created [InvocationContext].
    */
+  @OptIn(FrameworkInternalApi::class)
   protected suspend fun createInvocationContext(
     session: Session,
     invocationId: String?,
@@ -586,10 +589,18 @@ abstract class AbstractRunner : Runner {
       } else {
         invocationId
       }
+    // A message that no function response ties to an invocation continues a paused task.
+    val invocationIdToJoin =
+      resolvedInvocationId
+        ?: if (isNodeRoot && newMessage != null && !newMessage.hasIdentifiedFunctionResponses()) {
+          pausedTaskEvent(session.events)?.invocationId
+        } else {
+          null
+        }
 
     // `isResumable` enables stateful checkpointing (`agentState` / `endOfAgent` events) and
     // resuming without a new user message (`newMessage == null`). When `isResumable` is false, a
-    // node root still reuses `resolvedInvocationId` via `setupContextForNewInvocation` so the
+    // node root still reuses `invocationIdToJoin` via `setupContextForNewInvocation` so the
     // response event joins the calling invocation's history.
     if (isResumable && resolvedInvocationId != null) {
       return setupContextForResumedInvocation(
@@ -605,25 +616,27 @@ abstract class AbstractRunner : Runner {
       if (isResumable) "No new message provided and no resumable invocation to resume"
       else "No new message provided and session is not resumable"
     }
-    return setupContextForNewInvocation(
-      session,
-      resolvedInvocationId,
-      newMessage,
-      runConfig,
-      stateDelta,
-    )
+    val context =
+      setupContextForNewInvocation(session, invocationIdToJoin, newMessage, runConfig, stateDelta)
+    // A message that joins a paused task is the user's next turn there, not a replay of its first.
+    if (resolvedInvocationId != null || invocationIdToJoin == null) return context
+    return context.copy(frameworkData = context.frameworkData.copy(continuesPausedTask = true))
   }
 
   /**
    * Throws [IllegalArgumentException] if [newMessage] mixes identified function responses and text.
    */
   private fun requireNoTextWithFunctionResponses(newMessage: Content?) {
-    val parts = newMessage?.parts.orEmpty()
-    val hasResponses = parts.any { !it.functionResponse?.id.isNullOrEmpty() }
-    require(!hasResponses || parts.none { it.text != null }) {
+    val hasResponses = newMessage?.hasIdentifiedFunctionResponses() == true
+    require(!hasResponses || newMessage.parts.none { it.text != null }) {
       "Message cannot contain both function responses and text. Function responses resume an " +
         "existing invocation while text starts a new one."
     }
+  }
+
+  /** Whether this message carries a function response with an id, which ties it to a call. */
+  private fun Content.hasIdentifiedFunctionResponses(): Boolean = parts.any {
+    !it.functionResponse?.id.isNullOrEmpty()
   }
 
   /**
@@ -818,10 +831,12 @@ abstract class AbstractRunner : Runner {
           invocationId = currentContext.invocationId,
           author = Role.USER,
           content = currentContext.userContent,
+          // A reply while a task is paused belongs to that task's conversation.
+          isolationScope = pausedTaskEvent(context.session.events)?.isolationScope,
         )
         .apply { applyStateDelta(this, stateDelta) }
         .let { applyRunConfigCustomMetadata(it, context.runConfig) }
-        .withBranchFromMatchingCall(currentContext)
+        .withContextFromMatchingCall(currentContext)
 
     // A live run stores user input from the turn as it arrives, so only turn-based runs call this.
     val unused = sessionService.appendEvent(context.session, event)
@@ -841,9 +856,17 @@ abstract class AbstractRunner : Runner {
     }
   }
 
-  private suspend fun Event.withBranchFromMatchingCall(context: InvocationContext): Event =
-    context.findMatchingFunctionCall(this)?.branch?.let { branch -> this.copy(branch = branch) }
-      ?: this
+  /**
+   * Gives a function-response message the branch and isolation scope of the call it answers, so the
+   * answer lands in the history of the branch and scope the call was made in.
+   */
+  private suspend fun Event.withContextFromMatchingCall(context: InvocationContext): Event {
+    val call = context.findMatchingFunctionCall(this) ?: return this
+    return copy(
+      branch = call.branch ?: branch,
+      isolationScope = isolationScope ?: call.isolationScope,
+    )
+  }
 
   /**
    * Sets up an [InvocationContext] for a brand new invocation.
@@ -1024,6 +1047,29 @@ abstract class AbstractRunner : Runner {
    */
   private suspend fun selectAgentToRun(context: InvocationContext): Node =
     (root as? BaseAgent)?.let { findAgentToRun(context, it) } ?: root
+
+  /**
+   * Returns the latest event of the task still waiting on the user: the newest live event, left
+   * after rewinds, whose task has not finished since. A node path scope repeats in every
+   * invocation, so a terminal `finish_task` response closes only the events before it and the rest
+   * of its invocation.
+   */
+  private fun pausedTaskEvent(events: List<Event>): Event? {
+    val live = applyRewinds(events)
+    val lastFinish = mutableMapOf<String, IndexedValue<Event>>()
+    for (indexed in live.withIndex()) {
+      val scope = indexed.value.isolationScope ?: continue
+      if (FinishTaskTool.isTerminalResponse(indexed.value)) lastFinish[scope] = indexed
+    }
+    return live
+      .withIndex()
+      .lastOrNull { (index, event) ->
+        val scope = event.isolationScope ?: return@lastOrNull false
+        val finish = lastFinish[scope]
+        finish == null || (index > finish.index && event.invocationId != finish.value.invocationId)
+      }
+      ?.value
+  }
 
   /**
    * Finds the appropriate [BaseAgent] to run for the session in [context].
