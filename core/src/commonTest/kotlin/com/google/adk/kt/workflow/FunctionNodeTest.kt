@@ -50,6 +50,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -64,6 +65,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 private val startMessage = Content.fromText(Role.USER, "start")
 
@@ -107,8 +109,6 @@ private data class OrderRequest(val item: String, val quantity: Int, val unitPri
 
 @Serializable private data class PortProfile(val userId: String, val tier: String = "free")
 
-@Serializable private data class PortReading(val type: String, val value: Double)
-
 @Serializable
 private enum class PortStatus {
   @SerialName("shipped") SHIPPED
@@ -134,6 +134,8 @@ private class PortPlainWriter(override val name: String) : Node {
 private sealed interface PortShape {
   @Serializable data class Circle(val r: Double) : PortShape
 }
+
+@Serializable private data class PortShapeBox(val shape: PortShape)
 
 class FunctionNodeTest {
 
@@ -295,6 +297,76 @@ class FunctionNodeTest {
     assertFalse(secret in errorEvent.errorMessage.orEmpty())
   }
 
+  @Test
+  fun node_frameworkTypes_haveAClosedInputSchemaButNoOutputSchema() {
+    // Arrange
+    val readMessage = node("read_message") { _, message: Content -> message.text() }
+    val readEvent = node("read_event") { _, event: Event -> event.author }
+    val echoMessage = node<Any?, Content>("echo_message") { _, _ -> startMessage }
+
+    // Act
+    val messageSchema = assertNotNull(readMessage.inputSchema)
+
+    // Assert
+    assertEquals(setOf("role", "parts"), messageSchema.properties?.keys)
+    assertEquals(false, messageSchema.additionalProperties)
+    assertNotNull(readEvent.inputSchema)
+    assertNull(echoMessage.outputSchema)
+  }
+
+  /** The edge check rejects a class whose properties a closed `Content` schema does not declare. */
+  @Test
+  fun workflow_objectIntoContentPort_failsAtBuild() {
+    // Arrange
+    val produceOrder =
+      node<Any?, PortOrder>("produce_order") { _, _ -> PortOrder(id = "o1", note = secret) }
+    val readMessage = node("read_message") { _, message: Content -> message.text() }
+
+    // Act
+    val error =
+      assertFailsWith<GraphValidationException> {
+        Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, produceOrder), Edge(produceOrder, readMessage)),
+          )
+          .graph
+      }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Schema mismatch on edge produce_order -> read_message")
+  }
+
+  /** Reads the user's message by the first node's input type: text, or JSON with literals. */
+  @Test
+  fun workflow_startMessage_isReadByTheFirstNodesInputType() {
+    // Arrange
+    fun <T> first(node: FunctionNode<*, T>, text: String): Any? {
+      val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, node)))
+      return runWorkflowThroughRunner(workflow, Content.fromText(Role.USER, text))
+        .last { it.output != null }
+        .output
+    }
+    val greet = node("greet") { _, name: String -> "Hi $name" }
+    val double = node("double") { _, n: Int -> n * 2 }
+    val describe = node("describe") { _, order: OrderRequest -> order.quantity * order.unitPrice }
+    val items = parallelNode("items") { _, n: Int -> n + 1 }
+
+    // Act
+    val greeting = first(greet, """{"name": "Ada"}""")
+    val doubled = listOf("21", "\"21\"").map { first(double, it) }
+    val total = first(describe, """{"item": "pen", "quantity": 2.0, "unitPrice": "1.5"}""")
+    val incremented = first(items, """["1", 2.0, 3]""")
+    val wordError = assertFailsWith<NodeInputValidationException> { first(double, secret) }
+
+    // Assert
+    assertEquals("""Hi {"name": "Ada"}""", greeting)
+    assertEquals(listOf<Any?>(42L, 42L), doubled)
+    assertEquals(3.0, total)
+    assertEquals(listOf<Any?>(2L, 3L, 4L), incremented)
+    assertContains(wordError.message.orEmpty(), "input of node 'double' does not match")
+    assertFalse(secret in wordError.message.orEmpty())
+  }
+
   // -- Return / emission handling --
 
   @Test
@@ -363,6 +435,41 @@ class FunctionNodeTest {
     assertNull(outputEvent.content)
     assertEquals("cached answer", events.last { it.output != null }.output)
     assertEquals("cached answer", afterReload)
+  }
+
+  /** A Content port with an explicit schema checks a returned Content's message. */
+  @Test
+  fun node_contentReturnIntoSchemaCheckedContentPort_checksTheMessage() {
+    // Arrange
+    val produceContent =
+      node<Any?, Content>("produce_content") { _, _ -> Content.fromText(Role.MODEL, "hi") }
+    val afterReply =
+      node("after_reply", inputSchema = Schema(type = Type.STRING)) { _, reply: Content ->
+        reply.text()
+      }
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, produceContent), Edge(produceContent, afterReply)),
+      )
+    val integerPort =
+      node("integer_port", inputSchema = Schema(type = Type.INTEGER)) { _, c: Content -> c.text() }
+    val runner = runnerFor(workflow)
+
+    // Act
+    val events = runner.runEvents()
+    val outputEvent =
+      runner.session().events.single { it.nodeInfo?.path == "wf@1/produce_content@1" }
+    val afterReload = runOutputs(afterReply, reloaded(outputEvent).output).single()
+    val rejected =
+      assertFailsWith<NodeInputValidationException> {
+        runOutputs(integerPort, reloaded(outputEvent).output)
+      }
+
+    // Assert
+    assertEquals("hi", events.last { it.output != null }.output)
+    assertEquals("hi", afterReload)
+    assertContains(rejected.message.orEmpty(), "is not an integer")
   }
 
   /** Outputs the list of the items' returned [Content]s. */
@@ -631,9 +738,7 @@ class FunctionNodeTest {
     val stringSchema = Schema(type = Type.STRING)
     val profileSchema = SchemaUtils.inferSchema(typeOf<UserProfile>())
     val greetAny =
-      node<Any?, String>("greet_any", inputSchema = stringSchema) { _, input ->
-        (input as Content).text()
-      }
+      node<Any?, String>("greet_any", inputSchema = stringSchema) { _, input -> input as String }
     val greetContent =
       node<Content, String>("greet_content", inputSchema = stringSchema) { _, input ->
         input.text()
@@ -661,7 +766,7 @@ class FunctionNodeTest {
   }
 
   @Test
-  fun node_explicitInputSchema_checksTheConvertedInput() {
+  fun node_explicitInputSchema_checksTheInputAsItArrives() {
     // Arrange
     val intArray = Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER))
     val stringArray = Schema(type = Type.ARRAY, items = Schema(type = Type.STRING))
@@ -674,9 +779,44 @@ class FunctionNodeTest {
     val joined = runOutputs(join, listOf("a", "b"))
 
     // Assert
-    assertContains(wrongElement.message.orEmpty(), "input of node 'sum'[1]")
+    assertContains(
+      wrongElement.message.orEmpty(),
+      "input of node 'sum' does not match its schema: '[1]'",
+    )
     assertFalse(secret in wrongElement.message.orEmpty())
     assertEquals(listOf("a, b"), joined)
+  }
+
+  /**
+   * A typed value in a collection is checked in its JSON form; a schema sees no Kotlin defaults.
+   */
+  @Test
+  fun node_explicitInputSchema_checksTypedCollectionsAndIgnoresKotlinDefaults() {
+    // Arrange
+    val orderList = SchemaUtils.inferSchema(typeOf<List<OrderRequest>>())
+    val count = node("count", inputSchema = orderList) { _, xs: List<OrderRequest> -> xs.size }
+    val requiresMax =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "project" to Schema(type = Type.STRING),
+            "maxResults" to Schema(type = Type.INTEGER),
+          ),
+        required = listOf("project", "maxResults"),
+      )
+    val search = node("search", inputSchema = requiresMax) { _, q: TicketQuery -> q.maxResults }
+
+    // Act
+    val counted = runOutputs(count, listOf(OrderRequest("pen", 2, 1.5)))
+    val defaultError =
+      assertFailsWith<NodeInputValidationException> {
+        runOutputs(search, mapOf("project" to "ADK"))
+      }
+
+    // Assert
+    assertEquals(listOf(1L), counted)
+    assertContains(defaultError.message.orEmpty(), "lacks required 'maxResults'")
   }
 
   @Test
@@ -1152,8 +1292,9 @@ class FunctionNodeTest {
         "Map<Int, data class>, keyed by strings" to
           (mapOf(1 to order) to receivedThroughNodes(mapOf(1 to order))),
         "Box<Int>" to (PortBox(1) to receivedThroughNodes(PortBox(1))),
-        "sealed port" to
-          (PortShape.Circle(1.0) to receivedThroughNodes<PortShape>(PortShape.Circle(1.0))),
+        "data class with a sealed field" to
+          (PortShapeBox(PortShape.Circle(1.0)) to
+            receivedThroughNodes(PortShapeBox(PortShape.Circle(1.0)))),
         "Content" to (reply to receivedThroughNodes(reply)),
         "Content into Any?" to (replyJson to receivedThroughNodes<Any?>(reply)),
       )
@@ -1170,6 +1311,52 @@ class FunctionNodeTest {
     assertEquals(listOf<Byte>(1, 2, 3), (bytes.first as ByteArray).toList())
     assertEquals(listOf<Byte>(1, 2, 3), (bytes.second as ByteArray).toList())
     assertEquals(listOf<Any?>("AQID"), bytesOutput)
+  }
+
+  @Test
+  fun node_sealedPortType_failsWhenBuilt() {
+    // Act
+    val topLevel =
+      listOf(
+        assertFailsWith<WorkflowConfigurationException> {
+          node<PortShape, Unit>("sealed_in") { _, _ -> }
+        },
+        assertFailsWith<WorkflowConfigurationException> {
+          node<Any?, PortShape?>("sealed_out") { _, _ -> PortShape.Circle(1.0) }
+        },
+        assertFailsWith<WorkflowConfigurationException> {
+          parallelNode<PortShape, Unit>("sealed_items") { _, _ -> }
+        },
+      )
+    val nested =
+      listOf(
+        assertFailsWith<WorkflowConfigurationException> {
+          node<Any?, List<PortShape>>("sealed_list") { _, _ -> emptyList() }
+        },
+        assertFailsWith<WorkflowConfigurationException> {
+          node<Map<String, PortShape>, Unit>("sealed_map") { _, _ -> }
+        },
+      )
+
+    // Assert
+    for (error in topLevel) {
+      assertContains(error.message.orEmpty(), "which is a sealed type;")
+    }
+    for (error in nested) {
+      assertContains(error.message.orEmpty(), "which has a sealed type argument PortShape;")
+    }
+  }
+
+  @Test
+  fun node_jsonElementPort_buildsAndPassesAnyJson() {
+    // Arrange
+    val echo = node<JsonElement, JsonElement>("echo") { _, element -> element }
+
+    // Act
+    val outputs = runOutputs(echo, mapOf("a" to listOf(1, "x")))
+
+    // Assert
+    assertEquals(listOf<Any?>(mapOf("a" to listOf(1L, "x"))), outputs)
   }
 
   @Test
@@ -1268,41 +1455,6 @@ class FunctionNodeTest {
     assertContains(byteMapError.message.orEmpty(), "node 'blobs' has input type")
     assertContains(byteMapError.message.orEmpty(), "only a top-level ByteArray is supported")
     assertEquals(listOf("bytes", "totals", "messages"), built.map { it.name })
-  }
-
-  @Test
-  fun typedPorts_sealedInput_decodesAParentTypedOutputAndNamesTheFixForASubclassTypedOne() {
-    // Arrange: only a producer typed with the sealed parent writes the class discriminator.
-    val parentTyped = node<Any?, PortShape>("parent_typed") { _, _ -> PortShape.Circle(1.0) }
-    val subclassTyped =
-      node<Any?, PortShape.Circle>("subclass_typed") { _, _ -> PortShape.Circle(1.0) }
-    val consume = node<PortShape, PortShape>("consume") { _, shape -> shape }
-    val parentJson = runOutputs(parentTyped, null).single()
-    val subclassJson = runOutputs(subclassTyped, null).single()
-
-    // Act
-    val decoded = runOutputs(consume, parentJson).single()
-    val error = assertFailsWith<NodeInputValidationException> { runOutputs(consume, subclassJson) }
-
-    // Assert
-    assertEquals(parentJson, decoded)
-    assertContains(error.message.orEmpty(), "input of node 'consume' does not match")
-    assertContains(error.message.orEmpty(), "(node<_, ")
-    assertContains(error.message.orEmpty(), "so the class discriminator is written")
-  }
-
-  @Test
-  fun typedPorts_classWithTypeAndValueFields_mismatchNamesNoDiscriminator() {
-    // Arrange: fields named like a sealed descriptor's elements.
-    val consume = node<PortReading, Unit>("consume") { _, _ -> }
-
-    // Act
-    val error =
-      assertFailsWith<NodeInputValidationException> { runOutputs(consume, mapOf("type" to "t")) }
-
-    // Assert
-    assertContains(error.message.orEmpty(), "input of node 'consume' does not match")
-    assertFalse("discriminator" in error.message.orEmpty())
   }
 
   @Test

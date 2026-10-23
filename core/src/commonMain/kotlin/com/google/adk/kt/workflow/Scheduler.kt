@@ -365,12 +365,14 @@ internal class Scheduler(
       val schema = workflow.outputSchema
       val side = "output of workflow '${workflow.name}'"
       context.output =
-        if (schema == null) output else SchemaUtils.validateValue(output, schema, side).getOrThrow()
+        if (schema == null) output else SchemaUtils.checkedValue(output, schema, side)
       // Validation can read a Content as JSON null, which is no output; the terminal node's raw
       // output then no longer counts for delegating ancestors either.
       val state = context.requireNodeState()
       if (context.hasProducedOutput) {
-        state.markOutputEmitted()
+        // A checked value that differs from the terminal node's raw one goes out as this workflow's
+        // own output event, so a resume replays it; NodeRunner sends it.
+        if (context.output == output) state.markOutputEmitted()
       } else if (output != null) {
         state.clearDelegatedOutput(output)
       }

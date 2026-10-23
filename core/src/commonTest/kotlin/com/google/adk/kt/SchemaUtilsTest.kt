@@ -1057,7 +1057,7 @@ class SchemaUtilsTest {
     )
   }
 
-  /** An untyped union with no keys or items of its own is checked by its branches alone. */
+  /** An untyped union with no keys, items or enum of its own is checked by its branches alone. */
   @Test
   fun fitsInto_untypedUnionOfEnums_fitsAWiderEnumOnly() {
     // Arrange
@@ -1069,6 +1069,18 @@ class SchemaUtilsTest {
     assertTrue(Schema(anyOf = listOf(red)).fitsInto(colors))
     assertTrue(Schema(anyOf = listOf(red, colors)).fitsInto(colors))
     assertFalse(Schema(anyOf = listOf(red, green)).fitsInto(colors))
+  }
+
+  /** An untyped union's own enum is read as its branches' type, not as JSON literals. */
+  @Test
+  fun fitsInto_untypedUnionWithItsOwnEnum_readsTheEnumAsTheBranchesType() {
+    // Arrange
+    val string = Schema(type = Type.STRING)
+    val colors = Schema(type = Type.STRING, enum = listOf("red", "blue"))
+
+    // Act / Assert
+    assertTrue(Schema(enum = listOf("1"), anyOf = listOf(string)).fitsInto(string))
+    assertFalse(Schema(enum = listOf("green"), anyOf = listOf(string)).fitsInto(colors))
   }
 
   @Test
