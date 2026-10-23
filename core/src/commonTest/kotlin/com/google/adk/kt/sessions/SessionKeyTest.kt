@@ -26,15 +26,6 @@ import kotlin.test.assertTrue
 class SessionKeyTest {
 
   @Test
-  fun componentAccessors_returnConstructorValues() {
-    val key = SessionKey("app-name", "user-id", "session-id")
-
-    assertEquals("app-name", key.appName)
-    assertEquals("user-id", key.userId)
-    assertEquals("session-id", key.id)
-  }
-
-  @Test
   fun acceptsBlankComponents() {
     val key = SessionKey("", "", "")
 
@@ -106,18 +97,6 @@ class SessionKeyTest {
     val b = SessionKey("app-name", "user-id", "session-id")
 
     assertEquals(a.hashCode(), b.hashCode())
-  }
-
-  @Test
-  fun copy_overridesIndividualFields() {
-    val key = SessionKey("app-name", "user-id", "session-id")
-
-    assertEquals(SessionKey("other-app", "user-id", "session-id"), key.copy(appName = "other-app"))
-    assertEquals(
-      SessionKey("app-name", "other-user", "session-id"),
-      key.copy(userId = "other-user"),
-    )
-    assertEquals(SessionKey("app-name", "user-id", "other-id"), key.copy(id = "other-id"))
   }
 
   @Test

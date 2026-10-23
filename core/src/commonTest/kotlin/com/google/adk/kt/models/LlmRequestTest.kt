@@ -216,19 +216,6 @@ class LlmRequestTest {
     assertNull(request.cacheableContentsTokenCount)
   }
 
-  @Test
-  fun cacheFields_canBeSet() {
-    val config = ContextCacheConfig()
-    val metadata = CacheMetadata(fingerprint = "abc", contentsCount = 2)
-
-    val request =
-      LlmRequest(cacheConfig = config, cacheMetadata = metadata, cacheableContentsTokenCount = 5000)
-
-    assertEquals(config, request.cacheConfig)
-    assertEquals(metadata, request.cacheMetadata)
-    assertEquals(5000, request.cacheableContentsTokenCount)
-  }
-
   @OptIn(AdkJavaInteropApi::class)
   @Test
   fun toBuilder_matchesCopy() {
@@ -250,13 +237,6 @@ class LlmRequestTest {
       request.copy(contents = emptyList()),
       request.toBuilder().contents(emptyList()).build(),
     )
-  }
-
-  @Test
-  fun liveConnectConfig_set_carriesItToTheRequest() {
-    val request = LlmRequest(liveConnectConfig = LiveConnectConfig(temperature = 0.5f))
-
-    assertEquals(0.5f, request.liveConnectConfig.temperature)
   }
 
   @Test

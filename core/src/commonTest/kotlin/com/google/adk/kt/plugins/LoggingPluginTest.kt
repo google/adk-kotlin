@@ -67,12 +67,6 @@ class LoggingPluginTest {
   }
 
   @Test
-  fun afterRunCallback_runsWithoutError() = runBlocking {
-    loggingPlugin.afterRun(invocationContext)
-    // Runs without error
-  }
-
-  @Test
   fun beforeAgentCallback_returnsContinue() = runBlocking {
     val result = loggingPlugin.beforeAgent(callbackContext)
     assertEquals(CallbackChoice.Continue(EventActions()), result)

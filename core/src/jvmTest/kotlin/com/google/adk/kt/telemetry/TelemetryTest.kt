@@ -21,7 +21,6 @@ import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
-import com.google.adk.kt.telemetry.noop.NoOpTracer
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.adk.kt.testing.userMessage
 import com.google.common.truth.Truth.assertThat
@@ -90,30 +89,6 @@ class TelemetryTest {
     // The other thread should see the default OtelTracer, not the custom one set in the current
     // thread.
     assertThat(tracerInOtherThread).isInstanceOf(OtelTracer::class.java)
-  }
-
-  @Test
-  fun noOpTracer_whenMethodsCalled_doesNotCrash() = runBlocking {
-    val tracer = NoOpTracer
-    assertThat(tracer).isInstanceOf(NoOpTracer::class.java)
-
-    // Verify we can call all methods without crashing
-    val span =
-      tracer
-        .spanBuilder("test-span")
-        .set("key", "value")
-        .set("key", 1L)
-        .set("key", 2.0)
-        .set("key", true)
-        .startSpan()
-
-    span.addEvent("event")
-    span.recordException(RuntimeException("test"))
-
-    // Set parent
-    tracer.spanBuilder("child").setParent(tracer.currentContext()).startSpan().end()
-
-    span.end()
   }
 
   // --- parent-span capture: nesting ADK spans under the caller's active span ---

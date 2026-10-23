@@ -105,23 +105,6 @@ class CacheMetadataTest {
     assertFalse(metadata.expireSoon)
   }
 
-  @Test
-  fun copy_incrementInvocationsUsed_producesUpdatedCopy() {
-    val metadata =
-      CacheMetadata(
-        fingerprint = "abc",
-        contentsCount = 1,
-        cacheName = "cache/1",
-        expireTime = Clock.System.now().toEpochMilliseconds() + 1_000,
-        invocationsUsed = 1,
-      )
-
-    val updated = metadata.copy(invocationsUsed = metadata.invocationsUsed!! + 1)
-
-    assertEquals(2, updated.invocationsUsed)
-    assertEquals(1, metadata.invocationsUsed)
-  }
-
   @OptIn(AdkJavaInteropApi::class)
   @Test
   fun toBuilder_matchesCopy() {

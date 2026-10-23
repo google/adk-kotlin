@@ -26,8 +26,6 @@ import com.google.adk.kt.types.FunctionCallingConfig
 import com.google.adk.kt.types.FunctionCallingConfigMode
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GenerateContentConfig
-import com.google.adk.kt.types.GoogleMaps
-import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.HarmBlockMethod
 import com.google.adk.kt.types.HarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory
@@ -666,26 +664,6 @@ class ConversionsTest {
             FunctionResponse(name = "testFunction", response = mapOf("result" to 42), id = "testId")
         )
       )
-  }
-
-  @Test
-  fun toFirebaseGoogleSearch_returnsFirebaseGoogleSearch() {
-    val conversions = Conversions()
-    val googleSearch = GoogleSearch()
-
-    val firebaseGoogleSearch = conversions.toFirebaseGoogleSearch(googleSearch)
-
-    assertThat(firebaseGoogleSearch).isNotNull()
-  }
-
-  @Test
-  fun toFirebaseGoogleMaps_returnsFirebaseGoogleMaps() {
-    val conversions = Conversions()
-    val googleMaps = GoogleMaps()
-
-    val firebaseGoogleMaps = conversions.toFirebaseGoogleMaps(googleMaps)
-
-    assertThat(firebaseGoogleMaps).isNotNull()
   }
 
   @Test

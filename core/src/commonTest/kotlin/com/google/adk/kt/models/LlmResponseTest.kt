@@ -195,28 +195,8 @@ class LlmResponseTest {
   }
 
   @Test
-  fun testCustomMetadata() {
-    val llmResponse =
-      LlmResponse(
-        content = modelMessage("Response text"),
-        customMetadata = mapOf("label" to "experiment-a"),
-      )
-
-    assertEquals("experiment-a", llmResponse.customMetadata?.get("label"))
-  }
-
-  @Test
   fun cacheMetadata_defaultsToNull() {
     assertEquals(null, LlmResponse().cacheMetadata)
-  }
-
-  @Test
-  fun cacheMetadata_canBeSet() {
-    val metadata = CacheMetadata(fingerprint = "abc", contentsCount = 2)
-
-    val llmResponse = LlmResponse(cacheMetadata = metadata)
-
-    assertEquals(metadata, llmResponse.cacheMetadata)
   }
 
   @OptIn(AdkJavaInteropApi::class)

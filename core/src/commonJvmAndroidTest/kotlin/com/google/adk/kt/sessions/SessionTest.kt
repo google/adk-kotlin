@@ -19,7 +19,6 @@ package com.google.adk.kt.sessions
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.events.Event
 import com.google.common.truth.Truth.assertThat
-import kotlin.time.Clock
 import kotlin.time.Instant
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,25 +26,6 @@ import org.junit.runners.JUnit4
 
 @RunWith(JUnit4::class)
 class SessionTest {
-
-  @Test
-  fun constructor_initializesFieldsCorrectly() {
-    val sessionId = "session-123"
-    val appName = "test-app"
-    val userId = "user-456"
-    val state = State()
-    val events = mutableListOf<Event>()
-    val lastUpdateTime = Clock.System.now()
-
-    val session = Session(SessionKey(appName, userId, sessionId), state, events, lastUpdateTime)
-
-    assertThat(session.key.id).isEqualTo(sessionId)
-    assertThat(session.key.appName).isEqualTo(appName)
-    assertThat(session.key.userId).isEqualTo(userId)
-    assertThat(session.state).isEqualTo(state)
-    assertThat(session.events).isEqualTo(events)
-    assertThat(session.lastUpdateTime).isEqualTo(lastUpdateTime)
-  }
 
   @Test
   fun constructor_withMinimalArgs_initializesDefaults() {

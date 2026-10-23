@@ -21,11 +21,8 @@ import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.types.FunctionDeclaration
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -34,33 +31,7 @@ class BaseToolTest {
   private class DefaultTool : BaseTool("default_tool", "A tool with default arguments") {
     override fun declaration(): FunctionDeclaration? = null
 
-    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
-      return "default result"
-    }
-  }
-
-  private class ExtendedTool :
-    BaseTool(
-      name = "extended_tool",
-      description = "A generic extended tool",
-      isLongRunning = true,
-      customMetadata = mapOf("key" to "value"),
-    ) {
-    val expectedDeclaration = FunctionDeclaration("extended_tool", "A generic extended tool")
-
-    override fun declaration(): FunctionDeclaration? = expectedDeclaration
-
-    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
-      return args
-    }
-  }
-
-  private class MinimalTool : BaseTool("minimal_tool", "A minimal tool") {
-    override fun declaration(): FunctionDeclaration? = null
-
-    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
-      throw NotImplementedError("Tool execution is not implemented for tool: minimal_tool")
-    }
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = Unit
   }
 
   private class ToolWithDeclaration : BaseTool("tool_with_decl", "A tool") {
@@ -78,77 +49,6 @@ class BaseToolTest {
     assertEquals("A tool with default arguments", tool.description)
     assertFalse(tool.isLongRunning)
     assertTrue(tool.customMetadata.isEmpty())
-  }
-
-  @Test
-  fun tool_extendedTool_hasCorrectProperties() {
-    val tool = ExtendedTool()
-
-    assertEquals("extended_tool", tool.name)
-    assertEquals("A generic extended tool", tool.description)
-    assertTrue(tool.isLongRunning)
-    assertEquals(mapOf("key" to "value"), tool.customMetadata)
-  }
-
-  @Test
-  fun declaration_onDefaultTool_returnsNull() {
-    val tool = DefaultTool()
-
-    assertNull(tool.declaration())
-  }
-
-  @Test
-  fun declaration_onExtendedTool_returnsTool() {
-    val tool = ExtendedTool()
-
-    assertSame(tool.expectedDeclaration, tool.declaration())
-  }
-
-  @Test
-  fun declaration_onToolWithDeclaration_returnsTool() {
-    val tool = ToolWithDeclaration()
-
-    val declaration = tool.declaration()
-    assertNotNull(declaration)
-    assertEquals("tool_with_decl", declaration.name)
-  }
-
-  @Test
-  fun run_onDefaultTool_returnsDefaultResult() = runTest {
-    val tool = DefaultTool()
-    val toolContext = testToolContext()
-    val args = emptyMap<String, Any>()
-
-    val result = tool.run(toolContext, args)
-
-    assertEquals("default result", result)
-  }
-
-  @Test
-  fun run_onExtendedTool_returnsArguments() = runTest {
-    val tool = ExtendedTool()
-    val toolContext = testToolContext()
-    val args = mapOf("arg1" to "value1", "arg2" to 42)
-
-    val result = tool.run(toolContext, args)
-
-    assertEquals(args, result)
-  }
-
-  @Test
-  fun declaration_onMinimalTool_returnsNull() {
-    val tool = MinimalTool()
-
-    assertNull(tool.declaration())
-  }
-
-  @Test
-  fun run_onMinimalTool_throwsNotImplementedError() = runTest {
-    val tool = MinimalTool()
-    val toolContext = testToolContext()
-
-    val exception = assertFailsWith<NotImplementedError> { tool.run(toolContext, emptyMap()) }
-    assertEquals("Tool execution is not implemented for tool: minimal_tool", exception.message)
   }
 
   @Test

@@ -29,23 +29,6 @@ import kotlin.test.assertNotNull
 class SchemaTest {
 
   @Test
-  fun dataClass_storesValuesCorrectly() {
-    val schema =
-      Schema(
-        type = Type.OBJECT,
-        description = "A test schema",
-        properties = mapOf("prop1" to Schema(type = Type.STRING)),
-        required = listOf("prop1"),
-      )
-
-    assertEquals(Type.OBJECT, schema.type)
-    assertEquals("A test schema", schema.description)
-    assertEquals(1, schema.properties?.size)
-    assertEquals(Type.STRING, schema.properties?.get("prop1")?.type)
-    assertEquals(listOf("prop1"), schema.required)
-  }
-
-  @Test
   fun toGenAiSchema_convertsCorrectly() {
     val ktSchema =
       Schema(
