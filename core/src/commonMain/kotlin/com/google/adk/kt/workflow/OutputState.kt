@@ -28,7 +28,7 @@ internal sealed interface OutputState {
   data class Produced(val value: Any) : OutputState
 
   /**
-   * This activation's own output was marked emitted; a workflow's validated output is never sent.
+   * This activation's own output was marked emitted; a workflow's checked output may not be sent.
    */
   data class Emitted(val value: Any) : OutputState
 

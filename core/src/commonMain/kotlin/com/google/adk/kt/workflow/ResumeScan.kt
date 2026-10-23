@@ -19,6 +19,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -403,13 +404,14 @@ private fun readSchema(value: Any?): Schema? =
   }
 
 /**
- * Unwraps and validates an interrupt [response] against [schema]. A `{"result": value}` envelope is
- * unwrapped, and string values inside it are parsed as JSON unless [schema] accepts a string.
+ * Unwraps an interrupt [response] and returns it as [schema] reads it. A `{"result": value}`
+ * envelope is unwrapped, and string values inside it are parsed as JSON unless [schema] accepts a
+ * string; a null answer fails a schema that does not admit null.
  */
 internal fun validateAnswer(schema: Schema?, response: Any?, interruptId: String): Any? {
   val answer = unwrapAnswer(schema, response)
   if (schema == null) return answer
-  return SchemaUtils.validateValue(answer, schema).getOrElse {
+  return ValueCoercer.coerceValue(answer, schema, "answer").getOrElse {
     throw IllegalArgumentException(
       "Validation failed for interrupt $interruptId: ${it.message}",
       it,

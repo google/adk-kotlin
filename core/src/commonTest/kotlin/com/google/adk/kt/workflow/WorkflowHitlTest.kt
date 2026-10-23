@@ -283,16 +283,19 @@ private class RecordsInputThenAsks(override val name: String, private val interr
   }
 }
 
+@Serializable private data class HitlProfile(val id: String, val age: Int)
+
 /** Answers with a model-style message whose content is its output, the way an agent node does. */
 private class MessageOutput(
   override val name: String,
   private val text: String,
   override val outputSchema: Schema? = null,
+  private val thought: Boolean? = null,
 ) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     emit(
       Event(
-        content = Content(role = Role.MODEL, parts = listOf(Part(text = text))),
+        content = Content(role = Role.MODEL, parts = listOf(Part(text = text, thought = thought))),
         nodeInfo = NodeInfo(messageAsOutput = true),
       )
     )
@@ -1688,10 +1691,39 @@ class WorkflowHitlTest {
     // Arrange
     val session = sessionAwaitingAnswer(AGE_SCHEMA)
 
-    // Act: the age arrives as text, which an integer property rejects rather than parses.
+    // Act: the age arrives as a word, which no integer reading accepts.
     val error =
       assertFailsWith<IllegalArgumentException> {
-        session.turn(answer("ask_1", mapOf("age" to "25")))
+        session.turn(answer("ask_1", mapOf("age" to "twenty-five")))
+      }
+
+    // Assert
+    assertContains(error.message!!, "Validation failed for interrupt ask_1")
+  }
+
+  /** A quoted integer in an answer reaches the successor as the integer. */
+  @Test
+  fun resume_objectAnswerWithQuotedInteger_reachesTheSuccessorAsTheInteger() {
+    // Arrange
+    val session = sessionAwaitingAnswer(AGE_SCHEMA)
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("age" to "25")))
+
+    // Assert
+    assertEquals(mapOf("age" to 25L), events.replyInput())
+  }
+
+  /** A null answer fails a schema with a type instead of reaching the successor. */
+  @Test
+  fun resume_nullAnswer_failsATypedSchema() {
+    // Arrange
+    val session = sessionAwaitingAnswer(AGE_SCHEMA)
+
+    // Act
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        session.turn(answer("ask_1", mapOf("result" to null)))
       }
 
     // Assert
@@ -3143,6 +3175,86 @@ class WorkflowHitlTest {
     assertEquals(mapOf("chat" to "agent said hi", "ask" to mapOf("v" to 1L)), joinEvent.output)
   }
 
+  /** A replayed thought-only message gives no output, as it has no text. */
+  @Test
+  fun resume_replayedThoughtOnlyMessage_givesNoOutput() {
+    // Arrange: the message node finishes on the first turn while its sibling asks for input.
+    val chat = MessageOutput("chat", "pondering", thought = true)
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, chat), Edge(Start, ask), Edge(chat, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(mapOf("chat" to null, "ask" to mapOf("v" to 1L)), joinEvent.output)
+  }
+
+  /** The re-sent text of a replayed message reads back as text, so a later resume gets it too. */
+  @Test
+  fun resume_replayedMessageOutput_isResentAsItsTextForTheNextResume() {
+    // Arrange: the message node finishes on the first turn while two siblings ask for input.
+    val chat = MessageOutput("chat", "agent said hi")
+    val first = Ask("first", RequestInput(interruptId = "ask_1", message = "need input"))
+    val second = Ask("second", RequestInput(interruptId = "ask_2", message = "need more"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, chat),
+            Edge(Start, first),
+            Edge(Start, second),
+            Edge(chat, join),
+            Edge(first, join),
+            Edge(second, join),
+          ),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val resumed = session.turn(answer("ask_1", mapOf("v" to 1L)))
+    val final = session.turn(answer("ask_2", mapOf("v" to 2L)))
+
+    // Assert
+    val resent = resumed.single { it.nodeInfo?.path == "wf@1/chat@1" }
+    assertNull(resent.content)
+    val stored =
+      adkJson.decodeFromString(
+        Event.serializer(),
+        adkJson.encodeToString(Event.serializer(), resent),
+      )
+    assertEquals("agent said hi", stored.output)
+    val joinEvent = final.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals("agent said hi", (joinEvent.output as Map<*, *>)["chat"])
+  }
+
+  /** A message-as-output node's JSON text reaches a typed successor as that type, live. */
+  @Test
+  fun messageOutput_intoTypedNode_isReadAsJson() {
+    // Arrange
+    val chat = MessageOutput("chat", """{"id": "u1", "age": "3"}""")
+    val describe = node("describe") { _, profile: HitlProfile -> "${profile.id}:${profile.age}" }
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, chat), Edge(chat, describe)))
+    val session = WorkflowSession(workflow)
+
+    // Act
+    val events = session.turn(userMessage("go"))
+
+    // Assert
+    assertEquals("u1:3", events.single { it.nodeInfo?.path == "wf@1/describe@1" }.output)
+  }
+
   @Test
   fun resume_messageOutputNodeWithOutputSchema_isRehydratedToTheParsedValue() {
     // Arrange: the message is JSON text that the node's output schema describes.
@@ -3307,7 +3419,7 @@ class WorkflowHitlTest {
   @Test
   fun validateAnswer_answerTheSchemaRejects_failsNamingTheInterrupt() {
     // Arrange
-    val badCount = mapOf("result" to """{"count": "1"}""")
+    val badCount = mapOf("result" to """{"count": "one"}""")
     val badBoolean = mapOf("result" to "yes")
 
     // Act
@@ -3335,12 +3447,14 @@ class WorkflowHitlTest {
     val forString = answer(Schema(type = Type.STRING), "42")
     val forUnion = answer(intOrString, "42")
     val forBoolean = answer(Schema(type = Type.BOOLEAN), "true")
+    val forInteger = answer(Schema(type = Type.INTEGER), "25")
 
     // Assert
     assertEquals(mapOf("a" to 1L), unschemed)
     assertEquals("42", forString)
     assertEquals("42", forUnion)
     assertEquals(true, forBoolean)
+    assertEquals(25L, forInteger)
   }
 
   @Test
@@ -3367,6 +3481,22 @@ class WorkflowHitlTest {
 
     // Assert
     assertEquals("42", output)
+  }
+
+  @Test
+  fun validateAnswer_nullOrAWordForABoolean_failsAndAnUndeclaredKeyIsKept() {
+    // Arrange
+    val extra = mapOf("count" to 1, "note" to "x")
+
+    // Act
+    val kept = validateAnswer(COUNT_SCHEMA, extra, "ask_1")
+
+    // Assert
+    assertEquals(extra, kept)
+    assertFailsWith<IllegalArgumentException> { validateAnswer(COUNT_SCHEMA, null, "ask_1") }
+    assertFailsWith<IllegalArgumentException> {
+      validateAnswer(Schema(type = Type.BOOLEAN), mapOf("result" to "yes"), "ask_1")
+    }
   }
 
   @Test
@@ -3619,7 +3749,7 @@ class WorkflowHitlTest {
   }
 
   @Test
-  fun requireConfirmation_nullAnswer_asksAgain() {
+  fun requireConfirmation_nullAnswer_failsTheResume() {
     // Arrange
     val remove =
       node<RemovalTarget, RemovalResult>("remove_file", requireConfirmation = true) { _, _ ->
@@ -3629,13 +3759,15 @@ class WorkflowHitlTest {
     session.advance(userMessage("go"))
 
     // Act
-    val events = session.turn(answer(REMOVAL_CONFIRMATION_ID, mapOf("result" to null)))
+    val (events, error) =
+      session.failingTurn(answer(REMOVAL_CONFIRMATION_ID, mapOf("result" to null)))
 
     // Assert
-    assertEquals(
-      listOf(REMOVAL_CONFIRMATION_ID),
-      events.flatMap { it.functionCalls() }.mapNotNull { it.id },
+    assertContains(
+      error.message.orEmpty(),
+      "Validation failed for interrupt $REMOVAL_CONFIRMATION_ID",
     )
+    assertTrue(events.none { it.functionCalls().isNotEmpty() })
     assertTrue(events.none { it.nodeInfo?.path == "wf@1/reply@1" })
   }
 
@@ -3827,7 +3959,7 @@ class WorkflowHitlTest {
   }
 
   @Test
-  fun requireConfirmationPredicate_nullAnswer_asksAgainWithoutDecidingAgain() {
+  fun requireConfirmationPredicate_nullAnswer_failsWithoutDecidingAgain() {
     // Arrange
     var decisions = 0
     val remove =
@@ -3841,12 +3973,12 @@ class WorkflowHitlTest {
     session.advance(userMessage("go"))
 
     // Act
-    val events = session.turn(answer(REMOVAL_CONFIRMATION_ID, mapOf("result" to null)))
+    val (_, error) = session.failingTurn(answer(REMOVAL_CONFIRMATION_ID, mapOf("result" to null)))
 
     // Assert
-    assertEquals(
-      listOf(REMOVAL_CONFIRMATION_ID),
-      events.flatMap { it.functionCalls() }.mapNotNull { it.id },
+    assertContains(
+      error.message.orEmpty(),
+      "Validation failed for interrupt $REMOVAL_CONFIRMATION_ID",
     )
     assertEquals(1, decisions)
   }

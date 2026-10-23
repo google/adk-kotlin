@@ -21,7 +21,6 @@ import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
-import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.reflect.KType
@@ -321,45 +320,9 @@ object SchemaUtils {
       parsed
     }
 
-  /**
-   * Checks any [value] against [schema] with the rules [validateMapOnSchema] applies to an
-   * argument, and returns it; a null [value] passes. A [Content] becomes its text, read as JSON
-   * unless [schema] takes a string or the text is not JSON. A failure names [argsName] and, for a
-   * map, a reason that names only parts of the schema, but never the value.
-   */
-  internal fun validateValue(
-    value: Any?,
-    schema: Schema,
-    argsName: String = "value",
-  ): Result<Any?> {
-    if (value == null) return Result.success(null)
-    val data =
-      if (value !is Content) value
-      else value.text().let { if (acceptsString(schema)) it else readJson(it).getOrDefault(it) }
-    val detail: String?
-    if (data is Map<*, *>) {
-      val args = data.entries.associate { (k, v) -> k.toString() to v }
-      val failure = validateMapOnSchema(args, schema, "Value").exceptionOrNull()
-      if (failure == null) return Result.success(data)
-      val properties = schema.properties
-      // An undeclared key is data, so it goes unnamed; other messages name only the schema's parts.
-      detail =
-        if (properties != null && args.keys.any { it !in properties }) {
-          "it has a key the schema does not declare"
-        } else {
-          failure.message
-        }
-    } else {
-      val failure = matchType(data, schema, "Value", UnionBudget()).exceptionOrNull()
-      if (failure == null) return Result.success(data)
-      // A type mismatch message quotes the value; only running out of budget does not.
-      detail = (failure as? SchemaTooComplexException)?.message
-    }
-    val suffix = detail?.let { ": $it" } ?: "."
-    return Result.failure(
-      IllegalArgumentException("validation error: $argsName does not match its schema$suffix")
-    )
-  }
+  /** Returns [value] as [schema] reads it; a null passes every schema, as no output upstream. */
+  internal fun checkedValue(value: Any?, schema: Schema, what: String): Any? =
+    if (value == null) null else ValueCoercer.coerceValue(value, schema, what).getOrThrow()
 
   /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
   internal fun acceptsString(schema: Schema): Boolean =
@@ -603,12 +566,13 @@ private fun Schema.sourceAnyOfFitsInto(alternatives: List<Schema>, target: Schem
   val branches =
     if (takesNull) alternatives
     else alternatives.filter { it.type != Type.NULL }.map { it.copy(nullable = null) }
-  // An untyped union admits only its branches' values, so own keys or items take their common
-  // type. An own part with no keys or items constrains nothing beyond the branches.
+  // An untyped union admits only its branches' values, so own keys, items or an enum take their
+  // common type, if they share one. An own part with none of these is checked by its branches.
   val commonType =
     branches.filter { it.type != Type.NULL }.map { it.impliedType() }.distinct().singleOrNull()
+  val constrainsItself = impliedType() != null || enum != null
   val ownType =
-    if (declaredType == null && impliedType() != null && commonType != null) commonType else type
+    if (declaredType == null && constrainsItself && commonType != null) commonType else type
   val own = copy(anyOf = null, type = ownType, nullable = if (takesNull) true else nullable)
   val parentHasType = declaredType != null
   return own.fitsInto(target) &&

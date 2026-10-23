@@ -21,6 +21,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -45,17 +46,22 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.PolymorphicSerializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.StructureKind
 import kotlinx.serialization.descriptors.nullable
 
 /**
- * A workflow [Node] backed by a suspending function that may emit progress [Event]s and returns an
- * output of type [O]. Its schemas inferred from [I] and [O] only describe it; an explicit schema
- * passed to [node] is also enforced.
+ * A workflow [Node] backed by a suspending function that returns an [O] and may emit [Event]s. An
+ * input that does not decode as [I] throws [NodeInputValidationException]; an output that is not an
+ * [O] or a `Content`, has no JSON form, or fails an explicit schema throws
+ * [IllegalArgumentException].
  *
  * Inline workflow steps use [node] or [parallelNode], and Java callers use `FunctionNodes`,
  * [parallelOf] and [toBuilder]; a schema set on a [Builder] is explicit.
  *
- * @param I Expected type of `nodeInput` from predecessor nodes.
+ * @param I Expected type of `nodeInput` from predecessor nodes. A message reaches a `Content` or
+ *   `Any` port as is, a `String` as its text, a `ByteArray` as base64 text, and another typed port
+ *   as JSON, converting only a quoted literal of the port's type and a whole number for an integer.
  * @param O Type of the value the body returns, which is the node's output. `Unit` or `null` is no
  *   output, an [Event] passes through as it is, and a [RequestInput] fails. Any other value, a
  *   [Content] included, is output as its JSON form under [O]'s serializer.
@@ -88,11 +94,10 @@ private constructor(
     rerunOnResume = rerunOnResume || itemNode != null,
     waitForOutput = waitForOutput,
     config = config,
-    // A parallel node declares no port schemas, as in adk-python; its item node keeps its own.
-    inputSchema =
-      if (itemNode != null) null else explicitInputSchema ?: inferredPortSchema(inputCodec),
+    // A parallel node declares no port schemas; its item node keeps its own.
+    inputSchema = if (itemNode != null) null else explicitInputSchema ?: inputCodec.schema,
     outputSchema =
-      if (itemNode != null) null else explicitOutputSchema ?: inferredPortSchema(outputCodec),
+      if (itemNode != null) null else explicitOutputSchema ?: inferredOutputSchema(outputCodec),
     stateSchema = stateSchema,
   ) {
 
@@ -210,9 +215,7 @@ private constructor(
     val interruptId = "$CONFIRMATION_INTERRUPT_PREFIX${context.nodePath}"
     val answer = context.resumeInputs[interruptId]
     if (answer == null) {
-      // A present but null answer asks again without deciding again.
-      val decide = interruptId !in context.resumeInputs && !requireConfirmation
-      if (decide && confirmationPredicate?.invoke(context, input) != true) return null
+      if (!requireConfirmation && confirmationPredicate?.invoke(context, input) != true) return null
       requestInput(
         interruptId = interruptId,
         message = "Please approve or reject the tool call $name().",
@@ -231,26 +234,32 @@ private constructor(
   }
 
   /**
-   * Makes [nodeInput] an [I], then checks its JSON form against an explicit [inputSchema]. A
-   * parallel node passes it through, and its item node checks each item.
+   * Checks [nodeInput] against an explicit [inputSchema] as it arrives, then makes the checked
+   * value an [I]; a `Content` port receives the message itself. A parallel node passes it through,
+   * and its item node checks each item.
    */
   override fun validateInput(nodeInput: Any?): Any? {
     if (itemNode != null) return nodeInput
     val what = "input of node '$name'"
-    val input = inputCodec.coerce(nodeInput, what)
-    if (explicitInputSchema != null) {
-      val checked =
-        try {
-          inputCodec.schemaForm(input, what)
-        } catch (e: IllegalArgumentException) {
-          throw NodeInputValidationException("validation error: ${e.message}", e)
-        }
-      val unused =
-        SchemaUtils.validateValue(checked, explicitInputSchema, what).getOrElse {
-          throw NodeInputValidationException(it.message.orEmpty(), it)
-        }
-    }
-    return input
+    if (explicitInputSchema == null || nodeInput == null) return inputCodec.coerce(nodeInput, what)
+    val takesContent = inputCodec.classifier == Content::class
+    // A Content port checks the message, which may arrive as its JSON form.
+    val json =
+      when {
+        takesContent -> inputCodec.coerce(nodeInput, what)
+        nodeInput.isJsonForm() -> nodeInput
+        else ->
+          try {
+            inputCodec.schemaForm(nodeInput, what)
+          } catch (e: IllegalArgumentException) {
+            throw NodeInputValidationException("validation error: ${e.message}", e)
+          }
+      }
+    val checked =
+      ValueCoercer.coerceValue(json, explicitInputSchema, what).getOrElse {
+        throw NodeInputValidationException(it.message.orEmpty(), it)
+      }
+    return if (takesContent) json else inputCodec.coerce(checked, what)
   }
 
   /**
@@ -276,7 +285,7 @@ private constructor(
   /**
    * Returns a returned value, or a returned event's output, as successors receive it: a [Content]
    * as its JSON form, an [Event] as it is, and any other value as its JSON form under [O]'s
-   * serializer. An explicit [outputSchema] then checks the result.
+   * serializer. An explicit [outputSchema] then checks it, and the checked value is the output.
    */
   override fun validateOutput(output: Any?): Any? {
     // A parallel node outputs its items' outputs, which each item node already validated.
@@ -287,10 +296,8 @@ private constructor(
     val what = "output of node '$name'"
     // Only a node whose O is Content, Event or Any returns a Content, which has one JSON form.
     val json = if (output is Content) contentJson(output) else outputCodec.schemaForm(output, what)
-    if (explicitOutputSchema != null) {
-      val unused = SchemaUtils.validateValue(json, explicitOutputSchema, what).getOrThrow()
-    }
-    return json
+    return if (explicitOutputSchema == null) json
+    else SchemaUtils.checkedValue(json, explicitOutputSchema, what)
   }
 
   /**
@@ -561,6 +568,19 @@ private val TOOL_CONFIRMATION_SCHEMA: Schema? by lazy {
   SchemaUtils.inferSchema(typeOf<ToolConfirmation>())
 }
 
+/** Whether this value is already in the form a schema checks: JSON-native, or a message. */
+private fun Any?.isJsonForm(): Boolean =
+  when (this) {
+    null,
+    is String,
+    is Number,
+    is Boolean,
+    is Content -> true
+    is Map<*, *> -> entries.all { (key, value) -> key is String && value.isJsonForm() }
+    is Collection<*> -> all { it.isJsonForm() }
+    else -> false
+  }
+
 /** Types a node handles by their meaning rather than as data. */
 private val FRAMEWORK_TYPES: Set<KClass<*>> = setOf(Content::class, Event::class)
 
@@ -570,9 +590,9 @@ private val FRAMEWORK_TYPES: Set<KClass<*>> = setOf(Content::class, Event::class
  */
 private val SERIALIZER_FREE_TYPES: Set<KClass<*>> = FRAMEWORK_TYPES + setOf(Any::class, Unit::class)
 
-/** Infers a port's schema, except for framework types. */
-private fun inferredPortSchema(codec: PortCodec<*>): Schema? =
-  if (codec.classifier in FRAMEWORK_TYPES) null else codec.schema
+/** Infers an output port's schema, except for framework types, which pass through as they are. */
+private fun inferredOutputSchema(codec: PortCodec<*>): Schema? =
+  if (codec.classifier in FRAMEWORK_TYPES) null else codec.outputSchema
 
 /**
  * Returns [value] as a node outputs it and a schema checks it: a framework value as it is, and
@@ -586,26 +606,31 @@ internal fun PortCodec<*>.schemaForm(value: Any?, what: String): Any? =
   }
 
 /**
- * Creates a [FunctionNode] that runs [block] on an input of type [I] and returns an output of type
- * [O], emitting progress [Event]s through its [FlowCollector] receiver. Schemas inferred from [I]
- * and [O] describe the node, while an explicit [inputSchema] or [outputSchema] is also enforced on
- * every run. Unlike adk-python, which dumps only models, an output travels as its JSON form under
- * [O]'s serializer, so a successor typed `Any?` reads a `Long` for an `Int`, and an input decodes
- * from that form, a quoted number included.
+ * Creates a [FunctionNode] that runs [block], which uses `context.state`, `context.updateState` and
+ * [requestInput]. An edge into it builds only if the predecessor's output schema fits its input
+ * schema, except a rejected confirmation's output; inferred output schemas require every field,
+ * inferred input schemas only fields without defaults. Explicit schemas apply each run.
  *
- * The block asks the user for input with [requestInput]. Its return value, a [Content] included, is
- * the node's output; emitting an event with an output or calling `Context.setOutput` fails the
- * node. A node that talks to an agent node sends the message with `emit(content)`.
+ * For example, an output `DefOrder(id, total, qty = 1)` feeds an input `ReqOrder(id, total, qty)`:
+ * the output always carries `qty`, which the input requires.
  *
+ * The block's return value, a [Content] included, is the node's output; emitting an event with an
+ * output or calling `Context.setOutput` fails the node. A node that talks to an agent node sends
+ * the message with `emit(content)`. A node has no auth configuration.
+ *
+ * @param name The node's name, required: non-empty and without '/', '@' or '.'.
+ * @param inputSchema Checks the input as it arrives, before [I]'s defaults apply; an `Any?` port
+ *   then gets the checked value.
  * @param rerunOnResume Whether a resume runs the node again rather than using the resuming answer;
  *   unset, it is true when [requireConfirmation] is true.
  * @param requireConfirmation Whether each run first asks the user to approve it: pass `true`, or a
- *   predicate that decides for each input. The request carries the input's JSON form as `args`; a
- *   rejected run skips the block and outputs `{"error": "This tool call is rejected."}`, and the
- *   answer is available as [Context.toolConfirmation].
- * @throws WorkflowConfigurationException if [I] or [O] has no usable serializer and is not
- *   `Content`, `Event`, `Any`, or `Unit`, or if [requireConfirmation] is true with `rerunOnResume =
- *   false`.
+ *   predicate that decides for each input. The request's payload holds the input's JSON form as
+ *   `args`; a rejected run skips the block and outputs `{"error": "This tool call is rejected."}`
+ *   unchecked; the answer is in [Context.toolConfirmation].
+ * @throws IllegalArgumentException if [name] is empty or contains '/', '@', or '.'.
+ * @throws WorkflowConfigurationException if [I] or [O], or a type argument inside it, is a sealed
+ *   type, a nested `ByteArray`, or has no usable serializer and is not `Content`, `Event`, `Any`,
+ *   or `Unit`, or if [requireConfirmation] is true with `rerunOnResume = false`.
  */
 @ExperimentalWorkflowApi
 inline fun <reified I, reified O> node(
@@ -641,9 +666,11 @@ inline fun <reified I, reified O> node(
  * @param rerunOnResume Whether a resume runs the node again rather than using the resuming answer;
  *   unset, it is true.
  * @param requireConfirmation Decides for each input whether a run asks the user to approve it; it
- *   runs on each run that has no answer yet, and once the node has asked, the answer decides.
- * @throws WorkflowConfigurationException if [I] or [O] has no usable serializer and is not
- *   `Content`, `Event`, `Any`, or `Unit`, or with `rerunOnResume = false`.
+ *   runs on each run that has no answer yet, and once the node has asked, the answer decides. A
+ *   rejected run outputs as the other [node] overload describes.
+ * @throws IllegalArgumentException if [name] is invalid, as in the other [node] overload.
+ * @throws WorkflowConfigurationException if [I] or [O] is not a valid port type, as in the other
+ *   [node] overload, or with `rerunOnResume = false`.
  */
 @ExperimentalWorkflowApi
 inline fun <reified I, reified O> node(
@@ -717,7 +744,7 @@ suspend fun FlowCollector<Event>.emit(content: Content) {
 
 /**
  * Throws [WorkflowConfigurationException] when node [name]'s [port] type [type], or a type argument
- * inside it, cannot travel as JSON, so the node fails when it is built rather than on its first
+ * inside it, is not a valid port type, so the node fails when it is built rather than on its first
  * value.
  */
 @PublishedApi
@@ -726,7 +753,7 @@ internal fun requirePortSerializer(name: String, port: String, type: KType) {
   throw WorkflowConfigurationException("node '$name' has $port type $type, $problem")
 }
 
-/** Returns why [type] or one of its type arguments cannot travel as JSON, or null if it can. */
+/** Returns why [type] or one of its type arguments is not a valid port type, or null if it is. */
 private fun portTypeProblem(type: KType, nested: Boolean): String? {
   val classifier = type.classifier
   if (classifier in SERIALIZER_FREE_TYPES) return null
@@ -738,10 +765,23 @@ private fun portTypeProblem(type: KType, nested: Boolean): String? {
     return "which has no usable serializer. Mark it @Serializable, or use Any for a JSON-native " +
       "value, such as Map<String, Any?> for Map<String, *>."
   }
+  if (serializer.descriptor.isSealedForm()) {
+    val name = (classifier as? KClass<*>)?.simpleName ?: "it"
+    val what = if (nested) "which has a sealed type argument $name" else "which is a sealed type"
+    return "$what; declare the port as a concrete @Serializable class, wrap the hierarchy in " +
+      "one, or use Any for a JSON-native value."
+  }
   return type.arguments.firstNotNullOfOrNull { argument ->
     argument.type?.let { portTypeProblem(it, nested = true) }
   }
 }
+
+/** Whether this is a sealed type's descriptor: a class discriminator and a value, not a class. */
+private fun SerialDescriptor.isSealedForm(): Boolean =
+  kind != StructureKind.CLASS &&
+    elementsCount == 2 &&
+    getElementName(0) == "type" &&
+    getElementName(1) == "value"
 
 /**
  * Whether [serializer] is an interface's polymorphic serializer, nullable or not, which adkJson
@@ -764,7 +804,9 @@ private fun isOpenPolymorphic(serializer: KSerializer<*>, classifier: KClassifie
  *
  * @param maxParallelWorkers Maximum number of items run at a time, or `null` for no limit.
  * @param requireConfirmation Whether each item's run first asks the user to approve it: pass
- *   `true`, or a predicate that decides for each item, as in [node].
+ *   `true`, or a predicate that decides for each item, as in [node], which describes a rejected
+ *   run's output.
+ * @throws IllegalArgumentException if [name] is invalid, as in [node].
  * @throws WorkflowConfigurationException if [maxParallelWorkers] is less than 1, or as in [node].
  */
 @ExperimentalWorkflowApi
@@ -799,12 +841,13 @@ inline fun <reified I, reified O> parallelNode(
   )
 
 /**
- * Creates a fan-out [FunctionNode] as the other block-form [parallelNode] overload does, asking the
- * user to approve an item's run only when [requireConfirmation] returns true for that item. The
- * predicate runs on each item's run that has no answer yet; once the item has asked, the answer
- * decides.
+ * Creates a fan-out [FunctionNode] as the other block-form [parallelNode] does, asking to approve
+ * an item's run only when [requireConfirmation] returns true for it. The predicate runs on each
+ * item's run with no answer yet; once the item has asked, the answer decides. A rejected item
+ * outputs as in [node].
  *
  * @param maxParallelWorkers Maximum number of items run at a time, or `null` for no limit.
+ * @throws IllegalArgumentException if [name] is invalid, as in [node].
  * @throws WorkflowConfigurationException if [maxParallelWorkers] is less than 1, or as in [node].
  */
 @ExperimentalWorkflowApi

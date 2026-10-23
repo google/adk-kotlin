@@ -63,8 +63,8 @@ import kotlinx.serialization.Serializable
  * @property maxProperties The most allowed properties. Applicable only if `type` is [Type.OBJECT].
  * @property additionalProperties Whether an object may have properties [properties] does not
  *   declare: `null` or `true` allows them, `false` rejects them, and a [Schema] must match each.
- *   Applicable only if `type` is [Type.OBJECT]. Tool and model schemas ignore it, and a [Schema]
- *   value reads back from JSON as a `Map`.
+ *   Applicable only if `type` is [Type.OBJECT]. Workflow checks read it, tool and model schemas
+ *   ignore it; a [Schema] value reads back from JSON as a `Map`.
  */
 @Serializable
 data class Schema

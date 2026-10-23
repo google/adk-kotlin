@@ -250,18 +250,20 @@ private constructor(
 
     /** Records the event's output and routing on [context], then stamps and forwards the event. */
     private suspend fun dispatch(event: Event) {
-      track(event)
-      send(event)
+      send(track(event))
     }
 
-    /** Updates [context] with any output, interrupts, or routing carried by [event]. */
-    private fun track(event: Event) {
+    /**
+     * Updates [context] with any output, interrupts, or routing carried by [event], and returns the
+     * event with its state delta checked.
+     */
+    private fun track(event: Event): Event {
       when {
         event.output != null -> context.output = event.output
         // A final message-as-output event has no separate output; its content is the node's output.
         event.isMessageAsOutput -> context.output = event.content
       }
-      context.validateStateDelta(event.actions.stateDelta)
+      val delta = context.checkedStateDelta(event.actions.stateDelta)
       if (event.longRunningToolIds.isNotEmpty()) nodeState.addInterruptIds(event.longRunningToolIds)
       // Only apply routing from this node's own events; events from nested nodes were already
       // handled at their own level.
@@ -273,6 +275,8 @@ private constructor(
         }
         event.actions.transferToAgent?.let { context.actions.transferToAgent = it }
       }
+      return if (delta === event.actions.stateDelta) event
+      else event.copy(actions = event.actions.copy(stateDelta = delta))
     }
 
     /** Stamps the event, flushes any pending deltas onto it (unless partial), and sends it. */
