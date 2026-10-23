@@ -28,6 +28,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -48,7 +49,7 @@ class ToolContextTest {
       )
 
     assertEquals(invocationContext, context.invocationContext)
-    assertEquals(eventActions, context.actions)
+    assertSame(eventActions, context.actions)
     assertEquals("function_call_id", context.functionCallId)
     assertEquals(toolConfirmation, context.toolConfirmation)
     assertEquals("event_id", context.eventId)

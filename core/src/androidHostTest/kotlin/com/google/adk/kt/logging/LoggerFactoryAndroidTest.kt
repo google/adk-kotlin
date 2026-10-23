@@ -17,15 +17,25 @@
 package com.google.adk.kt.logging
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class LoggerFactoryAndroidTest {
   @Test
-  fun testGetLogger() {
+  fun getLogger_namedClass_usesTheSimpleName() {
     val logger = LoggerFactory.getLogger(LoggerFactoryAndroidTest::class)
-    assertNotNull("LoggerFactory.getLogger should return a non-null Logger on Android", logger)
+
+    assertEquals("LoggerFactoryAndroidTest", logger.name)
+  }
+
+  @Test
+  fun getLogger_anonymousClass_usesUnknown() {
+    val anonymous = object {}
+
+    val logger = LoggerFactory.getLogger(anonymous::class)
+
+    assertEquals("Unknown", logger.name)
   }
 }

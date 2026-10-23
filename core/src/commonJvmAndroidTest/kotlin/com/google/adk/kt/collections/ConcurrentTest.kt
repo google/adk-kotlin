@@ -16,24 +16,24 @@
 
 package com.google.adk.kt.collections
 
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class ConcurrentTest {
   @Test
-  fun concurrentMutableMapOf_isEmpty() {
-    val map = ConcurrentHashMap<String, Int>()
-    assertTrue(map.isEmpty())
-  }
+  fun concurrentMutableMapOf_putDuringIteration_doesNotThrow() {
+    val map = concurrentMutableMapOf<String, Int>()
+    map.putAll(mapOf("a" to 1, "b" to 2))
 
-  @Test
-  fun concurrentMutableMapOf_canStoreValues() {
-    val map = ConcurrentHashMap<String, Int>()
-    map["test"] = 1
-    assertTrue(map.containsKey("test"))
-    assertTrue(map["test"] == 1)
+    // A HashMap's fail-fast iterator would throw here; a concurrent map's is weakly consistent.
+    val iterator = map.keys.iterator()
+    iterator.next()
+    map["c"] = 3
+    while (iterator.hasNext()) {
+      iterator.next()
+    }
+
+    assertEquals(mapOf("a" to 1, "b" to 2, "c" to 3), map.toMap())
   }
 
   @Test

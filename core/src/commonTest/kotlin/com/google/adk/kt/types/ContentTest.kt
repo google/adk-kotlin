@@ -54,17 +54,10 @@ class ContentTest {
         inlineData = Blob(data = byteArrayOf(1, 2, 4), mimeType = "image/png", displayName = null)
       )
 
-    val blob1 = part1.inlineData!!
-    val blob2 = part2.inlineData!!
-    val blob3 = part3.inlineData!!
-    val blob4 = part4.inlineData!!
-    val data1 = blob1.data!!
-    val data2 = blob2.data!!
-    val data4 = blob4.data!!
-    assertTrue(data1.contentEquals(data2))
-    assertEquals("image/png", blob1.mimeType)
-    assertEquals("image/jpeg", blob3.mimeType) // Different mime type
-    assertTrue(!data1.contentEquals(data4)) // Different data
+    assertEquals(part1, part2)
+    assertEquals(part1.hashCode(), part2.hashCode())
+    assertNotEquals(part1, part3) // Different mime type
+    assertNotEquals(part1, part4) // Different data
   }
 
   @Test

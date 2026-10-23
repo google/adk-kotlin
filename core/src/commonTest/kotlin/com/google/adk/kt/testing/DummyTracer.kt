@@ -87,6 +87,7 @@ class DummySpan(
 ) : Span {
   var isEnded = false
   val events = mutableListOf<String>()
+  val recordedExceptions = mutableListOf<Throwable>()
   val attributes = initialAttributes.toMutableMap()
 
   override operator fun set(key: String, value: String): Span {
@@ -119,7 +120,10 @@ class DummySpan(
     return this
   }
 
-  override fun recordException(exception: Throwable): Span = this
+  override fun recordException(exception: Throwable): Span {
+    recordedExceptions.add(exception)
+    return this
+  }
 
   override fun end() {
     isEnded = true

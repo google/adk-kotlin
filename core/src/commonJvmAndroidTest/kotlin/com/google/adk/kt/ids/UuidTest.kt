@@ -18,13 +18,17 @@ package com.google.adk.kt.ids
 
 import kotlin.test.Test
 import kotlin.test.assertNotEquals
-import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class UuidTest {
   @Test
-  fun random_generatesNonNullUuid() {
+  fun random_returnsLowercaseVersion4UuidString() {
     val uuid = Uuid.random()
-    assertNotNull(uuid)
+
+    assertTrue(
+      Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}").matches(uuid),
+      "not a lowercase version 4 UUID: $uuid",
+    )
   }
 
   @Test
