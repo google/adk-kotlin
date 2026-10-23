@@ -14,13 +14,17 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWorkflowApi::class)
+@file:OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
 // typeOf<T>() is a compiler intrinsic and does not require kotlin-reflect.
 @file:Suppress("KotlinReflectNeeded")
 
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
@@ -36,7 +40,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonPrimitive
+
+@Serializable private data class CodecReading(val value: JsonPrimitive)
 
 @Serializable private data class CodecQuery(val project: String, val maxResults: Int = 5)
 
@@ -154,20 +162,126 @@ class ValueCodecTest {
   }
 
   @Test
-  fun coerce_content_reachesOnlyContentOrAnyPorts() {
+  fun coerce_content_isTextForAStringPortJsonForAnotherAndItselfForContentOrAny() {
     // Arrange
-    val message = Content.fromText(Role.USER, """{"project": "ADK"}""")
+    val json = """{"project": "ADK"}"""
+    val message = Content.fromText(Role.USER, json)
 
     // Act
     val sameContent = codec<Content>().coerce(message, "input")
     val sameAny = codec<Any>().coerce(message, "input")
-    val classError =
-      assertFailsWith<NodeInputValidationException> { codec<CodecQuery>().coerce(message, "input") }
+    val text = codec<String>().coerce(message, "input")
+    val query = codec<CodecQuery>().coerce(message, "input")
+    val number = codec<Int>().coerce(Content.fromText(Role.USER, "42"), "input")
+    val wordError =
+      assertFailsWith<NodeInputValidationException> {
+        codec<Int>().coerce(Content.fromText(Role.USER, secret), "input")
+      }
 
     // Assert
     assertSame(message, sameContent)
     assertSame<Any>(message, sameAny)
-    assertContains(classError.message.orEmpty(), "but got Content")
+    assertEquals(json, text)
+    assertEquals(CodecQuery("ADK"), query)
+    assertEquals(42, number)
+    assertFalse(secret in wordError.message.orEmpty())
+  }
+
+  /** A typed port forgives only quotes and `.0`: a quoted literal of its type or a whole number. */
+  @Test
+  fun coerce_scalars_followThePortCoercionTable() {
+    // Arrange
+    val accepted =
+      listOf(
+        codec<Int>() to 42.0,
+        codec<Int>() to "42",
+        codec<Int>() to "1e2",
+        codec<Long>() to 21L,
+        codec<Double>() to "1.5",
+        codec<Boolean>() to "true",
+        codec<String>() to "3",
+        codec<CodecQuery>() to mapOf("project" to "ADK", "maxResults" to "7", "extra" to 1),
+        codec<CodecReading>() to mapOf("value" to 3L),
+      )
+    val rejected =
+      listOf(
+        codec<Int>() to 3.5,
+        codec<Int>() to "3_000",
+        codec<Int>() to "007",
+        codec<Int>() to "+42",
+        codec<Int>() to " 42",
+        codec<Int>() to "42d",
+        codec<Int>() to "0x1p3",
+        codec<Long>() to "-9223372036854775809",
+        codec<Int>() to "three",
+        codec<Int>() to true,
+        codec<Double>() to "nan",
+        codec<Double>() to "+1.5",
+        codec<Double>() to "42d",
+        codec<Boolean>() to "TRUE",
+        codec<Boolean>() to "yes",
+        codec<Boolean>() to 1,
+        codec<String>() to 3,
+        codec<String>() to true,
+      )
+
+    // Act
+    val values = accepted.map { (codec, value) -> codec.coerce(value, "input") }
+    val failures = rejected.map { (codec, value) ->
+      runCatching { codec.coerce(value, "input") }.exceptionOrNull()
+    }
+
+    // Assert
+    assertEquals(
+      listOf<Any?>(
+        42,
+        42,
+        100,
+        21L,
+        1.5,
+        true,
+        "3",
+        CodecQuery("ADK", 7),
+        CodecReading(JsonPrimitive(3L)),
+      ),
+      values,
+    )
+    assertTrue(failures.all { it is NodeInputValidationException }, failures.toString())
+  }
+
+  @Test
+  fun coerce_eventWithATimestampInSeconds_readsItAsMillis() {
+    // Arrange
+    val saved = mapOf("author" to "agent", "timestamp" to 1760000000.5)
+
+    // Act
+    val event = codec<Event>().coerce(saved, "input")
+
+    // Assert
+    assertEquals(1760000000500L, event.timestamp)
+  }
+
+  @Test
+  fun coerce_mapToFrameworkType_readsASavedOneBackAndRejectsUnknownKeys() {
+    // Arrange
+    val message = Content.fromText(Role.USER, "hi")
+    val saved = jsonElementToAny(adkJson.encodeToJsonElement(Content.serializer(), message))
+    val order = mapOf("project" to "ADK", "note" to secret)
+
+    // Act
+    val readBack = codec<Content>().coerce(saved, "input")
+    val contentError =
+      assertFailsWith<NodeInputValidationException> { codec<Content>().coerce(order, "input") }
+    val eventError =
+      assertFailsWith<NodeInputValidationException> { codec<Event>().coerce(order, "input") }
+    val query = codec<CodecQuery>().coerce(order, "input")
+
+    // Assert
+    assertEquals(message, readBack)
+    assertContains(contentError.message.orEmpty(), "input does not match")
+    assertContains(eventError.message.orEmpty(), "input does not match")
+    assertFalse(secret in contentError.message.orEmpty() + eventError.message.orEmpty())
+    assertEquals(CodecQuery("ADK"), query)
   }
 
   @Test
