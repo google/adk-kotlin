@@ -361,6 +361,10 @@ object SchemaUtils {
     )
   }
 
+  /** Returns [value] as [schema] reads it; a null passes every schema, as no output upstream. */
+  internal fun checkedValue(value: Any?, schema: Schema, what: String): Any? =
+    if (value == null) null else ValueCoercer.coerceValue(value, schema, what).getOrThrow()
+
   /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
   internal fun acceptsString(schema: Schema): Boolean =
     schema.type == Type.STRING || schema.anyOf.orEmpty().any { acceptsString(it) }
