@@ -39,9 +39,9 @@ import kotlinx.coroutines.flow.flow
  *
  * Use it to put an existing tool into a graph, such as an MCP tool or an agent wrapped as a tool.
  *
- * **Tools that run inside the model.** Some tools, such as Google Search, URL context and Vertex AI
- * Search, work only inside a model call and have no local implementation, so running one as a node
- * fails the node. To use such a tool in a graph, give it to an
+ * **Tools without a local implementation.** Some built-in tools, such as Google Search, URL context
+ * and Vertex AI Search, only change the model request and cannot run on their own, so this function
+ * throws [IllegalArgumentException] for them. To use such a tool in a graph, give it to an
  * [LlmAgent][com.google.adk.kt.agents.LlmAgent] and use that agent as the node.
  *
  * **Input.** The node accepts:
@@ -82,8 +82,13 @@ import kotlinx.coroutines.flow.flow
  */
 @ExperimentalWorkflowApi
 @JvmOverloads
-fun BaseTool.asNode(name: String = this.name, config: NodeConfig = NodeConfig()): Node =
-  ToolNode(this, name, config)
+fun BaseTool.asNode(name: String = this.name, config: NodeConfig = NodeConfig()): Node {
+  require(hasLocalImplementation) {
+    "Tool '${this.name}' only changes the model request and has no local implementation, so it" +
+      " cannot run as a workflow node. Give it to an LlmAgent and use that agent as the node."
+  }
+  return ToolNode(this, name, config)
+}
 
 /** Runs a [BaseTool] as a workflow node. Created by [asNode], which documents its behavior. */
 internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeConfig) :

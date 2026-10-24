@@ -32,6 +32,9 @@ class UrlContextTool : BaseTool(name = "url_context", description = "url_context
 
   override fun declaration(): FunctionDeclaration? = null
 
+  override val hasLocalImplementation: Boolean
+    get() = false
+
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     throw UnsupportedOperationException("UrlContextTool does not support local execution")
   }
