@@ -47,9 +47,11 @@ import kotlinx.coroutines.flow.flow
  *   route, instead of completing when [runNode] returns. A node that never produces either then
  *   waits forever, which is a graph-authoring error.
  * @property config The node's retry policy and execution timeout.
- * @property inputSchema Validates the node's input before it runs.
- * @property outputSchema Validates the output value the node emits. A value set with
- *   `Context.setOutput` and a message-as-output event's content are not checked.
+ * @property inputSchema Validates the node's input before it runs, read as JSON; the node receives
+ *   the checked value unless it takes a `Content`.
+ * @property outputSchema Validates the output value the node emits the same way, and the checked
+ *   value is the output. A value set with `Context.setOutput` and a message-as-output event's
+ *   content are not checked.
  * @property stateSchema Declares the state keys the node uses. Child nodes inherit it unless they
  *   declare their own.
  */
@@ -118,17 +120,17 @@ abstract class BaseNode(
     val schema = inputSchema ?: return nodeInput
     if (requiresAllPredecessors && nodeInput is Map<*, *>) {
       return nodeInput.entries.associate { (predecessor, output) ->
-        val side = "output of '$predecessor' into node '$name'"
-        predecessor.toString() to SchemaUtils.validateValue(output, schema, side).getOrThrow()
+        predecessor.toString() to
+          SchemaUtils.checkedValue(output, schema, "output of '$predecessor' into node '$name'")
       }
     }
-    return SchemaUtils.validateValue(nodeInput, schema, "input of node '$name'").getOrThrow()
+    return SchemaUtils.checkedValue(nodeInput, schema, "input of node '$name'")
   }
 
-  /** Checks [output] against [outputSchema], if there is one, and returns it. */
+  /** Checks [output] against [outputSchema], if there is one, and returns the checked value. */
   protected open fun validateOutput(output: Any?): Any? {
     val schema = outputSchema ?: return output
-    return SchemaUtils.validateValue(output, schema, "output of node '$name'").getOrThrow()
+    return SchemaUtils.checkedValue(output, schema, "output of node '$name'")
   }
 }
 

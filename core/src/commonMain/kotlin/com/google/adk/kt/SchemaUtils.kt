@@ -361,6 +361,10 @@ object SchemaUtils {
     )
   }
 
+  /** Returns [value] as [schema] reads it; a null passes every schema, as no output upstream. */
+  internal fun checkedValue(value: Any?, schema: Schema, what: String): Any? =
+    if (value == null) null else ValueCoercer.coerceValue(value, schema, what).getOrThrow()
+
   /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
   internal fun acceptsString(schema: Schema): Boolean =
     schema.type == Type.STRING || schema.anyOf.orEmpty().any { acceptsString(it) }
@@ -603,12 +607,13 @@ private fun Schema.sourceAnyOfFitsInto(alternatives: List<Schema>, target: Schem
   val branches =
     if (takesNull) alternatives
     else alternatives.filter { it.type != Type.NULL }.map { it.copy(nullable = null) }
-  // An untyped union admits only its branches' values, so own keys or items take their common
-  // type. An own part with no keys or items constrains nothing beyond the branches.
+  // An untyped union admits only its branches' values, so own keys, items or an enum take their
+  // common type, if they share one. An own part with none of these is checked by its branches.
   val commonType =
     branches.filter { it.type != Type.NULL }.map { it.impliedType() }.distinct().singleOrNull()
+  val constrainsItself = impliedType() != null || enum != null
   val ownType =
-    if (declaredType == null && impliedType() != null && commonType != null) commonType else type
+    if (declaredType == null && constrainsItself && commonType != null) commonType else type
   val own = copy(anyOf = null, type = ownType, nullable = if (takesNull) true else nullable)
   val parentHasType = declaredType != null
   return own.fitsInto(target) &&
