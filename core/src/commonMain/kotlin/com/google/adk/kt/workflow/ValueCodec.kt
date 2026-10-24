@@ -17,24 +17,34 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.serialization.LenientByteArraySerializer
+import com.google.adk.kt.serialization.LenientEpochMillisSerializer
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.reflect.KClass
 import kotlin.reflect.KType
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.SerialKind
 import kotlinx.serialization.descriptors.StructureKind
+import kotlinx.serialization.encoding.CompositeDecoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** Reads a port's values as its type [T] and writes their JSON form. */
 internal interface PortCodec<T> {
@@ -43,6 +53,10 @@ internal interface PortCodec<T> {
 
   /** The schema the port's type infers, which describes the port without being enforced. */
   val schema: Schema?
+
+  /** The schema of the port's output JSON form, when it differs from [schema]. */
+  val outputSchema: Schema?
+    get() = schema
 
   /**
    * Returns [value] as a [T], or throws [NodeInputValidationException] that names [what], not
@@ -58,10 +72,9 @@ internal interface PortCodec<T> {
 }
 
 /**
- * Reads a value as a [T] where it enters typed code, such as a node input, and writes a [T] as its
- * JSON form. A value that already is a [T] passes through, converted element by element for a
- * collection or map; anything else is decoded from its JSON form with [kType]'s serializer. A
- * [Content] is not a JSON form, so it reaches only a port typed `Content` or `Any`.
+ * Reads a value as a [T] where it enters typed code and writes a [T] as its JSON form. Another
+ * value decodes from its JSON form, converting only a quoted literal of a scalar's type and a whole
+ * number for an integer; a message is read as text or JSON.
  */
 @OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
 internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
@@ -76,7 +89,24 @@ internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
     (if (classifier == ByteArray::class) ByteArrayAsBase64Serializer else serializer)
       as KSerializer<Any?>?
 
+  /**
+   * The schema of [kType]'s JSON form for an input: defaulted fields are optional, while a nullable
+   * field without a default stays required although [coerce] reads its absence as null.
+   */
   override val schema: Schema? by lazy { SchemaUtils.inferSchema(kType) }
+
+  /** The schema of [kType]'s JSON form as [encode] writes it, with every field present. */
+  override val outputSchema: Schema? by lazy { SchemaUtils.inferSchema(kType, forOutput = true) }
+
+  /**
+   * ADK model types and [Event] reject unknown keys, so a value of another class fails to decode.
+   */
+  private val decodeJson: Json =
+    if (classifier == Event::class || serializer?.descriptor?.serialName?.isAdkTypeName() == true) {
+      strictJson
+    } else {
+      adkJson
+    }
 
   private val elementCodec: ValueCodec<Any?>? =
     kType.arguments.singleOrNull()?.type?.let { ValueCodec(it) }
@@ -132,20 +162,26 @@ internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
       // A rebuilt collection of another class falls through to decoding.
       if (coerced === value || classifier.isInstance(coerced)) return coerced
     }
+    if (value is Content) {
+      val takesString =
+        classifier == String::class ||
+          classifier == CharSequence::class ||
+          classifier == ByteArray::class
+      val contentSchema = if (takesString) Schema(type = Type.STRING) else Schema()
+      return coerceAny(ValueCoercer.coerceContent(value, contentSchema), what)
+    }
     val serializer = jsonSerializer
-    if (serializer != null && value !is Content) {
+    if (serializer != null) {
       return try {
-        adkJson.decodeFromJsonElement(serializer, jsonOf(value))
-      } catch (e: IllegalArgumentException) {
-        // Also catches SerializationException; its message can quote the value, so no cause.
-        val hint =
-          if (serializer.descriptor.isSealedForm()) {
-            " Declare the producing node's output as $kType (node<_, $kType>) so the class " +
-              "discriminator is written."
-          } else {
-            ""
-          }
-        throw NodeInputValidationException("validation error: $what does not match $kType.$hint")
+        decodeJson.decodeFromJsonElement(
+          serializer,
+          readLiterals(jsonOf(value), serializer.descriptor),
+        )
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        // Any decode failure names the port; its message can quote the value, so no cause.
+        throw NodeInputValidationException("validation error: $what does not match $kType.")
       }
     }
     val actualTypeName = value::class.simpleName ?: "unknown"
@@ -188,6 +224,66 @@ private fun jsonOf(value: Any?): JsonElement =
   }
 
 /**
+ * Serializers that declare a scalar kind but read other JSON too, so the table leaves them alone.
+ */
+@OptIn(FrameworkInternalApi::class)
+private val OWN_READERS: Set<String> =
+  setOf(
+    JsonPrimitive.serializer().descriptor.serialName,
+    LenientByteArraySerializer.descriptor.serialName,
+    LenientEpochMillisSerializer.descriptor.serialName,
+  )
+
+/**
+ * Applies the port coercion table to [element] as [descriptor] reads it: a quoted JSON literal of a
+ * scalar's type becomes that literal and a whole number becomes an integer. Throws
+ * [IllegalArgumentException] for any other scalar of the wrong JSON type, such as `"TRUE"`.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun readLiterals(element: JsonElement, descriptor: SerialDescriptor): JsonElement {
+  if (element is JsonNull || descriptor.serialName.removeSuffix("?") in OWN_READERS) return element
+  if (descriptor.isInline) return readLiterals(element, descriptor.getElementDescriptor(0))
+  fun scalar(read: (Any?) -> Any?): JsonElement {
+    // Anything but a primitive is left to the serializer, which rejects it or reads it its way.
+    if (element !is JsonPrimitive) return element
+    return anyToJsonElement(
+      read(jsonElementToAny(element)) ?: throw IllegalArgumentException("not a ${descriptor.kind}")
+    )
+  }
+  return when (descriptor.kind) {
+    PrimitiveKind.INT,
+    PrimitiveKind.LONG,
+    PrimitiveKind.SHORT,
+    PrimitiveKind.BYTE -> scalar(ValueCoercer::integerLiteral)
+    PrimitiveKind.FLOAT,
+    PrimitiveKind.DOUBLE -> scalar(ValueCoercer::numberLiteral)
+    PrimitiveKind.BOOLEAN -> scalar(ValueCoercer::booleanLiteral)
+    PrimitiveKind.STRING,
+    PrimitiveKind.CHAR,
+    SerialKind.ENUM -> scalar { it as? String }
+    StructureKind.CLASS ->
+      if (element !is JsonObject) element
+      else
+        JsonObject(
+          element.mapValues { (key, value) ->
+            val index = descriptor.getElementIndex(key)
+            if (index == CompositeDecoder.UNKNOWN_NAME) value
+            else readLiterals(value, descriptor.getElementDescriptor(index))
+          }
+        )
+    StructureKind.LIST ->
+      if (element !is JsonArray) element
+      else JsonArray(element.map { readLiterals(it, descriptor.getElementDescriptor(0)) })
+    StructureKind.MAP ->
+      if (element !is JsonObject) element
+      else
+        JsonObject(element.mapValues { readLiterals(it.value, descriptor.getElementDescriptor(1)) })
+    // Polymorphic and contextual values decode by their own rules.
+    else -> element
+  }
+}
+
+/**
  * [adkJson] that writes every property, `null` and default values included, so a value on either
  * port keeps its class's shape, also when an explicit schema checks it.
  */
@@ -198,14 +294,15 @@ private val outputJson: Json =
     encodeDefaults = true
   }
 
-/**
- * Whether this is a sealed type's descriptor: the class discriminator and the value, not a class.
- */
-private fun SerialDescriptor.isSealedForm(): Boolean =
-  kind != StructureKind.CLASS &&
-    elementsCount == 2 &&
-    getElementName(0) == "type" &&
-    getElementName(1) == "value"
+/** The package prefix of ADK's model types, such as [Content] and `Part`. */
+private val ADK_TYPES_PREFIX =
+  Content.serializer().descriptor.serialName.substringBeforeLast('.') + "."
+
+private fun String.isAdkTypeName(): Boolean = startsWith(ADK_TYPES_PREFIX)
+
+/** [adkJson] that fails on a key the decoded class does not declare. */
+@OptIn(FrameworkInternalApi::class)
+private val strictJson: Json = Json(adkJson) { ignoreUnknownKeys = false }
 
 /** The codecs of a map type's key and value, or null when [kType] has no such argument. */
 @OptIn(ExperimentalWorkflowApi::class)
