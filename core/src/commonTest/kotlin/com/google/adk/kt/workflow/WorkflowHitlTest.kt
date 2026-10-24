@@ -283,6 +283,8 @@ private class RecordsInputThenAsks(override val name: String, private val interr
   }
 }
 
+@Serializable private data class HitlProfile(val id: String, val age: Int)
+
 /** Answers with a model-style message whose content is its output, the way an agent node does. */
 private class MessageOutput(
   override val name: String,
@@ -3141,6 +3143,22 @@ class WorkflowHitlTest {
     // Assert
     val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
     assertEquals(mapOf("chat" to "agent said hi", "ask" to mapOf("v" to 1L)), joinEvent.output)
+  }
+
+  /** A message-as-output node's JSON text reaches a typed successor as that type, live. */
+  @Test
+  fun messageOutput_intoTypedNode_isReadAsJson() {
+    // Arrange
+    val chat = MessageOutput("chat", """{"id": "u1", "age": "3"}""")
+    val describe = node("describe") { _, profile: HitlProfile -> "${profile.id}:${profile.age}" }
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, chat), Edge(chat, describe)))
+    val session = WorkflowSession(workflow)
+
+    // Act
+    val events = session.turn(userMessage("go"))
+
+    // Assert
+    assertEquals("u1:3", events.single { it.nodeInfo?.path == "wf@1/describe@1" }.output)
   }
 
   @Test

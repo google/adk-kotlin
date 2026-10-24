@@ -20,6 +20,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
@@ -111,15 +112,10 @@ internal class ParallelWorker(private val worker: Node, private val maxParallelW
     if (content.parts.isEmpty() || content.parts.any { it.text == null }) return content
     val itemType = (worker as? FunctionNode<*, *>)?.inputCodec?.classifier
     if (itemType == Content::class) return content
-    val text = content.text()
-    val json =
-      SchemaUtils.readJson(text).getOrElse {
-        return text
-      }
-    if (json is List<*>) return json
+    val read = ValueCoercer.coerceContent(content, Schema())
     val takesString =
       itemType == String::class || worker.inputSchema?.let(SchemaUtils::acceptsString) == true
-    return if (takesString) text else json
+    return if (read !is List<*> && takesString) content.text() else read
   }
 
   /**
