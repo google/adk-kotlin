@@ -253,8 +253,12 @@ Run it however you run any other main class. With the Gradle `application`
 plugin that is `mainClass = "com.example.MainKt"` — a top-level `main` in
 `Main.kt` compiles to `MainKt`, not `Main` — and then `./gradlew run`.
 
-The server binds loopback, because these endpoints are unauthenticated. Put your
-own authentication in front of it before widening that:
+The server binds loopback, because these endpoints are unauthenticated, and
+enforces per-request connection-peer, forwarding-header, DNS-rebinding (`Host`),
+and `Origin` checks behind that default. Put your own authentication in front of
+it before widening `host` (or setting `allowRemoteRequests = true` when
+embedding `adkApiModule` into your own Ktor engine, and `allowOrigins` when
+serving cross-origin browsers):
 
 ```kotlin
 import com.google.adk.kt.webserver.AdkApiServer
@@ -271,7 +275,9 @@ A built-in development UI to help you test, evaluate, debug, and showcase your a
 
 `AdkDevServer` takes the same config and adds the UI at
 `http://localhost:8080/dev-ui`, together with the trace and agent-graph
-endpoints it drives:
+endpoints it drives (rejecting non-loopback peers and proxied or tunneled
+requests even if `host` is widened, unless explicitly enabled via
+`allowRemoteRequests = true` or `ADK_ALLOW_REMOTE_REQUESTS=1`):
 
 ```kotlin
 import com.google.adk.kt.webserver.AdkServerConfig

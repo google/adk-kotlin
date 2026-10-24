@@ -43,6 +43,7 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.uri
 import io.ktor.server.response.respond
@@ -91,7 +92,7 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
    */
   protected open fun configure(application: Application) {
     val webUiEnabled = application.resolveWebUi(config)
-    application.adkApiModule(config, webUiEnabled)
+    application.adkApiModule(config, webUiEnabled = webUiEnabled, bindHost = config.host)
     if (webUiEnabled) {
       logger.warn(
         "Serving the Development UI from the API server; its debug, evaluation and graph views " +
@@ -163,19 +164,35 @@ private val requestLogging = requestLoggingPlugin { level, message ->
  * property asks for it) and flushes [AdkServerConfig.sessionService] when the application stops,
  * waiting up to 3 seconds for a flush that honors cancellation.
  *
+ * Installs per-request connection-peer and browser-origin checks backing the loopback default; set
+ * [AdkServerConfig.allowRemoteRequests] (or widen [AdkServerConfig.host] behind your own
+ * authentication) and [AdkServerConfig.allowOrigins] when intentionally serving remote callers.
+ *
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
  *
  * Your engine decides the interface: [AdkServerConfig.host] is read by [AdkApiServer], not here.
  */
 fun Application.adkApiModule(config: AdkServerConfig) {
-  adkApiModule(config, resolveWebUi(config))
+  adkApiModule(config, webUiEnabled = resolveWebUi(config))
 }
 
 /** [adkApiModule] with the Development UI decision already made, so it is resolved once. */
 @OptIn(FrameworkInternalApi::class)
-internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boolean) {
+internal fun Application.adkApiModule(
+  config: AdkServerConfig,
+  webUiEnabled: Boolean,
+  bindHost: String? = null,
+) {
+  val allowRemoteRequests =
+    resolveAllowRemoteRequests(config, default = !isLoopbackAddress(config.host))
+  val allowOrigins = resolveAllowOrigins(config)
+  val effectiveBindHost = bindHost ?: config.host.takeIf { !allowRemoteRequests }
+
   install(requestLogging)
+  install(localClientGuardPlugin(allowRemoteRequests))
+  install(originCheckPlugin(allowOrigins = allowOrigins, bindHost = effectiveBindHost))
+  install(CORS) { configureAdkCors(allowOrigins) }
   install(ContentNegotiation) { json(adkJson) }
 
   flushSessionServiceOnStop(config.sessionService)
