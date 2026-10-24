@@ -56,7 +56,7 @@ class NewFileSystemSource(private val skillsBaseDir: String) : SkillSource {
     resourceDirectoryPath: String,
   ): Result<List<String>> = sourceRunCatching {
     validateBaseDir()
-    val skillDirPath = Paths.get(skillsBaseDir).resolve(skillName)
+    val skillDirPath = resolveSkillDir(skillName)
     // Validates the skill.
     val unused = parseSkillFromDir(skillDirPath)
 
@@ -96,18 +96,18 @@ class NewFileSystemSource(private val skillsBaseDir: String) : SkillSource {
 
   override suspend fun loadFrontmatter(skillName: String): Result<Frontmatter> = sourceRunCatching {
     validateBaseDir()
-    parseSkillFromDir(Paths.get(skillsBaseDir).resolve(skillName)).first
+    parseSkillFromDir(resolveSkillDir(skillName)).first
   }
 
   override suspend fun loadInstructions(skillName: String): Result<String> = sourceRunCatching {
     validateBaseDir()
-    parseSkillFromDir(Paths.get(skillsBaseDir).resolve(skillName)).second
+    parseSkillFromDir(resolveSkillDir(skillName)).second
   }
 
   override suspend fun loadResource(skillName: String, resourcePath: String): Result<ByteArray> =
     sourceRunCatching {
       validateBaseDir()
-      val skillDirPath = Paths.get(skillsBaseDir).resolve(skillName)
+      val skillDirPath = resolveSkillDir(skillName)
       // Validates the skill.
       val unused = parseSkillFromDir(skillDirPath)
 
@@ -137,6 +137,42 @@ class NewFileSystemSource(private val skillsBaseDir: String) : SkillSource {
         )
       }
     }
+
+  /**
+   * Resolves [skillName] to a directory directly under the skills base directory.
+   *
+   * Rejects names that are not a single path segment and any resolved path that escapes the base
+   * directory, including through a symbolic link. The check lives here, rather than only in the
+   * tools, so that every caller of [NewFileSystemSource] is protected.
+   */
+  private fun resolveSkillDir(skillName: String): Path {
+    if (!isSingleSegmentSkillName(skillName)) {
+      throw SkillSourceException("Invalid skill name: $skillName")
+    }
+    val baseDirPath = Paths.get(skillsBaseDir).toAbsolutePath().normalize()
+    val skillDirPath =
+      try {
+        baseDirPath.resolve(skillName).normalize()
+      } catch (e: java.nio.file.InvalidPathException) {
+        throw SkillSourceException("Invalid skill name: $skillName", e)
+      }
+    if (!skillDirPath.startsWith(baseDirPath)) {
+      throw SkillSourceException("Invalid skill name: $skillName")
+    }
+    if (Files.exists(skillDirPath)) {
+      val realBasePath = baseDirPath.toRealPath()
+      val realSkillPath =
+        try {
+          skillDirPath.toRealPath()
+        } catch (e: java.io.IOException) {
+          throw SkillSourceException("Skill $skillName not found.", e)
+        }
+      if (!realSkillPath.startsWith(realBasePath)) {
+        throw SkillSourceException("Invalid skill name: $skillName")
+      }
+    }
+    return skillDirPath
+  }
 
   /**
    * Verifies that [skillsBaseDir] points to an existing directory, throwing [SkillSourceException]
