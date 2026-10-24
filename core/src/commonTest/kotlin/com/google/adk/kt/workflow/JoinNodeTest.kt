@@ -267,33 +267,49 @@ class JoinNodeTest {
   }
 
   @Test
-  fun inputSchema_outputWithUndeclaredKey_failsNamingThePredecessor() {
+  fun inputSchema_outputWithUndeclaredKey_isKeptUnlessTheSchemaIsClosed() {
     // Arrange
     val a = Emitter("a", mapOf("key" to "a", "value" to 1L))
-    val b = Emitter("b", mapOf("key" to "b", "value" to 2L, "extra" to true))
-    val workflow = fanInto(JoinNode("j", inputSchema = keyValueSchema), a, b)
+    val bOutput = mapOf("key" to "b", "value" to 2L, "extra" to true)
+    val open = fanInto(JoinNode("j", inputSchema = keyValueSchema), a, Emitter("b", bOutput))
+    val closedSchema = keyValueSchema.copy(additionalProperties = false)
+    val closed = fanInto(JoinNode("j", inputSchema = closedSchema), a, Emitter("b", bOutput))
 
     // Act
-    val error = assertFailsWith<IllegalArgumentException> { runWorkflow(workflow) }
+    val joined = runWorkflow(open).runsOf("wf@1/j").single().output as Map<*, *>
+    val error = assertFailsWith<IllegalArgumentException> { runWorkflow(closed) }
 
     // Assert: the failure names the predecessor whose output broke the schema.
+    assertEquals(bOutput, joined["b"])
     val message = error.message.orEmpty()
     assertContains(message, "validation error: output of 'b' into node 'j'")
-    assertContains(message, "it has a key the schema does not declare")
+    assertContains(message, "has a key the schema does not declare")
   }
 
   @Test
-  fun inputSchema_numericStringForInteger_failsWithoutConverting() {
+  fun inputSchema_quotedIntegerForInteger_isConvertedAndAWordFails() {
     // Arrange
     val a = Emitter("a", mapOf("key" to "a", "value" to 1L))
-    val b = Emitter("b", mapOf("key" to "b", "value" to "2"))
-    val workflow = fanInto(JoinNode("j", inputSchema = keyValueSchema), a, b)
+    val quoted =
+      fanInto(
+        JoinNode("j", inputSchema = keyValueSchema),
+        a,
+        Emitter("b", mapOf("key" to "b", "value" to "2")),
+      )
+    val word =
+      fanInto(
+        JoinNode("j", inputSchema = keyValueSchema),
+        a,
+        Emitter("b", mapOf("key" to "b", "value" to "two")),
+      )
 
     // Act
-    val error = assertFailsWith<IllegalArgumentException> { runWorkflow(workflow) }
+    val joined = runWorkflow(quoted).runsOf("wf@1/j").single().output as Map<*, *>
+    val error = assertFailsWith<IllegalArgumentException> { runWorkflow(word) }
 
     // Assert
-    assertContains(error.message.orEmpty(), "validation error")
+    assertEquals(mapOf("key" to "b", "value" to 2L), joined["b"])
+    assertContains(error.message.orEmpty(), "'value' is not an integer")
   }
 
   @Test

@@ -16,10 +16,11 @@
 
 package com.google.adk.kt.agents
 
-import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
@@ -253,37 +254,45 @@ open class Context(
 
   /**
    * Records a state change in [actions] `stateDelta` (copy-on-write) so it appears in [state] and
-   * flushes on the next event. [State.TEMP_PREFIX] keys last for the current invocation and are
-   * never stored; keys without an `app:`, `user:` or `temp:` prefix must match the node's state
-   * schema, if any.
+   * flushes on the next event. [State.TEMP_PREFIX] keys are never stored; keys without an `app:`,
+   * `user:` or `temp:` prefix must match the node's state schema, if any, and the checked value is
+   * stored.
    */
   fun updateState(key: String, value: Any) {
-    effectiveStateSchema?.let { validateStateEntry(it, key, value) }
-    actions = actions.copy(stateDelta = (actions.stateDelta + (key to value)).toMutableMap())
-  }
-
-  /** Validates every entry of [delta] against the state schema in force here, if there is one. */
-  internal fun validateStateDelta(delta: Map<String, Any>) {
-    val schema = effectiveStateSchema ?: return
-    for ((key, value) in delta) validateStateEntry(schema, key, value)
+    val stored = effectiveStateSchema?.let { validateStateEntry(it, key, value) } ?: value
+    actions = actions.copy(stateDelta = (actions.stateDelta + (key to stored)).toMutableMap())
   }
 
   /**
-   * Validates one state write against [schema] without changing the value. A scoped key (`app:`,
+   * Checks every entry of [delta] against the state schema in force here, if there is one. Returns
+   * [delta] itself when no value changes, otherwise a new map of the checked values.
+   */
+  internal fun checkedStateDelta(delta: MutableMap<String, Any>): MutableMap<String, Any> {
+    val schema = effectiveStateSchema ?: return delta
+    val checked =
+      delta.mapValuesTo(concurrentMutableMapOf()) { (key, value) ->
+        validateStateEntry(schema, key, value)
+      }
+    return if (checked == delta) delta else checked
+  }
+
+  /**
+   * Checks one state write against [schema] and returns the value to store. A scoped key (`app:`,
    * `user:`, or `temp:`) passes unchecked, as does the removal sentinel, which stands for the key's
    * absence rather than a value of its type.
    */
-  private fun validateStateEntry(schema: Schema, key: String, value: Any) {
+  private fun validateStateEntry(schema: Schema, key: String, value: Any): Any {
     val scoped =
       key.startsWith(State.APP_PREFIX) ||
         key.startsWith(State.USER_PREFIX) ||
         key.startsWith(State.TEMP_PREFIX)
-    if (scoped || value === State.REMOVED) return
+    if (scoped || value === State.REMOVED) return value
     val propertySchema =
       requireNotNull(schema.properties?.get(key)) {
         "validation error: state key '$key' is not declared in the state schema."
       }
-    SchemaUtils.validateValue(value, propertySchema, argsName = "state key '$key'").getOrThrow()
+    val checked = ValueCoercer.coerceValue(value, propertySchema, "state key '$key'").getOrThrow()
+    return requireNotNull(checked) { "validation error: state key '$key' is null." }
   }
 
   /**
@@ -303,8 +312,8 @@ open class Context(
    * reference to [actions] taken before the merge will not receive subsequent writes.
    */
   fun mergeEventActions(actions: EventActions) {
-    validateStateDelta(actions.stateDelta)
-    this.actions = this.actions.mergeWith(actions)
+    val checked = actions.copy(stateDelta = checkedStateDelta(actions.stateDelta))
+    this.actions = this.actions.mergeWith(checked)
   }
 
   /**
@@ -852,7 +861,8 @@ internal class NodeExecutionState(
     get() = outputStateRef.load().let { it !is OutputState.None && it !is OutputState.Delegated }
 
   /**
-   * Whether the output was marked emitted; a workflow's validated output is marked but never sent.
+   * Whether the output was marked emitted; a workflow's checked output can be marked without being
+   * sent.
    */
   val hasEmittedOutput: Boolean
     get() =
@@ -900,8 +910,8 @@ internal class NodeExecutionState(
 
   /**
    * Records [value] as the output a `useAsOutput` descendant marked emitted for this activation. A
-   * no-op unless this activation delegated its output; a later value (a workflow's validated
-   * output, marked emitted but never sent) replaces its terminal node's raw one.
+   * no-op unless this activation delegated its output; a later value (a workflow's checked output)
+   * replaces its terminal node's raw one.
    */
   private fun recordDelegatedOutput(value: Any) {
     while (true) {

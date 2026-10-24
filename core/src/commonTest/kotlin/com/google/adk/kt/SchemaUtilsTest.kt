@@ -22,14 +22,11 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.jsonElementToAny
-import com.google.adk.kt.types.Content
-import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.jvm.JvmInline
 import kotlin.reflect.typeOf
 import kotlin.test.Test
-import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -78,14 +75,6 @@ private sealed class Shape {
 @JvmInline @Serializable private value class OrderId(val value: String)
 
 class SchemaUtilsTest {
-
-  private val countSchema =
-    Schema(type = Type.OBJECT, properties = mapOf("count" to Schema(type = Type.INTEGER)))
-
-  private fun text(value: String) = Content(parts = listOf(Part(text = value)))
-
-  /** A value no failure message may quote. */
-  private val secret = "SENTINEL-4711"
 
   @Test
   fun validateMapOnSchema_validInput_returnsSuccess() {
@@ -1057,7 +1046,7 @@ class SchemaUtilsTest {
     )
   }
 
-  /** An untyped union with no keys or items of its own is checked by its branches alone. */
+  /** An untyped union with no keys, items or enum of its own is checked by its branches alone. */
   @Test
   fun fitsInto_untypedUnionOfEnums_fitsAWiderEnumOnly() {
     // Arrange
@@ -1069,6 +1058,18 @@ class SchemaUtilsTest {
     assertTrue(Schema(anyOf = listOf(red)).fitsInto(colors))
     assertTrue(Schema(anyOf = listOf(red, colors)).fitsInto(colors))
     assertFalse(Schema(anyOf = listOf(red, green)).fitsInto(colors))
+  }
+
+  /** An untyped union's own enum is read as its branches' type, not as JSON literals. */
+  @Test
+  fun fitsInto_untypedUnionWithItsOwnEnum_readsTheEnumAsTheBranchesType() {
+    // Arrange
+    val string = Schema(type = Type.STRING)
+    val colors = Schema(type = Type.STRING, enum = listOf("red", "blue"))
+
+    // Act / Assert
+    assertTrue(Schema(enum = listOf("1"), anyOf = listOf(string)).fitsInto(string))
+    assertFalse(Schema(enum = listOf("green"), anyOf = listOf(colors)).fitsInto(colors))
   }
 
   @Test
@@ -1434,131 +1435,4 @@ class SchemaUtilsTest {
 
   private fun anyJson(value: CustomerOrder): Any? =
     jsonElementToAny(adkJson.encodeToJsonElement(CustomerOrder.serializer(), value))
-
-  @Test
-  fun validateValue_mapIsCheckedAndReturnedUnchanged() {
-    assertEquals(
-      mapOf("count" to 1),
-      SchemaUtils.validateValue(mapOf("count" to 1), countSchema).getOrThrow(),
-    )
-    assertTrue(SchemaUtils.validateValue(mapOf("count" to "1"), countSchema).isFailure)
-    assertTrue(SchemaUtils.validateValue(mapOf("count" to 1, "extra" to 2), countSchema).isFailure)
-    assertTrue(
-      SchemaUtils.validateValue(mapOf("count" to 1), Schema(type = Type.INTEGER)).isFailure
-    )
-  }
-
-  @Test
-  fun validateValue_valueThatIsNotAMap_isCheckedWithTheSameRules() {
-    val integer = Schema(type = Type.INTEGER)
-    val integers = Schema(type = Type.ARRAY, items = integer)
-    val color = Schema(type = Type.STRING, enum = listOf("red"))
-
-    assertEquals(42, SchemaUtils.validateValue(42, integer).getOrThrow())
-    assertEquals(listOf(1), SchemaUtils.validateValue(listOf(1), integers).getOrThrow())
-    assertEquals("blue", SchemaUtils.validateValue("blue", color).getOrThrow())
-    assertTrue(SchemaUtils.validateValue("abc", integer).isFailure)
-    assertTrue(SchemaUtils.validateValue(42.0, integer).isFailure)
-    assertTrue(SchemaUtils.validateValue(listOf("a"), integers).isFailure)
-    assertTrue(SchemaUtils.validateValue("""{"count": 1}""", countSchema).isFailure)
-  }
-
-  @Test
-  fun validateValue_nullPasses() {
-    assertEquals(null, SchemaUtils.validateValue(null, Schema(type = Type.INTEGER)).getOrThrow())
-  }
-
-  @Test
-  fun validateValue_readsAContentAsJsonUnlessTheSchemaTakesAString() {
-    val json = """{"count": 42}"""
-    val eitherIntOrString =
-      Schema(anyOf = listOf(Schema(type = Type.INTEGER), Schema(type = Type.STRING)))
-
-    assertEquals(
-      mapOf("count" to 42L),
-      SchemaUtils.validateValue(text(json), countSchema).getOrThrow(),
-    )
-    assertEquals(
-      json,
-      SchemaUtils.validateValue(text(json), Schema(type = Type.STRING)).getOrThrow(),
-    )
-    assertEquals("42", SchemaUtils.validateValue(text("42"), eitherIntOrString).getOrThrow())
-    assertEquals("hello", SchemaUtils.validateValue(text("hello"), Schema()).getOrThrow())
-    assertTrue(SchemaUtils.validateValue(text("""{"count": "42"}"""), countSchema).isFailure)
-    assertTrue(SchemaUtils.validateValue(text("hello"), countSchema).isFailure)
-  }
-
-  /** Returns the failure message for [value], checking that it never quotes [secret]. */
-  private fun validateValueFailureMessage(value: Any?, schema: Schema): String {
-    val error = SchemaUtils.validateValue(value, schema, "input of node 'n'").exceptionOrNull()
-    assertIs<IllegalArgumentException>(error)
-    assertEquals(null, error.cause)
-    val message = error.message.orEmpty()
-    assertFalse(secret in message)
-    return message
-  }
-
-  @Test
-  fun validateValue_mapFailure_namesTheDeclaredKeyOrTheSchemaButNeverTheValue() {
-    val person =
-      Schema(
-        type = Type.OBJECT,
-        properties = mapOf("name" to Schema(type = Type.STRING)),
-        required = listOf("name"),
-      )
-    val prefix = "validation error: input of node 'n' does not match its schema: "
-
-    assertEquals(
-      prefix +
-        "Value arg: count type does not match value schema: Schema(type=OBJECT, properties=[count])",
-      validateValueFailureMessage(mapOf("count" to secret), countSchema),
-    )
-    assertEquals(
-      prefix + "Value args does not contain required name",
-      validateValueFailureMessage(mapOf<String, Any?>(), person),
-    )
-    assertEquals(
-      prefix + "Value schema does not describe an object: Schema(type=INTEGER)",
-      validateValueFailureMessage(mapOf("count" to secret), Schema(type = Type.INTEGER)),
-    )
-  }
-
-  @Test
-  fun validateValue_undeclaredKey_isReportedWithoutItsName() {
-    assertEquals(
-      "validation error: input of node 'n' does not match its schema: " +
-        "it has a key the schema does not declare",
-      validateValueFailureMessage(mapOf("count" to 1, secret to 2), countSchema),
-    )
-  }
-
-  @Test
-  fun validateValue_scalarFailure_isGenericUnlessTheSchemaIsTooComplex() {
-    // Each level reuses its child on both branches, so 12 levels describe 4096 combinations.
-    var nested = Schema(type = Type.STRING)
-    repeat(12) { nested = Schema(anyOf = listOf(nested, nested)) }
-
-    assertEquals(
-      "validation error: input of node 'n' does not match its schema.",
-      validateValueFailureMessage(secret, Schema(type = Type.INTEGER)),
-    )
-    assertContains(
-      validateValueFailureMessage(listOf(secret), nested),
-      "schema is too complex to validate",
-    )
-  }
-
-  @Test
-  fun validateValue_setForArraySchema_succeeds() {
-    // Act
-    val result =
-      SchemaUtils.validateValue(
-        setOf(1, 2),
-        Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER)),
-        "ids",
-      )
-
-    // Assert
-    assertTrue(result.isSuccess)
-  }
 }

@@ -18,14 +18,57 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.Serializable
 
-/** Graph validation, rule by rule, matching adk-python's `utils/_graph_validation.py`. */
+/** A node with explicit schemas that passes its input through. */
+private class SchemaNode(
+  override val name: String,
+  override val inputSchema: Schema? = null,
+  override val outputSchema: Schema? = null,
+) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow { emit(nodeInput) }
+}
+
+@Serializable private data class FitBasicOrder(val id: String, val total: Double)
+
+@Serializable private data class FitFullOrder(val id: String, val total: Double, val note: String)
+
+@Serializable
+private data class FitOrderWithNote(val id: String, val total: Double, val note: String? = null)
+
+@Serializable private data class FitSettings(val theme: String = "light")
+
+/** A node that outputs [value] as an [O]. */
+private inline fun <reified O> produce(value: O): FunctionNode<Any?, O> =
+  node("produce") { _, _ -> value }
+
+/** A node that takes an [I] and outputs nothing. */
+private inline fun <reified I> consume(): FunctionNode<I, Unit> = node("consume") { _, _ -> }
+
+@Serializable private data class RankedTopic(val title: String, val score: Int)
+
+@Serializable private data class RankedEntry(val topic: RankedTopic, val rank: Int)
+
+/** An object schema with one required string property named [property]. */
+private fun objectWith(property: String) =
+  Schema(
+    type = Type.OBJECT,
+    properties = mapOf(property to Schema(type = Type.STRING)),
+    required = listOf(property),
+  )
+
+/** Graph validation, rule by rule. */
 class GraphValidationTest {
 
   @Test
@@ -457,5 +500,275 @@ class GraphValidationTest {
 
     // Assert
     assertNotNull(workflow.graph)
+  }
+
+  @Test
+  fun validateGraph_equalSchemasOnAnEdge_isAccepted() {
+    // Arrange
+    val a = SchemaNode("a", outputSchema = objectWith("x"))
+    val b = SchemaNode("b", inputSchema = objectWith("x"))
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, a), Edge(a, b)))
+
+    // Assert
+    assertEquals(setOf("b"), graph.terminalNodeNames)
+  }
+
+  @Test
+  fun validateGraph_schemaWithKeysBesideAnyOf_isCheckedAsAWhole() {
+    // Arrange
+    val withAnyOf = objectWith("id").copy(anyOf = listOf(objectWith("a")))
+    val shared = SchemaNode("shared", outputSchema = withAnyOf)
+    val sameInput = SchemaNode("same", inputSchema = withAnyOf)
+    val integerOutput = SchemaNode("integer", outputSchema = Schema(type = Type.INTEGER))
+    val stringInput =
+      SchemaNode(
+        "string",
+        inputSchema = Schema(type = Type.STRING, anyOf = listOf(Schema(type = Type.INTEGER))),
+      )
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, shared), Edge(shared, sameInput)))
+    val error =
+      assertFailsWith<GraphValidationException> {
+        Graph.of(listOf(Edge(Start, integerOutput), Edge(integerOutput, stringInput)))
+      }
+
+    // Assert
+    assertEquals(setOf("same"), graph.terminalNodeNames)
+    assertContains(error.message.orEmpty(), "Schema mismatch on edge integer -> string.")
+  }
+
+  /** The failure names the edge and both schemas. */
+  @Test
+  fun validateGraph_differentSchemasOnAnEdge_isRejected() {
+    // Arrange
+    val a = SchemaNode("a", outputSchema = objectWith("x"))
+    val b = SchemaNode("b", inputSchema = objectWith("y"))
+
+    // Act
+    val error =
+      assertFailsWith<GraphValidationException> { Graph.of(listOf(Edge(Start, a), Edge(a, b))) }
+
+    // Assert
+    assertEquals(
+      "Graph validation failed. Schema mismatch on edge a -> b. Output schema" +
+        """ {"type":"OBJECT","properties":{"x":{"type":"STRING"}},"required":["x"]}""" +
+        " does not fit input schema" +
+        """ {"type":"OBJECT","properties":{"y":{"type":"STRING"}},"required":["y"]}.""",
+      error.message,
+    )
+  }
+
+  /** A missing schema on either end passes. */
+  @Test
+  fun validateGraph_schemaMissingOnOneEnd_isAccepted() {
+    // Arrange
+    val a = SchemaNode("a", outputSchema = objectWith("x"))
+    val b = SchemaNode("b")
+    val c = SchemaNode("c", inputSchema = objectWith("z"))
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, a), Edge(a, b), Edge(b, c)))
+
+    // Assert
+    assertEquals(setOf("c"), graph.terminalNodeNames)
+  }
+
+  /** Accepts a hand-written schema that lists the same `required` names in another order. */
+  @Test
+  fun validateGraph_requiredInAnotherOrder_isAccepted() {
+    // Arrange
+    val consume = node("consume") { _, topic: RankedTopic -> topic.title }
+    val inferred = assertNotNull(consume.inputSchema)
+    assertEquals(listOf("title", "score"), inferred.required)
+    val produce =
+      SchemaNode("produce", outputSchema = inferred.copy(required = listOf("score", "title")))
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, produce), Edge(produce, consume)))
+
+    // Assert
+    assertEquals(setOf("consume"), graph.terminalNodeNames)
+  }
+
+  /** Ignores the order of `required` in nested schemas too, here a list's items. */
+  @Test
+  fun validateGraph_nestedRequiredInAnotherOrder_isAccepted() {
+    // Arrange
+    val consume = node("consume") { _, topics: List<RankedTopic> -> topics.size }
+    val inferred = assertNotNull(consume.inputSchema)
+    val items = assertNotNull(inferred.items)
+    assertEquals(listOf("title", "score"), items.required)
+    val produce =
+      SchemaNode(
+        "produce",
+        outputSchema = inferred.copy(items = items.copy(required = items.required?.reversed())),
+      )
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, produce), Edge(produce, consume)))
+
+    // Assert
+    assertEquals(setOf("consume"), graph.terminalNodeNames)
+  }
+
+  /** Ignores the order of `required` in a nested object property. */
+  @Test
+  fun validateGraph_propertyRequiredInAnotherOrder_isAccepted() {
+    // Arrange
+    val consume = node("consume") { _, entry: RankedEntry -> entry.rank }
+    val inferred = assertNotNull(consume.inputSchema)
+    val topic = assertNotNull(inferred.properties?.get("topic"))
+    assertEquals(listOf("title", "score"), topic.required)
+    val reordered = topic.copy(required = listOf("score", "title"))
+    val produce =
+      SchemaNode(
+        "produce",
+        outputSchema = inferred.copy(properties = inferred.properties + ("topic" to reordered)),
+      )
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, produce), Edge(produce, consume)))
+
+    // Assert
+    assertEquals(setOf("consume"), graph.terminalNodeNames)
+  }
+
+  /** Ignores the order of `required` in an `anyOf` alternative, for hand-written schemas. */
+  @Test
+  fun validateGraph_anyOfRequiredInAnotherOrder_isAccepted() {
+    // Arrange
+    fun anyOfObject(vararg required: String) =
+      Schema(
+        anyOf =
+          listOf(
+            Schema(
+              type = Type.OBJECT,
+              properties =
+                mapOf("a" to Schema(type = Type.STRING), "b" to Schema(type = Type.STRING)),
+              required = required.toList(),
+            )
+          )
+      )
+    val a = SchemaNode("a", outputSchema = anyOfObject("a", "b"))
+    val b = SchemaNode("b", inputSchema = anyOfObject("b", "a"))
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, a), Edge(a, b)))
+
+    // Assert
+    assertEquals(setOf("b"), graph.terminalNodeNames)
+  }
+
+  /** Still rejects a schema whose `required` names differ, not only their order. */
+  @Test
+  fun validateGraph_differentRequiredNames_isRejected() {
+    // Arrange
+    val consume = node("consume") { _, topic: RankedTopic -> topic.title }
+    val inferred = assertNotNull(consume.inputSchema)
+    val produce = SchemaNode("produce", outputSchema = inferred.copy(required = listOf("title")))
+
+    // Act
+    val error =
+      assertFailsWith<GraphValidationException> {
+        Graph.of(listOf(Edge(Start, produce), Edge(produce, consume)))
+      }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Schema mismatch on edge produce -> consume.")
+  }
+
+  /** A hand-written producer schema, open as written, fits a class whose fields it declares. */
+  @Test
+  fun validateGraph_openHandWrittenSchemaIntoInferredClass_isAccepted() {
+    // Arrange
+    val handWritten =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("title" to Schema(type = Type.STRING), "score" to Schema(type = Type.INTEGER)),
+        required = listOf("title", "score"),
+      )
+    val agentLike = SchemaNode("agent", outputSchema = handWritten)
+    val consume = node("consume") { _, topic: RankedTopic -> topic.title }
+
+    // Act
+    val graph = Graph.of(listOf(Edge(Start, agentLike), Edge(agentLike, consume)))
+
+    // Assert
+    assertEquals(setOf("consume"), graph.terminalNodeNames)
+  }
+
+  /** Accepts an edge when every value the producer's type admits fits the consumer's type. */
+  @Test
+  fun validateGraph_typedEdge_isAcceptedWhenEveryProducedValueFits() {
+    // Arrange
+    fun accepts(from: Node, to: Node): Boolean =
+      try {
+        val unused = Graph.of(listOf(Edge(Start, from), Edge(from, to)))
+        true
+      } catch (e: GraphValidationException) {
+        assertContains(e.message.orEmpty(), "Schema mismatch")
+        false
+      }
+
+    // Act
+    val results =
+      mapOf(
+        "Int -> Int?" to accepts(produce<Int>(1), consume<Int?>()),
+        "Int -> Double" to accepts(produce<Int>(1), consume<Double>()),
+        "List<Int> -> List<Double>" to
+          accepts(produce<List<Int>>(listOf(1)), consume<List<Double>>()),
+        "subset -> optional note" to
+          accepts(produce(FitBasicOrder("o1", 1.0)), consume<FitOrderWithNote>()),
+        "Int? -> Int" to accepts(produce<Int?>(1), consume<Int>()),
+        "String -> Int" to accepts(produce("1"), consume<Int>()),
+        "List<Int?> -> List<Int>" to accepts(produce<List<Int?>>(listOf(1)), consume<List<Int>>()),
+        "superset -> class" to
+          accepts(produce(FitFullOrder("o1", 1.0, "n")), consume<FitBasicOrder>()),
+        "disjoint -> all-optional" to
+          accepts(produce(FitBasicOrder("o1", 1.0)), consume<FitSettings>()),
+      )
+
+    // Assert
+    assertEquals(
+      mapOf(
+        "Int -> Int?" to true,
+        "Int -> Double" to true,
+        "List<Int> -> List<Double>" to true,
+        "subset -> optional note" to true,
+        "Int? -> Int" to false,
+        "String -> Int" to false,
+        "List<Int?> -> List<Int>" to false,
+        "superset -> class" to false,
+        "disjoint -> all-optional" to false,
+      ),
+      results,
+    )
+  }
+
+  /** Accepts that edge once the input is typed `Any?` or takes the producer's schema. */
+  @Test
+  fun validateGraph_intOutputIntoAnyOrMatchingSchemaInput_isAccepted() {
+    // Arrange
+    val produceInt = node<Any?, Int>("produce_int") { _, _ -> 1 }
+    val consumeAny = node("consume_any") { _, n: Any? -> n.toString() }
+    val consumeMatching =
+      node("consume_matching", inputSchema = produceInt.outputSchema) { _, n: Int? -> n }
+
+    // Act
+    val graph =
+      Graph.of(
+        listOf(
+          Edge(Start, produceInt),
+          Edge(produceInt, consumeAny),
+          Edge(produceInt, consumeMatching),
+        )
+      )
+
+    // Assert
+    assertEquals(setOf("consume_any", "consume_matching"), graph.terminalNodeNames)
   }
 }
