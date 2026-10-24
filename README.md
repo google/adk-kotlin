@@ -168,7 +168,9 @@ with `CompletableFuture` and Reactive Streams `Publisher`:
 -   **`PublisherRunner`** wraps a runner and streams events as a
     `Publisher<Event>`, which adapts in one line to RxJava
     (`Flowable.fromPublisher(...)`), Reactor (`Flux.from(...)`), or Spring
-    WebFlux.
+    WebFlux; `runLive` (experimental) does the same for a live conversation,
+    which ends when its `LiveRequestQueue` is closed or the model ends the
+    session.
 -   **`CompletableFutureSessionService`, `CompletableFutureArtifactService`, and
     `CompletableFutureMemoryService`** wrap a session, artifact, or memory
     service so that each call returns a `CompletableFuture`, which Reactor
