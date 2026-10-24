@@ -28,9 +28,11 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.api.gax.paging.Page
 import com.google.cloud.storage.Blob as GcsBlob
+import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
 import com.google.cloud.storage.Storage
 import com.google.cloud.storage.Storage.BlobListOption
+import com.google.cloud.storage.StorageException
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -42,6 +44,7 @@ import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
 import org.mockito.kotlin.stub
 import org.mockito.kotlin.verify
 
@@ -173,6 +176,75 @@ class GcsArtifactServiceTest {
         service.saveArtifact(SESSION_KEY, FILENAME, artifact)
       }
     assertThat(error).hasMessageThat().doesNotContain(FILENAME)
+  }
+
+  @Test
+  fun saveArtifact_listFailsWithNon404_propagatesError() = runTest {
+    val artifact =
+      Part(inlineData = Blob(data = "test content".toByteArray(), mimeType = "text/plain"))
+
+    storage.stub {
+      on { list(eq(bucketName), any<BlobListOption>()) } doThrow
+        StorageException(500, "Internal Server Error")
+    }
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        service.saveArtifact(SESSION_KEY, FILENAME, artifact)
+      }
+    assertThat(error).hasMessageThat().contains("HTTP 500")
+    assertThat(error).hasMessageThat().doesNotContain(FILENAME)
+    assertThat(error).hasMessageThat().doesNotContain(USER_ID)
+    assertThat(error).hasMessageThat().doesNotContain(SESSION_ID)
+    verify(storage, never())
+      .create(any<BlobInfo>(), any<ByteArray>(), any<Storage.BlobTargetOption>())
+  }
+
+  @Test
+  fun loadArtifact_listFailsWithNon404_propagatesError() = runTest {
+    storage.stub {
+      on { list(eq(bucketName), any<BlobListOption>()) } doThrow
+        StorageException(500, "Internal Server Error")
+    }
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        service.loadArtifact(SESSION_KEY, FILENAME, version = null)
+      }
+    assertThat(error).hasMessageThat().contains("HTTP 500")
+    assertThat(error).hasMessageThat().doesNotContain(FILENAME)
+    assertThat(error).hasMessageThat().doesNotContain(USER_ID)
+    assertThat(error).hasMessageThat().doesNotContain(SESSION_ID)
+  }
+
+  @Test
+  fun deleteArtifact_listFailsWithNon404_propagatesError() = runTest {
+    storage.stub {
+      on { list(eq(bucketName), any<BlobListOption>()) } doThrow
+        StorageException(500, "Internal Server Error")
+    }
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        service.deleteArtifact(SESSION_KEY, FILENAME)
+      }
+    assertThat(error).hasMessageThat().contains("HTTP 500")
+    assertThat(error).hasMessageThat().doesNotContain(FILENAME)
+    assertThat(error).hasMessageThat().doesNotContain(USER_ID)
+    assertThat(error).hasMessageThat().doesNotContain(SESSION_ID)
+    verify(storage, never()).delete(any<Iterable<BlobId>>())
+  }
+
+  @Test
+  fun listVersions_listFailsWith404_returnsEmptyList() = runTest {
+    storage.stub {
+      on { list(eq(bucketName), any<BlobListOption>()) } doThrow
+        StorageException(404, "Not Found")
+    }
+
+    val versions = service.listVersions(SESSION_KEY, FILENAME)
+
+    assertThat(versions).isEmpty()
   }
 
   private companion object {
