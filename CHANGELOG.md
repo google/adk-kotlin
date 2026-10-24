@@ -1,5 +1,70 @@
 # Changelog
 
+## [1.5.0](https://github.com/google/adk-kotlin/compare/v1.4.0...v1.5.0) (2026-10-24)
+
+
+### Features
+
+* add CompletableFuture wrappers for the session, artifact, and memory services ([2f50281](https://github.com/google/adk-kotlin/commit/2f502817381be4cb1ca152ad6b221eeeb45f7dc3))
+* add NodeInfo.name, runId, and parentRunId, and Event.nodeName ([408f038](https://github.com/google/adk-kotlin/commit/408f0386f24fd9079ae3abb86d94868bc6d95957))
+* add parallel worker fan-out to workflow nodes ([282c68a](https://github.com/google/adk-kotlin/commit/282c68ad8f80f56acd68177bd4b85bd707cac9cd))
+* **auth:** add an internal serializer for API key and HTTP credentials ([a8ee84c](https://github.com/google/adk-kotlin/commit/a8ee84c5fdb0720e05217cbe6acf69c28486fcc8))
+* **auth:** add AuthConfig ([c01be47](https://github.com/google/adk-kotlin/commit/c01be471d16242ebce053b6fab0fa8c3248083bc))
+* **auth:** add AuthScheme with API key and HTTP schemes ([855aed0](https://github.com/google/adk-kotlin/commit/855aed0db3ef39afae32afdb961f4adc9c496205))
+* **auth:** add the OAuth2 scheme ([68d89e7](https://github.com/google/adk-kotlin/commit/68d89e7374b93caabe73d9635afc422b642da446))
+* **auth:** add the OpenID Connect schemes ([d93eb79](https://github.com/google/adk-kotlin/commit/d93eb795fc8358052190e6f4e2801e3391933845))
+* Expand BigQueryAgentAnalyticsPlugin to support full agent execution lifecycle logging ([0ba6825](https://github.com/google/adk-kotlin/commit/0ba6825a8b05801c97b327be900f0a3e3f4fb59c))
+* **firebase:** bump Firebase BOM to 35.0.2 (firebase-ai 18.0.0) and add ADK usage label ([4426528](https://github.com/google/adk-kotlin/commit/4426528d4f7b0fdbb2c789bc2f9498168a81b46f))
+* let a typed node ask the user to approve a run ([b565666](https://github.com/google/adk-kotlin/commit/b565666ebd145cde83fe2abbabb662f305a561b4))
+* let a typed workflow node body ask for human input with requestInput ([af8ad2c](https://github.com/google/adk-kotlin/commit/af8ad2c02bec0b1eeeb38b255b892b8b83a97984))
+* **live:** add RunConfig.saveLiveBlob to record live audio as artifacts ([29694fa](https://github.com/google/adk-kotlin/commit/29694fa80641c2798b1d6bf4a1b7e90fbc38e27b))
+* **live:** add Runner.runLive, the public entrypoint ([79396fa](https://github.com/google/adk-kotlin/commit/79396fa1a3c4a979a9b95cdb26b26d013321de6e))
+* **live:** deliver a streaming tool's Events to the caller only ([0ee2f30](https://github.com/google/adk-kotlin/commit/0ee2f30befc547ff898d046ea70efc885b22987c))
+* **live:** persist user turns and resume live runs across connections ([f18c62c](https://github.com/google/adk-kotlin/commit/f18c62cc929e20af5726e3bd8c0fce3ab61e0cdc))
+* **live:** record a final answer for each stream that ends ([ec60fae](https://github.com/google/adk-kotlin/commit/ec60faea47fd3d4c57bd00d8d0663f8d432ba278))
+* **live:** run SequentialAgent in live mode ([c65cc1b](https://github.com/google/adk-kotlin/commit/c65cc1bc137fe247839500f34bda6b3e2efc0891))
+* **live:** stream a repeated tool call once ([0355356](https://github.com/google/adk-kotlin/commit/0355356e47e2a622212f4f6abb2ae5dfd3bcd9b8))
+* **live:** stream results from tools that return a Flow ([3f1afd0](https://github.com/google/adk-kotlin/commit/3f1afd0c0be8d3cbb511519af3cc2dd1fa2dd456))
+* **live:** support transfer_to_agent in live runs ([2a087fd](https://github.com/google/adk-kotlin/commit/2a087fd1e9c7622bf96b026ad70f4472e4c39b14))
+* move BigQuery agent analytics to its own integrations-bigquery module ([5383188](https://github.com/google/adk-kotlin/commit/5383188b7029e9da066b2607f95e1584e927c831))
+* reject a workflow node output that has no JSON form at the node ([c40cc40](https://github.com/google/adk-kotlin/commit/c40cc409e127b6011e42106c26a32e5cc82769e8))
+* replay finished workflow children when a node retries ([7b26476](https://github.com/google/adk-kotlin/commit/7b2647603dc0c9f27e2103cbdfbc51de3602d141))
+* **schema:** read schema values as JSON and check schema compatibility ([e7e9541](https://github.com/google/adk-kotlin/commit/e7e9541dfcfa73d98c809fbbfa8f6e95a1b9278c))
+* **sessions:** add an optional read cache to BufferedSessionService ([34f0016](https://github.com/google/adk-kotlin/commit/34f001672c6d89614875bd66b711cc6a6611d930))
+* **sessions:** add BufferedSessionService to persist session writes in the background ([1fc0124](https://github.com/google/adk-kotlin/commit/1fc01247a9a19c73b2122f96431142c48300a978))
+* typed workflow node outputs travel as JSON, with Context.setOutput ([8b21add](https://github.com/google/adk-kotlin/commit/8b21add4ed3e992254b1502ddb0d52c6695d9762))
+* **types:** add Schema.additionalProperties ([5381372](https://github.com/google/adk-kotlin/commit/538137200eae4db55327cec1fada1efb2eec8920))
+* **workflow:** Java interop for FunctionNode ([1955435](https://github.com/google/adk-kotlin/commit/19554358f3e963f3a49505327ad255464e8c1087))
+* **workflow:** make a returned Content a function node's output and reject other output paths ([32a7482](https://github.com/google/adk-kotlin/commit/32a7482a98bf19292953e577f5118b88a3ce7cf7))
+
+
+### Bug Fixes
+
+* bump LiteRT-LM to 0.16.1 and support 0.15 through 0.18.1 ([60c4527](https://github.com/google/adk-kotlin/commit/60c4527fd6124e4a91f5e1ddd453b4e1c89ff6b1))
+* extend tracking headers on Vertex AI OpenAI-compatible and Claude calls ([7e60b20](https://github.com/google/adk-kotlin/commit/7e60b2019987bc011b5a335fff12343bcdd75731))
+* hold the retry limit when another callback answers the error ([d89b915](https://github.com/google/adk-kotlin/commit/d89b915eca0d8d771d36bfe32a0981daa3504768))
+* keep model output out of LlmAgent's outputSchema mismatch log ([bd056b2](https://github.com/google/adk-kotlin/commit/bd056b2a7d4d4c05a14735688a9bf8c477b6d96c))
+* keep temp: state for the rest of an invocation in workflows ([a995844](https://github.com/google/adk-kotlin/commit/a99584486f4db51f0715dae18d6a89f05701da47))
+* **live:** run before-model callbacks on speech before after-model callbacks can transfer ([ec8c9a1](https://github.com/google/adk-kotlin/commit/ec8c9a13eeaf3ba2c829d874ba7dbed22c80ac6e))
+* **live:** screen the user's speech before any tool call runs ([b55f16d](https://github.com/google/adk-kotlin/commit/b55f16d7b8167c77d804b36150908bd43c321d2c))
+* **live:** start no stream answered alongside a handover ([d595404](https://github.com/google/adk-kotlin/commit/d595404fc5928428e15fdec3b8155e0c07b73f99))
+* make the experimental Workflow.runAsync internal so workflows run only through a Runner ([d9dfe23](https://github.com/google/adk-kotlin/commit/d9dfe230822cd6cc5aa5fd93ad8979c349735bce))
+* omit caller values from artifact and Vertex AI session errors ([a1eff64](https://github.com/google/adk-kotlin/commit/a1eff643a8ad896b4544ce4d9cf4c4292be0a9b6))
+* pass an explicit cause to SendChannel.close for coroutines before 1.11 ([39856c3](https://github.com/google/adk-kotlin/commit/39856c34e47b607134ed7943c407c992f53b8576))
+* reject routing-map entries started after the routing map is built ([c6b8393](https://github.com/google/adk-kotlin/commit/c6b8393da722a840ce0f7109953c43872760052a))
+* restrict transfer_to_agent to sub-agents, parent, and peers ([70b9409](https://github.com/google/adk-kotlin/commit/70b9409cb132ea09b2b66f6f587ee4133855accf))
+* run afterRun when the caller stops collecting early ([1fdb56a](https://github.com/google/adk-kotlin/commit/1fdb56a6b27c95831f1f6e02e18e7542724e2c36))
+* run Vertex AI session and memory services on Ktor's OkHttp engine ([9897bab](https://github.com/google/adk-kotlin/commit/9897bab39f0840a97fd1561b1a9fc6c5b78f5dba))
+* send one ADK tag and one Kotlin tag on every Gemini request ([a9011cb](https://github.com/google/adk-kotlin/commit/a9011cb3900a25594bafca5fca5d853690859b0d))
+* **sessions:** complete buffered writes in order when BufferedSessionService stops ([68ce04d](https://github.com/google/adk-kotlin/commit/68ce04dac10281cf582416d7f1bf2d1af08bac47))
+
+
+### Documentation
+
+* **examples:** add a BufferedSessionService example ([1e4c074](https://github.com/google/adk-kotlin/commit/1e4c074570eda01a18781c2d30e646468a328a50))
+* **examples:** add an example for the read cache of BufferedSessionService ([34d90e3](https://github.com/google/adk-kotlin/commit/34d90e3aee88ce05bf18f96552fbd76934597633))
+* run Gemini on Vertex AI with gemini-3.8-flash ([7d9248f](https://github.com/google/adk-kotlin/commit/7d9248f6a8ef5aad6149d3bb12f762652b2af598))
+
 ## [1.4.0](https://github.com/google/adk-kotlin/compare/v1.3.0...v1.4.0) (2026-10-14)
 
 
