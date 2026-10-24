@@ -17,14 +17,17 @@
 package com.google.adk.kt.interop
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.runners.Runner
 import com.google.adk.kt.types.Content
+import com.google.errorprone.annotations.CheckReturnValue
 import java.util.concurrent.CompletableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +81,33 @@ class PublisherRunner private constructor(private val delegate: Runner) : AutoCl
       .asPublisher()
 
   /**
+   * Experimental: runs the agent over a live connection, streaming the whole conversation's events
+   * (see [Runner.runLive]). Each subscription starts its own run, which ends when
+   * [liveRequestQueue] is closed or the model ends the session; cancelling the subscription closes
+   * the connection and leaves the queue open. Events arrive on [Dispatchers.IO], never on the
+   * thread that sends to the queue; hand slow work in `onNext` to your own executor.
+   */
+  @CheckReturnValue
+  @JvmOverloads
+  // Not Unconfined (uses the sending thread) or Default (blocking holds a CPU thread).
+  @Suppress("GlobalCoroutineDispatchers")
+  @ExperimentalLiveApi
+  fun runLive(
+    userId: String,
+    sessionId: String,
+    liveRequestQueue: LiveRequestQueue,
+    runConfig: RunConfig? = null,
+  ): Publisher<Event> =
+    delegate
+      .runLive(
+        userId = userId,
+        sessionId = sessionId,
+        liveRequestQueue = liveRequestQueue,
+        runConfig = runConfig,
+      )
+      .asPublisher(Dispatchers.IO)
+
+  /**
    * Rewinds the session to before [rewindBeforeInvocationId]; see [Runner.rewindAsync]. The
    * returned future completes once the rewind has been applied.
    */
@@ -90,6 +120,10 @@ class PublisherRunner private constructor(private val delegate: Runner) : AutoCl
     null
   }
 
+  /**
+   * Closes the runner and cancels pending rewinds, but not runs in flight; cancel their
+   * subscriptions first.
+   */
   override fun close() {
     scope.cancel()
     delegate.close()
