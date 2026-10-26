@@ -52,10 +52,16 @@ import com.google.adk.kt.types.Transcription
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -64,8 +70,10 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 
 /** Drives whole live runs through the public runner against scripted presets of real traffic. */
@@ -793,6 +801,359 @@ class LiveRunIntegrationTest {
         runner.sessionService.getSession(SessionKey(runner.appName, USER_ID, SESSION_ID))
       assertThat(session?.events?.count { it.branch == "first@c1" }).isEqualTo(2)
     }
+
+  /** A declared `stop_streaming` tool, whose body answers "ran" if it ever runs. */
+  private fun stopStreamingTool() = DummyTool(name = "stop_streaming") { _, _ -> "ran" }
+
+  /** The model calling `stop_streaming` on the tool [name], as call [id]. */
+  private fun stopStreamingCall(name: String, id: String) =
+    Respond(modelFunctionCallResponse("stop_streaming", mapOf("function_name" to name), id = id))
+
+  /** The answer to a `stop_streaming` call that stopped the tool [name]. */
+  private fun stopStreamingAnswer(name: String) =
+    mapOf("status" to "Successfully stopped streaming function $name")
+
+  /** A `monitor` tool that winds down slowly once cancelled, first completing [cancelled]. */
+  private fun stubbornTool(cancelled: CompletableDeferred<Unit>? = null) =
+    DummyTool(name = "monitor") { _, _ ->
+      flow<String> {
+        try {
+          awaitCancellation()
+        } finally {
+          cancelled?.complete(Unit)
+          // Outlasts the one-second stop timeout.
+          withContext(NonCancellable) { delay(1500.milliseconds) }
+        }
+      }
+    }
+
+  @Test
+  fun runLive_stopStreaming_stopsEveryRunningCallOfThatTool() {
+    runBlocking {
+      val first = CompletableDeferred<Unit>()
+      val second = CompletableDeferred<Unit>()
+      val cancellations = ArrayDeque(listOf(first, second))
+      val monitor =
+        DummyTool(name = "monitor") { _, _ -> endlessStream(cancellations.removeFirst()) }
+      var stopBodyRan = false
+      val stopStreaming =
+        DummyTool(name = "stop_streaming") { _, _ ->
+          stopBodyRan = true
+          "ran"
+        }
+      val script =
+        listOf(
+          // Different arguments, since a repeat of a call that still streams starts nothing.
+          Respond(modelFunctionCallResponse("monitor", mapOf("symbol" to "gold"), id = "c1")),
+          AwaitSent("the first pending answer", answers("c1", PENDING)),
+          Respond(modelFunctionCallResponse("monitor", mapOf("symbol" to "silver"), id = "c2")),
+          AwaitSent("the second pending answer", answers("c2", PENDING)),
+          stopStreamingCall("monitor", "s1"),
+          AwaitSent("the stop answer", answers("s1", stopStreamingAnswer("monitor"))),
+          stopStreamingCall("monitor", "s2"),
+          AwaitSent(
+            "the second stop answer",
+            answers("s2", mapOf("status" to "No active streaming function named monitor found")),
+          ),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val (runner, _) = runnerFor(script, tools = listOf(monitor, stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      assertThat(first.isCompleted).isTrue()
+      assertThat(second.isCompleted).isTrue()
+      assertThat(stopBodyRan).isFalse()
+    }
+  }
+
+  @Test
+  fun runLive_identicalCallAfterAStop_startsANewStream() {
+    runBlocking {
+      val streams = MutableStateFlow(0)
+      val gold = mapOf("symbol" to "gold")
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", gold, id = "c1")),
+          AwaitSent("the first value", answers("c1", mapOf("result" to "watching gold"))),
+          stopStreamingCall("monitor", "s1"),
+          AwaitSent("the stop answer", answers("s1", stopStreamingAnswer("monitor"))),
+          Respond(modelFunctionCallResponse("monitor", gold, id = "c2")),
+          AwaitSent("the new pending answer", answers("c2", PENDING)),
+          AwaitSent("the new stream's value", answers("c2", mapOf("result" to "watching gold"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) = runnerFor(script, tools = listOf(watchingTool(streams), stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      model.connections.single().assertAllWaitsMet()
+      assertThat(streams.value).isEqualTo(2)
+    }
+  }
+
+  @Test
+  fun runLive_streamStoppedByStopStreaming_getsNoStoppedRecordAtTheRunsEnd() {
+    runBlocking {
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer", answers("c1", PENDING)),
+          stopStreamingCall("monitor", "s1"),
+          AwaitSent("the stop answer", answers("s1", stopStreamingAnswer("monitor"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) =
+        runnerFor(script, tools = listOf(endlessTool(CompletableDeferred()), stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      model.connections.single().assertAllWaitsMet()
+      // The stop call's own answer is the record; the stopped call gets nothing extra.
+      assertThat(runner.stoppedCallIds()).isEmpty()
+    }
+  }
+
+  @Test
+  fun runLive_stubbornStreamStoppedByStopStreaming_getsNoStoppedRecordAtTheRunsEnd() {
+    runBlocking {
+      // Still winding down when the run ends, so its final stop finds it cancelled but running.
+      val stubborn = stubbornTool()
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer", answers("c1", PENDING)),
+          stopStreamingCall("monitor", "s1"),
+          AwaitSent(
+            "the stop answer",
+            answers("s1", mapOf("status" to "The task is not cancelled yet for monitor.")),
+          ),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) = runnerFor(script, tools = listOf(stubborn, stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      model.connections.single().assertAllWaitsMet()
+      // The stop call's answer already speaks for it; a second, conflicting record would mislead.
+      assertThat(runner.stoppedCallIds()).isEmpty()
+    }
+  }
+
+  @Test
+  fun runLive_stoppedToolFailsWhileStopping_answersOnlyThatItStopped() {
+    runBlocking {
+      val failing =
+        DummyTool(name = "monitor") { _, _ ->
+          flow<String> {
+            try {
+              awaitCancellation()
+            } catch (e: CancellationException) {
+              throw IllegalStateException("cleanup failed", e)
+            }
+          }
+        }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer", answers("c1", PENDING)),
+          stopStreamingCall("monitor", "s1"),
+          AwaitSent("the stop answer", answers("s1", stopStreamingAnswer("monitor"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) = runnerFor(script, tools = listOf(failing, stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      model.connections.single().assertAllWaitsMet()
+      // A failure while stopping is only logged; c1 gets no answer beyond pending.
+      assertThat(model.toolAnswers().filter { it.id == "c1" }.map { it.response })
+        .containsExactly(PENDING)
+    }
+  }
+
+  @Test
+  fun runLive_stopStreamingInJavaSpelling_stopsTheTool() {
+    runBlocking {
+      val cancelled = CompletableDeferred<Unit>()
+      var stopBodyRan = false
+      val stopStreaming =
+        DummyTool(name = "stopStreaming") { _, _ ->
+          stopBodyRan = true
+          "ran"
+        }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer", answers("c1", PENDING)),
+          Respond(
+            modelFunctionCallResponse(
+              "stopStreaming",
+              mapOf("functionName" to "monitor"),
+              id = "s1",
+            )
+          ),
+          AwaitSent("the stop answer", answers("s1", stopStreamingAnswer("monitor"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val (runner, _) = runnerFor(script, tools = listOf(endlessTool(cancelled), stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      assertThat(cancelled.isCompleted).isTrue()
+      assertThat(stopBodyRan).isFalse()
+    }
+  }
+
+  @Test
+  fun runLive_stopStreamingWithMixedSpelling_runsAsAnOrdinaryTool() {
+    runBlocking {
+      // Each spelling pairs a tool name with its own argument; a mixed pair is not intercepted.
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer", answers("c1", PENDING)),
+          Respond(
+            modelFunctionCallResponse(
+              "stop_streaming",
+              mapOf("functionName" to "monitor"),
+              id = "s1",
+            )
+          ),
+          AwaitSent("the tool's own answer", answers("s1", mapOf("result" to "ran"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) =
+        runnerFor(script, tools = listOf(endlessTool(CompletableDeferred()), stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      model.connections.single().assertAllWaitsMet()
+    }
+  }
+
+  @Test
+  fun runLive_stopStreamingWithANonStringName_failsTheRun() {
+    runBlocking {
+      val script =
+        listOf(
+          Respond(
+            modelFunctionCallResponse("stop_streaming", mapOf("function_name" to 7), id = "s1")
+          ),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, _) = runnerFor(script, tools = listOf(stopStreaming))
+
+      val failure = assertFailsWith<IllegalArgumentException> { runner.runUntilTurnComplete() }
+
+      assertThat(failure)
+        .hasMessageThat()
+        .isEqualTo("stop_streaming requires a string function_name.")
+    }
+  }
+
+  @Test
+  fun runLive_stopStreamingAFlowThatIgnoresCancellation_stopsItAtItsNextValue() {
+    runBlocking {
+      // Never checks for cancellation itself, so only the check between values can stop it.
+      val busy =
+        object : Flow<String> {
+          override suspend fun collect(collector: FlowCollector<String>) {
+            for (i in 1..50) {
+              withContext(NonCancellable) { delay(40.milliseconds) }
+              collector.emit("v$i")
+            }
+          }
+        }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the first value", answers("c1", mapOf("result" to "v1"))),
+          stopStreamingCall("monitor", "s1"),
+          AwaitSent("the stop answer", answers("s1", stopStreamingAnswer("monitor"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) =
+        runnerFor(
+          script,
+          tools = listOf(DummyTool(name = "monitor") { _, _ -> busy }, stopStreaming),
+        )
+
+      val unused = runner.runUntilTurnComplete()
+
+      val sent = model.connections.single().sent
+      val stopAnswer = sent.indexOfFirst { message -> message.toolAnswers().any { it.id == "s1" } }
+      assertThat(sent.drop(stopAnswer + 1).flatMap { it.toolAnswers() }.map { it.id })
+        .doesNotContain("c1")
+    }
+  }
+
+  @Test
+  fun runLive_callerStopsCollectingWhileAStopWaits_endsWithoutAnsweringTheStop() {
+    runBlocking {
+      val cancelled = CompletableDeferred<Unit>()
+      val stubborn = stubbornTool(cancelled)
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the pending answer", answers("c1", PENDING)),
+          stopStreamingCall("monitor", "s1"),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) = runnerFor(script, tools = listOf(stubborn, stopStreaming))
+
+      val run = launch {
+        runner.runLive(USER_ID, SESSION_ID, LiveRequestQueue(), liveConfig()).collect {}
+      }
+      // Only the stop cancels the tool, so once its cleanup starts the stop is in its wait.
+      cancelled.await()
+      run.cancelAndJoin()
+
+      assertThat(model.connections.single().sent.flatMap { it.toolAnswers() }.map { it.id })
+        .doesNotContain("s1")
+    }
+  }
+
+  @Test
+  fun runLive_stopStreamingBeforeTheStreamStarted_leavesNothingForASecondStop() {
+    runBlocking {
+      val monitorCall =
+        Part(functionCall = FunctionCall(name = "monitor", args = emptyMap(), id = "c1"))
+      val stopCall =
+        Part(
+          functionCall =
+            FunctionCall(
+              name = "stop_streaming",
+              args = mapOf("function_name" to "monitor"),
+              id = "s1",
+            )
+        )
+      val none = mapOf("status" to "No active streaming function named monitor found")
+      // Both calls in one turn, so the stop lands before the stream's pending answer is queued.
+      val script =
+        listOf(
+          Respond(LlmResponse(content = Content(Role.MODEL, listOf(monitorCall, stopCall)))),
+          AwaitSent("the first stop answer", answers("s1", stopStreamingAnswer("monitor"))),
+          stopStreamingCall("monitor", "s2"),
+          AwaitSent("the second stop answer", answers("s2", none)),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val stopStreaming = stopStreamingTool()
+      val (runner, model) =
+        runnerFor(script, tools = listOf(endlessTool(CompletableDeferred()), stopStreaming))
+
+      val unused = runner.runUntilTurnComplete()
+
+      model.connections.single().assertAllWaitsMet()
+    }
+  }
 
   companion object {
     private const val USER_ID = "user"

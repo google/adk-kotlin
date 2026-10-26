@@ -21,6 +21,7 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.TurnBasedToolRunner
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.EventActions
@@ -58,10 +59,11 @@ import kotlinx.coroutines.flow.flow
  * none. The tool validates its own arguments in [BaseTool.run], as it does when a model calls it.
  *
  * **Output.** The tool's return value, unchanged, is the node's output; a tool that returns
- * nothing, including a long-running tool that defers its result, gives the node no output. The
- * tool's state and artifact changes travel on the node's output event. Actions that only a model
- * call can honor are dropped: a confirmation request, an agent transfer, and the skip-summarization
- * flag.
+ * nothing, including a long-running tool that defers its result, gives the node no output. A tool
+ * that returns a [Flow] outputs the flow's one value, after the
+ * [Event][com.google.adk.kt.events.Event]s it emits. The tool's state and artifact changes travel
+ * on the node's output event. Actions that only a model call can honor are dropped: a confirmation
+ * request, an agent transfer, and the skip-summarization flag.
  *
  * **Errors.** An exception the tool throws fails the node, and the retry policy in `config`
  * applies. A retry runs the tool again, so a tool with side effects should be safe to repeat. A
@@ -100,7 +102,14 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
       if (param !in args && param in state) args[param] = state[param]
     }
     val toolContext = ToolContext(context.invocationContext, functionCallId = Uuid.random())
-    val result = tool.run(toolContext, args)
+    // A returned Flow outputs its one value after its events, as in an agent's turn.
+    val result =
+      TurnBasedToolRunner().runThenEmitEvents({ event ->
+        // The node, not the tool's events, decides where the graph goes.
+        emit(event.copy(actions = event.actions.copy(route = null, transferToAgent = null)))
+      }) { runner ->
+        runner(tool, toolContext, args)
+      }
     // Only the tool's deltas carry over; a node can't honor its other actions, such as a transfer.
     context.mergeEventActions(
       EventActions(

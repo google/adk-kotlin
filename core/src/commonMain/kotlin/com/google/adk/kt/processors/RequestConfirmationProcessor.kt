@@ -17,6 +17,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.TurnBasedToolRunner
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
@@ -175,14 +176,17 @@ internal class RequestConfirmationProcessor : LlmRequestProcessor {
     if (pending.isEmpty()) return request
 
     // Re-execute the original calls with the confirmations, and emit the resulting events.
-    context
-      .handleFunctionCalls(
-        functionCalls = pending.values.map { it.originalCall },
-        tools = agent.tools.associateBy { it.name },
-        filters = pending.keys,
-        toolConfirmations = pending.mapValues { it.value.confirmation },
-      )
-      ?.let { emitEvent(it) }
+    val response =
+      TurnBasedToolRunner().runThenEmitEvents(emitEvent) { runner ->
+        context.handleFunctionCallsWith(
+          functionCalls = pending.values.map { it.originalCall },
+          tools = agent.tools.associateBy { it.name },
+          filters = pending.keys,
+          toolConfirmations = pending.mapValues { it.value.confirmation },
+          toolRunner = runner,
+        )
+      }
+    if (response != null) emitEvent(response)
 
     return request
   }

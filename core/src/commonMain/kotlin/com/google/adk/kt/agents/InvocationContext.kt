@@ -510,7 +510,9 @@ data class InvocationContext(
    * Processes a list of function calls by executing them efficiently and safely.
    *
    * This handles parallel execution, argument conversion, error processing, and merging all
-   * resulting [EventActions] and standard outputs.
+   * resulting [EventActions] and standard outputs. A tool returning a
+   * [kotlinx.coroutines.flow.Flow] answers with its single value; this function drops the flow's
+   * emitted events, since it returns only the merged response [Event].
    *
    * @param functionCalls List of [FunctionCall] instances to process.
    * @param tools A mapping from tool name to the available [BaseTool] instance.
@@ -524,7 +526,14 @@ data class InvocationContext(
     tools: Map<String, BaseTool>,
     filters: Set<String> = emptySet(),
     toolConfirmations: Map<String, ToolConfirmation>? = null,
-  ): Event? = handleFunctionCallsWith(functionCalls, tools, filters, toolConfirmations.orEmpty())
+  ): Event? =
+    handleFunctionCallsWith(
+      functionCalls,
+      tools,
+      filters,
+      toolConfirmations.orEmpty(),
+      TurnBasedToolRunner()::run,
+    )
 
   /** As [handleFunctionCalls], running each resolved tool through [toolRunner]. */
   @Suppress("UnsafeCoroutineCrossing")
@@ -972,11 +981,17 @@ data class ContextFrameworkData(
 internal fun RunConfig.forNewLiveSession(): RunConfig =
   copy(live = live.copy(sessionResumption = live.sessionResumption?.copy(handle = null)))
 
-/** Runs one resolved tool call and returns its result, so a live run can stream a returned Flow. */
+/**
+ * Runs one resolved tool call and returns its result, so live and turn-based runs can treat a
+ * returned [kotlinx.coroutines.flow.Flow] differently.
+ */
 internal typealias ToolRunner =
   suspend (tool: BaseTool, context: ToolContext, args: Map<String, Any?>) -> Any
 
-/** Calls [BaseTool.run] as is; every run but a live one uses it. */
+/**
+ * Calls [BaseTool.run] as is, for a caller of [InvocationContext.executeSingleFunctionCall] that
+ * brings no runner.
+ */
 @get:JvmSynthetic
 internal val DEFAULT_TOOL_RUNNER: ToolRunner = { tool, context, args -> tool.run(context, args) }
 

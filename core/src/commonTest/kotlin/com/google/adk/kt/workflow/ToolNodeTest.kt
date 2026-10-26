@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
@@ -444,6 +445,151 @@ class ToolNodeTest {
     val writerEvent = events.single { it.nodeInfo?.path == "wf@1/writer@1" }
     assertNull(writerEvent.output)
     assertEquals(mapOf<String, Any>("color" to "blue"), writerEvent.actions.stateDelta.toMap())
+  }
+
+  @Test
+  fun run_toolReturnsFlow_outputsItsOneValueAfterItsEvents() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(Event(content = Content.fromText(Role.MODEL, "Working")), mapOf("rows" to 42))
+        }
+        .asNode()
+
+    // Act
+    val events = runToolAfter(null, tool)
+
+    // Assert
+    val output = events.indexOfFirst { it.nodeInfo?.path == "wf@1/analyze@1" && it.output != null }
+    assertEquals(mapOf("rows" to 42), events[output].output)
+    val progress = events.indexOfFirst { it.content?.text() == "Working" }
+    assertTrue(progress in 0 until output, "the tool's event should precede the node's output")
+    // The workflow authors every node event, so check which node emitted it instead of its author.
+    assertEquals("wf@1/analyze@1", events[progress].nodeInfo?.path)
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesRouteAndTransfer_neitherSteersTheWorkflow() {
+    // Arrange: under its default name the node shares the tool's name, which authors the event.
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          val steering =
+            EventActions(route = listOf(Route.Tag("yes")), transferToAgent = "elsewhere")
+          flowOf(
+            Event(content = Content.fromText(Role.MODEL, "Working"), actions = steering),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+    val yes = ToolNodeCapture("yes")
+    val other = ToolNodeCapture("other")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, tool),
+            Edge(tool, yes, Route.Tag("yes")),
+            Edge(tool, other, Route.Default),
+          ),
+      )
+
+    // Act
+    val events = runWorkflow(workflow)
+
+    // Assert
+    assertTrue(
+      events.none { it.nodeInfo?.path == "wf@1/yes@1" },
+      "the tool's event should not route the workflow",
+    )
+    assertEquals(mapOf("received" to mapOf("rows" to 42)), events.outputAt("wf@1/other@1"))
+    assertTrue(events.none { it.actions.transferToAgent != null })
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesAnOutput_nodeOutputsTheFlowsValue() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(content = Content.fromText(Role.MODEL, "Working"), output = "meta"),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+
+    // Act
+    val events = runToolAfter(null, tool)
+
+    // Assert
+    val outputs = events.filter { it.nodeInfo?.path == "wf@1/analyze@1" }.mapNotNull { it.output }
+    assertEquals(listOf<Any>(mapOf("rows" to 42)), outputs)
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesAnOutputAndNoValue_nodeHasNoOutput() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(Event(content = Content.fromText(Role.MODEL, "Working"), output = "meta"))
+        }
+        .asNode()
+
+    // Act
+    val events = runToolAfter(null, tool)
+
+    // Assert
+    val nodeEvents = events.filter { it.nodeInfo?.path == "wf@1/analyze@1" }
+    assertTrue(nodeEvents.any { it.content?.text() == "Working" })
+    assertTrue(nodeEvents.all { it.output == null })
+    assertTrue(events.none { it.errorCode != null })
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesMessageAsOutput_nodeOutputsTheFlowsValue() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(
+              content = Content.fromText(Role.MODEL, "Working"),
+              nodeInfo = NodeInfo(messageAsOutput = true),
+            ),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+
+    // Act
+    val events = runToolAfter(null, tool)
+
+    // Assert
+    val outputs = events.filter { it.nodeInfo?.path == "wf@1/analyze@1" }.mapNotNull { it.output }
+    assertEquals(listOf<Any>(mapOf("rows" to 42)), outputs)
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesLongRunningIds_workflowDoesNotPause() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(
+              content = Content.fromText(Role.MODEL, "Working"),
+              longRunningToolIds = setOf("x"),
+            ),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+    val capture = ToolNodeCapture("capture")
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, tool), Edge(tool, capture)))
+
+    // Act
+    val events = runWorkflow(workflow)
+
+    // Assert: a paused node never hands its output on, so the capture node would not run.
+    assertEquals(mapOf("received" to mapOf("rows" to 42)), events.outputAt("wf@1/capture@1"))
   }
 
   @Test
