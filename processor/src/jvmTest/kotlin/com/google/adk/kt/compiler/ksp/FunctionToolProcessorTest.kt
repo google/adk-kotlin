@@ -19,18 +19,41 @@ package com.google.adk.kt.compiler.ksp
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.StreamingMode
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
+import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.DummyLiveModel
+import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
+import com.google.adk.kt.testing.DummyLiveStep.Respond
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -48,6 +71,19 @@ class FunctionToolProcessorTest {
     val agent = SimpleAgent()
     val invocationContext = InvocationContext(session = session, runConfig = null, agent = agent)
     return ToolContext(invocationContext = invocationContext, functionCallId = functionCallId)
+  }
+
+  /** Calls [toolName], then answers with text once the request carries the tool's answer. */
+  private class CallThenAnswerModel(private val toolName: String) : Model {
+    override val name = "call-then-answer"
+
+    override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
+      val answered = request.contents.lastOrNull()?.parts?.any { it.functionResponse != null }
+      emit(
+        if (answered == true) LlmResponse(content = modelMessage("done"))
+        else modelFunctionCallResponse(toolName)
+      )
+    }
   }
 
   @Test
@@ -482,6 +518,149 @@ class FunctionToolProcessorTest {
 
     assertThat(result).isEqualTo(mapOf("result" to "test:Alice"))
   }
+
+  @Test
+  fun execute_toolReturningAFlowOfStrings_wrapsEachValueAsAResult() {
+    runBlocking {
+      val result =
+        StreamToolTool()
+          .execute(createDummyContext(functionCallId = "c1"), mapOf("symbol" to "GOOG"))
+
+      assertThat((result as Flow<*>).toList())
+        .containsExactly(mapOf("result" to "c1 GOOG 300"), mapOf("result" to "GOOG 400"))
+        .inOrder()
+    }
+  }
+
+  @Test
+  fun execute_toolReturningAFlowOfMaps_returnsTheirValues() {
+    runBlocking {
+      val result = StreamMapToolTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList())
+        .containsExactly(
+          mapOf("result" to mapOf("price" to 300)),
+          mapOf("result" to mapOf("price" to 400)),
+        )
+        .inOrder()
+    }
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun runLive_generatedToolReturningAFlow_streamsItsValues() {
+    runBlocking {
+      val pending =
+        mapOf("status" to "The function is running asynchronously and the results are pending.")
+      fun answers(id: String, response: Map<String, Any?>): (Any) -> Boolean = { message ->
+        message is ContentInput &&
+          message.content.parts.any {
+            it.functionResponse?.id == id && it.functionResponse?.response == response
+          }
+      }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("streamTool", mapOf("symbol" to "GOOG"), id = "c1")),
+          AwaitSent("the pending answer", answers("c1", pending)),
+          AwaitSent("the first value", answers("c1", mapOf("result" to "c1 GOOG 300"))),
+          AwaitSent("the second value", answers("c1", mapOf("result" to "GOOG 400"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(StreamToolTool()))
+      val queue = LiveRequestQueue()
+
+      val unused =
+        InMemoryRunner(agent = agent)
+          .runLive("u", "s", queue, RunConfig(streamingMode = StreamingMode.BIDI))
+          .onEach { if (it.turnComplete) queue.close() }
+          .toList()
+
+      model.connections.single().assertAllWaitsMet()
+    }
+  }
+
+  @Test
+  fun execute_toolReturningAFlowOfDataClasses_shapesEachLikeASingleResult() {
+    runBlocking {
+      val result = StreamQuotesTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList())
+        .containsExactly(mapOf("result" to mapOf("symbol" to "GOOG", "price" to 300)))
+    }
+  }
+
+  @Test
+  fun execute_toolReturningAFlowOfNullableStrings_leavesNullUnwrapped() {
+    runBlocking {
+      val result = StreamMaybeTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList())
+        .containsExactly(null, mapOf("result" to "ready"))
+        .inOrder()
+    }
+  }
+
+  @Test
+  fun runAsync_generatedToolReturningNullThenAValue_answersWithTheValue() {
+    runBlocking {
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model = CallThenAnswerModel("streamMaybe"),
+          tools = listOf(StreamMaybeTool()),
+        )
+
+      val events =
+        InMemoryRunner(agent = agent).runAsync("u", "s", newMessage = userMessage("go")).toList()
+
+      assertThat(events.flatMap { it.functionResponses() }.single().response)
+        .isEqualTo(mapOf("result" to "ready"))
+    }
+  }
+
+  @Test
+  fun execute_toolReturningAFlowOfAny_passesItsValuesThroughUnconverted() {
+    runBlocking {
+      val result = StreamMixedTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList()).containsExactly(mixedEvent, "done").inOrder()
+    }
+  }
+
+  @Test
+  fun execute_toolReturningAFlowOfEvents_passesThemThroughUnconverted() {
+    runBlocking {
+      val result = StreamEventsTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).toList()).containsExactly(mixedEvent)
+    }
+  }
+
+  @Test
+  fun execute_toolReturningAStateFlow_streamsItLikeAFlow() {
+    runBlocking {
+      val result = StreamStateTool().execute(createDummyContext(), emptyMap())
+
+      assertThat((result as Flow<*>).first()).isEqualTo(mapOf("result" to "ready"))
+    }
+  }
+
+  @Test
+  fun declaration_toolsReturningAFlow_describeOneValueLikeASingleResult() {
+    assertThat(StreamToolTool().declaration()!!.response?.properties?.get("result")?.type)
+      .isEqualTo(Type.STRING)
+    assertThat(
+        StreamQuotesTool().declaration()!!.response?.properties?.get("result")?.properties?.keys
+      )
+      .containsExactly("symbol", "price")
+  }
+
+  @Test
+  fun declaration_toolsReturningAFlowOfEventsOrAny_declareNoResponse() {
+    assertThat(StreamMixedTool().declaration()!!.response).isNull()
+    assertThat(StreamEventsTool().declaration()!!.response).isNull()
+  }
 }
 
 // -- Test Fixtures --
@@ -680,3 +859,24 @@ fun requiredOverrideTool(@Param(required = Requiredness.REQUIRED) maybe: String?
 @Tool
 fun optionalOverrideTool(@Param(required = Requiredness.OPTIONAL) note: String?): String =
   "note=$note"
+
+@Tool
+fun streamTool(context: ToolContext, symbol: String): Flow<String> =
+  flowOf("${context.functionCallId} $symbol 300", "$symbol 400")
+
+@Tool
+fun streamMapTool(): Flow<Map<String, Any>> = flowOf(mapOf("price" to 300), mapOf("price" to 400))
+
+data class Quote(val symbol: String, val price: Int)
+
+@Tool fun streamQuotes(): Flow<Quote> = flowOf(Quote("GOOG", 300))
+
+@Tool fun streamMaybe(): Flow<String?> = flowOf(null, "ready")
+
+private val mixedEvent = Event(author = "progress")
+
+@Tool fun streamMixed(): Flow<Any> = flowOf(mixedEvent, "done")
+
+@Tool fun streamEvents(): Flow<Event> = flowOf(mixedEvent)
+
+@Tool fun streamState(): StateFlow<String> = MutableStateFlow("ready")

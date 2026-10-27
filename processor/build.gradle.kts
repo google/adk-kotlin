@@ -56,6 +56,7 @@ dependencies {
 
   kspTest(project(":google-adk-kotlin-processor"))
 
+  testImplementation(project(":google-adk-kotlin-testing"))
   testImplementation(libs.google.truth)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)

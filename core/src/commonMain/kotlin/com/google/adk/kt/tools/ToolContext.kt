@@ -18,13 +18,21 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequest
+import com.google.adk.kt.agents.LiveStreamingTools
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
+import kotlin.jvm.Volatile
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 
 /**
  * Context passed to tool executions.
  *
- * This subclass is kept for backward compatibility. Prefer [Context] in new code.
+ * This subclass is kept for backward compatibility. Prefer [Context] in new code, except for
+ * [liveRequests], which only a tool call has.
  *
  * A tool context is not a node activation, so the node-only members inherited from [Context] (such
  * as [Context.output] and [Context.routes]) throw [IllegalStateException] here.
@@ -35,4 +43,18 @@ class ToolContext(
   functionCallId: String? = null,
   toolConfirmation: ToolConfirmation? = null,
   eventId: String? = null,
-) : Context(invocationContext, actions, functionCallId, toolConfirmation, eventId)
+) : Context(invocationContext, actions, functionCallId, toolConfirmation, eventId) {
+
+  /** The live run that started this call's stream, set while the stream runs; null otherwise. */
+  @Volatile internal var liveInputSource: LiveStreamingTools? = null
+
+  /**
+   * Every [LiveRequest] the live run takes off its queue, caller input and tool answers alike, from
+   * when this flow is collected. Each collection gets its own buffered copy, which stops when the
+   * queue closes, the run ends, the tool is stopped or the agent hands over. It is empty except
+   * inside the Flow a streaming tool returns in a live run.
+   */
+  @ExperimentalLiveApi
+  val liveRequests: Flow<LiveRequest>
+    get() = flow { liveInputSource?.let { emitAll(it.requests()) } }
+}
