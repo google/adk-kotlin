@@ -31,15 +31,15 @@ import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
-import java.util.concurrent.CompletableFuture
 
 /**
- * Builds a [BaseTool] from a [Tool]-annotated Java method, the reflective counterpart of the
- * engine's KSP `@Tool` path (which needs the Kotlin compiler and so is closed to a javac-only
- * build). It reads the same [Tool]/[Param] annotations, relying on [Param.name]/[Param.required]
- * because Java retains neither parameter names nor nullability. JVM-only and intended for
- * javac-only modules; prefer the KSP `@Tool` path whenever the code is built with the Kotlin
- * compiler, which processes `.java` sources too.
+ * Builds a [BaseTool] from a [Tool]-annotated Java method for JVM-only, javac-only modules; prefer
+ * the KSP `@Tool` path whenever the code is built with the Kotlin compiler, which processes `.java`
+ * sources too. It reads the same [Tool]/[Param] annotations, relying on
+ * [Param.name]/[Param.required] because Java retains neither parameter names nor nullability. Like
+ * a KSP tool, the method runs in the calling coroutine, on its thread and with its context (such as
+ * MDC), so run blocking methods on a dispatcher meant for blocking work, for example through
+ * [PublisherRunner.runAsync].
  */
 @AdkJavaInteropApi
 object ReflectiveTools {
@@ -104,7 +104,7 @@ object ReflectiveTools {
     name: String,
     description: String,
   ) :
-    BaseFutureTool(
+    BaseTool(
       name,
       description,
       customMetadata =
@@ -174,12 +174,7 @@ object ReflectiveTools {
       return declaration.parameters(schema.build()).build()
     }
 
-    override fun runAsync(context: ToolContext, args: Map<String, Any?>): CompletableFuture<Any> =
-      CompletableFuture.supplyAsync {
-        invokeReflectively(context, args)
-      }
-
-    private fun invokeReflectively(context: ToolContext, args: Map<String, Any?>): Any {
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
       val actual = arrayOfNulls<Any>(method.parameterCount)
       if (contextIndex >= 0) {
         actual[contextIndex] = context

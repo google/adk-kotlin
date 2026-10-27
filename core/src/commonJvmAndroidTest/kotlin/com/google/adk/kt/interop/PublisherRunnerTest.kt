@@ -26,27 +26,38 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
 import com.google.adk.kt.testing.DummyLiveStep.Fail
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.audioFrame
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.outputTranscriptionStep
 import com.google.adk.kt.testing.turnCompleteStep
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.testing.wholeText
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Modality
 import com.google.common.truth.Truth.assertThat
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.asContextElement
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -159,6 +170,93 @@ class PublisherRunnerTest {
   /** [event] without the fields that differ between two runs of the same script. */
   private fun withoutRunIds(event: Event): Event =
     event.copy(id = "", invocationId = null, timestamp = 0)
+
+  /**
+   * A runner whose model calls the `record` tool once and then answers; [onCall] runs inside both
+   * model calls and the tool call.
+   */
+  private fun toolCallingRunner(onCall: () -> Unit): PublisherRunner {
+    val responses =
+      listOf(modelFunctionCallResponse("record"), LlmResponse(content = modelMessage("done")))
+    val model =
+      DummyModel(
+        "model",
+        responses.map { response ->
+          flow {
+            onCall()
+            emit(response)
+          }
+        },
+      )
+    val tool =
+      DummyTool(name = "record", declares = true) { _, _ ->
+        onCall()
+        mapOf("status" to "ok")
+      }
+    val runner =
+      PublisherRunner.inMemory(LlmAgent(name = "agent", model = model, tools = listOf(tool)))
+    runners += runner
+    return runner
+  }
+
+  private fun singleThreadDispatcher(name: String): ExecutorCoroutineDispatcher =
+    Executors.newSingleThreadExecutor { Thread(it, name) }.asCoroutineDispatcher()
+
+  /** This thread's name without the ` @coroutine#N` suffix that coroutine debug mode adds. */
+  private fun Thread.baseName(): String = name.substringBefore(" @coroutine#")
+
+  @Test
+  fun runAsync_coroutineContextGiven_runsTheModelAndToolsWithIt(): Unit = runBlocking {
+    val seen = CopyOnWriteArrayList<String?>()
+    val runner = toolCallingRunner { seen += requestId.get() }
+    val subscriber = RecordingSubscriber()
+
+    runner
+      .runAsync(
+        "u",
+        "s",
+        newMessage = userMessage("hi"),
+        coroutineContext = requestId.asContextElement("request-1"),
+      )
+      .subscribe(subscriber)
+
+    assertThat(withTimeout(GUARD_TIMEOUT) { subscriber.terminated.await() }).isNull()
+    assertThat(seen).containsExactly("request-1", "request-1", "request-1")
+  }
+
+  @Test
+  fun runAsync_dispatcherGiven_runsTheModelAndToolsOnIt(): Unit = runBlocking {
+    val threads = CopyOnWriteArrayList<String>()
+    val runner = toolCallingRunner { threads += Thread.currentThread().baseName() }
+    val subscriber = RecordingSubscriber()
+
+    singleThreadDispatcher("adk-run").use { dispatcher ->
+      runner
+        .runAsync("u", "s", newMessage = userMessage("hi"), coroutineContext = dispatcher)
+        .subscribe(subscriber)
+      assertThat(withTimeout(GUARD_TIMEOUT) { subscriber.terminated.await() }).isNull()
+    }
+
+    assertThat(threads).containsExactly("adk-run", "adk-run", "adk-run")
+  }
+
+  @Test
+  fun runAsync_fromJava_keepsTheSixArgumentOverload() {
+    val method =
+      PublisherRunner::class
+        .java
+        .getMethod(
+          "runAsync",
+          String::class.java,
+          String::class.java,
+          String::class.java,
+          Content::class.java,
+          Map::class.java,
+          RunConfig::class.java,
+        )
+
+    assertThat(method.returnType).isEqualTo(Publisher::class.java)
+  }
 
   @Test
   fun runLive_notSubscribed_opensNoConnection(): Unit = runBlocking {
@@ -287,6 +385,21 @@ class PublisherRunnerTest {
   }
 
   @Test
+  fun runLive_dispatcherGiven_deliversEventsOnIt(): Unit = runBlocking {
+    val runner = runnerFor(DummyLiveModel(answersAfterTheUser()))
+    val queue = LiveRequestQueue()
+    val subscriber = RecordingSubscriber(queue = queue)
+
+    singleThreadDispatcher("adk-live").use { dispatcher ->
+      runner.runLive("u", "s", queue, coroutineContext = dispatcher).subscribe(subscriber)
+      queue.sendContent(userMessage("hi"))
+      assertThat(withTimeout(GUARD_TIMEOUT) { subscriber.terminated.await() }).isNull()
+    }
+
+    assertThat(subscriber.threads.map { it.baseName() }.toSet()).containsExactly("adk-live")
+  }
+
+  @Test
   fun runLive_subscribersBlockInOnNext_leaveDispatchersDefaultFree(): Unit = runBlocking {
     val runner = runnerFor(DummyLiveModel(answersAfterTheUser()))
 
@@ -343,5 +456,8 @@ class PublisherRunnerTest {
   companion object {
     /** Bounds a wait whose failure mode is a hang. */
     private val GUARD_TIMEOUT = 10.seconds
+
+    /** Stands in for MDC: thread-local state a caller carries into a run through its context. */
+    private val requestId = ThreadLocal<String?>()
   }
 }

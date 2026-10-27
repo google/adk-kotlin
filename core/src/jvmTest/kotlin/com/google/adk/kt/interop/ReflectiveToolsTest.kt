@@ -33,6 +33,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.runBlocking
 
 enum class Style {
@@ -51,9 +52,21 @@ data class Point(val x: Int, val y: Int)
  */
 class Fixture {
   var lastContext: ToolContext? = null
+  var lastThread: Thread? = null
+  var lastRequestId: String? = null
+
+  /** Stands in for MDC: thread-local state a caller carries into a tool through its context. */
+  val requestId = ThreadLocal<String?>()
 
   @Tool(name = "current_time", description = "Returns the current time.")
   fun currentTime(): String = "noon"
+
+  @Tool(description = "Records the thread it runs on and that thread's request id.")
+  fun recordCaller(): String {
+    lastThread = Thread.currentThread()
+    lastRequestId = requestId.get()
+    return "ok"
+  }
 
   @Tool(description = "Adds two numbers.")
   fun addNumbers(
@@ -221,6 +234,17 @@ class ReflectiveToolsTest {
 
     assertEquals(mapOf("result" to "noon"), tool.run(testToolContext(), emptyMap()))
   }
+
+  @Test
+  fun run_invokesTheMethodInTheCallersCoroutine() =
+    runBlocking(fixture.requestId.asContextElement("request-1")) {
+      val tool = ReflectiveTools.fromMethod(fixture, "recordCaller")
+
+      val unused = tool.run(testToolContext(), emptyMap())
+
+      assertSame(Thread.currentThread(), fixture.lastThread)
+      assertEquals("request-1", fixture.lastRequestId)
+    }
 
   @Test
   fun run_mapReturn_isWrappedUnderResultKey() = runBlocking {
