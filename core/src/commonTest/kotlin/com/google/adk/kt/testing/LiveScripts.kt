@@ -26,7 +26,11 @@ import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
 import com.google.adk.kt.testing.DummyLiveStep.Respond
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Blob
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.UsageMetadata
@@ -91,3 +95,13 @@ internal suspend fun InMemoryRunner.storedEvents(
   userId: String = "u",
   sessionId: String = "s",
 ): List<Event> = sessionService.getSession(SessionKey(appName, userId, sessionId))?.events.orEmpty()
+
+/** A tool a live run calls in the background, which runs [onRun]. */
+internal fun nonBlockingTool(name: String, onRun: suspend () -> Any): BaseTool =
+  object : BaseTool(name, "A tool.") {
+    override val behavior = Behavior.NON_BLOCKING
+
+    override fun declaration() = FunctionDeclaration(name, description)
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = onRun()
+  }

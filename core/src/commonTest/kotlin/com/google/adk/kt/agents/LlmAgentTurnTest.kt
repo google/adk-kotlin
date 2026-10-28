@@ -26,6 +26,7 @@ import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.AfterModelCallback
+import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -74,6 +75,7 @@ import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.modelTransferToAgentResponse
+import com.google.adk.kt.testing.nonBlockingTool
 import com.google.adk.kt.testing.outputTranscription
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.storedBytes
@@ -82,6 +84,7 @@ import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.turnComplete
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.GoogleSearchTool
 import com.google.adk.kt.tools.TaskCompletedTool.Companion.TASK_COMPLETED_TOOL_NAME
@@ -107,6 +110,7 @@ import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceActivityType
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.google.genai.kotlin.GenAiApiException
 import kotlin.random.Random
 import kotlin.test.assertFailsWith
@@ -185,11 +189,13 @@ class LlmAgentTurnTest {
 
   /**
    * Runs [first] on one live run, then starts another, and returns the history it connects with.
+   * [onEvent] sees each event the caller gets.
    */
   private suspend fun nextRunHistory(
     first: List<DummyLiveStep>,
-    tool: DummyTool,
+    tool: BaseTool,
     includeContents: LlmAgent.IncludeContents = LlmAgent.IncludeContents.DEFAULT,
+    onEvent: (Event) -> Unit = {},
   ): List<Content> {
     val second = listOf(Respond(LlmResponse(turnComplete = true)))
     val model = DummyLiveModel.perConnection(listOf(first, second), name = "gemini-3.8-live")
@@ -207,6 +213,7 @@ class LlmAgentTurnTest {
         runner
           .runLive("u", "s", queue, RunConfig())
           .onEach { event ->
+            onEvent(event)
             if (event.content?.parts?.any { it.text == "Watching gold." } == true) {
               queue.sendContent(userMessage("Tell me a joke."))
             }
@@ -221,6 +228,40 @@ class LlmAgentTurnTest {
   private fun summaries(contents: List<Content>): List<Any?> = contents.map { content ->
     val part = content.parts.single()
     part.text ?: part.functionCall?.name ?: part.functionResponse?.response
+  }
+
+  /** The answer `lookup` gives once the model has answered the user's question. */
+  private val lateAnswer = mapOf("result" to "gold is 300")
+
+  /**
+   * The history the next live run connects with when `lookup`, called in the background, answers
+   * only after the model has answered the user's question.
+   */
+  private suspend fun nextRunHistoryAfterALateAnswer(
+    includeContents: LlmAgent.IncludeContents = LlmAgent.IncludeContents.DEFAULT
+  ): List<Content> {
+    val modelAnswered = CompletableDeferred<Unit>()
+    val tool =
+      nonBlockingTool("lookup") {
+        modelAnswered.await()
+        "gold is 300"
+      }
+    val first =
+      listOf(
+        Respond(modelFunctionCallResponse("lookup", id = "c1")),
+        Respond(LlmResponse(content = modelMessage("Watching gold."), partial = false)),
+        AwaitSent("the user's question") {
+          it is ContentInput && it.content.parts.any { part -> part.text == "Tell me a joke." }
+        },
+        Respond(LlmResponse(content = modelMessage("Why did the chicken cross?"), partial = false)),
+        AwaitSent("the late answer") { it.answers("c1", lateAnswer) },
+        Respond(LlmResponse(turnComplete = true)),
+      )
+    return nextRunHistory(first, tool, includeContents) { event ->
+      if (event.content?.parts?.any { it.text == "Why did the chicken cross?" } == true) {
+        modelAnswered.complete(Unit)
+      }
+    }
   }
 
   @Test
@@ -315,6 +356,74 @@ class LlmAgentTurnTest {
           .filter { it.response == stoppedAnswer("monitor") }
       assertEquals(listOf("c2"), stopped.map { it.id })
     }
+
+  @Test
+  fun runLive_dropBeforeABackgroundFlowAnswers_streamsAfterReconnect() {
+    runBlocking(BackgroundToolCalls) {
+      val registered = CompletableDeferred<Unit>()
+      val reconnected = CompletableDeferred<Unit>()
+      val ticker =
+        nonBlockingTool("ticker") {
+          flow {
+            emit("300")
+            awaitCancellation()
+          }
+        }
+      // Holds the call's pending answer back until the connection has dropped and reopened.
+      val holdAnswer = AfterToolCallback { _, _, _, result ->
+        registered.complete(Unit)
+        reconnected.await()
+        result
+      }
+      val first =
+        listOf(
+          Respond(
+            LlmResponse(
+              liveSessionResumptionUpdate =
+                LiveServerSessionResumptionUpdate(newHandle = "h1", resumable = true)
+            )
+          ),
+          Respond(modelFunctionCallResponse("ticker", id = "c1")),
+          AwaitSent("the user's message") { it is ContentInput },
+        )
+      val second =
+        listOf(
+          AwaitSent("the pending answer") { it.answers("c1", pendingAnswer) },
+          AwaitSent("the value") { it.answers("c1", mapOf("result" to "300")) },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model =
+        DummyLiveModel.perConnection(
+          listOf(first, second),
+          onConnect = { if (it == 1) reconnected.complete(Unit) },
+          onSend = { connection, message ->
+            if (connection == 0 && message is ContentInput) {
+              throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
+            }
+          },
+        )
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model = model,
+          tools = listOf(ticker),
+          afterToolCallbacks = listOf(holdAnswer),
+        )
+      val queue = LiveRequestQueue()
+
+      launch {
+        registered.await()
+        queue.sendContent(userMessage("hello"))
+      }
+      val unused =
+        InMemoryRunner(agent = agent)
+          .runLive("u", "s", queue, RunConfig())
+          .onEach { if (it.turnComplete) queue.close() }
+          .toList()
+
+      model.connections[1].assertAllWaitsMet()
+    }
+  }
 
   @Test
   fun runLive_connectionDropsWhileAToolStreams_deliversWhatItSendsAcrossTheDropOnce(): Unit =
@@ -597,6 +706,70 @@ class LlmAgentTurnTest {
         ),
         summaries(history),
       )
+    }
+  }
+
+  @Test
+  fun runLive_nextRunAfterANonBlockingCallWasStopped_replaysTheCallAsStopped() {
+    runBlocking(BackgroundToolCalls) {
+      var cancelled = false
+      val tool =
+        nonBlockingTool("lookup") {
+          try {
+            awaitCancellation()
+          } finally {
+            cancelled = true
+          }
+        }
+      // The streaming conversation, with no pending answer to wait for.
+      val first =
+        listOf(Respond(modelFunctionCallResponse("lookup", id = "c1"))) +
+          conversationAfterAStreamingCall().drop(2)
+
+      val history = nextRunHistory(first, tool)
+
+      val stopped =
+        mapOf(
+          "status" to "lookup was stopped when its live session ended; its result will not arrive."
+        )
+      assertThat(summaries(history))
+        .containsExactly(
+          "lookup",
+          stopped,
+          "Watching gold.",
+          "Tell me a joke.",
+          "Why did the chicken cross?",
+        )
+        .inOrder()
+      assertWithMessage("the run's end should cancel the call").that(cancelled).isTrue()
+    }
+  }
+
+  @Test
+  fun runLive_nextRunAfterALateNonBlockingAnswer_replaysItAfterItsCallAndKeepsTheLaterTurns() {
+    runBlocking(BackgroundToolCalls) {
+      val history = nextRunHistoryAfterALateAnswer()
+
+      assertThat(summaries(history))
+        .containsExactly(
+          "lookup",
+          lateAnswer,
+          "Watching gold.",
+          "Tell me a joke.",
+          "Why did the chicken cross?",
+        )
+        .inOrder()
+    }
+  }
+
+  @Test
+  fun runLive_includeContentsNone_nextRunAfterALateNonBlockingAnswer_connectsWithTheLastTurn() {
+    runBlocking(BackgroundToolCalls) {
+      val history = nextRunHistoryAfterALateAnswer(LlmAgent.IncludeContents.NONE)
+
+      assertThat(summaries(history))
+        .containsExactly("Tell me a joke.", "Why did the chicken cross?")
+        .inOrder()
     }
   }
 

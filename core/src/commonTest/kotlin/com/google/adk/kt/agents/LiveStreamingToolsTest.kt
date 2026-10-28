@@ -19,6 +19,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
@@ -38,6 +39,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -114,19 +116,20 @@ class LiveStreamingToolsTest {
     }
 
   @Test
-  fun onAnswersQueued_mayNotStart_neverStartsTheStream() {
+  fun onAnswersQueued_handingOver_neverStartsTheStream() {
     runBlocking {
       val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      tools.handingOver = { true }
       var started = false
       val tool = DummyTool(name = "monitor") { _, _ -> flow<String> { started = true } }
 
       val closed: List<Content>
       try {
         val unused = tools.run(tool, streamingToolContext("c1"), emptyMap())
-        tools.onAnswersQueued(answerTo("c1"), mayStart = false)
+        tools.onAnswersQueued(answerTo("c1"))
         yield()
       } finally {
-        closed = withContext(NonCancellable) { tools.close() }
+        closed = withContext(NonCancellable) { tools.close().streams }
       }
 
       assertWithMessage("a stream answered alongside a handover should never start")
@@ -149,7 +152,7 @@ class LiveStreamingToolsTest {
       tools.onAnswersQueued(answerTo("c1"))
       yield()
     } finally {
-      closed = withContext(NonCancellable) { tools.close() }
+      closed = withContext(NonCancellable) { tools.close().streams }
     }
 
     assertWithMessage("a stream whose pending answer was dropped should never start")
@@ -169,8 +172,8 @@ class LiveStreamingToolsTest {
 
       tools.stopRunning()
 
-      val stopped = tools.stopAll().flatMap { it.parts }.map { it.functionResponse?.id }
-      val closed = tools.close()
+      val stopped = tools.stopAll().streams.flatMap { it.parts }.map { it.functionResponse?.id }
+      val closed = tools.close().streams
 
       assertThat(stopped).containsExactly("c1")
       assertThat(closed).isEmpty()
@@ -190,7 +193,7 @@ class LiveStreamingToolsTest {
     queue.close()
 
     assertThat(queue.nextAnswers(1).map { it.id }).containsExactly("c1")
-    assertThat(tools.close()).isEmpty()
+    assertThat(tools.close().streams).isEmpty()
   }
 
   @Test
@@ -206,7 +209,7 @@ class LiveStreamingToolsTest {
       // A later call that reused the id failed, not the stream already running under it.
       tools.onCallFailed("c1")
       queue.sendContent(internalErrorContent(tool, "c1"))
-      val stopped = tools.stopAll().flatMap { it.parts }.map { it.functionResponse?.id }
+      val stopped = tools.stopAll().streams.flatMap { it.parts }.map { it.functionResponse?.id }
       queue.close()
 
       // Still running when stopped, so it owes a final answer.
@@ -293,7 +296,7 @@ class LiveStreamingToolsTest {
       val unused = tools.run(tool, streamingToolContext("c1"), emptyMap())
       tools.onBeforeConnect()
 
-      assertThat(tools.close().flatMap { it.parts }.map { it.functionResponse?.id })
+      assertThat(tools.close().streams.flatMap { it.parts }.map { it.functionResponse?.id })
         .containsExactly("c1")
     }
   }
@@ -308,7 +311,7 @@ class LiveStreamingToolsTest {
 
       val repeat = tools.run(tool, streamingToolContext("c2"), emptyMap())
 
-      val stopped = tools.close().flatMap { it.parts }.map { it.functionResponse?.id }
+      val stopped = tools.close().streams.flatMap { it.parts }.map { it.functionResponse?.id }
 
       assertThat((repeat as Map<*, *>)["status"].toString()).contains("already running")
       assertThat(stopped).containsExactly("c1", "c2")
@@ -326,7 +329,7 @@ class LiveStreamingToolsTest {
       val again = tools.run(tool, streamingToolContext("c1"), emptyMap())
       tools.onAnswersQueued(answerTo("c1"))
 
-      val stopped = tools.close().flatMap { it.parts }.map { it.functionResponse?.id }
+      val stopped = tools.close().streams.flatMap { it.parts }.map { it.functionResponse?.id }
 
       assertThat((again as Map<*, *>)["status"].toString()).contains("pending")
       assertThat(stopped).containsExactly("c1")
@@ -346,7 +349,7 @@ class LiveStreamingToolsTest {
       val replacement = tools.run(tool, streamingToolContext("c1"), mapOf("symbol" to "silver"))
       tools.onAnswersQueued(answerTo("c1"))
 
-      val stopped = tools.close().flatMap { it.parts }.map { it.functionResponse?.id }
+      val stopped = tools.close().streams.flatMap { it.parts }.map { it.functionResponse?.id }
 
       assertThat((repeat as Map<*, *>)["status"].toString()).contains("already running")
       assertThat((replacement as Map<*, *>)["status"].toString()).contains("pending")
@@ -372,7 +375,7 @@ class LiveStreamingToolsTest {
 
       release.complete(Unit)
       yield()
-      val closed = tools.close().flatMap { it.parts }.mapNotNull { it.functionResponse }
+      val closed = tools.close().streams.flatMap { it.parts }.mapNotNull { it.functionResponse }
 
       assertThat((repeat as Map<*, *>)["status"].toString()).contains("already running")
       val finished = mapOf("status" to "ticker finished streaming; no more updates will arrive.")
@@ -390,7 +393,7 @@ class LiveStreamingToolsTest {
       tools.onAnswersQueued(answerTo("c1"))
 
       yield()
-      val closed = tools.close().flatMap { it.parts }.mapNotNull { it.functionResponse }
+      val closed = tools.close().streams.flatMap { it.parts }.mapNotNull { it.functionResponse }
 
       assertThat(closed.map { it.id to it.response })
         .containsExactly(
@@ -414,7 +417,7 @@ class LiveStreamingToolsTest {
       tools.onAnswersQueued(answerTo("c1"))
       yield()
     } finally {
-      closed = withContext(NonCancellable) { tools.close() }
+      closed = withContext(NonCancellable) { tools.close().streams }
     }
     queue.close()
 
@@ -462,6 +465,97 @@ class LiveStreamingToolsTest {
   }
 
   @Test
+  fun stopAll_backgroundAnswerStillQueued_isNeverReceived() {
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+      val answer = Event(invocationId = "invocation", author = "agent", content = answerTo("b1"))
+      tools.onCallFailed("b1")
+      tools.runInBackground(DummyTool("lookup"), "b1", answer) { answer }
+      // The caller stores the answer, so the call queues it for the model and finishes.
+      tools.nextEvent().handled.complete(Unit)
+      yield()
+
+      val unused = tools.close()
+      queue.close()
+
+      assertWithMessage("a finished background call's queued answer was received")
+        .that(queue.receiveRequest())
+        .isNull()
+    }
+  }
+
+  @Test
+  fun onAnswersQueued_backgroundCallAnswersDuringAHandover_owesItNoStoppedAnswer() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      tools.handingOver = { true }
+      val answer = Event(invocationId = "invocation", author = "agent", content = answerTo("b1"))
+      tools.runInBackground(DummyTool("lookup"), "b1", answer) { answer }
+      tools.nextEvent().handled.complete(Unit)
+      yield()
+
+      assertThat(tools.stopAll().background).isEmpty()
+    }
+  }
+
+  @Test
+  fun stopAll_backgroundCallSwallowingItsCancellation_neverHandsOverItsAnswer() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      val answer = Event(invocationId = "invocation", author = "agent", content = answerTo("b1"))
+      // Answers anyway once stopped, as a tool that catches every exception does.
+      tools.runInBackground(DummyTool("lookup"), "b1", answer) {
+        try {
+          awaitCancellation()
+        } catch (e: CancellationException) {}
+        answer
+      }
+      yield()
+
+      val stopped = tools.stopAll().background
+
+      assertThat(stopped).hasSize(1)
+      assertWithMessage("a stopped call's answer reached the caller")
+        .that(tools.drainEvents())
+        .isEmpty()
+    }
+  }
+
+  @Test
+  fun runInBackground_callThrowingAnError_isAnsweredWithAnError() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      val started = CompletableDeferred<Unit>()
+      val monitor = startedTool(started)
+      tools.startStream(monitor, "c1")
+      started.await()
+      val errorEvent = Event(invocationId = "invocation", author = "agent")
+
+      // Repeating monitor before failing owes b1 no final answer, and c1's stream keeps running.
+      tools.runInBackground(DummyTool("lookup"), "b1", errorEvent) {
+        val unused = tools.run(monitor, streamingToolContext("b1"), emptyMap())
+        throw AssertionError("secret")
+      }
+      tools.runInBackground(monitor, "c1", errorEvent) { error("secret") }
+      val delivered =
+        List(2) {
+          withTimeout(5.seconds) { tools.nextEvent() }.also { it.handled.complete(Unit) }.event
+        }
+
+      assertThat(delivered.flatMap { it.functionResponses() }.associate { it.id to it.response })
+        .containsExactly(
+          "b1",
+          mapOf("error" to "Invoking `lookup()` failed with an internal error."),
+          "c1",
+          mapOf("error" to "Invoking `monitor()` failed with an internal error."),
+        )
+      assertThat(tools.close().streams.flatMap { it.parts }.map { it.functionResponse?.id })
+        .containsExactly("c1")
+    }
+  }
+
+  @Test
   fun stopAll_streamRunning_leavesNoStreamToStop() {
     runBlocking {
       val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
@@ -473,10 +567,10 @@ class LiveStreamingToolsTest {
       val answer =
         try {
           tools.startStream(tool, "c1")
-          stopped = tools.stopAll()
+          stopped = tools.stopAll().streams
           tools.run(stop, streamingToolContext("s1"), mapOf("function_name" to "monitor"))
         } finally {
-          closed = withContext(NonCancellable) { tools.close() }
+          closed = withContext(NonCancellable) { tools.close().streams }
         }
 
       assertThat(stopped).hasSize(1)
@@ -528,7 +622,7 @@ class LiveStreamingToolsTest {
           tools.startStream(news, "n1")
           tools.run(stop, streamingToolContext("s1"), mapOf("function_name" to "monitor"))
         } finally {
-          closed = withContext(NonCancellable) { tools.close() }
+          closed = withContext(NonCancellable) { tools.close().streams }
         }
 
       assertThat(answer)
@@ -685,7 +779,7 @@ class LiveStreamingToolsTest {
       val closed = tools.close()
 
       assertThat(
-          closed
+          closed.streams
             .flatMap { it.parts }
             .mapNotNull { it.functionResponse }
             .map { it.id to it.scheduling }

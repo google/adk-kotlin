@@ -39,7 +39,7 @@ import com.google.adk.kt.models.toTracePayload
 import com.google.adk.kt.models.withInlineDataSummarized
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
-import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
+import com.google.adk.kt.processors.OUT_OF_TURN_ANSWER_KEY
 import com.google.adk.kt.processors.createFinalModelResponseEvent
 import com.google.adk.kt.processors.findTransferTargets
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
@@ -80,6 +80,8 @@ import com.google.genai.kotlin.GenAiApiException
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import kotlin.jvm.JvmSynthetic
 import kotlin.jvm.Volatile
 import kotlin.random.Random
@@ -496,6 +498,8 @@ internal class LlmAgentTurn(
     firstSession: Boolean,
   ): Boolean {
     if (context.isEndOfInvocation) return false
+    // Background calls outlive a restart, so they check this turn's handover, not the last one's.
+    liveTools?.handingOver = { pendingHandover.load() != null }
 
     val queue = liveRun().requestQueue
     // Before connecting, so a second reader usually opens no session; the sender still claims it.
@@ -1478,22 +1482,27 @@ internal class LlmAgentTurn(
   }
 
   /**
-   * Records each streaming call's final [answers] once the run ended or handed over, for calls
-   * whose pending or repeat answer reached the session, so a later run's history shows the stream
-   * ended. Outside a workflow node it writes straight to the session because the connection is
-   * closing and a failed or abandoned run has no collector; a node, which may still hold the first
-   * answers, records them after those, or straight to the session if its round fails. A failed
-   * append is logged rather than thrown, so it does not replace an exception unwinding the run.
+   * Records the final [answers] once the run ended or handed over: a streaming call's when its
+   * pending or repeat answer reached the session, so a later run's history shows the stream ended,
+   * and a stopped background call's unless its own answer did. Outside a workflow node it writes
+   * straight to the session because the connection is closing and a failed or abandoned run has no
+   * collector; a node, which may still hold the first answers, records only its streams' after
+   * those, or straight to the session if its round fails. A failed append is logged rather than
+   * thrown, so it does not replace an exception unwinding the run.
    */
-  private suspend fun recordFinalAnswers(answers: List<Content>) {
-    if (answers.isEmpty()) return
+  private suspend fun recordFinalAnswers(answers: LiveStreamingTools.FinalAnswers) {
+    if (answers.streams.isEmpty() && answers.background.isEmpty()) return
     val nodePath = nodePath()
     if (nodePath != null) {
-      liveRun().deferFinalAnswers(nodePath, answers.map(::finalAnswerRecord))
+      // A node may still hold a background call's answer, so it records no stopped one yet.
+      if (answers.streams.isNotEmpty()) {
+        liveRun().deferFinalAnswers(nodePath, answers.streams.map(::finalAnswerRecord))
+      }
       return
     }
     val answered = answeredCallIds(context.session.events)
-    val owed = answers.filter { answer -> answer.parts.any { it.functionResponse?.id in answered } }
+    val isAnswered = { answer: Content -> answer.parts.any { it.functionResponse?.id in answered } }
+    val owed = answers.streams.filter(isAnswered) + answers.background.filterNot(isAnswered)
     if (owed.isEmpty()) return
     withContext(NonCancellable) {
       try {
@@ -1501,19 +1510,19 @@ internal class LlmAgentTurn(
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        logger.warn { "Recording ${owed.size} stopped streams failed (${e::class.simpleName})." }
+        logger.warn { "Recording ${owed.size} final answers failed (${e::class.simpleName})." }
       }
     }
   }
 
-  /** The event that records a stopped stream's final [answer]. */
+  /** The event that records a stopped call's final [answer]. */
   private fun finalAnswerRecord(answer: Content): Event =
     createModelResponseEvent()
       .copy(
         content = answer,
         // As the runner adds the run's metadata to each event it stores.
         customMetadata =
-          context.runConfig?.customMetadata.orEmpty() + (STREAM_FINAL_ANSWER_KEY to true),
+          context.runConfig?.customMetadata.orEmpty() + (OUT_OF_TURN_ANSWER_KEY to true),
       )
 
   /** Records the request's state change on an event of its own. */
@@ -1670,8 +1679,7 @@ internal class LlmAgentTurn(
     val content = event.content ?: return
     if (content.parts.none { it.functionResponse != null }) return
     queue.sendContent(content)
-    // A stream answered alongside a handover would only reach the next agent.
-    liveTools?.onAnswersQueued(content, mayStart = pendingHandover.load() == null)
+    liveTools?.onAnswersQueued(content)
   }
 
   /**
@@ -2297,7 +2305,24 @@ internal class LlmAgentTurn(
     tools: Map<String, BaseTool>,
     emitEvent: suspend (Event) -> Unit,
   ): Event? {
-    val functionCalls = actionEvent.functionCalls()
+    // With background calls on, a live run answers a non-blocking call from the background.
+    val inBackground =
+      liveTools != null && currentCoroutineContext()[BackgroundToolCalls.Key] != null
+    val (background, functionCalls) =
+      actionEvent.functionCalls().partition { inBackground && runsInBackground(tools[it.name]) }
+    val liveSessionId = actionEvent.liveSessionId
+    if (liveTools != null) {
+      for (call in background) {
+        val errorEvent = createModelResponseEvent().copy(liveSessionId = liveSessionId)
+        // Every live call has an id: the turn fills in a missing one before any tool runs.
+        val callId = checkNotNull(call.id) { "A live tool call has no id." }
+        liveTools.runInBackground(tools.getValue(call.name), callId, errorEvent) {
+          context
+            .executeSingleFunctionCall(call, tools, toolRunner = liveTools::run)
+            ?.copy(liveSessionId = liveSessionId)
+        }
+      }
+    }
     val functionResponseEvent =
       functionCalls
         .takeIf { it.isNotEmpty() }
@@ -2313,7 +2338,7 @@ internal class LlmAgentTurn(
           )
         }
         // A live answer names the session its call came from, as in ADK Python.
-        ?.copy(liveSessionId = actionEvent.liveSessionId)
+        ?.copy(liveSessionId = liveSessionId)
 
     functionResponseEvent?.let { responseEvent ->
       // A live run can't take approvals or sign-ins yet, so it asks for neither.
@@ -2710,6 +2735,16 @@ private fun liveBehavior(tool: BaseTool): Behavior? =
     tool.behavior == Behavior.BLOCKING -> Behavior.BLOCKING
     else -> null
   }
+
+/** Turns on answering non-blocking live calls from the background; off until that path is done. */
+internal object BackgroundToolCalls : AbstractCoroutineContextElement(Key) {
+  object Key : CoroutineContext.Key<BackgroundToolCalls>
+}
+
+/** Whether a live run answers a call to [tool] from the background; a stream answers at once. */
+@OptIn(FrameworkInternalApi::class)
+private fun runsInBackground(tool: BaseTool?): Boolean =
+  tool != null && !tool.isStreaming && isNonBlocking(tool)
 
 /**
  * Whether [tool] is non-blocking in a live run: a set [BaseTool.behavior] decides, and otherwise a

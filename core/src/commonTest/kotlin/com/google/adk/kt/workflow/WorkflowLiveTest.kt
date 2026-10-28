@@ -19,6 +19,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BackgroundToolCalls
 import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
@@ -42,7 +43,7 @@ import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.models.SingleCollectorLiveConnection
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
+import com.google.adk.kt.processors.OUT_OF_TURN_ANSWER_KEY
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
@@ -53,6 +54,7 @@ import com.google.adk.kt.testing.SaveHookArtifactService
 import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.nonBlockingTool
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -524,14 +526,50 @@ class WorkflowLiveTest {
     // Assert: the stopped stream's answer is in the task's scope, where its call is.
     val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
     val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-    val finalAnswer = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+    val finalAnswer = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
     assertNotNull(call.isolationScope)
     assertEquals(call.isolationScope, finalAnswer.isolationScope)
     // The caller receives the answer too, not only the session.
     assertEquals(
       listOf(finalAnswer.id),
-      events.filter { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }.map { it.id },
+      events.filter { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }.map { it.id },
     )
+  }
+
+  @Test
+  fun taskNode_startedByRunNode_finishingWithABackgroundCallRunning_stopsTheCallAndFinishes() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: the task calls a tool that never answers, beside its finish_task.
+      val stopped = CompletableDeferred<Unit>()
+      val lookup =
+        nonBlockingTool("lookup") {
+          try {
+            awaitCancellation()
+          } finally {
+            stopped.complete(Unit)
+          }
+        }
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("lookup", emptyMap())),
+          Part(functionCall = FunctionCall("finish_task", mapOf("result" to "memo"))),
+        )
+      val writer =
+        LlmAgent(
+          name = "writer",
+          model = LiveNodeModel("writer", listOf(listOf(turn))),
+          tools = listOf(lookup),
+          mode = AgentMode.TASK,
+        )
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("write"))
+
+      val events = runLiveWorkflow(Workflow("wf", listOf(Edge(Start, started(writer)))), queue)
+
+      // Assert: the round's end stopped the call, and the task still finished.
+      assertEquals(mapOf("result" to "memo"), events.mapNotNull { it.output }.single())
+      assertTrue(stopped.isCompleted)
+    }
   }
 
   @Test
@@ -579,13 +617,13 @@ class WorkflowLiveTest {
     val unused =
       withTimeout(30.seconds) {
         runner.runLive("user", "live", queue).first {
-          it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true
+          it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true
         }
       }
 
     // Assert: both streams are still recorded as stopped.
     val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
-    val records = stored.filter { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+    val records = stored.filter { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
     assertEquals(
       listOf("first_monitor", "second_monitor"),
       records.flatMap { it.functionResponses() }.map { it.name }.sorted(),
@@ -792,7 +830,7 @@ class WorkflowLiveTest {
       // Written straight to the session, the answer still carries the task's scope, as its call
       // does.
       val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-      val finalAnswer = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+      val finalAnswer = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
       assertNotNull(call.isolationScope)
       assertEquals(call.isolationScope, finalAnswer.isolationScope)
     }
@@ -826,7 +864,7 @@ class WorkflowLiveTest {
       // Assert: the failed round stores the stop under the task's node, where its call is.
       val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
       val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-      val stop = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+      val stop = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
       val path = assertNotNull(call.nodeInfo?.path)
       assertEquals(path, stop.nodeInfo?.path)
     }
