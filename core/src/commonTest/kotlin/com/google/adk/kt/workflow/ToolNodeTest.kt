@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
@@ -52,9 +53,12 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
@@ -115,6 +119,12 @@ private fun runToolAfter(
   val source = Emitter("source", input)
   val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, tool)))
   workflow.runAsync(context).toList()
+}
+
+/** Runs a tool whose flow emits [event] and then a value, and returns how the node failed. */
+private fun failureAfterEventAndValue(event: Event): String {
+  val tool = DummyTool(name = "analyze") { _, _ -> flowOf(event, mapOf("rows" to 42)) }.asNode()
+  return assertFailsWith<IllegalStateException> { runToolAfter(null, tool) }.message.orEmpty()
 }
 
 /** The session the artifact tests run in. */
@@ -444,6 +454,194 @@ class ToolNodeTest {
     val writerEvent = events.single { it.nodeInfo?.path == "wf@1/writer@1" }
     assertNull(writerEvent.output)
     assertEquals(mapOf<String, Any>("color" to "blue"), writerEvent.actions.stateDelta.toMap())
+  }
+
+  @Test
+  fun run_toolReturnsFlow_outputsItsValueAfterItsEventsAndIgnoresTheirRoute() {
+    // Arrange: the node, not a tool's event, picks the outgoing edge.
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          val routed = EventActions(route = listOf(Route.Tag("yes")))
+          flowOf(
+            Event(content = Content.fromText(Role.MODEL, "Working"), actions = routed),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+    val yes = ToolNodeCapture("yes")
+    val other = ToolNodeCapture("other")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, tool),
+            Edge(tool, yes, Route.Tag("yes")),
+            Edge(tool, other, Route.Default),
+          ),
+      )
+
+    // Act
+    val events = runWorkflow(workflow)
+
+    // Assert
+    val output = events.indexOfFirst { it.nodeInfo?.path == "wf@1/analyze@1" && it.output != null }
+    assertEquals(mapOf("rows" to 42), events[output].output)
+    val progress = events.indexOfFirst { it.content?.text() == "Working" }
+    assertTrue(progress in 0 until output, "the tool's event should precede the node's output")
+    // The workflow authors every node event, so check which node emitted it instead of its author.
+    assertEquals("wf@1/analyze@1", events[progress].nodeInfo?.path)
+    assertTrue(events.none { it.nodeInfo?.path == "wf@1/yes@1" }, "the event should not route")
+    assertEquals(mapOf("received" to mapOf("rows" to 42)), events.outputAt("wf@1/other@1"))
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesATransfer_failsTheNode() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(
+              content = Content.fromText(Role.MODEL, "Working"),
+              actions = EventActions(transferToAgent = "elsewhere"),
+            ),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+
+    // Act
+    val error = assertFailsWith<IllegalStateException> { runToolAfter(null, tool) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Only agents can request an agent transfer.")
+  }
+
+  @Test
+  fun run_toolFlowRelaysAnotherAuthorsTransfer_ignoresIt() {
+    // Arrange: only the tool's own event can ask for a transfer.
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(
+              author = "sub_agent",
+              content = Content.fromText(Role.MODEL, "Working"),
+              actions = EventActions(transferToAgent = "elsewhere"),
+            ),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+
+    // Act
+    val events = runToolAfter(null, tool)
+
+    // Assert
+    val nodeEvents = events.filter { it.nodeInfo?.path == "wf@1/analyze@1" }
+    assertEquals(listOf<Any>(mapOf("rows" to 42)), nodeEvents.mapNotNull { it.output })
+    assertNull(nodeEvents.single { it.content?.text() == "Working" }.actions.transferToAgent)
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesAnOutput_nodeOutputsIt() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(content = Content.fromText(Role.MODEL, "Working"), output = mapOf("rows" to 42))
+          )
+        }
+        .asNode()
+
+    // Act
+    val events = runToolAfter(null, tool)
+
+    // Assert
+    val nodeEvents = events.filter { it.nodeInfo?.path == "wf@1/analyze@1" }
+    assertEquals(listOf<Any>(mapOf("rows" to 42)), nodeEvents.mapNotNull { it.output })
+    assertNull(nodeEvents.single { it.content?.text() == "Working" }.output)
+  }
+
+  @Test
+  fun run_toolFlowEventValueThenAnotherValue_failsTheNode() {
+    // Arrange: an event's output, or its content as the message output, is the flow's value.
+    val withOutput = Event(content = Content.fromText(Role.MODEL, "Working"), output = "meta")
+    val asMessage =
+      Event(
+        content = Content.fromText(Role.MODEL, "Working"),
+        nodeInfo = NodeInfo(messageAsOutput = true),
+      )
+
+    // Act and assert
+    assertContains(failureAfterEventAndValue(withOutput), "at most one result")
+    assertContains(failureAfterEventAndValue(asMessage), "at most one result")
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesMessageAsOutput_nodeOutputsItsContent() {
+    // Arrange
+    val working = Content.fromText(Role.MODEL, "Working")
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(Event(content = working, nodeInfo = NodeInfo(messageAsOutput = true)))
+        }
+        .asNode()
+
+    // Act
+    val events = runToolAfter(null, tool)
+
+    // Assert
+    val outputs = events.filter { it.nodeInfo?.path == "wf@1/analyze@1" }.mapNotNull { it.output }
+    assertEquals(listOf<Any>(working), outputs)
+  }
+
+  @Test
+  fun run_toolFlowEventCarriesLongRunningIds_workflowDoesNotPause() {
+    // Arrange
+    val tool =
+      DummyTool(name = "analyze") { _, _ ->
+          flowOf(
+            Event(
+              content = Content.fromText(Role.MODEL, "Working"),
+              longRunningToolIds = setOf("x"),
+            ),
+            mapOf("rows" to 42),
+          )
+        }
+        .asNode()
+    val capture = ToolNodeCapture("capture")
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, tool), Edge(tool, capture)))
+
+    // Act
+    val events = runWorkflow(workflow)
+
+    // Assert: a paused node never hands its output on, so the capture node would not run.
+    assertEquals(mapOf("received" to mapOf("rows" to 42)), events.outputAt("wf@1/capture@1"))
+  }
+
+  @Test
+  fun run_toolTimesOutAfterAnEvent_stillDeliversTheEvent() {
+    runBlocking {
+      // Arrange
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+            flow<Any> {
+              emit(Event(content = Content.fromText(Role.MODEL, "Working")))
+              awaitCancellation()
+            }
+          }
+          .asNode(config = NodeConfig(timeout = 200.milliseconds))
+      val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, tool)))
+      val seen = mutableListOf<Event>()
+
+      // Act
+      assertFailsWith<NodeTimeoutException> {
+        workflow.runAsync(testInvocationContext()).onEach { seen += it }.toList()
+      }
+
+      // Assert
+      assertTrue(seen.any { it.content?.text() == "Working" }, "the progress event should arrive")
+    }
   }
 
   @Test

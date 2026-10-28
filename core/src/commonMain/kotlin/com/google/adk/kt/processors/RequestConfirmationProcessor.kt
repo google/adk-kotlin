@@ -17,16 +17,20 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.NonLiveToolRunner
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.events.parseToolConfirmation
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import kotlinx.coroutines.flow.Flow
 
 /**
  * On every turn, looks at the most recent user event for `FunctionResponse`s named
@@ -175,16 +179,33 @@ internal class RequestConfirmationProcessor : LlmRequestProcessor {
     if (pending.isEmpty()) return request
 
     // Re-execute the original calls with the confirmations, and emit the resulting events.
-    context
-      .handleFunctionCalls(
-        functionCalls = pending.values.map { it.originalCall },
-        tools = agent.tools.associateBy { it.name },
-        filters = pending.keys,
-        toolConfirmations = pending.mapValues { it.value.confirmation },
-      )
-      ?.let { emitEvent(it) }
+    val response =
+      NonLiveToolRunner().runEmittingEvents(emitEvent) { runner ->
+        context.handleFunctionCallsWith(
+          functionCalls = pending.values.map { it.originalCall },
+          tools = agent.tools.associateBy { it.name },
+          filters = pending.keys,
+          toolConfirmations = pending.mapValues { it.value.confirmation },
+          toolRunner = if (context.liveRequestQueue == null) runner else this::runBeforeConnect,
+        )
+      }
+    if (response != null) emitEvent(response)
 
     return request
+  }
+
+  /**
+   * Runs [tool] for a live run, which resumes approved calls before it connects. A returned [Flow]
+   * has no stream to feed yet, so it fails the call instead of being collected.
+   */
+  private suspend fun runBeforeConnect(
+    tool: BaseTool,
+    context: ToolContext,
+    args: Map<String, Any?>,
+  ): Any {
+    val result = tool.run(context, args)
+    check(result !is Flow<*>) { "A streaming tool can't resume an approved call in a live run." }
+    return result
   }
 
   private data class ConfirmedCall(

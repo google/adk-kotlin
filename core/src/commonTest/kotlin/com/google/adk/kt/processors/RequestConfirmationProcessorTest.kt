@@ -35,6 +35,7 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.assertEquals
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -396,6 +397,44 @@ class RequestConfirmationProcessorTest {
     assertEquals(toolName, response.name)
     assertEquals(originalCallId, response.id)
     assertEquals(mapOf("status" to "executed"), response.response)
+  }
+
+  @Test
+  fun process_approvedFlowTool_emitsItsEventBeforeTheResponse() {
+    runBlocking {
+      val toolName = "risky_tool"
+      val (session, context) =
+        newConfirmationContext(
+          tools =
+            listOf(
+              DummyTool(toolName) { _, _ ->
+                flowOf(Event(content = modelMessage("Starting")), mapOf("status" to "executed"))
+              }
+            )
+        )
+      session.events.addAll(originalCallEvents(context.invocationId, toolName, "orig_1"))
+      session.events.add(
+        agentEvent(
+          context.invocationId,
+          synthConfirmationCallPart(
+            synthId = "synth_1",
+            originalToolName = toolName,
+            originalCallId = "orig_1",
+          ),
+        )
+      )
+      session.events.add(approvalEvent(context.invocationId, synthId = "synth_1"))
+
+      val emittedEvents = collectEmittedEvents(context)
+
+      assertEquals(2, emittedEvents.size)
+      val progress = emittedEvents[0]
+      assertEquals(toolName, progress.author)
+      assertEquals("$toolName@orig_1", progress.branch)
+      val response = emittedEvents[1].functionResponses().single()
+      assertEquals("orig_1", response.id)
+      assertEquals(mapOf("status" to "executed"), response.response)
+    }
   }
 
   @Test

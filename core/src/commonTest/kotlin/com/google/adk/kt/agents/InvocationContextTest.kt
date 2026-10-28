@@ -48,6 +48,7 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -1373,6 +1374,35 @@ class InvocationContextTest {
     assertEquals(setOf("call_1", "call_2"), responses.keys)
     assertEquals(mapOf("temp" to 21), responses["call_1"]!!.response)
     assertNotNull(responses["call_2"]!!.response["error"])
+  }
+
+  @Test
+  fun handleFunctionCalls_toolReturnsAFlow_answersWithItsValueAndReturnsNoToolEvent() {
+    runBlocking {
+      // This entry point returns only the merged response, so the flow's event has nowhere to go.
+      val tool =
+        DummyTool(name = "analyze") { _, _ ->
+          flowOf(Event(content = modelMessage("Starting")), mapOf("rows" to 42))
+        }
+
+      val context =
+        testInvocationContext(
+          agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
+          invocationId = "inv",
+        )
+
+      val merged =
+        checkNotNull(
+          context.handleFunctionCalls(
+            listOf(FunctionCall(name = "analyze", args = emptyMap(), id = "call_1")),
+            mapOf("analyze" to tool),
+          )
+        )
+
+      assertEquals("test_llm_agent", merged.author)
+      assertEquals(mapOf("rows" to 42), merged.functionResponses().single().response)
+      assertTrue(checkNotNull(merged.content).parts.all { it.functionResponse != null })
+    }
   }
 
   @Test
