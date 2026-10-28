@@ -113,27 +113,28 @@ fun main() {
   println("Target BigQuery table: ${projectId}.${datasetId}.${tableName}")
 
   val app = BigQueryAnalyticsDemoAgent.createApp(projectId, datasetId, tableName)
-  val runner = InMemoryRunner(app = app)
+  // Closing the runner closes the plugin, which writes the rows still queued.
+  InMemoryRunner(app = app).use { runner ->
+    runBlocking {
+      val events =
+        runner
+          .runAsync(
+            userId = "user_123",
+            sessionId = "session_${System.currentTimeMillis()}",
+            newMessage =
+              Content(
+                role = Role.USER,
+                parts = listOf(Part(text = "What are some of the key features of the Kotlin ADK?")),
+              ),
+          )
+          .toList()
 
-  runBlocking {
-    val events =
-      runner
-        .runAsync(
-          userId = "user_123",
-          sessionId = "session_${System.currentTimeMillis()}",
-          newMessage =
-            Content(
-              role = Role.USER,
-              parts = listOf(Part(text = "What are some of the key features of the Kotlin ADK?")),
-            ),
-        )
-        .toList()
-
-    println("Agent execution finished. Events collected: ${events.size}")
-    for (event in events) {
-      val text = event.content?.parts?.firstOrNull()?.text
-      if (!text.isNullOrBlank()) {
-        println("[${event.author}]: $text")
+      println("Agent execution finished. Events collected: ${events.size}")
+      for (event in events) {
+        val text = event.content?.parts?.firstOrNull()?.text
+        if (!text.isNullOrBlank()) {
+          println("[${event.author}]: $text")
+        }
       }
     }
   }

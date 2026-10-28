@@ -43,22 +43,28 @@ import com.google.adk.kt.tools.mcp.McpTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.UsageMetadata
+import com.google.auth.Credentials
 import com.google.cloud.bigquery.BigQuery
 import com.google.cloud.bigquery.BigQueryException
 import com.google.cloud.bigquery.BigQueryOptions
 import com.google.cloud.bigquery.Clustering
-import com.google.cloud.bigquery.InsertAllRequest
 import com.google.cloud.bigquery.StandardTableDefinition
 import com.google.cloud.bigquery.TableId
 import com.google.cloud.bigquery.TableInfo
 import com.google.cloud.bigquery.TimePartitioning
 import java.time.Instant
+import java.util.Collections
 import java.util.UUID
+import java.util.WeakHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 import kotlin.coroutines.CoroutineContext
 import kotlin.jvm.JvmStatic
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
+import kotlin.time.toKotlinDuration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -69,14 +75,16 @@ import kotlinx.coroutines.withContext
 /**
  * An ADK [Plugin] that records agent execution events to a BigQuery table. If the destination table
  * does not exist, the plugin automatically creates and configures the partitioned table on first
- * use. Row inserts currently execute synchronously on the invocation path, blocking until the
- * BigQuery write completes, so partial streaming responses are not logged.
+ * use. Rows are queued and written in the background in batches with the BigQuery Storage Write
+ * API; call [close] when done to write the rows still queued.
  */
-class BigQueryAgentAnalyticsPlugin(
+class BigQueryAgentAnalyticsPlugin
+internal constructor(
   private val config: BigQueryLoggerConfig,
-  private val bigQuery: BigQuery = createBigQuery(config),
-  @Suppress("GlobalCoroutineDispatchers") private val ioContext: CoroutineContext = Dispatchers.IO,
-  private val timeSource: TimeSource = TimeSource.Monotonic,
+  private val bigQuery: BigQuery,
+  private val ioContext: CoroutineContext,
+  private val timeSource: TimeSource,
+  private val createRowWriter: (Credentials?) -> RowWriter,
 ) : Plugin {
 
   override val name: String = "bigquery_agent_analytics"
@@ -85,10 +93,39 @@ class BigQueryAgentAnalyticsPlugin(
   private val mutex = Mutex()
   private var lastCheckTime: TimeMark? = null
   private val traceManager = TraceManager()
-  // Like Python ADK, -1 means unlimited.
+  // -1 means unlimited.
   private val maxContentLength =
     if (config.maxContentLength == -1) Int.MAX_VALUE else config.maxContentLength
   private val parser = Parser(maxContentLength)
+  // Shared by every pipeline, so counts outlive a close; seeded, so its keys never change.
+  private val drops = DropCounter().apply { add(SETUP_UNAVAILABLE, count = 0) }
+  private val pipelineLock = Any()
+  // Guarded by pipelineLock.
+  private var pipeline: Pipeline? = null
+  // Callers of close wait for one in progress, so that the shutdown hook does not end it early.
+  private val closeLock = Any()
+
+  /**
+   * Creates a plugin that logs to the table [config] names.
+   *
+   * @param config Where and what to log.
+   * @param bigQuery Client that creates and upgrades the table and its views; the Storage Write API
+   *   writes the rows with this client's credentials.
+   * @param ioContext Context that blocking BigQuery calls and the background writer run in.
+   * @param timeSource Clock for the interval between attempts to create the table.
+   */
+  constructor(
+    config: BigQueryLoggerConfig,
+    bigQuery: BigQuery = createBigQuery(config),
+    @Suppress("GlobalCoroutineDispatchers") ioContext: CoroutineContext = Dispatchers.IO,
+    timeSource: TimeSource = TimeSource.Monotonic,
+  ) : this(
+    config,
+    bigQuery,
+    ioContext,
+    timeSource,
+    createRowWriter = { credentials -> StorageWriteApiWriter.create(config, credentials) },
+  )
 
   override suspend fun onUserMessage(
     invocationContext: InvocationContext,
@@ -111,7 +148,7 @@ class BigQueryAgentAnalyticsPlugin(
           invocationContext = invocationContext,
           content = mapOf("tool" to responseName, "result" to result.toPlainValue()),
           isContentTruncated = result.isTruncated,
-          // Like Python ADK, only a resumed long-running tool gets the pair keys.
+          // Only a resumed long-running tool gets the pair keys.
           eventData =
             EventData(
               adkExtras =
@@ -273,6 +310,7 @@ class BigQueryAgentAnalyticsPlugin(
     } finally {
       traceManager.endInvocation(invocationContext)
     }
+    if (config.flushOnRunEnd) flush()
   }
 
   override suspend fun onRunError(invocationContext: InvocationContext, error: Throwable) {
@@ -292,6 +330,7 @@ class BigQueryAgentAnalyticsPlugin(
     } finally {
       traceManager.endInvocation(invocationContext)
     }
+    if (config.flushOnRunEnd) flush()
   }
 
   override suspend fun beforeAgent(
@@ -381,17 +420,21 @@ class BigQueryAgentAnalyticsPlugin(
       val invocationContext = context.invocationContext
       val spanId = traceManager.getCurrentSpanId(invocationContext)
       if (spanId != null) traceManager.recordFirstToken(invocationContext, spanId)
-      // Partial chunks get no row while each insert blocks the stream.
-      if (response.partial) return@guarded
-
       // Read before popSpan drops the record that holds the first-token time.
       val timeToFirstToken =
         if (spanId != null) traceManager.timeToFirstToken(invocationContext, spanId) else null
-      val popped = traceManager.popSpan(invocationContext, LLM_REQUEST_KIND)
+      // A streaming chunk leaves the model call's span open.
+      val popped =
+        if (response.partial) null else traceManager.popSpan(invocationContext, LLM_REQUEST_KIND)
       val eventData =
         EventData(
-          errorMessage = response.errorMessage,
-          latency = popped?.duration,
+          errorMessage = if (response.partial) null else response.errorMessage,
+          latency =
+            when {
+              !response.partial -> popped?.duration
+              spanId != null -> traceManager.elapsed(invocationContext, spanId)
+              else -> null
+            },
           timeToFirstToken = timeToFirstToken,
           modelVersion = response.modelVersion,
           spanIdOverride = popped?.spanId,
@@ -533,8 +576,86 @@ class BigQueryAgentAnalyticsPlugin(
     return CallbackChoice.Continue(Unit)
   }
 
+  /**
+   * Waits until every row logged before the call is written to BigQuery or dropped.
+   *
+   * While it waits, queued rows are written without waiting for their batch to fill.
+   */
+  suspend fun flush() {
+    synchronized(pipelineLock) { pipeline?.processor }?.flush()
+  }
+
+  /**
+   * Returns how many rows were dropped so far for each reason, such as `queue_full` or
+   * `retry_exhausted`. Every reason is listed, even one with no drops.
+   */
+  fun getDropStats(): Map<String, Long> = drops.snapshot()
+
+  /**
+   * Writes the rows still queued, waiting up to [BigQueryLoggerConfig.shutdownTimeout], and
+   * releases the write client. The next row logged starts a new one.
+   */
   override fun close() {
-    traceManager.clear()
+    synchronized(closeLock) {
+      // Kept until shutdown returns, so that a flush meanwhile waits for the rows to be written.
+      val stopping = synchronized(pipelineLock) { pipeline }
+      if (stopping != null) {
+        try {
+          val timeout = config.shutdownTimeout.toKotlinDuration()
+          val start = TimeSource.Monotonic.markNow()
+          stopping.processor.shutdown(timeout)
+          closeWriter(stopping.writer, within = timeout - start.elapsedNow())
+        } finally {
+          openPlugins.remove(this)
+          synchronized(pipelineLock) { pipeline = null }
+        }
+      }
+      traceManager.clear()
+    }
+  }
+
+  // The first row after a close starts a new pipeline.
+  private fun getOrStartProcessor(): BatchProcessor =
+    synchronized(pipelineLock) { (pipeline ?: startPipeline().also { pipeline = it }).processor }
+
+  private fun startPipeline(): Pipeline {
+    // Rows are written as the same identity that creates the table.
+    val writer = createRowWriter(bigQuery.options?.scopedCredentials)
+    val processor =
+      BatchProcessor(
+        writer = writer,
+        batchSize = config.batchSize,
+        flushInterval = config.batchFlushInterval.toKotlinDuration(),
+        queueMaxSize = config.queueMaxSize,
+        retryConfig = config.retryConfig,
+        context = ioContext,
+        drops = drops,
+      )
+    try {
+      registerShutdownHook()
+    } catch (e: IllegalStateException) {
+      logger.debug { "JVM is shutting down; rows logged now are written only if close runs." }
+    }
+    openPlugins.add(this)
+    return Pipeline(processor, writer)
+  }
+
+  // The client can wait minutes for writes still in flight, so it closes on its own thread.
+  private fun closeWriter(writer: RowWriter, within: Duration) {
+    val closer =
+      thread(name = "bigquery-analytics-writer-close", isDaemon = true) {
+        try {
+          writer.close()
+        } catch (e: Exception) {
+          logger.warn { "Closing the BigQuery write client failed: ${e::class.simpleName}" }
+        }
+      }
+    try {
+      // join(0) would wait forever.
+      closer.join(within.inWholeMilliseconds.coerceAtLeast(1))
+    } catch (e: InterruptedException) {
+      Thread.currentThread().interrupt()
+    }
   }
 
   private suspend fun logEvent(
@@ -574,6 +695,7 @@ class BigQueryAgentAnalyticsPlugin(
       }
 
     if (!ensureTableExistsOnce()) {
+      drops.add(SETUP_UNAVAILABLE)
       logger.debug { "Table is not created, skipping event logging" }
       return
     }
@@ -590,7 +712,7 @@ class BigQueryAgentAnalyticsPlugin(
 
     val row =
       mapOf<String, Any?>(
-        "timestamp" to Instant.now().toString(),
+        "timestamp" to Instant.now(),
         "event_id" to UUID.randomUUID().toString().replace("-", ""),
         "event_type" to eventType,
         "agent" to invocationContext.agent.name,
@@ -618,24 +740,7 @@ class BigQueryAgentAnalyticsPlugin(
             attributes.isTruncated),
       )
 
-    val tableId = TableId.of(config.projectId, config.datasetId, config.tableName)
-    withContext(ioContext) {
-      try {
-        val response = bigQuery.insertAll(InsertAllRequest.newBuilder(tableId).addRow(row).build())
-        if (response.hasErrors()) {
-          logger.error {
-            "BigQuery insert failed for $eventType: ${response.insertErrors.size} row error(s)"
-          }
-        } else {
-          logger.debug { "Successfully inserted row: $eventType" }
-        }
-      } catch (e: BigQueryException) {
-        logger.error(e) { "Failed to insert row into BigQuery" }
-      } catch (e: RuntimeException) {
-        if (e is CancellationException) throw e
-        logger.error(e) { "Failed to insert row into BigQuery" }
-      }
-    }
+    getOrStartProcessor().append(row, isTerminal = eventType in TERMINAL_EVENT_TYPES)
   }
 
   private suspend fun ensureTableExistsOnce(): Boolean {
@@ -774,23 +879,26 @@ class BigQueryAgentAnalyticsPlugin(
     node.forEach(::removeNullFields)
   }
 
+  // A streaming chunk has no finish reason or cache type yet.
   private fun llmResponseAttributes(response: LlmResponse): Map<String, Any?> = buildMap {
     val usage = response.usageMetadata
     if (usage != null) put("usage_metadata", usageAttributes(usage))
-    response.finishReason?.let { put("finish_reason", it.name) }
-    // Attached cache metadata means ADK's explicit cache served the tokens.
-    put(
-      "cache_type",
-      when {
-        (usage?.cachedContentTokenCount ?: 0) <= 0 -> "none"
-        response.cacheMetadata != null -> "explicit"
-        else -> "implicit"
-      },
-    )
+    if (!response.partial) {
+      response.finishReason?.let { put("finish_reason", it.name) }
+      // Attached cache metadata means ADK's explicit cache served the tokens.
+      put(
+        "cache_type",
+        when {
+          (usage?.cachedContentTokenCount ?: 0) <= 0 -> "none"
+          response.cacheMetadata != null -> "explicit"
+          else -> "implicit"
+        },
+      )
+    }
     response.cacheMetadata?.let { put("cache_metadata", cacheMetadataAttributes(it)) }
   }
 
-  // Python ADK's snake_case keys, without the per-modality token details.
+  // Snake_case keys, without the per-modality token details.
   private fun usageAttributes(usage: UsageMetadata): Map<String, Any?> =
     mapOf(
         "prompt_token_count" to usage.promptTokenCount,
@@ -803,7 +911,7 @@ class BigQueryAgentAnalyticsPlugin(
       )
       .filterValues { it != null }
 
-  // Python ADK's snake_case keys, with times in epoch seconds.
+  // Snake_case keys, with times in epoch seconds.
   private fun cacheMetadataAttributes(cache: CacheMetadata): Map<String, Any?> =
     mapOf(
         "cache_name" to cache.cacheName,
@@ -892,10 +1000,13 @@ class BigQueryAgentAnalyticsPlugin(
     if (!functionCallId.isNullOrEmpty()) put("function_call_id", functionCallId)
   }
 
+  private class Pipeline(val processor: BatchProcessor, val writer: RowWriter)
+
   /**
    * Fluent builder for [BigQueryAgentAnalyticsPlugin], provided primarily for Java callers. Any
    * property left unset falls back to the same default as the constructor.
    */
+  @AdkJavaInteropApi
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
     private var config: BigQueryLoggerConfig? = null
@@ -943,7 +1054,36 @@ class BigQueryAgentAnalyticsPlugin(
     private const val LLM_REQUEST_KIND = "llm_request"
     private const val TOOL_KIND = "tool"
 
+    // Rows lost because the table could not be created; counted by the plugin.
+    private const val SETUP_UNAVAILABLE = "setup_unavailable"
+
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
+
+    // Rows that close an invocation, which may take the queue slots kept for them.
+    private val TERMINAL_EVENT_TYPES =
+      setOf(EventType.INVOCATION_COMPLETED, EventType.INVOCATION_ERROR)
+
+    // Plugins that may hold rows; weak, so that a plugin dropped without close can be collected.
+    private val openPlugins: MutableSet<BigQueryAgentAnalyticsPlugin> =
+      Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
+    private val shutdownHookRegistered = AtomicBoolean(false)
+
+    // One hook for every plugin: it writes the rows still queued when the JVM exits.
+    private fun registerShutdownHook() {
+      if (shutdownHookRegistered.compareAndSet(false, true)) {
+        Runtime.getRuntime().addShutdownHook(Thread(::closeOpenPlugins, "bigquery-analytics-exit"))
+      }
+    }
+
+    // Internal for tests; closes in parallel, so exit waits only for the slowest close.
+    internal fun closeOpenPlugins() {
+      // Unlike toList, this copy does not throw if the GC clears an entry mid-copy.
+      val plugins = synchronized(openPlugins) { openPlugins.toMutableList() }
+      val closers = plugins.map { plugin ->
+        thread(name = "bigquery-analytics-exit-close") { plugin.close() }
+      }
+      for (closer in closers) closer.join()
+    }
 
     private val HITL_EVENT_TYPES =
       mapOf(
