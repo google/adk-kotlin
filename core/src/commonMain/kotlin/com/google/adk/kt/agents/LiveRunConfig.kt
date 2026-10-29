@@ -19,6 +19,7 @@ package com.google.adk.kt.agents
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.types.AudioTranscriptionConfig
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.ContextWindowCompressionConfig
 import com.google.adk.kt.types.Modality
 import com.google.adk.kt.types.ProactivityConfig
@@ -33,9 +34,9 @@ import kotlin.jvm.JvmStatic
  * Settings of a live run, held in [RunConfig.live]. They belong to the experimental live API, the
  * only code that reads them, and may change without notice.
  *
- * Properties from [responseModalities] to [contextWindowCompression] configure the live connection,
- * set once when it opens and not changed per turn; [saveLiveBlob] instead tells ADK to record the
- * conversation's audio and never reaches the connection.
+ * Every property but [saveLiveBlob] configures the live connection, set once when it opens and not
+ * changed per turn; [saveLiveBlob] instead tells ADK to record the conversation's audio and never
+ * reaches the connection.
  *
  * @property responseModalities The modalities the model may return. Empty leaves it unset, and the
  *   SDK then asks for audio on a live connection, as unset does in ADK Python. A value set here is
@@ -59,6 +60,7 @@ import kotlin.jvm.JvmStatic
  *   referenced from an event the run emits. ADK never deletes these recordings, not even with the
  *   session, so prefer an artifact service backed by durable storage over an in-memory one for
  *   anything but short sessions.
+ * @property avatarConfig The avatar the model renders its replies as.
  */
 data class LiveRunConfig
 @ExperimentalLiveApi
@@ -76,6 +78,7 @@ constructor(
   val sessionResumption: SessionResumptionConfig? = null,
   val contextWindowCompression: ContextWindowCompressionConfig? = null,
   val saveLiveBlob: Boolean = false,
+  val avatarConfig: AvatarConfig? = null,
 ) {
   // Only the constructor and builders need the opt-in (not `copy`), so RunConfig can hold one.
 
@@ -100,6 +103,7 @@ constructor(
       .sessionResumption(sessionResumption)
       .contextWindowCompression(contextWindowCompression)
       .saveLiveBlob(saveLiveBlob)
+      .avatarConfig(avatarConfig)
 
   /**
    * Fluent builder for [LiveRunConfig], provided primarily for Java callers. Any property left
@@ -120,6 +124,7 @@ constructor(
     private var sessionResumption: SessionResumptionConfig? = null
     private var contextWindowCompression: ContextWindowCompressionConfig? = null
     private var saveLiveBlob: Boolean = false
+    private var avatarConfig: AvatarConfig? = null
 
     fun responseModalities(responseModalities: List<Modality>): Builder = apply {
       this.responseModalities = responseModalities
@@ -169,6 +174,10 @@ constructor(
 
     fun saveLiveBlob(saveLiveBlob: Boolean): Builder = apply { this.saveLiveBlob = saveLiveBlob }
 
+    fun avatarConfig(avatarConfig: AvatarConfig?): Builder = apply {
+      this.avatarConfig = avatarConfig
+    }
+
     @OptIn(ExperimentalLiveApi::class)
     fun build(): LiveRunConfig =
       LiveRunConfig(
@@ -184,6 +193,7 @@ constructor(
         sessionResumption = sessionResumption,
         contextWindowCompression = contextWindowCompression,
         saveLiveBlob = saveLiveBlob,
+        avatarConfig = avatarConfig,
       )
   }
 

@@ -26,7 +26,9 @@ import com.google.genai.kotlin.types.ActivityHandling as GenAiActivityHandling
 import com.google.genai.kotlin.types.AudioTranscriptionConfig as GenAiAudioTranscriptionConfig
 import com.google.genai.kotlin.types.AudioTranscriptionConfigMode as GenAiAudioTranscriptionConfigMode
 import com.google.genai.kotlin.types.AutomaticActivityDetection as GenAiAutomaticActivityDetection
+import com.google.genai.kotlin.types.AvatarConfig as GenAiAvatarConfig
 import com.google.genai.kotlin.types.ContextWindowCompressionConfig as GenAiContextWindowCompressionConfig
+import com.google.genai.kotlin.types.CustomizedAvatar as GenAiCustomizedAvatar
 import com.google.genai.kotlin.types.EndSensitivity as GenAiEndSensitivity
 import com.google.genai.kotlin.types.InteractionStatus as GenAiInteractionStatus
 import com.google.genai.kotlin.types.LiveConnectConfig as GenAiLiveConnectConfig
@@ -341,6 +343,34 @@ internal fun GenAiProactivityConfig.fromGenaiSdk(): ProactivityConfig =
 internal fun ProactivityConfig.toGenaiSdk(): GenAiProactivityConfig =
   GenAiProactivityConfig(proactiveAudio = proactiveAudio)
 
+// --- CustomizedAvatar ---
+/** Converts a [GenAiCustomizedAvatar] from the GenAI SDK to an ADK [CustomizedAvatar]. */
+internal fun GenAiCustomizedAvatar.fromGenaiSdk(): CustomizedAvatar =
+  CustomizedAvatar(imageMimeType = imageMimeType, imageData = imageData)
+
+/** Converts an ADK [CustomizedAvatar] to a [GenAiCustomizedAvatar] for the GenAI SDK. */
+internal fun CustomizedAvatar.toGenaiSdk(): GenAiCustomizedAvatar =
+  GenAiCustomizedAvatar(imageMimeType = imageMimeType, imageData = imageData)
+
+// --- AvatarConfig ---
+/** Converts a [GenAiAvatarConfig] from the GenAI SDK to an ADK [AvatarConfig]. */
+internal fun GenAiAvatarConfig.fromGenaiSdk(): AvatarConfig =
+  AvatarConfig(
+    avatarName = avatarName,
+    customizedAvatar = customizedAvatar?.fromGenaiSdk(),
+    audioBitrateBps = audioBitrateBps,
+    videoBitrateBps = videoBitrateBps,
+  )
+
+/** Converts an ADK [AvatarConfig] to a [GenAiAvatarConfig] for the GenAI SDK. */
+internal fun AvatarConfig.toGenaiSdk(): GenAiAvatarConfig =
+  GenAiAvatarConfig(
+    avatarName = avatarName,
+    customizedAvatar = customizedAvatar?.toGenaiSdk(),
+    audioBitrateBps = audioBitrateBps,
+    videoBitrateBps = videoBitrateBps,
+  )
+
 // --- TranslationConfig ---
 /** Converts a [GenAiTranslationConfig] from the GenAI SDK to an ADK [TranslationConfig]. */
 internal fun GenAiTranslationConfig.fromGenaiSdk(): TranslationConfig =
@@ -359,7 +389,7 @@ internal fun TranslationConfig.toGenaiSdk(): GenAiTranslationConfig =
 // --- LiveConnectConfig ---
 /**
  * Converts a [GenAiLiveConnectConfig] from the GenAI SDK to an ADK [LiveConnectConfig]. The SDK
- * fields ADK does not mirror, `httpOptions`, `avatarConfig` and `labels`, are dropped.
+ * fields ADK does not mirror, `httpOptions` and `labels`, are dropped.
  *
  * Three numbers also narrow on the way in: `temperature` and `topP` cross from the SDK's `Double?`
  * to `Float?`, and `topK` to `Int?`, which truncates toward zero rather than rounding.
@@ -387,14 +417,14 @@ internal fun GenAiLiveConnectConfig.fromGenaiSdk(): LiveConnectConfig =
     safetySettings = safetySettings?.map { it.fromGenaiSdk() },
     explicitVadSignal = explicitVadSignal,
     translationConfig = translationConfig?.fromGenaiSdk(),
+    avatarConfig = avatarConfig?.fromGenaiSdk(),
   )
 
 /**
  * Converts an ADK [LiveConnectConfig] to a [GenAiLiveConnectConfig] for the GenAI SDK.
  *
  * `httpOptions` is never mirrored: it configures the transport rather than the conversation, and a
- * caller who needs it passes their own client. The other unmirrored SDK fields are simply not
- * mirrored yet.
+ * caller who needs it passes their own client. `labels` is not mirrored yet.
  */
 internal fun LiveConnectConfig.toGenaiSdk(): GenAiLiveConnectConfig =
   GenAiLiveConnectConfig(
@@ -419,6 +449,7 @@ internal fun LiveConnectConfig.toGenaiSdk(): GenAiLiveConnectConfig =
     safetySettings = safetySettings?.map { it.toGenaiSdk() },
     explicitVadSignal = explicitVadSignal,
     translationConfig = translationConfig?.toGenaiSdk(),
+    avatarConfig = avatarConfig?.toGenaiSdk(),
   )
 
 // --- Server message types ---

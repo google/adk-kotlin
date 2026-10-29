@@ -381,6 +381,7 @@ class LiveConvertersTest {
     assertEquals(1, sdk.safetySettings?.size)
     assertEquals(true, sdk.explicitVadSignal)
     assertEquals("es", sdk.translationConfig?.targetLanguageCode)
+    assertEquals("Kai", sdk.avatarConfig?.avatarName)
   }
 
   @Test
@@ -399,15 +400,14 @@ class LiveConvertersTest {
   fun liveConnectConfig_toGenaiSdk_leavesUnmirroredSdkFieldsUnset() {
     val sdk = fullyPopulatedLiveConnectConfig().toGenaiSdk()
 
-    // The converter must not invent these; `toGenaiSdk`'s KDoc says which are permanent.
+    // The converter must not invent this; `toGenaiSdk`'s KDoc says which are permanent.
     assertNull(sdk.httpOptions)
-    assertNull(sdk.avatarConfig)
   }
 
   @Test
   fun liveConnectConfig_mirrorsEverySdkFieldItDoesNotDeliberatelyDrop() {
     // Names only: the round trip above catches wrong targets; this catches an undecided field.
-    val deliberatelyDropped = setOf("avatarConfig", "httpOptions", "labels")
+    val deliberatelyDropped = setOf("httpOptions", "labels")
     val sdkDescriptor = SdkLiveConnectConfig.serializer().descriptor
     val adkDescriptor = LiveConnectConfig.serializer().descriptor
     val sdkDeclared =
@@ -648,5 +648,7 @@ class LiveConvertersTest {
         ),
       explicitVadSignal = true,
       translationConfig = TranslationConfig(targetLanguageCode = "es", echoTargetLanguage = true),
+      avatarConfig =
+        AvatarConfig(avatarName = "Kai", audioBitrateBps = 32_000, videoBitrateBps = 1_000_000),
     )
 }

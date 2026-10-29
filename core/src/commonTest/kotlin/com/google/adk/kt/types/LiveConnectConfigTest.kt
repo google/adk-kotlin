@@ -25,7 +25,7 @@ class LiveConnectConfigTest {
   @OptIn(AdkJavaInteropApi::class)
   @Test
   fun toBuilder_everyPropertySet_matchesCopy() {
-    // A distinct non-default value for every one of the 21 properties, so a swap is caught.
+    // A distinct non-default value for every one of the 22 properties, so a swap is caught.
     val config =
       LiveConnectConfig(
         responseModalities = listOf(Modality.AUDIO),
@@ -59,6 +59,7 @@ class LiveConnectConfigTest {
           ),
         explicitVadSignal = true,
         translationConfig = TranslationConfig(targetLanguageCode = "es", echoTargetLanguage = true),
+        avatarConfig = AvatarConfig(avatarName = "avatar-1"),
       )
 
     assertEquals(config.copy(), config.toBuilder().build())
