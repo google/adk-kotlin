@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.interop
 
+import com.google.adk.kt.agents.LiveRequest
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
@@ -38,14 +39,26 @@ import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.common.truth.Truth.assertThat
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactive.asPublisher
 import kotlinx.coroutines.runBlocking
 import org.reactivestreams.Publisher
+import org.reactivestreams.Subscriber
+import org.reactivestreams.Subscription
 
 class BasePublisherToolTest {
 
@@ -55,6 +68,15 @@ class BasePublisherToolTest {
         it.functionResponse?.id == callId && it.functionResponse.response == response
       }
   }
+
+  /** The n of a user's "ping n" message, or null. */
+  private fun pingNumber(message: Any?): Int? =
+    (message as? ContentInput)
+      ?.content
+      ?.parts
+      ?.firstNotNullOfOrNull { it.text }
+      ?.removePrefix("ping ")
+      ?.toIntOrNull()
 
   /** A Java-style tool that publishes [items]. */
   private fun publishingTool(vararg items: String) =
@@ -122,6 +144,90 @@ class BasePublisherToolTest {
       assertThat(error)
         .hasMessageThat()
         .isEqualTo("Only a connected live run can stream a tool's Flow; return a value instead.")
+    }
+  }
+
+  @Test
+  fun run_subscriberBlockingOnTheLiveInput_doesNotHoldBackTheSends() {
+    // The n of the first "ping n" the subscriber gets; its onNext blocks until the test ends.
+    val blockedOn = AtomicInteger()
+    val release = CountDownLatch(1)
+    val error = AtomicReference<Throwable>()
+    val subscriber =
+      object : Subscriber<LiveRequest> {
+        override fun onSubscribe(subscription: Subscription) {
+          subscription.request(Long.MAX_VALUE)
+        }
+
+        override fun onNext(request: LiveRequest) {
+          val ping = pingNumber(request.input) ?: return
+          blockedOn.compareAndSet(0, ping)
+          // Bounded, so a stalled send loop fails the script's wait instead of hanging the test.
+          release.await(10, TimeUnit.SECONDS)
+        }
+
+        override fun onError(t: Throwable) {
+          error.set(t)
+        }
+
+        override fun onComplete() {}
+      }
+    val listener =
+      object : BasePublisherTool("listen", "Listens to the user with a subscriber that blocks.") {
+        override fun declaration(): FunctionDeclaration = FunctionDeclaration(name, description)
+
+        override fun runPublisher(
+          context: ToolContext,
+          args: Map<String, Any?>,
+        ): Publisher<String> =
+          // Subscribes from the returned stream, the only place the live input is set.
+          flow<String> {
+              AsyncJavaHelpers.asPublisher(context.liveRequests).subscribe(subscriber)
+              awaitCancellation()
+            }
+            .asPublisher()
+      }
+    val script =
+      listOf(
+        Respond(modelFunctionCallResponse("listen", id = CALL_ID)),
+        // Only the blocked ping or a later one: an earlier one may be checked after the block.
+        AwaitSent("a ping sent while the subscriber blocks") { message ->
+          // A failed subscription never blocks, so report its error instead of the wait's timeout.
+          error.get()?.let { throw AssertionError("The live input publisher failed", it) }
+          val sent = pingNumber(message)
+          sent != null && blockedOn.get() in 1..sent
+        },
+        Respond(LlmResponse(turnComplete = true)),
+      )
+
+    try {
+      // Multi-threaded, so a blocked sender cannot also stall the script's timeout.
+      runBlocking(Dispatchers.Default) {
+        val model = DummyLiveModel(script)
+        val agent = LlmAgent(name = "agent", model = model, tools = listOf(listener))
+        val queue = LiveRequestQueue()
+        // The tool starts listening asynchronously, so the user pings until it hears one.
+        val pinger = launch {
+          var n = 0
+          while (true) {
+            queue.sendContent(userMessage("ping ${++n}"))
+            delay(20.milliseconds)
+          }
+        }
+        try {
+          val unused =
+            InMemoryRunner(agent = agent)
+              .runLive("u", "s", queue, RunConfig(streamingMode = StreamingMode.BIDI))
+              .onEach { if (it.turnComplete) queue.close() }
+              .toList()
+          assertThat(error.get()).isNull()
+          model.connections.single().assertAllWaitsMet()
+        } finally {
+          pinger.cancel()
+        }
+      }
+    } finally {
+      release.countDown()
     }
   }
 

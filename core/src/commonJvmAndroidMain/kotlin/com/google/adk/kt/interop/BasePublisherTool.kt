@@ -33,8 +33,7 @@ import org.reactivestreams.Publisher
  * tool non-blocking on its own, so the model can keep the conversation going while results arrive.
  *
  * A live tool can read the experimental `context.getLiveRequests()` through
- * `AsyncJavaHelpers.asPublisher`, whose signals can arrive on the engine's send thread, so do slow
- * work on another thread.
+ * [AsyncJavaHelpers.asPublisher].
  */
 @AdkJavaInteropApi
 abstract class BasePublisherTool
