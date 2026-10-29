@@ -17,9 +17,13 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.ValueCoercer
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.auth.AuthConfig
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.AuthHandler
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -507,6 +511,35 @@ open class Context(
     }
     actions.requestedToolConfirmations[functionCallId] =
       ToolConfirmation(hint = hint, confirmed = false, payload = payload)
+  }
+
+  /**
+   * Asks the app for the credential [authConfig] describes: the next event carries a sign-in
+   * request for the current tool call. Only a tool call has a [functionCallId], so this can only be
+   * called in a tool context.
+   *
+   * @throws IllegalStateException if [functionCallId] is not set.
+   * @throws IllegalArgumentException if an OAuth2 or OpenID Connect [authConfig] can't produce an
+   *   authorization URL, as when it has no OAuth2 raw credential or client ID, asks for a code
+   *   challenge method other than S256, or has only a discovery URL.
+   */
+  @ExperimentalAuthApi
+  fun requestCredential(authConfig: AuthConfig) {
+    val callId = checkNotNull(functionCallId) { "functionCallId is not set." }
+    actions.requestedAuthConfigs[callId] = AuthHandler(authConfig).generateAuthRequest()
+  }
+
+  /**
+   * Returns the credential the app sent back for [authConfig], or null if there is none yet. It is
+   * read from [state] under the config's `temp:` key, then under its plain key, skipping a
+   * malformed value. When [authConfig] has an OAuth2 raw credential, its client ID and secret
+   * replace the stored ones; an OAuth2 authorization code is returned as is, not exchanged for a
+   * token.
+   */
+  @ExperimentalAuthApi
+  suspend fun getAuthResponse(authConfig: AuthConfig): AuthCredential? {
+    // Suspends so that exchanging an authorization code for a token needs no API change.
+    return AuthHandler(authConfig).getAuthResponse(state)
   }
 
   /** The node this context is an activation of. */
