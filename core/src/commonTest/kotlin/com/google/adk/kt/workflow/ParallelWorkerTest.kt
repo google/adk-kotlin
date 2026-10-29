@@ -105,7 +105,7 @@ private class AlwaysFailsAt(name: String, private val badItem: Long) :
       ),
   ) {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    if (nodeInput == badItem) throw NodeExecutionException("RuntimeError", "always")
+    if (nodeInput == badItem) throw TestNodeException("always")
     emit(nodeInput)
   }
 }
@@ -120,7 +120,7 @@ private class PlainItemTagger(override val name: String, private val flakyItem: 
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     if (nodeInput == flakyItem && context.attemptCount == 1) {
-      throw NodeExecutionException("RuntimeError", "first attempt")
+      throw TestNodeException("first attempt")
     }
     emit("tagged:$nodeInput")
   }
@@ -136,7 +136,7 @@ private class Doubler(name: String) : BaseNode(name = name) {
 /** Fails on one nominated item, to show a single bad item fails the whole node. */
 private class FailsOn(name: String, private val bad: Long) : BaseNode(name = name) {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    if (nodeInput == bad) throw NodeExecutionException("RuntimeError", "bad item")
+    if (nodeInput == bad) throw TestNodeException("bad item")
     emit(nodeInput)
   }
 }
@@ -161,7 +161,7 @@ private class FailsFirstAttemptAt(name: String, private val flakyItem: Long) :
   ) {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     if (nodeInput == flakyItem && context.attemptCount == 1) {
-      throw NodeExecutionException("RuntimeError", "first attempt")
+      throw TestNodeException("first attempt")
     }
     emit(nodeInput)
   }
@@ -219,7 +219,7 @@ private class FanOutDispatcher(
 /** Fails on every item with a message naming the item, so failure ordering is observable. */
 private class AlwaysFails(name: String) : BaseNode(name = name) {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    throw NodeExecutionException("RuntimeError", "$nodeInput failed")
+    throw TestNodeException("$nodeInput failed")
   }
 }
 
@@ -294,7 +294,7 @@ private class FailFastProbe(name: String, private val bad: Long) : BaseNode(name
     private set
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    if (nodeInput == bad) throw NodeExecutionException("RuntimeError", "boom")
+    if (nodeInput == bad) throw TestNodeException("boom")
     delay(10.seconds)
     siblingCompleted = true
     emit(nodeInput)
@@ -344,7 +344,7 @@ private class InterruptThenFailure(name: String) : BaseNode(name = name) {
       return@flow
     }
     delay(200.milliseconds)
-    throw NodeExecutionException("RuntimeError", "late failure")
+    throw TestNodeException("late failure")
   }
 }
 
@@ -397,7 +397,7 @@ class ParallelWorkerTest {
     val events = mutableListOf<Event>()
 
     // Act
-    assertFailsWith<NodeExecutionException> {
+    assertFailsWith<TestNodeException> {
       runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
     }
 
@@ -787,7 +787,7 @@ class ParallelWorkerTest {
 
     // Act
     val error =
-      assertFailsWith<NodeExecutionException> {
+      assertFailsWith<TestNodeException> {
         runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
       }
 
@@ -808,7 +808,7 @@ class ParallelWorkerTest {
 
     // Act
     val error =
-      assertFailsWith<NodeExecutionException> {
+      assertFailsWith<TestNodeException> {
         runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
       }
 
@@ -829,7 +829,7 @@ class ParallelWorkerTest {
 
     // Act + Assert: when multiple items fail in the same window, the lowest-index item wins.
     repeat(10) {
-      val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+      val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
       assertEquals("item-0 failed", error.message)
     }
   }
@@ -843,7 +843,7 @@ class ParallelWorkerTest {
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, worker)))
 
     // Act
-    val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+    val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
 
     // Assert: the node failed fast and the sibling was cancelled before it could finish.
     assertContains(error.message!!, "boom")
@@ -905,7 +905,7 @@ class ParallelWorkerTest {
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, worker)))
 
     // Act
-    val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+    val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
 
     // Assert: the failure outranks the earlier interrupt.
     assertContains(error.message!!, "late failure")
