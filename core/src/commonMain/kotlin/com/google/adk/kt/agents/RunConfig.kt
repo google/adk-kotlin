@@ -58,6 +58,15 @@ enum class StreamingMode {
   BIDI,
 }
 
+/** Execution mode when the model calls multiple tools in a single turn. */
+enum class ToolExecutionMode {
+  /** Runs tool calls concurrently (default). */
+  PARALLEL,
+
+  /** Runs tool calls one after another in request order, awaiting each before starting the next. */
+  SEQUENTIAL,
+}
+
 /**
  * Configs for runtime behavior of agents.
  *
@@ -66,6 +75,8 @@ enum class StreamingMode {
  *   enforced, except by a live run, which ignores it; a value <= 0 means unbounded.
  * @property customMetadata Custom metadata for the current invocation.
  * @property live Settings that only a live run reads.
+ * @property toolExecutionMode How multiple tool calls in a single turn run,
+ *   [ToolExecutionMode.PARALLEL] or [ToolExecutionMode.SEQUENTIAL].
  */
 data class RunConfig
 @JvmOverloads
@@ -74,6 +85,7 @@ constructor(
   val maxLlmCalls: Int = 500,
   val customMetadata: Map<String, Any>? = null,
   @OptIn(ExperimentalLiveApi::class) val live: LiveRunConfig = LiveRunConfig(),
+  val toolExecutionMode: ToolExecutionMode = ToolExecutionMode.PARALLEL,
 ) {
   init {
     require(maxLlmCalls != Int.MAX_VALUE) { "maxLlmCalls should be less than Int.MAX_VALUE." }
@@ -96,6 +108,7 @@ constructor(
       .maxLlmCalls(maxLlmCalls)
       .customMetadata(customMetadata)
       .live(live)
+      .toolExecutionMode(toolExecutionMode)
 
   /**
    * Fluent builder for [RunConfig], provided primarily for Java callers. Any property left unset
@@ -108,6 +121,7 @@ constructor(
     private var maxLlmCalls: Int = 500
     private var customMetadata: Map<String, Any>? = null
     @OptIn(ExperimentalLiveApi::class) private var live: LiveRunConfig = LiveRunConfig()
+    private var toolExecutionMode: ToolExecutionMode = ToolExecutionMode.PARALLEL
 
     fun streamingMode(streamingMode: StreamingMode): Builder = apply {
       this.streamingMode = streamingMode
@@ -121,12 +135,17 @@ constructor(
 
     fun live(live: LiveRunConfig): Builder = apply { this.live = live }
 
+    fun toolExecutionMode(toolExecutionMode: ToolExecutionMode): Builder = apply {
+      this.toolExecutionMode = toolExecutionMode
+    }
+
     fun build(): RunConfig =
       RunConfig(
         streamingMode = streamingMode,
         maxLlmCalls = maxLlmCalls,
         customMetadata = customMetadata,
         live = live,
+        toolExecutionMode = toolExecutionMode,
       )
   }
 

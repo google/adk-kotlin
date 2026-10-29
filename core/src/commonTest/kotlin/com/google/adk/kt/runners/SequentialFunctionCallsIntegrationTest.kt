@@ -18,6 +18,7 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LlmCallsLimitExceededException
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.ToolExecutionMode
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
@@ -39,7 +40,9 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 
 /**
  * Multi-turn function calling: a single tool invoked across multiple model turns, and parallel
@@ -253,5 +256,108 @@ class SequentialFunctionCallsIntegrationTest {
     // The 4th turn trips the cap before the model is invoked again: exactly 3 LLM calls happen.
     assertEquals(3, modelCalls)
     assertEquals(3, toolInvocations)
+  }
+
+  /**
+   * Three tool calls in one model response sharing an optimistic-concurrency version counter: under
+   * [ToolExecutionMode.SEQUENTIAL], each call completes before the next starts, preserves request
+   * order, and advances the shared version without concurrent stale-read conflicts.
+   */
+  @Test
+  fun runAsync_multipleToolCallsInOneTurnWithSequentialMode_executesSeriallyInOrder(): Unit =
+    runBlocking {
+      val executionOrder = mutableListOf<String>()
+      val runner = versionedToolsRunner(listOf("tool_a", "tool_b", "tool_c"), executionOrder)
+
+      val events =
+        runner
+          .runAsync(
+            userId = "user1",
+            sessionId = "session1",
+            newMessage = userMessage("go"),
+            runConfig = RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL),
+          )
+          .toList()
+
+      assertEquals(
+        listOf(
+          "start:tool_a",
+          "end:tool_a",
+          "start:tool_b",
+          "end:tool_b",
+          "start:tool_c",
+          "end:tool_c",
+        ),
+        executionOrder,
+      )
+      val responseEvent = events.single { it.functionResponses().isNotEmpty() }
+      assertEquals(
+        listOf("tool_a" to 1, "tool_b" to 2, "tool_c" to 3),
+        responseEvent.functionResponses().map { it.name to it.response["version"] },
+      )
+    }
+
+  /**
+   * Counterpart to [runAsync_multipleToolCallsInOneTurnWithSequentialMode_executesSeriallyInOrder]:
+   * under the default [ToolExecutionMode.PARALLEL], suspending tools overlap on the shared version
+   * counter and trip the optimistic-concurrency check.
+   */
+  @Test
+  fun runAsync_multipleToolCallsInOneTurnWithDefaultMode_overlapsConcurrentCalls(): Unit =
+    runBlocking {
+      val runner = versionedToolsRunner(listOf("tool_a", "tool_b"))
+
+      val error =
+        assertFailsWith<IllegalStateException> {
+          runner
+            .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("go"))
+            .toList()
+        }
+
+      assertTrue(
+        error.message.orEmpty().startsWith("Concurrent modification:"),
+        "Unexpected message: ${error.message}",
+      )
+    }
+
+  private fun versionedToolsRunner(
+    toolNames: List<String>,
+    executionOrder: MutableList<String> = mutableListOf(),
+  ): InMemoryRunner {
+    var backendVersion = 0
+    fun versionedTool(name: String) =
+      DummyTool(
+        name = name,
+        onRun = { _, _ ->
+          executionOrder += "start:$name"
+          val expectedVersion = backendVersion
+          yield()
+          check(expectedVersion == backendVersion) {
+            "Concurrent modification: version changed from $expectedVersion to $backendVersion"
+          }
+          val nextVersion = expectedVersion + 1
+          backendVersion = nextVersion
+          executionOrder += "end:$name"
+          mapOf("version" to nextVersion)
+        },
+      )
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model =
+          DummyModel.createSequential(
+            "versioned-tools-model",
+            listOf(
+              modelParallelFunctionCallsResponse(
+                *toolNames
+                  .map { name -> FunctionCall(name = name, id = "call_$name") }
+                  .toTypedArray()
+              ),
+              LlmResponse(content = modelMessage("Done.")),
+            ),
+          ),
+        tools = toolNames.map(::versionedTool),
+      )
+    return InMemoryRunner(agent = agent)
   }
 }

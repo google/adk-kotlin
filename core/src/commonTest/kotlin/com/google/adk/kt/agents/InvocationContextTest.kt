@@ -23,6 +23,7 @@ import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.GetSessionConfig
@@ -48,8 +49,10 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -1374,6 +1377,93 @@ class InvocationContextTest {
     assertEquals(mapOf("temp" to 21), responses["call_1"]!!.response)
     assertNotNull(responses["call_2"]!!.response["error"])
   }
+
+  @Test
+  fun handleFunctionCalls_sequentialModeToolThrows_abortsRemainingAndLeavesSessionUncommitted():
+    Unit = runBlocking {
+    var thirdToolStarted = false
+    val firstTool =
+      DummyTool(name = "tool_a") { ctx, _ ->
+        ctx.updateState("uncommitted", "value")
+        mapOf("ok" to true)
+      }
+    val failingTool =
+      DummyTool(name = "tool_b") { _, _ ->
+        yield()
+        throw IllegalStateException("tool_b failed")
+      }
+    val thirdTool =
+      DummyTool(name = "tool_c") { _, _ ->
+        thirdToolStarted = true
+        mapOf("ok" to true)
+      }
+    val context =
+      testInvocationContext(
+        agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
+        runConfig = RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL),
+        invocationId = "inv",
+      )
+
+    val thrown =
+      assertFailsWith<IllegalStateException> {
+        context.handleFunctionCalls(
+          listOf(
+            FunctionCall(name = "tool_a", args = emptyMap(), id = "call_1"),
+            FunctionCall(name = "tool_b", args = emptyMap(), id = "call_2"),
+            FunctionCall(name = "tool_c", args = emptyMap(), id = "call_3"),
+          ),
+          mapOf("tool_a" to firstTool, "tool_b" to failingTool, "tool_c" to thirdTool),
+        )
+      }
+
+    assertThat(thrown).hasMessageThat().isEqualTo("tool_b failed")
+    assertThat(thirdToolStarted).isFalse()
+    assertThat(context.session.state["uncommitted"]).isNull()
+  }
+
+  @Test
+  fun handleFunctionCalls_sequentialModeWithFiltersAndConfirmations_runsFilteredInOrder(): Unit =
+    runBlocking {
+      val observed = mutableListOf<String>()
+      fun recordingTool(name: String) =
+        DummyTool(name = name) { ctx, _ ->
+          observed += "start:$name:${ctx.toolConfirmation?.confirmed}"
+          yield()
+          observed += "end:$name"
+          mapOf("tool" to name)
+        }
+      val context =
+        testInvocationContext(
+          agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
+          runConfig = RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL),
+          invocationId = "inv",
+        )
+
+      val merged =
+        context.handleFunctionCalls(
+          functionCalls =
+            listOf(
+              FunctionCall(name = "tool_a", args = emptyMap(), id = "call_1"),
+              FunctionCall(name = "tool_skip", args = emptyMap(), id = "call_skip"),
+              FunctionCall(name = "tool_b", args = emptyMap(), id = "call_2"),
+            ),
+          tools = listOf("tool_a", "tool_skip", "tool_b").associateWith(::recordingTool),
+          filters = setOf("call_1", "call_2"),
+          toolConfirmations =
+            mapOf(
+              "call_1" to ToolConfirmation(confirmed = true),
+              "call_2" to ToolConfirmation(confirmed = false),
+            ),
+        )
+
+      val responseEvent = checkNotNull(merged)
+      assertThat(observed)
+        .containsExactly("start:tool_a:true", "end:tool_a", "start:tool_b:false", "end:tool_b")
+        .inOrder()
+      assertThat(responseEvent.functionResponses().map { it.id })
+        .containsExactly("call_1", "call_2")
+        .inOrder()
+    }
 
   @Test
   fun getEvents_currentBranch_includesUserEventOnSubBranch() = runBlocking {
