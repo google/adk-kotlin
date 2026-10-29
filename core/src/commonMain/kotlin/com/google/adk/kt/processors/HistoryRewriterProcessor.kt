@@ -91,19 +91,15 @@ internal class HistoryRewriterProcessor {
       )
     }
 
-    // Replace each compaction event with its summary and drop the raw events it covers.
-    val eventsWithCompactionApplied =
+    // Replace each compaction event with its summary, drop the raw events it covers, and recover
+    // any compacted function_call whose response survived outside the compacted range.
+    val recoveredEvents =
       if (rawFilteredEvents.any { it.actions.compaction != null }) {
-        processCompactionEvents(rawFilteredEvents, agentName)
+        val eventsWithCompactionApplied = processCompactionEvents(rawFilteredEvents, agentName)
+        recoverCompactedFunctionCalls(eventsWithCompactionApplied, rawFilteredEvents)
       } else {
         rawFilteredEvents
       }
-
-    // Compaction may have summarized away a function_call whose response survives (e.g. a
-    // long-running call resumed after it was compacted). Recover the missing call from the
-    // pre-compaction events so call/response pairing stays intact for the steps below.
-    val recoveredEvents =
-      recoverCompactedFunctionCalls(eventsWithCompactionApplied, rawFilteredEvents)
 
     // A result goes with its call when the call is presented as context, or it pairs with nothing.
     val narratedCallIds = mutableSetOf<String>()
@@ -316,104 +312,110 @@ internal class HistoryRewriterProcessor {
   /**
    * Re-injects function-call events that compaction removed but whose responses came later.
    *
-   * The canonical case is a paused long-running tool call: the call and its intermediate
-   * placeholder response are compacted, then the real result arrives on resume -- a later event not
-   * covered by the summary. That surviving response would be orphaned, which breaks call/response
-   * pairing in [rearrangeEventsForLatestFunctionResponse] (it throws).
+   * The canonical case is a paused long-running or confirmation-gated tool call: the call and its
+   * intermediate placeholder response are compacted, then the real result arrives on resume -- a
+   * later event not covered by the summary. That surviving response would be orphaned, which breaks
+   * call/response pairing in [rearrangeEventsForLatestFunctionResponse] (it throws).
    *
-   * For each response whose call is no longer present, the original call event is restored from
-   * [sourceEvents] (the pre-compaction list) and inserted immediately before the first surviving
-   * response that references it. The whole call event is recovered so parallel calls stay intact;
-   * for every call in that event whose response was *also* compacted away, the freshest (latest)
-   * response for that call is re-injected too, so a parallel sibling is not surfaced as a phantom
-   * pending call.
+   * For each response whose owning call is no longer present, the original call event is restored
+   * from [sourceEvents] (the pre-compaction list, paired by event identity with the latest
+   * preceding call of the same ID) and inserted immediately before the first surviving response
+   * that references it. The whole call event is recovered so parallel calls stay intact; for every
+   * call in that event whose response was *also* compacted away, the freshest (latest) response for
+   * that call is re-injected too in [sourceEvents] order, so a parallel sibling is not surfaced as
+   * a phantom pending call.
    *
-   * Only long-running calls are recovered: a response whose call was compacted is only expected for
-   * a long-running call (its placeholder response balanced the call, so the compactor did not treat
-   * it as an open obligation). A response whose call is not long-running -- or whose call is absent
-   * from [sourceEvents] entirely -- is left unrecovered, so a genuinely unmatched response still
-   * surfaces via the throw in [rearrangeEventsForLatestFunctionResponse].
+   * A response whose call is absent from [sourceEvents] entirely is left unrecovered, so a
+   * genuinely unmatched response still surfaces via the throw in
+   * [rearrangeEventsForLatestFunctionResponse].
    *
-   * @param events The post-compaction events being assembled into request contents.
+   * @param events The post-compaction events being assembled into request contents. Surviving raw
+   *   events must be the same [Event] instances as in [sourceEvents] (matched by reference
+   *   identity).
    * @param sourceEvents The pre-compaction events to recover missing calls (and responses) from.
-   * @return [events] with recovered long-running call events re-injected; the same list is returned
-   *   when nothing needs recovery.
+   * @return [events] with recovered call events re-injected; the same list is returned when nothing
+   *   needs recovery.
    */
   private fun recoverCompactedFunctionCalls(
     events: List<Event>,
     sourceEvents: List<Event>,
   ): List<Event> {
-    val callIdsPresent = mutableSetOf<String>()
-    val responseIdsPresent = mutableSetOf<String>()
-    for (event in events) {
-      for (call in event.functionCalls()) {
-        call.id?.let(callIdsPresent::add)
-      }
-      for (response in event.functionResponses()) {
-        response.id?.let(responseIdsPresent::add)
-      }
+    if (events === sourceEvents || events.none { it.functionResponses().isNotEmpty() }) {
+      return events
     }
 
-    // Responses whose originating call is no longer present in the assembled events.
-    val orphanedIds = responseIdsPresent - callIdsPresent
-    if (orphanedIds.isEmpty()) return events
+    val presentEvents = events.mapTo(mutableSetOf()) { EventRef(it) }
 
-    // The call events that match the orphaned responses, limited to long-running calls.
-    val callEventByOrphanId = mutableMapOf<String, Event>()
+    // Walk sourceEvents in order to pair each FunctionResponse with the latest preceding
+    // FunctionCall of the same ID, and record the freshest response per call for each owning
+    // call event.
+    val latestCallById = mutableMapOf<String, EventRef>()
+    val callsByResponse = mutableMapOf<EventRef, MutableList<EventRef>>()
+    val responseByCall = mutableMapOf<EventRef, MutableMap<String, EventRef>>()
+    val survivingResponses = mutableMapOf<EventRef, MutableSet<String>>()
+
     for (event in sourceEvents) {
+      val eventRef = EventRef(event)
       for (call in event.functionCalls()) {
-        val id = call.id ?: continue
-        if (id in orphanedIds && id in event.longRunningToolIds && id !in callEventByOrphanId) {
-          callEventByOrphanId[id] = event
+        val id = call.id?.takeIf { it.isNotEmpty() } ?: continue
+        latestCallById[id] = eventRef
+      }
+      for (response in event.functionResponses()) {
+        val responseId = response.id?.takeIf { it.isNotEmpty() } ?: continue
+        val callRef = latestCallById[responseId] ?: continue
+        callsByResponse.getOrPut(eventRef) { mutableListOf() }.add(callRef)
+        if (eventRef in presentEvents) {
+          survivingResponses.getOrPut(callRef) { mutableSetOf() }.add(responseId)
         }
-      }
-    }
-    // No long-running calls to recover: leave the list as-is so the downstream rearrange still
-    // throws for any unmatched response.
-    if (callEventByOrphanId.isEmpty()) return events
-
-    // Final response event per call id, taken from the pre-compaction source. Selected by max
-    // timestamp so the newest result is kept.
-    val finalResponseEventByID = mutableMapOf<String, Event>()
-    for (event in sourceEvents) {
-      for (response in event.functionResponses()) {
-        val id = response.id ?: continue
-        val existing = finalResponseEventByID[id]
-        if (existing == null || event.timestamp >= existing.timestamp) {
-          finalResponseEventByID[id] = event
+        val responsesForCall = responseByCall.getOrPut(callRef) { mutableMapOf() }
+        val existing = responsesForCall[responseId]
+        if (existing == null || event.timestamp >= existing.event.timestamp) {
+          responsesForCall[responseId] = eventRef
         }
       }
     }
 
     val result = mutableListOf<Event>()
-    val reinjectedCallIds = mutableSetOf<String>()
+    val reinjectedCalls = mutableSetOf<EventRef>()
+    val reinjectedResponses = mutableSetOf<EventRef>()
     for (event in events) {
-      for (response in event.functionResponses()) {
-        val id = response.id ?: continue
-        val callEvent = callEventByOrphanId[id] ?: continue
-        if (id in reinjectedCallIds) continue
-
-        // Re-inject the whole call event (the call with orphaned response and all its siblings).
-        result.add(callEvent)
-
-        // Mark all calls in the event as reinjected so we don't re-inject the sibling calls later
-        // again.
-        val callIdsInEvent = callEvent.functionCalls().mapNotNull { it.id }
-        reinjectedCallIds.addAll(callIdsInEvent)
+      val eventRef = EventRef(event)
+      for (callRef in callsByResponse[eventRef].orEmpty()) {
+        if (callRef in presentEvents || !reinjectedCalls.add(callRef)) continue
+        result.add(callRef.event)
 
         // Restore the final response for any sibling call whose response was also compacted
-        // away, so the sibling is not left looking like a pending call.
-        val siblingResponsesToReinject = LinkedHashSet<Event>()
-        for (callId in callIdsInEvent) {
-          if (callId !in responseIdsPresent) {
-            finalResponseEventByID[callId]?.let(siblingResponsesToReinject::add)
+        // away, in sourceEvents order, so the sibling is not left looking like a pending call.
+        val survivingForCall = survivingResponses[callRef].orEmpty()
+        val responsesForCall = responseByCall[callRef].orEmpty()
+        val siblingResponsesToAdd = mutableSetOf<EventRef>()
+        for (siblingCall in callRef.event.functionCalls()) {
+          val siblingId = siblingCall.id?.takeIf { it.isNotEmpty() } ?: continue
+          if (siblingId !in survivingForCall) {
+            val siblingResponse = responsesForCall[siblingId]
+            if (siblingResponse != null && reinjectedResponses.add(siblingResponse)) {
+              siblingResponsesToAdd.add(siblingResponse)
+            }
           }
         }
-        result.addAll(siblingResponsesToReinject)
+        if (siblingResponsesToAdd.isNotEmpty()) {
+          for (sourceEvent in sourceEvents) {
+            if (EventRef(sourceEvent) in siblingResponsesToAdd) {
+              result.add(sourceEvent)
+            }
+          }
+        }
       }
       result.add(event)
     }
-    return result
+    return if (reinjectedCalls.isEmpty()) events else result
+  }
+
+  /** Wraps an [Event] so sets and map keys compare by reference identity (`===`). */
+  private class EventRef(val event: Event) {
+    override fun equals(other: Any?): Boolean = other is EventRef && event === other.event
+
+    override fun hashCode(): Int = event.id.hashCode()
   }
 
   /**
@@ -1080,38 +1082,54 @@ internal class HistoryRewriterProcessor {
 
   /** Rearrange the async function_response events in the history. */
   private fun rearrangeEventsForAsyncFunctionResponsesInHistory(events: List<Event>): List<Event> {
-    // 1. Map function call IDs to their response event index
-    val functionCallIdToResponseEventIndex = buildMap {
-      events.forEachIndexed { index, event ->
-        for (response in event.functionResponses()) {
-          response.id?.let { id -> put(id, index) }
-        }
+    // 1. Pair each response with the latest preceding call of that ID, keeping the last update.
+    val callEventIndicesById = mutableMapOf<String, MutableList<Int>>()
+    events.forEachIndexed { index, event ->
+      if (event.functionResponses().isNotEmpty()) return@forEachIndexed
+      for (call in event.functionCalls()) {
+        val id = call.id ?: continue
+        callEventIndicesById.getOrPut(id) { mutableListOf() }.add(index)
+      }
+    }
+
+    val responseEventIndexByCall = mutableMapOf<Int, MutableMap<String, Int>>()
+    events.forEachIndexed { responseIndex, event ->
+      for (response in event.functionResponses()) {
+        val functionCallId = response.id ?: continue
+        val callIndices = callEventIndicesById[functionCallId] ?: continue
+        val owningCallIndex = callIndices.lastOrNull { it < responseIndex } ?: callIndices.first()
+        responseEventIndexByCall.getOrPut(owningCallIndex) { mutableMapOf() }[functionCallId] =
+          responseIndex
       }
     }
 
     // 2. Process events
+    val processedResponseIndices = mutableSetOf<Int>()
     return buildList {
-      for (event in events) {
+      events.forEachIndexed { index, event ->
         if (event.functionResponses().isNotEmpty()) {
           // Function responses are handled when processing their corresponding function calls
-          continue
+          return@forEachIndexed
         }
 
         add(event)
 
         val functionCalls = event.functionCalls()
         if (functionCalls.isNotEmpty()) {
+          val responsesForCall = responseEventIndexByCall[index].orEmpty()
           val functionResponseEventIndices =
             functionCalls
-              .mapNotNull { call -> call.id?.let { functionCallIdToResponseEventIndex[it] } }
-              .toSet()
+              .mapNotNull { call -> call.id?.let { responsesForCall[it] } }
+              .distinct()
+              .sorted()
+              .filter { processedResponseIndices.add(it) }
 
           if (functionResponseEventIndices.isNotEmpty()) {
             if (functionResponseEventIndices.size == 1) {
               add(events[functionResponseEventIndices.first()])
             } else {
               // Merge all async function responses as one response event
-              val responsesToMerge = functionResponseEventIndices.sorted().map { events[it] }
+              val responsesToMerge = functionResponseEventIndices.map { events[it] }
               add(mergeFunctionResponseEvents(responsesToMerge))
             }
           }
