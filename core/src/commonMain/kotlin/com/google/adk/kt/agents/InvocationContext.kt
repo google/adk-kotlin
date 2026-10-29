@@ -547,19 +547,30 @@ data class InvocationContext(
     }
 
     val functionResponseEvents =
-      filteredCalls
-        .map { functionCall ->
-          async {
-            executeSingleFunctionCall(
-              functionCall,
-              tools,
-              toolConfirmations[functionCall.id],
-              toolRunner,
-            )
-          }
+      if (runConfig?.toolExecutionMode == ToolExecutionMode.SEQUENTIAL) {
+        filteredCalls.mapNotNull { functionCall ->
+          executeSingleFunctionCall(
+            functionCall,
+            tools,
+            toolConfirmations[functionCall.id],
+            toolRunner,
+          )
         }
-        .awaitAll()
-        .filterNotNull()
+      } else {
+        filteredCalls
+          .map { functionCall ->
+            async {
+              executeSingleFunctionCall(
+                functionCall,
+                tools,
+                toolConfirmations[functionCall.id],
+                toolRunner,
+              )
+            }
+          }
+          .awaitAll()
+          .filterNotNull()
+      }
     if (functionResponseEvents.isEmpty()) {
       return@coroutineScope null
     }

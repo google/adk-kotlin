@@ -1376,6 +1376,57 @@ class InvocationContextTest {
   }
 
   @Test
+  fun handleFunctionCalls_sequentialMode_executesEachCallAfterPreviousCompletes() = runBlocking {
+    val events = mutableListOf<String>()
+    var activeTools = 0
+    var maxConcurrentTools = 0
+    val toolA =
+      DummyTool(name = "tool_a") { _, _ ->
+        activeTools++
+        maxConcurrentTools = maxOf(maxConcurrentTools, activeTools)
+        events.add("start:a")
+        kotlinx.coroutines.yield()
+        events.add("end:a")
+        activeTools--
+        mapOf("step" to "a")
+      }
+    val toolB =
+      DummyTool(name = "tool_b") { _, _ ->
+        activeTools++
+        maxConcurrentTools = maxOf(maxConcurrentTools, activeTools)
+        events.add("start:b")
+        kotlinx.coroutines.yield()
+        events.add("end:b")
+        activeTools--
+        mapOf("step" to "b")
+      }
+
+    val context =
+      testInvocationContext(
+        agent = LlmAgent(name = "test_llm_agent", model = DummyModel("mock_model")),
+        invocationId = "inv",
+        runConfig = RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL),
+      )
+
+    val merged =
+      context.handleFunctionCalls(
+        listOf(
+          FunctionCall(name = "tool_a", args = emptyMap(), id = "call_1"),
+          FunctionCall(name = "tool_b", args = emptyMap(), id = "call_2"),
+        ),
+        mapOf("tool_a" to toolA, "tool_b" to toolB),
+      )
+
+    assertEquals(1, maxConcurrentTools)
+    assertEquals(listOf("start:a", "end:a", "start:b", "end:b"), events)
+    assertNotNull(merged)
+    assertEquals(
+      listOf("call_1" to mapOf("step" to "a"), "call_2" to mapOf("step" to "b")),
+      merged!!.functionResponses().map { it.id to it.response },
+    )
+  }
+
+  @Test
   fun getEvents_currentBranch_includesUserEventOnSubBranch() = runBlocking {
     val userOnChild = userEventOn("agent_1.child")
 

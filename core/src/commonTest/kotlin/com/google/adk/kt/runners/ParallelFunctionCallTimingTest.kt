@@ -16,6 +16,8 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.ToolExecutionMode
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
@@ -25,6 +27,7 @@ import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.FunctionCall
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
@@ -123,6 +126,75 @@ class ParallelFunctionCallTimingTest {
     assertTrue(
       elapsed >= expected,
       "expected at least ${expected}ms (serial dispatch across $toolNames.size turns); got ${elapsed}ms",
+    )
+  }
+
+  /**
+   * Three tools emitted in a single model turn with [ToolExecutionMode.SEQUENTIAL] must execute one
+   * after another in request order, each completing before the next starts.
+   */
+  @Test
+  fun runAsync_threeToolCallsWithSequentialMode_dispatchedSeriallyInOrder() = runTest {
+    val toolNames = listOf("tool_a", "tool_b", "tool_c")
+    val trace = mutableListOf<String>()
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              modelParallelFunctionCallsResponse(
+                *toolNames
+                  .mapIndexed { idx, name ->
+                    FunctionCall(name = name, args = emptyMap(), id = "call_$idx")
+                  }
+                  .toTypedArray()
+              ),
+              LlmResponse(content = modelMessage("all done")),
+            ),
+          ),
+        tools =
+          toolNames.map { name ->
+            DummyTool(
+              name = name,
+              onRun = { _, _ ->
+                trace.add("start:$name")
+                delay(DELAY_MS)
+                trace.add("end:$name")
+                mapOf("from" to name)
+              },
+            )
+          },
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    val startTime = testScheduler.currentTime
+    runner
+      .runAsync(
+        userId = "u",
+        sessionId = "s",
+        newMessage = userMessage("do all"),
+        runConfig = RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL),
+      )
+      .toList()
+    val elapsed = testScheduler.currentTime - startTime
+
+    val expected = DELAY_MS * toolNames.size
+    assertTrue(
+      elapsed >= expected,
+      "expected at least ${expected}ms for ToolExecutionMode.SEQUENTIAL; got ${elapsed}ms",
+    )
+    assertEquals(
+      listOf(
+        "start:tool_a",
+        "end:tool_a",
+        "start:tool_b",
+        "end:tool_b",
+        "start:tool_c",
+        "end:tool_c",
+      ),
+      trace,
     )
   }
 

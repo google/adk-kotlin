@@ -33,6 +33,7 @@ class RunConfigTest {
     assertEquals(500, config.maxLlmCalls)
     assertEquals(null, config.customMetadata)
     assertEquals(LiveRunConfig(), config.live)
+    assertEquals(ToolExecutionMode.NONE, config.toolExecutionMode)
   }
 
   @Test
@@ -60,6 +61,7 @@ class RunConfigTest {
         maxLlmCalls = 42,
         customMetadata = mapOf("key" to "value"),
         live = LiveRunConfig(saveLiveBlob = true),
+        toolExecutionMode = ToolExecutionMode.SEQUENTIAL,
       )
 
     assertEquals(config.copy(), config.toBuilder().build())
@@ -70,7 +72,7 @@ class RunConfigTest {
   fun defaults_toString_enumeratesEveryProperty() {
     // A tripwire for new RunConfig properties; the nested live text is derived.
     assertEquals(
-      "RunConfig(streamingMode=NONE, maxLlmCalls=500, customMetadata=null, live=${LiveRunConfig()})",
+      "RunConfig(streamingMode=NONE, maxLlmCalls=500, customMetadata=null, live=${LiveRunConfig()}, toolExecutionMode=NONE)",
       RunConfig().toString(),
     )
   }
@@ -93,6 +95,7 @@ class RunConfigTest {
         .maxLlmCalls(7)
         .customMetadata(customMetadata)
         .live(live)
+        .toolExecutionMode(ToolExecutionMode.SEQUENTIAL)
         .build()
 
     assertEquals(
@@ -101,6 +104,7 @@ class RunConfigTest {
         maxLlmCalls = 7,
         customMetadata = customMetadata,
         live = live,
+        toolExecutionMode = ToolExecutionMode.SEQUENTIAL,
       ),
       built,
     )
