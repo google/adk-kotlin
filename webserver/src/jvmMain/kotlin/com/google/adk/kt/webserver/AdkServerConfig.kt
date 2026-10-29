@@ -27,7 +27,6 @@ import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
-import com.google.adk.kt.webserver.dev.AdkDevServer
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.loaders.AgentLoaderApps
 import com.google.adk.kt.webserver.loaders.AppLoader
@@ -38,7 +37,8 @@ import com.google.adk.kt.webserver.loaders.SingleAgentLoader
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 
 /**
- * What an [AdkApiServer] or [AdkDevServer] needs to serve a set of agents over HTTP.
+ * What an [AdkApiServer] or [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] needs to
+ * serve a set of agents over HTTP.
  *
  * @property agentLoader The agents to serve. Deprecated: set [appLoader] instead. Set exactly one
  *   of the two.
@@ -46,11 +46,13 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  * @property captureMessageContent When true the server records prompt and response content into
  *   telemetry spans so the Dev UI trace view can display it. This may capture PII, so it defaults
  *   to false; enable it only for local development.
- * @property host Interface [AdkApiServer] and [AdkDevServer] bind to; IPv4 loopback by default,
+ * @property host Interface [AdkApiServer] and
+ *   [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] bind to; IPv4 loopback by default,
  *   since these endpoints are unauthenticated; nothing listens on ::1. Installing a module into
  *   your own engine binds whatever that engine was given, not this.
  * @property webUiEnabled Whether to mount the Development UI; null leaves the choice to the server
- *   variant, off for [AdkApiServer] and on for [AdkDevServer]. The `adk.web.ui.enabled` property
+ *   variant, off for [AdkApiServer] and on for
+ *   [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer]. The `adk.web.ui.enabled` property
  *   overrides it either way, so that a deployment which cannot change code can still turn the UI
  *   off; the corollary is that an ambient property beats an explicit setting here.
  * @property camelCaseEnforced Whether responses use the strict camelCase spelling. Off leaves every
@@ -65,6 +67,13 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  *   to publish. `adk.app.info.enabled` overrides it either way, as the Development UI property
  *   does, so a deployment that cannot change code can still turn the endpoint off. Experimental:
  *   setting it requires `@OptIn(ExperimentalAppInfoFeature::class)`.
+ * @property allowOrigins Cross-origin browser origins allowed in addition to same-origin requests
+ *   (literal origins, `"*"`, or `"regex:<pattern>"` entries, matching ADK Python).
+ * @property allowRemoteRequests Whether non-loopback peers and proxied or tunneled requests are
+ *   accepted. When null, [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] rejects
+ *   non-loopback and proxied callers regardless of [host], while [AdkApiServer] rejects them when
+ *   [host] is loopback (`127.0.0.1` by default) and accepts them when [host] is widened explicitly
+ *   (such as `0.0.0.0` behind an authenticating proxy).
  */
 data class AdkServerConfig(
   @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
@@ -80,6 +89,8 @@ data class AdkServerConfig(
   val camelCaseEnforced: Boolean? = null,
   @property:ExperimentalAppInfoFeature val includeAppInfo: Boolean? = null,
   val appLoader: AppLoader? = null,
+  val allowOrigins: List<String> = emptyList(),
+  val allowRemoteRequests: Boolean? = null,
 ) {
   init {
     require((agentLoader == null) != (appLoader == null)) {
@@ -116,6 +127,41 @@ data class AdkServerConfig(
     appLoader = null,
   )
 
+  /**
+   * The constructor before [allowOrigins] and [allowRemoteRequests]. Stays visible because javac
+   * skips hidden constructors, so Java code written against it keeps compiling alongside Kotlin
+   * binaries using default arguments.
+   */
+  constructor(
+    agentLoader: AgentLoader? = null,
+    sessionService: SessionService,
+    artifactService: ArtifactService,
+    port: Int = DEFAULT_PORT,
+    host: String = DEFAULT_HOST,
+    apiServerSpanExporter: ApiServerSpanExporter = ApiServerSpanExporter(),
+    captureMessageContent: Boolean = false,
+    plugins: List<Plugin> = emptyList(),
+    webUiEnabled: Boolean? = null,
+    camelCaseEnforced: Boolean? = null,
+    includeAppInfo: Boolean? = null,
+    appLoader: AppLoader? = null,
+  ) : this(
+    agentLoader = agentLoader,
+    sessionService = sessionService,
+    artifactService = artifactService,
+    port = port,
+    host = host,
+    apiServerSpanExporter = apiServerSpanExporter,
+    captureMessageContent = captureMessageContent,
+    plugins = plugins,
+    webUiEnabled = webUiEnabled,
+    camelCaseEnforced = camelCaseEnforced,
+    includeAppInfo = includeAppInfo,
+    appLoader = appLoader,
+    allowOrigins = emptyList(),
+    allowRemoteRequests = null,
+  )
+
   /** What the routes serve, chosen once from whichever loader is set. */
   internal val servedApps: ServedApps =
     appLoader?.let(::AppLoaderApps) ?: AgentLoaderApps(checkNotNull(agentLoader))
@@ -140,6 +186,8 @@ data class AdkServerConfig(
       .webUiEnabled(webUiEnabled)
       .camelCaseEnforced(camelCaseEnforced)
       .includeAppInfo(includeAppInfo)
+      .allowOrigins(allowOrigins)
+      .allowRemoteRequests(allowRemoteRequests)
 
   /**
    * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
@@ -160,6 +208,8 @@ data class AdkServerConfig(
     private var camelCaseEnforced: Boolean? = null
     private var includeAppInfo: Boolean? = null
     private var appLoader: AppLoader? = null
+    private var allowOrigins: List<String> = emptyList()
+    private var allowRemoteRequests: Boolean? = null
 
     @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
     fun agentLoader(agentLoader: AgentLoader?): Builder = apply { this.agentLoader = agentLoader }
@@ -199,6 +249,14 @@ data class AdkServerConfig(
       this.includeAppInfo = includeAppInfo
     }
 
+    fun allowOrigins(allowOrigins: List<String>): Builder = apply {
+      this.allowOrigins = allowOrigins.toList()
+    }
+
+    fun allowRemoteRequests(allowRemoteRequests: Boolean?): Builder = apply {
+      this.allowRemoteRequests = allowRemoteRequests
+    }
+
     fun build(): AdkServerConfig =
       AdkServerConfig(
         agentLoader = agentLoader,
@@ -213,6 +271,8 @@ data class AdkServerConfig(
         camelCaseEnforced = camelCaseEnforced,
         includeAppInfo = includeAppInfo,
         appLoader = appLoader,
+        allowOrigins = allowOrigins,
+        allowRemoteRequests = allowRemoteRequests,
       )
   }
 

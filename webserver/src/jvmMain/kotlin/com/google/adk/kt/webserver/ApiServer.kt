@@ -158,15 +158,12 @@ private val requestLogging = requestLoggingPlugin { level, message ->
 }
 
 /**
- * Installs the ADK agent runtime (health, version, app discovery, sessions, artifacts, the run
- * endpoints, and app-info when [AdkServerConfig.includeAppInfo] or the `adk.app.info.enabled`
- * property asks for it) and flushes [AdkServerConfig.sessionService] when the application stops,
- * waiting up to 3 seconds for a flush that honors cancellation.
- *
- * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
- * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
- *
- * Your engine decides the interface: [AdkServerConfig.host] is read by [AdkApiServer], not here.
+ * Installs the ADK agent runtime (health, version, discovery, sessions, artifacts, run, and
+ * optional app-info or Development UI) with loopback peer and browser-origin guards, and flushes
+ * [AdkServerConfig.sessionService] on stop. Set [AdkServerConfig.allowRemoteRequests] (or widen
+ * [AdkServerConfig.host] behind your own authentication) and [AdkServerConfig.allowOrigins] when
+ * serving remote callers. Your engine decides the interface: [AdkServerConfig.host] is read by
+ * [AdkApiServer], not here.
  */
 fun Application.adkApiModule(config: AdkServerConfig) {
   adkApiModule(config, resolveWebUi(config))
@@ -175,7 +172,12 @@ fun Application.adkApiModule(config: AdkServerConfig) {
 /** [adkApiModule] with the Development UI decision already made, so it is resolved once. */
 @OptIn(FrameworkInternalApi::class)
 internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boolean) {
+  val allowRemoteRequests = config.allowRemoteRequests ?: !isLoopbackAddress(config.host)
+  val effectiveBindHost = if (!allowRemoteRequests) AdkServerConfig.DEFAULT_HOST else null
+
   install(requestLogging)
+  install(localClientGuardPlugin(allowRemoteRequests))
+  install(originCheckPlugin(allowOrigins = config.allowOrigins, bindHost = effectiveBindHost))
   install(ContentNegotiation) { json(adkJson) }
 
   flushSessionServiceOnStop(config.sessionService)
