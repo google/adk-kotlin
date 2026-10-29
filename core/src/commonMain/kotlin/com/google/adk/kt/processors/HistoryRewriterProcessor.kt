@@ -796,9 +796,9 @@ internal class HistoryRewriterProcessor {
   /**
    * Returns whether a part is invisible for LLM context.
    *
-   * A part is invisible if:
-   * - It has no meaningful content (text, inline_data, function_call, function_response, tool_call
-   *   or tool_response) and no thought_signature, OR
+   * A part is invisible if either:
+   * - It has no meaningful content (text, inline_data, file_data, function_call, function_response,
+   *   tool_call, tool_response, executable_code or code_execution_result) and no thought_signature.
    * - It is marked as a thought AND contains none of those.
    *
    * Function calls and responses are never invisible, even if marked as thought, because they
@@ -829,7 +829,12 @@ internal class HistoryRewriterProcessor {
     }
 
     val isThought = part.thought == true
-    val hasContent = !part.text.isNullOrBlank() || part.inlineData != null || part.fileData != null
+    val hasContent =
+      !part.text.isNullOrBlank() ||
+        part.inlineData != null ||
+        part.fileData != null ||
+        part.executableCode != null ||
+        part.codeExecutionResult != null
 
     return isThought || !hasContent
   }

@@ -24,9 +24,13 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userEvent
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.CodeExecutionResult
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.ExecutableCode
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.Language
+import com.google.adk.kt.types.Outcome
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolCall
@@ -133,6 +137,23 @@ class HistoryRewriterProcessorTest {
 
     assertEquals(2, contents.size)
     assertNotNull(contents[1].parts[0].thoughtSignature)
+  }
+
+  @Test
+  fun rewrite_codeExecutionEvents_areKept() {
+    val code = ExecutableCode(code = "print(1)", language = Language.PYTHON)
+    val result = CodeExecutionResult(outcome = Outcome.OUTCOME_OK, output = "1")
+    val events =
+      listOf(
+        userEvent("Run it."),
+        modelPartEvent(Part(executableCode = code)),
+        modelPartEvent(Part(codeExecutionResult = result)),
+      )
+
+    val contents = rewrite(events)
+
+    assertEquals(listOf(Part(executableCode = code)), contents[1].parts)
+    assertEquals(listOf(Part(codeExecutionResult = result)), contents[2].parts)
   }
 
   // The model runs server-side tools itself and requires the caller to echo the parts back on the
