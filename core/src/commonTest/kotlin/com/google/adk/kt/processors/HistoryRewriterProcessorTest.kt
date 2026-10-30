@@ -28,6 +28,7 @@ import com.google.adk.kt.types.CodeExecutionResult
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.ExecutableCode
 import com.google.adk.kt.types.FileData
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Language
 import com.google.adk.kt.types.Outcome
@@ -1089,6 +1090,333 @@ class HistoryRewriterProcessorTest {
       listOf("Approve it.", "approve", "approve", "Now the task.", "worker", "worker"),
       partNames(contents),
     )
+  }
+
+  @Test
+  fun rewrite_reusedCallIdWithoutCompaction_pairsEachCallWithItsOwnResponse() {
+    val events =
+      listOf(
+        userEvent("Turn 1"),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("lookup", args = mapOf("step" to 1), id = "call_807"),
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("lookup", "call_807", status("turn-1")),
+        ),
+        Event(author = "agent", content = modelMessage("Done 1.")),
+        userEvent("Turn 2"),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("lookup", args = mapOf("step" to 2), id = "call_807"),
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("lookup", "call_807", status("turn-2")),
+        ),
+        Event(author = "agent", content = modelMessage("Done 2.")),
+      )
+
+    val contents = rewrite(events)
+
+    assertEquals(
+      listOf("Turn 1", "lookup", "turn-1", "Done 1.", "Turn 2", "lookup", "turn-2", "Done 2."),
+      summaries(contents),
+    )
+    assertEquals(mapOf("step" to 1), contents[1].parts.single().functionCall?.args)
+    assertEquals(mapOf("step" to 2), contents[5].parts.single().functionCall?.args)
+  }
+
+  @Test
+  fun rewrite_reusedCallIdWithoutCompaction_keepsLastUpdatePerCall() {
+    val events =
+      listOf(
+        userEvent("Turn 1"),
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "call_807")),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("monitor", "call_807", status("pending-1")),
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("monitor", "call_807", status("done-1")),
+        ),
+        userEvent("Turn 2"),
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "call_807")),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("monitor", "call_807", status("pending-2")),
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("monitor", "call_807", status("done-2")),
+        ),
+        userEvent("Turn 3"),
+      )
+
+    val contents = rewrite(events)
+
+    assertEquals(
+      listOf("Turn 1", "monitor", "done-1", "Turn 2", "monitor", "done-2", "Turn 3"),
+      summaries(contents),
+    )
+  }
+
+  @Test
+  fun rewrite_responsePrecedingFirstCallWithSameId_pairsWithFirstCall() {
+    val events =
+      listOf(
+        userEvent("Start"),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("lookup", "call_807", status("early")),
+        ),
+        Event(author = "agent", content = modelFunctionCall("lookup", id = "call_807")),
+        userEvent("Follow up"),
+      )
+
+    val contents = rewrite(events)
+
+    assertEquals(listOf("Start", "lookup", "early", "Follow up"), summaries(contents))
+  }
+
+  @Test
+  fun rewrite_compaction_reusedCallIdAcrossTurns_pairsWithLatestPrecedingCall() {
+    val call1 =
+      Event(
+        author = "agent",
+        content = modelFunctionCall("lookup", args = mapOf("turn" to 1), id = "call_1"),
+        longRunningToolIds = setOf("call_1"),
+        timestamp = 100L,
+      )
+    val response1 =
+      Event(
+        author = "agent",
+        content = userFunctionResponse("lookup", "call_1", status("turn-1-done")),
+        timestamp = 110L,
+      )
+    val call2 =
+      Event(
+        author = "agent",
+        content = modelFunctionCall("lookup", args = mapOf("turn" to 2), id = "call_1"),
+        longRunningToolIds = setOf("call_1"),
+        timestamp = 120L,
+      )
+    val response2Pending =
+      Event(
+        author = "agent",
+        content = userFunctionResponse("lookup", "call_1", status("pending")),
+        timestamp = 130L,
+      )
+    val compaction = compactionEvent(startTs = 100L, endTs = 130L, summary = "SUM")
+    val response2Final =
+      Event(
+        author = "user",
+        content = userFunctionResponse("lookup", "call_1", status("turn-2-done")),
+        timestamp = 200L,
+      )
+
+    val contents =
+      rewrite(listOf(call1, response1, call2, response2Pending, compaction, response2Final))
+
+    assertEquals(listOf("SUM", "lookup", "turn-2-done"), summaries(contents))
+    assertEquals(mapOf("turn" to 2), contents[1].parts.single().functionCall?.args)
+  }
+
+  @Test
+  fun rewrite_compaction_recoveredParallelCallKeepsItsOwnSiblingResultWhenIdReused() {
+    val parallelCall1 =
+      Event(
+        author = "agent",
+        content =
+          modelMessage(
+            Part(functionCall = FunctionCall(name = "sibling", id = "sib_1")),
+            Part(functionCall = FunctionCall(name = "lr_tool", id = "lr_1")),
+          ),
+        longRunningToolIds = setOf("lr_1"),
+        timestamp = 100L,
+      )
+    val sib1Response =
+      Event(
+        author = "agent",
+        content = userFunctionResponse("sibling", "sib_1", status("turn-1-sib")),
+        timestamp = 110L,
+      )
+    val lr1Pending =
+      Event(
+        author = "agent",
+        content = userFunctionResponse("lr_tool", "lr_1", status("pending")),
+        timestamp = 120L,
+      )
+    val call2ReusingSiblingId =
+      Event(
+        author = "agent",
+        content = modelFunctionCall("sibling", id = "sib_1"),
+        timestamp = 130L,
+      )
+    val sib2Response =
+      Event(
+        author = "agent",
+        content = userFunctionResponse("sibling", "sib_1", status("turn-2-sib")),
+        timestamp = 140L,
+      )
+    val compaction = compactionEvent(startTs = 100L, endTs = 140L, summary = "SUM")
+    val lr1Final =
+      Event(
+        author = "user",
+        content = userFunctionResponse("lr_tool", "lr_1", status("lr-done")),
+        timestamp = 200L,
+      )
+
+    val contents =
+      rewrite(
+        listOf(
+          parallelCall1,
+          sib1Response,
+          lr1Pending,
+          call2ReusingSiblingId,
+          sib2Response,
+          compaction,
+          lr1Final,
+        )
+      )
+
+    assertEquals(3, contents.size)
+    assertEquals("SUM", contents[0].parts.single().text)
+    assertEquals(listOf("sib_1", "lr_1"), contents[1].parts.mapNotNull { it.functionCall?.id })
+    assertEquals(
+      listOf("sib_1" to "turn-1-sib", "lr_1" to "lr-done"),
+      contents[2].parts.mapNotNull { part ->
+        part.functionResponse?.let { it.id to it.response["status"] }
+      },
+    )
+  }
+
+  @Test
+  fun rewrite_compaction_deduplicatesAndOrdersMergedSiblingResponses() {
+    val parallelCall =
+      Event(
+        author = "agent",
+        content =
+          modelMessage(
+            Part(functionCall = FunctionCall(name = "sib_a", id = "sib_a")),
+            Part(functionCall = FunctionCall(name = "sib_b", id = "sib_b")),
+            Part(functionCall = FunctionCall(name = "lr_tool", id = "lr_1")),
+          ),
+        longRunningToolIds = setOf("lr_1"),
+        timestamp = 100L,
+      )
+    // Both siblings start pending in one event, then sib_a finishes in a later event. Re-injecting
+    // in sourceEvents order keeps sibAResponse after siblingsPending so the real result wins.
+    val siblingsPending =
+      Event(
+        author = "agent",
+        content =
+          userMessage(
+            Part(
+              functionResponse =
+                FunctionResponse(name = "sib_a", id = "sib_a", response = status("pending"))
+            ),
+            Part(
+              functionResponse =
+                FunctionResponse(name = "sib_b", id = "sib_b", response = status("pending"))
+            ),
+          ),
+        timestamp = 110L,
+      )
+    val sibAResponse =
+      Event(
+        author = "agent",
+        content = userFunctionResponse("sib_a", "sib_a", status("a-done")),
+        timestamp = 120L,
+      )
+    val compaction = compactionEvent(startTs = 100L, endTs = 120L, summary = "SUM")
+    val lr1Final =
+      Event(
+        author = "user",
+        content = userFunctionResponse("lr_tool", "lr_1", status("lr-done")),
+        timestamp = 200L,
+      )
+
+    val contents =
+      rewrite(listOf(parallelCall, siblingsPending, sibAResponse, compaction, lr1Final))
+
+    assertEquals(3, contents.size)
+    assertEquals(
+      listOf("sib_a" to "a-done", "sib_b" to "pending", "lr_1" to "lr-done"),
+      contents[2].parts.mapNotNull { part ->
+        part.functionResponse?.let { it.id to it.response["status"] }
+      },
+    )
+  }
+
+  @Test
+  fun rewrite_compaction_sharedCompactedSiblingResponseAcrossTwoRecoveredCalls_reinjectedOnce() {
+    val call1 =
+      Event(
+        author = "agent",
+        content =
+          modelMessage(
+            Part(functionCall = FunctionCall(name = "sib_1", id = "sib_1")),
+            Part(functionCall = FunctionCall(name = "lr_1", id = "lr_1")),
+          ),
+        longRunningToolIds = setOf("lr_1"),
+        timestamp = 100L,
+      )
+    val call2 =
+      Event(
+        author = "agent",
+        content =
+          modelMessage(
+            Part(functionCall = FunctionCall(name = "sib_2", id = "sib_2")),
+            Part(functionCall = FunctionCall(name = "lr_2", id = "lr_2")),
+          ),
+        longRunningToolIds = setOf("lr_2"),
+        timestamp = 110L,
+      )
+    val sharedSiblingResponse =
+      Event(
+        author = "agent",
+        content =
+          userMessage(
+            Part(
+              functionResponse =
+                FunctionResponse(name = "sib_1", id = "sib_1", response = status("sib-1-ok"))
+            ),
+            Part(
+              functionResponse =
+                FunctionResponse(name = "sib_2", id = "sib_2", response = status("sib-2-ok"))
+            ),
+          ),
+        timestamp = 120L,
+      )
+    val compaction = compactionEvent(startTs = 100L, endTs = 120L, summary = "SUM")
+    val resumeLr1 =
+      Event(
+        author = "user",
+        content = userFunctionResponse("lr_1", "lr_1", status("lr-1-ok")),
+        timestamp = 200L,
+      )
+    val resumeLr2 =
+      Event(
+        author = "user",
+        content = userFunctionResponse("lr_2", "lr_2", status("lr-2-ok")),
+        timestamp = 210L,
+      )
+
+    val contents =
+      rewrite(listOf(call1, call2, sharedSiblingResponse, compaction, resumeLr1, resumeLr2))
+
+    assertEquals(5, contents.size)
+    assertEquals("SUM", contents[0].parts.single().text)
+    assertEquals(listOf("sib_1", "lr_1"), contents[1].parts.mapNotNull { it.functionCall?.id })
+    assertEquals(
+      listOf("sib_1", "sib_2", "lr_1"),
+      contents[2].parts.mapNotNull { it.functionResponse?.id },
+    )
+    assertEquals(listOf("sib_2", "lr_2"), contents[3].parts.mapNotNull { it.functionCall?.id })
+    assertEquals(listOf("lr_2"), contents[4].parts.mapNotNull { it.functionResponse?.id })
   }
 
   private fun rewrite(
