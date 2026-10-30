@@ -239,7 +239,12 @@ internal constructor(
     val callerContext = currentCoroutineContext().minusKey(Job)
     val handle = openHandle(modelName, config, callerContext)
     val connection =
-      GeminiLiveConnection(handle, modelVersion = modelName, pumpContext = callerContext)
+      GeminiLiveConnection(
+        handle,
+        modelVersion = modelName,
+        pumpContext = callerContext,
+        vertexAi = client.enterprise,
+      )
     // Return only once the server confirms setup; a refused setup throws and closes the socket.
     connection.awaitSetup()
     return connection
@@ -277,7 +282,7 @@ internal constructor(
 
   @OptIn(FrameworkInternalApi::class)
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
-    val preparedRequest = request.prepareGenerateContentRequest(!client.enterprise)
+    val preparedRequest = request.prepareGenerateContentRequest(vertexAi = client.enterprise)
 
     // The manager may rewrite the request to use a cache and returns metadata for the responses.
     val cacheManager =
@@ -480,16 +485,27 @@ internal fun cacheScopeOf(client: Client): Map<String, String> = buildMap {
 /**
  * Prepares an [LlmRequest] for the GenerateContent API.
  *
- * This method can optionally sanitize the request and ensures that the last content part is from
+ * This method sanitizes the request for its backend and ensures that the last content part is from
  * the user to prompt a model response.
  *
- * @param sanitize Whether to sanitize the request to be compatible with the Gemini API backend.
+ * @param vertexAi Whether the request goes to the Vertex AI backend rather than the Gemini API.
  * @return The prepared [LlmRequest].
  */
-internal fun LlmRequest.prepareGenerateContentRequest(sanitize: Boolean): LlmRequest {
-  val req = if (sanitize) sanitizeForGeminiApi() else this
+internal fun LlmRequest.prepareGenerateContentRequest(vertexAi: Boolean): LlmRequest {
+  val req = if (vertexAi) sanitizeForVertexAi() else sanitizeForGeminiApi()
   return req.copy(contents = req.contents.ensureModelResponse().toMutableList())
 }
+
+/** Sanitizes the request for the Vertex AI backend; see [withoutPartMetadata]. */
+internal fun LlmRequest.sanitizeForVertexAi(): LlmRequest =
+  copy(contents = contents.map { it.withoutPartMetadata() }.toMutableList())
+
+/**
+ * Returns this content without part metadata. The GenAI SDK rejects it for Vertex AI before
+ * sending, failing the whole call; parts converted from A2A, for example, can carry it.
+ */
+internal fun Content.withoutPartMetadata(): Content =
+  copy(parts = parts.map { it.copy(partMetadata = null) })
 
 /**
  * Sanitizes the request to ensure it is compatible with the Gemini API backend. Required as there

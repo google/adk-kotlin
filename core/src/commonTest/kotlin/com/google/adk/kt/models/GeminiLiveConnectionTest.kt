@@ -161,6 +161,32 @@ class GeminiLiveConnectionTest {
     GeminiLiveConnection(handle, modelVersion)
 
   @Test
+  fun sendContentAndHistory_vertexAi_dropPartMetadata() = runBlocking {
+    val handle = RecordingSessionHandle()
+    val connection = GeminiLiveConnection(handle, "gemini-live", vertexAi = true)
+    val content = userMessage(Part(text = "hello", partMetadata = mapOf("meta" to "data")))
+
+    connection.sendHistory(listOf(content))
+    connection.sendContent(content)
+
+    val sentParts =
+      handle.clientContents.flatMap { (turns, _) -> turns.flatMap { it.parts.orEmpty() } }
+    assertEquals(listOf("hello", "hello"), sentParts.map { it.text })
+    assertTrue(sentParts.all { it.partMetadata == null })
+  }
+
+  @Test
+  fun sendContent_geminiApi_keepsPartMetadata() =
+    runBlocking<Unit> {
+      val handle = RecordingSessionHandle()
+
+      connection(handle)
+        .sendContent(userMessage(Part(text = "hello", partMetadata = mapOf("meta" to "data"))))
+
+      assertNotNull(handle.clientContents.single().first.single().parts?.single()?.partMetadata)
+    }
+
+  @Test
   fun sendContent_plainText_goesAsClientContentCompletingTheTurn() = runBlocking {
     val handle = RecordingSessionHandle()
 
