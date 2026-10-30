@@ -37,8 +37,11 @@ import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Language
 import com.google.adk.kt.types.Outcome
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.PartMediaResolution
+import com.google.adk.kt.types.PartMediaResolutionLevel
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VideoMetadata
 import java.util.Base64
 import kotlin.enums.enumEntries
 import kotlin.reflect.KClass
@@ -251,19 +254,24 @@ internal fun A2APart<*>.toAdk(): Part {
     is TextPart -> Part(text = text)
     is FilePart -> {
       val fileContent = file as FileContent
+      // Despite its non-null signature, the SDK passes null for a URI file without a name.
+      val name = fileContent.name()?.ifEmpty { null }
       when (fileContent) {
         is FileWithUri ->
-          Part(fileData = FileData(mimeType = fileContent.mimeType(), fileUri = fileContent.uri()))
+          Part(
+            fileData =
+              FileData(
+                mimeType = fileContent.mimeType(),
+                displayName = name,
+                fileUri = fileContent.uri(),
+              )
+          )
         is FileWithBytes ->
           Part(
             inlineData =
-              Blob(
-                fileContent.mimeType(),
-                fileContent.name(),
-                Base64.getDecoder().decode(fileContent.bytes()),
-              )
+              Blob(fileContent.mimeType(), name, Base64.getDecoder().decode(fileContent.bytes()))
           )
-      }
+      }.withMediaControl(metadata)
     }
     is DataPart -> toAdk()
     else -> throw IllegalArgumentException("Unsupported A2A Part type: ${this::class.simpleName}")
@@ -412,8 +420,7 @@ private inline fun <T, reified E : Enum<E>> DataPart.decodeData(
 ): T {
   val data = dataAsMap().toMutableMap()
   data[enumKey]?.let { value ->
-    val entry = enumEntries<E>().firstOrNull { it.name.equals(value.toString(), ignoreCase = true) }
-    data[enumKey] = (entry ?: unspecified).name
+    data[enumKey] = (enumEntryIgnoringCase<E>(value.toString()) ?: unspecified).name
   }
   return adkJson.decodeFromJsonElement(serializer, anyToJsonElement(data))
 }
@@ -433,6 +440,62 @@ private fun DataPart.toInlineJsonPart(): Part {
   )
 }
 
+/**
+ * Returns this part with the video metadata and media resolution that an A2A file part carries in
+ * [metadata]. A value that does not decode is skipped, so the file itself is kept.
+ */
+private fun Part.withMediaControl(metadata: Map<String, Any?>?): Part {
+  if (metadata == null) return this
+  return copy(
+    videoMetadata = metadata[MetadataKeys.VIDEO_METADATA]?.let(::decodeVideoMetadata),
+    mediaResolution =
+      (metadata[MetadataKeys.MEDIA_RESOLUTION] as? Map<*, *>)?.toPartMediaResolution(),
+  )
+}
+
+private fun decodeVideoMetadata(value: Any): VideoMetadata? =
+  try {
+    adkJson.decodeFromJsonElement(VideoMetadata.serializer(), anyToJsonElement(value))
+  } catch (e: IllegalArgumentException) {
+    // Also covers SerializationException, a subclass.
+    logger.warn("Ignoring A2A video metadata that does not decode (${e::class.simpleName})")
+    null
+  }
+
+// Read by hand: A2A metadata is a protobuf Struct, so numTokens arrives as a Double. A level this
+// build does not know, or a numTokens that is not a whole Int, is left unset instead of guessed.
+private fun Map<*, *>.toPartMediaResolution(): PartMediaResolution? {
+  val level =
+    (this["level"] as? String)?.let { enumEntryIgnoringCase<PartMediaResolutionLevel>(it) }
+  val numTokens =
+    ((this["numTokens"] ?: this["num_tokens"]) as? Number)?.toDouble()?.let { number ->
+      number.toInt().takeIf { it.toDouble() == number }
+    }
+  return if (level == null && numTokens == null) null else PartMediaResolution(level, numTokens)
+}
+
+private inline fun <reified E : Enum<E>> enumEntryIgnoringCase(name: String): E? =
+  enumEntries<E>().firstOrNull { it.name.equals(name, ignoreCase = true) }
+
+/**
+ * Returns the A2A metadata that carries this part's video metadata and media resolution, or null
+ * when it has neither, so the A2A part carries no metadata.
+ */
+private fun Part.mediaControlMetadata(): Map<String, Any>? =
+  buildMap {
+      videoMetadata?.let {
+        put(MetadataKeys.VIDEO_METADATA, encodeAsMap(VideoMetadata.serializer(), it))
+      }
+      mediaResolution?.let {
+        put(MetadataKeys.MEDIA_RESOLUTION, encodeAsMap(PartMediaResolution.serializer(), it))
+      }
+    }
+    .ifEmpty { null }
+
+/** Encodes [value], whose type serializes as a JSON object, as a map of its fields. */
+private fun <T> encodeAsMap(serializer: KSerializer<T>, value: T): Map<*, *> =
+  jsonElementToAny(adkJson.encodeToJsonElement(serializer, value)) as Map<*, *>
+
 private fun Map<String, Any?>?.isPartial() = this?.get(MetadataKeys.PARTIAL) == true
 
 /** Converts a GenAI Content object to a list of A2A Parts. */
@@ -446,12 +509,20 @@ internal fun Part.toA2A(isPartial: Boolean = false): A2APart<*> {
     return TextPart(it)
   }
   fileData?.let { fd ->
-    return FilePart(FileWithUri(fd.mimeType ?: "application/octet-stream", "", fd.fileUri ?: ""))
+    return FilePart(
+      FileWithUri(
+        fd.mimeType ?: "application/octet-stream",
+        fd.displayName ?: "",
+        fd.fileUri ?: "",
+      ),
+      mediaControlMetadata(),
+    )
   }
   inlineData?.let { blob ->
     val bytesStr = blob.data?.let { Base64.getEncoder().encodeToString(it) } ?: ""
     return FilePart(
-      FileWithBytes(blob.mimeType ?: "application/octet-stream", blob.displayName ?: "", bytesStr)
+      FileWithBytes(blob.mimeType ?: "application/octet-stream", blob.displayName ?: "", bytesStr),
+      mediaControlMetadata(),
     )
   }
   functionCall?.let {
@@ -509,8 +580,7 @@ private fun <T> typedDataPart(
   value: T,
   isPartial: Boolean = false,
 ): DataPart {
-  @Suppress("UNCHECKED_CAST")
-  val dataMap = jsonElementToAny(adkJson.encodeToJsonElement(serializer, value)) as Map<String, Any>
+  val dataMap = encodeAsMap(serializer, value)
   val metadata =
     buildMap<String, Any> {
       put(MetadataKeys.TYPE, type)

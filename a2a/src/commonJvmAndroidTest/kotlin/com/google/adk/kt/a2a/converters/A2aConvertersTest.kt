@@ -34,11 +34,15 @@ import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Language
 import com.google.adk.kt.types.Outcome
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.PartMediaResolution
+import com.google.adk.kt.types.PartMediaResolutionLevel
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.types.VideoMetadata
 import com.google.common.truth.Truth.assertThat
 import java.util.Base64
 import kotlin.test.assertFailsWith
+import kotlin.time.Duration.Companion.seconds
 import org.a2aproject.sdk.client.MessageEvent
 import org.a2aproject.sdk.client.TaskEvent
 import org.a2aproject.sdk.client.TaskUpdateEvent
@@ -95,14 +99,21 @@ class A2aConvertersTest {
     assertThat(fileData).isNotNull()
     assertThat(fileData!!.mimeType).isEqualTo("text/plain")
     assertThat(fileData.fileUri).isEqualTo("http://file.txt")
+    assertThat(fileData.displayName).isEqualTo("file.txt")
   }
 
   @Test
-  fun toA2A_withFileDataPart_returnsFilePartWithUri() {
-    val part = Part(fileData = FileData(mimeType = "text/plain", fileUri = "http://file.txt"))
+  fun toA2A_withFileDataPart_returnsFilePartWithUriAndName() {
+    val part =
+      Part(
+        fileData =
+          FileData(mimeType = "text/plain", displayName = "file.txt", fileUri = "http://file.txt")
+      )
     val result = part.toA2A()
     assertThat((result as FilePart).file.mimeType()).isEqualTo("text/plain")
     assertThat((result.file as FileWithUri).uri()).isEqualTo("http://file.txt")
+    assertThat(result.file.name()).isEqualTo("file.txt")
+    assertThat(result.metadata).isNull()
   }
 
   @Test
@@ -129,6 +140,115 @@ class A2aConvertersTest {
     assertThat(result.file.name()).isEqualTo("file.txt")
     assertThat((result.file as FileWithBytes).bytes())
       .isEqualTo(Base64.getEncoder().encodeToString(bytes))
+    assertThat(result.metadata).isNull()
+  }
+
+  @Test
+  fun toAdk_withFilePartEmptyName_leavesDisplayNameUnset() {
+    val encoded = Base64.getEncoder().encodeToString("content".toByteArray())
+
+    val uriResult = FilePart(FileWithUri("text/plain", "", "gs://bucket/file.txt")).toAdk()
+    val bytesResult = FilePart(FileWithBytes("text/plain", "", encoded)).toAdk()
+
+    assertThat(uriResult.fileData?.displayName).isNull()
+    assertThat(bytesResult.inlineData?.displayName).isNull()
+  }
+
+  @Test
+  fun toA2A_withInlineDataVideoMetadata_putsVideoMetadataInMetadata() {
+    val part =
+      Part(
+        inlineData = Blob(mimeType = "video/mp4", data = "video".toByteArray()),
+        videoMetadata = VideoMetadata(fps = 30.0),
+      )
+
+    val result = part.toA2A() as FilePart
+
+    assertThat(result.metadata)
+      .isEqualTo(mapOf(MetadataKeys.VIDEO_METADATA to mapOf("fps" to 30.0)))
+  }
+
+  @Test
+  fun toA2A_withFileDataMediaResolution_putsMediaResolutionInMetadata() {
+    val part =
+      Part(
+        fileData = FileData(mimeType = "image/png", fileUri = "gs://bucket/image.png"),
+        mediaResolution =
+          PartMediaResolution(
+            level = PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH,
+            numTokens = 64,
+          ),
+      )
+
+    val result = part.toA2A() as FilePart
+
+    assertThat(result.metadata)
+      .isEqualTo(
+        mapOf(
+          MetadataKeys.MEDIA_RESOLUTION to
+            mapOf("level" to "MEDIA_RESOLUTION_HIGH", "numTokens" to 64L)
+        )
+      )
+  }
+
+  @Test
+  fun toAdk_withFilePartMediaControlMetadata_setsVideoMetadataAndMediaResolution() {
+    val encoded = Base64.getEncoder().encodeToString("video".toByteArray())
+    val metadata =
+      mapOf(
+        MetadataKeys.VIDEO_METADATA to mapOf("fps" to 30.0, "startOffset" to "1.5s"),
+        MetadataKeys.MEDIA_RESOLUTION to
+          mapOf("level" to "media_resolution_high", "numTokens" to 64.0),
+      )
+
+    val result = FilePart(FileWithBytes("video/mp4", "clip.mp4", encoded), metadata).toAdk()
+
+    assertThat(result.videoMetadata).isEqualTo(VideoMetadata(startOffset = 1.5.seconds, fps = 30.0))
+    assertThat(result.mediaResolution)
+      .isEqualTo(
+        PartMediaResolution(level = PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH, numTokens = 64)
+      )
+  }
+
+  @Test
+  fun toAdk_withFilePartMalformedVideoMetadata_keepsFileWithoutVideoMetadata() {
+    val metadata = mapOf(MetadataKeys.VIDEO_METADATA to mapOf("startOffset" to "not a duration"))
+    val filePart = FilePart(FileWithUri("video/mp4", "clip.mp4", "gs://bucket/clip.mp4"), metadata)
+
+    val result = filePart.toAdk()
+
+    assertThat(result.fileData?.fileUri).isEqualTo("gs://bucket/clip.mp4")
+    assertThat(result.videoMetadata).isNull()
+  }
+
+  @Test
+  fun toAdk_withFilePartUnknownMediaResolutionLevel_leavesLevelUnset() {
+    fun convert(resolution: Map<String, Any>) =
+      FilePart(
+          FileWithUri("image/png", "image.png", "gs://bucket/image.png"),
+          mapOf(MetadataKeys.MEDIA_RESOLUTION to resolution),
+        )
+        .toAdk()
+
+    val withTokens =
+      convert(mapOf("level" to "MEDIA_RESOLUTION_FROM_THE_FUTURE", "numTokens" to 64.0))
+    val levelOnly = convert(mapOf("level" to "MEDIA_RESOLUTION_FROM_THE_FUTURE"))
+
+    assertThat(withTokens.mediaResolution).isEqualTo(PartMediaResolution(numTokens = 64))
+    assertThat(levelOnly.mediaResolution).isNull()
+  }
+
+  @Test
+  fun toAdk_withFilePartFractionalNumTokens_leavesNumTokensUnset() {
+    val resolution = mapOf("level" to "MEDIA_RESOLUTION_HIGH", "numTokens" to 64.5)
+    val metadata = mapOf(MetadataKeys.MEDIA_RESOLUTION to resolution)
+    val filePart =
+      FilePart(FileWithUri("image/png", "image.png", "gs://bucket/image.png"), metadata)
+
+    val result = filePart.toAdk()
+
+    assertThat(result.mediaResolution)
+      .isEqualTo(PartMediaResolution(level = PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH))
   }
 
   @Test
