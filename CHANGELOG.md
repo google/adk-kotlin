@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.6.0](https://github.com/google/adk-kotlin/compare/v1.5.0...v1.6.0) (2026-10-30)
+
+
+### Features
+
+* **auth:** add internal authorization URL building ([72b068f](https://github.com/google/adk-kotlin/commit/72b068f81ef890d7272f415313f841b1deb95140))
+* **auth:** add internal PKCE code verifier and S256 challenge ([02b2985](https://github.com/google/adk-kotlin/commit/02b298513435ab5ef54fce5e99a567f0a029362b))
+* **auth:** add internal secure random string generation ([3d2d6aa](https://github.com/google/adk-kotlin/commit/3d2d6aaac26e907cff21441514166ade5baefccc))
+* carry a Java caller's coroutine context into runs and reflective tools ([73cfb2e](https://github.com/google/adk-kotlin/commit/73cfb2e64de557e1c635cf08b3b0b78e60b76c99))
+* **live:** let a streaming tool read the live input from Context.liveRequests ([248cb5b](https://github.com/google/adk-kotlin/commit/248cb5b03955ce1a200f571f540dac84d2ff1c84))
+* run Java calls in the caller's context ([abe2aa4](https://github.com/google/adk-kotlin/commit/abe2aa4c313c5c13ab72045e30d3f23bc5c09201))
+* **workflow:** let RetryConfig match exceptions by class ([9948e13](https://github.com/google/adk-kotlin/commit/9948e13039254ad03004a68a77b24d61f32bf4b2))
+
+
+### Bug Fixes
+
+* carry code execution parts through A2A and agent history ([544489e](https://github.com/google/adk-kotlin/commit/544489ec10295cca4f52dd01e0aa56fd61edceae))
+* carry thought flags and thought signatures over A2A ([2809a83](https://github.com/google/adk-kotlin/commit/2809a837752644f3720eaa759d2cb5144ba1a84e))
+* contain skill names to the skills directory ([d0fc0ad](https://github.com/google/adk-kotlin/commit/d0fc0adcaa830acf0f7586629286e47a16ec7a46))
+* convert tool call and response parts to and from A2A ([8f242e2](https://github.com/google/adk-kotlin/commit/8f242e27a4e503d276b530334c69873a45779974))
+* end the run when a blocking remote call returns ([47be658](https://github.com/google/adk-kotlin/commit/47be658ea3f27cf30eaacd2830e3191c3209d411))
+* fix replay branches and delegated outputs on resume ([5f697a6](https://github.com/google/adk-kotlin/commit/5f697a631d3cab4105f4629692c3e9d329be56b0))
+* keep credentials out of requests to remote agents ([cab085a](https://github.com/google/adk-kotlin/commit/cab085a08d54c80a8af7b469641e2ee464138889))
+* keep the caller's context in background coroutines ([27868ff](https://github.com/google/adk-kotlin/commit/27868ff8b6bd907e7ece8240f37d7b2e703b1e8e))
+* propagate non-404 GCS listing errors ([7ef30ff](https://github.com/google/adk-kotlin/commit/7ef30ff8d841d801145db5e85002504bc533ef6c))
+* relay only the parts ADK Python relays from other agents' events ([ab2d83c](https://github.com/google/adk-kotlin/commit/ab2d83c767ca8225d581dd03e376b940d5244724))
+* rerun a resumed workflow agent only for a reply meant for it ([925d87f](https://github.com/google/adk-kotlin/commit/925d87f6a60b858c4429d70019d45ad335acef3e))
+* run agents off the Ktor call thread ([ad1961d](https://github.com/google/adk-kotlin/commit/ad1961d37a067f348231035d927ac1d908e032b8))
+* **runners:** make every message a user turn and keep user content on resume ([970e62d](https://github.com/google/adk-kotlin/commit/970e62d2f209c14e80f03525a9ec3257deca43f5))
+* send Claude only the current turn's thinking blocks ([9e83a53](https://github.com/google/adk-kotlin/commit/9e83a533d69c69eb36eeabf3c912b6693d167e7d))
+* serialize longRunningToolIds as a sorted list ([7fd87c8](https://github.com/google/adk-kotlin/commit/7fd87c8fc0e55d123cd13bf35302017255d988fe))
+
+
+### Documentation
+
+* port the Spring Boot WebFlux order-support service to Java ([223dcbb](https://github.com/google/adk-kotlin/commit/223dcbb3b7cdda12bcabf72afaa4da235b06597b))
+
 ## [1.5.0](https://github.com/google/adk-kotlin/compare/v1.4.0...v1.5.0) (2026-10-28)
 
 
