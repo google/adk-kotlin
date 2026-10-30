@@ -33,7 +33,8 @@ import io.ktor.server.routing.routing
  * The local development server: [AdkApiServer] plus the endpoints the Dev UI drives, and the UI.
  *
  * These endpoints read agent state and run debugging code, so this variant belongs on a development
- * machine; deploy [AdkApiServer] instead.
+ * machine; deploy [AdkApiServer] instead. Non-loopback peers and proxied or tunneled requests are
+ * rejected even when [AdkServerConfig.host] is widened, unless remote access is explicitly enabled.
  */
 class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
   override fun configure(application: Application) {
@@ -47,10 +48,15 @@ class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
  *
  * Installs [adkApiModule] itself, so do not install both. Unlike [adkApiModule] this mounts the
  * Development UI, unless [AdkServerConfig.webUiEnabled] or the `adk.web.ui.enabled` property turns
- * it off.
+ * it off, and rejects non-loopback peers by default regardless of [AdkServerConfig.host].
  */
 fun Application.adkDevModule(config: AdkServerConfig) {
-  adkApiModule(config.copy(webUiEnabled = config.webUiEnabled ?: true))
+  adkApiModule(
+    config.copy(
+      webUiEnabled = config.webUiEnabled ?: true,
+      allowRemoteRequests = config.allowRemoteRequests ?: false,
+    )
+  )
 
   val camelCase = resolveCamelCase(config)
 

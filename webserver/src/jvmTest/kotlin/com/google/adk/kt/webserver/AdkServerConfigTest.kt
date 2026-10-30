@@ -22,15 +22,20 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.webserver.loaders.AgentLoader
+import com.google.adk.kt.webserver.loaders.AppLoader
 import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -40,6 +45,12 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import java.io.ByteArrayOutputStream
+import java.net.URLClassLoader
+import javax.tools.ToolProvider
+import kotlin.io.path.createTempDirectory
+import kotlin.io.path.writeText
+import kotlin.jvm.internal.DefaultConstructorMarker
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -209,6 +220,8 @@ class AdkServerConfigTest {
     assertThat(config.plugins).isEmpty()
     assertThat(config.webUiEnabled).isNull()
     assertThat(config.includeAppInfo).isNull()
+    assertThat(config.allowOrigins).isEmpty()
+    assertThat(config.allowRemoteRequests).isNull()
   }
 
   @Test
@@ -229,6 +242,8 @@ class AdkServerConfigTest {
         .captureMessageContent(true)
         .webUiEnabled(true)
         .includeAppInfo(true)
+        .allowOrigins(listOf("https://console.example.com"))
+        .allowRemoteRequests(true)
         .build()
 
     assertThat(config.agentLoader).isSameInstanceAs(loader)
@@ -240,6 +255,8 @@ class AdkServerConfigTest {
     assertThat(config.captureMessageContent).isTrue()
     assertThat(config.webUiEnabled).isTrue()
     assertThat(config.includeAppInfo).isTrue()
+    assertThat(config.allowOrigins).containsExactly("https://console.example.com")
+    assertThat(config.allowRemoteRequests).isTrue()
   }
 
   @Test
@@ -267,9 +284,119 @@ class AdkServerConfigTest {
         webUiEnabled = true,
         camelCaseEnforced = true,
         includeAppInfo = true,
+        allowOrigins = listOf("https://console.example.com"),
+        allowRemoteRequests = true,
       )
 
     assertThat(config.toBuilder().build()).isEqualTo(config.copy())
     assertThat(config.toBuilder().port(9124).build()).isEqualTo(config.copy(port = 9124))
+  }
+
+  @Test
+  fun preGuardTwelveParameterConstructor_linksFromKotlinDefaultsAndCompilesInJava() {
+    val appLoader = InMemoryAppLoader(App(appName = "test_app", rootAgent = FakeAgent()))
+    val sessions = InMemorySessionService()
+    val artifacts = InMemoryArtifactService()
+    val twelveParamTypes =
+      arrayOf(
+        AgentLoader::class.java,
+        SessionService::class.java,
+        ArtifactService::class.java,
+        Int::class.java,
+        String::class.java,
+        ApiServerSpanExporter::class.java,
+        Boolean::class.java,
+        List::class.java,
+        Boolean::class.javaObjectType,
+        Boolean::class.javaObjectType,
+        Boolean::class.javaObjectType,
+        AppLoader::class.java,
+      )
+    val kotlinDefaultConstructor =
+      AdkServerConfig::class
+        .java
+        .getConstructor(*twelveParamTypes, Int::class.java, DefaultConstructorMarker::class.java)
+    // Default every parameter except sessionService (1), artifactService (2), and appLoader (11).
+    val mask = ((1 shl 12) - 1) and ((1 shl 1) or (1 shl 2) or (1 shl 11)).inv()
+    val fromKotlinDefaults =
+      kotlinDefaultConstructor.newInstance(
+        null,
+        sessions,
+        artifacts,
+        0,
+        null,
+        null,
+        false,
+        null,
+        null,
+        null,
+        null,
+        appLoader,
+        mask,
+        null,
+      )
+    assertThat(fromKotlinDefaults.appLoader).isSameInstanceAs(appLoader)
+    assertThat(fromKotlinDefaults.captureMessageContent).isFalse()
+    assertThat(fromKotlinDefaults.allowOrigins).isEmpty()
+    assertThat(fromKotlinDefaults.allowRemoteRequests).isNull()
+
+    val compiler = checkNotNull(ToolProvider.getSystemJavaCompiler()) { "javac is unavailable." }
+    val directory = createTempDirectory("adk-server-config-java")
+    try {
+      val sourceFile =
+        directory.resolve("TwelveArgCaller.java").apply {
+          writeText(
+            """
+            import com.google.adk.kt.artifacts.ArtifactService;
+            import com.google.adk.kt.sessions.SessionService;
+            import com.google.adk.kt.webserver.AdkServerConfig;
+            import com.google.adk.kt.webserver.loaders.AppLoader;
+            import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter;
+            import java.util.List;
+
+            public final class TwelveArgCaller {
+              public static AdkServerConfig create(
+                  SessionService sessions, ArtifactService artifacts, AppLoader apps) {
+                return new AdkServerConfig(
+                    null, sessions, artifacts, 8080, "127.0.0.1", new ApiServerSpanExporter(),
+                    false, List.of(), null, null, null, apps);
+              }
+            }
+            """
+              .trimIndent()
+          )
+        }
+      val errors = ByteArrayOutputStream()
+      val exitCode =
+        compiler.run(
+          null,
+          null,
+          errors,
+          "-proc:none",
+          "-classpath",
+          System.getProperty("java.class.path"),
+          "-d",
+          directory.toString(),
+          sourceFile.toString(),
+        )
+      assertWithMessage("javac failed:\n$errors").that(exitCode).isEqualTo(0)
+      URLClassLoader(arrayOf(directory.toUri().toURL()), javaClass.classLoader).use { classLoader ->
+        val caller = classLoader.loadClass("TwelveArgCaller")
+        val fromJava =
+          caller
+            .getMethod(
+              "create",
+              SessionService::class.java,
+              ArtifactService::class.java,
+              AppLoader::class.java,
+            )
+            .invoke(null, sessions, artifacts, appLoader) as AdkServerConfig
+        assertThat(fromJava.appLoader).isSameInstanceAs(appLoader)
+        assertThat(fromJava.allowOrigins).isEmpty()
+        assertThat(fromJava.allowRemoteRequests).isNull()
+      }
+    } finally {
+      directory.toFile().deleteRecursively()
+    }
   }
 }
