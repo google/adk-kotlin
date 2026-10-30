@@ -36,6 +36,8 @@ internal object MetadataKeys {
   const val IS_LONG_RUNNING = "adk_is_long_running"
   const val TYPE = "adk_type"
   const val AUTHOR = "adk_author"
+  const val VIDEO_METADATA = "adk_video_metadata"
+  const val MEDIA_RESOLUTION = "adk_media_resolution"
 }
 
 internal const val ADK_METADATA_TASK_ID = "adk_task_id"
