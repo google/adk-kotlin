@@ -23,7 +23,9 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.jvm.JvmSynthetic
+import kotlin.jvm.Volatile
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -51,6 +53,17 @@ internal class LiveRun(
   /** Whether [append] stores events; a run without a session service drops them. */
   val storesEvents: Boolean
     get() = sessionService != null
+
+  /**
+   * Set by the live turn while it hands an event over, and completed by [finishStore]. One turn
+   * emits at a time, and the runner stores each event inside that emit, so one slot is enough.
+   */
+  @Volatile var storeWatch: CompletableDeferred<Unit>? = null
+
+  /** Called by the runner once its store step for an event has run, whether or not it stored it. */
+  fun finishStore() {
+    val unused = storeWatch?.complete(Unit)
+  }
 
   /**
    * Appends [event] to the session, bounded by [LIVE_SESSION_TIMEOUT] so a hung session service

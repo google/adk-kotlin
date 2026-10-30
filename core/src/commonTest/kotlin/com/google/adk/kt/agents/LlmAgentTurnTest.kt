@@ -112,13 +112,16 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -2185,6 +2188,60 @@ class LlmAgentTurnTest {
   }
 
   @Test
+  fun runLive_queuedInputs_storeEachAnswerBeforeTheNextInput() = runBlocking {
+    val agent =
+      liveAgent(
+        InputGatedLiveConnection(
+          listOf(LlmResponse(content = modelMessage("first")), turnComplete()),
+          listOf(LlmResponse(content = modelMessage("second")), turnComplete()),
+        )
+      )
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "input-order")
+    val session = sessionService.createSession(key)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hi"))
+    queue.sendContent(userMessage("and then?"))
+    val context = liveContextFor(agent, queue, session = session, sessionService = sessionService)
+
+    // Stores each answer as it arrives, as the runner would.
+    agent.runLive(context).collect { event ->
+      if (!event.partial) {
+        val unused = sessionService.appendEvent(session, event)
+      }
+      if (event.content?.parts?.firstOrNull()?.text == "second") queue.close()
+    }
+
+    val texts =
+      checkNotNull(sessionService.getSession(key)).events.mapNotNull {
+        it.content?.parts?.firstOrNull()?.text
+      }
+    assertEquals(listOf("hi", "first", "and then?", "second"), texts)
+  }
+
+  @Test
+  fun runLive_inputDuringAStreamedAnswer_doesNotWaitForTheAnswerToEnd() = runBlocking {
+    val chunks = List(50) { LlmResponse(content = modelMessage("chunk"), partial = true) }
+    val connection =
+      InputGatedLiveConnection(
+        chunks + turnComplete(),
+        listOf(LlmResponse(content = modelMessage("done")), turnComplete()),
+      )
+    val agent = liveAgent(connection)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hi"))
+    var seen = 0
+
+    agent.runLive(liveContextFor(agent, queue)).collect { event ->
+      if (++seen == 5) queue.sendContent(userMessage("and then?"))
+      if (event.content?.parts?.firstOrNull()?.text == "done") queue.close()
+    }
+
+    // The second input reached the model while the first answer was still streaming.
+    assertTrue(connection.emittedAtInputs[1] < chunks.size)
+  }
+
+  @Test
   fun runLive_dropAfterTheUserTurnIsStored_doesNotStoreItTwice() = runTest {
     val committed = CompletableDeferred<Unit>()
     val sessionService = CommitThenYieldSessionService({ it.author == Role.USER }, committed)
@@ -2879,6 +2936,48 @@ class LlmAgentTurnTest {
       closed.complete(Unit)
       if (failsClose) throw TeardownFailure()
       if (hangsClose) awaitCancellation()
+    }
+  }
+
+  /**
+   * Emits turn n only after the n-th input arrives, so a test can pin how answers and queued inputs
+   * interleave. A later collection resumes at the next turn instead of replaying; the stream ends
+   * on close.
+   */
+  private class InputGatedLiveConnection(vararg turns: List<LlmResponse>) :
+    SingleCollectorLiveConnection() {
+    private val turns = turns.toList()
+    private val inputs = MutableStateFlow(0)
+    private val closed = CompletableDeferred<Unit>()
+    private var next = 0
+    private var emitted = 0
+
+    /** How many responses had gone out when each input arrived. */
+    val emittedAtInputs = mutableListOf<Int>()
+
+    override fun responses(): Flow<LlmResponse> = flow {
+      while (next < turns.size) {
+        val turn = next++
+        inputs.first { it > turn }
+        for (response in turns[turn]) {
+          emit(response)
+          emitted++
+        }
+      }
+      closed.await()
+    }
+
+    override suspend fun sendHistory(history: List<Content>) {}
+
+    override suspend fun sendContent(content: Content, partial: Boolean) {
+      emittedAtInputs += emitted
+      inputs.update { it + 1 }
+    }
+
+    override suspend fun sendRealtime(input: RealtimeInput) {}
+
+    override suspend fun closeSession() {
+      closed.complete(Unit)
     }
   }
 

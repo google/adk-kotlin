@@ -1484,6 +1484,68 @@ class RunLiveTest {
     }
 
   @Test
+  fun runLive_typedTurnSentWhileAnAnswerIsBeingStored_storesTheAnswerFirst(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    // Sends the next turn while the runner is still handling "first", then takes a while to store.
+    val slowStore =
+      object : Plugin {
+        override val name = "slow-store"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+          if (event.hasText("first")) {
+            queue.sendContent(userMessage("and then?"))
+            delay(100.milliseconds)
+          }
+          return event
+        }
+      }
+    val runner =
+      InMemoryRunner(
+        agent = LlmAgent(name = "live_agent", model = twoTurnModel()),
+        plugins = listOf(slowStore),
+      )
+    queue.sendContent(userMessage("hi"))
+
+    val unused =
+      runner
+        .runLive("u", "s", queue, RunConfig())
+        .onEach { if (it.hasText("second")) queue.close() }
+        .toList()
+
+    assertThat(runner.storedEvents().mapNotNull { it.content?.parts?.firstOrNull()?.text })
+      .containsExactly("hi", "first", "and then?", "second")
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_slowCallerOnAStoredAnswer_doesNotHoldTheNextTypedTurn(): Unit = runBlocking {
+    val model = twoTurnModel()
+    val runner = InMemoryRunner(agent = LlmAgent(name = "live_agent", model = model))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hi"))
+    var sentWhileHandling: Boolean? = null
+
+    val unused =
+      runner
+        .runLive("u", "s", queue, RunConfig())
+        .onEach { event ->
+          if (event.hasText("first")) {
+            queue.sendContent(userMessage("and then?"))
+            // The runner stored "first" before handing it over, so this caller holds nothing up.
+            delay(100.milliseconds)
+            sentWhileHandling = model.connections.flatMap { it.sent }.any { it.isText("and then?") }
+          }
+          if (event.hasText("second")) queue.close()
+        }
+        .toList()
+
+    assertThat(sentWhileHandling).isTrue()
+    assertThat(runner.storedEvents().mapNotNull { it.content?.parts?.firstOrNull()?.text })
+      .containsExactly("hi", "first", "and then?", "second")
+      .inOrder()
+  }
+
+  @Test
   fun runLive_streamingToolEmitsAnEvent_leavesTheAgentsOutputKeyUnset(): Unit = runBlocking {
     val tool =
       DummyTool(name = "monitor") { _, _ ->
@@ -1547,6 +1609,20 @@ class RunLiveTest {
         throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
       }
     }
+
+    /** Answers the user's "hi" with "first", then their "and then?" with "second". */
+    private fun twoTurnModel() =
+      DummyLiveModel(
+        listOf(
+          AwaitSent("the first turn") { it.isText("hi") },
+          Respond(LlmResponse(content = modelMessage("first"), turnComplete = true)),
+          AwaitSent("the second turn") { it.isText("and then?") },
+          Respond(LlmResponse(content = modelMessage("second"), turnComplete = true)),
+        )
+      )
+
+    private fun Event.hasText(text: String): Boolean =
+      content?.parts?.any { it.text == text } == true
 
     private fun Any.isText(text: String): Boolean =
       this is ContentInput && content.parts.any { it.text == text }
