@@ -90,7 +90,7 @@ private class SimultaneousFailures(name: String, count: Int) : BaseNode(name = n
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     allRunning.countDown()
     check(runInterruptible { allRunning.await(30, TimeUnit.SECONDS) }) { "items never ran at once" }
-    throw NodeExecutionException("RuntimeError", "item $nodeInput failed")
+    throw TestNodeException("item $nodeInput failed")
   }
 }
 
@@ -144,7 +144,7 @@ class ParallelWorkerConcurrencyTest {
 
       // Act
       val error =
-        assertFailsWith<NodeExecutionException> {
+        assertFailsWith<TestNodeException> {
           runBlocking(Dispatchers.Default) { workflow.runAsync(testInvocationContext()).toList() }
         }
 

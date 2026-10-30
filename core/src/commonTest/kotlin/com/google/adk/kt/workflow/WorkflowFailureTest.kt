@@ -74,7 +74,7 @@ private class FailsUntilAttempt(
   override val config: NodeConfig = NodeConfig(retryConfig = retry)
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-    if (context.attemptCount < succeedFrom) throw NodeExecutionException("RuntimeError", "boom")
+    if (context.attemptCount < succeedFrom) throw TestNodeException("boom")
     emit("B")
   }
 }
@@ -119,13 +119,13 @@ class WorkflowFailureTest {
   fun aNodeThatRaisesWithoutRetryShutsTheWorkflowDown() {
     // Arrange
     val a = Emitter("a", "A")
-    val boom = AlwaysRaises("boom", { NodeExecutionException("RuntimeError", "boom") })
+    val boom = AlwaysRaises("boom", { TestNodeException("boom") })
     val after = Emitter("after", "never")
     val workflow =
       Workflow(name = "wf", edges = listOf(Edge(Start, a), Edge(a, boom), Edge(boom, after)))
 
     // Act
-    val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+    val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
 
     // Assert
     assertContains(error.message!!, "boom")
@@ -147,8 +147,8 @@ class WorkflowFailureTest {
     assertEquals(
       listOf(
         Triple("wf@1/a@1", null, "A"),
-        Triple("wf@1/flaky@1", "RuntimeError", null),
-        Triple("wf@1/flaky@1", "RuntimeError", null),
+        Triple("wf@1/flaky@1", "TestNodeException", null),
+        Triple("wf@1/flaky@1", "TestNodeException", null),
         Triple("wf@1/flaky@1", null, "B"),
         Triple("wf@1/c@1", null, "C"),
       ),
@@ -173,20 +173,19 @@ class WorkflowFailureTest {
   @Test
   fun anExhaustedRetryBudgetFailsTheRun() {
     // Arrange
-    val doomed =
-      AlwaysRaises("doomed", { NodeExecutionException("RuntimeError", "boom") }, instantRetry(3))
+    val doomed = AlwaysRaises("doomed", { TestNodeException("boom") }, instantRetry(3))
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, doomed)))
 
     // Act
     val events = mutableListOf<Event>()
     val error =
-      assertFailsWith<NodeExecutionException> {
+      assertFailsWith<TestNodeException> {
         runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
       }
 
     // Assert: all three attempts ran and failed before the run gave up.
     assertContains(error.message!!, "boom")
-    assertEquals(3, events.count { it.errorCode == "RuntimeError" })
+    assertEquals(3, events.count { it.errorCode == "TestNodeException" })
   }
 
   @Test
@@ -195,7 +194,7 @@ class WorkflowFailureTest {
     val unmatched =
       AlwaysRaises(
         "unmatched",
-        { NodeExecutionException("RuntimeError", "boom") },
+        { TestNodeException("boom") },
         instantRetry(5, exceptions = listOf("ValueError")),
       )
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, unmatched)))
@@ -203,18 +202,18 @@ class WorkflowFailureTest {
     // Act
     val events = mutableListOf<Event>()
     val error =
-      assertFailsWith<NodeExecutionException> {
+      assertFailsWith<TestNodeException> {
         runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
       }
 
     // Assert
     assertContains(error.message!!, "boom")
-    assertEquals(1, events.count { it.errorCode == "RuntimeError" })
+    assertEquals(1, events.count { it.errorCode == "TestNodeException" })
   }
 
   @Test
   fun retryAppliesToSubclassesOfTheListedExceptionClasses() {
-    // Arrange: the node raises a NodeExecutionException, which extends RuntimeException.
+    // Arrange: the node throws a TestNodeException, which extends RuntimeException.
     val flaky =
       FailsUntilAttempt(
         "flaky",
@@ -227,7 +226,7 @@ class WorkflowFailureTest {
     val events = runWorkflow(workflow)
 
     // Assert: the first attempt failed and was retried.
-    assertEquals(1, events.count { it.errorCode == "RuntimeError" })
+    assertEquals(1, events.count { it.errorCode == "TestNodeException" })
     assertEquals("B", events.last().output)
   }
 
@@ -268,7 +267,7 @@ class WorkflowFailureTest {
     }
 
     // Assert
-    assertEquals(2, events.count { it.errorCode == "NodeTimeoutError" })
+    assertEquals(2, events.count { it.errorCode == "NodeTimeoutException" })
   }
 
   @Test
@@ -324,14 +323,14 @@ class WorkflowFailureTest {
   fun aFailingBranchCancelsAStillRunningSibling() {
     // Arrange
     val fork = Emitter("fork", "F")
-    val boom = AlwaysRaises("boom", { NodeExecutionException("RuntimeError", "boom") })
+    val boom = AlwaysRaises("boom", { TestNodeException("boom") })
     val slow = CancellationProbe("slow", nap = 30.seconds)
     val workflow =
       Workflow(name = "wf", edges = listOf(Edge(Start, fork), Edge(fork, boom), Edge(fork, slow)))
 
     // Act
     val start = TimeSource.Monotonic.markNow()
-    val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+    val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
     val elapsed = start.elapsedNow()
 
     // Assert: the failure ends the run instead of waiting out the sleeping sibling, and the
@@ -357,19 +356,19 @@ class WorkflowFailureTest {
     val doomed =
       AlwaysRaises(
         "doomed",
-        { NodeExecutionException("RuntimeError", "boom") },
+        { TestNodeException("boom") },
         instantRetry(5, exceptions = emptyList()),
       )
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, doomed)))
 
     // Act
     val events = mutableListOf<Event>()
-    assertFailsWith<NodeExecutionException> {
+    assertFailsWith<TestNodeException> {
       runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
     }
 
     // Assert: an empty list matches nothing, so the node runs once and is not retried.
-    assertEquals(1, events.count { it.errorCode == "RuntimeError" })
+    assertEquals(1, events.count { it.errorCode == "TestNodeException" })
   }
 
   @Test
@@ -391,13 +390,13 @@ class WorkflowFailureTest {
   fun aFailureInsideANestedWorkflowFailsTheOuterRun() {
     // Arrange: the inner workflow reports its failure on the shared context rather than by
     // raising, so this guards the path the outer scheduler reads it back on.
-    val boom = AlwaysRaises("boom", { NodeExecutionException("RuntimeError", "inner boom") })
+    val boom = AlwaysRaises("boom", { TestNodeException("inner boom") })
     val inner = Workflow(name = "inner", edges = listOf(Edge(Start, boom)))
     val after = Emitter("after", "never")
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, inner), Edge(inner, after)))
 
     // Act
-    val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+    val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
 
     // Assert
     assertContains(error.message!!, "inner boom")
@@ -414,7 +413,7 @@ class WorkflowFailureTest {
 
         override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
           childRuns += 1
-          throw NodeExecutionException("RuntimeError", "child boom")
+          throw TestNodeException("child boom")
         }
       }
     val inner =
@@ -426,7 +425,7 @@ class WorkflowFailureTest {
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, inner)))
 
     // Act
-    val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+    val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
 
     // Assert: the workflow retried its whole graph, so the child ran once per attempt.
     assertContains(error.message!!, "child boom")
@@ -445,7 +444,7 @@ class WorkflowFailureTest {
 
         override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
           childRuns += 1
-          throw NodeExecutionException("RuntimeError", "boom")
+          throw TestNodeException("boom")
         }
       }
     val workflow =
@@ -456,7 +455,7 @@ class WorkflowFailureTest {
       )
 
     // Act
-    val error = assertFailsWith<NodeExecutionException> { runWorkflow(workflow) }
+    val error = assertFailsWith<TestNodeException> { runWorkflow(workflow) }
 
     // Assert: the root workflow re-ran its whole graph, so the child ran once per attempt.
     assertContains(error.message!!, "boom")

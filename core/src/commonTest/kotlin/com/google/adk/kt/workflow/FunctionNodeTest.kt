@@ -292,7 +292,7 @@ class FunctionNodeTest {
     // Assert
     assertFalse(secret in error.message.orEmpty())
     val errorEvent = runner.session().events.single { it.errorCode != null }
-    assertEquals("NodeInputValidationError", errorEvent.errorCode)
+    assertEquals("NodeInputValidationException", errorEvent.errorCode)
     assertEquals("wf@1/consume_int@1", errorEvent.nodeInfo?.path)
     assertFalse(secret in errorEvent.errorMessage.orEmpty())
   }

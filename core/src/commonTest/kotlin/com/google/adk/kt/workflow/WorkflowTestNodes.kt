@@ -37,6 +37,9 @@ import kotlinx.coroutines.runBlocking
  * build - which compiles the whole test source set together - sees a single definition of each.
  */
 
+/** A failure thrown only by test nodes, so tests never mistake it for one raised by the runtime. */
+internal class TestNodeException(message: String) : RuntimeException(message)
+
 /** A live object with no JSON form, as a custom node might emit it. */
 internal data class LiveOrder(val id: String)
 
