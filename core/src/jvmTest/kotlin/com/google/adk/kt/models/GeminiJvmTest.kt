@@ -26,6 +26,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.SpeechConfig
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
@@ -272,6 +273,26 @@ class GeminiJvmTest {
   }
 
   @Test
+  fun generateContent_vertexAi_leavesPartMetadataOutOfRequest() {
+    mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
+    val part = Part(text = "Hello", partMetadata = mapOf("meta" to "data"))
+
+    runBlocking {
+      vertexAiClient().use { client ->
+        val unused =
+          Gemini(client, "gemini-3.1-flash-preview")
+            .generateContent(
+              LlmRequest(contents = listOf(userMessage(part)), config = GenerateContentConfig()),
+              stream = false,
+            )
+            .toList()
+      }
+    }
+
+    assertThat(takeRequestBody()).doesNotContain("partMetadata")
+  }
+
+  @Test
   fun generateContent_callerSuppliedClient_attachesAdkTrackingHeaders() {
     mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
 
@@ -316,6 +337,22 @@ class GeminiJvmTest {
     }
 
     assertTrackingHeaders(mockServer.takeRequest(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+  }
+
+  @Test
+  @OptIn(ExperimentalLiveApi::class)
+  fun connect_vertexAi_sendsContentWithPartMetadata() {
+    mockServer.enqueue(MockResponse.Builder().webSocketUpgrade(AnswerLiveSetup).build())
+    val content = userMessage(Part(text = "Hello", partMetadata = mapOf("meta" to "data")))
+
+    // The SDK throws if part metadata reaches its Vertex AI converter.
+    runBlocking {
+      vertexAiClient().use { client ->
+        val connection = Gemini(client, "gemini-live-test").connect(LlmRequest())
+        connection.sendContent(content)
+        connection.closeSession()
+      }
+    }
   }
 
   @Test
@@ -695,6 +732,15 @@ class GeminiJvmTest {
     assertThat(usage.candidatesTokenCount).isEqualTo(candidates)
     assertThat(usage.totalTokenCount).isEqualTo(total)
   }
+
+  private fun vertexAiClient() =
+    Client(
+      project = "test-project",
+      location = "us-central1",
+      credentials = fakeVertexCredentials().credentials?.toGenaiSdk(),
+      enterprise = true,
+      httpOptions = HttpOptions(baseUrl = mockServer.url("/").toString()),
+    )
 
   private fun fakeVertexCredentials(): VertexCredentials =
     VertexCredentials(
