@@ -27,7 +27,6 @@ import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
-import com.google.adk.kt.webserver.dev.AdkDevServer
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.loaders.AgentLoaderApps
 import com.google.adk.kt.webserver.loaders.AppLoader
@@ -38,7 +37,8 @@ import com.google.adk.kt.webserver.loaders.SingleAgentLoader
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 
 /**
- * What an [AdkApiServer] or [AdkDevServer] needs to serve a set of agents over HTTP.
+ * What an [AdkApiServer] or [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] needs to
+ * serve a set of agents over HTTP.
  *
  * @property agentLoader The agents to serve. Deprecated: set [appLoader] instead. Set exactly one
  *   of the two.
@@ -46,11 +46,13 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  * @property captureMessageContent When true the server records prompt and response content into
  *   telemetry spans so the Dev UI trace view can display it. This may capture PII, so it defaults
  *   to false; enable it only for local development.
- * @property host Interface [AdkApiServer] and [AdkDevServer] bind to; IPv4 loopback by default,
+ * @property host Interface [AdkApiServer] and
+ *   [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] bind to; IPv4 loopback by default,
  *   since these endpoints are unauthenticated; nothing listens on ::1. Installing a module into
  *   your own engine binds whatever that engine was given, not this.
  * @property webUiEnabled Whether to mount the Development UI; null leaves the choice to the server
- *   variant, off for [AdkApiServer] and on for [AdkDevServer]. The `adk.web.ui.enabled` property
+ *   variant, off for [AdkApiServer] and on for
+ *   [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer]. The `adk.web.ui.enabled` property
  *   overrides it either way, so that a deployment which cannot change code can still turn the UI
  *   off; the corollary is that an ambient property beats an explicit setting here.
  * @property camelCaseEnforced Whether responses use the strict camelCase spelling. Off leaves every
@@ -65,6 +67,11 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  *   to publish. `adk.app.info.enabled` overrides it either way, as the Development UI property
  *   does, so a deployment that cannot change code can still turn the endpoint off. Experimental:
  *   setting it requires `@OptIn(ExperimentalAppInfoFeature::class)`.
+ * @property allowedHosts Host names that requests may name besides this machine: in `Host` when
+ *   [AdkApiServer] or [AdkDevServer][com.google.adk.kt.webserver.dev.AdkDevServer] binds a loopback
+ *   [host], and in a browser page's `Origin`, which must otherwise be this server's own origin. The
+ *   ADK routes answer anything else with 403, and `*` turns both checks off. No CORS headers are
+ *   added, so a cross-origin page also needs Ktor's CORS plugin.
  */
 data class AdkServerConfig(
   @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
@@ -80,11 +87,13 @@ data class AdkServerConfig(
   val camelCaseEnforced: Boolean? = null,
   @property:ExperimentalAppInfoFeature val includeAppInfo: Boolean? = null,
   val appLoader: AppLoader? = null,
+  val allowedHosts: Set<String> = emptySet(),
 ) {
   init {
     require((agentLoader == null) != (appLoader == null)) {
       "Set exactly one of agentLoader and appLoader."
     }
+    require(allowedHosts.none { '/' in it }) { "allowedHosts takes host names, not URLs." }
   }
 
   /** Keeps code compiled against the constructor without [appLoader] linking. */
@@ -116,6 +125,37 @@ data class AdkServerConfig(
     appLoader = null,
   )
 
+  /** Keeps code compiled against the constructor without [allowedHosts] linking. */
+  @Deprecated("Binary compatibility only.", level = DeprecationLevel.HIDDEN)
+  constructor(
+    agentLoader: AgentLoader? = null,
+    sessionService: SessionService,
+    artifactService: ArtifactService,
+    port: Int = DEFAULT_PORT,
+    host: String = DEFAULT_HOST,
+    apiServerSpanExporter: ApiServerSpanExporter = ApiServerSpanExporter(),
+    captureMessageContent: Boolean = false,
+    plugins: List<Plugin> = emptyList(),
+    webUiEnabled: Boolean? = null,
+    camelCaseEnforced: Boolean? = null,
+    includeAppInfo: Boolean? = null,
+    appLoader: AppLoader? = null,
+  ) : this(
+    agentLoader = agentLoader,
+    sessionService = sessionService,
+    artifactService = artifactService,
+    port = port,
+    host = host,
+    apiServerSpanExporter = apiServerSpanExporter,
+    captureMessageContent = captureMessageContent,
+    plugins = plugins,
+    webUiEnabled = webUiEnabled,
+    camelCaseEnforced = camelCaseEnforced,
+    includeAppInfo = includeAppInfo,
+    appLoader = appLoader,
+    allowedHosts = emptySet(),
+  )
+
   /** What the routes serve, chosen once from whichever loader is set. */
   internal val servedApps: ServedApps =
     appLoader?.let(::AppLoaderApps) ?: AgentLoaderApps(checkNotNull(agentLoader))
@@ -140,6 +180,7 @@ data class AdkServerConfig(
       .webUiEnabled(webUiEnabled)
       .camelCaseEnforced(camelCaseEnforced)
       .includeAppInfo(includeAppInfo)
+      .allowedHosts(allowedHosts)
 
   /**
    * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
@@ -160,6 +201,7 @@ data class AdkServerConfig(
     private var camelCaseEnforced: Boolean? = null
     private var includeAppInfo: Boolean? = null
     private var appLoader: AppLoader? = null
+    private var allowedHosts: Set<String> = emptySet()
 
     @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
     fun agentLoader(agentLoader: AgentLoader?): Builder = apply { this.agentLoader = agentLoader }
@@ -199,6 +241,10 @@ data class AdkServerConfig(
       this.includeAppInfo = includeAppInfo
     }
 
+    fun allowedHosts(allowedHosts: Set<String>): Builder = apply {
+      this.allowedHosts = allowedHosts
+    }
+
     fun build(): AdkServerConfig =
       AdkServerConfig(
         agentLoader = agentLoader,
@@ -213,6 +259,7 @@ data class AdkServerConfig(
         camelCaseEnforced = camelCaseEnforced,
         includeAppInfo = includeAppInfo,
         appLoader = appLoader,
+        allowedHosts = allowedHosts,
       )
   }
 

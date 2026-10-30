@@ -60,6 +60,7 @@ dependencies {
   implementation(libs.slf4j.api)
   implementation(libs.slf4j.simple)
 
+  testImplementation(project(":google-adk-kotlin-testing"))
   testImplementation(libs.ktor.server.test.host)
   testImplementation(libs.google.truth)
   testImplementation(libs.junit)
