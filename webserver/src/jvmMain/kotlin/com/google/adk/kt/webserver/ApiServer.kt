@@ -105,7 +105,10 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
     val engine =
       synchronized(lifecycleLock) {
         if (server != null) return
-        embeddedServer(Netty, port = config.port, host = config.host) { configure(this) }
+        embeddedServer(Netty, port = config.port, host = config.host) {
+            attributes.put(BIND_HOST_KEY, config.host)
+            configure(this)
+          }
           .also { server = it }
       }
     logger.info("{} starting on {}:{}", this::class.simpleName, config.host, config.port)
@@ -166,7 +169,9 @@ private val requestLogging = requestLoggingPlugin { level, message ->
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
  *
- * Your engine decides the interface: [AdkServerConfig.host] is read by [AdkApiServer], not here.
+ * In an engine you start yourself, these routes skip the `Host` check that
+ * [AdkServerConfig.allowedHosts] describes, since that engine decides the listen address; they
+ * still answer 403 to a browser page from another origin.
  */
 fun Application.adkApiModule(config: AdkServerConfig) {
   adkApiModule(config, resolveWebUi(config))
@@ -200,34 +205,36 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
   val camelCase = resolveCamelCase(config)
   val appInfoEnabled = resolveAppInfoEnabled(config)
   routing {
-    get("/health") { call.respond(mapOf("status" to "ok")) }
-    if (!camelCase) {
-      logger.warn(
-        "Responses use the mixed spelling: /version emits `language_version` and the " +
-          "development trace endpoints emit `span_id`. This default will change in a future " +
-          "release; set camelCaseEnforced or {}=true to migrate now.",
-        CAMEL_CASE_ENFORCED_PROPERTY,
-      )
-    }
-    get("/version") {
-      call.respond(
-        VersionInfo.of(
-          version = VERSION,
-          language = "kotlin",
-          languageVersion = System.getProperty("java.version", "unknown"),
-          camelCase = camelCase,
+    hostOriginGuarded(config.allowedHosts) {
+      get("/health") { call.respond(mapOf("status" to "ok")) }
+      if (!camelCase) {
+        logger.warn(
+          "Responses use the mixed spelling: /version emits `language_version` and the " +
+            "development trace endpoints emit `span_id`. This default will change in a future " +
+            "release; set camelCaseEnforced or {}=true to migrate now.",
+          CAMEL_CASE_ENFORCED_PROPERTY,
         )
-      )
-    }
-    appRoutes(config.servedApps)
-    artifactRoutes(config.artifactService)
-    runRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
-    sessionRoutes(config.sessionService)
-    if (appInfoEnabled) {
-      appInfoRoutes(config.servedApps)
-    }
-    if (webUiEnabled) {
-      staticRoutes(this@adkApiModule)
+      }
+      get("/version") {
+        call.respond(
+          VersionInfo.of(
+            version = VERSION,
+            language = "kotlin",
+            languageVersion = System.getProperty("java.version") ?: "unknown",
+            camelCase = camelCase,
+          )
+        )
+      }
+      appRoutes(config.servedApps)
+      artifactRoutes(config.artifactService)
+      runRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
+      sessionRoutes(config.sessionService)
+      if (appInfoEnabled) {
+        appInfoRoutes(config.servedApps)
+      }
+      if (webUiEnabled) {
+        staticRoutes(this@adkApiModule)
+      }
     }
   }
 }
