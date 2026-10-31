@@ -65,6 +65,14 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  *   to publish. `adk.app.info.enabled` overrides it either way, as the Development UI property
  *   does, so a deployment that cannot change code can still turn the endpoint off. Experimental:
  *   setting it requires `@OptIn(ExperimentalAppInfoFeature::class)`.
+ * @property allowOrigins Cross-origin browser origins allowed in addition to same-origin requests
+ *   (literal origins, `"*"`, or `"regex:<pattern>"` entries, matching ADK Python). Overridden by
+ *   the comma-separated `adk.allow.origins` property when set.
+ * @property allowRemoteRequests Whether non-loopback peers and proxied or tunneled requests are
+ *   accepted. When null, [AdkDevServer] rejects non-loopback and proxied callers regardless of
+ *   [host], while [AdkApiServer] rejects them when [host] is loopback (`127.0.0.1` by default) and
+ *   accepts them when [host] is widened explicitly (such as `0.0.0.0` behind an authenticating
+ *   proxy). Overridden by `adk.allow.remote.requests` or `ADK_ALLOW_REMOTE_REQUESTS`.
  */
 data class AdkServerConfig(
   @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
@@ -80,6 +88,8 @@ data class AdkServerConfig(
   val camelCaseEnforced: Boolean? = null,
   @property:ExperimentalAppInfoFeature val includeAppInfo: Boolean? = null,
   val appLoader: AppLoader? = null,
+  val allowOrigins: List<String> = emptyList(),
+  val allowRemoteRequests: Boolean? = null,
 ) {
   init {
     require((agentLoader == null) != (appLoader == null)) {
@@ -116,6 +126,41 @@ data class AdkServerConfig(
     appLoader = null,
   )
 
+  /**
+   * Keeps code compiled against the constructor before [allowOrigins] and [allowRemoteRequests]
+   * linking.
+   */
+  @Deprecated("Binary compatibility only.", level = DeprecationLevel.HIDDEN)
+  constructor(
+    agentLoader: AgentLoader? = null,
+    sessionService: SessionService,
+    artifactService: ArtifactService,
+    port: Int = DEFAULT_PORT,
+    host: String = DEFAULT_HOST,
+    apiServerSpanExporter: ApiServerSpanExporter = ApiServerSpanExporter(),
+    captureMessageContent: Boolean = false,
+    plugins: List<Plugin> = emptyList(),
+    webUiEnabled: Boolean? = null,
+    camelCaseEnforced: Boolean? = null,
+    includeAppInfo: Boolean? = null,
+    appLoader: AppLoader? = null,
+  ) : this(
+    agentLoader = agentLoader,
+    sessionService = sessionService,
+    artifactService = artifactService,
+    port = port,
+    host = host,
+    apiServerSpanExporter = apiServerSpanExporter,
+    captureMessageContent = captureMessageContent,
+    plugins = plugins,
+    webUiEnabled = webUiEnabled,
+    camelCaseEnforced = camelCaseEnforced,
+    includeAppInfo = includeAppInfo,
+    appLoader = appLoader,
+    allowOrigins = emptyList(),
+    allowRemoteRequests = null,
+  )
+
   /** What the routes serve, chosen once from whichever loader is set. */
   internal val servedApps: ServedApps =
     appLoader?.let(::AppLoaderApps) ?: AgentLoaderApps(checkNotNull(agentLoader))
@@ -140,6 +185,8 @@ data class AdkServerConfig(
       .webUiEnabled(webUiEnabled)
       .camelCaseEnforced(camelCaseEnforced)
       .includeAppInfo(includeAppInfo)
+      .allowOrigins(allowOrigins)
+      .allowRemoteRequests(allowRemoteRequests)
 
   /**
    * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
@@ -160,6 +207,8 @@ data class AdkServerConfig(
     private var camelCaseEnforced: Boolean? = null
     private var includeAppInfo: Boolean? = null
     private var appLoader: AppLoader? = null
+    private var allowOrigins: List<String> = emptyList()
+    private var allowRemoteRequests: Boolean? = null
 
     @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
     fun agentLoader(agentLoader: AgentLoader?): Builder = apply { this.agentLoader = agentLoader }
@@ -199,6 +248,14 @@ data class AdkServerConfig(
       this.includeAppInfo = includeAppInfo
     }
 
+    fun allowOrigins(allowOrigins: List<String>): Builder = apply {
+      this.allowOrigins = allowOrigins.toList()
+    }
+
+    fun allowRemoteRequests(allowRemoteRequests: Boolean?): Builder = apply {
+      this.allowRemoteRequests = allowRemoteRequests
+    }
+
     fun build(): AdkServerConfig =
       AdkServerConfig(
         agentLoader = agentLoader,
@@ -213,6 +270,8 @@ data class AdkServerConfig(
         camelCaseEnforced = camelCaseEnforced,
         includeAppInfo = includeAppInfo,
         appLoader = appLoader,
+        allowOrigins = allowOrigins,
+        allowRemoteRequests = allowRemoteRequests,
       )
   }
 
