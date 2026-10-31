@@ -19,6 +19,7 @@ package com.google.adk.kt.testing
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
+import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
@@ -69,6 +70,7 @@ class DummyModel(
      * Creates a [DummyModel] that returns a sequence of [LlmResponse]s, each wrapped in its own
      * [Flow], on subsequent calls.
      */
+    @JvmStatic
     fun createSequential(name: String, responses: List<LlmResponse>): DummyModel =
       DummyModel(name, responses.map { flowOf(it) })
   }

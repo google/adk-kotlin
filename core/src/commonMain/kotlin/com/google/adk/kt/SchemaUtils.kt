@@ -393,15 +393,23 @@ object SchemaUtils {
   @OptIn(FrameworkInternalApi::class)
   internal fun readJson(text: String): Result<Any?> {
     val element =
+      readJsonElement(text)
+        ?: return Result.failure(
+          IllegalArgumentException("validation error: value is not valid JSON.")
+        )
+    return Result.success(jsonElementToAny(element))
+  }
+
+  /** Reads [text] as strict JSON (see [readJson]) into a [JsonElement], or null when it is not. */
+  @OptIn(FrameworkInternalApi::class)
+  internal fun readJsonElement(text: String): JsonElement? {
+    val element =
       try {
         adkJson.parseToJsonElement(text)
       } catch (e: SerializationException) {
         null
       }
-    if (element == null || !isStrictJson(element)) {
-      return Result.failure(IllegalArgumentException("validation error: value is not valid JSON."))
-    }
-    return Result.success(jsonElementToAny(element))
+    return element?.takeIf { isStrictJson(it) }
   }
 
   /** A JSON integer literal without a fractional or exponent part. */
