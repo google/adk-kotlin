@@ -43,7 +43,9 @@ class LoadArtifactsTool :
         Schema(
           type = Type.OBJECT,
           properties =
-            mapOf("artifact_names" to Schema(type = Type.ARRAY, items = Schema(type = Type.STRING))),
+            mapOf(
+              "artifact_names" to Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)),
+            ),
         ),
     )
   }
@@ -98,29 +100,27 @@ class LoadArtifactsTool :
   ): LlmRequest {
     // Attach the content of the artifacts if the model requests them.
     val lastContent = llmRequest.contents.lastOrNull() ?: return llmRequest
-    if (lastContent.parts.isEmpty()) {
-      return llmRequest
-    }
-
-    val functionResponse = lastContent.parts.first().functionResponse ?: return llmRequest
-    if (functionResponse.name != "load_artifacts") {
-      return llmRequest
-    }
-
     var newRequest = llmRequest
-    for (artifactName in functionResponse.response.getArtifactNamesList()) {
-      val artifact = loadArtifact(toolContext, artifactName)
-      if (artifact == null) {
+    for (part in lastContent.parts) {
+      val functionResponse = part.functionResponse ?: continue
+      if (functionResponse.name != "load_artifacts") {
         continue
       }
-      // TODO: Convert artifacts with unsupported MIME types to text, as Python ADK does.
-      newRequest =
-        newRequest.appendContent(
-          Content(
-            role = Role.USER,
-            parts = listOf(Part(text = "Artifact $artifactName is:"), artifact),
+
+      for (artifactName in functionResponse.response.getArtifactNamesList()) {
+        val artifact = loadArtifact(toolContext, artifactName)
+        if (artifact == null) {
+          continue
+        }
+        // TODO: Convert artifacts with unsupported MIME types to text, as Python ADK does.
+        newRequest =
+          newRequest.appendContent(
+            Content(
+              role = Role.USER,
+              parts = listOf(Part(text = "Artifact $artifactName is:"), artifact),
+            ),
           )
-        )
+      }
     }
     return newRequest
   }
