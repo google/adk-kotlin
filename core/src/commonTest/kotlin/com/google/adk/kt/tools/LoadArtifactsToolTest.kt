@@ -16,15 +16,25 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyArtifactService
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCall
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Type
@@ -33,6 +43,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class LoadArtifactsToolTest {
@@ -374,5 +387,174 @@ class LoadArtifactsToolTest {
 
     // Original contents (model func call, user func response). No new content should be added.
     assertEquals(2, request.contents.size)
+  }
+
+  @Test
+  fun processLlmRequest_multipleLoadResponses_loadsExistingArtifactsInResponseOrder() =
+    runBlocking {
+      val firstArtifact = Part(text = "First artifact contents")
+      val secondArtifact = Part(text = "Second artifact contents")
+      val context =
+        testToolContext(
+          testInvocationContext(
+            artifactService =
+              mockArtifactService(
+                keysToReturn = listOf("first.txt", "second.txt"),
+                loadToReturn = mapOf("first.txt" to firstArtifact, "second.txt" to secondArtifact),
+              )
+          )
+        )
+      val responses =
+        Content(
+          role = Role.USER,
+          parts =
+            listOf(
+              Part(text = "Tool responses follow"),
+              Part(
+                functionResponse =
+                  FunctionResponse(
+                    "load_artifacts",
+                    response = mapOf("artifact_names" to listOf("missing.txt", "first.txt")),
+                  )
+              ),
+              Part(
+                functionResponse = FunctionResponse("other_tool", response = mapOf("ok" to true))
+              ),
+              Part(text = "More tool responses"),
+              Part(
+                functionResponse =
+                  FunctionResponse(
+                    "load_artifacts",
+                    response = mapOf("artifact_names" to listOf("second.txt")),
+                  )
+              ),
+            ),
+        )
+      val request = LlmRequest(contents = listOf(responses))
+
+      val result = LoadArtifactsTool().processLlmRequest(context, request)
+
+      assertEquals(
+        listOf(
+          responses,
+          Content(
+            role = Role.USER,
+            parts = listOf(Part(text = "Artifact first.txt is:"), firstArtifact),
+          ),
+          Content(
+            role = Role.USER,
+            parts = listOf(Part(text = "Artifact second.txt is:"), secondArtifact),
+          ),
+        ),
+        result.contents,
+      )
+      assertEquals(listOf(responses), request.contents)
+    }
+
+  @Test
+  fun run_loadArtifactsAfterAnotherTool_includesRequestedArtifactInNextModelRequest() =
+    runBlocking {
+      assertArtifactReachesAnsweringModel(loadArtifactsFirst = false)
+    }
+
+  @Test
+  fun run_loadArtifactsBeforeAnotherTool_includesRequestedArtifactInNextModelRequest() =
+    runBlocking {
+      assertArtifactReachesAnsweringModel(loadArtifactsFirst = true)
+    }
+
+  @Test
+  fun run_userPrefixedArtifactFromAnotherSessionAfterAnotherTool_includesItInNextModelRequest() =
+    runBlocking {
+      assertArtifactReachesAnsweringModel(
+        loadArtifactsFirst = false,
+        filename = "user:invoice.txt",
+        savedInSession = "earlier-session",
+      )
+    }
+
+  @Test
+  fun run_unprefixedNameOfUserArtifactAfterAnotherTool_includesItInNextModelRequest() =
+    runBlocking {
+      assertArtifactReachesAnsweringModel(
+        loadArtifactsFirst = false,
+        savedAs = "user:invoice.txt",
+        savedInSession = "earlier-session",
+      )
+    }
+
+  private suspend fun assertArtifactReachesAnsweringModel(
+    loadArtifactsFirst: Boolean,
+    filename: String = "invoice.txt",
+    savedAs: String = filename,
+    savedInSession: String = "session1",
+  ) {
+    val artifacts = InMemoryArtifactService()
+    val payload = "Invoice total is 1234.56 USD"
+    artifacts.saveArtifact(
+      SessionKey("artifact_app", "user1", savedInSession),
+      savedAs,
+      Part(text = payload),
+    )
+    val currencyCall = Part(functionCall = FunctionCall("get_currency", id = "currency-1"))
+    val artifactCall =
+      Part(
+        functionCall =
+          FunctionCall(
+            "load_artifacts",
+            args = mapOf("artifact_names" to listOf(filename)),
+            id = "artifact-1",
+          )
+      )
+    val orderedCalls =
+      if (loadArtifactsFirst) listOf(artifactCall, currencyCall)
+      else listOf(currencyCall, artifactCall)
+    var calls = 0
+    var answerRequest: LlmRequest? = null
+    val model =
+      DummyModel("artifact-model") { request ->
+        calls++
+        if (calls == 1) {
+          flowOf(LlmResponse(content = Content(role = Role.MODEL, parts = orderedCalls)))
+        } else {
+          answerRequest = request
+          flowOf(LlmResponse(content = modelMessage("Finished")))
+        }
+      }
+    val agent =
+      LlmAgent(
+        name = "invoice_agent",
+        model = model,
+        tools =
+          listOf(
+            DummyTool(name = "get_currency", declares = true) { _, _ ->
+              mapOf("currency" to "USD")
+            },
+            LoadArtifactsTool(),
+          ),
+      )
+    val runner =
+      InMemoryRunner(agent = agent, appName = "artifact_app", artifactService = artifacts)
+    try {
+      val events =
+        runner.runAsync("user1", "session1", newMessage = userMessage("Read the invoice")).toList()
+      val responses = events.flatMap { it.functionResponses() }
+      assertEquals(orderedCalls.map { it.functionCall!!.name }, responses.map { it.name })
+      val artifactResponse = responses.single { it.name == "load_artifacts" }
+      assertEquals(listOf(filename), artifactResponse.response["artifact_names"])
+      val nextRequest = assertNotNull(answerRequest)
+      assertEquals(2, calls)
+      assertEquals(
+        Content(
+          role = Role.USER,
+          parts = listOf(Part(text = "Artifact $filename is:"), Part(text = payload)),
+        ),
+        nextRequest.contents.last(),
+        "A successful load_artifacts response must supply the file to the answering model; " +
+          "loadArtifactsFirst=$loadArtifactsFirst",
+      )
+    } finally {
+      runner.close()
+    }
   }
 }
