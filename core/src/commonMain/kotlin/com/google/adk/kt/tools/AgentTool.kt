@@ -20,6 +20,7 @@ import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
@@ -150,6 +151,8 @@ open class AgentTool(
           userId = childSession.key.userId,
           sessionId = childSession.key.id!!,
           newMessage = content,
+          // The child returns one tool result, even when its caller streams.
+          runConfig = context.invocationContext.runConfig?.copy(streamingMode = StreamingMode.NONE),
         )
         .lastOrNull()
 

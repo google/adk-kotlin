@@ -18,8 +18,12 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.CallbackContext
+import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LlmCallsLimitExceededException
+import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.InMemoryArtifactService
@@ -28,13 +32,17 @@ import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
 import com.google.adk.kt.plugins.Plugin
+import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.simplifyEvents
@@ -52,6 +60,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -306,7 +318,7 @@ class AgentToolTest {
           agent = inner,
           session = parentSession,
           sessionService = parentSessionService,
-        )
+        ),
       )
 
     val unused = tool.run(context, mapOf("request" to "Hello"))
@@ -347,7 +359,7 @@ class AgentToolTest {
                 "userKey" to "userValue",
                 "_adkInternal" to "should-not-leak",
                 "temp:ephemeral" to "should-not-cross",
-              )
+              ),
           ),
       )
     val context = testToolContext(testInvocationContext(agent = inner, session = parentSession))
@@ -434,7 +446,7 @@ class AgentToolTest {
             DummyModel("inner-model") {
               flowOf(LlmResponse(content = modelMessage("Response from inner agent")))
             },
-        )
+        ),
       )
     val mainModel =
       DummyModel(
@@ -445,7 +457,7 @@ class AgentToolTest {
               modelFunctionCallResponse(
                 name = "inner-agent",
                 args = mapOf("request" to "Hello inner"),
-              )
+              ),
             ),
             flowOf(LlmResponse(content = modelMessage("Final Answer"))),
           ),
@@ -462,7 +474,7 @@ class AgentToolTest {
       listOf(
         "main-agent" to
           Part(
-            functionCall = FunctionCall("inner-agent", args = mapOf("request" to "Hello inner"))
+            functionCall = FunctionCall("inner-agent", args = mapOf("request" to "Hello inner")),
           ),
         "main-agent" to
           Part(
@@ -470,7 +482,7 @@ class AgentToolTest {
               FunctionResponse(
                 "inner-agent",
                 response = mapOf("result" to "Response from inner agent"),
-              )
+              ),
           ),
         "main-agent" to "Final Answer",
       ),
@@ -549,7 +561,7 @@ class AgentToolTest {
     val beforeAgentCalls = mutableMapOf<String, Int>()
 
     override suspend fun beforeAgent(
-      context: CallbackContext
+      context: CallbackContext,
     ): CallbackChoice<EventActions, com.google.adk.kt.types.Content> {
       val agentName = context.agent.name
       beforeAgentCalls[agentName] = (beforeAgentCalls[agentName] ?: 0) + 1
@@ -584,7 +596,7 @@ class AgentToolTest {
                   modelFunctionCallResponse(
                     name = "tool_agent",
                     args = mapOf("request" to "Hello inner"),
-                  )
+                  ),
                 ),
                 flowOf(LlmResponse(content = modelMessage("Final Answer"))),
               ),
@@ -625,7 +637,7 @@ class AgentToolTest {
                   modelFunctionCallResponse(
                     name = "tool_agent",
                     args = mapOf("request" to "Hello inner"),
-                  )
+                  ),
                 ),
                 flowOf(LlmResponse(content = modelMessage("Final Answer"))),
               ),
@@ -665,7 +677,7 @@ class AgentToolTest {
                   modelFunctionCallResponse(
                     name = "tool_agent",
                     args = mapOf("request" to "Hello inner"),
-                  )
+                  ),
                 ),
                 flowOf(LlmResponse(content = modelMessage("Final Answer"))),
               ),
@@ -704,7 +716,7 @@ class AgentToolTest {
               assertEquals("test", a1.text)
               val unused = cb.saveArtifact("artifact_2", Part(text = a1.text + " 2"))
               CallbackChoice.Continue(EventActions())
-            }
+            },
           ),
       )
     val rootAgent =
@@ -719,7 +731,7 @@ class AgentToolTest {
                   modelFunctionCallResponse(
                     name = "tool_agent",
                     args = mapOf("request" to "Hello inner"),
-                  )
+                  ),
                 ),
                 flowOf(LlmResponse(content = modelMessage("Final Answer"))),
               ),
@@ -730,7 +742,7 @@ class AgentToolTest {
             BeforeAgentCallback { cb ->
               val unused = cb.saveArtifact("artifact_1", Part(text = "test"))
               CallbackChoice.Continue(EventActions())
-            }
+            },
           ),
         afterAgentCallbacks =
           listOf(
@@ -740,7 +752,7 @@ class AgentToolTest {
               assertEquals("test 2", a2.text)
               val unused = cb.saveArtifact("artifact_3", Part(text = a2.text + " 3"))
               CallbackChoice.Continue(Unit)
-            }
+            },
           ),
       )
     val parentArtifactService = InMemoryArtifactService()
@@ -796,7 +808,7 @@ class AgentToolTest {
               author = "inner-agent",
               content = modelMessage("done"),
               groundingMetadata = grounding,
-            )
+            ),
           )
         },
       )
@@ -819,7 +831,7 @@ class AgentToolTest {
               author = "inner-agent",
               content = modelMessage("done"),
               groundingMetadata = GroundingMetadata(),
-            )
+            ),
           )
         },
       )
@@ -830,4 +842,111 @@ class AgentToolTest {
 
     assertEquals(null, context.actions.stateDelta["temp:_adk_grounding_metadata"])
   }
+
+  @Test
+  fun run_childNeedsTwoModelCalls_enforcesCallerOneCallLimit(): Unit = runBlocking {
+    val context = testToolContext(testInvocationContext(runConfig = RunConfig(maxLlmCalls = 1)))
+
+    assertFailsWith<LlmCallsLimitExceededException> {
+      AgentTool(twoCallAgent()).run(context, mapOf("request" to "Look up the answer"))
+    }
+  }
+
+  @Test
+  fun run_childNeedsTwoModelCalls_hasOwnCounterUnderCallerLimit(): Unit = runBlocking {
+    val invocationContext = testInvocationContext(runConfig = RunConfig(maxLlmCalls = 2))
+    invocationContext.incrementLlmCallsCount()
+    val context = testToolContext(invocationContext)
+
+    val result = AgentTool(twoCallAgent()).run(context, mapOf("request" to "Look up the answer"))
+
+    assertEquals("Lookup completed", result)
+  }
+
+  @Test
+  fun run_streamingCaller_preservesRunSettingsAndMetadataWithoutStreamingChild(): Unit =
+    runBlocking {
+      val metadata = mapOf("trace_id" to "parent-trace")
+      val callerConfig =
+        RunConfig(streamingMode = StreamingMode.SSE, maxLlmCalls = 7, customMetadata = metadata)
+      var childConfig: RunConfig? = null
+      val childStreams = mutableListOf<Boolean>()
+      val childEvents = mutableListOf<Event>()
+      val model =
+        object : Model {
+          override val name = "recording-model"
+
+          override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> {
+            childStreams.add(stream)
+            return flowOf(LlmResponse(content = modelMessage("Child completed")))
+          }
+        }
+      val child =
+        LlmAgent(
+          name = "child_agent",
+          model = model,
+          beforeAgentCallbacks =
+            listOf(
+              BeforeAgentCallback { callback ->
+                childConfig = callback.invocationContext.runConfig
+                CallbackChoice.Continue(EventActions())
+              },
+            ),
+        )
+      val recorder =
+        object : Plugin {
+          override val name = "record_child_events"
+
+          override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+            childEvents.add(event)
+            return event
+          }
+        }
+      val invocationContext =
+        testInvocationContext(runConfig = callerConfig)
+          .copy(pluginManager = PluginManager(listOf(recorder)))
+      val context = testToolContext(invocationContext)
+
+      val result = AgentTool(child).run(context, mapOf("request" to "Answer the question"))
+
+      assertEquals("Child completed", result)
+      assertEquals(listOf(false), childStreams)
+      assertEquals(callerConfig.copy(streamingMode = StreamingMode.NONE), childConfig)
+      assertTrue(childEvents.isNotEmpty())
+      childEvents.forEach { assertEquals(metadata, it.customMetadata) }
+      assertSame(callerConfig, invocationContext.runConfig)
+      assertEquals(StreamingMode.SSE, callerConfig.streamingMode)
+      assertEquals(7, callerConfig.maxLlmCalls)
+      assertEquals(metadata, callerConfig.customMetadata)
+    }
+
+  @Test
+  fun run_withoutCallerRunConfig_keepsChildRunConfigNull(): Unit = runBlocking {
+    var childConfig: RunConfig? = RunConfig()
+    val child =
+      DummyAgent(name = "child_agent") { context ->
+        childConfig = context.runConfig
+        emit(Event(author = "child_agent", content = modelMessage("Child completed")))
+      }
+    val context = testToolContext(testInvocationContext(runConfig = null))
+
+    val result = AgentTool(child).run(context, mapOf("request" to "Answer the question"))
+
+    assertEquals("Child completed", result)
+    assertNull(childConfig)
+  }
+
+  private fun twoCallAgent(): LlmAgent =
+    LlmAgent(
+      name = "lookup_agent",
+      model =
+        DummyModel.createSequential(
+          "lookup-model",
+          listOf(
+            modelFunctionCallResponse("lookup", id = "lookup-1"),
+            LlmResponse(content = modelMessage("Lookup completed")),
+          ),
+        ),
+      tools = listOf(DummyTool(name = "lookup", declares = true)),
+    )
 }
