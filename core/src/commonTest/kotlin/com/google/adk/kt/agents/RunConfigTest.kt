@@ -29,10 +29,20 @@ class RunConfigTest {
   @Test
   fun testRunConfigDefaults() {
     val config = RunConfig()
+
     assertEquals(StreamingMode.NONE, config.streamingMode)
     assertEquals(500, config.maxLlmCalls)
     assertEquals(null, config.customMetadata)
     assertEquals(LiveRunConfig(), config.live)
+    assertEquals(ToolExecutionMode.PARALLEL, config.toolExecutionMode)
+  }
+
+  @Test
+  fun toolExecutionMode_customValue_isRetained() {
+    assertEquals(
+      ToolExecutionMode.SEQUENTIAL,
+      RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL).toolExecutionMode,
+    )
   }
 
   @Test
@@ -60,17 +70,26 @@ class RunConfigTest {
         maxLlmCalls = 42,
         customMetadata = mapOf("key" to "value"),
         live = LiveRunConfig(saveLiveBlob = true),
+        toolExecutionMode = ToolExecutionMode.SEQUENTIAL,
       )
 
-    assertEquals(config.copy(), config.toBuilder().build())
-    assertEquals(config.copy(maxLlmCalls = 7), config.toBuilder().maxLlmCalls(7).build())
+    val rebuilt = config.toBuilder().build()
+    val overridden =
+      config.toBuilder().maxLlmCalls(7).toolExecutionMode(ToolExecutionMode.PARALLEL).build()
+
+    assertEquals(config.copy(), rebuilt)
+    assertEquals(
+      config.copy(maxLlmCalls = 7, toolExecutionMode = ToolExecutionMode.PARALLEL),
+      overridden,
+    )
   }
 
   @Test
   fun defaults_toString_enumeratesEveryProperty() {
     // A tripwire for new RunConfig properties; the nested live text is derived.
     assertEquals(
-      "RunConfig(streamingMode=NONE, maxLlmCalls=500, customMetadata=null, live=${LiveRunConfig()})",
+      "RunConfig(streamingMode=NONE, maxLlmCalls=500, customMetadata=null, " +
+        "live=${LiveRunConfig()}, toolExecutionMode=PARALLEL)",
       RunConfig().toString(),
     )
   }
@@ -93,6 +112,7 @@ class RunConfigTest {
         .maxLlmCalls(7)
         .customMetadata(customMetadata)
         .live(live)
+        .toolExecutionMode(ToolExecutionMode.SEQUENTIAL)
         .build()
 
     assertEquals(
@@ -101,6 +121,7 @@ class RunConfigTest {
         maxLlmCalls = 7,
         customMetadata = customMetadata,
         live = live,
+        toolExecutionMode = ToolExecutionMode.SEQUENTIAL,
       ),
       built,
     )

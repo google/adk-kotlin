@@ -509,8 +509,8 @@ data class InvocationContext(
   /**
    * Processes a list of function calls by executing them efficiently and safely.
    *
-   * This handles parallel execution, argument conversion, error processing, and merging all
-   * resulting [EventActions] and standard outputs.
+   * This handles parallel or sequential execution (per [RunConfig.toolExecutionMode]), argument
+   * conversion, error processing, and merging all resulting [EventActions] and standard outputs.
    *
    * @param functionCalls List of [FunctionCall] instances to process.
    * @param tools A mapping from tool name to the available [BaseTool] instance.
@@ -547,25 +547,39 @@ data class InvocationContext(
     }
 
     val functionResponseEvents =
-      filteredCalls
-        .map { functionCall ->
-          async {
-            executeSingleFunctionCall(
-              functionCall,
-              tools,
-              toolConfirmations[functionCall.id],
-              toolRunner,
-            )
-          }
-        }
-        .awaitAll()
-        .filterNotNull()
+      when (runConfig?.toolExecutionMode ?: ToolExecutionMode.PARALLEL) {
+        ToolExecutionMode.SEQUENTIAL ->
+          filteredCalls
+            .map { functionCall ->
+              executeSingleFunctionCall(
+                functionCall,
+                tools,
+                toolConfirmations[functionCall.id],
+                toolRunner,
+              )
+            }
+            .filterNotNull()
+        ToolExecutionMode.PARALLEL ->
+          filteredCalls
+            .map { functionCall ->
+              async {
+                executeSingleFunctionCall(
+                  functionCall,
+                  tools,
+                  toolConfirmations[functionCall.id],
+                  toolRunner,
+                )
+              }
+            }
+            .awaitAll()
+            .filterNotNull()
+      }
     if (functionResponseEvents.isEmpty()) {
       return@coroutineScope null
     }
 
     val mergedEvent = mergeParallelFunctionResponseEvents(functionResponseEvents)
-    // When multiple tool calls run in parallel, emit a synthetic merged span so the merged response
+    // When multiple tool calls run in one turn, emit a synthetic merged span so the merged response
     // event is traceable in the Dev UI (parity with Python `trace_merged_tool_calls`).
     if (functionResponseEvents.size > 1) {
       recordMergedToolCallSpan(mergedEvent)
@@ -654,12 +668,14 @@ data class InvocationContext(
       // instead of re-invoking the model with an empty payload -- otherwise a tool that keeps
       // requesting input (e.g. request_input) loops. Every other value is emitted as a response.
       // Done before `runAfterToolCallbacks` to avoid wrapping `Unit` as `{result: Unit}`. See
-      // [BaseTool.isLongRunning]. A task delegation's `Unit` defers too: its task node answers it.
+      // [BaseTool.isLongRunning]. A task delegation's `Unit` defers too: its task node answers
+      // it.
       if ((tool.isLongRunning || tool is TaskAgentTool) && toolResult === Unit) {
         return@withSpan null
       }
       // A regular tool's `Unit`, or a `null` leaked by a Java tool that breaks the non-null `run`
-      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires the
+      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires
+      // the
       // response to be a map. Only a long-running tool's or a task delegation's `Unit` defers.
       if (toolResult === Unit || (toolResult as Any?) == null) {
         toolResult = mapOf(BaseTool.RESULT_KEY to null)
