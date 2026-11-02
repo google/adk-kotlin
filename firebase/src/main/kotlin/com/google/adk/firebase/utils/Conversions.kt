@@ -619,6 +619,16 @@ internal class Conversions {
       )
     }
 
+  /**
+   * Converts an agent's output schema for the generation config's `responseSchema`.
+   *
+   * Returns `null` for an object that declares no properties: [toFirebaseSchema] turns that into a
+   * string carrying JSON, which suits a tool argument but would make the model answer with a quoted
+   * string. Without a schema, the JSON response MIME type still asks for an object.
+   */
+  fun toFirebaseResponseSchema(schema: Schema): FirebaseSchema? =
+    if (schema.convertsToFreeFormObject()) null else toFirebaseSchema(schema)
+
   fun toFirebaseSchema(schema: Schema): FirebaseSchema =
     with(schema) {
       // Firebase models a union as a schema that carries only `anyOf`, so a typed schema cannot
@@ -661,12 +671,11 @@ internal class Conversions {
             Type.OBJECT,
             Type.TYPE_UNSPECIFIED,
             null -> {
-              val declaredProps = properties
-              if (declaredProps.isNullOrEmpty()) {
+              if (convertsToFreeFormObject()) {
                 freeFormObject(description, isNullable, title)
               } else {
                 FirebaseSchema.obj(
-                  properties = declaredProps.mapValues { toFirebaseSchema(it.value) },
+                  properties = properties.orEmpty().mapValues { toFirebaseSchema(it.value) },
                   description = description,
                   optionalProperties = optionalParameters(this),
                   nullable = isNullable,
@@ -773,6 +782,12 @@ internal class Conversions {
       else -> FirebaseBranch.TYPED
     }
 
+  /** Whether [toFirebaseSchema] converts this schema with [freeFormObject]. */
+  private fun Schema.convertsToFreeFormObject(): Boolean =
+    firebaseBranch() == FirebaseBranch.TYPED &&
+      (type == Type.OBJECT || type == Type.TYPE_UNSPECIFIED || type == null) &&
+      properties.isNullOrEmpty()
+
   /**
    * Whether Firebase drops this schema's `anyOf` because a type is declared beside it.
    *
@@ -874,9 +889,12 @@ internal class Conversions {
           maxOutputTokens = config.maxOutputTokens
           topP = config.topP
           topK = config.topK
+          presencePenalty = config.presencePenalty
+          frequencyPenalty = config.frequencyPenalty
           stopSequences = config.stopSequences
           candidateCount = config.candidateCount
           responseMimeType = config.responseMimeType
+          responseSchema = config.responseSchema?.let { toFirebaseResponseSchema(it) }
           responseModalities =
             config.responseModalities
               ?.mapNotNull { toFirebaseResponseModality(it) }
