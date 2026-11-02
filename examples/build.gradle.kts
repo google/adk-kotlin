@@ -16,6 +16,7 @@
 
 plugins {
   kotlin("jvm")
+  kotlin("plugin.serialization")
   alias(libs.plugins.ksp)
 }
 
@@ -47,6 +48,8 @@ dependencies {
   implementation(libs.google.auth.oauth2.http)
   implementation(libs.google.cloud.storage)
   implementation(libs.kotlinx.coroutines.core)
+  // kotlinx.serialization for the @Serializable data classes that workflow nodes take and return.
+  implementation(libs.kotlinx.serialization)
   implementation(libs.opentelemetry.sdk)
 
   ksp(project(":google-adk-kotlin-processor"))

@@ -28,7 +28,6 @@ import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
 import com.google.adk.kt.runners.InMemoryRunner
-import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
@@ -39,6 +38,7 @@ import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
 
 private const val MODEL_NAME = "gemini-3.8-flash"
 
@@ -54,14 +54,13 @@ object SupportTriageWorkflow {
    * account ID from the `account_id` session state key, so pass it with each request.
    */
   fun create(model: Model): Workflow {
-    // An LlmAgent is a Node, so it goes straight into the graph.
-    val classify = classifierAgent(model)
     val billing = billingAgent(model)
     val tech = techAgent(model)
     val summarize = summaryAgent(model)
 
     return workflow("support_triage") {
-      chain(Start, classify, requestCategory).route {
+      // An LlmAgent is a Node, so it goes straight into the graph.
+      chain(Start, classifierAgent(model), requestCategory).route {
         on("billing") then billing
         on("tech") then tech
         otherwise(summarize)
@@ -73,12 +72,9 @@ object SupportTriageWorkflow {
 
   /** Routes on the category the classifier returned, since an [LlmAgent] node emits no route. */
   private val requestCategory =
-    node<Any?, Unit>("request_category") { context, _ ->
-      val category = (context.state[TRIAGE_KEY] as? Map<*, *>)?.get("category") as? String
-      // Consumes the answer, so a later turn never routes on this turn's category.
-      context.updateState(TRIAGE_KEY, State.REMOVED)
-      // Without a category, this node emits no route, so `otherwise` takes the request.
-      if (category != null) context.routes = listOf(Route.Tag(category))
+    node<Triage, Unit>("request_category") { context, triage ->
+      // No edge matches `other`, so `otherwise` takes the request.
+      context.routes = listOf(Route.Tag(triage.category))
     }
 }
 
@@ -109,7 +105,6 @@ private fun classifierAgent(model: Model): LlmAgent =
     model = model,
     instruction = Instruction("Classify the customer's latest message."),
     outputSchema = TRIAGE_SCHEMA,
-    outputKey = TRIAGE_KEY,
   )
 
 private fun billingAgent(model: Model): LlmAgent =
@@ -150,9 +145,10 @@ private fun summaryAgent(model: Model): LlmAgent =
       ),
   )
 
-private const val TRIAGE_KEY = "triage"
+/** The classifier's structured answer, which matches [TRIAGE_SCHEMA]. */
+@Serializable private data class Triage(val category: String)
 
-/** The classifier's structured answer, so routing never depends on parsing free text. */
+/** The schema of [Triage], so routing never depends on parsing free text. */
 private val TRIAGE_SCHEMA =
   Schema(
     type = Type.OBJECT,

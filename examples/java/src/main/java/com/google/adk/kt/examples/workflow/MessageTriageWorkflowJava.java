@@ -16,29 +16,27 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.Arrays;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of the message-triage graph from the ADK docs: an agent labels a message as a bug, a
- * customer-support request, a logistics question, or several of these, and a custom node emits one
- * route per label so each matching handler runs.
+ * customer-support request, a logistics question, or several of these, and a function node emits
+ * one route per label so each matching handler runs.
  */
 public final class MessageTriageWorkflowJava {
 
@@ -46,23 +44,20 @@ public final class MessageTriageWorkflowJava {
 
   /** Builds the workflow, with the classifier on {@code model}. */
   public static Workflow create(Model model) {
-    Node processMessage = processMessageAgent(model);
-
     return Workflow.builder()
         .name("routing_workflow")
         .edges(
             g ->
                 g.fromStart()
-                    .chain(processMessage, new MessageCategories())
+                    .chain(processMessageAgent(model), messageCategories())
                     .route(
                         r -> {
-                          r.on("BUG").then(new Responder("response_1_bug", "Handling bug..."));
+                          r.on("BUG").then(responder("response_1_bug", "Handling bug..."));
                           r.on("CUSTOMER_SUPPORT")
                               .then(
-                                  new Responder(
-                                      "response_2_support", "Handling customer support..."));
+                                  responder("response_2_support", "Handling customer support..."));
                           r.on("LOGISTICS")
-                              .then(new Responder("response_3_logistics", "Handling logistics..."));
+                              .then(responder("response_3_logistics", "Handling logistics..."));
                         }))
         .build();
   }
@@ -97,40 +92,31 @@ public final class MessageTriageWorkflowJava {
             or "LOGISTICS". If you think a message applies to more than one category,
             reply with a comma separated list of categories.\
             """)
-        .outputKey("categories")
         .build();
   }
 
-  /** Emits a route for each label the classifier left in state; several routes fan out. */
-  private static final class MessageCategories extends BasePublisherNode {
-    MessageCategories() {
-      super("message_categories");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      String labels =
-          context.getState().get("categories") instanceof String categories ? categories : "";
-      context.setRoutes(
-          Arrays.stream(labels.split(",", -1)).map(label -> new Route.Tag(label.trim())).toList());
-      return Mono.empty();
-    }
+  /** Emits a route for each label in the classifier's answer; several routes fan out. */
+  private static FunctionNode<String, Object> messageCategories() {
+    return FunctionNodes.of(
+        "message_categories",
+        String.class,
+        Object.class,
+        (ctx, labels) -> {
+          ctx.setRoutes(
+              Arrays.stream(labels.split(",", -1))
+                  .map(label -> new Route.Tag(label.trim()))
+                  .toList());
+          return null;
+        });
   }
 
-  /** Replies that the message is being handled. */
-  private static final class Responder extends BasePublisherNode {
-    private final String reply;
-
-    Responder(String name, String reply) {
-      super(name);
-      this.reply = reply;
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Mono.just(
-          Event.builder().author("").content(Content.fromText(Role.MODEL, reply)).build());
-    }
+  /** Returns a node that tells the user the message is being handled. */
+  private static Node responder(String name, String reply) {
+    return FunctionNodes.of(
+        name,
+        Object.class,
+        Event.class,
+        (ctx, input) -> Event.builder().content(Content.fromText(Role.MODEL, reply)).build());
   }
 
   private MessageTriageWorkflowJava() {}

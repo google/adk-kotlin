@@ -47,23 +47,19 @@ private const val MODEL_NAME = "gemini-3.8-flash"
 object MessageTriageWorkflow {
 
   /** Builds the workflow, with the classifier on [model]. */
-  fun create(model: Model): Workflow {
-    val processMessage = processMessageAgent(model)
-
-    return workflow("routing_workflow") {
-      chain(Start, processMessage, messageCategories).route {
+  fun create(model: Model): Workflow =
+    workflow("routing_workflow") {
+      chain(Start, processMessageAgent(model), messageCategories).route {
         on("BUG") then responder("response_1_bug", "Handling bug...")
         on("CUSTOMER_SUPPORT") then responder("response_2_support", "Handling customer support...")
         on("LOGISTICS") then responder("response_3_logistics", "Handling logistics...")
       }
     }
-  }
 
-  /** Emits a route for each label the classifier left in state; several routes fan out. */
+  /** Emits a route for each label in the classifier's answer; several routes fan out. */
   private val messageCategories =
-    node<Any?, Unit>("message_categories") { context, _ ->
-      val labels = (context.state["categories"] as? String).orEmpty().split(",")
-      context.routes = labels.map { Route.Tag(it.trim()) }
+    node<String, Unit>("message_categories") { context, labels ->
+      context.routes = labels.split(",").map { Route.Tag(it.trim()) }
     }
 
   /** Returns a node that tells the user the message is being handled. */
@@ -102,5 +98,4 @@ private fun processMessageAgent(model: Model): LlmAgent =
         """
           .trimIndent()
       ),
-    outputKey = "categories",
   )

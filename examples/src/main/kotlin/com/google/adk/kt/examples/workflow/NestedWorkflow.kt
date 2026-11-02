@@ -47,26 +47,23 @@ object NestedWorkflow {
 
   /** Builds the workflow, with every agent on [model]. */
   fun create(model: Model): Workflow {
-    val findName = findNameAgent(model)
-    val generateBio = generateBioAgent(model)
     // A Workflow is a Node, so a whole workflow can be one branch of another.
-    val findFamousPerson = workflow("find_famous_person") { chain(Start, findName, generateBio) }
-    val findHistoricalEvent = findHistoricalEventAgent(model)
-    val join = JoinNode("join_for_aggregation")
+    val findFamousPerson =
+      workflow("find_famous_person") { chain(Start, findNameAgent(model), generateBioAgent(model)) }
 
     return workflow("nested_workflow") {
       Start.then(processInput)
-        .then(findFamousPerson, findHistoricalEvent)
-        .joinTo(join)
+        .then(findFamousPerson, findHistoricalEventAgent(model))
+        .joinTo(JoinNode("join_for_aggregation"))
         .then(aggregateResults)
     }
   }
 
   /** Stores the year from the user's message in state, and fails the run if there is none. */
   private val processInput =
-    node<Content, Unit>("process_input") { context, message ->
-      // START hands the first node the user's message as Content.
-      val year = Regex("""\b\d{4}\b""").find(message.text())?.value
+    node<String, Unit>("process_input") { context, text ->
+      // START hands the first node the user's message, which a String input receives as text.
+      val year = Regex("""\b\d{4}\b""").find(text)?.value
       if (year == null) {
         val reply = "Please provide a valid 4-digit year (e.g., 1955)."
         emit(Content.fromText(Role.MODEL, reply))
@@ -75,13 +72,13 @@ object NestedWorkflow {
       context.updateState("year", year)
     }
 
-  /** Combines both branches' answers, which [LlmAgent] nodes leave in state rather than output. */
+  /** Combines both branches' answers, which the join passes on keyed by branch name. */
   private val aggregateResults =
-    node<Any?, Unit>("aggregate_results") { context, _ ->
+    node<Map<String, String>, Unit>("aggregate_results") { context, answers ->
       val message =
         "# Year: ${context.state["year"]}\n\n" +
-          "## Famous Person Bio:\n\n${context.state["bio"]}\n\n" +
-          "## Historical Event:\n\n${context.state["historical_event"]}"
+          "## Famous Person Bio:\n\n${answers["find_famous_person"]}\n\n" +
+          "## Historical Event:\n\n${answers["find_historical_event"]}"
       emit(Content.fromText(Role.MODEL, message))
     }
 }
@@ -123,7 +120,6 @@ private fun generateBioAgent(model: Model): LlmAgent =
     model = model,
     instruction =
       Instruction("Write a short, engaging 3-sentence biography for the specified person."),
-    outputKey = "bio",
   )
 
 private fun findHistoricalEventAgent(model: Model): LlmAgent =
@@ -138,5 +134,4 @@ private fun findHistoricalEventAgent(model: Model): LlmAgent =
         """
           .trimIndent()
       ),
-    outputKey = "historical_event",
   )

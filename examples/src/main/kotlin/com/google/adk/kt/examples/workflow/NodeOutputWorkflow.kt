@@ -36,37 +36,34 @@ import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.workflow
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
 
 private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * A port of adk-python's `node_output` workflow sample: a function node's return value becomes its
  * output, a returned [Event] passes through as is, and an agent with an output schema answers with
- * structured data. An [LlmAgent] node answers the conversation rather than its node input and emits
- * no output, so the last node reads the agent's answer from state, where Python passes it as input.
+ * structured data, which the next node receives decoded into a data class.
  */
 object NodeOutputWorkflow {
 
   /** Builds the workflow, with the agent on [model]. */
-  fun create(model: Model): Workflow {
-    val generateStructuredOutput = topicAgent(model)
-
-    return workflow("node_output") {
+  fun create(model: Model): Workflow =
+    workflow("node_output") {
       chain(
         Start,
         generateStringOutput,
         generateEventOutput,
-        generateStructuredOutput,
+        topicAgent(model),
         consumeStructuredOutput,
       )
     }
-  }
 
   /** Returns a string, which becomes the node's output. */
   private val generateStringOutput =
-    node<Content, String>("generate_string_output") { _, message ->
-      // START hands the first node the user's message as Content.
-      "Processed input: ${message.text()}"
+    node<String, String>("generate_string_output") { _, text ->
+      // START hands the first node the user's message, which a String input receives as text.
+      "Processed input: $text"
     }
 
   /** Returns an [Event], which passes through as is and could also carry routes or state. */
@@ -75,15 +72,14 @@ object NodeOutputWorkflow {
       Event(output = "Event wrapped output: $text")
     }
 
-  /** Formats the agent's structured answer, which the agent left in state. */
+  /** Formats the agent's structured answer, decoded from the node input into [TopicDetails]. */
   private val consumeStructuredOutput =
-    node<Any?, String>("consume_structured_output") { context, _ ->
-      val topic = (context.state[TOPIC_KEY] as? Map<*, *>).orEmpty()
+    node<TopicDetails, String>("consume_structured_output") { _, topic ->
       """
       |Received structured output!
-      |Title: ${topic["title"]}
-      |Description: ${topic["description"]}
-      |Category: ${topic["category"]}
+      |Title: ${topic.title}
+      |Description: ${topic.description}
+      |Category: ${topic.category}
       """
         .trimMargin()
     }
@@ -92,14 +88,15 @@ object NodeOutputWorkflow {
     LlmAgent(
       name = "generate_structured_output",
       model = model,
-      instruction = Instruction("Generate a creative topic based on the user's input."),
+      instruction = Instruction("Generate a creative topic based on the following input."),
       outputSchema = TOPIC_SCHEMA,
-      outputKey = TOPIC_KEY,
     )
 
-  private const val TOPIC_KEY = "topic_details"
-
   /** The agent's structured answer, with the fields of adk-python's `TopicDetails` model. */
+  @Serializable
+  private data class TopicDetails(val title: String, val description: String, val category: String)
+
+  /** The schema of [TopicDetails], which the agent's answer must match. */
   private val TOPIC_SCHEMA =
     Schema(
       type = Type.OBJECT,

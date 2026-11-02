@@ -16,25 +16,25 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.JoinNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code nested_workflow} sample: for the year the user names, a nested
@@ -48,26 +48,22 @@ public final class NestedWorkflowJava {
 
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(Model model) {
-    Node findName = findNameAgent(model);
-    Node generateBio = generateBioAgent(model);
     // A Workflow is a Node, so a whole workflow can be one branch of another.
     Node findFamousPerson =
         Workflow.builder()
             .name("find_famous_person")
-            .edges(g -> g.fromStart().chain(findName, generateBio))
+            .edges(g -> g.fromStart().chain(findNameAgent(model), generateBioAgent(model)))
             .build();
-    Node findHistoricalEvent = findHistoricalEventAgent(model);
-    JoinNode join = new JoinNode("join_for_aggregation");
 
     return Workflow.builder()
         .name("nested_workflow")
         .edges(
             g ->
                 g.fromStart()
-                    .then(new ProcessInput())
-                    .then(findFamousPerson, findHistoricalEvent)
-                    .joinTo(join)
-                    .then(new AggregateResults()))
+                    .then(processInput())
+                    .then(findFamousPerson, findHistoricalEventAgent(model))
+                    .joinTo(new JoinNode("join_for_aggregation"))
+                    .then(aggregateResults()))
         .build();
   }
 
@@ -90,6 +86,26 @@ public final class NestedWorkflowJava {
     }
   }
 
+  private static final Pattern YEAR = Pattern.compile("\\b\\d{4}\\b");
+
+  /** Stores the year from the user's message in state, and fails the run if there is none. */
+  private static FunctionNode<Content, Object> processInput() {
+    return FunctionNodes.of(
+        "process_input",
+        // START hands the first node the user's message as Content.
+        Content.class,
+        Object.class,
+        (ctx, message) -> {
+          Matcher year = YEAR.matcher(message.text());
+          if (!year.find()) {
+            // A function node can't emit before it fails, so the error carries the reply.
+            throw new IllegalArgumentException("Please provide a valid 4-digit year (e.g., 1955).");
+          }
+          ctx.updateState("year", year.group());
+          return null;
+        });
+  }
+
   private static LlmAgent findNameAgent(Model model) {
     return LlmAgent.builder()
         .name("find_name")
@@ -107,7 +123,6 @@ public final class NestedWorkflowJava {
         .name("generate_bio")
         .model(model)
         .instruction("Write a short, engaging 3-sentence biography for the specified person.")
-        .outputKey("bio")
         .build();
   }
 
@@ -120,49 +135,27 @@ public final class NestedWorkflowJava {
             Describe one highly significant historical event that occurred in this year: {year}.
             Keep the description to 2 sentences.\
             """)
-        .outputKey("historical_event")
         .build();
   }
 
-  private static final Pattern YEAR = Pattern.compile("\\b\\d{4}\\b");
-
-  /** Stores the year from the user's message in state, and fails the run if there is none. */
-  private static final class ProcessInput extends BasePublisherNode {
-    ProcessInput() {
-      super("process_input");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      Matcher year = YEAR.matcher(((Content) nodeInput).text());
-      if (!year.find()) {
-        // A synchronous node fails before publishing, so the error carries the message.
-        throw new IllegalArgumentException("Please provide a valid 4-digit year (e.g., 1955).");
-      }
-      context.updateState("year", year.group());
-      return Mono.empty();
-    }
-  }
-
-  /** Combines both branches' answers, which LlmAgent nodes leave in state rather than output. */
-  private static final class AggregateResults extends BasePublisherNode {
-    AggregateResults() {
-      super("aggregate_results");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      String message =
-          "# Year: "
-              + context.getState().get("year")
-              + "\n\n## Famous Person Bio:\n\n"
-              + context.getState().get("bio")
-              + "\n\n## Historical Event:\n\n"
-              + context.getState().get("historical_event");
-      return Mono.just(
-          Event.builder().author("").content(Content.fromText(Role.MODEL, message)).build());
-    }
+  /** Combines both branches' answers, which the join passes on keyed by branch name. */
+  private static FunctionNode<Map<String, String>, Event> aggregateResults() {
+    return FunctionNodes.of(
+        "aggregate_results",
+        new TypeReference<Map<String, String>>() {},
+        Event.class,
+        (ctx, answers) ->
+            Event.builder()
+                .content(
+                    Content.fromText(
+                        Role.MODEL,
+                        "# Year: "
+                            + ctx.getState().get("year")
+                            + "\n\n## Famous Person Bio:\n\n"
+                            + answers.get("find_famous_person")
+                            + "\n\n## Historical Event:\n\n"
+                            + answers.get("find_historical_event")))
+                .build());
   }
 
   private NestedWorkflowJava() {}

@@ -16,23 +16,22 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.annotations.Param;
 import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
-import com.google.adk.kt.sessions.State;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
 import com.google.adk.kt.types.Schema;
 import com.google.adk.kt.types.Type;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
@@ -40,7 +39,6 @@ import java.util.List;
 import java.util.Map;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A support-triage workflow built with the workflow DSL. A classifier labels the request, a routing
@@ -57,8 +55,6 @@ public final class SupportTriageWorkflowJava {
    * request.
    */
   public static Workflow create(Model model) {
-    // An LlmAgent is a Node, so it goes straight into the graph.
-    Node classify = classifierAgent(model);
     Node billing = billingAgent(model);
     Node tech = techAgent(model);
     Node summarize = summaryAgent(model);
@@ -67,8 +63,9 @@ public final class SupportTriageWorkflowJava {
         .name("support_triage")
         .edges(
             g -> {
+              // An LlmAgent is a Node, so it goes straight into the graph.
               g.fromStart()
-                  .chain(classify, new RequestCategory())
+                  .chain(classifierAgent(model), requestCategory())
                   .route(
                       r -> {
                         r.on("billing").then(billing);
@@ -111,8 +108,20 @@ public final class SupportTriageWorkflowJava {
         .model(model)
         .instruction("Classify the customer's latest message.")
         .outputSchema(TRIAGE_SCHEMA)
-        .outputKey(TRIAGE_KEY)
         .build();
+  }
+
+  /** Routes on the category the classifier returned, since an LlmAgent node emits no route. */
+  private static FunctionNode<Triage, Object> requestCategory() {
+    return FunctionNodes.of(
+        "request_category",
+        Triage.class,
+        Object.class,
+        (ctx, triage) -> {
+          // No edge matches `other`, so `otherwise` takes the request.
+          ctx.setRoutes(List.of(new Route.Tag(triage.category())));
+          return null;
+        });
   }
 
   private static LlmAgent billingAgent(Model model) {
@@ -151,9 +160,10 @@ public final class SupportTriageWorkflowJava {
         .build();
   }
 
-  private static final String TRIAGE_KEY = "triage";
+  /** The classifier's structured answer, which matches {@link #TRIAGE_SCHEMA}. */
+  record Triage(String category) {}
 
-  /** The classifier's structured answer, so routing never depends on parsing free text. */
+  /** The schema of {@link Triage}, so routing never depends on parsing free text. */
   private static final Schema TRIAGE_SCHEMA =
       Schema.builder()
           .type(Type.OBJECT)
@@ -208,28 +218,6 @@ public final class SupportTriageWorkflowJava {
           "sync", "Degraded since 09:10 UTC. A fix is rolling out.",
           "login", "Operational",
           "billing", "Operational");
-    }
-  }
-
-  /** Routes on the category the classifier returned, since an LlmAgent node emits no route. */
-  private static final class RequestCategory extends BasePublisherNode {
-    RequestCategory() {
-      super("request_category");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Object category =
-          context.getState().get(TRIAGE_KEY) instanceof Map<?, ?> triage
-              ? triage.get("category")
-              : null;
-      // Consumes the answer, so a later turn never routes on this turn's category.
-      context.updateState(TRIAGE_KEY, State.getREMOVED());
-      // Without a category, this node emits no route, so `otherwise` takes the request.
-      if (category instanceof String name) {
-        context.setRoutes(List.of(new Route.Tag(name)));
-      }
-      return Mono.empty();
     }
   }
 
