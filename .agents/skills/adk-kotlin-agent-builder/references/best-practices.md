@@ -46,7 +46,13 @@ Some models cannot combine a response schema with tools, so an agent with `outpu
 
 ## Tools inherit the caller's dispatcher
 
-Tool calls from one model response run concurrently in the collector's context. A tool that blocks (JDBC, blocking HTTP, file I/O) blocks that thread and delays its siblings. Wrap blocking work in `withContext(Dispatchers.IO)` inside the tool.
+By default Tool calls from one model response run concurrently in the collector's context.
+
+Tool calls can be run sequentially by setting `RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL)`.
+
+A tool that blocks (JDBC, blocking HTTP, file I/O) blocks that
+thread and delays its siblings. Wrap blocking work in
+`withContext(Dispatchers.IO)` inside the tool.
 
 ## Close the runner; don't block inside coroutines
 

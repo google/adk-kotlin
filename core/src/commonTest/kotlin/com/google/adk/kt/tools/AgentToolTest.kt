@@ -19,7 +19,10 @@ package com.google.adk.kt.tools
 import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.agents.StreamingMode
+import com.google.adk.kt.agents.ToolExecutionMode
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.InMemoryArtifactService
@@ -35,8 +38,10 @@ import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
@@ -56,6 +61,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 
 class AgentToolTest {
 
@@ -829,5 +835,119 @@ class AgentToolTest {
     val unused = tool.run(context, mapOf("request" to "Hello"))
 
     assertEquals(null, context.actions.stateDelta["temp:_adk_grounding_metadata"])
+  }
+
+  @Test
+  fun run_propagatesCallerRunConfig(): Unit = runBlocking {
+    var capturedRunConfig: RunConfig? = null
+    val agent =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = { context ->
+          capturedRunConfig = context.runConfig
+          emit(Event(author = "inner-agent", content = modelMessage("done")))
+        },
+      )
+    val tool = AgentTool(agent)
+    val runConfig =
+      RunConfig(
+        toolExecutionMode = ToolExecutionMode.SEQUENTIAL,
+        maxLlmCalls = 7,
+        customMetadata = mapOf("tier" to "x"),
+      )
+    val context = testToolContext(testInvocationContext(agent = agent, runConfig = runConfig))
+
+    val unused = tool.run(context, mapOf("request" to "Hello"))
+
+    assertEquals(runConfig, capturedRunConfig)
+  }
+
+  @Test
+  fun run_withStreamingRunConfig_runsAgentWithoutStreaming(): Unit = runBlocking {
+    for (streamingMode in listOf(StreamingMode.SSE, StreamingMode.BIDI)) {
+      var capturedRunConfig: RunConfig? = null
+      val agent =
+        DummyAgent(
+          name = "inner-agent",
+          onRunAsync = { context ->
+            capturedRunConfig = context.runConfig
+            emit(Event(author = "inner-agent", content = modelMessage("done")))
+          },
+        )
+      val runConfig =
+        RunConfig(
+          streamingMode = streamingMode,
+          maxLlmCalls = 7,
+          toolExecutionMode = ToolExecutionMode.SEQUENTIAL,
+        )
+      val tool = AgentTool(agent)
+      val context = testToolContext(testInvocationContext(agent = agent, runConfig = runConfig))
+
+      val unused = tool.run(context, mapOf("request" to "Hello"))
+
+      assertEquals(
+        RunConfig(
+          streamingMode = StreamingMode.NONE,
+          maxLlmCalls = 7,
+          toolExecutionMode = ToolExecutionMode.SEQUENTIAL,
+        ),
+        capturedRunConfig,
+      )
+    }
+  }
+
+  @Test
+  fun run_throughInMemoryRunnerWithSequentialToolExecutionMode_runsWrappedAgentToolsSerially():
+    Unit = runBlocking {
+    val executionOrder = mutableListOf<String>()
+    fun recordingTool(name: String) =
+      DummyTool(name = name) { _, _ ->
+        executionOrder += "start:$name"
+        yield()
+        executionOrder += "end:$name"
+        mapOf("tool" to name)
+      }
+    val toolAgent =
+      LlmAgent(
+        name = "tool_agent",
+        model =
+          DummyModel.createSequential(
+            "inner-model",
+            listOf(
+              modelParallelFunctionCallsResponse(
+                FunctionCall(name = "tool_a", id = "call_a"),
+                FunctionCall(name = "tool_b", id = "call_b"),
+              ),
+              LlmResponse(content = modelMessage("inner done")),
+            ),
+          ),
+        tools = listOf(recordingTool("tool_a"), recordingTool("tool_b")),
+      )
+    val rootAgent =
+      LlmAgent(
+        name = "root_agent",
+        model =
+          DummyModel.createSequential(
+            "root-model",
+            listOf(
+              modelFunctionCallResponse(name = "tool_agent", args = mapOf("request" to "run both")),
+              LlmResponse(content = modelMessage("root done")),
+            ),
+          ),
+        tools = listOf(AgentTool(toolAgent)),
+      )
+    val runner = InMemoryRunner(agent = rootAgent)
+
+    val unused =
+      runner
+        .runAsync(
+          userId = "user1",
+          sessionId = "session1",
+          newMessage = userMessage("go"),
+          runConfig = RunConfig(toolExecutionMode = ToolExecutionMode.SEQUENTIAL),
+        )
+        .toList()
+
+    assertEquals(listOf("start:tool_a", "end:tool_a", "start:tool_b", "end:tool_b"), executionOrder)
   }
 }

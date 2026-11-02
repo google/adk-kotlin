@@ -20,6 +20,8 @@ import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
@@ -150,6 +152,7 @@ open class AgentTool(
           userId = childSession.key.userId,
           sessionId = childSession.key.id!!,
           newMessage = content,
+          runConfig = createChildRunConfig(context.invocationContext.runConfig),
         )
         .lastOrNull()
 
@@ -177,6 +180,14 @@ open class AgentTool(
 
     return ""
   }
+
+  /** Follows [callerRunConfig] but runs unary, as only the last event becomes the result. */
+  private fun createChildRunConfig(callerRunConfig: RunConfig?): RunConfig? =
+    if (callerRunConfig == null || callerRunConfig.streamingMode == StreamingMode.NONE) {
+      callerRunConfig
+    } else {
+      callerRunConfig.copy(streamingMode = StreamingMode.NONE)
+    }
 
   /** Whether [agent] is a single-turn [LlmAgent]. */
   @OptIn(ExperimentalWorkflowApi::class)

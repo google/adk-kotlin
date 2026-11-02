@@ -509,8 +509,8 @@ data class InvocationContext(
   /**
    * Processes a list of function calls by executing them efficiently and safely.
    *
-   * This handles parallel execution, argument conversion, error processing, and merging all
-   * resulting [EventActions] and standard outputs.
+   * This handles parallel or sequential execution (per [RunConfig.toolExecutionMode]), argument
+   * conversion, error processing, and merging all resulting [EventActions] and standard outputs.
    *
    * @param functionCalls List of [FunctionCall] instances to process.
    * @param tools A mapping from tool name to the available [BaseTool] instance.
@@ -527,14 +527,13 @@ data class InvocationContext(
   ): Event? = handleFunctionCallsWith(functionCalls, tools, filters, toolConfirmations.orEmpty())
 
   /** As [handleFunctionCalls], running each resolved tool through [toolRunner]. */
-  @Suppress("UnsafeCoroutineCrossing")
   internal suspend fun handleFunctionCallsWith(
     functionCalls: List<FunctionCall>,
     tools: Map<String, BaseTool>,
     filters: Set<String> = emptySet(),
     toolConfirmations: Map<String, ToolConfirmation> = emptyMap(),
     toolRunner: ToolRunner = DEFAULT_TOOL_RUNNER,
-  ): Event? = coroutineScope {
+  ): Event? {
     // Filter function calls
     val filteredCalls =
       if (filters.isEmpty()) {
@@ -543,35 +542,59 @@ data class InvocationContext(
         functionCalls.filter { it.id == null || it.id in filters }
       }
     if (filteredCalls.isEmpty()) {
-      return@coroutineScope null
+      return null
     }
 
     val functionResponseEvents =
-      filteredCalls
-        .map { functionCall ->
-          async {
-            executeSingleFunctionCall(
-              functionCall,
-              tools,
-              toolConfirmations[functionCall.id],
-              toolRunner,
-            )
-          }
-        }
-        .awaitAll()
-        .filterNotNull()
+      executeFunctionCalls(filteredCalls, tools, toolConfirmations, toolRunner)
     if (functionResponseEvents.isEmpty()) {
-      return@coroutineScope null
+      return null
     }
 
     val mergedEvent = mergeParallelFunctionResponseEvents(functionResponseEvents)
-    // When multiple tool calls run in parallel, emit a synthetic merged span so the merged response
+    // When multiple tool calls run in one turn, emit a synthetic merged span so the merged response
     // event is traceable in the Dev UI (parity with Python `trace_merged_tool_calls`).
     if (functionResponseEvents.size > 1) {
       recordMergedToolCallSpan(mergedEvent)
     }
-    return@coroutineScope mergedEvent
+    return mergedEvent
   }
+
+  // Each call builds its own isolated ToolContext and EventActions; merging happens after awaitAll.
+  @Suppress("UnsafeCoroutineCrossing")
+  private suspend fun executeFunctionCalls(
+    functionCalls: List<FunctionCall>,
+    tools: Map<String, BaseTool>,
+    toolConfirmations: Map<String, ToolConfirmation>,
+    toolRunner: ToolRunner,
+  ): List<Event> =
+    when (runConfig?.toolExecutionMode ?: ToolExecutionMode.PARALLEL) {
+      ToolExecutionMode.SEQUENTIAL ->
+        functionCalls.mapNotNull { functionCall ->
+          executeSingleFunctionCall(
+            functionCall,
+            tools,
+            toolConfirmations[functionCall.id],
+            toolRunner,
+          )
+        }
+      ToolExecutionMode.PARALLEL ->
+        coroutineScope {
+          functionCalls
+            .map { functionCall ->
+              async {
+                executeSingleFunctionCall(
+                  functionCall,
+                  tools,
+                  toolConfirmations[functionCall.id],
+                  toolRunner,
+                )
+              }
+            }
+            .awaitAll()
+            .filterNotNull()
+        }
+    }
 
   /** Emits the `execute_tool (merged)` span describing a merged parallel tool-call response. */
   private suspend fun recordMergedToolCallSpan(mergedEvent: Event) {
@@ -654,12 +677,14 @@ data class InvocationContext(
       // instead of re-invoking the model with an empty payload -- otherwise a tool that keeps
       // requesting input (e.g. request_input) loops. Every other value is emitted as a response.
       // Done before `runAfterToolCallbacks` to avoid wrapping `Unit` as `{result: Unit}`. See
-      // [BaseTool.isLongRunning]. A task delegation's `Unit` defers too: its task node answers it.
+      // [BaseTool.isLongRunning]. A task delegation's `Unit` defers too: its task node answers
+      // it.
       if ((tool.isLongRunning || tool is TaskAgentTool) && toolResult === Unit) {
         return@withSpan null
       }
       // A regular tool's `Unit`, or a `null` leaked by a Java tool that breaks the non-null `run`
-      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires the
+      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires
+      // the
       // response to be a map. Only a long-running tool's or a task delegation's `Unit` defers.
       if (toolResult === Unit || (toolResult as Any?) == null) {
         toolResult = mapOf(BaseTool.RESULT_KEY to null)
