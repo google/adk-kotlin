@@ -19,6 +19,7 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.GenerateContentConfig
@@ -342,6 +343,20 @@ class GeminiLiveConnectTest {
     gemini().apply { live = recorder }.connect(request).closeSession()
 
     assertEquals(true, assertNotNull(recorder.connectedWith).sessionResumption?.transparent)
+  }
+
+  @Test
+  fun connect_avatarConfigOnGeminiApiClient_isSentToTheSession(): Unit = runBlocking {
+    // connect has no backend check for avatars, so even a Gemini API client sends one.
+    val recorder = RecordingLive()
+    val request =
+      LlmRequest(
+        liveConnectConfig = LiveConnectConfig(avatarConfig = AvatarConfig(avatarName = "Kai"))
+      )
+
+    gemini().apply { live = recorder }.connect(request).closeSession()
+
+    assertEquals("Kai", assertNotNull(recorder.connectedWith).avatarConfig?.avatarName)
   }
 
   @Test

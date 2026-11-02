@@ -53,6 +53,7 @@ import kotlinx.serialization.Serializable
  * @property safetySettings Safety settings to apply to the session.
  * @property explicitVadSignal Whether the model sends its voice activity detection signals.
  * @property translationConfig Real-time speech-to-speech translation, for translation models.
+ * @property avatarConfig The avatar the model renders its replies as.
  */
 @Serializable
 data class LiveConnectConfig
@@ -79,6 +80,7 @@ constructor(
   val safetySettings: List<SafetySetting>? = null,
   val explicitVadSignal: Boolean? = null,
   val translationConfig: TranslationConfig? = null,
+  val avatarConfig: AvatarConfig? = null,
 ) {
 
   /**
@@ -110,6 +112,7 @@ constructor(
       .safetySettings(safetySettings.orEmpty())
       .explicitVadSignal(explicitVadSignal)
       .translationConfig(translationConfig)
+      .avatarConfig(avatarConfig)
 
   /**
    * Fluent builder for [LiveConnectConfig], provided primarily for Java callers. Any property left
@@ -139,6 +142,7 @@ constructor(
     private var safetySettings: List<SafetySetting> = emptyList()
     private var explicitVadSignal: Boolean? = null
     private var translationConfig: TranslationConfig? = null
+    private var avatarConfig: AvatarConfig? = null
 
     /** An empty list leaves it unset. */
     fun responseModalities(responseModalities: List<Modality>): Builder = apply {
@@ -219,6 +223,10 @@ constructor(
       this.translationConfig = translationConfig
     }
 
+    fun avatarConfig(avatarConfig: AvatarConfig?): Builder = apply {
+      this.avatarConfig = avatarConfig
+    }
+
     fun build(): LiveConnectConfig =
       LiveConnectConfig(
         responseModalities = responseModalities.ifEmpty { null },
@@ -242,6 +250,7 @@ constructor(
         safetySettings = safetySettings.ifEmpty { null },
         explicitVadSignal = explicitVadSignal,
         translationConfig = translationConfig,
+        avatarConfig = avatarConfig,
       )
   }
 

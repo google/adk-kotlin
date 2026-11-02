@@ -31,6 +31,7 @@ import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.types.ActivityHandling
 import com.google.adk.kt.types.AudioTranscriptionConfig
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.ContextWindowCompressionConfig
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.LiveConnectConfig
@@ -260,6 +261,7 @@ class BasicRequestProcessorTest {
         proactivity = ProactivityConfig(proactiveAudio = true),
         sessionResumption = SessionResumptionConfig(handle = "resumption-handle"),
         contextWindowCompression = ContextWindowCompressionConfig(triggerTokens = 1024L),
+        avatarConfig = AvatarConfig(avatarName = "avatar-1"),
       )
     val runConfig = RunConfig(live = settings)
     val agent = LlmAgent(name = "test", model = DummyModel("gemini-2.0-flash-live"))
@@ -278,6 +280,7 @@ class BasicRequestProcessorTest {
     assertEquals(settings.proactivity, live.proactivity)
     assertEquals(settings.sessionResumption, live.sessionResumption)
     assertEquals(settings.contextWindowCompression, live.contextWindowCompression)
+    assertEquals(settings.avatarConfig, live.avatarConfig)
   }
 
   @OptIn(ExperimentalLiveApi::class)

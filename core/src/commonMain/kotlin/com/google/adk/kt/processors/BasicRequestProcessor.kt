@@ -95,4 +95,5 @@ private fun LiveConnectConfig.applyRunConfig(runConfig: RunConfig): LiveConnectC
     proactivity = runConfig.live.proactivity,
     sessionResumption = runConfig.live.sessionResumption,
     contextWindowCompression = runConfig.live.contextWindowCompression,
+    avatarConfig = runConfig.live.avatarConfig,
   )

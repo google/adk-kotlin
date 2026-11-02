@@ -20,6 +20,7 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.types.ActivityHandling
 import com.google.adk.kt.types.AudioTranscriptionConfig
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.ContextWindowCompressionConfig
 import com.google.adk.kt.types.Modality
 import com.google.adk.kt.types.ProactivityConfig
@@ -52,6 +53,7 @@ class LiveRunConfigTest {
         sessionResumption = SessionResumptionConfig(handle = "resumption-handle"),
         contextWindowCompression = ContextWindowCompressionConfig(triggerTokens = 1024L),
         saveLiveBlob = true,
+        avatarConfig = AvatarConfig(avatarName = "avatar-1"),
       )
 
     assertThat(config.toBuilder().build()).isEqualTo(config.copy())
@@ -70,7 +72,8 @@ class LiveRunConfigTest {
           " outputAudioTranscription=$transcription, inputAudioTranscription=$transcription," +
           " realtimeInputConfig=null, explicitVadSignal=null, translationConfig=null," +
           " enableAffectiveDialog=null, proactivity=null," +
-          " sessionResumption=null, contextWindowCompression=null, saveLiveBlob=false)"
+          " sessionResumption=null, contextWindowCompression=null, saveLiveBlob=false," +
+          " avatarConfig=null)"
       )
   }
 

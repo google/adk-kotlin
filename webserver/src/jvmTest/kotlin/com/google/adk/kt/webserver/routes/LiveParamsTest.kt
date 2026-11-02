@@ -21,6 +21,7 @@ package com.google.adk.kt.webserver.routes
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.Modality
 import com.google.adk.kt.types.ProactivityConfig
 import com.google.adk.kt.types.SessionResumptionConfig
@@ -80,6 +81,27 @@ class LiveParamsTest {
     assertThat(config.live.responseModalities)
       .containsExactly(Modality.TEXT, Modality.AUDIO, Modality.VIDEO)
       .inOrder()
+  }
+
+  @Test
+  fun parseLiveRunParams_videoOnly_getsTheDefaultAvatar() {
+    val config = runConfigFrom("modalities" to listOf("VIDEO"))
+
+    assertThat(config.live.avatarConfig).isEqualTo(AvatarConfig(avatarName = "Kai"))
+  }
+
+  @Test
+  fun parseLiveRunParams_videoAmongModalities_getsTheDefaultAvatar() {
+    val config = runConfigFrom("modalities" to listOf("AUDIO", "VIDEO"))
+
+    assertThat(config.live.avatarConfig).isEqualTo(AvatarConfig(avatarName = "Kai"))
+  }
+
+  @Test
+  fun parseLiveRunParams_audioOnly_getsNoAvatar() {
+    val config = runConfigFrom("modalities" to listOf("AUDIO"))
+
+    assertThat(config.live.avatarConfig).isNull()
   }
 
   @Test
@@ -250,6 +272,7 @@ class LiveParamsTest {
       assertThat(realtimeInputConfig).isNull()
       assertThat(saveLiveBlob).isFalse()
       assertThat(explicitVadSignal).isNull()
+      assertThat(avatarConfig).isNull()
     }
   }
 

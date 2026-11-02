@@ -27,6 +27,7 @@ import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.Modality
 import com.google.adk.kt.types.ProactivityConfig
 import com.google.adk.kt.types.SessionResumptionConfig
@@ -63,6 +64,12 @@ import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass())
+
+/**
+ * The prebuilt avatar every VIDEO session gets, because the Live API rejects video output without
+ * an avatar.
+ */
+private const val DEFAULT_AVATAR_NAME = "Kai"
 
 /** The modalities a live agent may answer in, matched by their exact enum names. */
 private val LIVE_MODALITIES = listOf(Modality.TEXT, Modality.AUDIO, Modality.VIDEO)
@@ -160,6 +167,9 @@ internal fun parseLiveRunParams(parameters: Parameters): LiveRunParamsResult {
             },
           saveLiveBlob = flags.getValue(SAVE_LIVE_BLOB_PARAM) ?: false,
           explicitVadSignal = flags.getValue(EXPLICIT_VAD_SIGNAL_PARAM),
+          avatarConfig =
+            if (Modality.VIDEO in modalities) AvatarConfig(avatarName = DEFAULT_AVATAR_NAME)
+            else null,
         )
     )
   return LiveRunParamsResult.Success(LiveRunParams(appName, userId, sessionId, runConfig))
