@@ -47,20 +47,19 @@ public final class ReturnsWorkflowJava {
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
     OrderSystem orders = new OrderSystem();
-    // ReflectiveTools turns each @Tool method into a tool; ToolNodes.asNode makes it a step.
-    Node lookupOrder = ToolNodes.asNode(ReflectiveTools.fromMethod(orders, "lookupOrder"));
-    Node cancelOrder = ToolNodes.asNode(ReflectiveTools.fromMethod(orders, "cancelOrder"));
-    Node sendReturnLabel = ToolNodes.asNode(ReflectiveTools.fromMethod(orders, "sendReturnLabel"));
+
     return Workflow.builder()
         .name("returns")
         .edges(
             g ->
                 g.fromStart()
-                    .chain(lookupOrder, new ReturnDesk())
+                    .chain(toolStep(orders, "lookupOrder"), new ReturnDesk())
                     .route(
                         r -> {
-                          r.on(r.anyOf("processing", "packed")).then(cancelOrder);
-                          r.on(r.anyOf("shipped", "delivered")).then(sendReturnLabel);
+                          r.on(r.anyOf("processing", "packed"))
+                              .then(toolStep(orders, "cancelOrder"));
+                          r.on(r.anyOf("shipped", "delivered"))
+                              .then(toolStep(orders, "sendReturnLabel"));
                           r.otherwise(new Decline());
                         }))
         .build();
@@ -134,6 +133,14 @@ public final class ReturnsWorkflowJava {
       Object orderId = ((Map<?, ?>) nodeInput).get("orderId");
       return Mono.just("Order " + orderId + " can't be returned.");
     }
+  }
+
+  /**
+   * Turns the {@code @Tool} method {@code methodName} of {@code orders} into a tool with {@link
+   * ReflectiveTools} and wraps it as a workflow step with {@link ToolNodes#asNode}.
+   */
+  private static Node toolStep(OrderSystem orders, String methodName) {
+    return ToolNodes.asNode(ReflectiveTools.fromMethod(orders, methodName));
   }
 
   private ReturnsWorkflowJava() {}

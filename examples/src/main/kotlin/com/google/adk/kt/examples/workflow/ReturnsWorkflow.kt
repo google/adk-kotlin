@@ -44,14 +44,12 @@ object ReturnsWorkflow {
   /** Builds the workflow. It calls no model. */
   fun create(): Workflow {
     val orders = OrderSystem()
-    // @Tool generates a tool class per method, such as LookupOrderTool for lookupOrder.
-    val lookupOrder = LookupOrderTool(orders).asNode()
-    val cancelOrder = CancelOrderTool(orders).asNode()
-    val sendReturnLabel = SendReturnLabelTool(orders).asNode()
+
     return workflow("returns") {
-      chain(Start, lookupOrder, returnDesk).route {
-        on(anyOf("processing", "packed")) then cancelOrder
-        on(anyOf("shipped", "delivered")) then sendReturnLabel
+      // @Tool generates a tool class per method, such as LookupOrderTool for lookupOrder.
+      chain(Start, LookupOrderTool(orders).asNode(), returnDesk).route {
+        on(anyOf("processing", "packed")) then CancelOrderTool(orders).asNode()
+        on(anyOf("shipped", "delivered")) then SendReturnLabelTool(orders).asNode()
         otherwise(decline)
       }
     }

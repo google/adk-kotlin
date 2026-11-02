@@ -55,13 +55,6 @@ public final class ResearchWorkflowJava {
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(Model model) {
     Node plan = plannerAgent(model);
-    // Branches don't share events, so each researcher leaves its notes in state.
-    Node searchWeb = webResearcherAgent(model);
-    Node searchDocs = docsResearcherAgent(model);
-    JoinNode gather = new JoinNode("gather");
-    Node write = writerAgent(model);
-    Node review = reviewerAgent(model);
-    Node gate = new ReviewGate(3);
 
     return Workflow.builder()
         .name("research")
@@ -69,11 +62,11 @@ public final class ResearchWorkflowJava {
             g ->
                 g.fromStart()
                     .then(plan)
-                    // Fans out: both researchers run concurrently.
-                    .then(searchWeb, searchDocs)
+                    // Fans out; branches share no events, so researchers leave notes in state.
+                    .then(webResearcherAgent(model), docsResearcherAgent(model))
                     // Waits for both.
-                    .joinTo(gather)
-                    .chain(write, review, gate)
+                    .joinTo(new JoinNode("gather"))
+                    .chain(writerAgent(model), reviewerAgent(model), new ReviewGate(3))
                     .route(
                         r -> {
                           // Loops back while the reviewer asks for more.

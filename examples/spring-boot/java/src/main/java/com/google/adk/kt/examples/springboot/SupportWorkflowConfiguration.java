@@ -48,90 +48,14 @@ class SupportWorkflowConfiguration {
   static final String SHIPPING = "shipping";
   static final String REPLY = "reply";
 
-  private static final Schema TRIAGE_SCHEMA =
-      Schema.builder()
-          .type(Type.OBJECT)
-          .properties(
-              Map.of(
-                  "intent",
-                  Schema.builder()
-                      .type(Type.STRING)
-                      .enumValues("tracking", "refund", "other")
-                      .description(
-                          "tracking: where an order is or when it arrives. refund: money back"
-                              + " for an order. other: anything else.")
-                      .build(),
-                  "orderId",
-                  Schema.builder()
-                      .type(Type.STRING)
-                      .description("The order number in the message, or empty if it has none.")
-                      .build()))
-          .required("intent", "orderId")
-          .build();
-
-  /**
-   * The triage agent's structured answer, which {@code check_order} takes as its input. The ADK
-   * validates it against {@code TRIAGE_SCHEMA}, which requires both fields, so neither is null.
-   */
-  record Triage(String intent, String orderId) {}
-
-  /**
-   * The order that {@code check_order} found. A function node writes it as JSON, which is how the
-   * shipping agent receives it.
-   */
-  record OrderFacts(String orderId, String item) {}
-
-  /** The order with the refund policy's decision, which {@code refund_policy} passes on. */
-  record RefundFacts(String orderId, String item, String decision) {}
-
   /**
    * Creates the workflow, with {@code model} for every agent and {@code orders} for order lookups
    * and tools.
    */
   @Bean
   Workflow supportWorkflow(Model model, OrderService orders) {
-    LlmAgent triage =
-        LlmAgent.builder()
-            .name("triage")
-            .model(model)
-            .instruction(
-                "Classify the customer's message and extract the order number, if present.")
-            .mode(AgentMode.SINGLE_TURN)
-            .outputSchema(TRIAGE_SCHEMA)
-            .build();
-    LlmAgent shipping =
-        LlmAgent.builder()
-            .name(SHIPPING)
-            .model(model)
-            .instruction(
-                """
-                You answer delivery questions for an online store. The last message names the \
-                customer's order. Look up its tracking status with the tool, then tell the \
-                customer where their order is and when it arrives, in at most three sentences.\
-                """)
-            .mode(AgentMode.SINGLE_TURN)
-            // Reads the customer's message; a single-turn agent otherwise sees only its input.
-            .includeContents(LlmAgent.IncludeContents.DEFAULT)
-            // This module has no Kotlin compiler; with one, KSP generates tools at compile time:
-            // https://github.com/google/adk-kotlin/blob/main/examples/src/main/java/com/google/adk/kt/examples/interop/FunctionToolDemoAgentJava.java
-            .tools(ReflectiveTools.fromMethod(orders, "trackShipment"))
-            .build();
-    LlmAgent refunds =
-        LlmAgent.builder()
-            .name("refunds")
-            .model(model)
-            .instruction(
-                """
-                You handle approved refunds for an online store. The last message names the \
-                customer's order, whose refund the store's policy approved. Create a return \
-                label with the tool, then give the customer the label number, in at most three \
-                sentences.\
-                """)
-            .mode(AgentMode.SINGLE_TURN)
-            .includeContents(LlmAgent.IncludeContents.DEFAULT)
-            .tools(ReflectiveTools.fromMethod(orders, "createReturnLabel"))
-            .build();
-    FunctionNode<Triage, @Nullable OrderFacts> checkOrder = checkOrder(orders);
+    LlmAgent shipping = shippingAgent(model, orders);
+    LlmAgent refunds = refundsAgent(model, orders);
     FunctionNode<OrderFacts, RefundFacts> refundPolicy = refundPolicy(orders);
     FunctionNode<RefundFacts, String> refundDenied = refundDenied();
     FunctionNode<@Nullable OrderFacts, String> askForOrder = askForOrder();
@@ -142,7 +66,7 @@ class SupportWorkflowConfiguration {
         .edges(
             g -> {
               g.fromStart()
-                  .chain(triage, checkOrder)
+                  .chain(triageAgent(model), checkOrder(orders))
                   .route(
                       r -> {
                         r.on("tracking").then(shipping);
@@ -161,6 +85,55 @@ class SupportWorkflowConfiguration {
               g.from(refundDenied).then(reply);
               g.from(askForOrder).then(reply);
             })
+        .build();
+  }
+
+  /** Classifies the customer's message and answers with {@code TRIAGE_SCHEMA}. */
+  private static LlmAgent triageAgent(Model model) {
+    return LlmAgent.builder()
+        .name("triage")
+        .model(model)
+        .instruction("Classify the customer's message and extract the order number, if present.")
+        .mode(AgentMode.SINGLE_TURN)
+        .outputSchema(TRIAGE_SCHEMA)
+        .build();
+  }
+
+  /** Answers a delivery question with the order service's tracking tool. */
+  private static LlmAgent shippingAgent(Model model, OrderService orders) {
+    return LlmAgent.builder()
+        .name(SHIPPING)
+        .model(model)
+        .instruction(
+            """
+            You answer delivery questions for an online store. The last message names the \
+            customer's order. Look up its tracking status with the tool, then tell the \
+            customer where their order is and when it arrives, in at most three sentences.\
+            """)
+        .mode(AgentMode.SINGLE_TURN)
+        // Reads the customer's message; a single-turn agent otherwise sees only its input.
+        .includeContents(LlmAgent.IncludeContents.DEFAULT)
+        // This module has no Kotlin compiler; with one, KSP generates tools at compile time:
+        // https://github.com/google/adk-kotlin/blob/main/examples/src/main/java/com/google/adk/kt/examples/interop/FunctionToolDemoAgentJava.java
+        .tools(ReflectiveTools.fromMethod(orders, "trackShipment"))
+        .build();
+  }
+
+  /** Creates the return label for an approved refund with the order service. */
+  private static LlmAgent refundsAgent(Model model, OrderService orders) {
+    return LlmAgent.builder()
+        .name("refunds")
+        .model(model)
+        .instruction(
+            """
+            You handle approved refunds for an online store. The last message names the \
+            customer's order, whose refund the store's policy approved. Create a return \
+            label with the tool, then give the customer the label number, in at most three \
+            sentences.\
+            """)
+        .mode(AgentMode.SINGLE_TURN)
+        .includeContents(LlmAgent.IncludeContents.DEFAULT)
+        .tools(ReflectiveTools.fromMethod(orders, "createReturnLabel"))
         .build();
   }
 
@@ -236,4 +209,40 @@ class SupportWorkflowConfiguration {
   private static FunctionNode<@Nullable String, @Nullable String> reply() {
     return FunctionNodes.of(REPLY, String.class, String.class, (context, reply) -> reply);
   }
+
+  private static final Schema TRIAGE_SCHEMA =
+      Schema.builder()
+          .type(Type.OBJECT)
+          .properties(
+              Map.of(
+                  "intent",
+                  Schema.builder()
+                      .type(Type.STRING)
+                      .enumValues("tracking", "refund", "other")
+                      .description(
+                          "tracking: where an order is or when it arrives. refund: money back"
+                              + " for an order. other: anything else.")
+                      .build(),
+                  "orderId",
+                  Schema.builder()
+                      .type(Type.STRING)
+                      .description("The order number in the message, or empty if it has none.")
+                      .build()))
+          .required("intent", "orderId")
+          .build();
+
+  /**
+   * The triage agent's structured answer, which {@code check_order} takes as its input. The ADK
+   * validates it against {@code TRIAGE_SCHEMA}, which requires both fields, so neither is null.
+   */
+  record Triage(String intent, String orderId) {}
+
+  /**
+   * The order that {@code check_order} found. A function node writes it as JSON, which is how the
+   * shipping agent receives it.
+   */
+  record OrderFacts(String orderId, String item) {}
+
+  /** The order with the refund policy's decision, which {@code refund_policy} passes on. */
+  record RefundFacts(String orderId, String item, String decision) {}
 }

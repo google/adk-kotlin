@@ -349,7 +349,7 @@ class CreditBureau {
   ): Map<String, Any> {
     val limitUsd = creditLimitsUsd[customerId] ?: 0
     val result = mapOf("creditLimitUsd" to limitUsd, "covered" to (orderTotalUsd <= limitUsd))
-    // Agent nodes read state, not the join's output, so the check also records its result there.
+    // The agents' instructions read the result from state, so the check also records it there.
     context.updateState("credit", result)
     return result
   }

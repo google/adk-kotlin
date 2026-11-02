@@ -57,137 +57,20 @@ import reactor.core.publisher.Mono;
 public final class OrderProcessingWorkflowJava {
 
   private static final String MODEL_NAME = "gemini-3.8-flash";
-  private static final String RISK_KEY = "risk";
-  private static final String FINANCE_KEY = "finance_review";
-  private static final String COMPLIANCE_KEY = "compliance_review";
 
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(Model model) {
-    Node parseOrder = new ParseOrder();
-    Node geoCheck =
-        new OrderStep(
-            "geo_check",
-            context -> {
-              boolean mismatch =
-                  !Objects.equals(
-                      context.getState().get("ship_country"),
-                      context.getState().get("bill_country"));
-              context.updateState("geo_mismatch", mismatch);
-              return mismatch
-                  ? "The shipping and billing countries differ."
-                  : "The countries match.";
-            });
-    Node fraudScore =
-        new OrderStep(
-            "fraud_score",
-            context -> {
-              Map<String, Object> state = context.getState();
-              int score = 10;
-              if (Objects.equals(state.get("geo_mismatch"), true)) {
-                score += 25;
-              }
-              if (((Number) state.get("account_age_days")).intValue() < 30) {
-                score += 35;
-              }
-              if (((Number) state.get("total_usd")).intValue() > 2000) {
-                score += 15;
-              }
-              context.updateState("fraud_score", score);
-              return "Fraud score: " + score + " out of 100.";
-            });
-    Node reserveInventory =
-        new OrderStep(
-            "reserve_inventory",
-            context -> {
-              Object orderId = context.getState().get("order_id");
-              String reservation = "RSV-" + orderId;
-              context.updateState("reservation", reservation);
-              return "Reserved stock for order " + orderId + " as " + reservation + ".";
-            });
-    Node warehouseHold =
-        new OrderStep(
-            "warehouse_hold",
-            context -> {
-              String hold =
-                  context.getState().get("reservation") + " is held at the NJ-2 warehouse.";
-              context.updateState("inventory", hold);
-              return hold;
-            });
-    Node creditCheck =
-        ToolNodes.asNode(ReflectiveTools.fromMethod(new CreditBureau(), "creditCheck"));
-    JoinNode riskJoin = new JoinNode("risk_join");
-    Node assessRisk = riskAgent(model);
-    Node riskDecision = new RiskDecision();
-    Node financeReview = financeReviewAgent(model);
-    Node complianceReview = complianceReviewAgent(model);
-    JoinNode reviewJoin = new JoinNode("review_join");
-    Node reviewGate = new OrderReviewGate(2);
-    Node chargeCard =
-        new OrderStep(
-            "charge_card",
-            context ->
-                "Charged "
-                    + context.getState().get("total_usd")
-                    + " USD for order "
-                    + context.getState().get("order_id")
-                    + ".");
-    Node shipOrder =
-        new OrderStep(
-            "ship_order",
-            context -> {
-              context.updateState("outcome", "charged and shipped");
-              return "Shipped order "
-                  + context.getState().get("order_id")
-                  + " from the NJ-2 warehouse.";
-            });
-    Node freezeAccount =
-        new OrderStep(
-            "freeze_account",
-            context ->
-                "Froze account "
-                    + context.getState().get("customer_id")
-                    + " pending an investigation.");
-    Node alertSecOps =
-        new OrderStep(
-            "alert_sec_ops",
-            context ->
-                "Sent SecOps the fraud signals for order "
-                    + context.getState().get("order_id")
-                    + ".");
-    JoinNode auditJoin = new JoinNode("audit_join");
-    Node cancelOrder =
-        new OrderStep(
-            "cancel_order",
-            context -> {
-              context.updateState("outcome", "canceled");
-              return "Canceled order "
-                  + context.getState().get("order_id")
-                  + " and released "
-                  + context.getState().get("reservation")
-                  + ".";
-            });
-    Node sendReceipt =
-        new OrderStep(
-            "send_receipt",
-            context ->
-                "Emailed customer "
-                    + context.getState().get("customer_id")
-                    + ": order "
-                    + context.getState().get("order_id")
-                    + " was "
-                    + context.getState().get("outcome")
-                    + ".");
-
+    OrderNodes nodes = new OrderNodes(model);
     // Each nested workflow is one fan-out branch, so risk_join waits for its last step.
     Workflow fraudCheck =
         Workflow.builder()
             .name("fraud_check")
-            .edges(g -> g.fromStart().chain(geoCheck, fraudScore))
+            .edges(g -> g.fromStart().chain(nodes.geoCheck, nodes.fraudScore))
             .build();
     Workflow inventory =
         Workflow.builder()
             .name("inventory")
-            .edges(g -> g.fromStart().chain(reserveInventory, warehouseHold))
+            .edges(g -> g.fromStart().chain(nodes.reserveInventory, nodes.warehouseHold))
             .build();
     return Workflow.builder()
         .name("order_processing")
@@ -195,33 +78,35 @@ public final class OrderProcessingWorkflowJava {
             g -> {
               // Stage 1: the three branches run concurrently; risk_join waits for all of them.
               g.fromStart()
-                  .then(parseOrder)
-                  .then(fraudCheck, inventory, creditCheck)
-                  .joinTo(riskJoin)
-                  .chain(assessRisk, riskDecision)
+                  .then(nodes.parseOrder)
+                  .then(fraudCheck, inventory, nodes.creditCheck)
+                  .joinTo(nodes.riskJoin)
+                  .chain(nodes.assessRisk, nodes.riskDecision)
                   // Stage 2: route on risk decision; a route mapped to two nodes fans out.
                   .route(
                       r -> {
-                        r.on("auto_approve").then(chargeCard);
+                        r.on("auto_approve").then(nodes.chargeCard);
                         r.on(r.anyOf("manual_review", "high_value"))
-                            .then(financeReview, complianceReview);
-                        r.on("fraud").then(freezeAccount, alertSecOps);
-                        r.otherwise(cancelOrder);
+                            .then(nodes.financeReview, nodes.complianceReview);
+                        r.on("fraud").then(nodes.freezeAccount, nodes.alertSecOps);
+                        r.otherwise(nodes.cancelOrder);
                       });
-              g.from(financeReview, complianceReview)
-                  .joinTo(reviewJoin)
-                  .then(reviewGate)
+              g.from(nodes.financeReview, nodes.complianceReview)
+                  .joinTo(nodes.reviewJoin)
+                  .then(nodes.reviewGate)
                   .route(
                       r -> {
-                        r.on("approved").then(chargeCard);
+                        r.on("approved").then(nodes.chargeCard);
                         // Loops back for another assessment.
-                        r.on("recheck").then(assessRisk);
-                        r.otherwise(cancelOrder);
+                        r.on("recheck").then(nodes.assessRisk);
+                        r.otherwise(nodes.cancelOrder);
                       });
-              g.from(freezeAccount, alertSecOps).joinTo(auditJoin).then(cancelOrder);
+              g.from(nodes.freezeAccount, nodes.alertSecOps)
+                  .joinTo(nodes.auditJoin)
+                  .then(nodes.cancelOrder);
               // Stage 3: only one outcome runs per order, so the receipt needs no JoinNode.
-              g.from(chargeCard).chain(shipOrder, sendReceipt);
-              g.from(cancelOrder).then(sendReceipt);
+              g.from(nodes.chargeCard).chain(nodes.shipOrder, nodes.sendReceipt);
+              g.from(nodes.cancelOrder).then(nodes.sendReceipt);
             })
         .build();
   }
@@ -263,6 +148,133 @@ public final class OrderProcessingWorkflowJava {
               + " account_age_days=400",
           "order_id=O-1003 customer_id=C-977 total_usd=4800 ship_country=NG bill_country=US"
               + " account_age_days=2");
+
+  /**
+   * The nodes of the order workflow. Each step that outputs a String stands in for a backend call
+   * and says what it did.
+   */
+  private static final class OrderNodes {
+    final Node parseOrder = new ParseOrder();
+    final Node geoCheck =
+        new OrderStep(
+            "geo_check",
+            context -> {
+              boolean mismatch =
+                  !Objects.equals(
+                      context.getState().get("ship_country"),
+                      context.getState().get("bill_country"));
+              context.updateState("geo_mismatch", mismatch);
+              return mismatch
+                  ? "The shipping and billing countries differ."
+                  : "The countries match.";
+            });
+    final Node fraudScore =
+        new OrderStep(
+            "fraud_score",
+            context -> {
+              Map<String, Object> state = context.getState();
+              int score = 10;
+              if (Objects.equals(state.get("geo_mismatch"), true)) {
+                score += 25;
+              }
+              if (((Number) state.get("account_age_days")).intValue() < 30) {
+                score += 35;
+              }
+              if (((Number) state.get("total_usd")).intValue() > 2000) {
+                score += 15;
+              }
+              context.updateState("fraud_score", score);
+              return "Fraud score: " + score + " out of 100.";
+            });
+    final Node reserveInventory =
+        new OrderStep(
+            "reserve_inventory",
+            context -> {
+              Object orderId = context.getState().get("order_id");
+              String reservation = "RSV-" + orderId;
+              context.updateState("reservation", reservation);
+              return "Reserved stock for order " + orderId + " as " + reservation + ".";
+            });
+    final Node warehouseHold =
+        new OrderStep(
+            "warehouse_hold",
+            context -> {
+              String hold =
+                  context.getState().get("reservation") + " is held at the NJ-2 warehouse.";
+              context.updateState("inventory", hold);
+              return hold;
+            });
+    final Node creditCheck =
+        ToolNodes.asNode(ReflectiveTools.fromMethod(new CreditBureau(), "creditCheck"));
+    final JoinNode riskJoin = new JoinNode("risk_join");
+    final Node assessRisk;
+    final Node riskDecision = new RiskDecision();
+    final Node financeReview;
+    final Node complianceReview;
+    final JoinNode reviewJoin = new JoinNode("review_join");
+    final Node reviewGate = new OrderReviewGate(2);
+    final Node chargeCard =
+        new OrderStep(
+            "charge_card",
+            context ->
+                "Charged "
+                    + context.getState().get("total_usd")
+                    + " USD for order "
+                    + context.getState().get("order_id")
+                    + ".");
+    final Node shipOrder =
+        new OrderStep(
+            "ship_order",
+            context -> {
+              context.updateState("outcome", "charged and shipped");
+              return "Shipped order "
+                  + context.getState().get("order_id")
+                  + " from the NJ-2 warehouse.";
+            });
+    final Node freezeAccount =
+        new OrderStep(
+            "freeze_account",
+            context ->
+                "Froze account "
+                    + context.getState().get("customer_id")
+                    + " pending an investigation.");
+    final Node alertSecOps =
+        new OrderStep(
+            "alert_sec_ops",
+            context ->
+                "Sent SecOps the fraud signals for order "
+                    + context.getState().get("order_id")
+                    + ".");
+    final JoinNode auditJoin = new JoinNode("audit_join");
+    final Node cancelOrder =
+        new OrderStep(
+            "cancel_order",
+            context -> {
+              context.updateState("outcome", "canceled");
+              return "Canceled order "
+                  + context.getState().get("order_id")
+                  + " and released "
+                  + context.getState().get("reservation")
+                  + ".";
+            });
+    final Node sendReceipt =
+        new OrderStep(
+            "send_receipt",
+            context ->
+                "Emailed customer "
+                    + context.getState().get("customer_id")
+                    + ": order "
+                    + context.getState().get("order_id")
+                    + " was "
+                    + context.getState().get("outcome")
+                    + ".");
+
+    OrderNodes(Model model) {
+      assessRisk = riskAgent(model);
+      financeReview = financeReviewAgent(model);
+      complianceReview = complianceReviewAgent(model);
+    }
+  }
 
   private static LlmAgent riskAgent(Model model) {
     return LlmAgent.builder()
@@ -314,6 +326,10 @@ public final class OrderProcessingWorkflowJava {
         .outputKey(COMPLIANCE_KEY)
         .build();
   }
+
+  private static final String RISK_KEY = "risk";
+  private static final String FINANCE_KEY = "finance_review";
+  private static final String COMPLIANCE_KEY = "compliance_review";
 
   /** The risk agent's structured decision, which {@link RiskDecision} routes on. */
   private static final Schema RISK_SCHEMA =
@@ -372,7 +388,7 @@ public final class OrderProcessingWorkflowJava {
       int limitUsd = CREDIT_LIMITS_USD.getOrDefault(customerId, 0);
       Map<String, Object> result =
           Map.of("creditLimitUsd", limitUsd, "covered", orderTotalUsd <= limitUsd);
-      // Agent nodes read state, not the join's output, so the check also records its result there.
+      // The agents' instructions read the result from state, so the check also records it there.
       context.updateState("credit", result);
       return result;
     }

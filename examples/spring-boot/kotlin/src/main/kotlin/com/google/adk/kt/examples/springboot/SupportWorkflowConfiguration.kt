@@ -48,71 +48,16 @@ import org.springframework.context.annotation.Configuration
 class SupportWorkflowConfiguration {
 
   /**
-   * The triage agent's structured answer, which `check_order` takes as its input. The ADK validates
-   * it against `TRIAGE_SCHEMA`, which requires both fields, so neither is null.
-   */
-  @Serializable internal data class Triage(val intent: String, val orderId: String)
-
-  /**
-   * The order that `check_order` found. A function node writes it as JSON, which is how the
-   * shipping agent receives it.
-   */
-  @Serializable internal data class OrderFacts(val orderId: String, val item: String)
-
-  /** The order with the refund policy's decision, which `refund_policy` passes on. */
-  @Serializable
-  internal data class RefundFacts(val orderId: String, val item: String, val decision: String)
-
-  /**
    * Creates the workflow, with [model] for every agent and [orders] for order lookups and tools.
    */
   @Bean
   fun supportWorkflow(model: Model, orders: OrderService): Workflow {
-    val triage =
-      LlmAgent(
-        name = "triage",
-        model = model,
-        instruction =
-          Instruction("Classify the customer's message and extract the order number, if present."),
-        mode = AgentMode.SINGLE_TURN,
-        outputSchema = TRIAGE_SCHEMA,
-      )
-    val shipping =
-      LlmAgent(
-        name = SHIPPING,
-        model = model,
-        instruction =
-          Instruction(
-            "You answer delivery questions for an online store. The last message names the " +
-              "customer's order. Look up its tracking status with the tool, then tell the " +
-              "customer where their order is and when it arrives, in at most three sentences."
-          ),
-        mode = AgentMode.SINGLE_TURN,
-        // Reads the customer's message; a single-turn agent otherwise sees only its input.
-        includeContents = LlmAgent.IncludeContents.DEFAULT,
-        // KSP generates TrackShipmentTool from the @Tool function OrderService.trackShipment.
-        tools = listOf(TrackShipmentTool(orders)),
-      )
-    val refunds =
-      LlmAgent(
-        name = "refunds",
-        model = model,
-        instruction =
-          Instruction(
-            "You handle approved refunds for an online store. The last message names the " +
-              "customer's order, whose refund the store's policy approved. Create a return " +
-              "label with the tool, then give the customer the label number, in at most three " +
-              "sentences."
-          ),
-        mode = AgentMode.SINGLE_TURN,
-        includeContents = LlmAgent.IncludeContents.DEFAULT,
-        tools = listOf(CreateReturnLabelTool(orders)),
-      )
-    val checkOrder = checkOrder(orders)
+    val shipping = shippingAgent(model, orders)
+    val refunds = refundsAgent(model, orders)
     val refundPolicy = refundPolicy(orders)
 
     return workflow(WORKFLOW) {
-      chain(Start, triage, checkOrder).route {
+      chain(Start, triageAgent(model), checkOrder(orders)).route {
         on("tracking") then shipping
         on("refund") then refundPolicy
         otherwise(askForOrder)
@@ -128,6 +73,52 @@ class SupportWorkflowConfiguration {
       askForOrder then reply
     }
   }
+
+  /** Classifies the customer's message and answers with [TRIAGE_SCHEMA]. */
+  private fun triageAgent(model: Model): LlmAgent =
+    LlmAgent(
+      name = "triage",
+      model = model,
+      instruction =
+        Instruction("Classify the customer's message and extract the order number, if present."),
+      mode = AgentMode.SINGLE_TURN,
+      outputSchema = TRIAGE_SCHEMA,
+    )
+
+  /** Answers a delivery question with the order service's tracking tool. */
+  private fun shippingAgent(model: Model, orders: OrderService): LlmAgent =
+    LlmAgent(
+      name = SHIPPING,
+      model = model,
+      instruction =
+        Instruction(
+          "You answer delivery questions for an online store. The last message names the " +
+            "customer's order. Look up its tracking status with the tool, then tell the " +
+            "customer where their order is and when it arrives, in at most three sentences."
+        ),
+      mode = AgentMode.SINGLE_TURN,
+      // Reads the customer's message; a single-turn agent otherwise sees only its input.
+      includeContents = LlmAgent.IncludeContents.DEFAULT,
+      // KSP generates TrackShipmentTool from the @Tool function OrderService.trackShipment.
+      tools = listOf(TrackShipmentTool(orders)),
+    )
+
+  /** Creates the return label for an approved refund with the order service. */
+  private fun refundsAgent(model: Model, orders: OrderService): LlmAgent =
+    LlmAgent(
+      name = "refunds",
+      model = model,
+      instruction =
+        Instruction(
+          "You handle approved refunds for an online store. The last message names the " +
+            "customer's order, whose refund the store's policy approved. Create a return " +
+            "label with the tool, then give the customer the label number, in at most three " +
+            "sentences."
+        ),
+      mode = AgentMode.SINGLE_TURN,
+      includeContents = LlmAgent.IncludeContents.DEFAULT,
+      tools = listOf(CreateReturnLabelTool(orders)),
+    )
 
   /**
    * The function node that takes the triage agent's answer, looks up the order, and routes on the
@@ -191,6 +182,22 @@ class SupportWorkflowConfiguration {
 
   /** The final node, which every branch leads to, so its output is the workflow's reply. */
   private val reply = node<String?, String?>(REPLY) { _, reply -> reply }
+
+  /**
+   * The triage agent's structured answer, which `check_order` takes as its input. The ADK validates
+   * it against `TRIAGE_SCHEMA`, which requires both fields, so neither is null.
+   */
+  @Serializable internal data class Triage(val intent: String, val orderId: String)
+
+  /**
+   * The order that `check_order` found. A function node writes it as JSON, which is how the
+   * shipping agent receives it.
+   */
+  @Serializable internal data class OrderFacts(val orderId: String, val item: String)
+
+  /** The order with the refund policy's decision, which `refund_policy` passes on. */
+  @Serializable
+  internal data class RefundFacts(val orderId: String, val item: String, val decision: String)
 
   companion object {
     /** The workflow's name. */

@@ -53,19 +53,13 @@ object ResearchWorkflow {
   /** Builds the workflow, with every agent on [model]. */
   fun create(model: Model): Workflow {
     val plan = plannerAgent(model)
-    // Branches don't share events, so each researcher leaves its notes in state.
-    val searchWeb = webResearcherAgent(model)
-    val searchDocs = docsResearcherAgent(model)
-    val gather = JoinNode("gather")
-    val write = writerAgent(model)
-    val review = reviewerAgent(model)
-    val gate = reviewGate(maxRounds = 3)
 
     return workflow("research") {
       Start.then(plan)
-        .then(searchWeb, searchDocs) // Fans out: both researchers run concurrently.
-        .joinTo(gather) // Waits for both.
-        .chain(write, review, gate)
+        // Fans out; branches share no events, so researchers leave notes in state.
+        .then(webResearcherAgent(model), docsResearcherAgent(model))
+        .joinTo(JoinNode("gather")) // Waits for both.
+        .chain(writerAgent(model), reviewerAgent(model), reviewGate(maxRounds = 3))
         .route {
           on("needs-more") then plan // Loops back while the reviewer asks for more.
           on("done") then briefPublisher

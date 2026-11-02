@@ -46,61 +46,14 @@ import reactor.core.publisher.Flux;
  */
 public final class FunctionNodeWorkflowJava {
 
-  /** Whether a teammate covers one requested day. */
-  record DayCover(int day, boolean covered) {}
-
-  /** The decision on a request; the manager's answer decodes into it. */
-  record TimeOffDecision(boolean approved, @JsonProperty("approved_days") Integer approvedDays) {}
-
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
-    FunctionNode<Content, List<Integer>> readRequest =
-        FunctionNodes.of(
-            "read_request",
-            Content.class,
-            new TypeReference<List<Integer>>() {},
-            (ctx, message) -> {
-              int days = Integer.parseInt(message.text().trim().split("\\s+", 2)[0]);
-              return IntStream.rangeClosed(1, days).boxed().toList();
-            });
-    FunctionNode<Integer, DayCover> checkCover =
-        FunctionNodes.of(
-            "check_cover",
-            Integer.class,
-            DayCover.class,
-            (ctx, day) -> new DayCover(day, day % 3 != 0));
-    // Runs check_cover on each day, at most two at a time; the next step joins the results.
-    FunctionNode<List<Integer>, List<DayCover>> checkAllDays =
-        FunctionNode.parallelOf(checkCover, 2);
-    FunctionNode<List<DayCover>, TimeOffDecision> evaluateRequest =
-        FunctionNodes.of(
-            "evaluate_request",
-            new TypeReference<List<DayCover>>() {},
-            TimeOffDecision.class,
-            (ctx, cover) ->
-                cover.size() <= 1
-                    ? new TimeOffDecision(true, cover.size())
-                    : requestInput(
-                        "manager_approval",
-                        "Approve "
-                            + cover.size()
-                            + " days off? "
-                            + cover.stream().filter(day -> !day.covered()).count()
-                            + " day(s) lack cover.",
-                        cover));
-    FunctionNode<TimeOffDecision, String> processDecision =
-        FunctionNodes.of(
-            "process_decision",
-            TimeOffDecision.class,
-            String.class,
-            (ctx, decision) ->
-                decision.approved()
-                    ? "Time off approved: " + decision.approvedDays() + " day(s)."
-                    : "Time off denied.");
     return Workflow.builder()
         .name("time_off")
         .edges(
-            g -> g.fromStart().chain(readRequest, checkAllDays, evaluateRequest, processDecision))
+            g ->
+                g.fromStart()
+                    .chain(readRequest(), checkAllDays(), evaluateRequest(), processDecision()))
         .build();
   }
 
@@ -118,6 +71,66 @@ public final class FunctionNodeWorkflowJava {
     run(runner, "long", answer("manager_approval", Map.of("approved", true, "approved_days", 2)));
     run(runner, "short", Content.fromText(Role.USER, "1 day off for a dentist visit"));
   }
+
+  /** Reads the number of requested days and outputs the list of day numbers. */
+  private static FunctionNode<Content, List<Integer>> readRequest() {
+    return FunctionNodes.of(
+        "read_request",
+        Content.class,
+        new TypeReference<List<Integer>>() {},
+        (ctx, message) -> {
+          int days = Integer.parseInt(message.text().trim().split("\\s+", 2)[0]);
+          return IntStream.rangeClosed(1, days).boxed().toList();
+        });
+  }
+
+  /** Runs check_cover on each day, at most two at a time; the next step joins the results. */
+  private static FunctionNode<List<Integer>, List<DayCover>> checkAllDays() {
+    FunctionNode<Integer, DayCover> checkCover =
+        FunctionNodes.of(
+            "check_cover",
+            Integer.class,
+            DayCover.class,
+            (ctx, day) -> new DayCover(day, day % 3 != 0));
+    return FunctionNode.parallelOf(checkCover, 2);
+  }
+
+  /** Approves one day on its own, and asks a manager about anything longer. */
+  private static FunctionNode<List<DayCover>, TimeOffDecision> evaluateRequest() {
+    return FunctionNodes.of(
+        "evaluate_request",
+        new TypeReference<List<DayCover>>() {},
+        TimeOffDecision.class,
+        (ctx, cover) ->
+            cover.size() <= 1
+                ? new TimeOffDecision(true, cover.size())
+                : requestInput(
+                    "manager_approval",
+                    "Approve "
+                        + cover.size()
+                        + " days off? "
+                        + cover.stream().filter(day -> !day.covered()).count()
+                        + " day(s) lack cover.",
+                    cover));
+  }
+
+  /** Reports the decision, which arrives as a {@link TimeOffDecision}. */
+  private static FunctionNode<TimeOffDecision, String> processDecision() {
+    return FunctionNodes.of(
+        "process_decision",
+        TimeOffDecision.class,
+        String.class,
+        (ctx, decision) ->
+            decision.approved()
+                ? "Time off approved: " + decision.approvedDays() + " day(s)."
+                : "Time off denied.");
+  }
+
+  /** Whether a teammate covers one requested day. */
+  record DayCover(int day, boolean covered) {}
+
+  /** The decision on a request; the manager's answer decodes into it. */
+  record TimeOffDecision(boolean approved, @JsonProperty("approved_days") Integer approvedDays) {}
 
   /** Sends {@code message} in a session and prints each step's output and any question. */
   private static void run(PublisherRunner runner, String sessionId, Content message) {
