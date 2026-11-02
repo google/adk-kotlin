@@ -306,7 +306,7 @@ class SupportControllerTest {
  * call throw, `[silent]` makes the reply come back empty after the tool call, and `[endless]` makes
  * it never finish.
  */
-private class ScriptedModel : Model {
+internal class ScriptedModel : Model {
   override val name = "scripted-model"
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> {

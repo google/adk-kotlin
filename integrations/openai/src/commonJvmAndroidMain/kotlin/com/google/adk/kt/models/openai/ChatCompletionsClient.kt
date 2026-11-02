@@ -34,8 +34,7 @@ import io.ktor.http.Headers
 import io.ktor.http.HttpMethod
 import io.ktor.http.content.TextContent
 import io.ktor.http.isSuccess
-import io.ktor.utils.io.LineEnding
-import io.ktor.utils.io.readLine
+import io.ktor.utils.io.readUTF8Line
 import java.io.IOException
 import java.net.URI
 import java.time.Instant
@@ -157,7 +156,12 @@ internal class KtorChatCompletionsClient(
         // Bounds the whole attempt and closes it, so a retry does not leave it running.
         timeout?.let { limit ->
           // Ktor rejects zero, which a sub-millisecond timeout would round to.
-          httpRequest.timeout { requestTimeoutMillis = limit.inWholeMilliseconds.coerceAtLeast(1) }
+          val millis = limit.inWholeMilliseconds.coerceAtLeast(1)
+          httpRequest.timeout {
+            requestTimeoutMillis = millis
+            // Also bounds each read so a stalled body ends even if cancelling does not close it.
+            socketTimeoutMillis = millis
+          }
         }
         sharedHttpClient.prepareRequest(httpRequest).execute { response ->
           val text = response.bodyAsText()
@@ -245,11 +249,8 @@ internal class KtorChatCompletionsClient(
         }
         val body = response.bodyAsChannel()
         while (true) {
-          // Lenient, since SSE also ends a line at a lone CR.
-          val rawLine = body.readLine(LineEnding.Lenient)
-          // Ktor can end a failed read as if the body were complete, or with a cut line.
-          body.closedCause?.let { throw it }
-          val line = rawLine?.trim() ?: break
+          // Ends a line at CR, LF, or CRLF as SSE requires; deprecated in Ktor 3 for `readLine`.
+          @Suppress("DEPRECATION") val line = body.readUTF8Line()?.trim() ?: break
           if (!line.startsWith("data:")) continue
           val payload = line.removePrefix("data:").trim()
           if (payload.isNotEmpty()) emit(payload)

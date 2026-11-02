@@ -41,6 +41,7 @@ dependencies {
 
   testImplementation(libs.spring.boot.starter.webflux.test)
   testImplementation(libs.google.truth)
+  testImplementation(libs.micrometer.context.propagation)
   testRuntimeOnly(libs.junit.platform.launcher)
 }
 
