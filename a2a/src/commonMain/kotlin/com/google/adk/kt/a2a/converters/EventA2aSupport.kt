@@ -38,6 +38,8 @@ internal object MetadataKeys {
   const val AUTHOR = "adk_author"
   const val THOUGHT = "adk_thought"
   const val THOUGHT_SIGNATURE = "adk_thought_signature"
+  const val VIDEO_METADATA = "adk_video_metadata"
+  const val MEDIA_RESOLUTION = "adk_media_resolution"
 }
 
 internal const val ADK_METADATA_TASK_ID = "adk_task_id"
