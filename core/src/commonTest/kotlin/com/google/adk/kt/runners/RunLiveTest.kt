@@ -38,6 +38,7 @@ import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
@@ -92,6 +93,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 
 /** Covers the live entry point on the runner and the agent contract underneath it. */
@@ -1484,6 +1486,158 @@ class RunLiveTest {
     }
 
   @Test
+  fun runLive_answerBehindAToolEventTheCallerHolds_doesNotHoldTheNextTypedTurn(): Unit =
+    runBlocking {
+      val toolGo = CompletableDeferred<Unit>()
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          // The caller's activity signal, sent while it holds the tool's event, prompts an answer.
+          AwaitSent("the activity start") { it == RealtimeInput.ActivityStart },
+          Respond(LlmResponse(content = modelMessage(FIRST_ANSWER))),
+          AwaitSent("the typed turn") { it.isText(SECOND_TURN) },
+          Respond(LlmResponse(content = modelMessage(SECOND_ANSWER), turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val agent =
+        LlmAgent(name = "live_agent", model = model, tools = listOf(watchingTool(toolGo, "300")))
+      val queue = LiveRequestQueue()
+      var sentWhileHandling: Boolean? = null
+
+      val events =
+        InMemoryRunner(agent = agent)
+          .runLive("u", "s", queue, RunConfig())
+          .onEach { event ->
+            if (event.content?.parts?.any { it.functionCall != null } == true) toolGo.complete(Unit)
+            if (event.branch == "monitor@c1") {
+              queue.sendActivityStart()
+              // Lets the model's answer arrive; it now waits behind this event.
+              delay(50.milliseconds)
+              sentWhileHandling = sendNextAndWait(queue, model)
+            }
+            if (event.turnComplete) queue.close()
+          }
+          .toList()
+
+      assertThat(sentWhileHandling).isTrue()
+      assertThat(events.mapNotNull { it.content?.parts?.firstOrNull()?.text })
+        .containsAtLeast("watching", FIRST_ANSWER, SECOND_ANSWER)
+        .inOrder()
+    }
+
+  @Test
+  fun runLive_queuedTypedTurnsAfterAToolEvent_storeEachAnswerBeforeTheNextTurn(): Unit =
+    runBlocking {
+      val toolGo = CompletableDeferred<Unit>()
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("monitor", id = "c1")),
+          AwaitSent("the first turn") { it.isText(FIRST_TURN) },
+          Respond(LlmResponse(content = modelMessage(FIRST_ANSWER), turnComplete = true)),
+          AwaitSent("the second turn") { it.isText(SECOND_TURN) },
+          Respond(LlmResponse(content = modelMessage(SECOND_ANSWER), turnComplete = true)),
+        )
+      val agent =
+        LlmAgent(
+          name = "live_agent",
+          model = DummyLiveModel(script),
+          tools = listOf(watchingTool(toolGo, "300")),
+        )
+      val runner = InMemoryRunner(agent = agent)
+      val queue = LiveRequestQueue()
+
+      val unused =
+        runner
+          .runLive("u", "s", queue, RunConfig())
+          .onEach { event ->
+            if (event.content?.parts?.any { it.functionCall != null } == true) toolGo.complete(Unit)
+            // The tool's event has been handed over, so the turns queued now keep their order.
+            if (event.branch == "monitor@c1") {
+              queue.sendContent(userMessage(FIRST_TURN))
+              queue.sendContent(userMessage(SECOND_TURN))
+            }
+            if (event.hasText(SECOND_ANSWER)) queue.close()
+          }
+          .toList()
+
+      assertThat(runner.storedTexts())
+        .containsAtLeast(FIRST_TURN, FIRST_ANSWER, SECOND_TURN, SECOND_ANSWER)
+        .inOrder()
+    }
+
+  @Test
+  fun runLive_typedTurnSentWhileAnAnswerIsBeingStored_doesNotWaitForTheStore(): Unit = runBlocking {
+    val model = twoTurnModel()
+    val queue = LiveRequestQueue()
+    var sentDuringStore: Boolean? = null
+    // Sends the next turn from onEvent, which the runner runs before it stores the answer.
+    val slowStore =
+      object : Plugin {
+        override val name = "slow-store"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+          if (event.hasText(FIRST_ANSWER)) sentDuringStore = sendNextAndWait(queue, model)
+          return event
+        }
+      }
+    val runner =
+      InMemoryRunner(
+        agent = LlmAgent(name = "live_agent", model = model),
+        plugins = listOf(slowStore),
+      )
+    queue.sendContent(userMessage(FIRST_TURN))
+
+    val unused =
+      runner
+        .runLive("u", "s", queue, RunConfig())
+        .onEach { if (it.hasText(SECOND_ANSWER)) queue.close() }
+        .toList()
+
+    assertThat(sentDuringStore).isTrue()
+  }
+
+  @Test
+  fun runLive_queuedTypedTurns_storeEachAnswerBeforeTheNextTurn(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    val runner = InMemoryRunner(agent = LlmAgent(name = "live_agent", model = twoTurnModel()))
+    queue.sendContent(userMessage(FIRST_TURN))
+    queue.sendContent(userMessage(SECOND_TURN))
+
+    val unused =
+      runner
+        .runLive("u", "s", queue, RunConfig())
+        .onEach { if (it.hasText(SECOND_ANSWER)) queue.close() }
+        .toList()
+
+    assertThat(runner.storedTexts())
+      .containsExactly(FIRST_TURN, FIRST_ANSWER, SECOND_TURN, SECOND_ANSWER)
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_slowCallerOnAStoredAnswer_doesNotHoldTheNextTypedTurn(): Unit = runBlocking {
+    val model = twoTurnModel()
+    val runner = InMemoryRunner(agent = LlmAgent(name = "live_agent", model = model))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage(FIRST_TURN))
+    var sentWhileHandling: Boolean? = null
+
+    val unused =
+      runner
+        .runLive("u", "s", queue, RunConfig())
+        .onEach { event ->
+          if (event.hasText(FIRST_ANSWER)) sentWhileHandling = sendNextAndWait(queue, model)
+          if (event.hasText(SECOND_ANSWER)) queue.close()
+        }
+        .toList()
+
+    assertThat(sentWhileHandling).isTrue()
+    assertThat(runner.storedTexts())
+      .containsExactly(FIRST_TURN, FIRST_ANSWER, SECOND_TURN, SECOND_ANSWER)
+      .inOrder()
+  }
+
+  @Test
   fun runLive_streamingToolEmitsAnEvent_leavesTheAgentsOutputKeyUnset(): Unit = runBlocking {
     val tool =
       DummyTool(name = "monitor") { _, _ ->
@@ -1519,6 +1673,11 @@ class RunLiveTest {
   }
 
   companion object {
+    private const val FIRST_TURN = "hi"
+    private const val FIRST_ANSWER = "first"
+    private const val SECOND_TURN = "and then?"
+    private const val SECOND_ANSWER = "second"
+
     private val pendingAnswer =
       mapOf("status" to "The function is running asynchronously and the results are pending.")
 
@@ -1546,6 +1705,34 @@ class RunLiveTest {
       if (connection == 0 && message.isText(text)) {
         throw GenAiApiException(1006, "ConnectionClosed", "socket closed")
       }
+    }
+
+    /** Answers [FIRST_TURN] with [FIRST_ANSWER], then [SECOND_TURN] with [SECOND_ANSWER]. */
+    private fun twoTurnModel() =
+      DummyLiveModel(
+        listOf(
+          AwaitSent("the first turn") { it.isText(FIRST_TURN) },
+          Respond(LlmResponse(content = modelMessage(FIRST_ANSWER), turnComplete = true)),
+          AwaitSent("the second turn") { it.isText(SECOND_TURN) },
+          Respond(LlmResponse(content = modelMessage(SECOND_ANSWER), turnComplete = true)),
+        )
+      )
+
+    private fun Event.hasText(text: String): Boolean =
+      content?.parts?.any { it.text == text } == true
+
+    /** The texts of the events [this] runner stored, in order. */
+    private suspend fun InMemoryRunner.storedTexts(): List<String> =
+      storedEvents().mapNotNull { it.content?.parts?.firstOrNull()?.text }
+
+    /** Sends [SECOND_TURN] and returns whether it reaches [model] before this call returns. */
+    private suspend fun sendNextAndWait(queue: LiveRequestQueue, model: DummyLiveModel): Boolean {
+      queue.sendContent(userMessage(SECOND_TURN))
+      return withTimeoutOrNull(5.seconds) {
+        while (model.connections.flatMap { it.sent }.none { it.isText(SECOND_TURN) }) {
+          delay(10.milliseconds)
+        }
+      } != null
     }
 
     private fun Any.isText(text: String): Boolean =

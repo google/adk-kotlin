@@ -30,7 +30,6 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.update
@@ -192,6 +191,8 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
 
   private val sentState = MutableStateFlow<List<Any>>(emptyList())
   private val closedState = MutableStateFlow(false)
+  // Bumped on each send and close, so a send wakes `receive()` in one hop.
+  private val changes = MutableStateFlow(0)
   private val collecting = Mutex()
   private var next = 0
   private var matched = 0
@@ -283,10 +284,12 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
 
   override suspend fun closeSession() {
     closedState.value = true
+    changes.update { it + 1 }
   }
 
   private fun record(message: Any) {
     sentState.update { it + message }
+    changes.update { it + 1 }
   }
 
   // sendHistory, sendContent and sendRealtime resolve to these more specific overloads, so [onSend]
@@ -332,7 +335,7 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
       if (closedState.value) return -1
       val seen = index
       // Suspend until a new message is sent or the connection closes.
-      combine(sentState, closedState) { sent, closed -> sent.size > seen || closed }.first { it }
+      changes.first { sentState.value.size > seen || closedState.value }
     }
   }
 

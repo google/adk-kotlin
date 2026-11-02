@@ -91,6 +91,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -113,6 +114,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 
@@ -755,7 +757,7 @@ internal class LlmAgentTurn(
    * Pumps the caller's queue into [connection] while reading turns back out of it, until the caller
    * closes the queue, the connection ends or retires, a handover starts, or a callback blocks the
    * model's output or spoken input. Records how it stopped in [result]; the flow completes only
-   * once the sender has stopped.
+   * once the sender has stopped. Collect the result once.
    */
   // Only the sender writes the connection; the session service must accept concurrent appends.
   @Suppress("UnsafeCoroutineCrossing")
@@ -765,14 +767,13 @@ internal class LlmAgentTurn(
     queue: LiveRequestQueue,
     close: suspend () -> Boolean,
     result: LiveAttemptResult,
-  ): Flow<Event> =
-    channelFlow {
-        // Returns once the caller has handled the event, so neither loop runs ahead of the caller.
-        val deliver: suspend (Event) -> Unit = { event ->
-          val delivery = Delivery(event)
-          send(delivery)
-          delivery.handled.await()
-        }
+  ): Flow<Event> {
+    // Completed when the receiver's latest event is taken, or early behind another event.
+    val answerTaken = AtomicReference<CompletableDeferred<Unit>?>(null)
+    // Set while the emitter hands the caller an event that is not the receiver's latest.
+    val emittingOther = AtomicBoolean(false)
+    return channelFlow {
+        val deliver: suspend (Event) -> Unit = { event -> handOver(Delivery(event)) }
         val saves = RecordingSaves(this, deliver)
         recordingSaves.store(saves)
         // A transport drop the sender saw, kept so it surfaces after the saves finish instead of
@@ -780,7 +781,13 @@ internal class LlmAgentTurn(
         var sendDrop: Throwable? = null
         val receiver = async {
           try {
-            receiveTurns(request, connection, queue, result, deliver)
+            receiveTurns(request, connection, queue, result) { event ->
+              val delivery = Delivery(event)
+              answerTaken.store(delivery.taken)
+              // Read while the caller holds another event, so a typed turn must not wait on it.
+              if (emittingOther.load()) delivery.taken.complete(Unit)
+              handOver(delivery)
+            }
           } catch (e: Throwable) {
             // A handover cut short stops its streams first; the saves below can take seconds.
             if (pendingHandover.load() != null) liveTools?.stopRunning()
@@ -797,6 +804,13 @@ internal class LlmAgentTurn(
          */
         suspend fun sendOrReplay(pending: PendingSend): Boolean {
           try {
+            // Only a typed turn adds a turn to the session, so only it waits behind the answer.
+            val storesTurn = (pending.request.input as? ContentInput)?.storesTurn == true
+            if (!pending.persisted && storesTurn) {
+              // yield() lets the receiver record an answer that already arrived; best effort.
+              yield()
+              answerTaken.load()?.await()
+            }
             writeRequest(request, connection, pending, deliver)
             return true
           } catch (e: LiveWriteFailure) {
@@ -879,10 +893,23 @@ internal class LlmAgentTurn(
       .transform { delivery ->
         // A producer that claimed it puts it back, so its tool waits for the later delivery.
         if (delivery.claim()) {
-          emit(delivery.event)
+          val other = delivery.taken !== answerTaken.load()
+          if (other) {
+            emittingOther.store(true)
+            // Re-read after setting the flag: an answer behind this event must not hold a turn.
+            answerTaken.load()?.complete(Unit)
+          }
+          // Frees a waiting typed turn before the store, so a slow store does not hold it.
+          val unused = delivery.taken.complete(Unit)
+          try {
+            emit(delivery.event)
+          } finally {
+            if (other) emittingOther.store(false)
+          }
           delivery.handled.complete(Unit)
         }
       }
+  }
 
   /**
    * Reads the model's turns off [connection] and emits their events, answering tool calls through
@@ -1242,9 +1269,8 @@ internal class LlmAgentTurn(
     liveRequest: LiveRequest,
     input: ContentInput,
     content: Content,
-    answersTools: Boolean,
   ): Boolean {
-    if (input.partial || answersTools) return false
+    if (!input.storesTurn) return false
     val liveRun = liveRun()
     if (!liveRun.storesEvents) return false
     liveRun.append(
@@ -1331,8 +1357,7 @@ internal class LlmAgentTurn(
     val liveRequest = pending.request
     val input = liveRequest.input
     val original = (input as? ContentInput)?.content
-    // A ContentInput's parts are non-empty and all tool answers or none, so the first tells which.
-    val answersTools = original?.parts?.first()?.functionResponse != null
+    val answersTools = (input as? ContentInput)?.answersTools == true
     // Content without a role is the user's, as in ADK Python; tool answers keep theirs unset.
     val content =
       if (original?.role == null && !answersTools) original?.copy(role = Role.USER) else original
@@ -1342,9 +1367,7 @@ internal class LlmAgentTurn(
       // Cached just before the send, as Python does.
       if (input is RealtimeInput.Audio) audioCache?.cacheInput(input.blob)
       val storedTurn =
-        input is ContentInput &&
-          content != null &&
-          persistUserTurn(liveRequest, input, content, answersTools)
+        input is ContentInput && content != null && persistUserTurn(liveRequest, input, content)
       // A state delta reaches the session even when nothing was said to carry it.
       if (!storedTurn) persistStateDeltaOnly(liveRequest)
       // Marked before the write, so a replay after a drop redoes none of the above.
@@ -2188,7 +2211,8 @@ private class LiveAttemptResult {
 private class LiveWriteFailure(override val cause: Throwable) : Exception(cause)
 
 /**
- * One event on its way to the caller, with the signal that the caller has handled it.
+ * One event on its way to the caller, with the signals that the emitter has taken it and that the
+ * caller has handled it.
  *
  * The emitter and a producer whose send was cancelled can both see it; whichever claims it first
  * owns it, so it is delivered once.
@@ -2198,9 +2222,20 @@ private class Delivery(
   val event: Event,
   val handled: CompletableDeferred<Unit> = CompletableDeferred(),
 ) {
+  val taken = CompletableDeferred<Unit>()
+
   private val claimed = AtomicBoolean(false)
 
   fun claim(): Boolean = claimed.compareAndSet(false, true)
+}
+
+/**
+ * Sends [delivery] and returns once the caller has handled it, so no loop's events queue up ahead
+ * of the caller.
+ */
+private suspend fun SendChannel<Delivery>.handOver(delivery: Delivery) {
+  send(delivery)
+  delivery.handled.await()
 }
 
 /**
@@ -2385,6 +2420,14 @@ private fun LlmRequest.resumingFrom(handle: String): LlmRequest =
             ?: SessionResumptionConfig(handle = handle)
       )
   )
+
+/** Whether this input answers the model's tool calls; its parts are all tool answers or none. */
+private val ContentInput.answersTools: Boolean
+  get() = content.parts.first().functionResponse != null
+
+/** Whether this input adds a user turn to the session: typed, whole, and not a tool answer. */
+private val ContentInput.storesTurn: Boolean
+  get() = !partial && !answersTools
 
 /**
  * A sealed class representing either a [LlmRequest] or a [LlmResponse].

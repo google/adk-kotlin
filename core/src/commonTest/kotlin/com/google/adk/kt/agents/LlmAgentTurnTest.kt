@@ -48,6 +48,7 @@ import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.TelemetryConfig
 import com.google.adk.kt.telemetry.Tracer
+import com.google.adk.kt.testing.DummyLiveConnection
 import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
@@ -2185,6 +2186,96 @@ class LlmAgentTurnTest {
   }
 
   @Test
+  fun runLive_queuedInputs_storeEachAnswerBeforeTheNextInput(): Unit = runBlocking {
+    val firstTurn = "hi"
+    val firstAnswer = "first"
+    val secondTurn = "and then?"
+    val secondAnswer = "second"
+    val agent =
+      liveAgent(
+        DummyLiveConnection(
+          listOf(
+            awaitText(firstTurn),
+            Respond(LlmResponse(content = modelMessage(firstAnswer))),
+            Respond(turnComplete()),
+            awaitText(secondTurn),
+            Respond(LlmResponse(content = modelMessage(secondAnswer))),
+            Respond(turnComplete()),
+          )
+        )
+      )
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage(firstTurn))
+    queue.sendContent(userMessage(secondTurn))
+
+    val texts = storedTextsOfLiveRun(agent, queue, lastText = secondAnswer)
+
+    assertThat(texts).containsExactly(firstTurn, firstAnswer, secondTurn, secondAnswer).inOrder()
+  }
+
+  @Test
+  fun runLive_inputDuringAStreamedAnswer_doesNotWaitForTheAnswerToEnd() = runBlocking {
+    val firstTurn = "hi"
+    val secondTurn = "and then?"
+    val lastAnswer = "done"
+    val chunks = List(50) { Respond(LlmResponse(content = modelMessage("chunk"), partial = true)) }
+    val connection =
+      DummyLiveConnection(
+        listOf(awaitText(firstTurn)) +
+          chunks +
+          listOf(
+            Respond(turnComplete()),
+            awaitText(secondTurn),
+            Respond(LlmResponse(content = modelMessage(lastAnswer))),
+            Respond(turnComplete()),
+          )
+      )
+    val agent = liveAgent(connection)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage(firstTurn))
+    var seen = 0
+    var seenWhenSent: Int? = null
+
+    agent.runLive(liveContextFor(agent, queue)).collect { event ->
+      if (++seen == 5) queue.sendContent(userMessage(secondTurn))
+      if (seenWhenSent == null && connection.sent.any { it.isText(secondTurn) }) {
+        seenWhenSent = seen
+      }
+      if (event.content?.parts?.firstOrNull()?.text == lastAnswer) queue.close()
+    }
+
+    // The second input reached the model while the first answer was still streaming.
+    assertThat(seenWhenSent).isLessThan(chunks.size)
+  }
+
+  @Test
+  fun runLive_firstTypedTurn_waitsForAnAnswerAlreadyArriving(): Unit = runBlocking {
+    val openingReply = "welcome back"
+    val turn = "hi"
+    val answer = "first"
+    val agent =
+      liveAgent(
+        DummyLiveConnection(
+          listOf(
+            // The opening reply, as to resent history, arrives before any input.
+            Respond(LlmResponse(content = modelMessage(openingReply))),
+            Respond(turnComplete()),
+            awaitText(turn),
+            Respond(LlmResponse(content = modelMessage(answer))),
+            Respond(turnComplete()),
+          )
+        )
+      )
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage(turn))
+
+    val texts = storedTextsOfLiveRun(agent, queue, lastText = answer)
+
+    // The model's opening reply was already arriving, so it is stored before the first typed turn.
+    assertThat(texts).containsExactly(openingReply, turn, answer).inOrder()
+  }
+
+  @Test
   fun runLive_dropAfterTheUserTurnIsStored_doesNotStoreItTwice() = runTest {
     val committed = CompletableDeferred<Unit>()
     val sessionService = CommitThenYieldSessionService({ it.author == Role.USER }, committed)
@@ -2881,6 +2972,36 @@ class LlmAgentTurnTest {
       if (hangsClose) awaitCancellation()
     }
   }
+
+  /**
+   * Runs [agent] live on [queue], storing each whole event as the runner would, until an event with
+   * [lastText] arrives; returns the stored texts in order.
+   */
+  private suspend fun storedTextsOfLiveRun(
+    agent: BaseAgent,
+    queue: LiveRequestQueue,
+    lastText: String,
+  ): List<String> {
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "live-order")
+    val session = sessionService.createSession(key)
+    val context = liveContextFor(agent, queue, session = session, sessionService = sessionService)
+    agent.runLive(context).collect { event ->
+      if (!event.partial) {
+        val unused = sessionService.appendEvent(session, event)
+      }
+      if (event.content?.parts?.firstOrNull()?.text == lastText) queue.close()
+    }
+    return checkNotNull(sessionService.getSession(key)).events.mapNotNull {
+      it.content?.parts?.firstOrNull()?.text
+    }
+  }
+
+  /** Waits until the code under test sends a typed turn with [text]. */
+  private fun awaitText(text: String) = AwaitSent(text) { it.isText(text) }
+
+  private fun Any.isText(text: String): Boolean =
+    (this as? ContentInput)?.content?.parts?.firstOrNull()?.text == text
 
   /** Hands out [connections] in order, one per connect, and records each connect's request. */
   private class RecordingLiveModel(
