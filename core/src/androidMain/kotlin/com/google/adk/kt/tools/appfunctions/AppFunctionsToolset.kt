@@ -176,8 +176,8 @@ internal constructor(
         .mapNotNull { tool -> discovered.toolPackages[tool.name]?.let { it to tool.name } }
         .groupBy({ it.first }, { it.second })
     val guidance =
-      discovered.guidance.mapNotNull { (packageName, description) ->
-        offering[packageName]?.let { AppGuidance(packageName, it, description) }
+      discovered.guidance.mapNotNull { (packageName, instructions) ->
+        offering[packageName]?.let { AppGuidance(packageName, it, instructions) }
       }
     return Offer(tools, guidance)
   }
@@ -267,7 +267,7 @@ internal constructor(
   /**
    * What each app among [offering] says about using its functions as a whole, by package name.
    *
-   * Only the model-facing description is read, and an app that declares nothing or whose
+   * Only the model-facing instructions are read, and an app that declares nothing or whose
    * declaration cannot be read is simply absent. Escaping and capping happen here, so the cap
    * bounds the cache and the rendered request alike.
    */
@@ -277,9 +277,9 @@ internal constructor(
     val guidance = mutableMapOf<String, String>()
     // One app at a time: the default offers one package, so fanning out would buy nothing.
     for (metadata in offering.distinctBy { it.packageName }) {
-      val description =
+      val instructions =
         try {
-          client.appMetadata(metadata.packageMetadata)?.description?.trim()
+          client.appMetadata(metadata.packageMetadata)?.instructions?.trim()
         } catch (e: CancellationException) {
           throw e
         } catch (e: Exception) {
@@ -291,7 +291,7 @@ internal constructor(
         }
       // Escape first: escaping expands, so capping the raw text would bound this map and leave
       // what goes out several times larger.
-      if (!description.isNullOrEmpty()) guidance[metadata.packageName] = cap(escape(description))
+      if (!instructions.isNullOrEmpty()) guidance[metadata.packageName] = cap(escape(instructions))
     }
     return guidance
   }
@@ -444,9 +444,9 @@ internal class PlatformAppFunctionClient(private val context: Context) : AppFunc
 /**
  * [text] with the characters that could close a tag neutralised.
  *
- * The description is another app's prose placed inside this toolset's own tags, so a literal
+ * The instructions text is another app's prose placed inside this toolset's own tags, so a literal
  * closing tag in it would let that app carry on in text that reads as the framework's instruction.
- * Only the description needs this; a package name and a generated tool name cannot contain either.
+ * Only that text needs this; a package name and a generated tool name cannot contain either.
  */
 private fun escape(text: String): String = text.replace("&", "&amp;").replace("<", "&lt;")
 
@@ -468,7 +468,7 @@ private fun cap(text: String): String =
 private class AppGuidance(
   val packageName: String,
   val toolNames: List<String>,
-  val description: String,
+  val instructions: String,
 )
 
 /**
@@ -496,7 +496,7 @@ private fun render(guidance: List<AppGuidance>): String = buildString {
   appendLine("<app_function_guidance>")
   for (app in guidance) {
     appendLine("  <app name=\"${app.packageName}\" tools=\"${app.toolNames.joinToString(", ")}\">")
-    appendLine(app.description)
+    appendLine(app.instructions)
     appendLine("  </app>")
   }
   append("</app_function_guidance>")

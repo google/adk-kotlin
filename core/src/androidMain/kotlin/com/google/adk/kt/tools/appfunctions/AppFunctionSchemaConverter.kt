@@ -233,7 +233,7 @@ internal object AppFunctionSchemaConverter {
           format = type.enumValues?.let { "enum" } ?: type.format,
           // The app validates its own string values against this, so a model never shown it sends
           // arguments the app refuses for a reason the refusal cannot give.
-          pattern = type.pattern,
+          pattern = type.regexPattern,
           nullable = nullable,
         )
       is AppFunctionIntTypeMetadata ->

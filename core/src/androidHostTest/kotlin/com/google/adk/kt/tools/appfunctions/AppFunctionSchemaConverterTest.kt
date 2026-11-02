@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools.appfunctions
 
+import android.os.PatternMatcher
 import androidx.appfunctions.AppFunctionName
 import androidx.appfunctions.metadata.AppFunctionAllOfTypeMetadata
 import androidx.appfunctions.metadata.AppFunctionArrayTypeMetadata
@@ -92,43 +93,73 @@ class AppFunctionSchemaConverterTest {
     assertThat(mode.format).isEqualTo("enum")
   }
 
-  // Newer AppFunctions versions ignore the constructor's pattern, so compare with the metadata's.
-
   @Test
   fun toFunctionDeclaration_stringPattern_carriesIt() {
     // The app validates its own values against the pattern, so the model has to be shown it to
     // produce an argument the app will accept.
-    val stringType = AppFunctionStringTypeMetadata(isNullable = false, pattern = "^content:.*")
-    val declaration = convert(params = listOf(param("uri", stringType)))
-
-    val uri = checkNotNull(declaration?.parameters?.properties?.get("uri"))
-    assertThat(uri.pattern).isEqualTo(stringType.pattern)
-  }
-
-  @Test
-  fun toFunctionDeclaration_stringPatternInsideAnArray_carriesItOnTheItem() {
-    val itemType = AppFunctionStringTypeMetadata(isNullable = false, pattern = "^content:.*")
     val declaration =
       convert(
         params =
           listOf(
-            param("uris", AppFunctionArrayTypeMetadata(itemType = itemType, isNullable = false))
+            param(
+              "uri",
+              AppFunctionStringTypeMetadata(
+                isNullable = false,
+                patternMatchers = listOf(PatternMatcher("content:", PatternMatcher.PATTERN_PREFIX)),
+              ),
+            )
+          )
+      )
+
+    val uri = checkNotNull(declaration?.parameters?.properties?.get("uri"))
+    assertThat(uri.pattern).isEqualTo("^content:")
+  }
+
+  @Test
+  fun toFunctionDeclaration_stringPatternInsideAnArray_carriesItOnTheItem() {
+    val declaration =
+      convert(
+        params =
+          listOf(
+            param(
+              "uris",
+              AppFunctionArrayTypeMetadata(
+                itemType =
+                  AppFunctionStringTypeMetadata(
+                    isNullable = false,
+                    patternMatchers =
+                      listOf(PatternMatcher("content:", PatternMatcher.PATTERN_PREFIX)),
+                  ),
+                isNullable = false,
+              ),
+            )
           )
       )
 
     val uris = checkNotNull(declaration?.parameters?.properties?.get("uris"))
-    assertThat(uris.items?.pattern).isEqualTo(itemType.pattern)
+    assertThat(uris.items?.pattern).isEqualTo("^content:")
   }
 
   @Test
   fun toFunctionDeclaration_stringFormatAndPattern_carriesBoth() {
-    val stringType =
-      AppFunctionStringTypeMetadata(isNullable = false, pattern = "^content:.*", format = "uri")
-    val declaration = convert(params = listOf(param("uri", stringType)))
+    val declaration =
+      convert(
+        params =
+          listOf(
+            param(
+              "uri",
+              AppFunctionStringTypeMetadata(
+                isNullable = false,
+                patternMatchers = listOf(PatternMatcher("content:", PatternMatcher.PATTERN_PREFIX)),
+                format = "uri",
+              ),
+            )
+          )
+      )
 
     val uri = checkNotNull(declaration?.parameters?.properties?.get("uri"))
     assertThat(uri.format).isEqualTo("uri")
-    assertThat(uri.pattern).isEqualTo(stringType.pattern)
+    assertThat(uri.pattern).isEqualTo("^content:")
   }
 
   @Test
