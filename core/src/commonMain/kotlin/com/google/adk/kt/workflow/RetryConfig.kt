@@ -36,11 +36,10 @@ import kotlin.time.Duration.Companion.milliseconds
  * @property backoffFactor Multiplier applied to the delay after each attempt.
  * @property jitter Randomness factor, not a duration: the delay is spread over `delay * (1 +/-
  *   jitter)`. Zero removes randomness.
- * @property exceptions Reported type names to retry on, matched exactly with no subclass match. The
- *   reported name is the failure's own simple name, or for a [NodeExecutionException] the wrapped
- *   failure's type name -- so list e.g. "RuntimeError", not "NodeExecutionException". A failure is
- *   retried when it matches this list or [exceptionClasses], and any failure is retried when both
- *   are null; a [WorkflowConfigurationException] is never retried, even when listed.
+ * @property exceptions Simple class names of failures to retry on, such as "NodeTimeoutException",
+ *   matched exactly with no subclass matching. A failure is retried when it matches this list or
+ *   [exceptionClasses], and any failure is retried when both are null; a
+ *   [WorkflowConfigurationException] is never retried, even when listed.
  * @property exceptionClasses Failure types to retry on, each also matching its subclasses. A
  *   failure is retried when it matches this list or [exceptions], and any failure is retried when
  *   both are null. A [WorkflowConfigurationException] is never retried, even when its class is
@@ -150,8 +149,8 @@ data class RetryConfig(
     fun jitter(jitter: Double): Builder = apply { this.jitter = jitter }
 
     /**
-     * Sets [RetryConfig.exceptions], the type names of failures to retry on, or unsets it if null.
-     * Leaves [RetryConfig.exceptionClasses] unchanged.
+     * Sets [RetryConfig.exceptions], the simple class names of failures to retry on, or unsets it
+     * if null. Leaves [RetryConfig.exceptionClasses] unchanged.
      */
     fun exceptions(exceptions: List<String>?): Builder = apply { this.exceptions = exceptions }
 
@@ -197,11 +196,9 @@ data class RetryConfig(
     val DEFAULT_MAX_DELAY: Duration = ExponentialBackoff.DEFAULT_MAX_DELAY
 
     /**
-     * Returns the name a retry policy matches [error] by. Node failures are compared by simple type
-     * name across implementations, and [NodeExecutionException] carries the name of the failure it
-     * stands in for rather than its own.
+     * Returns the name reported in a node's error event and matched by [RetryConfig.exceptions]:
+     * the failure's simple class name, or "Exception" for an anonymous class.
      */
-    internal fun errorTypeName(error: Throwable): String =
-      (error as? NodeExecutionException)?.typeName ?: error::class.simpleName ?: "Exception"
+    internal fun errorTypeName(error: Throwable): String = error::class.simpleName ?: "Exception"
   }
 }

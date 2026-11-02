@@ -260,7 +260,7 @@ class WorkflowRootNodeTest {
     // Arrange: slow appends keep the collector busy while the workflow fails.
     val plugin = RecordingPlugin()
     val a = Emitter("a", "A")
-    val boom = ThrowingNode("boom") { NodeExecutionException("RuntimeError", "workflow boom") }
+    val boom = ThrowingNode("boom") { TestNodeException("workflow boom") }
     val after = Emitter("after", "never")
     val workflow =
       Workflow(name = "wf", edges = listOf(Edge(Start, a), Edge(a, boom), Edge(boom, after)))
@@ -272,7 +272,7 @@ class WorkflowRootNodeTest {
 
     // Act
     val error =
-      assertFailsWith<NodeExecutionException> {
+      assertFailsWith<TestNodeException> {
         runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
       }
     val session = assertNotNull(runner.sessionService.getSession(SessionKey("graph_app", "u", "s")))
@@ -281,7 +281,7 @@ class WorkflowRootNodeTest {
     assertContains(error.message!!, "workflow boom")
     assertEquals(listOf("wf@1/a@1", "wf@1/boom@1"), session.events.mapNotNull { it.nodeInfo?.path })
     assertEquals("wf", session.events.last().author)
-    assertEquals("RuntimeError", session.events.last().errorCode)
+    assertEquals("TestNodeException", session.events.last().errorCode)
     assertSame(error, plugin.seenErrors.single())
     assertEquals(0, plugin.afterRunCount)
   }

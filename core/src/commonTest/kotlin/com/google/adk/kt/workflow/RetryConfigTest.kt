@@ -36,7 +36,7 @@ class RetryConfigTest {
 
   @Test
   fun zeroOrOneMaxAttemptsMeansNoRetry() {
-    val error = NodeExecutionException("RuntimeError", "boom")
+    val error = IllegalStateException("boom")
 
     assertFalse(RetryConfig(maxAttempts = 0).shouldRetry(error, attemptCount = 1))
     assertFalse(RetryConfig(maxAttempts = 1).shouldRetry(error, attemptCount = 1))
@@ -61,10 +61,30 @@ class RetryConfigTest {
   fun exceptionClassesMatchListedClassesAndTheirSubclasses() {
     val config = RetryConfig(exceptionClasses = listOf(NodeExecutionException::class))
 
-    assertTrue(config.shouldRetry(NodeExecutionException("RuntimeError", "boom"), attemptCount = 1))
+    assertTrue(config.shouldRetry(NodeExecutionException("boom"), attemptCount = 1))
     assertTrue(config.shouldRetry(NodeTimeoutException("node", 1.seconds), attemptCount = 1))
+    assertTrue(config.shouldRetry(NodeInputValidationException("bad input"), attemptCount = 1))
     assertFalse(config.shouldRetry(RuntimeException("boom"), attemptCount = 1))
     assertFalse(config.shouldRetry(IllegalStateException("boom"), attemptCount = 1))
+  }
+
+  @Test
+  fun aNodeFailureIsNamedByItsOwnClass() {
+    val timeout = NodeTimeoutException("node", 1.seconds)
+
+    assertEquals(
+      "NodeExecutionException",
+      RetryConfig.errorTypeName(NodeExecutionException("boom")),
+    )
+    assertEquals("NodeTimeoutException", RetryConfig.errorTypeName(timeout))
+    assertEquals(
+      "NodeInputValidationException",
+      RetryConfig.errorTypeName(NodeInputValidationException("bad input")),
+    )
+    assertFalse(
+      RetryConfig(exceptions = listOf("NodeExecutionException"))
+        .shouldRetry(timeout, attemptCount = 1)
+    )
   }
 
   @Test
@@ -78,15 +98,13 @@ class RetryConfigTest {
   fun aFailureMatchingEitherNamesOrClassesIsRetried() {
     val config =
       RetryConfig(
-        exceptions = listOf("ValueError"),
+        exceptions = listOf("NodeTimeoutException"),
         exceptionClasses = listOf(IllegalStateException::class),
       )
 
-    assertTrue(config.shouldRetry(NodeExecutionException("ValueError", "boom"), attemptCount = 1))
+    assertTrue(config.shouldRetry(NodeTimeoutException("node", 1.seconds), attemptCount = 1))
     assertTrue(config.shouldRetry(IllegalStateException("boom"), attemptCount = 1))
-    assertFalse(
-      config.shouldRetry(NodeExecutionException("RuntimeError", "boom"), attemptCount = 1)
-    )
+    assertFalse(config.shouldRetry(NodeInputValidationException("bad input"), attemptCount = 1))
   }
 
   @Test

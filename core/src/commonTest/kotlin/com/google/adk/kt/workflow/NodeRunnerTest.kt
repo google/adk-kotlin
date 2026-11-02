@@ -246,29 +246,17 @@ class NodeRunnerTest {
   }
 
   @Test
-  fun aFailureReportsTheDeclaredCrossImplementationTypeName() {
-    // Arrange: the declared type name is what another ADK implementation matches on.
-    val node = ThrowingNode("boom") { NodeExecutionException("RuntimeError", "node failed") }
+  fun aFailureReportsTheExceptionClassNameAndMessage() {
+    // Arrange
+    val node = ThrowingNode("boom") { IllegalStateException("node failed") }
 
     // Act
     val (context, events) = runNode(node, parentBranch = "root")
 
     // Assert
-    assertEquals("RuntimeError", events.single().errorCode)
+    assertEquals("IllegalStateException", events.single().errorCode)
     assertEquals("node failed", events.single().errorMessage)
     assertEquals("boom@1", context.requireNodeState().failure?.nodePath)
-  }
-
-  @Test
-  fun aFailureWithoutADeclaredTypeNameReportsTheExceptionClassName() {
-    // Arrange
-    val node = ThrowingNode("boom") { IllegalStateException("node failed") }
-
-    // Act
-    val (_, events) = runNode(node, parentBranch = "root")
-
-    // Assert
-    assertEquals("IllegalStateException", events.single().errorCode)
   }
 
   @Test

@@ -164,7 +164,7 @@ private class FailsFirstAttemptDispatcher(
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     val result =
       context.runNode(child, nodeInput = childInput, runId = childRunId, useAsOutput = useAsOutput)
-    if (context.attemptCount == 1) throw NodeExecutionException("RuntimeError", "first attempt")
+    if (context.attemptCount == 1) throw TestNodeException("first attempt")
     emit(result)
   }
 }
@@ -220,7 +220,7 @@ private class SetCallerOutputThenFailChild(override val name: String, private va
   Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     checkNotNull(context.parent).output = value
-    throw NodeExecutionException("RuntimeError", "failed before emitting its output")
+    throw TestNodeException("failed before emitting its output")
   }
 }
 
@@ -228,7 +228,7 @@ private class SetCallerOutputThenFailChild(override val name: String, private va
 private class EmitThenFailChild(override val name: String, private val value: Any) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     emit(value)
-    throw NodeExecutionException("RuntimeError", "failed after its output")
+    throw TestNodeException("failed after its output")
   }
 }
 
@@ -244,7 +244,7 @@ private class EmitThenCancelChild(override val name: String, private val value: 
 private class AssignThenFailChild(override val name: String, private val value: Any) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     context.output = value
-    throw NodeExecutionException("RuntimeError", "failed before emitting its output")
+    throw TestNodeException("failed before emitting its output")
   }
 }
 
@@ -285,7 +285,7 @@ private class FailsOnFirstCall(override val name: String) : Node {
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     calls += 1
-    if (calls == 1) throw NodeExecutionException("RuntimeError", "first call")
+    if (calls == 1) throw TestNodeException("first call")
     emit("ok")
   }
 }
@@ -683,14 +683,14 @@ class DynamicDispatchTest {
   @Test
   fun runNode_childFails_failsDispatcher() {
     // Arrange
-    val child = ThrowingNode("child") { NodeExecutionException("RuntimeError", "child boom") }
+    val child = ThrowingNode("child") { TestNodeException("child boom") }
     val dispatcher = Dispatcher("dispatcher", child)
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, dispatcher)))
     val events = mutableListOf<Event>()
 
     // Act: the child's failure is wrapped and carried up, failing the dispatcher and the run.
     val error =
-      assertFailsWith<NodeExecutionException> {
+      assertFailsWith<TestNodeException> {
         runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
       }
 
@@ -704,7 +704,7 @@ class DynamicDispatchTest {
   @Test
   fun runNode_dispatcherCatchesChildFailure_carriesOn() {
     // Arrange
-    val child = ThrowingNode("child") { NodeExecutionException("RuntimeError", "child boom") }
+    val child = ThrowingNode("child") { TestNodeException("child boom") }
     val dispatcher = FailureCatchingDispatcher("dispatcher", child, "RECOVERED")
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, dispatcher)))
 
@@ -937,7 +937,7 @@ class DynamicDispatchTest {
   @Test
   fun runNode_childFailsUnderDispatcherRetryPolicy_isNotRetried() {
     // Arrange: the dispatcher may retry, but a dynamic child's failure is carried up, not retried.
-    val child = ThrowingNode("child") { NodeExecutionException("RuntimeError", "child boom") }
+    val child = ThrowingNode("child") { TestNodeException("child boom") }
     val retry = RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO, jitter = 0.0)
     val dispatcher = Dispatcher("dispatcher", child, config = NodeConfig(retryConfig = retry))
     val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, dispatcher)))
@@ -945,7 +945,7 @@ class DynamicDispatchTest {
 
     // Act
     val error =
-      assertFailsWith<NodeExecutionException> {
+      assertFailsWith<TestNodeException> {
         runBlocking { workflow.runAsync(testInvocationContext()).collect { events.add(it) } }
       }
 
@@ -1079,7 +1079,7 @@ class DynamicDispatchTest {
   @Test
   fun runNode_delegateFails_callerFallsBackToItsOwnOutput() {
     // Arrange: the delegate fails, and the caller catches that and produces its own output.
-    val child = ThrowingNode("child") { NodeExecutionException("RuntimeError", "child boom") }
+    val child = ThrowingNode("child") { TestNodeException("child boom") }
     val dispatcher = FailureCatchingDispatcher("dispatcher", child, "FALLBACK", useAsOutput = true)
     val after = EchoChild("after", "after")
     val workflow =
@@ -1430,7 +1430,7 @@ class DynamicDispatchTest {
   @Test
   fun runNode_delegateFailsBeforeEmitting_callerCanDelegateAgain() {
     // Arrange
-    val first = ThrowingNode("first") { NodeExecutionException("RuntimeError", "first failed") }
+    val first = ThrowingNode("first") { TestNodeException("first failed") }
     val dispatcher = RedelegatingDispatcher("dispatcher", first, Emitter("second", "SECOND"))
     val after = EchoChild("after", "after")
     val workflow =
@@ -1523,7 +1523,7 @@ class DynamicDispatchTest {
   @Test
   fun runNode_childFails_throwsDynamicNodeFailedExceptionWithItsError() {
     // Arrange
-    val child = ThrowingNode("child") { NodeExecutionException("RuntimeError", "child boom") }
+    val child = ThrowingNode("child") { TestNodeException("child boom") }
     val workflow =
       Workflow(name = "wf", edges = listOf(Edge(Start, FailureReporter("dispatcher", child))))
 

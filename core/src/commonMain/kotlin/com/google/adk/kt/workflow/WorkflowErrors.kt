@@ -17,15 +17,19 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import kotlin.jvm.JvmOverloads
 import kotlin.time.Duration
 
 /**
- * A node failure that reports under a [typeName] other than this class's own, so a failure raised
- * in one ADK implementation is matched by the same name in another.
+ * Base class for node failures raised by the workflow runtime, such as [NodeTimeoutException]. A
+ * node can also throw this class or a subclass it defines; error events and
+ * [RetryConfig.exceptions] name each failure by its simple class name. List it in
+ * [RetryConfig.exceptionClasses] to retry this class and every subclass.
  */
 @ExperimentalWorkflowApi
-open class NodeExecutionException(val typeName: String, message: String, cause: Throwable? = null) :
-  RuntimeException(message, cause)
+open class NodeExecutionException
+@JvmOverloads
+constructor(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 /** Encapsulates the failure of a node activation along with the node path where it occurred. */
 internal data class NodeExecutionFailure(val cause: Throwable, val nodePath: String)
@@ -36,15 +40,12 @@ internal data class NodeExecutionFailure(val cause: Throwable, val nodePath: Str
  */
 @ExperimentalWorkflowApi
 class NodeTimeoutException(val nodeName: String, val timeout: Duration, cause: Throwable? = null) :
-  NodeExecutionException("NodeTimeoutError", "Node '$nodeName' timed out after $timeout.", cause)
+  NodeExecutionException("Node '$nodeName' timed out after $timeout.", cause)
 
-/**
- * Raised when a node's runtime input fails validation. Reports `typeName =
- * "NodeInputValidationError"`.
- */
+/** Raised when a node's runtime input fails validation. */
 @ExperimentalWorkflowApi
 class NodeInputValidationException(message: String, cause: Throwable? = null) :
-  NodeExecutionException("NodeInputValidationError", message, cause)
+  NodeExecutionException(message, cause)
 
 /** A workflow graph failed validation. Raised when the graph is built, not when it runs. */
 @ExperimentalWorkflowApi

@@ -242,7 +242,7 @@ private class FailsOnceThenAsks(override val name: String) : Node {
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     runs += 1
-    if (context.attemptCount == 1) throw NodeExecutionException("RuntimeError", "first attempt")
+    if (context.attemptCount == 1) throw TestNodeException("first attempt")
     emit(RequestInput(interruptId = "ask_1", message = "need input"))
   }
 }
@@ -368,7 +368,7 @@ private class DispatchNumberedThenFailOnce(override val name: String, private va
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     context.runNodeUnchecked(child, runId = "1")
-    if (context.attemptCount == 1) throw NodeExecutionException("RuntimeError", "first attempt")
+    if (context.attemptCount == 1) throw TestNodeException("first attempt")
     emit("done")
   }
 }
@@ -417,7 +417,7 @@ private class ReportsProgressThenFailsFirstRun(override val name: String, privat
     if (runs == 1) {
       emit(Event(content = Content(role = Role.MODEL, parts = listOf(Part(text = "working")))))
       yield()
-      throw NodeExecutionException("RuntimeError", "first run fails")
+      throw TestNodeException("first run fails")
     }
     if (value != null) emit(value)
   }
@@ -463,7 +463,7 @@ private class FailsTwiceSecondAfterADelay(override val name: String) : Node {
     runs += 1
     yield()
     if (runs == 2) delay(100.milliseconds)
-    if (runs <= 2) throw NodeExecutionException("RuntimeError", "run $runs fails")
+    if (runs <= 2) throw TestNodeException("run $runs fails")
   }
 }
 
@@ -488,7 +488,7 @@ private class YieldsThenFailsFirstRun(override val name: String) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     runs += 1
     yield()
-    if (runs == 1) throw NodeExecutionException("RuntimeError", "first run fails")
+    if (runs == 1) throw TestNodeException("first run fails")
   }
 }
 
@@ -507,7 +507,7 @@ private class DispatchThenFailOnce(
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     val a = context.runNode(named, runId = "n")
     val b = context.runNode(anonymous)
-    if (context.attemptCount == 1) throw NodeExecutionException("RuntimeError", "first attempt")
+    if (context.attemptCount == 1) throw TestNodeException("first attempt")
     emit(listOf(a, b))
   }
 }
@@ -521,7 +521,7 @@ private class DispatchThenFailFirstRun(override val name: String, private val ch
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     runs += 1
     val result = context.runNode(child, runId = "n")
-    if (runs == 1) throw NodeExecutionException("RuntimeError", "first run fails")
+    if (runs == 1) throw TestNodeException("first run fails")
     emit(result)
   }
 }
@@ -563,7 +563,7 @@ private class YieldsThenFails(override val name: String) : Node {
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     runs += 1
     yield()
-    throw NodeExecutionException("RuntimeError", "failed")
+    throw TestNodeException("failed")
   }
 }
 
@@ -598,7 +598,7 @@ private class FailsFirstRun(override val name: String) : Node {
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     runs += 1
-    if (runs == 1) throw NodeExecutionException("RuntimeError", "first run fails")
+    if (runs == 1) throw TestNodeException("first run fails")
     emit("recovered")
   }
 }
@@ -867,7 +867,7 @@ private class DelegateThenFailOnce(override val name: String, private val child:
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     runs += 1
     context.runNode(child, runId = "c", useAsOutput = true)
-    if (context.attemptCount == 1) throw NodeExecutionException("RuntimeError", "first attempt")
+    if (context.attemptCount == 1) throw TestNodeException("first attempt")
   }
 }
 
@@ -895,7 +895,7 @@ private class EmitThenFailOnceThenWriteState(override val name: String, private 
           actions = EventActions(route = listOf(no()), transferToAgent = "stale_agent"),
         )
       )
-      throw NodeExecutionException("RuntimeError", "first attempt")
+      throw TestNodeException("first attempt")
     }
     context.updateState(key, "ok")
   }
@@ -2824,7 +2824,7 @@ class WorkflowHitlTest {
     val items =
       parallelNode<Int, Int>("items", maxParallelWorkers = 1) { _, item ->
         runs[item] = (runs[item] ?: 0) + 1
-        if (item == 2 && runs[item] == 1) throw NodeExecutionException("RuntimeError", "first run")
+        if (item == 2 && runs[item] == 1) throw TestNodeException("first run")
         item * 10
       }
     val input = Emitter("input", listOf(1, 2, 3))
@@ -3829,7 +3829,7 @@ class WorkflowHitlTest {
     val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
 
     // Assert: the failure left no result to replay, so the node ran again and succeeded.
-    assertTrue(firstError is NodeExecutionException, "expected the first turn to fail")
+    assertTrue(firstError is TestNodeException, "expected the first turn to fail")
     val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
     assertEquals(mapOf("ask" to mapOf("v" to 1L), "flaky" to "recovered"), joinEvent.output)
   }
