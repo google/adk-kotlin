@@ -28,6 +28,8 @@ import kotlinx.serialization.descriptors.PolymorphicKind
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.SerialKind
 import kotlinx.serialization.descriptors.StructureKind
+import kotlinx.serialization.descriptors.nonNullOriginal
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNames
 import kotlinx.serialization.json.JsonNamingStrategy
 import org.junit.Test
@@ -101,18 +103,27 @@ class WireAliasCoverageTest {
   }
 
   @Test
+  fun theSurvey_entersEveryVariantOfASealedHierarchy() {
+    val survey = AliasSurvey()
+
+    survey.visit(Variants.serializer().descriptor, "Variants")
+
+    assertThat(survey.missing)
+      .containsExactly(
+        """Variants.bareName (needs @JsonNames("bare_name"))""",
+        """Variants.unaliasedName (needs @JsonNames("unaliased_name"))""",
+      )
+  }
+
+  @Test
   fun typesTheSurveyDoesNotEnter_areTheKnownOnes() {
-    // These carry caller data or dispatch polymorphically, so they name no fields to alias. Two of
-    // them are reachable only through EventActions, so this also pins that the survey gets there -
-    // the coverage assertion above would pass vacuously if it stopped.
+    // These carry caller data, so they name no fields to alias. JsonElement is reachable only
+    // through EventActions, so this also pins that the survey gets there - the coverage assertion
+    // above would pass vacuously if it stopped.
     assertThat(survey().notEntered)
       .containsExactly(
         "kotlinx.serialization.ContextualSerializer<Any>",
-        "com.google.adk.kt.types.PartialArgValue",
-        // EventActions.route serializes through RouteListSerializer, whose descriptor is
-        // JsonElement's; EventActions.agentState is a sealed hierarchy.
         "kotlinx.serialization.json.JsonElement",
-        "com.google.adk.kt.agents.TypedData",
       )
   }
 
@@ -136,6 +147,15 @@ class WireAliasCoverageTest {
       if (!seen.add(descriptor)) return
       when {
         descriptor.isInline -> return visit(descriptor.getElementDescriptor(0), path)
+        // A sealed hierarchy's variants are ours, under element 1; JsonElement's are caller data.
+        descriptor.kind == PolymorphicKind.SEALED &&
+          descriptor.nonNullOriginal != JsonElement.serializer().descriptor -> {
+          val variants = descriptor.getElementDescriptor(1)
+          for (index in 0 until variants.elementsCount) {
+            visit(variants.getElementDescriptor(index), path)
+          }
+          return
+        }
         descriptor.kind == SerialKind.CONTEXTUAL || descriptor.kind is PolymorphicKind -> {
           notEntered.add(descriptor.serialName.removeSuffix("?"))
           return
@@ -192,3 +212,13 @@ private data class SharedNames(
 
 /** Consecutive capitals, where a naive transform and the naming strategy disagree. */
 @Serializable private data class Acronyms(val fileURI: String? = null)
+
+/** A sealed hierarchy with an aliased variant between two unaliased ones. */
+@Serializable
+private sealed interface Variants {
+  @Serializable data class Bare(val bareName: String? = null) : Variants
+
+  @Serializable data class Named(@JsonNames("well_named") val wellNamed: String? = null) : Variants
+
+  @Serializable data class Unaliased(val unaliasedName: String? = null) : Variants
+}
