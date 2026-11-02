@@ -16,19 +16,19 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.types.Schema;
+import com.google.adk.kt.types.Type;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.Locale;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code multi_triggers} workflow sample: three nodes transform the user's
@@ -38,16 +38,17 @@ public final class MultiTriggersWorkflowJava {
 
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
-    Node makeUppercase = new MakeUppercase();
-    Node countCharacters = new CountCharacters();
-    Node reverseString = new ReverseString();
-    Node sendMessage = new SendMessage();
+    Node makeUppercase = makeUppercase();
+    Node countCharacters = countCharacters();
+    Node reverseString = reverseString();
+    Node sendMessage = sendMessage();
 
     return Workflow.builder()
         .name("multi_triggers")
+        // The input schema reads the user's message as text, so START hands each branch a String.
+        .inputSchema(Schema.builder().type(Type.STRING).build())
         .edges(
             g -> {
-              // START hands each branch the user's message as Content.
               g.fromStart().then(makeUppercase, countCharacters, reverseString);
               // Without a JoinNode, each predecessor triggers its own run of send_message.
               g.from(makeUppercase).then(sendMessage);
@@ -71,52 +72,34 @@ public final class MultiTriggersWorkflowJava {
     }
   }
 
-  private static final class MakeUppercase extends BasePublisherNode {
-    MakeUppercase() {
-      super("make_uppercase");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Mono.just(((Content) nodeInput).text().toUpperCase(Locale.ROOT));
-    }
+  private static FunctionNode<String, String> makeUppercase() {
+    return FunctionNodes.of(
+        "make_uppercase", String.class, String.class, (ctx, text) -> text.toUpperCase(Locale.ROOT));
   }
 
-  private static final class CountCharacters extends BasePublisherNode {
-    CountCharacters() {
-      super("count_characters");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Mono.just(((Content) nodeInput).text().length());
-    }
+  private static FunctionNode<String, Integer> countCharacters() {
+    return FunctionNodes.of(
+        "count_characters", String.class, Integer.class, (ctx, text) -> text.length());
   }
 
-  private static final class ReverseString extends BasePublisherNode {
-    ReverseString() {
-      super("reverse_string");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      String text = ((Content) nodeInput).text();
-      return Mono.just(new StringBuilder(text).reverse().toString());
-    }
+  private static FunctionNode<String, String> reverseString() {
+    return FunctionNodes.of(
+        "reverse_string",
+        String.class,
+        String.class,
+        (ctx, text) -> new StringBuilder(text).reverse().toString());
   }
 
   /** Reports the output of whichever predecessor triggered this run. */
-  private static final class SendMessage extends BasePublisherNode {
-    SendMessage() {
-      super("send_message");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      String text = "Triggered for input: " + nodeInput;
-      return Mono.just(
-          Event.builder().author("").content(Content.fromText(Role.MODEL, text)).build());
-    }
+  private static FunctionNode<Object, Event> sendMessage() {
+    return FunctionNodes.of(
+        "send_message",
+        Object.class,
+        Event.class,
+        (ctx, input) ->
+            Event.builder()
+                .content(Content.fromText(Role.MODEL, "Triggered for input: " + input))
+                .build());
   }
 
   private MultiTriggersWorkflowJava() {}

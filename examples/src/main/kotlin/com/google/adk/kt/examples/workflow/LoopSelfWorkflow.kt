@@ -46,9 +46,9 @@ object LoopSelfWorkflow {
 
   /** Stores the user's number in state, and fails the run if it is out of range. */
   private val validateInput =
-    node<Content, Unit>("validate_input") { context, input ->
-      // START hands the first node the user's message as Content.
-      val number = input.text().trim().toInt()
+    node<String, Unit>("validate_input") { context, text ->
+      // START hands the first node the user's message, which a String input receives as text.
+      val number = text.trim().toInt()
       if (number !in 0..10) {
         emit(message("Please provide a number between 0 and 10."))
         throw IllegalArgumentException("Invalid input.")

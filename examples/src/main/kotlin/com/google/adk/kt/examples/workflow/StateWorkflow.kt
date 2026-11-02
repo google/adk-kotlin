@@ -46,9 +46,8 @@ object StateWorkflow {
 
   /** Stores the user's text in state through the context, and outputs it. */
   private val processInitialInput =
-    node<Content, String>("process_initial_input") { context, message ->
-      // START hands the first node the user's message as Content.
-      val text = message.text()
+    node<String, String>("process_initial_input") { context, text ->
+      // START hands the first node the user's message, which a String input receives as text.
       context.updateState("original_text", text)
       text
     }

@@ -23,6 +23,8 @@ import com.google.adk.kt.apps.App
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.emit
@@ -38,8 +40,8 @@ object MultiTriggersWorkflow {
 
   /** Builds the workflow. It calls no model. */
   fun create(): Workflow =
-    workflow("multi_triggers") {
-      // START hands each branch the user's message as Content.
+    // The input schema reads the user's message as text, so START hands each branch a String.
+    workflow("multi_triggers", inputSchema = Schema(type = Type.STRING)) {
       Start.then(makeUppercase, countCharacters, reverseString)
       // With no JoinNode in between, each predecessor triggers its own run of send_message.
       makeUppercase.then(sendMessage)
@@ -47,14 +49,11 @@ object MultiTriggersWorkflow {
       reverseString.then(sendMessage)
     }
 
-  private val makeUppercase =
-    node<Content, String>("make_uppercase") { _, message -> message.text().uppercase() }
+  private val makeUppercase = node<String, String>("make_uppercase") { _, text -> text.uppercase() }
 
-  private val countCharacters =
-    node<Content, Int>("count_characters") { _, message -> message.text().length }
+  private val countCharacters = node<String, Int>("count_characters") { _, text -> text.length }
 
-  private val reverseString =
-    node<Content, String>("reverse_string") { _, message -> message.text().reversed() }
+  private val reverseString = node<String, String>("reverse_string") { _, text -> text.reversed() }
 
   /** Reports the output of whichever predecessor triggered this run. */
   private val sendMessage =

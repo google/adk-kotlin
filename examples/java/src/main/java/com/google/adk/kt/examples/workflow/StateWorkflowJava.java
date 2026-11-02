@@ -16,26 +16,25 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.events.EventActions;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
- * A port of adk-python's {@code state} workflow sample: nodes write session state through the
- * context and through an event, and read it back through the context. ADK's Java nodes take no
- * parameters from state, so {@code read_state_via_param} reads its key through the context too.
+ * A port of adk-python's {@code state} workflow sample: function nodes write session state through
+ * the context and through an event, and read it back through the context. ADK's Java function nodes
+ * take no parameters from state, so {@code read_state_via_param} reads its key through the context
+ * too.
  */
 public final class StateWorkflowJava {
 
@@ -47,10 +46,10 @@ public final class StateWorkflowJava {
             g ->
                 g.fromStart()
                     .chain(
-                        new ProcessInitialInput(),
-                        new UpdateStateViaEvent(),
-                        new ReadStateViaContext(),
-                        new ReadStateViaParam()))
+                        processInitialInput(),
+                        updateStateViaEvent(),
+                        readStateViaContext(),
+                        readStateViaParam()))
         .build();
   }
 
@@ -71,63 +70,57 @@ public final class StateWorkflowJava {
   }
 
   /** Stores the user's text in state through the context, and outputs it. */
-  private static final class ProcessInitialInput extends BasePublisherNode {
-    ProcessInitialInput() {
-      super("process_initial_input");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      String text = ((Content) nodeInput).text();
-      context.updateState("original_text", text);
-      return Mono.just(text);
-    }
+  private static FunctionNode<Content, String> processInitialInput() {
+    return FunctionNodes.of(
+        "process_initial_input",
+        // START hands the first node the user's message as Content.
+        Content.class,
+        String.class,
+        (ctx, message) -> {
+          String text = message.text();
+          ctx.updateState("original_text", text);
+          return text;
+        });
   }
 
-  /** Stores the uppercased text by emitting an event whose state delta the session applies. */
-  private static final class UpdateStateViaEvent extends BasePublisherNode {
-    UpdateStateViaEvent() {
-      super("update_state_via_event");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // The framework may add to an event's state delta, so the map must be mutable.
-      Map<String, Object> stateDelta = new HashMap<>();
-      stateDelta.put("uppercased_text", ((String) nodeInput).toUpperCase(Locale.ROOT));
-      Event event =
-          Event.builder().actions(EventActions.builder().stateDelta(stateDelta).build()).build();
-      return Mono.just(event);
-    }
+  /** Stores the uppercased text by returning an event whose state delta the session applies. */
+  private static FunctionNode<String, Event> updateStateViaEvent() {
+    return FunctionNodes.of(
+        "update_state_via_event",
+        String.class,
+        Event.class,
+        (ctx, text) -> {
+          // The framework may add to an event's state delta, so the map must be mutable.
+          Map<String, Object> stateDelta = new HashMap<>();
+          stateDelta.put("uppercased_text", text.toUpperCase(Locale.ROOT));
+          return Event.builder()
+              .actions(EventActions.builder().stateDelta(stateDelta).build())
+              .build();
+        });
   }
 
   /** Reads both earlier values from state, then stores and outputs a sentence combining them. */
-  private static final class ReadStateViaContext extends BasePublisherNode {
-    ReadStateViaContext() {
-      super("read_state_via_ctx");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Map<String, Object> state = context.getState();
-      String result =
-          state.get("uppercased_text") + " (Original was: " + state.get("original_text") + ")";
-      context.updateState("appended_text", result);
-      return Mono.just(result);
-    }
+  private static FunctionNode<Object, String> readStateViaContext() {
+    return FunctionNodes.of(
+        "read_state_via_ctx",
+        Object.class,
+        String.class,
+        (ctx, input) -> {
+          Map<String, Object> state = ctx.getState();
+          String result =
+              state.get("uppercased_text") + " (Original was: " + state.get("original_text") + ")";
+          ctx.updateState("appended_text", result);
+          return result;
+        });
   }
 
   /** Outputs the final result built from the sentence the previous node stored. */
-  private static final class ReadStateViaParam extends BasePublisherNode {
-    ReadStateViaParam() {
-      super("read_state_via_param");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Mono.just("Final Result: " + context.getState().get("appended_text") + "!");
-    }
+  private static FunctionNode<Object, String> readStateViaParam() {
+    return FunctionNodes.of(
+        "read_state_via_param",
+        Object.class,
+        String.class,
+        (ctx, input) -> "Final Result: " + ctx.getState().get("appended_text") + "!");
   }
 
   private StateWorkflowJava() {}
