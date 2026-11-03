@@ -37,6 +37,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.ai.FirebaseAI
+import com.google.firebase.ai.type.GenerativeBackend
 import kotlin.runCatching
 import kotlin.test.Test
 import kotlinx.coroutines.flow.toList
@@ -76,8 +77,11 @@ class FirebaseRoomSessionIntegrationTest {
     private const val APP_NAME = "firebase room session integration tests"
     private const val TEST_DB_NAME = "firebase_room_session_integration_test.db"
 
-    /** Model used when [EnvVars.FIREBASE_MODEL_NAME] is unset. */
-    private const val DEFAULT_MODEL_NAME = "gemini-flash-latest"
+    /**
+     * Model used when [EnvVars.FIREBASE_MODEL_NAME] is unset. This names a specific model because
+     * Agent Platform does not serve `-latest` aliases.
+     */
+    private const val DEFAULT_MODEL_NAME = "gemini-3.8-flash"
 
     private object EnvVars {
       const val FIREBASE_API_KEY = "FIREBASE_API_KEY"
@@ -166,12 +170,15 @@ class FirebaseRoomSessionIntegrationTest {
     Assume.assumeFalse("firebase integration test disabled", itDisabled)
     initFirebaseApp()
     Assume.assumeTrue("unable to initialize firebase app", this::firebaseApp.isInitialized)
-    // A rolling `-latest` alias rather than a pinned version: a pinned model can be capacity
-    // constrained and answer 503 UNAVAILABLE for hours, which fails this test everywhere at once.
     val modelName =
       System.getenv(EnvVars.FIREBASE_MODEL_NAME)?.ifEmpty { null } ?: DEFAULT_MODEL_NAME
     // Retry transient endpoint errors (e.g. 503 from an overloaded model) with exponential backoff.
-    firebaseModel = Firebase.create(modelName, FirebaseAI.getInstance(firebaseApp)).withRetry()
+    firebaseModel =
+      Firebase.create(
+          modelName,
+          FirebaseAI.getInstance(firebaseApp, GenerativeBackend.agentPlatform()),
+        )
+        .withRetry()
 
     context = ApplicationProvider.getApplicationContext()
     context.deleteDatabase(TEST_DB_NAME)

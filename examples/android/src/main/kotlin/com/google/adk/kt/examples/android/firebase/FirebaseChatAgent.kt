@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.FirebaseAI
+import com.google.firebase.ai.type.GenerativeBackend
 
 /**
  * Builds the [LlmAgent] used by [FirebaseChatActivity], backed by the Firebase AI (Gemini) model
@@ -33,16 +34,21 @@ internal object FirebaseChatAgent {
   const val NAME: String = "firebase_agent"
 
   /**
-   * The Firebase AI model to use. Any model available to your Firebase project works; override it
-   * if this one is not enabled for you.
+   * The Firebase AI model to use. Any model the Agent Platform Gemini API offers your Firebase
+   * project works, except `-latest` aliases. Override this value if this model is not enabled for
+   * you.
    */
-  private const val MODEL_NAME: String = "gemini-flash-latest"
+  private const val MODEL_NAME: String = "gemini-3.8-flash"
 
   /** Builds the agent against the given (already initialized) [firebaseApp]. */
   fun create(firebaseApp: FirebaseApp): LlmAgent =
     LlmAgent(
       name = NAME,
-      model = Firebase.create(MODEL_NAME, FirebaseAI.getInstance(firebaseApp)),
+      model =
+        Firebase.create(
+          MODEL_NAME,
+          FirebaseAI.getInstance(firebaseApp, GenerativeBackend.agentPlatform()),
+        ),
       instruction =
         Instruction(
           """

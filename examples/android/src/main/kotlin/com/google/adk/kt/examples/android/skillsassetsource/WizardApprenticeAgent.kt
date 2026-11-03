@@ -24,6 +24,7 @@ import com.google.adk.kt.skills.AssetSkillSource
 import com.google.adk.kt.tools.SkillToolset
 import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.FirebaseAI
+import com.google.firebase.ai.type.GenerativeBackend
 
 /**
  * Builds the "wizard's apprentice" [LlmAgent] used by [SkillsAssetSourceActivity].
@@ -38,10 +39,11 @@ internal object WizardApprenticeAgent {
   const val NAME: String = "wizard_apprentice"
 
   /**
-   * The Firebase AI model to use. Any model available to your Firebase project works; override it
-   * if this one is not enabled for you.
+   * The Firebase AI model to use. Any model the Agent Platform Gemini API offers your Firebase
+   * project works, except `-latest` aliases. Override this value if this model is not enabled for
+   * you.
    */
-  private const val MODEL_NAME: String = "gemini-flash-latest"
+  private const val MODEL_NAME: String = "gemini-3.8-flash"
 
   /**
    * Builds the agent against the given (already initialized) [firebaseApp], reading skills from
@@ -50,7 +52,11 @@ internal object WizardApprenticeAgent {
   fun create(context: Context, firebaseApp: FirebaseApp): LlmAgent =
     LlmAgent(
       name = NAME,
-      model = Firebase.create(MODEL_NAME, FirebaseAI.getInstance(firebaseApp)),
+      model =
+        Firebase.create(
+          MODEL_NAME,
+          FirebaseAI.getInstance(firebaseApp, GenerativeBackend.agentPlatform()),
+        ),
       instruction =
         Instruction(
           """

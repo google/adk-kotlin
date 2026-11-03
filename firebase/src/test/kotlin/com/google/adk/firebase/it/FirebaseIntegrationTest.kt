@@ -41,6 +41,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.ai.FirebaseAI
+import com.google.firebase.ai.type.GenerativeBackend
 import kotlin.runCatching
 import kotlin.test.Test
 import kotlinx.coroutines.flow.toList
@@ -64,8 +65,11 @@ class FirebaseIntegrationTest {
      */
     private const val FIREBASE_APP_NAME = "adk-firebase-integration-test"
 
-    /** Model used when [EnvVars.FIREBASE_MODEL_NAME] is unset. */
-    private const val DEFAULT_MODEL_NAME = "gemini-flash-latest"
+    /**
+     * Model used when [EnvVars.FIREBASE_MODEL_NAME] is unset. This names a specific model because
+     * Agent Platform does not serve `-latest` aliases.
+     */
+    private const val DEFAULT_MODEL_NAME = "gemini-3.8-flash"
 
     private object EnvVars {
       const val FIREBASE_API_KEY = "FIREBASE_API_KEY"
@@ -177,12 +181,15 @@ class FirebaseIntegrationTest {
     Assume.assumeFalse("firebase integration test disabled", itDisabled)
     initFirebaseApp()
     Assume.assumeTrue("unable to initialize firebase app", this::firebaseApp.isInitialized)
-    // A rolling `-latest` alias rather than a pinned version: a pinned model can be capacity
-    // constrained and answer 503 UNAVAILABLE for hours, which fails this test everywhere at once.
     val modelName =
       System.getenv(EnvVars.FIREBASE_MODEL_NAME)?.ifEmpty { null } ?: DEFAULT_MODEL_NAME
     // Retry transient endpoint errors (e.g. 503 from an overloaded model) with exponential backoff.
-    firebaseModel = Firebase.create(modelName, FirebaseAI.getInstance(firebaseApp)).withRetry()
+    firebaseModel =
+      Firebase.create(
+          modelName,
+          FirebaseAI.getInstance(firebaseApp, GenerativeBackend.agentPlatform()),
+        )
+        .withRetry()
   }
 
   @Test

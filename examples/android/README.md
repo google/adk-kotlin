@@ -107,7 +107,10 @@ chat, LiteRT-LM chat) don't need any of this. Two ways, in order of preference:
 This mirrors what a normal Firebase Android developer does.
 
 1.  In the [Firebase console](https://console.firebase.google.com/), open your
-    project (or create one) and enable the **Firebase AI Logic** / Gemini API.
+    project (or create one) and set up **Firebase AI Logic** with the **Agent
+    Platform Gemini API** (formerly Vertex AI). This provider requires the
+    project to be on the pay-as-you-go
+    [pricing plan](https://firebase.google.com/docs/ai-logic/pricing).
 2.  Register an **Android app** with the package name
     **`com.google.adk.kt.examples.android`** (this is the `applicationId` in
     [`build.gradle.kts`](build.gradle.kts); change both if you prefer your own).
