@@ -148,6 +148,8 @@ internal class GeminiLiveConnection(
   private val closeTimeout: Duration = CLOSE_SESSION_TIMEOUT,
   // The collector's context; its Job is dropped so the pump keeps its own lifecycle.
   pumpContext: CoroutineContext = EmptyCoroutineContext,
+  // Whether the session runs on Vertex AI, where sent contents must not carry part metadata.
+  private val vertexAi: Boolean = false,
 ) : SingleCollectorLiveConnection() {
 
   /**
@@ -494,7 +496,8 @@ internal class GeminiLiveConnection(
 
   override suspend fun sendHistory(history: List<Content>) {
     // Drops audio, which corrupts a replay, and `_adk_live` references the model can't resolve.
-    val contents = history.map { it.withoutReplayOnlyParts() }.filter { it.parts.isNotEmpty() }
+    val contents =
+      history.map { it.withoutReplayOnlyParts().forBackend() }.filter { it.parts.isNotEmpty() }
     if (contents.isEmpty()) {
       logger.debug { "No history to send after dropping replay-only parts." }
       return
@@ -514,8 +517,13 @@ internal class GeminiLiveConnection(
       session.sendToolResponse(functionResponses.map { it.toGenaiSdk() })
       return
     }
-    session.sendClientContent(listOf(input.content.toGenaiSdk()), turnComplete = !input.partial)
+    session.sendClientContent(
+      listOf(input.content.forBackend().toGenaiSdk()),
+      turnComplete = !input.partial,
+    )
   }
+
+  private fun Content.forBackend(): Content = if (vertexAi) withoutPartMetadata() else this
 
   override suspend fun sendRealtime(input: RealtimeInput) {
     when (input) {

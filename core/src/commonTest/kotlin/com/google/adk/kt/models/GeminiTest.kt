@@ -146,7 +146,7 @@ class GeminiTest {
       )
     val request = LlmRequest(model = null, contents = reqContents, config = GenerateContentConfig())
 
-    val prepared = request.prepareGenerateContentRequest(sanitize = true)
+    val prepared = request.prepareGenerateContentRequest(vertexAi = false)
 
     // Should:
     // 1. Sanitize the string display name
@@ -163,6 +163,42 @@ class GeminiTest {
       .isEqualTo(
         "Continue processing previous requests as instructed. Exit or provide a summary if no more outputs are needed."
       )
+  }
+
+  @Test
+  fun sanitizeForVertexAi_partWithMetadata_dropsOnlyMetadata() {
+    val blob = Blob(mimeType = "text/plain", data = "data".toByteArray(), displayName = "data.txt")
+    val request =
+      LlmRequest(
+        model = null,
+        contents =
+          mutableListOf(
+            userMessage(
+              Part(text = "Here it is."),
+              Part(inlineData = blob, partMetadata = mapOf("meta" to "data")),
+            )
+          ),
+        config = GenerateContentConfig(),
+      )
+
+    val sanitized = request.sanitizeForVertexAi()
+
+    assertThat(sanitized.contents.single().parts)
+      .containsExactly(Part(text = "Here it is."), Part(inlineData = blob))
+      .inOrder()
+  }
+
+  @Test
+  fun prepareGenerateContentRequest_vertexAi_dropsPartMetadataAndKeepsLabels() {
+    val part = Part(text = "Hi", partMetadata = mapOf("meta" to "data"))
+    val config = GenerateContentConfig(labels = mapOf("team" to "adk"))
+    val request =
+      LlmRequest(model = null, contents = mutableListOf(userMessage(part)), config = config)
+
+    val prepared = request.prepareGenerateContentRequest(vertexAi = true)
+
+    assertThat(prepared.contents.single().parts.single().partMetadata).isNull()
+    assertThat(prepared.config.labels).isEqualTo(mapOf("team" to "adk"))
   }
 
   @Test

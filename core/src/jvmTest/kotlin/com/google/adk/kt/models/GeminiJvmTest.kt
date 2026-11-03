@@ -26,6 +26,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.SpeechConfig
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
@@ -38,6 +39,7 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Base64
 import java.util.Date
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -272,6 +274,28 @@ class GeminiJvmTest {
   }
 
   @Test
+  fun generateContent_vertexAi_leavesPartMetadataOutOfRequest() {
+    mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
+    val part = Part(text = "Hello", partMetadata = mapOf("meta" to "data"))
+
+    runBlocking {
+      vertexAiClient().use { client ->
+        val unused =
+          Gemini(client, "gemini-3.1-flash-preview")
+            .generateContent(
+              LlmRequest(contents = listOf(userMessage(part)), config = GenerateContentConfig()),
+              stream = false,
+            )
+            .toList()
+      }
+    }
+
+    val body = takeRequestBody()
+    assertThat(body).contains("Hello")
+    assertThat(body).doesNotContain("partMetadata")
+  }
+
+  @Test
   fun generateContent_callerSuppliedClient_attachesAdkTrackingHeaders() {
     mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
 
@@ -316,6 +340,28 @@ class GeminiJvmTest {
     }
 
     assertTrackingHeaders(mockServer.takeRequest(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+  }
+
+  @Test
+  @OptIn(ExperimentalLiveApi::class)
+  fun connect_vertexAi_leavesPartMetadataOutOfClientContent() {
+    val server = RecordingLiveServer()
+    mockServer.enqueue(MockResponse.Builder().webSocketUpgrade(server).build())
+    val content = userMessage(Part(text = "Hello", partMetadata = mapOf("meta" to "data")))
+
+    // The SDK throws if part metadata reaches its Vertex AI converter.
+    runBlocking {
+      vertexAiClient().use { client ->
+        val connection = Gemini(client, "gemini-live-test").connect(LlmRequest())
+        connection.sendContent(content)
+        connection.closeSession()
+      }
+    }
+
+    val frame = server.messages.poll(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    assertThat(frame).contains("\"clientContent\"")
+    assertThat(frame).contains("Hello")
+    assertThat(frame).doesNotContain("partMetadata")
   }
 
   @Test
@@ -696,6 +742,15 @@ class GeminiJvmTest {
     assertThat(usage.totalTokenCount).isEqualTo(total)
   }
 
+  private fun vertexAiClient() =
+    Client(
+      project = "test-project",
+      location = "us-central1",
+      credentials = fakeVertexCredentials().credentials?.toGenaiSdk(),
+      enterprise = true,
+      httpOptions = HttpOptions(baseUrl = mockServer.url("/").toString()),
+    )
+
   private fun fakeVertexCredentials(): VertexCredentials =
     VertexCredentials(
       project = "test-project",
@@ -755,6 +810,18 @@ class GeminiJvmTest {
     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
       webSocket.close(code, null)
     }
+  }
+
+  /** Answers setup as [AnswerLiveSetup] does and keeps the client messages that follow it. */
+  private class RecordingLiveServer : WebSocketListener() {
+    val messages = LinkedBlockingQueue<String>()
+
+    override fun onMessage(webSocket: WebSocket, text: String) {
+      if ("\"setup\"" in text) AnswerLiveSetup.onMessage(webSocket, text) else messages.add(text)
+    }
+
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) =
+      AnswerLiveSetup.onClosing(webSocket, code, reason)
   }
 
   private class CollectorException : RuntimeException("collector failed")
