@@ -272,9 +272,9 @@ open class Context(
 
   /**
    * Records a state change in [actions] `stateDelta` (copy-on-write) so it appears in [state] and
-   * flushes on the next event. [State.TEMP_PREFIX] keys are never stored; keys without an `app:`,
-   * `user:` or `temp:` prefix must match the node's state schema, if any, and the checked value is
-   * stored.
+   * flushes on the next event. [State.TEMP_PREFIX] keys are never stored. Under a node's state
+   * schema, a key without a colon must be declared and its value must fit, unless the value is
+   * [State.REMOVED]; the checked value is stored.
    */
   fun updateState(key: String, value: Any) {
     val stored = effectiveStateSchema?.let { validateStateEntry(it, key, value) } ?: value
@@ -295,16 +295,12 @@ open class Context(
   }
 
   /**
-   * Checks one state write against [schema] and returns the value to store. A scoped key (`app:`,
-   * `user:`, or `temp:`) passes unchecked, as does the removal sentinel, which stands for the key's
-   * absence rather than a value of its type.
+   * Checks one state write against [schema] and returns the value to store. Any key containing a
+   * colon passes unchecked, as in ADK Python, since ADK keeps its own `<owner>:<key>` state beside
+   * the `app:`, `user:` and `temp:` scopes. So does the removal sentinel, which stands for absence.
    */
   private fun validateStateEntry(schema: Schema, key: String, value: Any): Any {
-    val scoped =
-      key.startsWith(State.APP_PREFIX) ||
-        key.startsWith(State.USER_PREFIX) ||
-        key.startsWith(State.TEMP_PREFIX)
-    if (scoped || value === State.REMOVED) return value
+    if (':' in key || value === State.REMOVED) return value
     val propertySchema =
       requireNotNull(schema.properties?.get(key)) {
         "validation error: state key '$key' is not declared in the state schema."

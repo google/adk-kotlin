@@ -47,8 +47,8 @@ import kotlinx.coroutines.flow.Flow
  * @property outputSchema Validates the output value the node emits with the same rules, and the
  *   checked value is the output. A value set with `Context.setOutput` and a message-as-output
  *   event's content are not checked.
- * @property stateSchema Declares the state keys the node uses. Child nodes inherit it unless they
- *   declare their own.
+ * @property stateSchema Declares the state keys the node uses; keys containing a colon are not
+ *   checked. Child nodes inherit it unless they declare their own.
  */
 interface Node {
   val name: String

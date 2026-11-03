@@ -166,6 +166,26 @@ class WorkflowSchemaTest {
   }
 
   @Test
+  fun stateSchema_keyWithAColon_passesUnchecked() {
+    // Arrange
+    val stateSchema =
+      Schema(type = Type.OBJECT, properties = mapOf("my:count" to Schema(type = Type.INTEGER)))
+    fun underSchema(node: Node) =
+      Workflow(name = "wf", edges = listOf(Edge(Start, node)), stateSchema = stateSchema)
+
+    // Act
+    val declared = runWorkflow(underSchema(SchemaStateNode("n", "my:count", "raw")))
+    val scoped = runWorkflow(underSchema(SchemaStateNode("n", "app:any", "raw")))
+    val onEvent =
+      runWorkflowAsApp(underSchema(SchemaDeltaNode("n", "adk_owner:key", "raw", merge = false)))
+
+    // Assert
+    assertEquals("raw", declared.written("my:count"))
+    assertEquals("raw", scoped.written("app:any"))
+    assertEquals("raw", onEvent.state["adk_owner:key"])
+  }
+
+  @Test
   fun stateSchema_rejectsAnUndeclaredKeyOrAValueThatDoesNotFit() {
     // Arrange
     val stateSchema =
@@ -180,13 +200,9 @@ class WorkflowSchemaTest {
         stateSchema = stateSchema,
       )
 
-    fun List<Event>.written(key: String) =
-      first { key in it.actions.stateDelta }.actions.stateDelta[key]
-
     // Act
     val box = runWorkflow(writing("box", mapOf("count" to 1)))
     val removed = runWorkflow(writing("count", State.REMOVED))
-    val scoped = runWorkflow(writing("app:any", "raw"))
     val quoted = runWorkflow(writing("count", "3"))
     val whole = runWorkflow(writing("count", 100.0))
 
@@ -195,7 +211,6 @@ class WorkflowSchemaTest {
     assertEquals(3L, quoted.written("count"))
     assertEquals(100L, whole.written("count"))
     assertEquals(State.REMOVED, removed.written("count"))
-    assertEquals("raw", scoped.written("app:any"))
     assertRejects("validation error: state key 'other' is not declared") {
       runWorkflow(writing("other", 1))
     }
@@ -241,6 +256,10 @@ class WorkflowSchemaTest {
     }
   }
 }
+
+/** Returns the value the first event writing [key] puts in its state delta. */
+private fun List<Event>.written(key: String): Any? =
+  first { key in it.actions.stateDelta }.actions.stateDelta[key]
 
 /** A minimal agent used as a graph node, with an optional [inputSchema]. */
 private class SchemaAgentNode(name: String, override val inputSchema: Schema? = null) :

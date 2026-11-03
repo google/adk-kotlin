@@ -47,7 +47,8 @@ import kotlinx.coroutines.flow.flow
  * @property inputSchema Validates the workflow's input before it runs.
  * @property outputSchema Validates the terminal node's output as the workflow's own output, which
  *   an enclosing workflow reads as this node's result.
- * @property stateSchema Declares the state keys the workflow and its nodes use.
+ * @property stateSchema Declares the state keys the workflow and its nodes use; keys containing a
+ *   colon are not checked.
  */
 @ExperimentalWorkflowApi
 class Workflow(

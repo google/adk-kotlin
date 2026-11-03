@@ -399,7 +399,8 @@ private constructor(
     }
 
     /**
-     * Sets the state keys the node uses, which child nodes inherit unless they declare their own.
+     * Sets the state keys the node uses; keys containing a colon are not checked. Child nodes
+     * inherit it unless they declare their own.
      */
     fun stateSchema(stateSchema: Schema?): Builder<I, O> = apply { this.stateSchema = stateSchema }
 
