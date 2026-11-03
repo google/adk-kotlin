@@ -21,6 +21,7 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.DEFAULT_TOOL_RUNNER
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.EventActions
@@ -68,7 +69,7 @@ import kotlinx.coroutines.flow.flow
  * tool may instead report a problem, such as a missing required parameter, by returning an error
  * map for a model to read. In a graph no model reads it: the error map becomes the node's output
  * and reaches the next node like any other value. A tool that requires confirmation returns its
- * placeholder error the same way.
+ * placeholder error the same way. A tool that returns a [Flow] fails the node as if it had thrown.
  *
  * **Identity.** Each call returns a new node. To use one tool at several places in a graph, convert
  * it once and reuse the returned node: two conversions share the tool's name, and a graph rejects
@@ -100,7 +101,8 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
       if (param !in args && param in state) args[param] = state[param]
     }
     val toolContext = ToolContext(context.invocationContext, functionCallId = Uuid.random())
-    val result = tool.run(toolContext, args)
+    // As in a turn outside a live run, a returned Flow fails the node.
+    val result = DEFAULT_TOOL_RUNNER(tool, toolContext, args)
     // Only the tool's deltas carry over; a node can't honor its other actions, such as a transfer.
     context.mergeEventActions(
       EventActions(

@@ -58,6 +58,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -1006,9 +1007,18 @@ internal fun RunConfig.forNewLiveSession(): RunConfig =
 internal typealias ToolRunner =
   suspend (tool: BaseTool, context: ToolContext, args: Map<String, Any?>) -> Any
 
-/** Calls [BaseTool.run] as is; every run but a live one uses it. */
+/**
+ * Calls [BaseTool.run] everywhere except a connected live run, and fails the call when the tool
+ * returns a [Flow].
+ */
 @get:JvmSynthetic
-internal val DEFAULT_TOOL_RUNNER: ToolRunner = { tool, context, args -> tool.run(context, args) }
+internal val DEFAULT_TOOL_RUNNER: ToolRunner = { tool, context, args ->
+  val result = tool.run(context, args)
+  check(result !is Flow<*>) {
+    "Only a connected live run can stream a tool's Flow; return a value instead."
+  }
+  result
+}
 
 /**
  * Returns [payload] as a function-response map: a [Map] keeps its string-keyed entries, and any

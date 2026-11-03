@@ -59,7 +59,9 @@ abstract class BaseTool(
    * [com.google.adk.kt.events.Event] goes to the caller only; the model stops the stream by calling
    * a `stop_streaming(function_name)` or `stopStreaming(functionName)` tool you declare, whose body
    * never runs. If the model makes a new call with the same arguments while the first flow is still
-   * streaming, that call is answered as already running and starts no second stream.
+   * streaming, that call is answered as already running and starts no second stream. Returning a
+   * flow anywhere else, including when a live run resumes an approved call before connecting, fails
+   * the call.
    */
   abstract suspend fun run(context: ToolContext, args: Map<String, Any?>): Any
 

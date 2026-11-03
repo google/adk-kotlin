@@ -602,6 +602,21 @@ class ToolNodeTest {
   }
 
   @Test
+  fun run_toolReturnsFlow_failsTheNode() {
+    // Arrange
+    val tool = DummyTool(name = "analyze") { _, _ -> flowOf(mapOf("rows" to 42)) }
+
+    // Act
+    val error = assertFailsWith<IllegalStateException> { runToolAfter(null, tool.asNode()) }
+
+    // Assert
+    assertEquals(
+      "Only a connected live run can stream a tool's Flow; return a value instead.",
+      error.message,
+    )
+  }
+
+  @Test
   fun asNode_defaults_usesToolNameAndDescription() {
     // Act
     val node = ToolNodeEchoTool("lookup").asNode()

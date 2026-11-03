@@ -19,6 +19,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.callbacks.AfterAgentCallback
@@ -27,6 +28,8 @@ import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmRequest
@@ -64,6 +67,7 @@ import com.google.adk.kt.testing.connectionDrop
 import com.google.adk.kt.testing.goAway
 import com.google.adk.kt.testing.handleUpdate
 import com.google.adk.kt.testing.inputTranscription
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
@@ -73,6 +77,7 @@ import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.storedBytes
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.turnComplete
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.GoogleSearchTool
@@ -9139,6 +9144,151 @@ class LlmAgentTurnTest {
       val answer = events.flatMap { it.functionResponses() }.single { it.id == "c1" }
       assertEquals(mapOf("result" to 0), answer.response)
     }
+  }
+
+  @Test
+  fun runAsync_toolReturnsAFlow_failsTheRun() {
+    runBlocking {
+      val runner = InMemoryRunner(agent = flowToolAgent())
+
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run")).toList()
+        }
+
+      assertEquals(
+        "Only a connected live run can stream a tool's Flow; return a value instead.",
+        failure.message,
+      )
+    }
+  }
+
+  @Test
+  fun runAsync_rootNodeAgentToolReturnsAFlow_failsTheRun() {
+    runBlocking {
+      val runner = InMemoryRunner(app = App(appName = "node_app", rootNode = flowToolAgent()))
+
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("run")).toList()
+        }
+
+      assertEquals(
+        "Only a connected live run can stream a tool's Flow; return a value instead.",
+        failure.message,
+      )
+    }
+  }
+
+  @Test
+  fun runLive_approvedFlowToolResumes_failsBeforeConnecting() {
+    runBlocking {
+      // A live run asks for no approval, so the one it resumes was given to an earlier turn's call.
+      val log = mutableListOf<String>()
+      val gated =
+        object : FunctionTool("my_function", "Needs approval.", requiresConfirmation = true) {
+          override fun declaration() = null
+
+          override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
+            log += "tool"
+            return flowOf(mapOf("rows" to 42))
+          }
+        }
+      val model =
+        RecordingLiveModel(
+          RecordingLiveConnection(listOf(turnComplete())),
+          onConnect = { log += "connect" },
+        )
+      val agent = LlmAgent(name = "LiveAgent", model = model, tools = listOf(gated))
+      val session = sessionWithApprovedCall(agent.name, toolName = "my_function", callId = "orig_1")
+
+      // The timeout keeps a hang from stalling the suite; it is not the failure this test expects.
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          withTimeout(5.seconds) {
+            agent.runLive(liveContextFor(agent, session = session)).toList()
+          }
+        }
+
+      assertEquals(
+        "Only a connected live run can stream a tool's Flow; return a value instead.",
+        failure.message,
+      )
+      assertEquals(listOf("tool"), log)
+    }
+  }
+
+  /** A session in which [agentName]'s call [callId] to [toolName] asked for approval and got it. */
+  private suspend fun sessionWithApprovedCall(
+    agentName: String,
+    toolName: String,
+    callId: String,
+  ): Session {
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "live-session")
+    val session = sessionService.createSession(key)
+    val args = mapOf("param" to "value")
+    val original =
+      mapOf(
+        FunctionCall.NAME_KEY to toolName,
+        FunctionCall.ARGS_KEY to args,
+        FunctionCall.ID_KEY to callId,
+      )
+    val confirm = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    val history =
+      listOf(
+        Event(author = agentName, content = modelFunctionCall(toolName, args, id = callId)),
+        Event(
+          author = agentName,
+          content =
+            userFunctionResponse(
+              toolName,
+              callId,
+              response = mapOf("error" to "requires confirmation"),
+            ),
+          actions =
+            EventActions().apply {
+              requestedToolConfirmations[callId] =
+                ToolConfirmation(confirmed = false, hint = "please confirm")
+            },
+        ),
+        Event(
+          author = agentName,
+          content =
+            modelFunctionCall(
+              confirm,
+              mapOf(FunctionCall.ORIGINAL_FUNCTION_CALL_KEY to original),
+              id = "synth_1",
+            ),
+        ),
+        Event(
+          author = Role.USER,
+          content =
+            userFunctionResponse(
+              confirm,
+              "synth_1",
+              response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
+            ),
+        ),
+      )
+    for (event in history) {
+      val unused = sessionService.appendEvent(session, event)
+    }
+    return checkNotNull(sessionService.getSession(key))
+  }
+
+  /** An agent whose model calls a tool that returns a [kotlinx.coroutines.flow.Flow]. */
+  private fun flowToolAgent(): LlmAgent {
+    val tool = DummyTool(name = "analyze") { _, _ -> flowOf(mapOf("rows" to 42)) }
+    val model =
+      DummyModel.createSequential(
+        "model",
+        listOf(
+          modelFunctionCallResponse("analyze", id = "c1"),
+          LlmResponse(content = modelMessage("done")),
+        ),
+      )
+    return LlmAgent(name = "agent", model = model, tools = listOf(tool))
   }
 
   private class TeardownFailure : RuntimeException("teardown failed")
