@@ -29,8 +29,15 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+
+private val MOCK_INPUT_CALL =
+  FunctionCall(name = "mock_function_call_for_required_user_input", id = "mock-id")
+
+private fun mockInputAnswer(response: Map<String, Any?>) =
+  FunctionResponse(name = MOCK_INPUT_CALL.name, response = response, id = MOCK_INPUT_CALL.id)
 
 class BaseRemoteA2AAgentTest {
 
@@ -155,6 +162,125 @@ class BaseRemoteA2AAgentTest {
     assertEquals(
       listOf("For context:", "[other-agent] said: Use the saved key."),
       result.content?.parts?.map { it.text },
+    )
+  }
+
+  @Test
+  fun prepareOutboundEvent_answerToMockInputCall_sendsAnswerAsText() {
+    val agent = TestRemoteAgent("my-agent")
+    val answer = Part(functionResponse = mockInputAnswer(mapOf("result" to "Blue")))
+
+    val result =
+      agent.testPrepareOutboundEvent(contextAnswering(agent, listOf(MOCK_INPUT_CALL), answer))
+
+    assertEquals(listOf(Part(text = "Blue")), result.content?.parts)
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_structuredAnswerToMockInputCall_sendsItAsJson() {
+    val agent = TestRemoteAgent("my-agent")
+    val answer = Part(functionResponse = mockInputAnswer(mapOf("color" to "blue", "shade" to 3)))
+
+    val result =
+      agent.testPrepareOutboundEvent(contextAnswering(agent, listOf(MOCK_INPUT_CALL), answer))
+
+    assertEquals(listOf("""{"color":"blue","shade":3}"""), result.content?.parts?.map { it.text })
+  }
+
+  @Test
+  fun prepareOutboundEvent_singleKeyAnswerOtherThanResult_sendsItAsJsonOnThePausedTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val answer = Part(functionResponse = mockInputAnswer(mapOf("company_name" to "Okta")))
+
+    val result =
+      agent.testPrepareOutboundEvent(contextAnswering(agent, listOf(MOCK_INPUT_CALL), answer))
+
+    assertEquals(listOf(Part(text = """{"company_name":"Okta"}""")), result.content?.parts)
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_emptyAnswerToMockInputCall_sendsTheAnswerFromHistory() {
+    val agent = TestRemoteAgent("my-agent")
+    val answer = mockInputAnswer(emptyMap())
+
+    val result =
+      agent.testPrepareOutboundEvent(
+        contextAnswering(agent, listOf(MOCK_INPUT_CALL), Part(functionResponse = answer))
+      )
+
+    // With no text to resume with, the history goes out instead, carrying the function response.
+    assertEquals(listOf(Part(functionResponse = answer)), result.content?.parts)
+    assertNull(result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_nullResultAnswerToMockInputCall_sendsTheAnswerFromHistory() {
+    val agent = TestRemoteAgent("my-agent")
+    val answer = mockInputAnswer(mapOf("result" to null))
+
+    val result =
+      agent.testPrepareOutboundEvent(
+        contextAnswering(agent, listOf(MOCK_INPUT_CALL), Part(functionResponse = answer))
+      )
+
+    assertEquals(listOf(Part(functionResponse = answer)), result.content?.parts)
+    assertNull(result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_answerToMockAuthCall_isLeftOut() {
+    val agent = TestRemoteAgent("my-agent")
+    val authCall = FunctionCall(name = "mock_function_call_for_required_user_auth", id = "mock-id")
+    val token =
+      FunctionResponse(name = "my-auth", response = mapOf("result" to "t0k3n"), id = "mock-id")
+
+    val result =
+      agent.testPrepareOutboundEvent(
+        contextAnswering(agent, listOf(authCall), Part(functionResponse = token))
+      )
+
+    assertEquals(true, result.content?.parts?.isEmpty())
+  }
+
+  @Test
+  fun prepareOutboundEvent_mockAnswerBesideOtherResponse_staysResume() {
+    val agent = TestRemoteAgent("my-agent")
+    val calls = listOf(MOCK_INPUT_CALL, FunctionCall(name = "lookup", id = "fc-id"))
+    val mockAnswer = mockInputAnswer(mapOf("result" to "Blue"))
+    val lookup = FunctionResponse(name = "lookup", response = mapOf("ok" to true), id = "fc-id")
+    val context =
+      contextAnswering(
+        agent,
+        calls,
+        Part(functionResponse = mockAnswer),
+        Part(functionResponse = lookup),
+        Part(text = "and more"),
+      )
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertEquals(listOf(mockAnswer, lookup), result.content?.parts?.map { it.functionResponse })
+  }
+
+  @Test
+  fun prepareOutboundEvent_answerWithoutMockCall_keepsText() {
+    val agent = TestRemoteAgent("my-agent")
+    val lookup = FunctionResponse(name = "lookup", response = mapOf("ok" to true), id = "fc-id")
+    val context =
+      contextAnswering(
+        agent,
+        listOf(FunctionCall(name = "lookup", id = "fc-id")),
+        Part(functionResponse = lookup),
+        Part(text = "and more"),
+      )
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertEquals(
+      listOf(Part(functionResponse = lookup), Part(text = "and more")),
+      result.content?.parts,
     )
   }
 
@@ -304,6 +430,30 @@ class BaseRemoteA2AAgentTest {
     assertEquals(
       "Failed to serialize response",
       result.customMetadata?.get(BaseRemoteA2AAgent.RESPONSE_ERROR),
+    )
+  }
+
+  /** A session where [agent] made [calls] on a remote task and the user answers with [answer]. */
+  private fun contextAnswering(
+    agent: TestRemoteAgent,
+    calls: List<FunctionCall>,
+    vararg answer: Part,
+  ): InvocationContext {
+    val remoteCalls =
+      Event(
+        author = agent.name,
+        content = Content(role = Role.MODEL, parts = calls.map { Part(functionCall = it) }),
+        customMetadata = mapOf("adk_task_id" to "task-123", "adk_context_id" to "ctx-456"),
+      )
+    val userAnswer =
+      Event(author = Role.USER, content = Content(role = Role.USER, parts = answer.toList()))
+    val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
+    session.events.addAll(listOf(remoteCalls, userAnswer))
+    return InvocationContext(
+      invocationId = "inv-123",
+      agent = agent,
+      session = session,
+      runConfig = null,
     )
   }
 }

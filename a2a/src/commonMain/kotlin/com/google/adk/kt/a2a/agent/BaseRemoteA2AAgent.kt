@@ -23,6 +23,7 @@ import com.google.adk.kt.a2a.converters.credentialCallIds
 import com.google.adk.kt.a2a.converters.extractPreprocessedEvents
 import com.google.adk.kt.a2a.converters.findUserFunctionCall
 import com.google.adk.kt.a2a.converters.taskId
+import com.google.adk.kt.a2a.converters.withMockCallAnswersAsText
 import com.google.adk.kt.a2a.converters.withoutCredentialParts
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
@@ -91,6 +92,7 @@ abstract class BaseRemoteA2AAgent(
         context.session.events
           .last()
           .withoutCredentialParts(context.session.events.credentialCallIds())
+          .withMockCallAnswersAsText(callEvent.functionCalls())
       // With nothing left to resume with, the scrubbed history below is sent instead.
       if (!responseEvent.content?.parts.isNullOrEmpty()) {
         val updatedMetadata = (responseEvent.customMetadata ?: emptyMap()).toMutableMap()

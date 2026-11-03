@@ -48,6 +48,7 @@ import java.util.Base64
 import kotlin.enums.enumEntries
 import kotlin.reflect.KClass
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
 import org.a2aproject.sdk.client.ClientEvent
 import org.a2aproject.sdk.client.MessageEvent
@@ -114,6 +115,7 @@ internal const val TYPE_TOOL_RESPONSE = "tool_response"
 internal const val DEFAULT_ERROR_MESSAGE = "A2A task failed"
 
 // Wrap a DataPart carried as an inline text blob; the other ADK ports use the same tags.
+private const val DATA_PART_MIME_TYPE = "text/plain"
 private const val DATA_PART_START_TAG = "<a2a_datapart_json>"
 private const val DATA_PART_END_TAG = "</a2a_datapart_json>"
 
@@ -192,14 +194,21 @@ internal fun Message.toAdkEvent(invocationContext: InvocationContext): Event? {
 }
 
 /**
- * Converts an A2A message to an ADK event, marking every part as a thought when [isPending], or
- * returns null if none of its parts converted.
+ * Converts the status message of a task in [state] to an ADK event, or returns null if none of its
+ * parts converted. A pending task's parts become thoughts, and a task waiting on the user keeps the
+ * ids of the remote's long-running calls, as [Task.toAdkEvent] does.
  */
-internal fun Message.toAdkEvent(invocationContext: InvocationContext, isPending: Boolean): Event? {
-  val adkParts = parts.toAdk().map { if (isPending) it.copy(thought = true) else it }
+internal fun Message.toAdkEvent(invocationContext: InvocationContext, state: TaskState): Event? {
+  val converted = parts.convertParts()
+  val adkParts =
+    converted.parts.map { if (state in PENDING_STATES) it.copy(thought = true) else it }
   if (adkParts.isEmpty()) return null
   return remoteAgentEvent(invocationContext)
-    .copy(content = Content(role = Role.MODEL, parts = adkParts))
+    .copy(
+      content = Content(role = Role.MODEL, parts = adkParts),
+      longRunningToolIds =
+        if (state.isInterruptedState()) converted.longRunningToolIds else emptySet(),
+    )
 }
 
 /** Converts an A2A [Task] to an ADK [Event]. */
@@ -248,6 +257,7 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
         turnComplete = isFinal,
         errorMessage = errorMessage,
       )
+      .withUserInputCall(status.state())
 
   return event.updateEventMetadata(metadata, id, contextId, metadataParser)
 }
@@ -345,13 +355,14 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
             remoteAgentEvent(context)
               .copy(errorMessage = msg.parts.filterIsInstance<TextPart>().firstOrNull()?.text)
           } else {
-            msg.toAdkEvent(context, PENDING_STATES.contains(taskState))
+            msg.toAdkEvent(context, taskState)
           }
         }
 
       val finalEvent =
         if (status.state().isFinalState() || status.state().isInterruptedState()) {
-          val baseEvent = messageEvent ?: remoteAgentEvent(context)
+          val baseEvent =
+            (messageEvent ?: remoteAgentEvent(context)).withUserInputCall(status.state())
           baseEvent.copy(
             turnComplete = true,
             partial = false,
@@ -460,7 +471,7 @@ private fun DataPart.toInlineJsonPart(): Part {
   return Part(
     inlineData =
       Blob(
-        mimeType = "text/plain",
+        mimeType = DATA_PART_MIME_TYPE,
         data = "$DATA_PART_START_TAG$json$DATA_PART_END_TAG".encodeToByteArray(),
       )
   )
@@ -661,3 +672,65 @@ internal fun TaskState.isInterruptedState(): Boolean {
     else -> false
   }
 }
+
+/**
+ * Replaces the last part carrying a prompt with a long-running call when the remote task waits in
+ * [state] for the user, so the app can answer a remote that sent no long-running call of its own.
+ */
+private fun Event.withUserInputCall(state: TaskState): Event {
+  if (longRunningToolIds.isNotEmpty()) return this
+  val kind =
+    when (state) {
+      TaskState.TASK_STATE_INPUT_REQUIRED -> UserInputCall.INPUT
+      TaskState.TASK_STATE_AUTH_REQUIRED -> UserInputCall.AUTH
+      else -> return this
+    }
+  val content = content ?: return this
+  for (index in content.parts.indices.reversed()) {
+    val prompt = content.parts[index].userInputPrompt()
+    if (!prompt.isUsablePrompt()) continue
+    val callId = Uuid.random()
+    val call = FunctionCall(name = kind.callName, args = mapOf(kind.argsKey to prompt), id = callId)
+    val parts = content.parts.toMutableList().apply { set(index, Part(functionCall = call)) }
+    return copy(content = content.copy(parts = parts), longRunningToolIds = setOf(callId))
+  }
+  return this
+}
+
+/** The call made up for a remote task waiting on the user, and the key its prompt goes under. */
+private enum class UserInputCall(val callName: String, val argsKey: String) {
+  INPUT(MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT, "input_required"),
+  AUTH(MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH, "auth_required"),
+}
+
+/** Returns the prompt this part carries: its text, or the data of a DataPart carried as JSON. */
+private fun Part.userInputPrompt(): Any? {
+  if (!text.isNullOrEmpty()) return text
+  val blob = inlineData?.takeIf { it.mimeType == DATA_PART_MIME_TYPE } ?: return null
+  val tagged = blob.data?.decodeToString() ?: return null
+  val json = tagged.removeSurrounding(DATA_PART_START_TAG, DATA_PART_END_TAG)
+  if (json.length == tagged.length) return null
+  // On A2A 1.x the JSON is the DataPart's data itself, not the A2A 0.3 part whose `data` entry ADK
+  // Python reads, so all of it is the prompt.
+  return try {
+    jsonElementToAny(adkJson.parseToJsonElement(json))
+  } catch (e: SerializationException) {
+    // The exception message can quote the bytes, so log only the type.
+    logger.warn("Ignoring inline JSON that does not parse as a prompt (${e::class.simpleName})")
+    null
+  }
+}
+
+/**
+ * Whether [this] counts as a prompt: as in a Python condition, null, false, zero and empty do not.
+ */
+private fun Any?.isUsablePrompt(): Boolean =
+  when (this) {
+    null -> false
+    is Boolean -> this
+    is Number -> toDouble() != 0.0
+    is String -> isNotEmpty()
+    is Collection<*> -> isNotEmpty()
+    is Map<*, *> -> isNotEmpty()
+    else -> true
+  }

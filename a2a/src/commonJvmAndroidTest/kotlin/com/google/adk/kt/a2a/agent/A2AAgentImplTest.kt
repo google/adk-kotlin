@@ -25,6 +25,7 @@ import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
@@ -83,6 +84,7 @@ import org.mockito.kotlin.isNull
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.timeout
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.whenever
@@ -956,6 +958,43 @@ class A2AAgentImplTest {
     assertThat(events).isNotEmpty()
     assertThat(events.last().turnComplete).isTrue()
   }
+
+  @Test
+  fun runAsync_answerToInputRequiredTask_resumesTaskWithAnswerText() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      val replies =
+        ArrayDeque(
+          listOf(
+            createTaskEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+            createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Painted."),
+          )
+        )
+      mockStreamResponse(this) { consumer -> consumer.accept(replies.removeFirst(), agentCard) }
+
+      val firstTurn =
+        runner.runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
+      val callEvent = firstTurn.toList().single { it.functionCalls().isNotEmpty() }
+      val call = callEvent.functionCalls().single()
+      assertThat(call.name).isEqualTo("mock_function_call_for_required_user_input")
+      assertThat(call.args).containsExactly("input_required", "Which color?")
+      assertThat(callEvent.longRunningToolIds).containsExactly(call.id)
+
+      val answer = userFunctionResponse(call.name, call.id, mapOf("result" to "Blue"))
+      runner.runAsync("user", "s1", newMessage = answer, runConfig = blocking).toList()
+
+      val messages = argumentCaptor<Message>()
+      verify(mockClient, times(2))
+        .sendMessage(
+          messages.capture(),
+          any<List<BiConsumer<ClientEvent, AgentCard>>>(),
+          any<Consumer<Throwable>>(),
+          isNull(),
+        )
+      assertThat(messages.secondValue.taskId()).isEqualTo("task-1")
+      assertThat(messages.secondValue.parts.map { (it as TextPart).text }).containsExactly("Blue")
+    }
 
   private fun createTestAgent(
     transportSupportsStreaming: Boolean = true,

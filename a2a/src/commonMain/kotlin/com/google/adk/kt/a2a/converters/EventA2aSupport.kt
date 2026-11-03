@@ -16,10 +16,14 @@
 package com.google.adk.kt.a2a.converters
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -45,7 +49,22 @@ internal object MetadataKeys {
 internal const val ADK_METADATA_TASK_ID = "adk_task_id"
 internal const val ADK_METADATA_CONTEXT_ID = "adk_context_id"
 
+/** Name of the call made up for a remote task waiting on user input. */
+internal const val MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT =
+  "mock_function_call_for_required_user_input"
+
+/** Name of the call made up for a remote task waiting on user authorization. */
+internal const val MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH =
+  "mock_function_call_for_required_user_auth"
+
 private const val REQUEST_CREDENTIAL_CALL_NAME = "adk_request_credential"
+
+/**
+ * Calls whose answers carry credentials. Only the answers are dropped: the mock auth call itself
+ * holds the remote's prompt.
+ */
+private val CREDENTIAL_CALL_NAMES =
+  setOf(REQUEST_CREDENTIAL_CALL_NAME, MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH)
 
 private val AUTH_CONFIG_ARG_KEYS = listOf("authConfig", "auth_config")
 
@@ -198,21 +217,24 @@ internal fun remoteCallAsUserPart(author: String, part: Part): Part? {
   }
 }
 
-/** Returns the ids of the credential requests in these events; null stands for an id-less one. */
+/**
+ * Returns the ids of the calls in these events whose answers carry credentials; null stands for an
+ * id-less one.
+ */
 internal fun List<Event>.credentialCallIds(): Set<String?> =
   flatMap { it.functionCalls() }
-    .filter { it.name == REQUEST_CREDENTIAL_CALL_NAME }
+    .filter { it.name in CREDENTIAL_CALL_NAMES }
     .mapTo(mutableSetOf()) { it.id }
 
 /**
- * Returns whether this part carries credentials: a credential request, a call whose `authConfig`
- * argument holds an AuthConfig, or an answer named for a credential request, answering one of
- * [credentialCallIds], or holding an AuthConfig. An answer without an id matches a request without
- * one.
+ * Returns whether this part carries credentials: an `adk_request_credential` call, a call whose
+ * `authConfig` argument holds an AuthConfig, or an answer named for one of [CREDENTIAL_CALL_NAMES],
+ * answering one of [credentialCallIds], or holding an AuthConfig. An answer without an id matches a
+ * call without one.
  */
 private fun Part.carriesCredential(credentialCallIds: Set<String?>): Boolean {
   functionResponse?.let { response ->
-    return response.name == REQUEST_CREDENTIAL_CALL_NAME ||
+    return response.name in CREDENTIAL_CALL_NAMES ||
       response.id in credentialCallIds ||
       isAuthConfig(response.response)
   }
@@ -228,6 +250,50 @@ internal fun Event.withoutCredentialParts(credentialCallIds: Set<String?>): Even
   val content = content ?: return this
   val kept = content.parts.filterNot { it.carriesCredential(credentialCallIds) }
   return if (kept.size == content.parts.size) this else copy(content = content.copy(parts = kept))
+}
+
+/**
+ * Returns this answer with each response to a mock input call among [calls] sent as text, since the
+ * remote asked a question and cannot read a response to a call it never made. If the answer also
+ * responds to another call, all responses are sent as is and its text is dropped, since an ADK
+ * runner rejects a message that mixes the two.
+ */
+internal fun Event.withMockCallAnswersAsText(calls: List<FunctionCall>): Event {
+  val content = content ?: return this
+  val inputCallIds =
+    calls
+      .filter { it.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT }
+      .mapNotNullTo(mutableSetOf()) { it.id }
+  val responses = content.parts.mapNotNull { it.functionResponse }
+  if (responses.none { it.id in inputCallIds }) return this
+  val staysResume = responses.any { it.id !in inputCallIds }
+  val parts =
+    content.parts.mapNotNull { part ->
+      val response = part.functionResponse
+      when {
+        response == null -> part.takeUnless { staysResume && it.text != null }
+        staysResume -> part
+        else -> answerText(response.response)?.let { Part(text = it) }
+      }
+    }
+  return copy(content = content.copy(parts = parts))
+}
+
+/**
+ * Returns the lone `result` value, or else the whole answer, as text: a string as is and anything
+ * else as JSON, which a remote can parse. Returns null if the answer is empty or its lone `result`
+ * is null.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun answerText(response: Map<String, Any?>): String? {
+  if (response.isEmpty()) return null
+  val value =
+    if (response.size == 1 && BaseTool.RESULT_KEY in response) {
+      response[BaseTool.RESULT_KEY] ?: return null
+    } else {
+      response
+    }
+  return value as? String ?: anyToJsonElement(value).toString()
 }
 
 // A serialized AuthConfig, bare or wrapped as {"result": ...}, has at least one of these keys.

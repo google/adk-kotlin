@@ -983,6 +983,164 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun taskToEvent_inputRequired_replacesLastTextWithLongRunningCall() {
+    val task =
+      taskWithStatusParts(TaskState.TASK_STATE_INPUT_REQUIRED, TextPart("Hi."), TextPart("Color?"))
+
+    val result = task.toAdkEvent(invocationContext)
+
+    val parts = result.content?.parts.orEmpty()
+    assertThat(parts.map { it.text }).containsExactly("Hi.", null).inOrder()
+    val call = parts[1].functionCall
+    assertThat(call?.name).isEqualTo("mock_function_call_for_required_user_input")
+    assertThat(call?.args).containsExactly("input_required", "Color?")
+    assertThat(result.longRunningToolIds).containsExactly(call?.id)
+  }
+
+  @Test
+  fun taskToEvent_authRequired_replacesTextWithAuthCall() {
+    val task = taskWithStatusParts(TaskState.TASK_STATE_AUTH_REQUIRED, TextPart("Sign in."))
+
+    val result = task.toAdkEvent(invocationContext)
+
+    val call = result.content?.parts?.single()?.functionCall
+    assertThat(call?.name).isEqualTo("mock_function_call_for_required_user_auth")
+    assertThat(call?.args).containsExactly("auth_required", "Sign in.")
+    assertThat(result.longRunningToolIds).containsExactly(call?.id)
+  }
+
+  @Test
+  fun taskToEvent_inputRequiredWithRemoteLongRunningCall_keepsText() {
+    val task =
+      taskWithStatusParts(
+        TaskState.TASK_STATE_INPUT_REQUIRED,
+        TextPart("Approve?"),
+        longRunningCallPart("call_lr"),
+      )
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.content?.parts?.first()?.text).isEqualTo("Approve?")
+    assertThat(result.longRunningToolIds).containsExactly("call_lr")
+  }
+
+  @Test
+  fun taskToEvent_inputRequiredWithoutPrompt_keepsParts() {
+    val file = FilePart(FileWithUri("image/png", "a.png", "gs://bucket/a.png"))
+    val task = taskWithStatusParts(TaskState.TASK_STATE_INPUT_REQUIRED, file, TextPart(""))
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.content?.parts?.map { it.functionCall }).containsExactly(null, null)
+    assertThat(result.longRunningToolIds).isEmpty()
+  }
+
+  @Test
+  fun taskToEvent_inputRequiredWithPromptOnlyInArtifact_replacesArtifactText() {
+    val file = FilePart(FileWithUri("image/png", "a.png", "gs://bucket/a.png"))
+    val task =
+      Task.builder(taskWithStatusParts(TaskState.TASK_STATE_INPUT_REQUIRED, file))
+        .artifacts(
+          listOf(
+            Artifact.builder().artifactId("artifact-1").parts(listOf(TextPart("Pick"))).build()
+          )
+        )
+        .build()
+
+    val result = task.toAdkEvent(invocationContext)
+
+    val call = result.content?.parts?.first()?.functionCall
+    assertThat(call?.args).containsExactly("input_required", "Pick")
+  }
+
+  @Test
+  fun taskToEvent_inputRequiredWithDataPrompt_usesItsData() {
+    val data = mapOf("question" to "Pick one", "options" to listOf("a", "b"))
+    val task = taskWithStatusParts(TaskState.TASK_STATE_INPUT_REQUIRED, DataPart(data))
+
+    val result = task.toAdkEvent(invocationContext)
+
+    val call = result.content?.parts?.single()?.functionCall
+    assertThat(call?.args).containsExactly("input_required", data)
+  }
+
+  @Test
+  fun taskToEvent_inputRequiredWithListDataPrompt_usesIt() {
+    val task =
+      taskWithStatusParts(TaskState.TASK_STATE_INPUT_REQUIRED, DataPart(listOf("red", "blue")))
+
+    val result = task.toAdkEvent(invocationContext)
+
+    val call = result.content?.parts?.single()?.functionCall
+    assertThat(call?.args).containsExactly("input_required", listOf("red", "blue"))
+  }
+
+  @Test
+  fun taskToEvent_inputRequiredWithFalsyDataPrompts_usesEarlierText() {
+    val falsyPrompts =
+      listOf(false, 0, "", listOf<Any>(), mapOf<String, Any>()).map { DataPart(it) }
+    val task =
+      taskWithStatusParts(
+        TaskState.TASK_STATE_INPUT_REQUIRED,
+        TextPart("Pick"),
+        *falsyPrompts.toTypedArray(),
+      )
+
+    val result = task.toAdkEvent(invocationContext)
+
+    val parts = result.content?.parts.orEmpty()
+    assertThat(parts[0].functionCall?.args).containsExactly("input_required", "Pick")
+    assertThat(parts.drop(1).mapNotNull { it.inlineData }).hasSize(5)
+  }
+
+  @Test
+  fun taskToEvent_completed_keepsText() {
+    val task = taskWithStatusParts(TaskState.TASK_STATE_COMPLETED, TextPart("Done."))
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.content?.parts?.single()?.text).isEqualTo("Done.")
+    assertThat(result.longRunningToolIds).isEmpty()
+  }
+
+  @Test
+  fun clientEventToEvent_inputRequiredStatusUpdate_replacesTextWithLongRunningCall() {
+    val event = statusUpdateWithParts(TaskState.TASK_STATE_INPUT_REQUIRED, TextPart("Color?"))
+
+    val result = event.toAdkEvent(invocationContext)
+
+    val call = result?.content?.parts?.single()?.functionCall
+    assertThat(call?.name).isEqualTo("mock_function_call_for_required_user_input")
+    assertThat(result?.longRunningToolIds).containsExactly(call?.id)
+    assertThat(result?.turnComplete).isTrue()
+  }
+
+  @Test
+  fun clientEventToEvent_inputRequiredStatusUpdateWithRemoteLongRunningCall_keepsIt() {
+    val event =
+      statusUpdateWithParts(
+        TaskState.TASK_STATE_INPUT_REQUIRED,
+        TextPart("Approve?"),
+        longRunningCallPart("call_lr"),
+      )
+
+    val result = event.toAdkEvent(invocationContext)
+
+    assertThat(result?.content?.parts?.first()?.text).isEqualTo("Approve?")
+    assertThat(result?.longRunningToolIds).containsExactly("call_lr")
+  }
+
+  @Test
+  fun clientEventToEvent_workingStatusUpdateWithRemoteLongRunningCall_keepsNoIds() {
+    val event = statusUpdateWithParts(TaskState.TASK_STATE_WORKING, longRunningCallPart("call_lr"))
+
+    val result = event.toAdkEvent(invocationContext)
+
+    assertThat(result?.content?.parts?.single()?.functionCall?.id).isEqualTo("call_lr")
+    assertThat(result?.longRunningToolIds).isEmpty()
+  }
+
+  @Test
   fun taskToEvent_withGroundingMetadata_returnsEvent() {
     val statusMessage =
       Message.builder()
@@ -1738,4 +1896,27 @@ class A2aConvertersTest {
 
   /** A file part whose bytes are not valid base64, so it cannot be converted. */
   private fun invalidBase64Part() = FilePart(FileWithBytes("text/plain", "bad.txt", "!!!"))
+
+  /** A function-call data part with call id [id] that the remote agent marks long-running. */
+  private fun longRunningCallPart(id: String) =
+    DataPart(
+      mapOf("name" to "lrTool", "id" to id, "args" to mapOf<String, Any>()),
+      mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_CALL, MetadataKeys.IS_LONG_RUNNING to true),
+    )
+
+  private fun statusWithParts(state: TaskState, parts: List<A2APart<*>>) =
+    TaskStatus(state, Message.builder().role(Message.Role.ROLE_AGENT).parts(parts).build(), null)
+
+  private fun taskWithStatusParts(state: TaskState, vararg parts: A2APart<*>): Task =
+    Task.builder()
+      .id("task-1")
+      .contextId("context-1")
+      .status(statusWithParts(state, parts.toList()))
+      .build()
+
+  private fun statusUpdateWithParts(state: TaskState, vararg parts: A2APart<*>): TaskUpdateEvent {
+    val status = statusWithParts(state, parts.toList())
+    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    return TaskUpdateEvent(task, TaskStatusUpdateEvent("task-1", status, "context-1", null))
+  }
 }
