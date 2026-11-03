@@ -47,7 +47,7 @@ class WireAliasCoverageTest {
    * The request bodies the routes decode: `/run` and `/run_sse` take the first, uploads the second,
    * and session creation the third.
    */
-  private val wireRoots: Map<String, KSerializer<*>> =
+  private val requestRoots: Map<String, KSerializer<*>> =
     mapOf(
       "AgentRunRequest" to AgentRunRequest.serializer(),
       "Part" to Part.serializer(),
@@ -55,15 +55,9 @@ class WireAliasCoverageTest {
     )
 
   @Test
-  fun everyMultiWordWireProperty_declaresItsSnakeCaseSpelling() {
-    assertThat(WireSchemaSurvey(wireRoots).missingAliases()).isEmpty()
-  }
-
-  @Test
-  fun noTwoPropertiesInAClass_shareAnAlternativeName() {
-    // kotlinx builds its alias map only for a key that misses every declared name, so a duplicate
-    // can sit unreported until some request happens to carry one.
-    for (surveyed in WireSchemaSurvey(wireRoots).types) {
+  fun requestBodies_classProperties_shareNoAlternativeName() {
+    // kotlinx checks alias pairs only on a key miss, and never an alias against a declared name.
+    for (surveyed in WireSchemaSurvey(requestRoots).types) {
       val type = surveyed.type
       val claimed =
         type.elementNames.flatMapIndexed { index, name -> type.alternatives(index) + name }
@@ -72,24 +66,13 @@ class WireAliasCoverageTest {
   }
 
   @Test
-  fun theSurvey_entersEveryTypeThatSharesASerialName() {
-    // Guards the survey itself, which is only useful if it reaches everything. Two lists share one
-    // serial name, and so do two instantiations of one generic, so a survey keyed on the name
-    // rather than the descriptor skips the second of each - a hole exactly where the real graph
-    // happens to have none.
-    val survey = WireSchemaSurvey(mapOf("SharedNames" to SharedNames.serializer()))
-
-    assertThat(survey.missingAliases())
-      .containsExactly(
-        """SharedNames.beta[].inAList (needs @JsonNames("in_a_list"))""",
-        """SharedNames.delta.held.inABox (needs @JsonNames("in_a_box"))""",
-      )
+  fun requestBodies_multiWordProperty_declaresSnakeCaseAlias() {
+    assertThat(WireSchemaSurvey(requestRoots).missingAliases()).isEmpty()
   }
 
   @Test
-  fun theSurvey_asksForTheAliasTheStrategyWouldDerive() {
-    // An acronym is where a hand-rolled transform and the library's part company: a survey that
-    // asked for file_u_r_i would have someone declare an alias no client ever sends.
+  fun survey_acronymProperty_asksForTheStrategyAlias() {
+    // A hand-rolled transform would ask for file_u_r_i, an alias no client ever sends.
     val survey = WireSchemaSurvey(mapOf("Acronyms" to Acronyms.serializer()))
 
     assertThat(survey.missingAliases())
@@ -97,7 +80,30 @@ class WireAliasCoverageTest {
   }
 
   @Test
-  fun theSurvey_entersEveryVariantOfASealedHierarchy() {
+  fun survey_requestBodies_declinesOnlyFreeFormValues() {
+    // Caller data names no fields; JsonElement proves the survey reaches EventActions.
+    assertThat(WireSchemaSurvey(requestRoots).declined)
+      .containsExactly(
+        ContextualSerializer(Any::class).descriptor,
+        JsonElement.serializer().descriptor,
+      )
+  }
+
+  @Test
+  fun survey_requestBodies_reachesPinnedTypes() {
+    // The alias assertion passes vacuously for any type the survey stops short of.
+    assertThat(WireSchemaSurvey(requestRoots).types.map { it.path })
+      .containsAtLeast(
+        "AgentRunRequest.newMessage.parts[].functionCall.partialArgs[].value",
+        "CreateSessionRequest.events[].actions.agentState",
+        "CreateSessionRequest.events[].actions.requestedAuthConfigs{}",
+        "CreateSessionRequest.events[].actions.requestedAuthConfigs{}.authScheme",
+        "CreateSessionRequest.events[].actions.requestedAuthConfigs{}.rawAuthCredential",
+      )
+  }
+
+  @Test
+  fun survey_sealedHierarchy_entersEveryVariant() {
     val survey = WireSchemaSurvey(mapOf("Variants" to Variants.serializer()))
 
     assertThat(survey.missingAliases())
@@ -108,14 +114,14 @@ class WireAliasCoverageTest {
   }
 
   @Test
-  fun typesTheSurveyDoesNotEnter_areTheKnownOnes() {
-    // These carry caller data, so they name no fields to alias. JsonElement is reachable only
-    // through EventActions, so this also pins that the survey gets there - the coverage assertion
-    // above would pass vacuously if it stopped.
-    assertThat(WireSchemaSurvey(wireRoots).declined)
+  fun survey_typesSharingASerialName_entersEach() {
+    // Lists and generic instantiations share serial names, so a name-keyed survey skips some.
+    val survey = WireSchemaSurvey(mapOf("SharedNames" to SharedNames.serializer()))
+
+    assertThat(survey.missingAliases())
       .containsExactly(
-        ContextualSerializer(Any::class).descriptor,
-        JsonElement.serializer().descriptor,
+        """SharedNames.beta[].inAList (needs @JsonNames("in_a_list"))""",
+        """SharedNames.delta.held.inABox (needs @JsonNames("in_a_box"))""",
       )
   }
 

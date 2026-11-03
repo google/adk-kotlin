@@ -75,8 +75,7 @@ internal class EmissionWalk {
     private set
 
   fun visit(json: JsonElement, descriptor: SerialDescriptor, path: String) {
-    // An inline value class is written as its wrapped value, so the JSON here is that value and
-    // not an object; descending keeps it from being mistaken for a shape mismatch.
+    // An inline value class is written as its wrapped value, which is not a shape mismatch.
     if (descriptor.isInline) return visit(json, descriptor.getElementDescriptor(0), path)
     when (descriptor.kind) {
       StructureKind.LIST ->
