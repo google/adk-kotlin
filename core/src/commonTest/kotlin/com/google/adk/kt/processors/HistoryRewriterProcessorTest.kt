@@ -1058,6 +1058,89 @@ class HistoryRewriterProcessorTest {
     assertEquals(listOf("monitor", "stopped"), summaries(contents))
   }
 
+  // The kept answers' event ids decide which queued answers a fresh live session drops.
+  @Test
+  fun rewrite_narratedAnswerALaterAnswerDrops_isNotCollected() {
+    val events =
+      listOf(
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "c1")),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("lookup", id = "b1"),
+          liveSessionId = "s1",
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("lookup", "b1"),
+          liveSessionId = "s1",
+        ),
+        Event(author = "agent", content = userFunctionResponse("monitor", "c1", status("done"))),
+      )
+    val answerIds = mutableSetOf<String>()
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(events, agentName = "agent", currentBranch = null, answerIds = answerIds)
+
+    assertEquals(listOf("monitor", "done"), summaries(contents))
+    assertEquals(setOf(events[3].id), answerIds)
+  }
+
+  @Test
+  fun rewrite_reusedCallIdWhoseLaterNarratedAnswerIsDropped_collectsOnlyTheKeptAnswers() {
+    val events =
+      listOf(
+        Event(author = "agent", content = modelFunctionCall("old", id = "c1")),
+        Event(author = "agent", content = userFunctionResponse("old", "c1", status("earlier"))),
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "c2")),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("lookup", id = "c1"),
+          liveSessionId = "s1",
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("lookup", "c1"),
+          liveSessionId = "s1",
+        ),
+        Event(author = "agent", content = userFunctionResponse("monitor", "c2", status("done"))),
+      )
+    val answerIds = mutableSetOf<String>()
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(events, agentName = "agent", currentBranch = null, answerIds = answerIds)
+
+    assertEquals(listOf("old", "earlier", "monitor", "done"), summaries(contents))
+    assertEquals(setOf(events[1].id, events[5].id), answerIds)
+  }
+
+  @Test
+  fun rewrite_answersMergedIntoOneEvent_collectsEachAnswersEvent() {
+    val parallelCall =
+      modelMessage(
+        Part(functionCall = FunctionCall(name = "first", id = "c1")),
+        Part(functionCall = FunctionCall(name = "second", id = "c2")),
+      )
+    val events =
+      listOf(
+        Event(author = "agent", content = parallelCall),
+        Event(author = "agent", content = userFunctionResponse("first", "c1", status("one"))),
+        Event(author = "agent", content = userFunctionResponse("second", "c2", status("two"))),
+      )
+    val answerIds = mutableSetOf<String>()
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(events, agentName = "agent", currentBranch = null, answerIds = answerIds)
+
+    assertEquals(
+      listOf("first", "second"),
+      contents.last().parts.mapNotNull { it.functionResponse?.name },
+    )
+    assertEquals(setOf(events[1].id, events[2].id), answerIds)
+  }
+
   private fun callAnsweredAgainAtTheEnd(
     recordAuthor: String = "agent",
     marked: Boolean = true,
@@ -1085,7 +1168,7 @@ class HistoryRewriterProcessorTest {
     Event(
       author = author,
       content = userFunctionResponse(name, id, status("stopped")),
-      customMetadata = mapOf(STREAM_FINAL_ANSWER_KEY to true).takeIf { marked },
+      customMetadata = mapOf(OUT_OF_TURN_ANSWER_KEY to true).takeIf { marked },
     )
 
   /** Each content's single part: its text, called function's name, or answer's status. */

@@ -73,6 +73,9 @@ internal class ContentsProcessor : LlmRequestProcessor {
         singleTurnNode && !agent.includeContentsExplicit -> IncludeContents.NONE
         else -> agent.includeContents
       }
+    // Only a live run needs the answer events' ids, which narration can hide from the contents.
+    val liveRun = context.liveRun
+    val answerIds = if (liveRun != null) mutableSetOf<String>() else null
     val history =
       HistoryRewriterProcessor()
         .rewrite(
@@ -85,7 +88,9 @@ internal class ContentsProcessor : LlmRequestProcessor {
           isolationScope = frameworkData.isolationScope,
           userContent = frameworkData.isolationScope?.let { taskOpeningMessage(context) },
           handoffInputId = currentCoroutineContext()[HandoffInput]?.eventId,
+          answerIds = answerIds,
         )
+    liveRun?.historyAnswerIds = answerIds.orEmpty()
 
     val newContents =
       if (request.contents.isNotEmpty()) {
