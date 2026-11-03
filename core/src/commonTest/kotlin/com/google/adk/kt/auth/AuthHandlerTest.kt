@@ -29,11 +29,7 @@ class AuthHandlerTest {
 
   @Test
   fun signInConfig_apiKeyScheme_dropsTheConfiguredKey() {
-    val config =
-      AuthConfig(
-        AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER),
-        rawAuthCredential = AuthCredential.ApiKey(Secret("sk-123")),
-      )
+    val config = AuthConfig(API_KEY, rawAuthCredential = AuthCredential.ApiKey(Secret("sk-123")))
 
     val request = config.signInConfig()
 
@@ -287,7 +283,156 @@ class AuthHandlerTest {
     }
   }
 
+  @Test
+  fun storedCredential_credentialUnderBothKeys_prefersTheTempKey() {
+    val config = AuthConfig(OIDC)
+    val temp = AuthCredential.OAuth2(accessToken = Secret("temp"))
+    val state =
+      mapOf(
+        config.credentialKey to AuthCredential.OAuth2(accessToken = Secret("plain")),
+        "temp:${config.credentialKey}" to temp,
+      )
+
+    val response = config.storedCredential(state)
+
+    assertEquals(temp, response)
+  }
+
+  @Test
+  fun storedCredential_emptyTempValue_fallsBackToThePlainKey() {
+    val config = AuthConfig(API_KEY)
+    val state = mapOf("temp:${config.credentialKey}" to "", config.credentialKey to "sk-plain")
+
+    val response = config.storedCredential(state)
+
+    assertEquals(AuthCredential.ApiKey(Secret("sk-plain")), response)
+  }
+
+  @Test
+  fun storedCredential_httpBasicString_fallsBackToThePlainKey() {
+    val basic = AuthCredential.Http.basic(username = "u", password = "p")
+
+    for (scheme in listOf(AuthScheme.Http.basic(), AuthScheme.Http(scheme = "Basic"))) {
+      val config = AuthConfig(scheme)
+      val tempKey = "temp:${config.credentialKey}"
+
+      assertNull(config.storedCredential(mapOf(tempKey to "bare")))
+      assertEquals(
+        basic,
+        config.storedCredential(mapOf(tempKey to "bare", config.credentialKey to basic)),
+      )
+    }
+  }
+
+  @Test
+  fun storedCredential_malformedTempMap_fallsBackToThePlainKey() {
+    val config = AuthConfig(API_KEY)
+    val malformed =
+      listOf(
+        mapOf("authType" to "oauth2", "oauth2" to "not an object"),
+        mapOf("authType" to "apiKey", "apiKey" to Secret("not JSON")),
+      )
+
+    for (stored in malformed) {
+      val state =
+        mapOf("temp:${config.credentialKey}" to stored, config.credentialKey to "sk-plain")
+      assertEquals(AuthCredential.ApiKey(Secret("sk-plain")), config.storedCredential(state))
+    }
+  }
+
+  @Test
+  fun storedCredential_map_decodesItWithTheConfiguredClient() {
+    val config = AuthConfig(AUTH_CODE, CONFIDENTIAL)
+    val stored =
+      mapOf(
+        "authType" to "oauth2",
+        "oauth2" to mapOf("clientId" to "other", "accessToken" to "tok"),
+      )
+
+    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+
+    assertEquals(
+      AuthCredential.OAuth2(
+        clientId = "cid",
+        clientSecret = Secret("sec"),
+        accessToken = Secret("tok"),
+        tokenEndpointAuthMethod = null,
+      ),
+      response,
+    )
+  }
+
+  @Test
+  fun storedCredential_noConfiguredOAuth2Client_keepsTheStoredOne() {
+    val config = AuthConfig(OIDC)
+    val stored = AuthCredential.OAuth2(clientId = "app", accessToken = Secret("tok"))
+
+    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+
+    assertEquals(stored, response)
+  }
+
+  @Test
+  fun storedCredential_nothingUsableStored_returnsNull() {
+    val config = AuthConfig(AUTH_CODE, CONFIDENTIAL)
+    val states =
+      listOf(
+        emptyMap(),
+        mapOf("temp:${config.credentialKey}" to 42, config.credentialKey to ""),
+        mapOf(config.credentialKey to mapOf("authType" to "oauth2", "oauth2" to "not an object")),
+        mapOf("other" to "tok"),
+      )
+
+    for (state in states) assertNull(config.storedCredential(state))
+  }
+
+  @Test
+  fun storedCredential_publicConfiguredClient_dropsTheStoredSecret() {
+    val config = AuthConfig(AUTH_CODE, CONFIDENTIAL.copy(clientSecret = null))
+    val stored =
+      AuthCredential.OAuth2(clientId = "other", clientSecret = Secret("x"), authCode = Secret("c"))
+
+    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+
+    assertEquals(stored.copy(clientId = "cid", clientSecret = null), response)
+  }
+
+  @Test
+  fun storedCredential_storedOAuth2Credential_takesTheClientFromTheConfig() {
+    val config = AuthConfig(AUTH_CODE, CONFIDENTIAL)
+    val stored =
+      AuthCredential.OAuth2(clientId = "other", clientSecret = Secret("x"), authCode = Secret("c"))
+
+    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+
+    assertEquals(stored.copy(clientId = "cid", clientSecret = Secret("sec")), response)
+  }
+
+  @Test
+  fun storedCredential_string_buildsTheSchemesCredential() {
+    val token = Secret("v")
+    val cases =
+      listOf(
+        API_KEY to AuthCredential.ApiKey(token),
+        AuthScheme.Http.bearer() to AuthCredential.Http.bearer("v"),
+        AuthScheme.Http(scheme = "digest") to
+          AuthCredential.Http("digest", AuthCredential.Http.Credentials(token = token)),
+        AUTH_CODE to AuthCredential.OAuth2(accessToken = token),
+        OIDC to AuthCredential.OAuth2(accessToken = token),
+        AuthScheme.OpenIdConnectUrl("https://o/.well-known/openid-configuration") to
+          AuthCredential.OAuth2(accessToken = token),
+      )
+
+    for ((scheme, expected) in cases) {
+      val config = AuthConfig(scheme)
+      val state = mapOf("temp:${config.credentialKey}" to "v")
+      assertEquals(expected, config.storedCredential(state))
+    }
+  }
+
   private companion object {
+    val API_KEY = AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER)
+
     val SCOPES = mapOf("read" to "Read", "write" to "Write")
 
     val AUTH_CODE =
