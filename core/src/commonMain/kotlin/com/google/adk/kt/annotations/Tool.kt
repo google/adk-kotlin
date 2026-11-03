@@ -23,7 +23,10 @@ package com.google.adk.kt.annotations
  * The generated wrapper converts the function's return value into a JSON-native [Map]: data
  * classes, enums, lists, maps, and nested structures are translated at compile time. A function may
  * therefore return a data class directly, unlike a hand-written [com.google.adk.kt.tools.BaseTool],
- * whose result must already be JSON-native.
+ * whose result must already be JSON-native. It may also return a [kotlinx.coroutines.flow.Flow]; a
+ * `Flow` of `Event` or `Any` passes its values through unconverted. A connected live run streams
+ * each value to the model, except an `Event`, which goes to the caller; anywhere else, the call
+ * fails (see [com.google.adk.kt.tools.BaseTool.run]), so return a value instead.
  *
  * Note: this annotation shares its simple name with [com.google.adk.kt.types.Tool], the GenAI tool
  * definition data class. Files that need to reference both should use an import alias.

@@ -19,12 +19,16 @@ package com.google.adk.kt.compiler.ksp
 import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.Tool as ToolAnnotation
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import com.google.devtools.ksp.getAllSuperTypes
+import com.google.devtools.ksp.getDeclaredFunctions
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.processing.KSPLogger
@@ -33,8 +37,10 @@ import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.KSFunctionDeclaration
 import com.google.devtools.ksp.symbol.KSType
+import com.google.devtools.ksp.symbol.KSTypeParameter
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
+import com.google.devtools.ksp.symbol.Variance
 import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.CodeBlock
 import com.squareup.kotlinpoet.FileSpec
@@ -72,12 +78,18 @@ internal class FunctionToolGenerator(
     val className = "${functionName.replaceFirstChar { it.uppercaseChar() }}Tool"
 
     val returnType = function.returnType?.resolve()
-    val returnTypeNameString = returnType?.declaration?.qualifiedName?.asString()
-    val isStreaming = returnTypeNameString == FLOW.canonicalName
-    if (isStreaming) {
-      logger.error("Streaming functions are not supported yet: ${functionName}", function)
-      return null
+    if (returnType != null && isFlow(returnType)) {
+      // The runtime only handles a non-null Flow.
+      if (returnType.isMarkedNullable) {
+        logger.error("A @Tool function cannot return a nullable Flow: ${functionName}", function)
+        return null
+      }
+      if (flowElementType(returnType) == null) {
+        logger.error("A @Tool Flow return needs a concrete element type: ${functionName}", function)
+        return null
+      }
     }
+
     val superclass = FunctionTool::class.asClassName()
     val typeBuilder = TypeSpec.classBuilder(className).superclass(superclass)
 
@@ -824,27 +836,59 @@ internal class FunctionToolGenerator(
     // error-tool callback pipeline (see `runErrorBaseToolCallbacks`) so plugins can either recover
     // them with a synthetic response or let them bubble up. The KSP-generated code must not
     // intercept them itself; catching here would deny callbacks the chance to recover.
-    if (returnTypeNameString == UNIT_QUALIFIED_NAME || returnTypeNameString == null) {
-      executeFun.addStatement(callStatement)
-      // For `Unit`-returning functions, return the `Unit` singleton directly. The framework
-      // recognises `Unit` as the "no response yet" signal for long-running tools (suppressing
-      // the function-response event) and answers it as `{"result": null}` for regular tools. See
-      // `BaseTool.isLongRunning`.
-      executeFun.addStatement("return Unit")
-    } else {
-      executeFun.addStatement("val result = $callStatement")
-      val serializedResult = buildOutputSerialization("result", returnType, mutableSetOf())
-      if (serializedResult == null) {
-        logger.error(
-          "Unsupported return type for serialization: ${returnTypeNameString} in ${functionName}",
-          function,
-        )
-        return
+    when {
+      returnTypeNameString == UNIT_QUALIFIED_NAME || returnTypeNameString == null -> {
+        executeFun.addStatement(callStatement)
+        // For `Unit`-returning functions, return the `Unit` singleton directly. The framework
+        // recognises `Unit` as the "no response yet" signal for long-running tools (suppressing
+        // the function-response event) and answers it as `{"result": null}` for regular tools. See
+        // `BaseTool.isLongRunning`.
+        executeFun.addStatement("return Unit")
       }
-      executeFun.addStatement(
-        "return mapOf(%T.RESULT_KEY to $serializedResult)",
-        BaseTool::class.asClassName(),
-      )
+      isFlow(returnType) -> {
+        val elementType = checkNotNull(flowElementType(returnType)) { "checked in generate" }
+        if (isPassThroughElement(elementType)) {
+          // Passed through; the runtime routes Events, unwraps FunctionResponses, wraps the rest.
+          executeFun.addStatement("return $callStatement")
+          return
+        }
+
+        val element =
+          buildOutputSerialization("value", elementType.makeNotNullable(), mutableSetOf())
+        if (element == null) {
+          logger.error(
+            "Unsupported Flow element type for serialization: " +
+              "${elementType.declaration.qualifiedName?.asString()} in ${functionName}",
+            function,
+          )
+          return
+        }
+
+        val wrapped = "mapOf(%T.RESULT_KEY to $element)"
+        val body =
+          if (elementType.isMarkedNullable) "if (value == null) null else $wrapped" else wrapped
+        // Each value answers like one `T` (a null stays null); `·` stops a wrap before the lambda.
+        executeFun.addStatement(
+          "return $callStatement.%M·{ value -> $body }",
+          FLOW_MAP_MEMBER,
+          BaseTool::class.asClassName(),
+        )
+      }
+      else -> {
+        executeFun.addStatement("val result = $callStatement")
+        val serializedResult = buildOutputSerialization("result", returnType, mutableSetOf())
+        if (serializedResult == null) {
+          logger.error(
+            "Unsupported return type for serialization: ${returnTypeNameString} in ${functionName}",
+            function,
+          )
+          return
+        }
+        executeFun.addStatement(
+          "return mapOf(%T.RESULT_KEY to $serializedResult)",
+          BaseTool::class.asClassName(),
+        )
+      }
     }
   }
 
@@ -896,17 +940,23 @@ internal class FunctionToolGenerator(
   }
 
   /**
-   * Describes what the tool sends back, or `null` when the shape is not knowable. The generated
-   * `execute` wraps every returned value in `mapOf(RESULT_KEY to ...)`, so that wrapper is what
-   * gets described. `Unit`, a long-running tool and a type [describesFaithfully] rejects are left
-   * undeclared, and `result` is not marked required.
+   * Builds the response schema for `mapOf(RESULT_KEY to ...)` around the return type (or the
+   * element type of a returned [FLOW]), leaving `result` optional. Returns `null` when the shape is
+   * unknown: `Unit`, a long-running tool, a [FLOW] of `Event`, `FunctionResponse` or `Any`, or a
+   * type that [describesFaithfully] rejects.
    */
   private fun buildResponseSchema(
     function: KSFunctionDeclaration,
     isLongRunning: Boolean,
   ): CodeBlock? {
     if (isLongRunning) return null
-    val returnType = function.returnType?.resolve() ?: return null
+    val declaredType = function.returnType?.resolve() ?: return null
+    val returnType =
+      if (isFlow(declaredType)) {
+        flowElementType(declaredType)?.takeUnless { isPassThroughElement(it) } ?: return null
+      } else {
+        declaredType
+      }
     val returnTypeName = returnType.declaration.qualifiedName?.asString() ?: return null
     if (returnTypeName == UNIT_QUALIFIED_NAME) return null
     if (!describesFaithfully(returnType, mutableSetOf())) return null
@@ -1257,8 +1307,67 @@ internal class FunctionToolGenerator(
         BOOLEAN_QUALIFIED_NAME,
       )
 
-    val FLOW = ClassName("kotlinx.coroutines.flow", "Flow")
-    val FLOW_MEMBER = MemberName("kotlinx.coroutines.flow", "flow")
+    private val FLOW = ClassName("kotlinx.coroutines.flow", "Flow")
+    private val PASS_THROUGH_QUALIFIED_NAMES =
+      setOf(Event::class.qualifiedName, FunctionResponse::class.qualifiedName, ANY_QUALIFIED_NAME)
+    private val FLOW_MAP_MEMBER = MemberName("kotlinx.coroutines.flow", "map")
+
+    /** Whether the class of [type] is [qualifiedName] or has it among its supertypes. */
+    private fun isOrExtends(type: KSType, qualifiedName: String): Boolean {
+      val declaration = type.declaration as? KSClassDeclaration ?: return false
+      return declaration.qualifiedName?.asString() == qualifiedName ||
+        declaration.getAllSuperTypes().any {
+          it.declaration.qualifiedName?.asString() == qualifiedName
+        }
+    }
+
+    /** Whether [type] is a [FLOW] or a subtype of one. */
+    private fun isFlow(type: KSType): Boolean = isOrExtends(type, FLOW.canonicalName)
+
+    /**
+     * The `T` of [FLOW] as seen from the flow [type], resolved through any subtype's type
+     * parameters, such as `List<Quote>` for `Paged<T> : Flow<List<T>>` used as `Paged<Quote>`.
+     * Returns null when it is not concrete, as in `Flow<*>`.
+     */
+    private fun flowElementType(type: KSType): KSType? {
+      val declaration = type.declaration as? KSClassDeclaration ?: return null
+      // asMemberOf reports a star-projected `T` as `Any`, so a star is caught here first.
+      val parameter = flowParameterOf(declaration)
+      if (parameter != null) {
+        val argument = type.arguments.getOrNull(declaration.typeParameters.indexOf(parameter))
+        if (argument?.variance == Variance.STAR) return null
+      }
+      val flow =
+        (sequenceOf(declaration) +
+            declaration.getAllSuperTypes().mapNotNull { it.declaration as? KSClassDeclaration })
+          .firstOrNull { it.qualifiedName?.asString() == FLOW.canonicalName } ?: return null
+      val collect =
+        flow.getDeclaredFunctions().firstOrNull { it.simpleName.asString() == "collect" }
+      val collector = collect?.asMemberOf(type.makeNotNullable())?.parameterTypes?.singleOrNull()
+      return collector?.arguments?.singleOrNull()?.type?.resolve()
+    }
+
+    /** The type parameter of [declaration] that the `T` of [FLOW] is bound to directly, if any. */
+    private fun flowParameterOf(declaration: KSClassDeclaration): KSTypeParameter? {
+      if (declaration.qualifiedName?.asString() == FLOW.canonicalName) {
+        return declaration.typeParameters.singleOrNull()
+      }
+      for (reference in declaration.superTypes) {
+        val supertype = reference.resolve()
+        val parent = supertype.declaration as? KSClassDeclaration ?: continue
+        val parameter = flowParameterOf(parent) ?: continue
+        val argument = supertype.arguments.getOrNull(parent.typeParameters.indexOf(parameter))
+        return argument?.type?.resolve()?.declaration as? KSTypeParameter
+      }
+      return null
+    }
+
+    /**
+     * Whether a [FLOW] of [type] passes its values through unconverted (`Event`, `FunctionResponse`
+     * or `Any`), for the runtime to route, unwrap or wrap.
+     */
+    private fun isPassThroughElement(type: KSType): Boolean =
+      type.declaration.qualifiedName?.asString() in PASS_THROUGH_QUALIFIED_NAMES
 
     /** Returns true if [type] is an injected context parameter (`Context` or `ToolContext`). */
     private fun isContextParameter(type: KSType): Boolean =

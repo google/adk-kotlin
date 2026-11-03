@@ -30,6 +30,7 @@ val agent = LlmAgent(name = "guide", model = model, tools = GuideService().gener
 
 - The description comes from `@Tool(description = ...)` or the KDoc summary, and parameter descriptions from `@Param` or `@param` KDoc tags.
 - Use simple types: primitives, `String`, enums, data classes, nullable versions of these, and lists or string-keyed maps of primitives, strings or data classes. Anything else, such as a list of enums, is rejected at compile time with an error naming the type; wrap it in a data class. `FunctionToolGenerator.kt` in the processor is the authority.
+- A `@Tool` function may return a `Flow<T>` of those types; a `Flow` of `Event` or `Any` passes values through unconverted. A connected live run streams each value to the model, except an `Event`, which goes to the caller; anywhere else, the call fails, so return a value instead.
 - Data classes do not need `@Serializable`.
 - A return value reaches the model as `{"result": ...}`; `Unit` becomes `{}`.
 - `com.google.adk.kt.annotations.Tool` clashes by name with `com.google.adk.kt.types.Tool`; alias one when both are imported.
