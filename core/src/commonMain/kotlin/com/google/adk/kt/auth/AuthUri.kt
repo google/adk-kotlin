@@ -21,6 +21,7 @@ package com.google.adk.kt.auth
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.crypto.generateRandomString
+import com.google.adk.kt.logging.LoggerFactory
 import io.ktor.http.URLBuilder
 import io.ktor.http.URLParserException
 import io.ktor.http.URLProtocol
@@ -28,6 +29,10 @@ import io.ktor.http.formUrlEncode
 
 /** The length of a new OAuth2 `state` value. */
 private const val STATE_LENGTH = 30
+
+private object AuthUri
+
+private val logger = LoggerFactory.getLogger(AuthUri::class)
 
 /**
  * Returns this credential with a new authorization URL for [scheme] and its `state`. A public
@@ -65,8 +70,16 @@ internal fun AuthCredential.OAuth2.withNewAuthUri(scheme: AuthScheme): AuthCrede
       )
       .filter { (_, value) -> !value.isNullOrEmpty() }
       .formUrlEncode()
+  val authUri = endpoint.withAuthorizationQuery(query)
+  // Logged once the URL is built, so a config that fails validation doesn't warn first.
+  if (isPublicClient) {
+    logger.warn {
+      "OAuth2 client secret is not set; using PKCE S256. Set codeChallengeMethod to S256 to " +
+        "declare a public client."
+    }
+  }
   return copy(
-    authUri = endpoint.withAuthorizationQuery(query),
+    authUri = authUri,
     state = state,
     codeVerifier = pkce?.let { Secret(it.getCodeVerifier()) } ?: codeVerifier,
     codeChallengeMethod = method ?: codeChallengeMethod,
