@@ -23,10 +23,14 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
 import kotlin.jvm.JvmStatic
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.transformWhile
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 
 /**
  * A shell agent that runs its sub-agents in parallel in an isolated manner.
@@ -91,8 +95,7 @@ class ParallelAgent(
     // still-running sibling branches via structured concurrency -- mirrors Python
     // `_asks_this_agent_to_exit` and ADK Java's takeUntil(escalate). A pause seen earlier in the
     // merged stream still takes precedence via the check below.
-    flows
-      .merge()
+    mergeAwaitingCollector(flows)
       .transformWhile { event ->
         if (context.shouldPauseInvocation(event)) {
           pauseInvocation = true
@@ -168,5 +171,42 @@ class ParallelAgent(
 
   companion object {
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
+  }
+}
+
+/** Holds an event and the signal that the collector has processed it. */
+private class Handoff(val event: Event) {
+  val processed = CompletableDeferred<Unit>()
+}
+
+/**
+ * Collects [flows] concurrently like `merge()`, but each `emit` returns only after the collector
+ * has processed the event, as it would without the merge. This ensures a sub-agent's next step sees
+ * the session state and history the runner has already updated. Mirrors Python ADK
+ * `_merge_agent_run`.
+ */
+// Each flow is collected by one coroutine of this scope, and emit runs on the collector coroutine.
+@Suppress("UnsafeCoroutineCrossing")
+private fun mergeAwaitingCollector(flows: List<Flow<Event>>): Flow<Event> = flow {
+  coroutineScope {
+    val handoffs = Channel<Handoff>()
+    val producers = flows.map { branch ->
+      launch {
+        branch.collect { event ->
+          val handoff = Handoff(event)
+          handoffs.send(handoff)
+          handoff.processed.await()
+        }
+      }
+    }
+    launch {
+      producers.joinAll()
+      // Explicit cause: no-arg close() fails to link against kotlinx-coroutines < 1.11.
+      val unused = handoffs.close(cause = null)
+    }
+    for (handoff in handoffs) {
+      emit(handoff.event)
+      handoff.processed.complete(Unit)
+    }
   }
 }
