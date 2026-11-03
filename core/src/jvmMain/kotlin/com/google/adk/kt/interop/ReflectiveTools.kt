@@ -14,32 +14,48 @@
  * limitations under the License.
  */
 
-@file:OptIn(AdkJavaInteropApi::class)
+@file:OptIn(AdkJavaInteropApi::class, ExperimentalLiveApi::class)
 
 package com.google.adk.kt.interop
 
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LiveRequest
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
+import java.lang.reflect.ParameterizedType
+import java.lang.reflect.Type as JavaType
+import java.lang.reflect.TypeVariable
+import java.lang.reflect.WildcardType
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.reactive.asFlow
+import kotlinx.coroutines.reactive.asPublisher
+import org.reactivestreams.Publisher
 
 /**
  * Builds a [BaseTool] from a [Tool]-annotated Java method, on the JVM only, for javac-only modules;
  * prefer the KSP `@Tool` path whenever the code is built with the Kotlin compiler, which processes
  * `.java` sources too. It reads the same [Tool]/[Param] annotations, relying on
- * [Param.name]/[Param.required] because Java retains neither parameter names nor nullability. Like
- * a KSP tool, the method runs in the calling coroutine and keeps its context (such as MDC), so run
- * blocking methods on a dispatcher meant for blocking work, such as [PublisherRunner.runAsync]'s
- * default.
+ * [Param.name]/[Param.required] because Java retains neither parameter names nor nullability; every
+ * parameter needs [Param] except one [Context] or [ToolContext] and one experimental
+ * `Publisher<LiveRequest>` (or `Publisher<? extends LiveRequest>`), which carries
+ * [ToolContext.liveRequests]. Like a KSP tool, the method runs in the calling coroutine and keeps
+ * its context (such as MDC), so run blocking methods on a dispatcher meant for blocking work, such
+ * as [PublisherRunner.runAsync]'s default; a returned Reactive Streams [Publisher] acts as a
+ * returned Flow does (see [BaseTool.run]).
  */
 @AdkJavaInteropApi
 object ReflectiveTools {
@@ -96,6 +112,32 @@ object ReflectiveTools {
     return ReflectiveTool(instance, method, name, annotation.description)
   }
 
+  private val PASS_THROUGH_ELEMENTS =
+    setOf(Event::class.java, FunctionResponse::class.java, Any::class.java)
+
+  /**
+   * The `T` that [type] gives `Publisher<T>`, found through its supertypes as KSP does (a wildcard
+   * gives its upper bound), or null if it gives none.
+   */
+  private fun publisherElement(
+    type: JavaType,
+    bindings: Map<TypeVariable<*>, JavaType> = emptyMap(),
+  ): JavaType? {
+    val raw = (if (type is ParameterizedType) type.rawType else type) as? Class<*> ?: return null
+    val arguments =
+      (type as? ParameterizedType)?.actualTypeArguments.orEmpty().map {
+        if (it is TypeVariable<*>) bindings[it] ?: it else it
+      }
+    if (raw == Publisher::class.java) {
+      val element = arguments.singleOrNull()
+      return if (element is WildcardType) element.upperBounds.singleOrNull() else element
+    }
+    val scope = raw.typeParameters.zip(arguments).toMap<TypeVariable<*>, JavaType>()
+    return (listOfNotNull(raw.genericSuperclass) + raw.genericInterfaces).firstNotNullOfOrNull {
+      publisherElement(it, scope)
+    }
+  }
+
   private class Bound(val index: Int, val spec: Param, val type: Class<*>, val required: Boolean)
 
   private class ReflectiveTool(
@@ -121,10 +163,47 @@ object ReflectiveTools {
         it == ToolContext::class.java || it == Context::class.java
       }
 
+    // The live input goes to the one Publisher<LiveRequest> parameter, which the model never sees.
+    private val liveInputIndex: Int = findLiveInputIndex()
+
+    // As in KSP, each published value answers like a single result unless the declared element is
+    // Event, FunctionResponse or Object, which pass through unconverted.
+    private val wrapsPublishedValues: Boolean =
+      when (val element = publisherElement(method.genericReturnType)) {
+        is Class<*> -> element !in PASS_THROUGH_ELEMENTS
+        is ParameterizedType -> true
+        else -> false
+      }
+
+    private fun findLiveInputIndex(): Int {
+      val publishers =
+        method.parameterTypes.indices.filter {
+          Publisher::class.java.isAssignableFrom(method.parameterTypes[it])
+        }
+      require(publishers.size <= 1) {
+        "${method.name} may take at most one Publisher parameter, for the live input."
+      }
+      val index = publishers.singleOrNull() ?: return -1
+
+      val bound = publisherElement(method.genericParameterTypes[index])
+      // A subtype such as Flowable cannot hold the plain Publisher the tool is handed.
+      require(
+        method.parameterTypes[index] == Publisher::class.java && bound == LiveRequest::class.java
+      ) {
+        "A Publisher parameter of ${method.name} must be a Publisher<LiveRequest>."
+      }
+
+      // The input runs only while a returned stream does, so no other return can hear it.
+      require(Publisher::class.java.isAssignableFrom(method.returnType)) {
+        "${method.name} takes the live input, so it must return a Publisher."
+      }
+      return index
+    }
+
     private val bound: List<Bound> =
       method.parameters
         .withIndex()
-        .filter { it.index != contextIndex }
+        .filter { it.index != contextIndex && it.index != liveInputIndex }
         .map { (i, parameter) ->
           val spec =
             requireNotNull(parameter.getAnnotation(Param::class.java)) {
@@ -179,6 +258,11 @@ object ReflectiveTools {
       if (contextIndex >= 0) {
         actual[contextIndex] = context
       }
+      if (liveInputIndex >= 0) {
+        // Signals the input on the run's dispatcher, as a Flow tool's collector receives it.
+        // A Java subscriber's request(n <= 0) is ignored, not failed as Reactive Streams 3.9 asks.
+        actual[liveInputIndex] = context.liveRequests.asPublisher(currentCoroutineContext())
+      }
       for (b in bound) {
         val raw = args[b.spec.name]
         require(raw != null || !b.required) {
@@ -198,10 +282,15 @@ object ReflectiveTools {
           }
         }
       // Match KSP @Tool: a Kotlin `Unit?` method has JVM return type Unit, not void.
-      return if (method.returnType == Void.TYPE || method.returnType == Unit::class.java) {
-        Unit
-      } else {
-        mapOf(BaseTool.RESULT_KEY to result)
+      return when {
+        method.returnType == Void.TYPE || method.returnType == Unit::class.java -> Unit
+        result is Publisher<*> -> {
+          // Acts as a returned Flow does, rather than answering with the publisher itself.
+          @Suppress("UNCHECKED_CAST") // Safe: Reactive Streams never emits null.
+          val values = (result as Publisher<Any>).asFlow()
+          if (wrapsPublishedValues) values.map { mapOf(BaseTool.RESULT_KEY to it) } else values
+        }
+        else -> mapOf(BaseTool.RESULT_KEY to result)
       }
     }
 
