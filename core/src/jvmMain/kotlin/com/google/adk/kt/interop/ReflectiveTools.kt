@@ -30,6 +30,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Schema
@@ -110,7 +111,8 @@ object ReflectiveTools {
         " overload of its name so a metadata consumer can re-resolve it."
     }
     val name = annotation.name.ifEmpty { method.name }
-    return ReflectiveTool(instance, method, name, annotation.description)
+    val behavior = annotation.behavior.takeUnless { it == Behavior.UNSPECIFIED }
+    return ReflectiveTool(instance, method, name, annotation.description, behavior)
   }
 
   private val PASS_THROUGH_ELEMENTS =
@@ -146,6 +148,7 @@ object ReflectiveTools {
     private val method: Method,
     name: String,
     description: String,
+    override val behavior: Behavior?,
   ) :
     BaseTool(
       name,

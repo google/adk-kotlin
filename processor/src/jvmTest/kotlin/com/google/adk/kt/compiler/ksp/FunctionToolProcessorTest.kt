@@ -749,6 +749,43 @@ class FunctionToolProcessorTest {
 
   @OptIn(ExperimentalLiveApi::class)
   @Test
+  fun generate_toolWithABehavior_overridesIt() {
+    assertThat(SlowTaskTool().behavior).isEqualTo(Behavior.NON_BLOCKING)
+    assertThat(QuickTaskTool().behavior).isEqualTo(Behavior.BLOCKING)
+    assertThat(NamedParamToolTool().behavior).isNull()
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun runLive_generatedToolWithABehavior_isDeclaredWithIt() {
+    runBlocking {
+      val model = DummyLiveModel(listOf(Respond(LlmResponse(turnComplete = true))))
+      val tools = listOf(SlowTaskTool(), QuickTaskTool(), NamedParamToolTool())
+      val queue = LiveRequestQueue()
+      queue.close()
+
+      val unused =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = tools))
+          .runLive("u", "s", queue)
+          .toList()
+
+      val declarations =
+        model.connectRequests.single().config.tools.orEmpty().flatMap {
+          it.functionDeclarations.orEmpty()
+        }
+      assertThat(declarations.associate { it.name to it.behavior })
+        .isEqualTo(
+          mapOf(
+            "slowTask" to Behavior.NON_BLOCKING,
+            "quickTask" to Behavior.BLOCKING,
+            "namedParamTool" to null,
+          )
+        )
+    }
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
   fun runLive_generatedToolReturningAStream_isDeclaredNonBlocking() {
     runBlocking {
       val model = DummyLiveModel(listOf(Respond(LlmResponse(turnComplete = true))))
@@ -1019,6 +1056,12 @@ fun optionalOverrideTool(@Param(required = Requiredness.OPTIONAL) note: String?)
 @Tool
 internal fun streamTool(context: ToolContext, symbol: String): Flow<String> =
   flowOf("${context.functionCallId} $symbol 300", "$symbol 400")
+
+/** Declared non-blocking in a live run. */
+@Tool(behavior = Behavior.NON_BLOCKING) internal fun slowTask(): String = "done"
+
+/** Declared blocking in a live run. */
+@Tool(behavior = Behavior.BLOCKING) internal fun quickTask(): String = "done"
 
 @Tool
 internal fun flowMapTool(): Flow<Map<String, Any>> =

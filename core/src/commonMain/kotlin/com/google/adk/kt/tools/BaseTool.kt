@@ -16,8 +16,10 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionDeclaration
 
 /**
@@ -49,6 +51,17 @@ abstract class BaseTool(
    */
   @FrameworkInternalApi open val isStreaming: Boolean = false
 
+  /**
+   * How a live run declares this tool to the model: [Behavior.NON_BLOCKING] lets the model keep the
+   * conversation going while a call is pending, [Behavior.BLOCKING] makes it wait for the response,
+   * and `null` or [Behavior.UNSPECIFIED] leaves the tool's declaration as it is. Override it with
+   * [Behavior.NON_BLOCKING] on a tool whose [run] returns a Flow; a tool that doesn't stream still
+   * runs to completion before the live run reads the model's next message. A
+   * [com.google.adk.kt.annotations.Tool] function returning a Flow, or a `BasePublisherTool`, is
+   * declared non-blocking without it.
+   */
+  @ExperimentalLiveApi open val behavior: Behavior? = null
+
   /** Returns the underlying function declaration. */
   abstract fun declaration(): FunctionDeclaration?
 
@@ -72,8 +85,9 @@ abstract class BaseTool(
    * the call.
    *
    * To have a live run declare a tool that returns a flow non-blocking, so the model can keep the
-   * conversation going while results arrive, make [declaration] return a [FunctionDeclaration]
-   * whose `behavior` is `Behavior.NON_BLOCKING`.
+   * conversation going while results arrive, override [behavior] with [Behavior.NON_BLOCKING];
+   * making [declaration] return a [FunctionDeclaration] whose `behavior` is `Behavior.NON_BLOCKING`
+   * works too.
    */
   abstract suspend fun run(context: ToolContext, args: Map<String, Any?>): Any
 

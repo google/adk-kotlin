@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.annotations
 
+import com.google.adk.kt.types.Behavior
+
 /**
  * Annotates a function to be exposed as an executable tool by the Google ADK Kotlin. KSP will
  * generate a corresponding [com.google.adk.kt.tools.FunctionTool] wrapper for annotated functions.
@@ -46,6 +48,11 @@ package com.google.adk.kt.annotations
  *   used.
  * @property requireConfirmation If true, the tool execution requires user confirmation.
  * @property isLongRunning If true, indicates the tool returns a Pending state and resumes later.
+ * @property behavior How a live run declares the tool to the model: [Behavior.NON_BLOCKING] lets
+ *   the model keep the conversation going while a call is pending, and [Behavior.BLOCKING] makes it
+ *   wait for the response. Only live runs use it. A function that returns a Flow is always declared
+ *   non-blocking, and one that doesn't still runs to completion before the live run reads the
+ *   model's next message.
  */
 @Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.RUNTIME)
@@ -54,4 +61,5 @@ annotation class Tool(
   val description: String = "",
   val requireConfirmation: Boolean = false,
   val isLongRunning: Boolean = false,
+  val behavior: Behavior = Behavior.UNSPECIFIED,
 )

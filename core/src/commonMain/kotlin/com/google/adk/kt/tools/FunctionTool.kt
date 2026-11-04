@@ -81,7 +81,9 @@ abstract class FunctionTool(
    *   Non-map values are wrapped under [BaseTool.RESULT_KEY]. Return `mapOf(ERROR_KEY to
    *   "<message>")` to signal an LLM-visible error. From a long-running tool, return `Unit` to
    *   defer the response; see [BaseTool.isLongRunning]. Return a [kotlinx.coroutines.flow.Flow] to
-   *   stream results in a live run; see [BaseTool.run].
+   *   stream results in a live run, and override [BaseTool.behavior] with
+   *   [com.google.adk.kt.types.Behavior.NON_BLOCKING] so the model can keep the conversation going
+   *   while the call is pending; see [BaseTool.run].
    */
   abstract suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any
 

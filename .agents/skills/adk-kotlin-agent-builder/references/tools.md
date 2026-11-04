@@ -83,6 +83,16 @@ Build an `McpToolset` through `McpToolset.McpToolsetConfig(...).toToolset()` and
 
 Mark the tool long-running (`isLongRunning = true` or `@Tool(isLongRunning = true)`). Returning `Unit` means "no result yet": no response is emitted and the run ends. The client continues later by sending a `FunctionResponse` with the same call `id` in a new `runAsync` (with a resumable `App`, that resumes the original invocation). Returning any value completes the call.
 
+## Non-blocking live tools
+
+In a live run, `@Tool(behavior = Behavior.NON_BLOCKING)`, or overriding
+`behavior` on a hand-written tool (which needs
+`@OptIn(ExperimentalLiveApi::class)`), lets the model keep the conversation
+going while a call is pending; `Behavior.BLOCKING` makes it wait for the
+response. A tool that returns a `Flow` is always declared non-blocking, and a
+tool that doesn't stream still runs to completion before the live run reads the
+model's next message.
+
 ## Confirmation-gated tools
 
 Mark the tool with `@Tool(requireConfirmation = true)` or pass `requiresConfirmation` to the `FunctionTool` constructor. The first call does not run the tool. Instead the runtime emits a synthetic long-running call named `adk_request_confirmation` (`FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME`) with its own `id`. The client replies with a function response of that name, **using the synthetic call's `id`**, and the tool then runs (or is rejected):

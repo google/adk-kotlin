@@ -42,6 +42,7 @@ import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
@@ -103,6 +104,9 @@ class Fixture {
 
   @Tool(name = "current_time", description = "Returns the current time.")
   fun currentTime(): String = "noon"
+
+  @Tool(description = "Declared non-blocking in a live run.", behavior = Behavior.NON_BLOCKING)
+  fun slowTask(): String = "done"
 
   @Tool(description = "Records the thread it runs on and that thread's request id.")
   fun recordCaller(): String {
@@ -615,6 +619,12 @@ class ReflectiveToolsTest {
   @Test
   fun fromMethod_methodReturningAValue_isNotStreaming() {
     assertFalse(ReflectiveTools.fromMethod(fixture, "currentTime").isStreaming)
+  }
+
+  @Test
+  fun fromMethod_toolWithABehavior_overridesIt() {
+    assertEquals(Behavior.NON_BLOCKING, ReflectiveTools.fromMethod(fixture, "slowTask").behavior)
+    assertNull(ReflectiveTools.fromMethod(fixture, "currentTime").behavior)
   }
 
   @Test

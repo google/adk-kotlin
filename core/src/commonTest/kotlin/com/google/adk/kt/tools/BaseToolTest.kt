@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.testToolContext
@@ -24,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -42,7 +44,7 @@ class BaseToolTest {
     override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = Unit
   }
 
-  @OptIn(FrameworkInternalApi::class)
+  @OptIn(ExperimentalLiveApi::class, FrameworkInternalApi::class)
   @Test
   fun tool_defaultTool_hasDefaultProperties() {
     val tool = DefaultTool()
@@ -52,6 +54,7 @@ class BaseToolTest {
     assertFalse(tool.isLongRunning)
     assertTrue(tool.customMetadata.isEmpty())
     assertFalse(tool.isStreaming)
+    assertNull(tool.behavior)
   }
 
   @Test

@@ -98,10 +98,11 @@ class LlmAgentLiveTest {
     return runUntilTurnsComplete(runnerFor(DummyLiveModel(script)), LiveRequestQueue(), runConfig)
   }
 
-  /** A tool whose [isStreaming] and declared behavior each test chooses. */
+  /** A tool whose [behavior], [isStreaming] and declared behavior each test chooses. */
   @OptIn(FrameworkInternalApi::class)
   private class DeclaredTool(
     name: String,
+    override val behavior: Behavior? = null,
     override val isStreaming: Boolean = false,
     private val declared: Behavior? = null,
   ) : BaseTool(name, "A tool.") {
@@ -374,6 +375,26 @@ class LlmAgentLiveTest {
   }
 
   @Test
+  fun runLive_nonBlockingTool_isDeclaredNonBlocking() {
+    runBlocking {
+      val tool =
+        DeclaredTool("tool", behavior = Behavior.NON_BLOCKING, declared = Behavior.BLOCKING)
+
+      assertThat(liveDeclaredBehaviors(tool)).containsExactly("tool", Behavior.NON_BLOCKING)
+    }
+  }
+
+  @Test
+  fun runLive_blockingTool_isDeclaredBlocking() {
+    runBlocking {
+      val tool =
+        DeclaredTool("tool", behavior = Behavior.BLOCKING, declared = Behavior.NON_BLOCKING)
+
+      assertThat(liveDeclaredBehaviors(tool)).containsExactly("tool", Behavior.BLOCKING)
+    }
+  }
+
+  @Test
   fun runLive_unmarkedTool_keepsItsDeclarationAsItIs() {
     runBlocking {
       val behaviors =
@@ -381,6 +402,11 @@ class LlmAgentLiveTest {
           DeclaredTool("plain"),
           DeclaredTool("self_declared", declared = Behavior.BLOCKING),
           DeclaredTool("unspecified", declared = Behavior.UNSPECIFIED),
+          DeclaredTool(
+            "unspecified_behavior",
+            behavior = Behavior.UNSPECIFIED,
+            declared = Behavior.BLOCKING,
+          ),
           DummyTool(name = "inherited", declares = true),
         )
 
@@ -390,6 +416,7 @@ class LlmAgentLiveTest {
             "plain" to null,
             "self_declared" to Behavior.BLOCKING,
             "unspecified" to Behavior.UNSPECIFIED,
+            "unspecified_behavior" to Behavior.BLOCKING,
             "inherited" to null,
           )
         )
@@ -402,7 +429,12 @@ class LlmAgentLiveTest {
       val behaviors =
         liveDeclaredBehaviors(
           DeclaredTool("marked", isStreaming = true),
-          DeclaredTool("marked_blocking", isStreaming = true, declared = Behavior.BLOCKING),
+          DeclaredTool(
+            "marked_blocking",
+            behavior = Behavior.BLOCKING,
+            isStreaming = true,
+            declared = Behavior.BLOCKING,
+          ),
         )
 
       assertThat(behaviors)
@@ -472,6 +504,8 @@ class LlmAgentLiveTest {
         listOf(
           DeclaredTool("plain"),
           DeclaredTool("marked", isStreaming = true, declared = Behavior.BLOCKING),
+          DeclaredTool("non_blocking", behavior = Behavior.NON_BLOCKING),
+          DeclaredTool("blocking", behavior = Behavior.BLOCKING, declared = Behavior.NON_BLOCKING),
         )
 
       val unused =
@@ -480,7 +514,14 @@ class LlmAgentLiveTest {
           .toList()
 
       assertThat(behaviorsOf(requests.single()))
-        .isEqualTo(mapOf("plain" to null, "marked" to Behavior.BLOCKING))
+        .isEqualTo(
+          mapOf(
+            "plain" to null,
+            "marked" to Behavior.BLOCKING,
+            "non_blocking" to null,
+            "blocking" to Behavior.NON_BLOCKING,
+          )
+        )
     }
   }
 }

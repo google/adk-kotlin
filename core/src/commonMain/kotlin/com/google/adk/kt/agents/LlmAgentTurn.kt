@@ -2453,11 +2453,15 @@ private val ContentInput.storesTurn: Boolean
 /**
  * The behavior a live run declares for [tool], or null to leave its declaration as it is. A
  * streaming tool's results arrive after its call is answered, so it is non-blocking even when its
- * declaration says otherwise.
+ * [BaseTool.behavior] or its declaration says [Behavior.BLOCKING].
  */
 @OptIn(FrameworkInternalApi::class)
 private fun liveBehavior(tool: BaseTool): Behavior? =
-  if (tool.isStreaming) Behavior.NON_BLOCKING else null
+  when {
+    tool.isStreaming || tool.behavior == Behavior.NON_BLOCKING -> Behavior.NON_BLOCKING
+    tool.behavior == Behavior.BLOCKING -> Behavior.BLOCKING
+    else -> null
+  }
 
 /**
  * A sealed class representing either a [LlmRequest] or a [LlmResponse].

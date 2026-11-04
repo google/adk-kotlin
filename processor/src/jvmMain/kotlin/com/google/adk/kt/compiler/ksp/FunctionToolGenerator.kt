@@ -33,6 +33,7 @@ import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.processing.KSPLogger
 import com.google.devtools.ksp.symbol.ClassKind
+import com.google.devtools.ksp.symbol.KSAnnotation
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.KSFunctionDeclaration
@@ -190,6 +191,24 @@ internal class FunctionToolGenerator(
               .build()
           )
           .initializer("true")
+          .build()
+      )
+    }
+    // A @Tool behavior other than UNSPECIFIED tells a live run how to declare the tool.
+    val behaviorName = enumArgName(toolAnnotation, "behavior") ?: "UNSPECIFIED"
+    if (behaviorName != "UNSPECIFIED") {
+      val behaviorClass = ClassName("com.google.adk.kt.types", "Behavior")
+      typeBuilder.addProperty(
+        PropertySpec.builder("behavior", behaviorClass.copy(nullable = true), KModifier.OVERRIDE)
+          .addAnnotation(
+            AnnotationSpec.builder(ClassName("kotlin", "OptIn"))
+              .addMember(
+                "%T::class",
+                ClassName("com.google.adk.kt.annotations", "ExperimentalLiveApi"),
+              )
+              .build()
+          )
+          .initializer("%T.%L", behaviorClass, behaviorName)
           .build()
       )
     }
@@ -1181,10 +1200,13 @@ internal class FunctionToolGenerator(
     return (!param.hasDefault && !isNullable) || requirednessName(param) == "REQUIRED"
   }
 
-  private fun requirednessName(param: KSValueParameter): String {
+  private fun requirednessName(param: KSValueParameter): String =
+    enumArgName(paramAnnotation(param), "required") ?: "AUTO"
+
+  /** The enum constant name of [annotation]'s [argName] argument, or null if it isn't there. */
+  private fun enumArgName(annotation: KSAnnotation?, argName: String): String? {
     val raw =
-      paramAnnotation(param)?.arguments?.firstOrNull { it.name?.asString() == "required" }?.value
-        ?: return "AUTO"
+      annotation?.arguments?.firstOrNull { it.name?.asString() == argName }?.value ?: return null
     return when (raw) {
       is KSType -> raw.declaration.simpleName.asString()
       is KSClassDeclaration -> raw.simpleName.asString()
