@@ -661,6 +661,103 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun toAdk_withUnlabelledDataPartMetadata_keepsMetadataOnPart() {
+    val result = DataPart(mapOf("key" to "value"), mapOf("meta" to "data")).toAdk()
+
+    assertThat(result.inlineData?.data?.decodeToString())
+      .isEqualTo("<a2a_datapart_json>{\"key\":\"value\"}</a2a_datapart_json>")
+    assertThat(result.partMetadata).isEqualTo(mapOf("meta" to "data"))
+  }
+
+  @Test
+  fun toA2A_withTaggedInlineJson_returnsDataPartWithMetadata() {
+    val json = "<a2a_datapart_json>{\"key\":\"value\"}</a2a_datapart_json>"
+    val part =
+      Part(
+        inlineData = Blob(mimeType = "text/plain", data = json.encodeToByteArray()),
+        partMetadata = mapOf("meta" to "data"),
+      )
+
+    val result = part.toA2A() as DataPart
+
+    assertThat(result.data).isEqualTo(mapOf("key" to "value"))
+    assertThat(result.metadata).isEqualTo(mapOf("meta" to "data"))
+  }
+
+  @Test
+  fun toA2A_withTaggedInlineJsonAndNullMetadataValue_dropsTheNullEntry() {
+    val json = "<a2a_datapart_json>{\"key\":\"value\"}</a2a_datapart_json>"
+    val part =
+      Part(
+        inlineData = Blob(mimeType = "text/plain", data = json.encodeToByteArray()),
+        partMetadata = mapOf("meta" to "data", "dropped" to null),
+      )
+
+    val result = part.toA2A() as DataPart
+
+    assertThat(result.metadata).isEqualTo(mapOf("meta" to "data"))
+  }
+
+  @Test
+  fun toA2A_withTaggedInlineJsonWithoutMetadata_returnsDataPartWithoutMetadata() {
+    val json = "<a2a_datapart_json>[\"a\",\"b\"]</a2a_datapart_json>"
+    val part = Part(inlineData = Blob(mimeType = "text/plain", data = json.encodeToByteArray()))
+
+    val result = part.toA2A() as DataPart
+
+    assertThat(result.data).isEqualTo(listOf("a", "b"))
+    assertThat(result.metadata).isNull()
+  }
+
+  @Test
+  fun toA2A_withTaggedJsonScalar_returnsDataPart() {
+    val data = "<a2a_datapart_json>42</a2a_datapart_json>".encodeToByteArray()
+
+    val result = Part(inlineData = Blob(mimeType = "text/plain", data = data)).toA2A()
+
+    assertThat((result as DataPart).data).isEqualTo(42L)
+  }
+
+  @Test
+  fun toA2A_withTaggedInvalidJson_returnsFilePart() {
+    val data = "<a2a_datapart_json>not json</a2a_datapart_json>".encodeToByteArray()
+
+    val result = Part(inlineData = Blob(mimeType = "text/plain", data = data)).toA2A()
+
+    assertThat((result as FilePart).file.mimeType()).isEqualTo("text/plain")
+    assertThat((result.file as FileWithBytes).bytes())
+      .isEqualTo(Base64.getEncoder().encodeToString(data))
+  }
+
+  @Test
+  fun toA2A_withTaggedJsonNull_returnsFilePart() {
+    val data = "<a2a_datapart_json>null</a2a_datapart_json>".encodeToByteArray()
+
+    val result = Part(inlineData = Blob(mimeType = "text/plain", data = data)).toA2A()
+
+    assertThat(result).isInstanceOf(FilePart::class.java)
+  }
+
+  @Test
+  fun toA2A_withTaggedJsonOfOtherMimeType_returnsFilePart() {
+    val data = "<a2a_datapart_json>{}</a2a_datapart_json>".encodeToByteArray()
+
+    val result = Part(inlineData = Blob(mimeType = "application/json", data = data)).toA2A()
+
+    assertThat(result).isInstanceOf(FilePart::class.java)
+  }
+
+  @Test
+  fun toAdkThenToA2A_withUnlabelledDataPart_keepsDataAndMetadata() {
+    val metadata = mapOf("meta" to "data", "mime_type" to "application/json")
+
+    val result = DataPart(mapOf("content" to "some data"), metadata).toAdk().toA2A() as DataPart
+
+    assertThat(result.data).isEqualTo(mapOf("content" to "some data"))
+    assertThat(result.metadata).isEqualTo(metadata)
+  }
+
+  @Test
   fun messageToEvent_withUnconvertiblePart_skipsOnlyThatPart() {
     val a2aMessage =
       Message.builder()

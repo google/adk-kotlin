@@ -464,7 +464,8 @@ private inline fun <T, reified E : Enum<E>> DataPart.decodeData(
 
 /**
  * Carries a DataPart with no matching ADK part type as inline JSON of its data, as ADK Python and
- * Go do for A2A 1.x.
+ * Go do for A2A 1.x. The DataPart's metadata becomes the part's metadata, so [toA2A] can send it
+ * back.
  */
 private fun DataPart.toInlineJsonPart(): Part {
   val json = adkJson.encodeToString(JsonElement.serializer(), anyToJsonElement(data))
@@ -473,7 +474,8 @@ private fun DataPart.toInlineJsonPart(): Part {
       Blob(
         mimeType = DATA_PART_MIME_TYPE,
         data = "$DATA_PART_START_TAG$json$DATA_PART_END_TAG".encodeToByteArray(),
-      )
+      ),
+    partMetadata = metadata?.ifEmpty { null },
   )
 }
 
@@ -529,6 +531,42 @@ private fun Part.mediaControlMetadata(): Map<String, Any> = buildMap {
 private fun <T> encodeAsMap(serializer: KSerializer<T>, value: T): Map<*, *> =
   jsonElementToAny(adkJson.encodeToJsonElement(serializer, value)) as Map<*, *>
 
+/**
+ * Turns tagged inline JSON, as [toInlineJsonPart] makes, back into a DataPart carrying [metadata],
+ * or returns null if it cannot.
+ */
+private fun Blob.toTaggedDataPartOrNull(metadata: Map<String, Any?>): DataPart? {
+  val json =
+    taggedJsonOrNull("Sending tagged inline data that is not JSON as a file") ?: return null
+  val dataValue = jsonElementToAny(json)
+  if (dataValue == null) {
+    // The SDK's DataPart cannot carry JSON null, so it goes out as a file, unlike in Python.
+    logger.warn("Sending tagged inline JSON null as a file")
+    return null
+  }
+  // Drops top-level nulls, unlike Python: the A2A Java SDK cannot parse them in a peer's reply.
+  val dataMetadata = metadata.mapNotNull { (key, value) -> value?.let { key to it } }.toMap()
+  return DataPart(dataValue, dataMetadata.ifEmpty { null })
+}
+
+/**
+ * Returns the JSON in tagged inline data, as [toInlineJsonPart] makes, or null if this is not
+ * tagged JSON. Logs [parseFailure] if the tagged text does not parse.
+ */
+private fun Blob.taggedJsonOrNull(parseFailure: String): JsonElement? {
+  if (mimeType != DATA_PART_MIME_TYPE) return null
+  val text = data?.decodeToString() ?: return null
+  val json = text.removeSurrounding(DATA_PART_START_TAG, DATA_PART_END_TAG)
+  if (json.length == text.length) return null
+  return try {
+    adkJson.parseToJsonElement(json)
+  } catch (e: SerializationException) {
+    // The exception message can quote the bytes, so log only the type.
+    logger.warn("$parseFailure (${e::class.simpleName})")
+    null
+  }
+}
+
 private fun Map<String, Any?>?.isPartial() = this?.get(MetadataKeys.PARTIAL) == true
 
 /** Converts a GenAI Content object to a list of A2A Parts. */
@@ -552,6 +590,9 @@ internal fun Part.toA2A(isPartial: Boolean = false): A2APart<*> {
     )
   }
   inlineData?.let { blob ->
+    blob.toTaggedDataPartOrNull(partMetadata.orEmpty())?.let {
+      return it
+    }
     val bytesStr = blob.data?.let { Base64.getEncoder().encodeToString(it) } ?: ""
     return FilePart(
       FileWithBytes(blob.mimeType ?: "application/octet-stream", blob.displayName ?: "", bytesStr),
@@ -706,19 +747,10 @@ private enum class UserInputCall(val callName: String, val argsKey: String) {
 /** Returns the prompt this part carries: its text, or the data of a DataPart carried as JSON. */
 private fun Part.userInputPrompt(): Any? {
   if (!text.isNullOrEmpty()) return text
-  val blob = inlineData?.takeIf { it.mimeType == DATA_PART_MIME_TYPE } ?: return null
-  val tagged = blob.data?.decodeToString() ?: return null
-  val json = tagged.removeSurrounding(DATA_PART_START_TAG, DATA_PART_END_TAG)
-  if (json.length == tagged.length) return null
   // On A2A 1.x the JSON is the DataPart's data itself, not the A2A 0.3 part whose `data` entry ADK
   // Python reads, so all of it is the prompt.
-  return try {
-    jsonElementToAny(adkJson.parseToJsonElement(json))
-  } catch (e: SerializationException) {
-    // The exception message can quote the bytes, so log only the type.
-    logger.warn("Ignoring inline JSON that does not parse as a prompt (${e::class.simpleName})")
-    null
-  }
+  val json = inlineData?.taggedJsonOrNull("Ignoring inline JSON that does not parse as a prompt")
+  return json?.let { jsonElementToAny(it) }
 }
 
 /**
