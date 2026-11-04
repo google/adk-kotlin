@@ -1750,6 +1750,41 @@ class WorkflowHitlTest {
   }
 
   @Test
+  fun resume_siblingAnsweredAfterANodeAskedTheSameIdAgain_keepsThatNodeWaiting() {
+    // Arrange: `review` asks again under the same id after a null answer while `ask_b` waits.
+    var reviewRuns = 0
+    val review =
+      node<Any?, String>("review", rerunOnResume = true) { ctx, _ ->
+        reviewRuns += 1
+        val answer = ctx.resumeInputs["r_1"] ?: requestInput(interruptId = "r_1")
+        "review: $answer"
+      }
+    val askB = Ask("ask_b", RequestInput(interruptId = "b_1", message = "B?"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, review), Edge(Start, askB), Edge(review, join), Edge(askB, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+    session.advance(answer("r_1", mapOf("result" to null)))
+    check(reviewRuns == 2) { "review should have asked again on the null answer" }
+
+    // Act
+    val turn3 = session.turn(answer("b_1", mapOf("b" to 1L)))
+    val reviewRunsAfterTurn3 = reviewRuns
+    val turn4 = session.turn(answer("r_1", mapOf("result" to "ok")))
+
+    // Assert: the null answer doesn't count for the new ask of `r_1`, so `j` waits for turn 4.
+    assertTrue(turn3.none { e -> e.functionCalls().any { it.id == "r_1" } })
+    assertEquals(2, reviewRunsAfterTurn3)
+    assertTrue(turn3.none { it.nodeInfo?.path == "wf@1/j@1" })
+    val joinEvent = turn4.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(mapOf("review" to "review: ok", "ask_b" to mapOf("b" to 1L)), joinEvent.output)
+  }
+
+  @Test
   fun resume_replayedDelegatingNode_passesItsEncodedOutputToTheJoin() {
     // Arrange: `router` finishes on turn 1 while `ask` waits, so turn 2 replays it into `j`.
     val asText = node<Any?, String>("as_text") { _, _ -> "42" }

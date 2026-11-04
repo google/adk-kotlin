@@ -302,7 +302,7 @@ internal object ResumeScan {
     /**
      * Registers the interrupts [event] raises on [node] (both long-running tool calls and
      * `adk_request_input` calls along with their `response_schema`) and returns whether any were
-     * raised.
+     * raised. An interrupt raised again counts as unanswered until its new answer arrives.
      */
     private fun recordRaisedInterrupts(
       event: Event,
@@ -313,6 +313,7 @@ internal object ResumeScan {
       val raised = event.longRunningToolIds + requests.mapNotNull { it.id }
       for (id in raised) {
         node.interruptIds.add(id)
+        node.resolvedResponses.remove(id)
         if (isDirect) node.directInterruptIds.add(id)
         interruptOwner[id] = node
       }
