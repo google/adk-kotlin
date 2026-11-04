@@ -76,7 +76,7 @@ public final class MessageWorkflowJava {
 
   /** A user-facing message from a node, with {@code parts} as its content. */
   private static Event message(Part... parts) {
-    return Event.builder().author("").content(new Content(Role.MODEL, List.of(parts))).build();
+    return Event.builder().content(new Content(Role.MODEL, List.of(parts))).build();
   }
 
   private static Part text(String text) {
