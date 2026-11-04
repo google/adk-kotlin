@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
@@ -31,6 +32,7 @@ import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
 import com.google.adk.kt.types.Schema;
 import com.google.adk.kt.types.Type;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.JoinNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Route;
@@ -61,6 +63,7 @@ public final class ResearchWorkflowJava {
         .edges(
             g ->
                 g.fromStart()
+                    .then(saveQuestion())
                     .then(plan)
                     // Fans out; branches share no events, so researchers leave notes in state.
                     .then(webResearcherAgent(model), docsResearcherAgent(model))
@@ -105,9 +108,11 @@ public final class ResearchWorkflowJava {
         .model(model)
         .instruction(
             """
-            Split the user's research question into two focused sub-questions: the first about
+            Split this research question into two focused sub-questions: the first about
             real-world adoption and experience, the second about what the official documentation
-            says. If this review of an earlier brief asks for more, target the gap it names:
+            says.
+            Question: {question}
+            If this review of an earlier brief asks for more, target the gap it names:
             {review?}\
             """)
         .build();
@@ -144,9 +149,10 @@ public final class ResearchWorkflowJava {
         .model(model)
         .instruction(
             """
-            Write a one-paragraph brief answering the user's question from these notes, and cite
-            the sources you use:
-            {web_notes?}
+            Write a one-paragraph brief answering this question from these notes, and cite the
+            sources you use.
+            Question: {question}
+            Notes: {web_notes?}
             {docs_notes?}\
             """)
         .outputKey("brief")
@@ -159,7 +165,8 @@ public final class ResearchWorkflowJava {
         .model(model)
         .instruction(
             """
-            Review this brief against the user's question and the research notes.
+            Review this brief against the question and the research notes.
+            Question: {question}
             Brief: {brief?}
             Notes: {web_notes?}
             {docs_notes?}\
@@ -190,6 +197,20 @@ public final class ResearchWorkflowJava {
                       .build()))
           .required("verdict", "feedback")
           .build();
+
+  /** Stores the user's question in state, where the planner, writer and reviewer read it. */
+  private static FunctionNode<Content, String> saveQuestion() {
+    return FunctionNodes.of(
+        "save_question",
+        // START hands the first node the user's message as Content.
+        Content.class,
+        String.class,
+        (ctx, message) -> {
+          String question = message.text();
+          ctx.updateState("question", question);
+          return question;
+        });
+  }
 
   /**
    * Routes on the reviewer's verdict, since an LlmAgent node emits no route. Stops the loop after
