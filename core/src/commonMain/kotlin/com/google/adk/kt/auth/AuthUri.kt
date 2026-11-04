@@ -46,12 +46,14 @@ private val logger = LoggerFactory.getLogger(AuthUri::class)
 @OptIn(SecretAccess::class)
 internal fun AuthCredential.OAuth2.withNewAuthUri(scheme: AuthScheme): AuthCredential.OAuth2 {
   require(!clientId.isNullOrEmpty()) { "An authorization URL needs a client ID." }
-  val method = if (isPublicClient) "S256" else codeChallengeMethod?.ifEmpty { null }
-  require(method == null || method == "S256") {
-    "Only the S256 code challenge method is supported."
-  }
+  val method =
+    if (isPublicClient) {
+      CodeChallengeMethod.S256
+    } else {
+      codeChallengeMethod?.ifEmpty { null }?.let(CodeChallengeMethod::named)
+    }
   val (endpoint, scopes) = scheme.authorizationEndpointAndScopes()
-  val pkce = method?.let { s256PkceProvider(codeVerifier?.reveal()) }
+  val verifier = method?.let { codeVerifier?.reveal()?.ifEmpty { null } ?: newCodeVerifier() }
   val state = generateRandomString(STATE_LENGTH)
   // The request's parameters in a fixed order, without empty values.
   val query =
@@ -65,8 +67,8 @@ internal fun AuthCredential.OAuth2.withNewAuthUri(scheme: AuthScheme): AuthCrede
         "prompt" to (prompt?.ifEmpty { null } ?: "consent"),
         "audience" to audience,
         "nonce" to nonce,
-        "code_challenge" to pkce?.getCodeChallenge(),
-        "code_challenge_method" to pkce?.getCodeChallengeMethod(),
+        "code_challenge" to verifier?.let { method.challenge(it) },
+        "code_challenge_method" to method?.name,
       )
       .filter { (_, value) -> !value.isNullOrEmpty() }
       .formUrlEncode()
@@ -81,8 +83,8 @@ internal fun AuthCredential.OAuth2.withNewAuthUri(scheme: AuthScheme): AuthCrede
   return copy(
     authUri = authUri,
     state = state,
-    codeVerifier = pkce?.let { Secret(it.getCodeVerifier()) } ?: codeVerifier,
-    codeChallengeMethod = method ?: codeChallengeMethod,
+    codeVerifier = verifier?.let(::Secret) ?: codeVerifier,
+    codeChallengeMethod = method?.name ?: codeChallengeMethod,
   )
 }
 

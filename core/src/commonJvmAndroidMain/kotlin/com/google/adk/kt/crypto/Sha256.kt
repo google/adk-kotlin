@@ -17,8 +17,13 @@
 package com.google.adk.kt.crypto
 
 import java.security.MessageDigest
+import java.util.Base64
 
 internal actual fun sha256Hex(input: String): String =
-  MessageDigest.getInstance("SHA-256").digest(input.encodeToByteArray()).joinToString("") {
-    (it.toInt() and 0xff).toString(16).padStart(2, '0')
-  }
+  sha256(input).joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+
+internal actual fun sha256Base64Url(input: String): String =
+  Base64.getUrlEncoder().withoutPadding().encodeToString(sha256(input))
+
+private fun sha256(input: String): ByteArray =
+  MessageDigest.getInstance("SHA-256").digest(input.encodeToByteArray())

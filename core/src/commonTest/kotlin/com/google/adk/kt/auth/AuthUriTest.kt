@@ -341,7 +341,7 @@ class AuthUriTest {
 
       val verifier = credential.codeVerifier?.reveal().orEmpty()
       assertEquals(48, verifier.length)
-      val challenge = s256PkceProvider(verifier).getCodeChallenge()
+      val challenge = CodeChallengeMethod.S256.challenge(verifier)
       assertAuthorizationUrl(
         credential,
         "https://a/auth?tenant=t&$CONFIDENTIAL_QUERY" +
@@ -404,7 +404,7 @@ class AuthUriTest {
 
       val verifier = first.codeVerifier?.reveal().orEmpty()
       assertEquals(48, verifier.length)
-      val challenge = s256PkceProvider(verifier).getCodeChallenge()
+      val challenge = CodeChallengeMethod.S256.challenge(verifier)
       assertAuthorizationUrl(
         first,
         "https://a/auth?tenant=t&$CONFIDENTIAL_QUERY" +

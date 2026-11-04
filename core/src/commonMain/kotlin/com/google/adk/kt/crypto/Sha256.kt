@@ -18,3 +18,9 @@ package com.google.adk.kt.crypto
 
 /** Returns the lowercase hex-encoded SHA-256 digest of [input]'s UTF-8 bytes. */
 internal expect fun sha256Hex(input: String): String
+
+/**
+ * Returns the URL-safe base64 (RFC 4648 section 5), without padding, of the SHA-256 digest of
+ * [input]'s UTF-8 bytes.
+ */
+internal expect fun sha256Base64Url(input: String): String
