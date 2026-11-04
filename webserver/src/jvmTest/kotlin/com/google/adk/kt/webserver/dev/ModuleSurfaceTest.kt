@@ -163,6 +163,8 @@ class ModuleSurfaceTest {
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/(method:POST)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/(method:GET)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/(method:DELETE)",
+        "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/versions/(method:GET)",
+        "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/versions/{versionId}/(method:GET)",
       )
 
     /** Opt-in, and on the contract side rather than the development one. */

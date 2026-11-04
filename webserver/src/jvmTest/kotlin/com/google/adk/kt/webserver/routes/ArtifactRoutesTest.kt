@@ -33,6 +33,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
@@ -51,6 +52,7 @@ class ArtifactRoutesTest {
   class FakeArtifactService(
     val onListArtifactKeys: suspend (SessionKey) -> List<String> = { emptyList() },
     val onLoadArtifact: suspend (SessionKey, String, Int?) -> Part? = { _, _, _ -> null },
+    val onListVersions: suspend (SessionKey, String) -> List<Int> = { _, _ -> emptyList() },
   ) : ArtifactService {
     override suspend fun saveArtifact(
       sessionKey: SessionKey,
@@ -76,7 +78,149 @@ class ArtifactRoutesTest {
     override suspend fun deleteArtifact(sessionKey: SessionKey, filename: String) {}
 
     override suspend fun listVersions(sessionKey: SessionKey, filename: String): List<Int> =
-      emptyList()
+      onListVersions(sessionKey, filename)
+  }
+
+  // Version routes. An unrouted path also answers 404, so these tests check the body too.
+
+  @Test
+  fun listVersions_existing_returnsVersionList() = testApplication {
+    var seenKey: SessionKey? = null
+    var seenName: String? = null
+    val service =
+      FakeArtifactService(
+        onListVersions = { key, name ->
+          seenKey = key
+          seenName = name
+          listOf(0, 1, 2)
+        }
+      )
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { artifactRoutes(service) }
+    }
+
+    val response =
+      client.get("/apps/testApp/users/testUser/sessions/testSession/artifacts/report.txt/versions")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(response.bodyAsText()).isEqualTo("[0,1,2]")
+    assertThat(seenKey).isEqualTo(SessionKey("testApp", "testUser", "testSession"))
+    assertThat(seenName).isEqualTo("report.txt")
+  }
+
+  @Test
+  fun listVersions_unknownArtifact_returnsEmptyListNotNotFound() = testApplication {
+    val service = FakeArtifactService(onListVersions = { _, _ -> emptyList() })
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { artifactRoutes(service) }
+    }
+
+    val response =
+      client.get("/apps/testApp/users/testUser/sessions/testSession/artifacts/nope.txt/versions")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(response.bodyAsText()).isEqualTo("[]")
+  }
+
+  @Test
+  fun loadVersion_numericId_passesThatVersionToTheService() = testApplication {
+    var seenKey: SessionKey? = null
+    var seenName: String? = null
+    var seenVersion: Int? = -1
+    val service =
+      FakeArtifactService(
+        onLoadArtifact = { key, name, version ->
+          seenKey = key
+          seenName = name
+          seenVersion = version
+          Part(text = "v$version")
+        }
+      )
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { artifactRoutes(service) }
+    }
+
+    val response =
+      client.get(
+        "/apps/testApp/users/testUser/sessions/testSession/artifacts/report.txt/versions/2"
+      )
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(seenKey).isEqualTo(SessionKey("testApp", "testUser", "testSession"))
+    assertThat(seenName).isEqualTo("report.txt")
+    assertThat(seenVersion).isEqualTo(2)
+    assertThat(response.bodyAsText()).contains("v2")
+  }
+
+  @Test
+  fun loadVersion_latest_passesNullVersion() = testApplication {
+    var seenVersion: Int? = -1
+    val service =
+      FakeArtifactService(
+        onLoadArtifact = { _, _, version ->
+          seenVersion = version
+          Part(text = "newest")
+        }
+      )
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { artifactRoutes(service) }
+    }
+
+    val response =
+      client.get(
+        "/apps/testApp/users/testUser/sessions/testSession/artifacts/report.txt/versions/latest"
+      )
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(seenVersion).isNull()
+  }
+
+  @Test
+  fun loadVersion_nonNumericId_returnsUnprocessableEntity() = testApplication {
+    var called = false
+    val service =
+      FakeArtifactService(
+        onLoadArtifact = { _, _, _ ->
+          called = true
+          Part(text = "should not be reached")
+        }
+      )
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { artifactRoutes(service) }
+    }
+
+    val response =
+      client.get(
+        "/apps/testApp/users/testUser/sessions/testSession/artifacts/report.txt/versions/banana"
+      )
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.UnprocessableEntity)
+    assertThat(response.contentType()?.withoutParameters()).isEqualTo(ContentType.Application.Json)
+    assertThat(response.bodyAsText()).isEqualTo("""{"detail":"Invalid version ID"}""")
+    assertThat(called).isFalse()
+  }
+
+  @Test
+  fun loadVersion_missingArtifact_returnsNotFoundFromHandler() = testApplication {
+    val service = FakeArtifactService(onLoadArtifact = { _, _, _ -> null })
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { artifactRoutes(service) }
+    }
+
+    val response =
+      client.get(
+        "/apps/testApp/users/testUser/sessions/testSession/artifacts/report.txt/versions/7"
+      )
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.NotFound)
+    assertThat(response.contentType()?.withoutParameters()).isEqualTo(ContentType.Application.Json)
+    assertThat(response.bodyAsText()).isEqualTo("""{"detail":"Artifact not found"}""")
   }
 
   @Test

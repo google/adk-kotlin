@@ -36,7 +36,12 @@ internal object ArtifactRoutesErrors {
   val ERR_MISSING_ARTIFACT_NAME =
     ArtifactRoutesError("Missing artifactName", HttpStatusCode.BadRequest)
   val ERR_ARTIFACT_NOT_FOUND = ArtifactRoutesError("Artifact not found", HttpStatusCode.NotFound)
+  val ERR_INVALID_VERSION_ID =
+    ArtifactRoutesError("Invalid version ID", HttpStatusCode.UnprocessableEntity)
 }
+
+/** The version id meaning "no preference", which the artifact service spells as a null version. */
+private const val LATEST_VERSION = "latest"
 
 internal data class ArtifactParams(
   val appName: String,
@@ -163,6 +168,66 @@ internal fun Route.artifactRoutes(artifactService: ArtifactService) {
 
         artifactService.deleteArtifact(SessionKey(appName, userId, sessionId), artifactName)
         call.respond(HttpStatusCode.NoContent)
+      }
+
+      // Lists an artifact's saved versions and serves one by number, or the newest for `latest`.
+      route("/versions") {
+        get {
+          val result = extractArtifactParams(call.parameters, requireArtifactName = true)
+          val params =
+            when (result) {
+              is ArtifactRoutesResult.Success -> result.params
+              is ArtifactRoutesResult.Error -> {
+                return@get call.respond(result.error.code, result.error.message)
+              }
+            }
+          val artifactName = params.artifactName ?: return@get
+
+          // An artifact nobody saved has no versions, so the answer is an empty list, not a 404.
+          call.respond(
+            artifactService.listVersions(
+              SessionKey(params.appName, params.userId, params.sessionId),
+              artifactName,
+            )
+          )
+        }
+
+        get("/{versionId}") {
+          val result = extractArtifactParams(call.parameters, requireArtifactName = true)
+          val params =
+            when (result) {
+              is ArtifactRoutesResult.Success -> result.params
+              is ArtifactRoutesResult.Error -> {
+                return@get call.respond(result.error.code, result.error.message)
+              }
+            }
+          val artifactName = params.artifactName ?: return@get
+          val versionId = call.parameters["versionId"] ?: return@get
+
+          // Any non-integer other than `latest` is the caller's mistake, so 422 rather than 404.
+          val version =
+            if (versionId == LATEST_VERSION) {
+              null
+            } else {
+              versionId.toIntOrNull()
+                ?: return@get call.respond(
+                  ArtifactRoutesErrors.ERR_INVALID_VERSION_ID.code,
+                  mapOf("detail" to ArtifactRoutesErrors.ERR_INVALID_VERSION_ID.message),
+                )
+            }
+
+          val part =
+            artifactService.loadArtifact(
+              SessionKey(params.appName, params.userId, params.sessionId),
+              artifactName,
+              version,
+            )
+              ?: return@get call.respond(
+                ArtifactRoutesErrors.ERR_ARTIFACT_NOT_FOUND.code,
+                mapOf("detail" to ArtifactRoutesErrors.ERR_ARTIFACT_NOT_FOUND.message),
+              )
+          call.respond(part)
+        }
       }
     }
   }

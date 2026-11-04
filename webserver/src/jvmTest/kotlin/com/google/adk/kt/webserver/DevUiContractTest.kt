@@ -228,8 +228,7 @@ class DevUiContractTest {
         ),
         UiEndpoint(
           "GET",
-          "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/versions/{version}",
-          unsupported = "artifact versions are not addressable by path",
+          "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/versions/{versionId}",
         ),
         UiEndpoint(
           "GET",
