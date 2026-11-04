@@ -52,8 +52,6 @@ internal class HistoryRewriterProcessor {
     isolationScope: String? = null,
     userContent: Content? = null,
   ): List<Content> {
-    // A tool's own messages sit on a `<tool>@<call id>` branch named by a recorded call id.
-    val toolCallIds = events.functionCallIds()
     val workingEvents =
       when (includeContents) {
         IncludeContents.DEFAULT -> events
@@ -62,7 +60,6 @@ internal class HistoryRewriterProcessor {
             filterSingleTurnNodeEvents(events, currentBranch, nodePath, singleTurnNode),
             agentName,
             currentBranch,
-            toolCallIds,
             nodePath,
             isolationScope,
           )
@@ -79,6 +76,8 @@ internal class HistoryRewriterProcessor {
         keepAncestors = true,
       )
 
+    // A tool's own messages sit on a `<tool>@<call id>` branch named by a recorded call id.
+    val toolCallIds = events.functionCallIds()
     // Filter raw events
     val rawFilteredEvents = rewindFilteredEvents.filter {
       shouldIncludeEventInContext(
@@ -426,10 +425,10 @@ internal class HistoryRewriterProcessor {
     events: List<Event>,
     agentName: String,
     currentBranch: String?,
-    toolCallIds: Set<String>,
     nodePath: String?,
     isolationScope: String?,
   ): List<Event> {
+    val toolCallIds = events.functionCallIds()
     // A posted-back result continues its call's turn, so the turn reaches back to that call.
     val unmatchedResultIds = mutableSetOf<String>()
     for (i in events.indices.reversed()) {

@@ -1083,6 +1083,59 @@ class LlmAgentAsNodeTest {
   }
 
   @Test
+  fun runAsync_resumedNodeAfterAnsweredRequest_seesItsCallAndAnswer() = runBlocking {
+    // Arrange: `ask -> agent`; the agent's own history sees the answer to `ask` without its call.
+    val model =
+      ScriptedModel(
+        Content(
+          role = Role.MODEL,
+          parts = listOf(Part(functionCall = FunctionCall("approve", emptyMap(), id = "call_1"))),
+        ),
+        Content.fromText(Role.MODEL, "approved"),
+      )
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(DummyTool(name = "approve", isLongRunning = true, onRun = { _, _ -> Unit })),
+      )
+    val ask = AskForInputNode("ask", "ask_1")
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            "app",
+            rootNode = Workflow("wf", listOf(Edge(Start, ask), Edge(ask, agent))),
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+      )
+    val unused = runner.runAsync("u", "s", newMessage = Content.fromText(Role.USER, "go")).toList()
+    val unusedAnswered =
+      runner.runAsync("u", "s", newMessage = inputAnswer("ask_1", mapOf("name" to "John"))).toList()
+    val answer =
+      Content(
+        role = Role.USER,
+        parts =
+          listOf(
+            Part(
+              functionResponse =
+                FunctionResponse(id = "call_1", name = "approve", response = mapOf("ok" to true))
+            )
+          ),
+      )
+
+    // Act
+    val unusedResumed = runner.runAsync("u", "s", newMessage = answer).toList()
+
+    // Assert
+    assertEquals(2, model.requests.size)
+    val second = model.requests[1].contents
+    assertEquals(listOf("go"), second.firstOrNull()?.parts?.mapNotNull { it.text })
+    assertTrue(second.any { c -> c.parts.any { it.functionCall?.id == "call_1" } })
+    assertTrue(second.any { c -> c.parts.any { it.functionResponse?.id == "call_1" } })
+  }
+
+  @Test
   fun runAsync_messageAsOutputNodeBeforeAPause_isNotRunAgainOnResume() = runBlocking {
     // Arrange: `summarizer -> ask`; the summarizer finishes, then `ask` pauses turn 1.
     val model = ScriptedModel(Content.fromText(Role.MODEL, "summary"))
