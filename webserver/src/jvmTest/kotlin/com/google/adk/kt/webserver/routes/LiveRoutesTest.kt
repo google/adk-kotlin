@@ -87,6 +87,8 @@ import org.junit.runners.JUnit4
 
 private const val PUMP_PATH = "/pump"
 
+private const val LIMITS_PATH = "/limits"
+
 private const val AUDIO_FRAME = """{"blob":{"mime_type":"audio/pcm","data":"AQID"}}"""
 
 private const val JPEG_FRAME = """{"blob":{"mime_type":"image/jpeg","data":"AQID"}}"""
@@ -522,6 +524,40 @@ class LiveRoutesTest {
     val config = loader.model.connectRequests.single().liveConnectConfig
     assertThat(config.responseModalities).containsExactly(Modality.TEXT)
     assertThat(config.proactivity).isEqualTo(ProactivityConfig(proactiveAudio = true))
+  }
+
+  @Test
+  fun runLive_underTheAppsOwnWebSockets_closesAnOversizedFrameWithTooBig() = testApplication {
+    application {
+      install(WebSockets)
+      routing {
+        liveRoutes(AppLoaderApps(FakeAppLoader()), FakeSessionService(), FakeArtifactService())
+      }
+    }
+
+    val oversized = Frame.Text("x".repeat(MAX_LIVE_FRAME_BYTES.toInt() + 1))
+    val reason = serverCloseOf(liveRunPath("live-agent"), oversized)
+
+    assertThat(reason?.code).isEqualTo(CloseReason.Codes.TOO_BIG.code)
+  }
+
+  @Test
+  fun applyLiveLimits_setsTheFrameCapPingAndTimeout() = testApplication {
+    var limits = emptyList<Long>()
+    application {
+      install(WebSockets)
+      routing {
+        webSocket(LIMITS_PATH) {
+          applyLiveLimits()
+          limits = listOf(maxFrameSize, pingIntervalMillis, timeoutMillis)
+          send(Frame.Text("set"))
+        }
+      }
+    }
+
+    liveClient().use { client -> client.webSocket(LIMITS_PATH) { receiveText() } }
+
+    assertThat(limits).containsExactly(MAX_LIVE_FRAME_BYTES, 20_000L, 20_000L).inOrder()
   }
 
   @Test

@@ -182,19 +182,31 @@ internal fun parseLiveRunParams(parameters: Parameters): LiveRunParamsResult {
  */
 internal const val MAX_LIVE_FRAME_BYTES = 16L * 1024 * 1024
 
+/** The ping period and timeout of a live socket, so one whose client stopped answering closes. */
+private val LIVE_PING_PERIOD = 20.seconds
+
 /**
  * Installs `WebSockets` with the limits `/run_live` relies on. On a stalled client, the engine's
  * write timeout (Netty's default is 10 s) then closes the socket.
  */
 internal fun Application.installLiveWebSockets() {
   install(WebSockets) {
-    // A 20 s ping and timeout, so the socket of a client that stopped answering closes.
-    pingPeriod = 20.seconds
-    timeout = 20.seconds
+    pingPeriod = LIVE_PING_PERIOD
+    timeout = LIVE_PING_PERIOD
     maxFrameSize = MAX_LIVE_FRAME_BYTES
     // A few frames of slack: send waits once 16 are queued, so a slow client can't grow memory.
     channels { outgoing = bounded(16) }
   }
+}
+
+/**
+ * Sets the live frame cap, ping and timeout on this socket, which an application that installed its
+ * own `WebSockets` first does not have. Only the bounded outgoing queue stays a plugin setting.
+ */
+internal fun DefaultWebSocketServerSession.applyLiveLimits() {
+  maxFrameSize = MAX_LIVE_FRAME_BYTES
+  pingIntervalMillis = LIVE_PING_PERIOD.inWholeMilliseconds
+  timeoutMillis = LIVE_PING_PERIOD.inWholeMilliseconds
 }
 
 /** Registers the bidirectional streaming endpoint the live clients connect to. */
@@ -206,6 +218,8 @@ internal fun Route.liveRoutes(
 ) {
   route("/run_live") {
     webSocket {
+      applyLiveLimits()
+
       val params =
         when (val result = parseLiveRunParams(call.request.queryParameters)) {
           is LiveRunParamsResult.Success -> result.params

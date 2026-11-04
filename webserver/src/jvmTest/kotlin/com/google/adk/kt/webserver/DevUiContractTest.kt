@@ -230,12 +230,7 @@ class DevUiContractTest {
           "GET",
           "/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts/{artifactName}/versions/{versionId}",
         ),
-        UiEndpoint(
-          "GET",
-          "/run_live",
-          unsupported = "live runs are not served yet",
-          webSocket = true,
-        ),
+        UiEndpoint("GET", "/run_live", webSocket = true),
         UiEndpoint("GET", "/config/telemetry"),
         UiEndpoint(
           "POST",

@@ -22,12 +22,15 @@ package com.google.adk.kt.webserver
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.InMemorySessionService
@@ -36,6 +39,9 @@ import com.google.adk.kt.sessions.ListSessionsResponse
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.testing.DummyLiveModel
+import com.google.adk.kt.testing.DummyLiveStep.Respond
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.loaders.AgentLoader
@@ -43,12 +49,15 @@ import com.google.adk.kt.webserver.loaders.AppLoader
 import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
 import com.google.adk.kt.webserver.loaders.SingleAgentLoader
 import com.google.adk.kt.webserver.models.RunResponse
+import com.google.adk.kt.webserver.routes.MAX_LIVE_FRAME_BYTES
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
 import com.google.adk.kt.workflow.Edge
 import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertThat
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -57,13 +66,25 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.server.application.DuplicatePluginException
+import io.ktor.server.application.install
+import io.ktor.server.application.plugin
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.pingInterval
+import io.ktor.server.websocket.timeout
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -562,6 +583,115 @@ class ApiServerTest {
         ),
     )
 
+  @Test
+  fun adkApiModule_appInstallsWebSocketsFirst_stillServesRunLive() = testApplication {
+    // An app with its own socket routes installs WebSockets first; the module then uses the app's.
+    application {
+      install(WebSockets)
+      adkApiModule(testConfig())
+    }
+
+    // The route runs as far as the session check, so it is served.
+    val code = liveClient().use { client -> client.closeCodeOf("mock-agent") }
+    assertThat(code).isEqualTo(CloseReason.Codes.PROTOCOL_ERROR.code)
+  }
+
+  @Test
+  fun adkApiModule_appInstallsWebSocketsAfterIt_getsADuplicatePluginError() = testApplication {
+    var lateInstallFailure: Throwable? = null
+    application {
+      adkApiModule(testConfig())
+      lateInstallFailure = runCatching { install(WebSockets) }.exceptionOrNull()
+    }
+
+    startApplication()
+
+    assertThat(lateInstallFailure).isInstanceOf(DuplicatePluginException::class.java)
+  }
+
+  @Test
+  fun adkApiModule_installsWebSocketsWithTheLiveLimits() = testApplication {
+    var webSockets: WebSockets? = null
+    application {
+      adkApiModule(testConfig())
+      webSockets = plugin(WebSockets)
+    }
+
+    startApplication()
+
+    with(checkNotNull(webSockets)) {
+      assertThat(pingInterval).isEqualTo(20.seconds)
+      assertThat(timeout).isEqualTo(20.seconds)
+      assertThat(maxFrameSize).isEqualTo(MAX_LIVE_FRAME_BYTES)
+    }
+  }
+
+  @Test
+  fun runLive_appFromAnAppLoader_resolvesBeforeTheSessionCheck() = testApplication {
+    application { adkApiModule(testConfig()) }
+    liveClient().use { client ->
+      val servedApp = client.closeCodeOf("mock-agent")
+      val unknownApp = client.closeCodeOf("nope")
+
+      // A served app gets as far as the session check; an unknown one stops at the app lookup.
+      assertThat(servedApp).isEqualTo(CloseReason.Codes.PROTOCOL_ERROR.code)
+      assertThat(unknownApp).isEqualTo(CloseReason.Codes.VIOLATED_POLICY.code)
+    }
+  }
+
+  @Test
+  fun runLive_appPlugins_reachTheLiveEvents() = testApplication {
+    // Only the app lists the plugin, so the stamp shows app plugins run on live runs.
+    assertThat(firstLiveFrame(appPlugins = listOf(StampingPlugin())))
+      .contains("stamped by the plugin")
+  }
+
+  @Test
+  fun runLive_serverPlugins_reachTheLiveEvents() = testApplication {
+    assertThat(firstLiveFrame(serverPlugins = listOf(StampingPlugin())))
+      .contains("stamped by the plugin")
+  }
+
+  /** Serves a live app answering "hi" with these plugins and returns its first frame. */
+  @OptIn(ExperimentalLiveApi::class)
+  private suspend fun ApplicationTestBuilder.firstLiveFrame(
+    appPlugins: List<Plugin> = emptyList(),
+    serverPlugins: List<Plugin> = emptyList(),
+  ): String {
+    val sessions = InMemorySessionService()
+    val key = SessionKey("live-app", "u", "s")
+    sessions.createSession(key, null)
+    val model =
+      DummyLiveModel(listOf(Respond(LlmResponse(content = modelMessage("hi"), partial = false))))
+    application {
+      adkApiModule(
+        AdkServerConfig(
+          appLoader =
+            InMemoryAppLoader(
+              App(
+                appName = key.appName,
+                rootAgent = LlmAgent(name = "live_agent", model = model),
+                plugins = appPlugins,
+              )
+            ),
+          sessionService = sessions,
+          artifactService = artifactService,
+          apiServerSpanExporter = ApiServerSpanExporter(),
+          plugins = serverPlugins,
+        )
+      )
+    }
+    var frame = ""
+    liveClient().use { client ->
+      client.webSocket(
+        "/run_live?app_name=${key.appName}&user_id=${key.userId}&session_id=${key.id}"
+      ) {
+        frame = (withTimeout(LIVE_TIMEOUT) { incoming.receive() } as Frame.Text).readText()
+      }
+    }
+    return frame
+  }
+
   private fun testConfig(
     plugins: List<Plugin> = emptyList(),
     appLoader: AppLoader = this.appLoader,
@@ -575,4 +705,17 @@ class ApiServerTest {
       plugins = plugins,
       appLoader = appLoader.takeIf { agentLoader == null },
     )
+
+  companion object {
+    private val LIVE_TIMEOUT = 10.seconds
+
+    /** The close code `/run_live` sends a client that names [appName] and an unknown session. */
+    private suspend fun HttpClient.closeCodeOf(appName: String): Short? {
+      var code: Short? = null
+      webSocket("/run_live?app_name=$appName&user_id=u&session_id=nope") {
+        code = withTimeout(LIVE_TIMEOUT) { closeReason.await() }?.code
+      }
+      return code
+    }
+  }
 }

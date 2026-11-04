@@ -27,7 +27,9 @@ import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.adk.kt.webserver.routes.appInfoRoutes
 import com.google.adk.kt.webserver.routes.appRoutes
 import com.google.adk.kt.webserver.routes.artifactRoutes
+import com.google.adk.kt.webserver.routes.installLiveWebSockets
 import com.google.adk.kt.webserver.routes.isWebUiEnabled
+import com.google.adk.kt.webserver.routes.liveRoutes
 import com.google.adk.kt.webserver.routes.runRoutes
 import com.google.adk.kt.webserver.routes.sessionRoutes
 import com.google.adk.kt.webserver.routes.staticRoutes
@@ -39,6 +41,7 @@ import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ResponseSent
 import io.ktor.server.application.install
+import io.ktor.server.application.pluginOrNull
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -48,6 +51,7 @@ import io.ktor.server.request.uri
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
 import io.ktor.util.AttributeKey
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.DisposableHandle
@@ -159,9 +163,13 @@ private val requestLogging = requestLoggingPlugin { level, message ->
 
 /**
  * Installs the ADK agent runtime (health, version, app discovery, sessions, artifacts, the run
- * endpoints, and app-info when [AdkServerConfig.includeAppInfo] or the `adk.app.info.enabled`
- * property asks for it) and flushes [AdkServerConfig.sessionService] when the application stops,
- * waiting up to 3 seconds for a flush that honors cancellation.
+ * endpoints including `/run_live`, and app-info when [AdkServerConfig.includeAppInfo] or the
+ * `adk.app.info.enabled` property asks for it), installs Ktor `WebSockets` unless the application
+ * already did (install your own `WebSockets` before this module, or startup fails), and flushes
+ * [AdkServerConfig.sessionService] when the application stops, waiting up to 3 seconds for a flush
+ * that honors cancellation. Your own `WebSockets` should set `maxFrameSize` to at most 16 MiB and
+ * bound its outgoing channel: Ktor reads a socket's first frames with the plugin's cap, before
+ * `/run_live` sets its own.
  *
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
@@ -179,6 +187,10 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
   install(ContentNegotiation) { json(adkJson) }
 
   flushSessionServiceOnStop(config.sessionService)
+
+  if (pluginOrNull(WebSockets) == null) {
+    installLiveWebSockets()
+  }
 
   val otelConfig = OpenTelemetryConfig(config.apiServerSpanExporter)
   val sdkTracerProvider = otelConfig.sdkTracerProvider()
@@ -229,6 +241,7 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
     if (webUiEnabled) {
       staticRoutes(this@adkApiModule)
     }
+    liveRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
   }
 }
 

@@ -154,6 +154,8 @@ class ModuleSurfaceTest {
         "/list-apps/(method:GET)",
         "/run/(method:POST)",
         "/run_sse/(method:POST)",
+        // The API module mounts /run_live in every deployment, selected by its upgrade headers.
+        "/run_live/(header:Connection = Upgrade)/(header:Upgrade = websocket)",
         "/apps/{appName}/users/{userId}/sessions/(method:GET)",
         "/apps/{appName}/users/{userId}/sessions/(method:POST)",
         "/apps/{appName}/users/{userId}/sessions/{sessionId}/(method:GET)",
