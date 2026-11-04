@@ -644,8 +644,7 @@ internal class HistoryRewriterProcessor {
         // Exclude thoughts from the context.
         continue
       }
-      // Blank text is not narrated: such a part is a signature carrier, and a bare "said:" would
-      // both pollute the prompt and keep the event alive on nothing. Matches the emptiness rule.
+      // Not narrated: a bare "said:" would pollute the prompt and keep the event alive on nothing.
       part.text
         ?.takeIf { it.isNotBlank() }
         ?.let { text -> newParts.add(Part(text = "[${event.author}] said: $text")) }
@@ -830,8 +829,9 @@ internal class HistoryRewriterProcessor {
     }
 
     val isThought = part.thought == true
+    // Whitespace-only text is still content: the turn happened, so the history keeps it.
     val hasContent =
-      !part.text.isNullOrBlank() ||
+      !part.text.isNullOrEmpty() ||
         part.inlineData != null ||
         part.fileData != null ||
         part.executableCode != null ||

@@ -362,8 +362,14 @@ class HistoryRewriterProcessorTest {
     assertEquals("Summarize the video.", contents[0].parts[0].text)
   }
 
-  // Whitespace-only text is not content either, so the carrier that carries it must not be narrated
-  // as a bare "said:". Matches what the emptiness rule already treats as blank.
+  @Test
+  fun rewrite_whitespaceOnlyTextFromCurrentAgent_isKept() {
+    val events = listOf(userEvent("a"), modelPartEvent(Part(text = "   ")), userEvent("b"))
+
+    assertEquals(listOf("user" to "a", "model" to "   ", "user" to "b"), turns(rewrite(events)))
+  }
+
+  // Whitespace-only text has nothing to attribute, so the carrier is not narrated as "said:".
   @Test
   fun rewrite_blankTextSignaturePartFromOtherAgent_isNotNarrated() {
     val events =
@@ -716,6 +722,18 @@ class HistoryRewriterProcessorTest {
       )
 
     assertEquals(listOf("model" to "Hello."), turns(rewrite(listOf(event))))
+  }
+
+  @Test
+  fun rewrite_whitespaceOnlyContentWithTranscription_keepsOnlyItsContent() {
+    val event =
+      Event(
+        author = "agent",
+        content = modelMessage(Part(text = "   ")),
+        outputTranscription = Transcription(text = "Hello."),
+      )
+
+    assertEquals(listOf("model" to "   "), turns(rewrite(listOf(event))))
   }
 
   @Test
