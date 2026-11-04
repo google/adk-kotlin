@@ -282,6 +282,7 @@ internal fun GenAiFunctionDeclaration.fromGenaiSdk(): FunctionDeclaration =
     description = description ?: "",
     parameters = parameters?.toKtSchema(),
     response = response?.toKtSchema(),
+    behavior = behavior?.toKt(),
   )
 
 /** Converts an ADK [FunctionDeclaration] to a [GenAiFunctionDeclaration] for the GenAI SDK. */
@@ -291,6 +292,7 @@ internal fun FunctionDeclaration.toGenaiSdk(): GenAiFunctionDeclaration =
     description = description,
     parameters = parameters?.toGenAiSchema(),
     response = response?.toGenAiSchema(),
+    behavior = behavior?.toGenaiSdk(),
   )
 
 // --- FunctionResponse ---

@@ -244,6 +244,20 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun functionDeclaration_withBehavior_convertsCorrectly() {
+    val adkFunctionDeclaration =
+      FunctionDeclaration(name = "myFunc", description = "desc", behavior = Behavior.NON_BLOCKING)
+
+    val genaiFunctionDeclaration = adkFunctionDeclaration.toGenaiSdk()
+
+    assertEquals(
+      com.google.genai.kotlin.types.Behavior.NON_BLOCKING,
+      genaiFunctionDeclaration.behavior,
+    )
+    assertEquals(adkFunctionDeclaration, genaiFunctionDeclaration.fromGenaiSdk())
+  }
+
+  @Test
   fun generateContentConfig_convertsCorrectly() {
     val adkConfig =
       GenerateContentConfig(

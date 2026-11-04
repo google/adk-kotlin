@@ -17,12 +17,15 @@
 package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Serializable
 
 /** Represents a function declaration for tool calling. */
 @Serializable
-data class FunctionDeclaration(
+data class FunctionDeclaration
+@JvmOverloads
+constructor(
   /** The name of the function. */
   val name: String,
   /** A description of what the function does. */
@@ -31,6 +34,8 @@ data class FunctionDeclaration(
   val parameters: Schema? = null,
   /** The shape of the value this function returns, when the tool declares one. */
   val response: Schema? = null,
+  /** Whether a live model waits for this function's response; only live connections support it. */
+  val behavior: Behavior? = null,
 ) {
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
@@ -39,7 +44,12 @@ data class FunctionDeclaration(
    */
   @AdkJavaInteropApi
   fun toBuilder(): Builder =
-    Builder().name(name).description(description).parameters(parameters).response(response)
+    Builder()
+      .name(name)
+      .description(description)
+      .parameters(parameters)
+      .response(response)
+      .behavior(behavior)
 
   /**
    * Fluent builder for [FunctionDeclaration], provided primarily for Java callers. Any property
@@ -51,6 +61,7 @@ data class FunctionDeclaration(
     private var description: String? = null
     private var parameters: Schema? = null
     private var response: Schema? = null
+    private var behavior: Behavior? = null
 
     fun name(name: String): Builder = apply { this.name = name }
 
@@ -59,6 +70,8 @@ data class FunctionDeclaration(
     fun parameters(parameters: Schema?): Builder = apply { this.parameters = parameters }
 
     fun response(response: Schema?): Builder = apply { this.response = response }
+
+    fun behavior(behavior: Behavior?): Builder = apply { this.behavior = behavior }
 
     fun build(): FunctionDeclaration =
       FunctionDeclaration(
@@ -69,6 +82,7 @@ data class FunctionDeclaration(
           },
         parameters = parameters,
         response = response,
+        behavior = behavior,
       )
   }
 

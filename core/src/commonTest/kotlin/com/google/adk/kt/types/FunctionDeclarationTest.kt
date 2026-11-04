@@ -71,6 +71,7 @@ class FunctionDeclarationTest {
         description = "Gets the weather.",
         parameters = Schema(type = Type.OBJECT),
         response = Schema(type = Type.STRING),
+        behavior = Behavior.BLOCKING,
       )
 
     assertEquals(declaration.copy(), declaration.toBuilder().build())

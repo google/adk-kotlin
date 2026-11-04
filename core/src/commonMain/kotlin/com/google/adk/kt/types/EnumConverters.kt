@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.types
 
+import com.google.genai.kotlin.types.Behavior as GenAiBehavior
 import com.google.genai.kotlin.types.BlockedReason as GenAiBlockedReason
 import com.google.genai.kotlin.types.FinishReason as GenAiFinishReason
 import com.google.genai.kotlin.types.FunctionCallingConfigMode as GenAiFunctionCallingConfigMode
@@ -193,3 +194,13 @@ internal fun GenAiPartMediaResolutionLevel.toKt(): PartMediaResolutionLevel =
 /** Converts an ADK [PartMediaResolutionLevel] to a [GenAiPartMediaResolutionLevel] for the SDK. */
 internal fun PartMediaResolutionLevel.toGenaiSdk(): GenAiPartMediaResolutionLevel =
   GenAiPartMediaResolutionLevel(this.name)
+
+/**
+ * Converts a [GenAiBehavior] from the GenAI SDK to an ADK [Behavior]. The SDK models enums as
+ * `value class` wrappers, so unknown values map to [Behavior.UNSPECIFIED].
+ */
+internal fun GenAiBehavior.toKt(): Behavior =
+  runCatching { Behavior.valueOf(this.value) }.getOrDefault(Behavior.UNSPECIFIED)
+
+/** Converts an ADK [Behavior] to a [GenAiBehavior] for the GenAI SDK. */
+internal fun Behavior.toGenaiSdk(): GenAiBehavior = GenAiBehavior(this.name)

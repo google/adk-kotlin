@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.types.FunctionDeclaration
@@ -41,6 +42,7 @@ class BaseToolTest {
     override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = Unit
   }
 
+  @OptIn(FrameworkInternalApi::class)
   @Test
   fun tool_defaultTool_hasDefaultProperties() {
     val tool = DefaultTool()
@@ -49,6 +51,7 @@ class BaseToolTest {
     assertEquals("A tool with default arguments", tool.description)
     assertFalse(tool.isLongRunning)
     assertTrue(tool.customMetadata.isEmpty())
+    assertFalse(tool.isStreaming)
   }
 
   @Test

@@ -19,26 +19,39 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
 import com.google.adk.kt.testing.DummyLiveStep.Respond
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.audioFrame
 import com.google.adk.kt.testing.inputTranscription
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.storedEvents
 import com.google.adk.kt.testing.turnCompleteStep
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.testing.wholeText
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.Toolset
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlin.test.Test
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -84,6 +97,64 @@ class LlmAgentLiveTest {
     val script = listOf(audioFrame(), turnCompleteStep())
     return runUntilTurnsComplete(runnerFor(DummyLiveModel(script)), LiveRequestQueue(), runConfig)
   }
+
+  /** A tool whose [isStreaming] and declared behavior each test chooses. */
+  @OptIn(FrameworkInternalApi::class)
+  private class DeclaredTool(
+    name: String,
+    override val isStreaming: Boolean = false,
+    private val declared: Behavior? = null,
+  ) : BaseTool(name, "A tool.") {
+    override fun declaration(): FunctionDeclaration =
+      FunctionDeclaration(name, description, behavior = declared)
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = "done"
+  }
+
+  /** A hand-written tool that streams two ticks and declares itself non-blocking. */
+  private class TickerTool : BaseTool("ticker", "Streams two ticks.") {
+    override fun declaration(): FunctionDeclaration =
+      FunctionDeclaration(name, description, behavior = Behavior.NON_BLOCKING)
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any =
+      flowOf("tick 1", "tick 2")
+  }
+
+  /** Whether a message sent to the model answers [callId] with [response]. */
+  private fun answers(callId: String, response: Map<String, Any?>): (Any) -> Boolean = { message ->
+    message is ContentInput &&
+      message.content.parts.any { part ->
+        part.functionResponse.let { it != null && it.id == callId && it.response == response }
+      }
+  }
+
+  /** A toolset that counts how often a run lists its [tools]. */
+  private class CountingToolset(private val tools: List<BaseTool>) : Toolset {
+    var getToolsCalls = 0
+
+    override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> {
+      getToolsCalls++
+      return tools
+    }
+  }
+
+  /** The behavior on each function declaration when a live run with [tools] connects. */
+  private suspend fun liveDeclaredBehaviors(vararg tools: BaseTool): Map<String, Behavior?> {
+    val model = DummyLiveModel(replyingWith("ok"))
+    val queue = LiveRequestQueue()
+    queue.close()
+    val agent = LlmAgent(name = "live_agent", model = model, tools = tools.toList())
+
+    val unused = InMemoryRunner(agent = agent).runLive("u", "s", queue).toList()
+
+    return behaviorsOf(model.connectRequests.single())
+  }
+
+  private fun behaviorsOf(request: LlmRequest): Map<String, Behavior?> =
+    request.config.tools
+      .orEmpty()
+      .flatMap { it.functionDeclarations.orEmpty() }
+      .associate { it.name to it.behavior }
 
   @Test
   fun runLive_inputTranscription_isAuthoredAsTheUser(): Unit = runBlocking {
@@ -300,5 +371,116 @@ class LlmAgentLiveTest {
     // The request the processors built is what reaches connect, not a fresh empty one.
     assertThat(model.connectRequests.single().config.systemInstruction?.parts?.firstOrNull()?.text)
       .isEqualTo("Answer briefly.")
+  }
+
+  @Test
+  fun runLive_unmarkedTool_keepsItsDeclarationAsItIs() {
+    runBlocking {
+      val behaviors =
+        liveDeclaredBehaviors(
+          DeclaredTool("plain"),
+          DeclaredTool("self_declared", declared = Behavior.BLOCKING),
+          DeclaredTool("unspecified", declared = Behavior.UNSPECIFIED),
+          DummyTool(name = "inherited", declares = true),
+        )
+
+      assertThat(behaviors)
+        .isEqualTo(
+          mapOf(
+            "plain" to null,
+            "self_declared" to Behavior.BLOCKING,
+            "unspecified" to Behavior.UNSPECIFIED,
+            "inherited" to null,
+          )
+        )
+    }
+  }
+
+  @Test
+  fun runLive_streamingMarkedTool_isDeclaredNonBlockingEvenWhenBlocking() {
+    runBlocking {
+      val behaviors =
+        liveDeclaredBehaviors(
+          DeclaredTool("marked", isStreaming = true),
+          DeclaredTool("marked_blocking", isStreaming = true, declared = Behavior.BLOCKING),
+        )
+
+      assertThat(behaviors)
+        .isEqualTo(
+          mapOf("marked" to Behavior.NON_BLOCKING, "marked_blocking" to Behavior.NON_BLOCKING)
+        )
+    }
+  }
+
+  @Test
+  fun runLive_streamingToolInAToolset_isDeclaredNonBlockingWithoutListingTheToolsetAgain() {
+    runBlocking {
+      val toolset = CountingToolset(listOf(DeclaredTool("marked", isStreaming = true)))
+      val model = DummyLiveModel(emptyList())
+      val queue = LiveRequestQueue()
+      queue.close()
+      val agent = LlmAgent(name = "live_agent", model = model, toolsets = listOf(toolset))
+
+      val unused = InMemoryRunner(agent = agent).runLive("u", "s", queue).toList()
+
+      assertThat(behaviorsOf(model.connectRequests.single()))
+        .containsExactly("marked", Behavior.NON_BLOCKING)
+      // Preparing the request lists the toolset once; marking reads the tools it found.
+      assertThat(toolset.getToolsCalls).isEqualTo(1)
+    }
+  }
+
+  @Test
+  fun runLive_flowToolDeclaringNonBlocking_isDeclaredNonBlockingAndStreamsItsValues() {
+    runBlocking {
+      val pending =
+        mapOf("status" to "The function is running asynchronously and the results are pending.")
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("ticker", id = "c1")),
+          AwaitSent("the pending answer", answers("c1", pending)),
+          AwaitSent("the first tick", answers("c1", mapOf("result" to "tick 1"))),
+          AwaitSent("the second tick", answers("c1", mapOf("result" to "tick 2"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val queue = LiveRequestQueue()
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(TickerTool()))
+
+      val unused =
+        InMemoryRunner(agent = agent)
+          .runLive("u", "s", queue, RunConfig(streamingMode = StreamingMode.BIDI))
+          .onEach { if (it.turnComplete) queue.close() }
+          .toList()
+
+      model.connections.single().assertAllWaitsMet()
+      assertThat(behaviorsOf(model.connectRequests.single()))
+        .containsExactly("ticker", Behavior.NON_BLOCKING)
+    }
+  }
+
+  @Test
+  fun runAsync_everyDeclaration_staysAsItIs() {
+    runBlocking {
+      val requests = mutableListOf<LlmRequest>()
+      val model =
+        DummyModel("model") { request ->
+          requests += request
+          flowOf(LlmResponse(content = modelMessage("ok")))
+        }
+      val tools =
+        listOf(
+          DeclaredTool("plain"),
+          DeclaredTool("marked", isStreaming = true, declared = Behavior.BLOCKING),
+        )
+
+      val unused =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = tools))
+          .runAsync("u", "s", newMessage = userMessage("hi"))
+          .toList()
+
+      assertThat(behaviorsOf(requests.single()))
+        .isEqualTo(mapOf("plain" to null, "marked" to Behavior.BLOCKING))
+    }
   }
 }

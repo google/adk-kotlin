@@ -17,6 +17,7 @@
 package com.google.adk.kt.interop
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -28,7 +29,8 @@ import org.reactivestreams.Publisher
 /**
  * Java-friendly base for a [BaseTool] whose result is a Reactive Streams [Publisher]. A Java
  * subclass overrides [declaration] and [runPublisher], whose values a connected live run streams;
- * anywhere else the call fails, as [BaseTool.run] describes for a Flow.
+ * anywhere else the call fails, as [BaseTool.run] describes for a Flow. A live run declares the
+ * tool non-blocking on its own, so the model can keep the conversation going while results arrive.
  *
  * A live tool can read the experimental `context.getLiveRequests()` through
  * `AsyncJavaHelpers.asPublisher`, whose signals can arrive on the engine's send thread, so do slow
@@ -39,6 +41,9 @@ abstract class BasePublisherTool
 @JvmOverloads
 constructor(name: String, description: String, customMetadata: Map<String, Any> = emptyMap()) :
   BaseTool(name, description, isLongRunning = false, customMetadata) {
+
+  // Every result comes from a publisher, so a live run can mark the tool before calling it.
+  @OptIn(FrameworkInternalApi::class) final override val isStreaming: Boolean = true
 
   /**
    * Publisher counterpart of [run]; implement the tool's logic here. Return the publisher promptly

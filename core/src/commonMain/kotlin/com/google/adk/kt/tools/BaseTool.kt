@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.FunctionDeclaration
 
@@ -41,6 +42,13 @@ abstract class BaseTool(
   val isLongRunning: Boolean = false,
   val customMetadata: Map<String, Any> = emptyMap(),
 ) : AutoCloseable {
+  /**
+   * Overridden by the framework's generated, reflective and publisher-based tools, which always
+   * stream in a live run, so a live run can declare them non-blocking before they run. For
+   * framework use only; it may change without notice.
+   */
+  @FrameworkInternalApi open val isStreaming: Boolean = false
+
   /** Returns the underlying function declaration. */
   abstract fun declaration(): FunctionDeclaration?
 
@@ -62,6 +70,10 @@ abstract class BaseTool(
    * streaming, that call is answered as already running and starts no second stream. Returning a
    * flow anywhere else, including when a live run resumes an approved call before connecting, fails
    * the call.
+   *
+   * To have a live run declare a tool that returns a flow non-blocking, so the model can keep the
+   * conversation going while results arrive, make [declaration] return a [FunctionDeclaration]
+   * whose `behavior` is `Behavior.NON_BLOCKING`.
    */
   abstract suspend fun run(context: ToolContext, args: Map<String, Any?>): Any
 

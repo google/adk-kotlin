@@ -25,6 +25,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
@@ -43,6 +44,7 @@ import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
@@ -730,6 +732,48 @@ class FunctionToolProcessorTest {
   fun declaration_toolReturningAPublisherSubtypeWithAnUnrelatedTypeParameter_describesItsValue() {
     assertThat(KeyedPublisherTool().declaration()!!.response?.properties?.get("result")?.type)
       .isEqualTo(Type.STRING)
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun generate_toolReturningAFlowOrAPublisher_isStreaming() {
+    assertThat(StreamToolTool().isStreaming).isTrue()
+    assertThat(PublishQuotesTool().isStreaming).isTrue()
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun generate_toolReturningAValue_isNotStreaming() {
+    assertThat(NamedParamToolTool().isStreaming).isFalse()
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun runLive_generatedToolReturningAStream_isDeclaredNonBlocking() {
+    runBlocking {
+      val model = DummyLiveModel(listOf(Respond(LlmResponse(turnComplete = true))))
+      val tools = listOf(StreamToolTool(), PublishQuotesTool(), NamedParamToolTool())
+      val queue = LiveRequestQueue()
+      queue.close()
+
+      val unused =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = tools))
+          .runLive("u", "s", queue)
+          .toList()
+
+      val declarations =
+        model.connectRequests.single().config.tools.orEmpty().flatMap {
+          it.functionDeclarations.orEmpty()
+        }
+      assertThat(declarations.associate { it.name to it.behavior })
+        .isEqualTo(
+          mapOf(
+            "streamTool" to Behavior.NON_BLOCKING,
+            "publishQuotes" to Behavior.NON_BLOCKING,
+            "namedParamTool" to null,
+          )
+        )
+    }
   }
 
   @Test

@@ -22,6 +22,7 @@ import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.LiveRequest
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
@@ -199,6 +200,10 @@ object ReflectiveTools {
       }
       return index
     }
+
+    // Read from the declared type, so a live run can mark the tool before calling it.
+    @OptIn(FrameworkInternalApi::class)
+    override val isStreaming: Boolean = Publisher::class.java.isAssignableFrom(method.returnType)
 
     private val bound: List<Bound> =
       method.parameters

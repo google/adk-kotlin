@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
@@ -34,6 +35,7 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.Test
@@ -57,14 +59,14 @@ class BasePublisherToolTest {
   /** A Java-style tool that publishes [items]. */
   private fun publishingTool(vararg items: String) =
     object : BasePublisherTool(TOOL_NAME, "Streams prices.") {
-      override fun declaration(): FunctionDeclaration? = null
+      override fun declaration(): FunctionDeclaration = FunctionDeclaration(name, description)
 
       override fun runPublisher(context: ToolContext, args: Map<String, Any?>): Publisher<String> =
         flowOf(*items).asPublisher()
     }
 
   @Test
-  fun run_underALiveRun_streamsEachValue() {
+  fun run_underALiveRun_isDeclaredNonBlockingAndStreamsEachValue() {
     runBlocking {
       val script =
         listOf(
@@ -86,7 +88,18 @@ class BasePublisherToolTest {
           .toList()
 
       model.connections.single().assertAllWaitsMet()
+      val declarations =
+        model.connectRequests.single().config.tools.orEmpty().flatMap {
+          it.functionDeclarations.orEmpty()
+        }
+      assertThat(declarations.single().behavior).isEqualTo(Behavior.NON_BLOCKING)
     }
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun isStreaming_anyPublisherTool_isTrue() {
+    assertThat(publishingTool("300").isStreaming).isTrue()
   }
 
   @Test

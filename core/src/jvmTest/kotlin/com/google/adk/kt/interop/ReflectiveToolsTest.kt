@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(AdkJavaInteropApi::class, ExperimentalLiveApi::class)
+@file:OptIn(AdkJavaInteropApi::class, ExperimentalLiveApi::class, FrameworkInternalApi::class)
 
 package com.google.adk.kt.interop
 
@@ -26,6 +26,7 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
@@ -52,6 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -603,6 +605,16 @@ class ReflectiveToolsTest {
         (tool.run(testToolContext(), emptyMap()) as Flow<*>).toList(),
       )
     }
+  }
+
+  @Test
+  fun fromMethod_methodReturningAPublisher_isStreaming() {
+    assertTrue(ReflectiveTools.fromMethod(StreamingFixture(), "prices").isStreaming)
+  }
+
+  @Test
+  fun fromMethod_methodReturningAValue_isNotStreaming() {
+    assertFalse(ReflectiveTools.fromMethod(fixture, "currentTime").isStreaming)
   }
 
   @Test

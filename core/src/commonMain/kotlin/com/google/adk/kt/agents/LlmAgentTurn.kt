@@ -62,6 +62,7 @@ import com.google.adk.kt.tools.VertexAiSearchAgentTool
 import com.google.adk.kt.tools.VertexAiSearchTool
 import com.google.adk.kt.tools.createGoogleSearchAgent
 import com.google.adk.kt.tools.createVertexAiSearchAgent
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -358,6 +359,26 @@ internal class LlmAgentTurn(
     return (allTools + request?.toolsDict.orEmpty()).associateBy { it.name }
   }
 
+  /** Returns this request with each tool's [liveBehavior] set on its function declaration. */
+  private fun LlmRequest.withToolBehaviors(): LlmRequest {
+    // The tools that prepareRequest declared, so no toolset is listed again before connecting.
+    val behaviors =
+      toolsDict.mapNotNull { tool -> liveBehavior(tool)?.let { tool.name to it } }.toMap()
+    val tools =
+      config.tools?.map { tool ->
+        tool.copy(
+          functionDeclarations =
+            tool.functionDeclarations?.map { declaration ->
+              when (val behavior = behaviors[declaration.name]) {
+                null -> declaration
+                else -> declaration.copy(behavior = behavior)
+              }
+            }
+        )
+      }
+    return copy(config = config.copy(tools = tools))
+  }
+
   /**
    * The agent's directly-declared tools (its own tools plus any injected by the runtime) with the
    * built-in multi-tools-limit workaround applied, resolved once per turn.
@@ -526,7 +547,7 @@ internal class LlmAgentTurn(
   private suspend fun prepareLiveSession(collector: FlowCollector<Event>): LlmRequest? {
     val request =
       when (val prepared = prepareRequest { collector.emit(it) }) {
-        is RequestOrResponse.Request -> prepared.request
+        is RequestOrResponse.Request -> prepared.request.withToolBehaviors()
         is RequestOrResponse.Response -> {
           collector.emit(createModelResponseEvent().copy(content = prepared.response.content))
           return null
@@ -2428,6 +2449,15 @@ private val ContentInput.answersTools: Boolean
 /** Whether this input adds a user turn to the session: typed, whole, and not a tool answer. */
 private val ContentInput.storesTurn: Boolean
   get() = !partial && !answersTools
+
+/**
+ * The behavior a live run declares for [tool], or null to leave its declaration as it is. A
+ * streaming tool's results arrive after its call is answered, so it is non-blocking even when its
+ * declaration says otherwise.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun liveBehavior(tool: BaseTool): Behavior? =
+  if (tool.isStreaming) Behavior.NON_BLOCKING else null
 
 /**
  * A sealed class representing either a [LlmRequest] or a [LlmResponse].

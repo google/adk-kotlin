@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.types
 
+import com.google.genai.kotlin.types.Behavior as SdkBehavior
 import com.google.genai.kotlin.types.BlockedReason as SdkBlockedReason
 import com.google.genai.kotlin.types.FinishReason as SdkFinishReason
 import com.google.genai.kotlin.types.FunctionCallingConfigMode as SdkFunctionCallingConfigMode
@@ -110,6 +111,13 @@ class EnumConvertersTest {
   }
 
   @Test
+  fun behavior_roundTripsThroughSdk() {
+    assertEquals(Behavior.UNSPECIFIED, Behavior.UNSPECIFIED.toGenaiSdk().toKt())
+    assertEquals(Behavior.BLOCKING, Behavior.BLOCKING.toGenaiSdk().toKt())
+    assertEquals(Behavior.NON_BLOCKING, Behavior.NON_BLOCKING.toGenaiSdk().toKt())
+  }
+
+  @Test
   fun toKt_unknownSdkValue_fallsBackToDefault() {
     // An SDK value with no matching ADK constant degrades to the catch-all (or null for `Type`)
     // rather than throwing.
@@ -132,6 +140,7 @@ class EnumConvertersTest {
       PartMediaResolutionLevel.MEDIA_RESOLUTION_UNSPECIFIED,
       SdkPartMediaResolutionLevel("UNRECOGNIZED").toKt(),
     )
+    assertEquals(Behavior.UNSPECIFIED, SdkBehavior("UNRECOGNIZED").toKt())
   }
 
   @Test

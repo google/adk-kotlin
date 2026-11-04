@@ -42,6 +42,7 @@ import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.symbol.Variance
 import com.squareup.kotlinpoet.AnnotationSpec
+import com.squareup.kotlinpoet.BOOLEAN
 import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.CodeBlock
 import com.squareup.kotlinpoet.FileSpec
@@ -79,7 +80,8 @@ internal class FunctionToolGenerator(
     val className = "${functionName.replaceFirstChar { it.uppercaseChar() }}Tool"
 
     val returnType = function.returnType?.resolve()
-    if (returnType != null && isStream(returnType)) {
+    val streams = returnType != null && isStream(returnType)
+    if (streams) {
       val kind = if (isPublisher(returnType)) "Publisher" else "Flow"
       // The runtime only handles a non-null Flow or Publisher.
       if (returnType.isMarkedNullable) {
@@ -175,6 +177,22 @@ internal class FunctionToolGenerator(
     // `requiresConfirmation` is forwarded from @Tool.
     typeBuilder.addSuperclassConstructorParameter(customMetadataArg(function, toolName))
     typeBuilder.addSuperclassConstructorParameter("%L", requiresConfirmation)
+    // Known from the return type, so a live run can declare the tool before it is ever called.
+    if (streams) {
+      typeBuilder.addProperty(
+        PropertySpec.builder("isStreaming", BOOLEAN, KModifier.OVERRIDE)
+          .addAnnotation(
+            AnnotationSpec.builder(ClassName("kotlin", "OptIn"))
+              .addMember(
+                "%T::class",
+                ClassName("com.google.adk.kt.annotations", "FrameworkInternalApi"),
+              )
+              .build()
+          )
+          .initializer("true")
+          .build()
+      )
+    }
 
     val instanceProperty = buildPrimaryConstructor(function, typeBuilder)
 
