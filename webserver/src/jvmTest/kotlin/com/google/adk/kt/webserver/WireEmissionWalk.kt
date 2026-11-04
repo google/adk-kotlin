@@ -56,12 +56,8 @@ internal fun assertEmissionRule(
 
   assertThat(walk.shapeMismatches).isEmpty()
   assertThat(walk.checkedKeys).isAtLeast(minKeys)
-  // Allowed, not required: a legacy alias may or may not be emitted depending on configuration,
-  // but nothing outside the known set may appear. Both prefixes, since a list-rooted path reads
-  // `Event[].` rather than `Event.`.
-  val allowed =
-    KNOWN_LEGACY_ALIASES.keys.filter { it.startsWith("$root.") || it.startsWith("$root[") }
-  assertThat(walk.snakeCaseKeys.minus(allowed.toSet())).isEmpty()
+  // Allowed, not required: a legacy alias may or may not be emitted depending on configuration.
+  assertThat(walk.snakeCaseKeys - KNOWN_LEGACY_ALIASES.keys).isEmpty()
   assertThat(walk.nullKeys).isEmpty()
 }
 
@@ -78,52 +74,44 @@ internal class EmissionWalk {
   var checkedKeys = 0
     private set
 
-  fun visit(element: JsonElement, descriptor: SerialDescriptor, path: String) {
+  fun visit(json: JsonElement, descriptor: SerialDescriptor, path: String) {
     // An inline value class is written as its wrapped value, so the JSON here is that value and
     // not an object; descending keeps it from being mistaken for a shape mismatch.
-    if (descriptor.isInline) return visit(element, descriptor.getElementDescriptor(0), path)
+    if (descriptor.isInline) return visit(json, descriptor.getElementDescriptor(0), path)
     when (descriptor.kind) {
-      StructureKind.LIST -> {
-        if (element !is JsonArray) {
-          shapeMismatches.add(path)
-          return
-        }
-        for (item in element) visit(item, descriptor.getElementDescriptor(0), "$path[]")
-      }
-      StructureKind.MAP -> {
-        // Keys and null values are caller data; a non-null value may still be a schema type.
-        if (element !is JsonObject) {
-          shapeMismatches.add(path)
-          return
-        }
-        val values = descriptor.getElementDescriptor(1)
-        for ((_, value) in element) {
-          // The key is caller data and must not reach an assertion message.
-          if (value !is JsonNull) visit(value, values, "$path{}")
-        }
-      }
+      StructureKind.LIST ->
+        if (json is JsonArray) visitItems(json, descriptor, path) else shapeMismatches += path
+      StructureKind.MAP ->
+        if (json is JsonObject) visitValues(json, descriptor, path) else shapeMismatches += path
       StructureKind.CLASS,
-      StructureKind.OBJECT -> {
-        if (element !is JsonObject) {
-          shapeMismatches.add(path)
-          return
-        }
-        for ((key, value) in element) {
-          val child = "$path.$key"
-          if (descriptor.getElementIndex(key) != CompositeDecoder.UNKNOWN_NAME) checkedKeys++
-          if (key.contains('_')) snakeCaseKeys.add(child)
-          if (value is JsonNull) {
-            nullKeys.add(child)
-            continue
-          }
-          val index = descriptor.getElementIndex(key)
-          if (index != CompositeDecoder.UNKNOWN_NAME) {
-            visit(value, descriptor.getElementDescriptor(index), child)
-          }
-        }
-      }
+      StructureKind.OBJECT ->
+        if (json is JsonObject) visitFields(json, descriptor, path) else shapeMismatches += path
       // Contextual is caller data; polymorphic is covered by the static survey instead.
       else -> {}
+    }
+  }
+
+  private fun visitItems(array: JsonArray, descriptor: SerialDescriptor, path: String) {
+    for (item in array) visit(item, descriptor.getElementDescriptor(0), "$path[]")
+  }
+
+  /** Visits each non-null map value, which may be a schema type; a null value is caller data. */
+  private fun visitValues(map: JsonObject, descriptor: SerialDescriptor, path: String) {
+    val values = descriptor.getElementDescriptor(1)
+    for ((_, value) in map) if (value !is JsonNull) visit(value, values, "$path{}")
+  }
+
+  private fun visitFields(fields: JsonObject, descriptor: SerialDescriptor, path: String) {
+    for ((key, value) in fields) {
+      val child = "$path.$key"
+      val index = descriptor.getElementIndex(key)
+      if (index != CompositeDecoder.UNKNOWN_NAME) checkedKeys++
+      if (key.contains('_')) snakeCaseKeys += child
+      when {
+        value is JsonNull -> nullKeys += child
+        index != CompositeDecoder.UNKNOWN_NAME ->
+          visit(value, descriptor.getElementDescriptor(index), child)
+      }
     }
   }
 }
