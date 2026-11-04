@@ -31,6 +31,8 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -248,18 +250,37 @@ private constructor(
     private suspend fun runAttempt(nodeInput: Any?, validateInput: Boolean) {
       val timeout = node.config.timeout
       if (timeout == null) {
-        asBaseNode(node).run(context, nodeInput, validateInput).collect(::dispatch)
+        withActivationJob {
+          asBaseNode(node).run(context, nodeInput, validateInput).collect(::dispatch)
+        }
         return
       }
       try {
         withTimeout(timeout) {
-          asBaseNode(node).run(context, nodeInput, validateInput).collect(::dispatch)
+          withActivationJob {
+            asBaseNode(node).run(context, nodeInput, validateInput).collect(::dispatch)
+          }
         }
       } catch (e: TimeoutCancellationException) {
         // Only relabel our own timeout: if an outer scope already cancelled us the coroutine is no
         // longer active, so rethrow the cancellation rather than blaming this node.
         if (currentCoroutineContext().isActive) throw NodeTimeoutException(node.name, timeout, e)
         else throw e
+      }
+    }
+
+    /**
+     * Runs [block] with this activation's job set and then cancels the job, so work started for the
+     * attempt outside its coroutine ends with it. The job is a supervisor, so one failed call does
+     * not cancel the others.
+     */
+    private suspend inline fun withActivationJob(block: () -> Unit) {
+      val job = SupervisorJob(currentCoroutineContext()[Job])
+      nodeState.activationJob = job
+      try {
+        block()
+      } finally {
+        job.cancel()
       }
     }
 

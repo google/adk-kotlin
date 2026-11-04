@@ -187,6 +187,9 @@ with `CompletableFuture` and Reactive Streams `Publisher`:
     connections: subclass it and return an instance in a `CompletableFuture`
     from the model's `BasePublisherModel.connectAsync` override. Its sends and
     close return `CompletableFuture`s, and each model turn is a `Publisher`.
+-   **`InteropContextView`** lets Java code call a `Context`'s suspending
+    methods, such as `loadArtifact`, `addSessionToMemory` and the experimental
+    `runNode`, each of which returns a `CompletableFuture`.
 -   **`@Tool` / `@Param`** annotations work from Java:
     `ReflectiveTools.fromMethod(...)` turns an annotated plain method into a tool
     for `javac`-only modules, or KSP can process `@Tool` directly when you build

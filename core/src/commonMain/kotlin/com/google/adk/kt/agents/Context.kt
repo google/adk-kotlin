@@ -67,6 +67,7 @@ import kotlin.reflect.KType
 import kotlin.reflect.typeOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -1038,6 +1039,10 @@ open class Context(
   internal fun requireNodeState(): NodeExecutionState =
     checkNotNull(nodeState) { "This member is available only on a node activation context." }
 
+  /** The job of the node attempt this context belongs to, or null outside a node activation. */
+  internal val activationJob: Job?
+    get() = nodeState?.activationJob
+
   companion object {
     internal fun buildNodePath(parentPath: String?, name: String, runId: String): String =
       BranchPath.childNodePath(parentPath, BranchPath.segment(name, runId))
@@ -1088,6 +1093,13 @@ internal class NodeExecutionState(
 
   /** Whether this activation replays a recorded outcome from history instead of running. */
   var isReplay: Boolean = false
+
+  /**
+   * Parent job for work started for this activation outside its own coroutine, such as calls
+   * through `InteropContextView`. The node runner sets this job for each attempt and cancels it
+   * when the attempt ends, ensuring that work started for the attempt stops with it.
+   */
+  @Volatile var activationJob: Job? = null
 
   /** The node's output value, or `null` if none was produced. */
   val output: Any?

@@ -26,14 +26,21 @@ import com.google.adk.kt.types.Schema
 import com.google.adk.kt.workflow.BaseNode
 import com.google.adk.kt.workflow.NodeConfig
 import com.google.adk.kt.workflow.validateNodeName
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletionException
+import java.util.concurrent.ExecutionException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.reactive.asFlow
 import org.reactivestreams.Publisher
 
 /**
  * Java-friendly base for implementing a workflow node. A Java subclass overrides [runNodeJava] to
  * set routes or state on the context and return a Reactive Streams [Publisher] of node outputs,
- * which this base adapts to the `Flow`-returning [runNode].
+ * which this base adapts to the `Flow`-returning [runNode]. To run other nodes from [runNodeJava],
+ * pass `rerunOnResume = true` and use [InteropContextView.runNode].
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi
@@ -77,5 +84,24 @@ constructor(
   ): Publisher<out @JvmWildcard Any>
 
   final override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> =
-    runNodeJava(context, nodeInput).asFlow()
+    runNodeJava(context, nodeInput).asFlow().catch { e ->
+      val failure = e.unwrapFutureFailure()
+      if (failure !is CancellationException) throw failure
+      // Only this node's own cancellation may end its run as canceled; any other one fails it.
+      currentCoroutineContext().ensureActive()
+      throw if (failure === e) CompletionException(e) else e
+    }
+}
+
+/**
+ * Returns the underlying failure that composed futures wrapped in [CompletionException]s or
+ * [ExecutionException]s, such as a paused child from [InteropContextView.runNode], so the runtime,
+ * retry policies, and error events see it.
+ */
+private fun Throwable.unwrapFutureFailure(): Throwable {
+  var failure: Throwable = this
+  while (failure is CompletionException || failure is ExecutionException) {
+    failure = failure.cause ?: return this
+  }
+  return failure
 }
