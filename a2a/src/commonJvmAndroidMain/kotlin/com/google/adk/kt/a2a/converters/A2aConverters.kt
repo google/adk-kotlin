@@ -641,7 +641,7 @@ internal fun InvocationContext.extractA2aParts(): List<A2APart<*>> {
     return emptyList()
   }
 
-  val lastResponseIndex = session.events.indexOfLast { it.author == agent.name }
+  val lastResponseIndex = lastResponseIndex()
 
   return preprocessedEvents.flatMapIndexed { index, event ->
     val actualIndex = lastResponseIndex + 1 + index

@@ -373,6 +373,40 @@ class EventA2aSupportTest {
   }
 
   @Test
+  fun extractPreprocessedEvents_afterFailedRequest_keepsItsTurn() {
+    val agent = DummyAgent(name = "my-agent")
+    val failedRequest =
+      Event(
+        author = "my-agent",
+        errorMessage = "A2A request failed (IOException)",
+        customMetadata = mapOf("a2a:request" to "{}"),
+      )
+    val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
+    session.events.addAll(
+      listOf(
+        Event(author = "my-agent", content = modelMessage("Which color?")),
+        Event(author = Role.USER, content = userMessage("Blue")),
+        failedRequest,
+        Event(author = Role.USER, content = userMessage("Green")),
+      )
+    )
+    val context =
+      InvocationContext(
+        invocationId = "inv-123",
+        agent = agent,
+        session = session,
+        runConfig = null,
+      )
+
+    val result = context.extractPreprocessedEvents()
+
+    assertEquals(
+      listOf("Blue", "Green"),
+      result.flatMap { it.content?.parts.orEmpty() }.mapNotNull { it.text },
+    )
+  }
+
+  @Test
   fun extractPreprocessedEvents_rephrasesOtherAgentMessages() {
     val agent = DummyAgent(name = "my-agent")
     val event1 = Event(author = "other-agent", content = modelMessage("data"))
