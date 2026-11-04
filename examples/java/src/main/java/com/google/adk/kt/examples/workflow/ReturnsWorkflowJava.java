@@ -16,26 +16,25 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.kt.annotations.Param;
 import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.tools.BaseTool;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.ToolNodes;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.List;
 import java.util.Map;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A returns desk built with the workflow DSL, whose steps include the {@code @Tool} methods of
@@ -53,14 +52,14 @@ public final class ReturnsWorkflowJava {
         .edges(
             g ->
                 g.fromStart()
-                    .chain(toolStep(orders, "lookupOrder"), new ReturnDesk())
+                    .chain(toolStep(orders, "lookupOrder"), returnDesk())
                     .route(
                         r -> {
                           r.on(r.anyOf("processing", "packed"))
                               .then(toolStep(orders, "cancelOrder"));
                           r.on(r.anyOf("shipped", "delivered"))
                               .then(toolStep(orders, "sendReturnLabel"));
-                          r.otherwise(new Decline());
+                          r.otherwise(decline());
                         }))
         .build();
   }
@@ -108,31 +107,26 @@ public final class ReturnsWorkflowJava {
   }
 
   /** Routes on the order's status and passes the order ID to the next step. */
-  private static final class ReturnDesk extends BasePublisherNode {
-    ReturnDesk() {
-      super("return_desk");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // Tools built from @Tool methods wrap their return value under "result".
-      Map<?, ?> order = (Map<?, ?>) ((Map<?, ?>) nodeInput).get(BaseTool.RESULT_KEY);
-      context.setRoutes(List.of(new Route.Tag((String) order.get("status"))));
-      return Mono.just(Map.of("orderId", order.get("orderId")));
-    }
+  private static FunctionNode<Map<String, Object>, Map<String, Object>> returnDesk() {
+    return FunctionNodes.of(
+        "return_desk",
+        new TypeReference<Map<String, Object>>() {},
+        new TypeReference<Map<String, Object>>() {},
+        (ctx, lookup) -> {
+          // Tools built from @Tool methods wrap their return value under "result".
+          Map<?, ?> order = (Map<?, ?>) lookup.get(BaseTool.RESULT_KEY);
+          ctx.setRoutes(List.of(new Route.Tag((String) order.get("status"))));
+          return Map.of("orderId", order.get("orderId"));
+        });
   }
 
   /** Declines a return for any other status, such as an already returned order. */
-  private static final class Decline extends BasePublisherNode {
-    Decline() {
-      super("decline");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Object orderId = ((Map<?, ?>) nodeInput).get("orderId");
-      return Mono.just("Order " + orderId + " can't be returned.");
-    }
+  private static FunctionNode<Map<String, Object>, String> decline() {
+    return FunctionNodes.of(
+        "decline",
+        new TypeReference<Map<String, Object>>() {},
+        String.class,
+        (ctx, request) -> "Order " + request.get("orderId") + " can't be returned.");
   }
 
   /**

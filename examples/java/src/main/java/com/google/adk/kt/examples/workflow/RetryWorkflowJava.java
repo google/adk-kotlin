@@ -34,8 +34,7 @@ import reactor.core.publisher.Mono;
 /**
  * A port of adk-python's {@code retry} workflow sample: a weather lookup fails at random, and its
  * retry policy runs it again, up to five attempts in all, before the next node reports the weather.
- * Each failed attempt emits an error event; the run fails if every attempt does. A synchronous Java
- * node fails before publishing, so only the successful attempt sends its attempt message.
+ * Each failed attempt emits an error event; the run fails if every attempt does.
  */
 public final class RetryWorkflowJava {
 
@@ -47,7 +46,7 @@ public final class RetryWorkflowJava {
         .build();
   }
 
-  /** Runs the workflow once and prints each failure, then the successful attempt and the report. */
+  /** Runs the workflow once and prints each attempt, each failure, and the report. */
   public static void main(String[] args) {
     PublisherRunner runner =
         PublisherRunner.inMemory(App.builder().appName("retry").rootNode(create()).build());
@@ -81,15 +80,16 @@ public final class RetryWorkflowJava {
 
     @Override
     protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      if (ThreadLocalRandom.current().nextDouble() < 0.7) {
-        throw new HttpException(500, "Internal Server Error");
-      }
       Event attempt =
           Event.builder()
               .content(
                   Content.fromText(
                       Role.MODEL, "Getting weather... attempt " + context.getAttemptCount()))
               .build();
+      if (ThreadLocalRandom.current().nextDouble() < 0.7) {
+        return Mono.<Object>just(attempt)
+            .concatWith(Mono.error(new HttpException(500, "Internal Server Error")));
+      }
       return Flux.just(attempt, "sunny");
     }
   }

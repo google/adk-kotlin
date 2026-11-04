@@ -65,7 +65,7 @@ public final class SupportTriageWorkflowJava {
             g -> {
               // An LlmAgent is a Node, so it goes straight into the graph.
               g.fromStart()
-                  .chain(classifierAgent(model), requestCategory())
+                  .chain(saveRequest(), classifierAgent(model), requestCategory())
                   .route(
                       r -> {
                         r.on("billing").then(billing);
@@ -111,6 +111,22 @@ public final class SupportTriageWorkflowJava {
         .build();
   }
 
+  /**
+   * Stores the customer's request in state so the specialists and the summarizer can read it. After
+   * a specialist, the summarizer sees only that specialist's notes.
+   */
+  private static FunctionNode<String, String> saveRequest() {
+    return FunctionNodes.of(
+        "save_request",
+        // START hands the first node the user's message, which a String input receives as text.
+        String.class,
+        String.class,
+        (ctx, request) -> {
+          ctx.updateState("request", request);
+          return request;
+        });
+  }
+
   /** Routes on the category the classifier returned, since an LlmAgent node emits no route. */
   private static FunctionNode<Triage, Object> requestCategory() {
     return FunctionNodes.of(
@@ -131,6 +147,7 @@ public final class SupportTriageWorkflowJava {
         .instruction(
             """
             You are a billing specialist. The customer's account ID is {account_id}.
+            The customer wrote: {request}
             Look up their recent charges, then note in two bullets what happened and how to \
             fix it.\
             """)
@@ -143,8 +160,12 @@ public final class SupportTriageWorkflowJava {
         .name("tech")
         .model(model)
         .instruction(
-            "You are a support engineer. Check the service status, then note in two bullets the"
-                + " likely cause and the fix or workaround.")
+            """
+            You are a support engineer.
+            The customer wrote: {request}
+            Check the service status, then note in two bullets the likely cause and the fix or
+            workaround.\
+            """)
         .tools(ReflectiveTools.fromMethod(new StatusPage(), "getServiceStatus"))
         .build();
   }
@@ -154,9 +175,12 @@ public final class SupportTriageWorkflowJava {
         .name("summary")
         .model(model)
         .instruction(
-            "Write the reply to the customer in at most four sentences, based on any specialist"
-                + " notes above. Do not mention internal tools or IDs other than the"
-                + " customer's.")
+            """
+            The customer wrote: {request}
+            Write the reply in at most four sentences, based on any specialist notes you are given;
+            without notes, say that a support agent will follow up. Do not mention internal tools or
+            IDs other than the customer's.\
+            """)
         .build();
   }
 

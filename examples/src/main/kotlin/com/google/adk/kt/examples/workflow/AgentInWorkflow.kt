@@ -100,7 +100,7 @@ fun main() = runBlocking {
       Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
     )
   val runner = InMemoryRunner(app = App(appName = "task_in_workflow", rootNode = workflow))
-  // A retried task agent sees only the latest message, so John Doe's details take two turns.
+  // A retried intake agent starts a new conversation, so Jane Doe gives both details at once.
   val replies = ArrayDeque(listOf("My name is John Doe", "555-1234", "Jane Doe, 555-1234"))
   var message: Content? = Content.fromText(Role.USER, replies.removeFirst())
   while (message != null) {

@@ -73,18 +73,19 @@ public final class FunctionNodeWorkflowJava {
   }
 
   /** Reads the number of requested days and outputs the list of day numbers. */
-  private static FunctionNode<Content, List<Integer>> readRequest() {
+  private static FunctionNode<String, List<Integer>> readRequest() {
     return FunctionNodes.of(
         "read_request",
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
+        String.class,
         new TypeReference<List<Integer>>() {},
         (ctx, message) -> {
-          int days = Integer.parseInt(message.text().trim().split("\\s+", 2)[0]);
+          int days = Integer.parseInt(message.trim().split("\\s+", 2)[0]);
           return IntStream.rangeClosed(1, days).boxed().toList();
         });
   }
 
-  /** Runs check_cover on each day, at most two at a time; the next step joins the results. */
+  /** Runs check_cover on each day, at most two at a time, and outputs the covers in day order. */
   private static FunctionNode<List<Integer>, List<DayCover>> checkAllDays() {
     FunctionNode<Integer, DayCover> checkCover =
         FunctionNodes.of(

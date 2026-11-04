@@ -30,6 +30,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
+import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
@@ -37,13 +38,18 @@ import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
 import com.google.adk.kt.testing.DummyLiveStep.Respond
+import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testToolContext
+import com.google.adk.kt.testing.userFunctionResponse
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -98,6 +104,7 @@ class Fixture {
   var lastContext: ToolContext? = null
   var lastThread: Thread? = null
   var lastRequestId: String? = null
+  var orders = 0
 
   /** Stands in for MDC: thread-local state a caller carries into a tool through its context. */
   val requestId = ThreadLocal<String?>()
@@ -160,6 +167,15 @@ class Fixture {
   ): String = "${items.size}:${meta.size}"
 
   @Tool(description = "Always fails.") fun boom(): String = throw IllegalStateException("boom")
+
+  @Tool(description = "Places an order once the user approves it.", requireConfirmation = true)
+  fun placeOrder(@Param(name = "item") item: String): String {
+    orders += 1
+    return "ordered $item"
+  }
+
+  @Tool(description = "Starts a job that answers later.", isLongRunning = true)
+  fun startJob(): String = "started"
 
   @Tool(description = "Returns null.") fun returnsNull(): String? = null
 
@@ -430,6 +446,93 @@ class ReflectiveToolsTest {
     assertFailsWith<IllegalArgumentException> {
       runBlocking { tool.run(testToolContext(), mapOf("a" to 1)) }
     }
+  }
+
+  @Test
+  fun run_requireConfirmation_noConfirmationYet_requestsItWithoutInvokingTheMethod() = runBlocking {
+    val tool = ReflectiveTools.fromMethod(fixture, "placeOrder")
+    val context = testToolContext(functionCallId = "fc1")
+
+    val result = tool.run(context, mapOf("item" to "pizza"))
+
+    assertEquals(mapOf(FunctionTool.ERROR_KEY to FunctionTool.CONFIRMATION_REQUIRED_ERROR), result)
+    assertEquals(0, fixture.orders)
+    assertTrue(context.actions.requestedToolConfirmations.containsKey("fc1"))
+    assertEquals(true, context.actions.skipSummarization)
+  }
+
+  @Test
+  fun run_requireConfirmation_confirmed_invokesTheMethod() = runBlocking {
+    val tool = ReflectiveTools.fromMethod(fixture, "placeOrder")
+    val context =
+      testToolContext(functionCallId = "fc1", toolConfirmation = ToolConfirmation(confirmed = true))
+
+    val result = tool.run(context, mapOf("item" to "pizza"))
+
+    assertEquals(mapOf("result" to "ordered pizza"), result)
+    assertEquals(1, fixture.orders)
+  }
+
+  @Test
+  fun run_requireConfirmation_rejected_answersWithTheRejectionWithoutInvokingTheMethod() =
+    runBlocking {
+      val tool = ReflectiveTools.fromMethod(fixture, "placeOrder")
+      val context =
+        testToolContext(
+          functionCallId = "fc1",
+          toolConfirmation = ToolConfirmation(confirmed = false),
+        )
+
+      val result = tool.run(context, mapOf("item" to "pizza"))
+
+      assertEquals(mapOf(FunctionTool.ERROR_KEY to FunctionTool.REJECTED_ERROR), result)
+      assertEquals(0, fixture.orders)
+    }
+
+  @Test
+  fun runAsync_requireConfirmation_userApproves_runsTheMethodOnce(): Unit = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              modelFunctionCallResponse("placeOrder", args = mapOf("item" to "pizza"), id = "c1"),
+              LlmResponse(content = modelMessage("done")),
+            ),
+          ),
+        tools = listOf(ReflectiveTools.fromMethod(fixture, "placeOrder")),
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    val asked =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("order")).toList()
+    val ordersBeforeApproval = fixture.orders
+    val confirmationId =
+      asked
+        .flatMap { it.functionCalls() }
+        .first { it.name == FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME }
+        .id
+    val approval =
+      userFunctionResponse(
+        name = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+        id = confirmationId,
+        response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
+      )
+    val resumed = runner.runAsync(userId = "u", sessionId = "s", newMessage = approval).toList()
+
+    assertEquals(0, ordersBeforeApproval)
+    assertEquals(1, fixture.orders)
+    assertEquals(
+      mapOf("result" to "ordered pizza"),
+      resumed.flatMap { it.functionResponses() }.first { it.name == "placeOrder" }.response,
+    )
+  }
+
+  @Test
+  fun fromMethod_longRunning_fails() {
+    assertFailsWith<IllegalArgumentException> { ReflectiveTools.fromMethod(fixture, "startJob") }
   }
 
   @Test

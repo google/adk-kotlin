@@ -44,7 +44,7 @@ public final class FanOutFanInWorkflowJava {
         .edges(
             g ->
                 g.fromStart()
-                    // START hands each branch the user's message as Content.
+                    // START hands each branch the user's message, read as text by a String input.
                     .then(makeUppercase(), countCharacters(), reverseString())
                     .joinTo(new JoinNode("join_for_results"))
                     .then(aggregate()))
@@ -65,28 +65,22 @@ public final class FanOutFanInWorkflowJava {
     }
   }
 
-  private static FunctionNode<Content, String> makeUppercase() {
+  private static FunctionNode<String, String> makeUppercase() {
     return FunctionNodes.of(
-        "make_uppercase",
-        Content.class,
-        String.class,
-        (ctx, message) -> message.text().toUpperCase(Locale.ROOT));
+        "make_uppercase", String.class, String.class, (ctx, text) -> text.toUpperCase(Locale.ROOT));
   }
 
-  private static FunctionNode<Content, Integer> countCharacters() {
+  private static FunctionNode<String, Integer> countCharacters() {
     return FunctionNodes.of(
-        "count_characters",
-        Content.class,
-        Integer.class,
-        (ctx, message) -> message.text().length());
+        "count_characters", String.class, Integer.class, (ctx, text) -> text.length());
   }
 
-  private static FunctionNode<Content, String> reverseString() {
+  private static FunctionNode<String, String> reverseString() {
     return FunctionNodes.of(
         "reverse_string",
-        Content.class,
         String.class,
-        (ctx, message) -> new StringBuilder(message.text()).reverse().toString());
+        String.class,
+        (ctx, text) -> new StringBuilder(text).reverse().toString());
   }
 
   /** Combines the three outputs, which the join passes on keyed by node name. */

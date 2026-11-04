@@ -79,13 +79,13 @@ public final class NodeOutputWorkflowJava {
   }
 
   /** Returns a node whose returned string becomes its output. */
-  private static FunctionNode<Content, String> generateStringOutput() {
+  private static FunctionNode<String, String> generateStringOutput() {
     return FunctionNodes.of(
         "generate_string_output",
-        // START hands the first node the user's message as Content.
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        (ctx, message) -> "Processed input: " + message.text());
+        String.class,
+        (ctx, text) -> "Processed input: " + text);
   }
 
   /**

@@ -28,8 +28,8 @@ import com.google.adk.kt.models.VertexCredentials
  */
 class ShipComputerTools {
 
-  /** Scans a nearby planet for life signs and resources. Safe; runs without confirmation. */
-  @Tool
+  /** Safe, so it runs without confirmation. */
+  @Tool(description = "Scans a nearby planet for life signs and resources.")
   fun scanPlanet(): String {
     println(
       ">>> 🪐 [SYSTEM]: Scanning planet... Life signs detected: Minimal. Resources: Dilithium present."
@@ -38,11 +38,13 @@ class ShipComputerTools {
   }
 
   /**
-   * Initiates an FTL warp jump to the specified sector. High-risk, so [Tool.requireConfirmation] is
-   * set so the framework pauses every invocation until the caller supplies a
-   * [com.google.adk.kt.events.ToolConfirmation].
+   * High-risk: [Tool.requireConfirmation] is set so the framework pauses every invocation until the
+   * caller supplies a [com.google.adk.kt.events.ToolConfirmation].
    */
-  @Tool(requireConfirmation = true)
+  @Tool(
+    description = "Initiates an FTL warp jump to the specified sector.",
+    requireConfirmation = true,
+  )
   fun initiateWarpJump(): String {
     println(">>> 🚀 [SYSTEM]: WARP DRIVE ENGAGED. Jumping to sector...")
     return "Warp jump successful. Arrived at destination."

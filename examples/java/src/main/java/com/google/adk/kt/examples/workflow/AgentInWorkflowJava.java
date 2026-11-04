@@ -19,20 +19,18 @@ package com.google.adk.kt.examples.workflow;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.adk.kt.agents.AgentMode;
 import com.google.adk.kt.agents.LlmAgent;
+import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.events.ToolConfirmation;
-import com.google.adk.kt.interop.BaseFutureTool;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
+import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
-import com.google.adk.kt.tools.FunctionTool;
-import com.google.adk.kt.tools.ToolContext;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.FunctionCall;
-import com.google.adk.kt.types.FunctionDeclaration;
 import com.google.adk.kt.types.FunctionResponse;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
@@ -46,7 +44,6 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import reactor.core.publisher.Flux;
 
 /**
@@ -88,7 +85,7 @@ public final class AgentInWorkflowJava {
     PublisherRunner runner =
         PublisherRunner.inMemory(
             App.builder().appName("task_in_workflow").rootNode(workflow).build());
-    // A retried task agent sees only the latest message, so John Doe's details take two turns.
+    // A retried intake agent starts a new conversation, so Jane Doe gives both details at once.
     Deque<String> replies =
         new ArrayDeque<>(List.of("My name is John Doe", "555-1234", "Jane Doe, 555-1234"));
     Content message = Content.fromText(Role.USER, replies.removeFirst());
@@ -175,7 +172,7 @@ public final class AgentInWorkflowJava {
     return LlmAgent.builder()
         .name("generate_instruction")
         .model(model)
-        .tools(new FindOrdersTool())
+        .tools(ReflectiveTools.fromMethod(new LabOrders(), "findOrders"))
         .instruction(
             """
             Use the find_orders tool to get the patient's orders.
@@ -189,43 +186,14 @@ public final class AgentInWorkflowJava {
     return Event.builder().content(Content.fromText(Role.MODEL, text)).build();
   }
 
-  /**
-   * Finds orders for the patient once the user approves the call. Hand-written because
-   * ReflectiveTools builds no tool that waits for approval. Like a {@code requireConfirmation}
-   * tool, its first call requests a confirmation, and the call that carries the answer runs or
-   * reports the rejection.
-   */
-  private static final class FindOrdersTool extends BaseFutureTool {
-    FindOrdersTool() {
-      super("find_orders", "Finds orders for the patient.");
-    }
-
-    @Override
-    public FunctionDeclaration declaration() {
-      return FunctionDeclaration.builder().name(getName()).description(getDescription()).build();
-    }
-
-    @Override
-    protected CompletableFuture<Object> runAsync(ToolContext context, Map<String, Object> args) {
-      ToolConfirmation confirmation = context.getToolConfirmation();
-      if (confirmation == null) {
-        context.requestConfirmation(
-            "Please approve or reject the tool call "
-                + getName()
-                + "() by responding with a FunctionResponse with an expected ToolConfirmation"
-                + " payload.",
-            null);
-        // Ends the turn on the request, as FunctionTool does, instead of calling the model again.
-        context.getActions().setSkipSummarization(true);
-        return CompletableFuture.completedFuture(
-            Map.of(FunctionTool.ERROR_KEY, FunctionTool.CONFIRMATION_REQUIRED_ERROR));
-      }
-      if (!confirmation.getConfirmed()) {
-        return CompletableFuture.completedFuture(
-            Map.of(FunctionTool.ERROR_KEY, FunctionTool.REJECTED_ERROR));
-      }
-      return CompletableFuture.completedFuture(
-          List.of("CBC (Complete Blood Count)", "Lipid Panel"));
+  /** A mock lab system whose orders lookup waits for the user to approve each call. */
+  public static final class LabOrders {
+    @Tool(
+        name = "find_orders",
+        description = "Finds orders for the patient.",
+        requireConfirmation = true)
+    public List<String> findOrders() {
+      return List.of("CBC (Complete Blood Count)", "Lipid Panel");
     }
   }
 

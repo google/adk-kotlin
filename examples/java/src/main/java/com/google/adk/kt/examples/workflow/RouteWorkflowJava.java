@@ -89,14 +89,14 @@ public final class RouteWorkflowJava {
   }
 
   /** Stores the user's input in state, where the agents' instructions read it. */
-  private static FunctionNode<Content, Object> processInput() {
+  private static FunctionNode<String, Object> processInput() {
     return FunctionNodes.of(
         "process_input",
-        // START hands the first node the user's message as Content.
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
+        String.class,
         Object.class,
-        (ctx, message) -> {
-          ctx.updateState("input", message.text());
+        (ctx, input) -> {
+          ctx.updateState("input", input);
           return null;
         });
   }

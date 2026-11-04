@@ -17,9 +17,11 @@
 package com.google.adk.kt.examples.workflow;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
@@ -34,7 +36,9 @@ import com.google.adk.kt.workflow.Workflow;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code nested_workflow} sample: for the year the user names, a nested
@@ -60,7 +64,7 @@ public final class NestedWorkflowJava {
         .edges(
             g ->
                 g.fromStart()
-                    .then(processInput())
+                    .then(new ProcessInput())
                     .then(findFamousPerson, findHistoricalEventAgent(model))
                     .joinTo(new JoinNode("join_for_aggregation"))
                     .then(aggregateResults()))
@@ -89,21 +93,28 @@ public final class NestedWorkflowJava {
   private static final Pattern YEAR = Pattern.compile("\\b\\d{4}\\b");
 
   /** Stores the year from the user's message in state, and fails the run if there is none. */
-  private static FunctionNode<Content, Object> processInput() {
-    return FunctionNodes.of(
-        "process_input",
-        // START hands the first node the user's message as Content.
-        Content.class,
-        Object.class,
-        (ctx, message) -> {
-          Matcher year = YEAR.matcher(message.text());
-          if (!year.find()) {
-            // A function node can't emit before it fails, so the error carries the reply.
-            throw new IllegalArgumentException("Please provide a valid 4-digit year (e.g., 1955).");
-          }
-          ctx.updateState("year", year.group());
-          return null;
-        });
+  private static final class ProcessInput extends BasePublisherNode {
+    ProcessInput() {
+      super("process_input");
+    }
+
+    @Override
+    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
+      // START hands the first node the user's message as Content.
+      Matcher year = YEAR.matcher(((Content) nodeInput).text());
+      if (!year.find()) {
+        Event reply =
+            Event.builder()
+                .content(
+                    Content.fromText(
+                        Role.MODEL, "Please provide a valid 4-digit year (e.g., 1955)."))
+                .build();
+        return Mono.<Object>just(reply)
+            .concatWith(Mono.error(new IllegalArgumentException("Invalid year format.")));
+      }
+      context.updateState("year", year.group());
+      return Mono.empty();
+    }
   }
 
   private static LlmAgent findNameAgent(Model model) {

@@ -53,10 +53,12 @@ import kotlin.reflect.KType
 import kotlin.reflect.typeOf
 
 /**
- * Creates [FunctionNode]s from Java with a type per port. Jackson reads each input into the input
- * type and writes each output as JSON, so records and POJOs work as ports; `Object.class` leaves a
- * port untyped, a `Content` or `Event` port passes values as they are, and a port typed this way
- * infers no schema. To run a node on each item of a list, wrap it with [FunctionNode.parallelOf].
+ * Creates [FunctionNode]s from Java with a type per port. Jackson reads each input into its
+ * declared type and writes each output as JSON, so records and POJOs work as ports, and a port
+ * typed this way infers no schema; `Object.class` leaves a port untyped, a `Content` or `Event`
+ * port passes values unchanged, and a `String` port reads a message as its text, passes null
+ * through, rejects any other non-text value, and infers a string schema. To run a node on each item
+ * of a list, wrap it with [FunctionNode.parallelOf].
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi
@@ -167,6 +169,17 @@ object FunctionNodes {
     throw NodeInterruptedException(RequestInput(interruptId, message, json, responseSchema))
   }
 
+  /**
+   * Asks the user for input with [request] and sends its payload as JSON, like the other
+   * `requestInput` overload. For example, build the request with [RequestInput.builder] to set only
+   * a message.
+   *
+   * @throws IllegalArgumentException if Jackson cannot write the payload of [request].
+   */
+  @JvmStatic
+  fun <T> requestInput(request: RequestInput): T =
+    requestInput(request.interruptId, request.message, request.payload, request.responseSchema)
+
   private fun <I, O> node(
     name: String,
     inputType: JavaType,
@@ -182,8 +195,17 @@ object FunctionNodes {
   ): FunctionNode.Builder<I, O> =
     FunctionNode.Builder.create<I, O>()
       // An input port also writes: an explicit input schema checks the input in its JSON form.
-      .inputCodec(portCodec<I>(inputType, "the input of $node", ::requireRoundTrip))
-      .outputCodec(portCodec<O>(outputType, "the output of $node", ::requireWritable))
+      .inputCodec(
+        portCodec<I>(inputType, "the input of $node", KOTLIN_CODEC_TYPES, ::requireRoundTrip)
+      )
+      .outputCodec(
+        portCodec<O>(
+          outputType,
+          "the output of $node",
+          KOTLIN_OUTPUT_CODEC_TYPES,
+          ::requireWritable,
+        )
+      )
 }
 
 private const val BUILDER = "a FunctionNodes.builder node"
@@ -206,7 +228,12 @@ private val KOTLIN_CODEC_TYPES: Map<Class<*>, KType> =
     Any::class.java to typeOf<Any?>(),
     Content::class.java to typeOf<Content?>(),
     Event::class.java to typeOf<Event?>(),
+    String::class.java to typeOf<String?>(),
   )
+
+/** [KOTLIN_CODEC_TYPES] for outputs; a String output is non-null since null means no output. */
+private val KOTLIN_OUTPUT_CODEC_TYPES: Map<Class<*>, KType> =
+  KOTLIN_CODEC_TYPES + (String::class.java to typeOf<String>())
 
 private fun javaType(type: Class<*>): JavaType =
   MAPPER.typeFactory.constructType(type.kotlin.javaObjectType)
@@ -216,9 +243,10 @@ private fun javaType(type: TypeReference<*>): JavaType = MAPPER.typeFactory.cons
 private fun <T> portCodec(
   type: JavaType,
   what: String,
+  kotlinTypes: Map<Class<*>, KType>,
   check: (JavaType, String) -> Unit,
 ): PortCodec<T> {
-  KOTLIN_CODEC_TYPES[type.rawClass]?.let {
+  kotlinTypes[type.rawClass]?.let {
     return ValueCodec(it)
   }
   check(type, what)

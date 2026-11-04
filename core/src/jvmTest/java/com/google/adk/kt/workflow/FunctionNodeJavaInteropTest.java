@@ -262,6 +262,84 @@ public final class FunctionNodeJavaInteropTest {
   }
 
   @Test
+  public void of_stringPort_readsTheUsersMessageAsText() {
+    // Arrange
+    FunctionNode<String, String> shout =
+        FunctionNodes.of("shout", String.class, String.class, (ctx, text) -> text + "!");
+
+    // Act
+    List<Event> events = run("string_port", "hi", shout);
+
+    // Assert
+    assertEquals("hi!", outputOf(events, "shout"));
+    assertEquals(Type.STRING, shout.getInputSchema().getType());
+    assertEquals(Boolean.TRUE, shout.getInputSchema().getNullable());
+    assertEquals(Type.STRING, shout.getOutputSchema().getType());
+  }
+
+  @Test
+  public void of_stringOutput_fitsANonNullStringInput() {
+    // Arrange
+    FunctionNode<String, String> shout =
+        FunctionNodes.of("shout", String.class, String.class, (ctx, text) -> text + "!");
+    FunctionNode<String, String> echo =
+        FunctionNodes.builder(String.class, String.class)
+            .name("echo")
+            .inputSchema(Schema.builder().type(Type.STRING).build())
+            .body((ctx, text) -> text)
+            .build();
+
+    // Act
+    List<Event> events = run("string_output", "hi", shout, echo);
+
+    // Assert
+    assertEquals("hi!", outputOf(events, "echo"));
+  }
+
+  @Test
+  public void of_stringPort_rejectsNonTextValues() {
+    // Arrange
+    Supplier<FunctionNode<String, String>> shout =
+        () -> FunctionNodes.of("shout", String.class, String.class, (ctx, text) -> text + "!");
+    FunctionNode<Object, Integer> number =
+        FunctionNodes.of("number", Object.class, Integer.class, (ctx, in) -> 3);
+    FunctionNode<Object, Boolean> flag =
+        FunctionNodes.of("flag", Object.class, Boolean.class, (ctx, in) -> true);
+    FunctionNode<Object, Map<String, Object>> record =
+        FunctionNodes.of(
+            "record",
+            Object.class,
+            new TypeReference<Map<String, Object>>() {},
+            (ctx, in) -> ImmutableMap.of("text", "hi"));
+
+    // Act
+    boolean numberRejected = rejected(() -> run("string_number", "go", number, shout.get()));
+    boolean booleanRejected = rejected(() -> run("string_boolean", "go", flag, shout.get()));
+    boolean mapRejected = rejected(() -> run("string_map", "go", record, shout.get()));
+
+    // Assert
+    assertTrue(numberRejected);
+    assertTrue(booleanRejected);
+    assertTrue(mapRejected);
+  }
+
+  @Test
+  public void of_stringPort_passesNullThrough() {
+    // Arrange
+    FunctionNode<Object, Object> nothing =
+        FunctionNodes.of("nothing", Object.class, Object.class, (ctx, in) -> null);
+    FunctionNode<String, String> describe =
+        FunctionNodes.of(
+            "describe", String.class, String.class, (ctx, text) -> text == null ? "no text" : text);
+
+    // Act
+    List<Event> events = run("string_null", "go", nothing, describe);
+
+    // Assert
+    assertEquals("no text", outputOf(events, "describe"));
+  }
+
+  @Test
   public void of_typeReferencePorts_fanOutAndCollectAListOfRecords() {
     // Arrange
     FunctionNode<Content, List<Integer>> readQuantities =
@@ -879,6 +957,35 @@ public final class FunctionNodeJavaInteropTest {
             .getArgs()
             .get("payload");
     assertEquals(ImmutableMap.of("days", 3L, "reason", "trip"), payload);
+  }
+
+  @Test
+  public void requestInput_requestWithoutAnId_asksWithAGeneratedIdAndTheJsonPayload() {
+    // Arrange
+    FunctionNode<Content, String> ask =
+        FunctionNodes.of(
+            "ask",
+            Content.class,
+            String.class,
+            (ctx, content) ->
+                FunctionNodes.requestInput(
+                    RequestInput.builder()
+                        .message("Approve?")
+                        .payload(new Leave(3, "trip"))
+                        .build()));
+    FunctionNode<String, String> greet =
+        FunctionNodes.of("greet", String.class, String.class, (ctx, name) -> "Hello, " + name);
+
+    // Act
+    List<Event> asked =
+        new JavaAskSession(ask, greet, "request_wf").run(Content.fromText("user", "hi"));
+
+    // Assert
+    Map<String, Object> args =
+        asked.stream().flatMap(e -> e.functionCalls().stream()).findFirst().orElseThrow().getArgs();
+    assertEquals("Approve?", args.get("message"));
+    assertEquals(ImmutableMap.of("days", 3L, "reason", "trip"), args.get("payload"));
+    assertTrue(args.get("interruptId") instanceof String id && !id.isEmpty());
   }
 
   @Test
