@@ -53,6 +53,10 @@ dependencies {
   implementation(libs.opentelemetry.sdk)
 
   ksp(project(":google-adk-kotlin-processor"))
+
+  testImplementation(libs.google.truth)
+  testImplementation(libs.junit)
+  testImplementation(libs.kotlin.test.junit)
 }
 
 // Convenience task to run the BigQuery Analytics Demo sample, e.g.:

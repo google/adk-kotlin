@@ -50,7 +50,11 @@ dependencies {
   implementation(project(":google-adk-kotlin-integrations-spring"))
   implementation(libs.spring.ai.google.genai)
   implementation(project(":google-adk-kotlin-webserver"))
+  testImplementation(libs.junit)
+  testImplementation(libs.google.truth)
 }
+
+tasks.test { useJUnit() }
 
 // Runs a Java example agent in a REPL, e.g.:
 //   ./gradlew :google-adk-kotlin-examples-java:runJavaExample \
