@@ -272,6 +272,41 @@ fun main() =
   AdkApiServer(AdkServerConfig.inMemory(rootAgent).copy(host = "0.0.0.0")).start(wait = true)
 ```
 
+### Exporting telemetry
+
+The server exports traces over OTLP when a standard OpenTelemetry setting names
+an endpoint, and exports nothing otherwise:
+
+```shell
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 ./gradlew run
+```
+
+The other standard `OTEL_*` environment variables and `otel.*` system properties
+apply too, such as `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES`; the service is named `adk-web-server` unless they
+name it. OTLP goes over `http/protobuf` unless `OTEL_EXPORTER_OTLP_PROTOCOL`
+says otherwise. Any OpenTelemetry autoconfigure extensions on your classpath
+also apply, except the GCP resource detector, whose metadata-server query can
+block startup. To turn it on, list
+`io.opentelemetry.contrib.gcp.resource.GCPResourceProvider` in
+`OTEL_JAVA_ENABLED_RESOURCE_PROVIDERS`, together with any other resource
+providers you want, since that list turns off the ones it leaves out.
+
+ADK records traces only, so metrics and logs are exported only when
+`OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` asks for them, for example for
+your own instruments. The Development UI trace view keeps working alongside the
+export. Spans carry prompt and response content only when
+`captureMessageContent` is on, but they always record exceptions and their
+messages.
+
+If the settings fail to apply, the server logs a warning and runs without
+exporting. If your application registers OpenTelemetry before the server starts,
+the server uses it as it is: it applies none of these settings, and the
+Development UI shows no traces. Don't set
+`otel.java.global-autoconfigure.enabled`: with it set, anything that asks for
+OpenTelemetry before the server starts configures it without the server's
+settings.
+
 ### Development UI
 
 Same as the beloved Python Development UI.

@@ -51,6 +51,8 @@ dependencies {
 
   implementation(libs.opentelemetry.api)
   implementation(libs.opentelemetry.sdk)
+  implementation(libs.opentelemetry.sdk.extension.autoconfigure)
+  runtimeOnly(libs.opentelemetry.exporter.otlp)
 
   implementation(libs.ktor.serialization.kotlinx.json)
   implementation(libs.ktor.server.content.negotiation)
@@ -65,3 +67,22 @@ dependencies {
   testImplementation(libs.google.truth)
   testImplementation(libs.junit)
 }
+
+// Every server a test starts reads OTEL_* settings, so the developer's or CI's must not reach them.
+tasks.withType<Test>().configureEach {
+  setEnvironment(System.getenv().filterKeys { !it.startsWith("OTEL_") })
+}
+
+// Core resolves its tracer once per JVM, so the test exporting through it needs a JVM of its own.
+val otlpEndToEndTestClass = "com.google.adk.kt.webserver.telemetry.OtlpEndToEndTest"
+
+val otlpEndToEndTest =
+  tasks.register<Test>("otlpEndToEndTest") {
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    filter { includeTestsMatching(otlpEndToEndTestClass) }
+  }
+
+tasks.test { filter { excludeTestsMatching(otlpEndToEndTestClass) } }
+
+tasks.check { dependsOn(otlpEndToEndTest) }

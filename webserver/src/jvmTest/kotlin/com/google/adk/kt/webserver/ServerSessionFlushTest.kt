@@ -23,15 +23,23 @@ import com.google.adk.kt.sessions.SessionException
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
+import com.google.adk.kt.webserver.telemetry.OtlpReceiver
+import com.google.adk.kt.webserver.telemetry.ServerTelemetry
+import com.google.adk.kt.webserver.telemetry.withSystemProperties
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.post
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ResponseSent
 import io.ktor.server.application.install
 import io.ktor.server.testing.testApplication
+import io.opentelemetry.api.GlobalOpenTelemetry
+import io.opentelemetry.sdk.common.CompletableResultCode
+import io.opentelemetry.sdk.trace.data.SpanData
+import io.opentelemetry.sdk.trace.export.SpanExporter
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.util.Collections
@@ -43,7 +51,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
-/** Covers when the server flushes its session service outside a run. */
+/** Covers when the server flushes its session service and telemetry outside a run. */
 @RunWith(JUnit4::class)
 class ServerSessionFlushTest {
 
@@ -202,6 +210,121 @@ class ServerSessionFlushTest {
     assertThat(stopTime).isAtLeast(3.seconds)
     assertThat(stopTime).isLessThan(10.seconds)
     assertThat(log).contains("Timed out flushing buffered session writes on stop")
+  }
+
+  @Test(timeout = 20_000)
+  fun applicationStop_telemetryFlushHangs_stopsAfterTheTimeout() {
+    withHangingTelemetry {
+      lateinit var stopStarted: TimeMark
+
+      val log = captureStandardError {
+        testApplication {
+          application { adkApiModule(testConfig(RecordingSessionService())) }
+          startApplication()
+          stopStarted = TimeSource.Monotonic.markNow()
+        }
+      }
+
+      val stopTime = stopStarted.elapsedNow()
+      assertThat(stopTime).isAtLeast(3.seconds)
+      assertThat(stopTime).isLessThan(10.seconds)
+      assertThat(log).contains("Timed out flushing buffered telemetry on stop")
+    }
+  }
+
+  @Test(timeout = 20_000)
+  fun applicationStop_bothFlushesHang_shareTheTimeout() {
+    val sessionService = RecordingSessionService(onFlush = { awaitCancellation() })
+    withHangingTelemetry {
+      lateinit var stopStarted: TimeMark
+
+      val log = captureStandardError {
+        testApplication {
+          application { adkApiModule(testConfig(sessionService)) }
+          startApplication()
+          stopStarted = TimeSource.Monotonic.markNow()
+        }
+      }
+
+      // Two separate timeouts would take at least 6 s.
+      val stopTime = stopStarted.elapsedNow()
+      assertThat(stopTime).isAtLeast(3.seconds)
+      assertThat(stopTime).isLessThan(5.seconds)
+      assertThat(log).contains("Timed out flushing buffered session writes on stop")
+      assertThat(log).contains("Timed out flushing buffered telemetry on stop")
+    }
+  }
+
+  @Test(timeout = 20_000)
+  fun applicationStop_unsubscribesTheTelemetryFlush() {
+    withHangingTelemetry {
+      lateinit var stopped: Application
+      testApplication {
+        application {
+          adkApiModule(testConfig(RecordingSessionService()))
+          stopped = this
+        }
+      }
+
+      // A dev-mode reload keeps the monitor, so a later stop on it must not flush telemetry again.
+      val log = captureStandardError { stopped.monitor.raise(ApplicationStopped, stopped) }
+
+      assertThat(log).doesNotContain("Timed out flushing buffered telemetry on stop")
+    }
+  }
+
+  @Test(timeout = 20_000)
+  fun applicationStop_exportsSpansThatEndDuringTheStop() {
+    OtlpReceiver().use { receiver ->
+      ServerTelemetry.resetForTest()
+      try {
+        withSystemProperties(
+          "otel.exporter.otlp.traces.endpoint" to "${receiver.endpoint}/v1/traces"
+        ) {
+          testApplication {
+            application {
+              adkApiModule(testConfig(RecordingSessionService()))
+              // Ends a span after the module's stopping handler, like a call the stop cancels.
+              monitor.subscribe(ApplicationStopping) { emitSpan("during-stop") }
+            }
+            startApplication()
+            emitSpan("before-stop")
+          }
+        }
+
+        assertThat(receiver.received("before-stop")).isTrue()
+        assertThat(receiver.received("during-stop")).isTrue()
+      } finally {
+        ServerTelemetry.resetForTest()
+      }
+    }
+  }
+
+  /** Runs [block] with telemetry whose every flush waits on a span export that never finishes. */
+  private fun withHangingTelemetry(block: () -> Unit) {
+    val pendingExport = CompletableResultCode()
+    val hangingExporter =
+      object : SpanExporter {
+        override fun export(spans: Collection<SpanData>) = pendingExport
+
+        override fun flush() = CompletableResultCode.ofSuccess()
+
+        override fun shutdown() = CompletableResultCode.ofSuccess()
+      }
+    ServerTelemetry.resetForTest()
+    try {
+      // The server reuses this installation instead of installing its own.
+      ServerTelemetry.install(hangingExporter)
+      emitSpan("pending")
+      block()
+    } finally {
+      pendingExport.succeed()
+      ServerTelemetry.resetForTest()
+    }
+  }
+
+  private fun emitSpan(name: String) {
+    GlobalOpenTelemetry.getTracer("test").spanBuilder(name).startSpan().end()
   }
 
   /** Runs [block] and returns what it wrote to standard error, where the server logs. */

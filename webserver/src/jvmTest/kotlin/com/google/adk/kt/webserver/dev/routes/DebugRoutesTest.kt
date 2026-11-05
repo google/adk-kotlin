@@ -24,7 +24,6 @@ import com.google.adk.kt.webserver.FakeArtifactService
 import com.google.adk.kt.webserver.FakeSessionService
 import com.google.adk.kt.webserver.dev.adkDevModule
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
-import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -34,6 +33,9 @@ import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import io.opentelemetry.sdk.trace.SdkTracerProvider
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
+import java.util.concurrent.TimeUnit
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -45,15 +47,18 @@ class DebugRoutesTest {
   /** Drives the real SDK so the exporter holds a span the session endpoint will render. */
   private fun exporterWithSpan(sessionId: String): ApiServerSpanExporter {
     val exporter = ApiServerSpanExporter()
-    val provider = OpenTelemetryConfig(exporter).sdkTracerProvider()
-    val span =
-      provider
-        .get("test")
-        .spanBuilder("call_llm")
-        .setAttribute("gcp.vertex.agent.session_id", sessionId)
-        .startSpan()
-    span.end()
-    provider.forceFlush().join(5, java.util.concurrent.TimeUnit.SECONDS)
+    SdkTracerProvider.builder()
+      .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+      .build()
+      .use { provider ->
+        provider
+          .get("test")
+          .spanBuilder("call_llm")
+          .setAttribute("gcp.vertex.agent.session_id", sessionId)
+          .startSpan()
+          .end()
+        provider.forceFlush().join(5, TimeUnit.SECONDS)
+      }
     return exporter
   }
 

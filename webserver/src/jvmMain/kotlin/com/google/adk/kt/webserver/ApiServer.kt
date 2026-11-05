@@ -33,10 +33,12 @@ import com.google.adk.kt.webserver.routes.liveRoutes
 import com.google.adk.kt.webserver.routes.runRoutes
 import com.google.adk.kt.webserver.routes.sessionRoutes
 import com.google.adk.kt.webserver.routes.staticRoutes
-import com.google.adk.kt.webserver.telemetry.OpenTelemetryConfig
+import com.google.adk.kt.webserver.telemetry.ServerTelemetry
+import io.ktor.events.EventHandler
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ResponseSent
@@ -53,8 +55,9 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.util.AttributeKey
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.DisposableHandle
+import kotlin.time.TimeSource
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
@@ -117,8 +120,8 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
   }
 
   /**
-   * Stops the engine, which waits for [adkApiModule] to flush [AdkServerConfig.sessionService]: up
-   * to 3 seconds more for a flush that honors cancellation.
+   * Stops the engine, which waits for [adkApiModule] to flush [AdkServerConfig.sessionService] and
+   * buffered telemetry: up to 3 seconds more for a session flush that honors cancellation.
    */
   fun stop() {
     synchronized(lifecycleLock) {
@@ -165,11 +168,12 @@ private val requestLogging = requestLoggingPlugin { level, message ->
  * Installs the ADK agent runtime (health, version, app discovery, sessions, artifacts, the run
  * endpoints including `/run_live`, and app-info when [AdkServerConfig.includeAppInfo] or the
  * `adk.app.info.enabled` property asks for it), installs Ktor `WebSockets` unless the application
- * already did (install your own `WebSockets` before this module, or startup fails), and flushes
- * [AdkServerConfig.sessionService] when the application stops, waiting up to 3 seconds for a flush
- * that honors cancellation. Your own `WebSockets` should set `maxFrameSize` to at most 16 MiB and
- * bound its outgoing channel: Ktor reads a socket's first frames with the plugin's cap, before
- * `/run_live` sets its own.
+ * already did (install your own `WebSockets` before this module, or startup fails), registers
+ * OpenTelemetry from the standard `OTEL_*` settings unless the process already has one, and flushes
+ * [AdkServerConfig.sessionService] and buffered telemetry when the application stops, waiting up to
+ * 3 seconds for a flush that honors cancellation. Your own `WebSockets` should set `maxFrameSize` to
+ * at most 16 MiB and bound its outgoing channel: Ktor reads a socket's first frames with the
+ * plugin's cap, before `/run_live` sets its own.
  *
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
@@ -186,15 +190,13 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
   install(requestLogging)
   install(ContentNegotiation) { json(adkJson) }
 
-  flushSessionServiceOnStop(config.sessionService)
+  flushOnStop(config.sessionService)
 
   if (pluginOrNull(WebSockets) == null) {
     installLiveWebSockets()
   }
 
-  val otelConfig = OpenTelemetryConfig(config.apiServerSpanExporter)
-  val sdkTracerProvider = otelConfig.sdkTracerProvider()
-  val unused = otelConfig.openTelemetrySdk(sdkTracerProvider)
+  ServerTelemetry.install(config.apiServerSpanExporter)
 
   // The Dev UI trace view needs message content, but it records potential PII into spans.
   TelemetryConfig.captureMessageContent = config.captureMessageContent
@@ -226,7 +228,7 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
         VersionInfo.of(
           version = VERSION,
           language = "kotlin",
-          languageVersion = System.getProperty("java.version", "unknown"),
+          languageVersion = System.getProperty("java.version") ?: "unknown",
           camelCase = camelCase,
         )
       )
@@ -246,28 +248,56 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
 }
 
 /**
- * Flushes [sessionService] when this application stops, giving up after [STOP_FLUSH_TIMEOUT] if the
- * flush honors cancellation. Ktor raises [ApplicationStopping] on `stop()` and from its JVM
- * shutdown hook, after the engine's shutdown grace period, so the flush also persists what calls
- * cut off by the stop had buffered.
+ * Flushes [sessionService] when this application stops and buffered telemetry once it has stopped,
+ * the two sharing [STOP_FLUSH_TIMEOUT] if the session flush honors cancellation. Ktor raises
+ * [ApplicationStopping] on `stop()` and from its JVM shutdown hook, after the engine's shutdown
+ * grace period, so the session flush also persists what calls cut off by the stop had buffered.
+ * [ApplicationStopped] follows once those calls are cancelled and their spans have ended.
  */
-private fun Application.flushSessionServiceOnStop(sessionService: SessionService) {
-  lateinit var subscription: DisposableHandle
-  subscription =
-    monitor.subscribe(ApplicationStopping) {
-      // Unsubscribes, since a dev-mode reload reruns this module on the same monitor.
-      subscription.dispose()
-      try {
-        runBlocking {
-          withTimeoutOrNull(STOP_FLUSH_TIMEOUT) { sessionService.flush() }
-            ?: logger.warn("Timed out flushing buffered session writes on stop")
+private fun Application.flushOnStop(sessionService: SessionService) {
+  var telemetryTimeout = STOP_FLUSH_TIMEOUT
+  // Each unsubscribes, since a dev-mode reload reruns this module on the same monitor.
+  monitor.subscribe(
+    ApplicationStopping,
+    object : EventHandler<Application> {
+      override fun invoke(application: Application) {
+        monitor.unsubscribe(ApplicationStopping, this)
+        val sessionFlushStarted = TimeSource.Monotonic.markNow()
+        try {
+          flushSessionService(sessionService)
+        } finally {
+          telemetryTimeout = STOP_FLUSH_TIMEOUT - sessionFlushStarted.elapsedNow()
         }
-      } catch (e: Exception) {
-        if (e is InterruptedException) Thread.currentThread().interrupt()
-        // Type only: the message can carry session content, which a log must not.
-        logger.warn("Failed to flush buffered session writes on stop: {}", e.javaClass.name)
       }
+    },
+  )
+  monitor.subscribe(
+    ApplicationStopped,
+    object : EventHandler<Application> {
+      override fun invoke(application: Application) {
+        monitor.unsubscribe(ApplicationStopped, this)
+        // Only here: a flush requested mid-flush returns the running one, missing later spans.
+        val flush = ServerTelemetry.forceFlush()
+        if (!flush.join(telemetryTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS).isDone) {
+          logger.warn("Timed out flushing buffered telemetry on stop")
+        }
+      }
+    },
+  )
+}
+
+/** Flushes [sessionService], giving up after [STOP_FLUSH_TIMEOUT] if it honors cancellation. */
+private fun flushSessionService(sessionService: SessionService) {
+  try {
+    runBlocking {
+      withTimeoutOrNull(STOP_FLUSH_TIMEOUT) { sessionService.flush() }
+        ?: logger.warn("Timed out flushing buffered session writes on stop")
     }
+  } catch (e: Exception) {
+    if (e is InterruptedException) Thread.currentThread().interrupt()
+    // Type only: the message can carry session content, which a log must not.
+    logger.warn("Failed to flush buffered session writes on stop: {}", e.javaClass.name)
+  }
 }
 
 private fun Application.resolveWebUi(config: AdkServerConfig): Boolean =
