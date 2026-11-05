@@ -16,6 +16,7 @@
 package com.google.adk.kt.examples.live
 
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.Semaphore
 import javax.sound.sampled.AudioFormat
@@ -26,17 +27,29 @@ import javax.sound.sampled.SourceDataLine
 import javax.sound.sampled.TargetDataLine
 
 /**
- * A Java Sound line that records the calls made on it, so recorder tests need no device.
+ * A Java Sound line that records the calls made on it, so player and recorder tests need no device.
  *
- * [read] serves [reads] in order and blocks until one arrives.
+ * [read] serves [reads] in order and blocks until one arrives; a [write] blocks while [blockWrites]
+ * is set, until [flush] or [close].
  */
 internal class FakeDataLine : SourceDataLine, TargetDataLine {
   val calls: MutableList<String> = Collections.synchronizedList(mutableListOf())
+  val written: MutableList<ByteArray> = Collections.synchronizedList(mutableListOf())
   val reads = LinkedBlockingQueue<ByteArray>()
   val readLengths: MutableList<Int> = Collections.synchronizedList(mutableListOf())
+  val writeEntered = CountDownLatch(1)
   val readStarted = Semaphore(0)
+  @Volatile var blockWrites = false
   @Volatile var startThrows = false
   @Volatile var stopThrows = false
+  @Volatile var drainThrows = false
+  // Caps what each write takes, to model a device error, which Java Sound reports as a short write.
+  @Volatile var writeAccepts = Int.MAX_VALUE
+  // Runs once as a write begins, before the bytes are taken, to model a concurrent discard.
+  @Volatile var onWriteEntry: (() -> Unit)? = null
+  // Runs while a drain is in progress, to model a play racing close().
+  @Volatile var onDrain: (() -> Unit)? = null
+  private val unblock = CountDownLatch(1)
   var openedFormat: AudioFormat? = null
   var openedBufferSize = -1
 
@@ -54,8 +67,18 @@ internal class FakeDataLine : SourceDataLine, TargetDataLine {
     open(javaSoundFormat(16_000), -1)
   }
 
-  override fun write(b: ByteArray, off: Int, len: Int): Int =
-    throw UnsupportedOperationException("a microphone line")
+  override fun write(b: ByteArray, off: Int, len: Int): Int {
+    onWriteEntry?.let {
+      onWriteEntry = null
+      it()
+    }
+    calls += "write"
+    val accepted = minOf(len, writeAccepts)
+    written += b.copyOfRange(off, off + accepted)
+    writeEntered.countDown()
+    if (blockWrites) unblock.await()
+    return accepted
+  }
 
   /** Copies the next queued chunk into [b]; an empty chunk returns 0, as a stopped line does. */
   override fun read(b: ByteArray, off: Int, len: Int): Int {
@@ -90,14 +113,18 @@ internal class FakeDataLine : SourceDataLine, TargetDataLine {
 
   override fun drain() {
     calls += "drain"
+    onDrain?.invoke()
+    if (drainThrows) throw IllegalStateException("drain failed")
   }
 
   override fun flush() {
     calls += "flush"
+    unblock.countDown()
   }
 
   override fun close() {
     calls += "close"
+    unblock.countDown()
     reads.offer(ByteArray(0))
   }
 

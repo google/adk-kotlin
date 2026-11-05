@@ -18,10 +18,13 @@ package com.google.adk.kt.examples.live;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.Control;
 import javax.sound.sampled.Line;
@@ -35,6 +38,11 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
   static final long LONG_WAIT_SECONDS = 5;
 
   final List<String> calls = new CopyOnWriteArrayList<>();
+
+  /** Ids of the chunks written, decoded from each chunk's first two bytes. */
+  final List<Integer> writtenIds = new CopyOnWriteArrayList<>();
+
+  final List<Integer> writeSizes = new CopyOnWriteArrayList<>();
 
   /** The length each read asked for. */
   final List<Integer> readLengths = new CopyOnWriteArrayList<>();
@@ -51,18 +59,53 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
   /** Counts down on the first read. */
   final CountDownLatch readEntered = new CountDownLatch(1);
 
+  /** Counts down on the first write. */
+  final CountDownLatch writeEntered = new CountDownLatch(1);
+
   /** When set, {@code open} waits on it, standing in for a native open that hangs. */
   volatile CountDownLatch openGate;
 
   volatile LineUnavailableException openFailure;
   volatile RuntimeException readFailure;
+  volatile RuntimeException writeFailure;
+
+  /** Runs after each write with the chunk id decoded from its first two bytes. */
+  volatile IntConsumer onWrite = id -> {};
+
+  volatile Consumer<Thread> onFlush = by -> {};
   volatile int openedBufferSize;
   volatile AudioFormat openedFormat;
   volatile boolean startThrows;
   volatile boolean stopThrows;
+  volatile boolean drainThrows;
+
+  /**
+   * Caps what each write takes, to model a device error, which Java Sound reports as a short write.
+   */
+  volatile int writeAccepts = Integer.MAX_VALUE;
+
+  volatile Runnable onWriteEntry = () -> {};
+  volatile Runnable onDrain = () -> {};
+  private volatile CountDownLatch writeGate = new CountDownLatch(0);
   private volatile boolean open = true;
 
+  /** The player's writer thread, once it has written. */
+  volatile Thread writer;
+
   private int readCount;
+
+  void blockWrites() {
+    writeGate = new CountDownLatch(1);
+  }
+
+  void releaseWrites() {
+    writeGate.countDown();
+  }
+
+  /** Waits for the writer thread to end and returns whether it did. */
+  boolean writerEnded() throws InterruptedException {
+    return writer.join(Duration.ofSeconds(LONG_WAIT_SECONDS));
+  }
 
   @Override
   public void open(AudioFormat format, int bufferSize) throws LineUnavailableException {
@@ -88,9 +131,28 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
     open(null, 0);
   }
 
+  // Returns what it takes, len unless writeAccepts caps it, as SourceDataLine.write does.
   @Override
+  @SuppressWarnings("CanIgnoreReturnValueSuggester")
   public int write(byte[] b, int off, int len) {
-    throw new UnsupportedOperationException("a microphone line");
+    writer = Thread.currentThread();
+    // Runs once, before the write is recorded, so a test can discard or close mid-write.
+    Runnable hook = onWriteEntry;
+    onWriteEntry = () -> {};
+    hook.run();
+    calls.add("write");
+    writeEntered.countDown();
+    awaitQuietly(writeGate);
+    if (writeFailure != null) {
+      throw writeFailure;
+    }
+    int id = (b[0] & 0xff) | ((b[1] & 0xff) << 8);
+    if (off == 0) {
+      writtenIds.add(id);
+    }
+    writeSizes.add(len);
+    onWrite.accept(id);
+    return Math.min(len, writeAccepts);
   }
 
   @Override
@@ -129,6 +191,7 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
   @Override
   public void flush() {
     calls.add("flush");
+    onFlush.accept(Thread.currentThread());
   }
 
   @Override
@@ -159,6 +222,10 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
   @Override
   public void drain() {
     calls.add("drain");
+    onDrain.run();
+    if (drainThrows) {
+      throw new IllegalStateException("drain failed");
+    }
   }
 
   @Override
