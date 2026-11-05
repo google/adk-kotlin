@@ -354,6 +354,38 @@ GOOGLE_CLOUD_PROJECT=my-project ./gradlew :google-adk-kotlin-examples:runServer 
 
 <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
 
+### Holding a live conversation
+
+`LiveAgentDemo` holds a spoken conversation through the machine's microphone and
+speaker until you press Enter. It streams audio through a `LiveRequestQueue` to
+a live model, plays the model's voice, and prints both sides along with any
+`getWeather` call and its result. Talking over the model cuts its reply short.
+Use headphones, as there is no echo cancellation. To start it:
+
+```shell
+./gradlew :google-adk-kotlin-examples:runLiveAgentDemo
+```
+
+On macOS, allow your terminal to use the microphone (System Settings, Privacy
+& Security, Microphone), or the demo hears only silence.
+
+The demo talks to `gemini-3.8-live` on Vertex AI in `us-central1`, so it needs
+application default credentials and a project:
+
+```shell
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT=your-project
+```
+
+Some projects that work for text generation are refused a live session.
+
+`LiveAgentDemoJava` is the Java port of `LiveAgentDemo` and takes the same
+settings:
+
+```shell
+./gradlew :google-adk-kotlin-examples-java:runLiveAgentDemoJava
+```
+
 ## 📂 Examples
 
 The agent snippet above is the short version. Every runnable example lives under
