@@ -17,11 +17,8 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import java.util.Collections
-import java.util.logging.Handler
+import com.google.adk.kt.testing.capturingLogs
 import java.util.logging.Level
-import java.util.logging.LogRecord
-import java.util.logging.Logger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -33,7 +30,8 @@ class AuthUriLoggingTest {
 
   @Test
   fun withNewAuthUri_publicClient_warnsWithoutTheClientId() {
-    val (credential, records) = capturingWarnings { PUBLIC_CLIENT.withNewAuthUri(AUTH_CODE) }
+    val (credential, records) =
+      capturingLogs(LOGGER, Level.WARNING) { PUBLIC_CLIENT.withNewAuthUri(AUTH_CODE) }
 
     assertEquals("S256", credential.codeChallengeMethod)
     val message = records.single().message.orEmpty()
@@ -50,7 +48,7 @@ class AuthUriLoggingTest {
       )
 
     for (client in clients) {
-      val (_, records) = capturingWarnings { client.withNewAuthUri(AUTH_CODE) }
+      val (_, records) = capturingLogs(LOGGER, Level.WARNING) { client.withNewAuthUri(AUTH_CODE) }
 
       assertTrue(records.isEmpty())
     }
@@ -71,7 +69,7 @@ class AuthUriLoggingTest {
 
     for (scheme in schemes) {
       val (_, records) =
-        capturingWarnings {
+        capturingLogs(LOGGER, Level.WARNING) {
           assertFailsWith<IllegalArgumentException> { PUBLIC_CLIENT.withNewAuthUri(scheme) }
         }
 
@@ -80,6 +78,9 @@ class AuthUriLoggingTest {
   }
 
   private companion object {
+    // Named after the file's private `AuthUri` object.
+    const val LOGGER = "com.google.adk.kt.auth.AuthUri"
+
     const val CLIENT_ID = "public-client-id"
 
     val PUBLIC_CLIENT = AuthCredential.OAuth2(clientId = CLIENT_ID, redirectUri = "https://app/cb")
@@ -91,33 +92,4 @@ class AuthUriLoggingTest {
         scopes = emptyMap(),
       )
   }
-}
-
-/**
- * Runs [block] and returns its result with every WARNING record `AuthUri.kt` logged meanwhile. The
- * facade delegates to Flogger, which is backed by `java.util.logging` and names the logger after
- * the file's private `AuthUri` object.
- */
-private fun <T> capturingWarnings(block: () -> T): Pair<T, List<LogRecord>> {
-  // publish() runs on whichever thread logged, so this cannot be a plain list.
-  val records = Collections.synchronizedList(mutableListOf<LogRecord>())
-  val handler =
-    object : Handler() {
-      override fun publish(record: LogRecord?) {
-        if (record?.level == Level.WARNING) records.add(record)
-      }
-
-      override fun flush() {}
-
-      override fun close() {}
-    }
-  val logger = Logger.getLogger("com.google.adk.kt.auth.AuthUri")
-  logger.addHandler(handler)
-  val result =
-    try {
-      block()
-    } finally {
-      logger.removeHandler(handler)
-    }
-  return result to synchronized(records) { records.toList() }
 }

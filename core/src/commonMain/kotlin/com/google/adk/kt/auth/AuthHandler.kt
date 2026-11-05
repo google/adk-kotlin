@@ -19,10 +19,8 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
-import com.google.adk.kt.serialization.adkJson
-import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.serialization.decodeFromPlainOrNull
 
 private object AuthHandler
 
@@ -88,7 +86,7 @@ private fun AuthConfig.credentialFrom(value: Any?): AuthCredential? {
   if (value is AuthCredential) return value
   val credential =
     when {
-      value is Map<*, *> -> decodeCredentialOrNull(value)
+      value is Map<*, *> -> decodeFromPlainOrNull(AuthCredentialSerializer, value)
       value is String && value.isNotEmpty() -> credentialFromString(value)
       else -> return null
     }
@@ -130,28 +128,7 @@ private fun AuthCredential.withoutConfiguredSecrets(): AuthCredential? =
     is AuthCredential.ApiKey -> copy(apiKey = null)
     is AuthCredential.Http ->
       copy(credentials = credentials.copy(password = null, token = null), additionalHeaders = null)
-    is AuthCredential.OAuth2 -> copy(clientSecret = null)
+    is AuthCredential.OAuth2 -> withoutClientSecret()
     is AuthCredential.ServiceAccount ->
       if (useDefaultCredential) copy(serviceAccountCredential = null) else null
-  }
-
-/** Returns [value] decoded as credential JSON, or null if it isn't valid. */
-@OptIn(FrameworkInternalApi::class)
-private fun decodeCredentialOrNull(value: Map<*, *>): AuthCredential? =
-  try {
-    adkJson.decodeFromJsonElement(AuthCredentialSerializer, anyToJsonElement(value))
-  } catch (e: IllegalArgumentException) {
-    // SerializationException extends IllegalArgumentException, so this catches both.
-    null
-  }
-
-/**
- * Returns this credential with [raw]'s OAuth2 client ID and secret when both are OAuth2, so the app
- * can't choose the client.
- */
-private fun AuthCredential.withConfiguredClient(raw: AuthCredential?): AuthCredential =
-  if (this is AuthCredential.OAuth2 && raw is AuthCredential.OAuth2) {
-    copy(clientId = raw.clientId, clientSecret = raw.clientSecret)
-  } else {
-    this
   }

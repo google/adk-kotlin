@@ -20,14 +20,11 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.capturingLogs
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
-import java.util.Collections
-import java.util.logging.Handler
 import java.util.logging.Level
-import java.util.logging.LogRecord
-import java.util.logging.Logger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -54,7 +51,8 @@ class LlmAgentLoggingTest {
     val context = InvocationContext(agent = agent, session = session, runConfig = null)
 
     // Act
-    val (events, records) = capturingSevere { agent.runAsync(context).toList() }
+    val (events, records) =
+      capturingLogs(LlmAgent::class.java.name, Level.SEVERE) { agent.runAsync(context).toList() }
 
     // Assert: the raw text is still saved and the mismatch still logged, without the model's text.
     assertEquals(rawOutput, events.single().actions.stateDelta["result"])
@@ -66,33 +64,4 @@ class LlmAgentLoggingTest {
       )
     }
   }
-}
-
-/**
- * Runs [block] and returns its result with every SEVERE record [LlmAgent] logged meanwhile. The
- * facade delegates to Flogger, which is backed by `java.util.logging` and names the logger after
- * the class.
- */
-private suspend fun <T> capturingSevere(block: suspend () -> T): Pair<T, List<LogRecord>> {
-  // publish() runs on whichever thread logged, so this cannot be a plain list.
-  val records = Collections.synchronizedList(mutableListOf<LogRecord>())
-  val handler =
-    object : Handler() {
-      override fun publish(record: LogRecord?) {
-        if (record?.level == Level.SEVERE) records.add(record)
-      }
-
-      override fun flush() {}
-
-      override fun close() {}
-    }
-  val logger = Logger.getLogger(LlmAgent::class.java.name)
-  logger.addHandler(handler)
-  val result =
-    try {
-      block()
-    } finally {
-      logger.removeHandler(handler)
-    }
-  return result to synchronized(records) { records.toList() }
 }
