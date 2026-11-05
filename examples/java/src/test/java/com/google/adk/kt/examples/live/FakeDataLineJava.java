@@ -21,6 +21,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.Control;
 import javax.sound.sampled.Line;
@@ -35,17 +36,33 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
 
   final List<String> calls = new CopyOnWriteArrayList<>();
 
+  /** The length each read asked for. */
+  final List<Integer> readLengths = new CopyOnWriteArrayList<>();
+
+  /** Results the microphone's reads return in turn; a read waits when none is left. */
+  final LinkedBlockingQueue<Integer> reads = new LinkedBlockingQueue<>();
+
+  /** What the read that {@code stop} wakes returns; Java Sound returns the bytes read so far. */
+  volatile int stopRead;
+
   /** Counts down when the code under test closes the line. */
   final CountDownLatch closed = new CountDownLatch(1);
+
+  /** Counts down on the first read. */
+  final CountDownLatch readEntered = new CountDownLatch(1);
 
   /** When set, {@code open} waits on it, standing in for a native open that hangs. */
   volatile CountDownLatch openGate;
 
   volatile LineUnavailableException openFailure;
+  volatile RuntimeException readFailure;
   volatile int openedBufferSize;
   volatile AudioFormat openedFormat;
   volatile boolean startThrows;
+  volatile boolean stopThrows;
   private volatile boolean open = true;
+
+  private int readCount;
 
   @Override
   public void open(AudioFormat format, int bufferSize) throws LineUnavailableException {
@@ -78,7 +95,35 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
 
   @Override
   public int read(byte[] b, int off, int len) {
-    throw new UnsupportedOperationException("a speaker line");
+    readEntered.countDown();
+    readLengths.add(len);
+    if (readFailure != null) {
+      throw readFailure;
+    }
+    int bytesRead = takeRead();
+    if (bytesRead > 0) {
+      b[off] = (byte) ++readCount;
+    }
+    return bytesRead;
+  }
+
+  /** Waits for the next read result, ignoring interrupts as Java Sound's read does. */
+  private int takeRead() {
+    boolean interrupted = false;
+    try {
+      while (true) {
+        try {
+          return reads.take();
+        } catch (InterruptedException e) {
+          // Only stop(), which queues a 0, unblocks the read; the interrupt is restored after.
+          interrupted = true;
+        }
+      }
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
+    }
   }
 
   @Override
@@ -89,6 +134,11 @@ final class FakeDataLineJava implements SourceDataLine, TargetDataLine {
   @Override
   public void stop() {
     calls.add("stop");
+    // A stopped microphone's blocked read returns, as Java Sound's does.
+    reads.add(stopRead);
+    if (stopThrows) {
+      throw new IllegalStateException("stop failed");
+    }
   }
 
   @Override
