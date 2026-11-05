@@ -25,6 +25,7 @@ import com.google.adk.kt.webserver.dev.routes.graphRoutes
 import com.google.adk.kt.webserver.dev.routes.telemetryConfigRoutes
 import com.google.adk.kt.webserver.dev.routes.unimplementedDevRoutes
 import com.google.adk.kt.webserver.resolveCamelCase
+import com.google.adk.kt.webserver.routes.isWebUiEnabled
 import io.ktor.server.application.Application
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
@@ -33,12 +34,13 @@ import io.ktor.server.routing.routing
  * The local development server: [AdkApiServer] plus the endpoints the Dev UI drives, and the UI.
  *
  * These endpoints read agent state and run debugging code, so this variant belongs on a development
- * machine; deploy [AdkApiServer] instead.
+ * machine; deploy [AdkApiServer] instead. Non-loopback peers and proxied or tunneled requests are
+ * rejected even when [AdkServerConfig.host] is widened, unless remote access is explicitly enabled.
  */
 class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
   override fun configure(application: Application) {
     // Replaces rather than extends the base: the dev module defaults the UI the other way.
-    application.adkDevModule(config)
+    application.adkDevModule(config, bindHost = config.host)
   }
 }
 
@@ -47,10 +49,23 @@ class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
  *
  * Installs [adkApiModule] itself, so do not install both. Unlike [adkApiModule] this mounts the
  * Development UI, unless [AdkServerConfig.webUiEnabled] or the `adk.web.ui.enabled` property turns
- * it off.
+ * it off, and rejects non-loopback peers by default regardless of [AdkServerConfig.host].
  */
 fun Application.adkDevModule(config: AdkServerConfig) {
-  adkApiModule(config.copy(webUiEnabled = config.webUiEnabled ?: true))
+  adkDevModule(config, bindHost = null)
+}
+
+internal fun Application.adkDevModule(config: AdkServerConfig, bindHost: String?) {
+  val devConfig =
+    config.copy(
+      webUiEnabled = config.webUiEnabled ?: true,
+      allowRemoteRequests = config.allowRemoteRequests ?: false,
+    )
+  adkApiModule(
+    devConfig,
+    webUiEnabled = isWebUiEnabled(default = devConfig.webUiEnabled ?: true),
+    bindHost = bindHost,
+  )
 
   val camelCase = resolveCamelCase(config)
 

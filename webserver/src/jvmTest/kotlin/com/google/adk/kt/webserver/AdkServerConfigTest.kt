@@ -209,6 +209,8 @@ class AdkServerConfigTest {
     assertThat(config.plugins).isEmpty()
     assertThat(config.webUiEnabled).isNull()
     assertThat(config.includeAppInfo).isNull()
+    assertThat(config.allowOrigins).isEmpty()
+    assertThat(config.allowRemoteRequests).isNull()
   }
 
   @Test
@@ -229,6 +231,8 @@ class AdkServerConfigTest {
         .captureMessageContent(true)
         .webUiEnabled(true)
         .includeAppInfo(true)
+        .allowOrigins(listOf("https://console.example.com"))
+        .allowRemoteRequests(true)
         .build()
 
     assertThat(config.agentLoader).isSameInstanceAs(loader)
@@ -240,6 +244,8 @@ class AdkServerConfigTest {
     assertThat(config.captureMessageContent).isTrue()
     assertThat(config.webUiEnabled).isTrue()
     assertThat(config.includeAppInfo).isTrue()
+    assertThat(config.allowOrigins).containsExactly("https://console.example.com")
+    assertThat(config.allowRemoteRequests).isTrue()
   }
 
   @Test
@@ -267,6 +273,8 @@ class AdkServerConfigTest {
         webUiEnabled = true,
         camelCaseEnforced = true,
         includeAppInfo = true,
+        allowOrigins = listOf("https://console.example.com"),
+        allowRemoteRequests = true,
       )
 
     assertThat(config.toBuilder().build()).isEqualTo(config.copy())
