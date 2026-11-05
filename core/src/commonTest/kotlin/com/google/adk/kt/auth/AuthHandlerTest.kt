@@ -18,6 +18,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.testing.signInReplyStateKey
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
@@ -161,16 +162,16 @@ class AuthHandlerTest {
   fun signInConfig_explicitCredentialKey_keepsIt() {
     val configs =
       listOf(
-        AuthConfig(AUTH_CODE, CONFIDENTIAL, credentialKey = "my_key"),
+        AuthConfig(AUTH_CODE, CONFIDENTIAL, credentialKey = CredentialKey("my_key")),
         AuthConfig(
           AUTH_CODE,
           CONFIDENTIAL.copy(authUri = "https://a/auth?s"),
-          credentialKey = "my_key",
+          credentialKey = CredentialKey("my_key"),
         ),
       )
 
     for (config in configs) {
-      assertEquals("my_key", config.signInConfig().credentialKey)
+      assertEquals("my_key", config.signInConfig().credentialKey.value)
     }
   }
 
@@ -289,8 +290,8 @@ class AuthHandlerTest {
     val temp = AuthCredential.OAuth2(accessToken = Secret("temp"))
     val state =
       mapOf(
-        config.credentialKey to AuthCredential.OAuth2(accessToken = Secret("plain")),
-        "temp:${config.credentialKey}" to temp,
+        config.credentialKey.value to AuthCredential.OAuth2(accessToken = Secret("plain")),
+        config.signInReplyStateKey to temp,
       )
 
     val response = config.storedCredential(state)
@@ -301,7 +302,7 @@ class AuthHandlerTest {
   @Test
   fun storedCredential_emptyTempValue_fallsBackToThePlainKey() {
     val config = AuthConfig(API_KEY)
-    val state = mapOf("temp:${config.credentialKey}" to "", config.credentialKey to "sk-plain")
+    val state = mapOf(config.signInReplyStateKey to "", config.credentialKey.value to "sk-plain")
 
     val response = config.storedCredential(state)
 
@@ -314,12 +315,12 @@ class AuthHandlerTest {
 
     for (scheme in listOf(AuthScheme.Http.basic(), AuthScheme.Http(scheme = "Basic"))) {
       val config = AuthConfig(scheme)
-      val tempKey = "temp:${config.credentialKey}"
+      val tempKey = config.signInReplyStateKey
 
       assertNull(config.storedCredential(mapOf(tempKey to "bare")))
       assertEquals(
         basic,
-        config.storedCredential(mapOf(tempKey to "bare", config.credentialKey to basic)),
+        config.storedCredential(mapOf(tempKey to "bare", config.credentialKey.value to basic)),
       )
     }
   }
@@ -335,7 +336,7 @@ class AuthHandlerTest {
 
     for (stored in malformed) {
       val state =
-        mapOf("temp:${config.credentialKey}" to stored, config.credentialKey to "sk-plain")
+        mapOf(config.signInReplyStateKey to stored, config.credentialKey.value to "sk-plain")
       assertEquals(AuthCredential.ApiKey(Secret("sk-plain")), config.storedCredential(state))
     }
   }
@@ -349,7 +350,7 @@ class AuthHandlerTest {
         "oauth2" to mapOf("clientId" to "other", "accessToken" to "tok"),
       )
 
-    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+    val response = config.storedCredential(mapOf(config.credentialKey.value to stored))
 
     assertEquals(
       AuthCredential.OAuth2(
@@ -367,7 +368,7 @@ class AuthHandlerTest {
     val config = AuthConfig(OIDC)
     val stored = AuthCredential.OAuth2(clientId = "app", accessToken = Secret("tok"))
 
-    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+    val response = config.storedCredential(mapOf(config.credentialKey.value to stored))
 
     assertEquals(stored, response)
   }
@@ -378,8 +379,10 @@ class AuthHandlerTest {
     val states =
       listOf(
         emptyMap(),
-        mapOf("temp:${config.credentialKey}" to 42, config.credentialKey to ""),
-        mapOf(config.credentialKey to mapOf("authType" to "oauth2", "oauth2" to "not an object")),
+        mapOf(config.signInReplyStateKey to 42, config.credentialKey.value to ""),
+        mapOf(
+          config.credentialKey.value to mapOf("authType" to "oauth2", "oauth2" to "not an object")
+        ),
         mapOf("other" to "tok"),
       )
 
@@ -392,7 +395,7 @@ class AuthHandlerTest {
     val stored =
       AuthCredential.OAuth2(clientId = "other", clientSecret = Secret("x"), authCode = Secret("c"))
 
-    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+    val response = config.storedCredential(mapOf(config.credentialKey.value to stored))
 
     assertEquals(stored.copy(clientId = "cid", clientSecret = null), response)
   }
@@ -403,7 +406,7 @@ class AuthHandlerTest {
     val stored =
       AuthCredential.OAuth2(clientId = "other", clientSecret = Secret("x"), authCode = Secret("c"))
 
-    val response = config.storedCredential(mapOf(config.credentialKey to stored))
+    val response = config.storedCredential(mapOf(config.credentialKey.value to stored))
 
     assertEquals(stored.copy(clientId = "cid", clientSecret = Secret("sec")), response)
   }
@@ -425,7 +428,7 @@ class AuthHandlerTest {
 
     for ((scheme, expected) in cases) {
       val config = AuthConfig(scheme)
-      val state = mapOf("temp:${config.credentialKey}" to "v")
+      val state = mapOf(config.signInReplyStateKey to "v")
       assertEquals(expected, config.storedCredential(state))
     }
   }

@@ -35,7 +35,6 @@ import kotlin.jvm.JvmStatic
  * @property credentialKey The key under which ADK stores and looks up [exchangedAuthCredential];
  *   configs with the same key share it. Defaults to a key derived from [authScheme] and
  *   [rawAuthCredential], computed once, so `copy` keeps it. `toString` redacts it.
- * @throws IllegalArgumentException if [credentialKey] is empty.
  */
 @OptIn(ExperimentalAuthApi::class)
 data class AuthConfig
@@ -45,17 +44,8 @@ constructor(
   @ExperimentalAuthApi val rawAuthCredential: AuthCredential? = null,
   @ExperimentalAuthApi val exchangedAuthCredential: AuthCredential? = null,
   @ExperimentalAuthApi
-  val credentialKey: String = deriveCredentialKey(authScheme, rawAuthCredential),
+  val credentialKey: CredentialKey = deriveCredentialKey(authScheme, rawAuthCredential),
 ) {
-  init {
-    require(credentialKey.isNotEmpty()) { "AuthConfig requires a non-empty credentialKey." }
-  }
-
-  // A derived key is a digest of the raw credential, so it can reveal a weak secret.
-  override fun toString(): String =
-    "AuthConfig(authScheme=$authScheme, rawAuthCredential=$rawAuthCredential, " +
-      "exchangedAuthCredential=$exchangedAuthCredential, credentialKey=${credentialKey.redacted()})"
-
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
    * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
@@ -81,7 +71,7 @@ constructor(
     private var authScheme: AuthScheme? = null
     private var rawAuthCredential: AuthCredential? = null
     private var exchangedAuthCredential: AuthCredential? = null
-    private var credentialKey: String? = null
+    private var credentialKey: CredentialKey? = null
 
     fun authScheme(authScheme: AuthScheme): Builder = apply { this.authScheme = authScheme }
 
@@ -93,7 +83,7 @@ constructor(
       this.exchangedAuthCredential = exchangedAuthCredential
     }
 
-    fun credentialKey(credentialKey: String?): Builder = apply {
+    fun credentialKey(credentialKey: CredentialKey?): Builder = apply {
       this.credentialKey = credentialKey
     }
 

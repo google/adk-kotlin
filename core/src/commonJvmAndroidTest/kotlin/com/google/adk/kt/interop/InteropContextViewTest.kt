@@ -35,6 +35,7 @@ import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyMemoryService
+import com.google.adk.kt.testing.signInReplyStateKey
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userFunctionResponse
@@ -816,7 +817,7 @@ class InteropContextViewTest {
 
     // Act
     val beforeReply = view.getAuthResponse(authConfig).await()
-    context.updateState("temp:${authConfig.credentialKey}", "sk-reply")
+    context.updateState(authConfig.signInReplyStateKey, "sk-reply")
     val afterReply = view.getAuthResponse(authConfig).await()
 
     // Assert

@@ -17,13 +17,13 @@
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
-import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.testing.DummyArtifactService
+import com.google.adk.kt.testing.signInReplyStateKey
+import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.types.Part
@@ -140,7 +140,7 @@ class ToolContextTest {
   @Test
   fun getAuthResponse_replyInPendingState_returnsIt() = runBlocking {
     val context = testToolContext()
-    context.updateState("temp:${API_KEY_CONFIG.credentialKey}", "sk-reply")
+    context.updateState(API_KEY_CONFIG.signInReplyStateKey, "sk-reply")
 
     assertEquals(AuthCredential.ApiKey(Secret("sk-reply")), context.getAuthResponse(API_KEY_CONFIG))
   }
@@ -200,10 +200,6 @@ class ToolContextTest {
   }
 
   private companion object {
-    val API_KEY_CONFIG =
-      AuthConfig(
-        AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER),
-        AuthCredential.ApiKey(Secret("sk-123")),
-      )
+    val API_KEY_CONFIG = testApiKeyConfig(rawKey = "sk-123")
   }
 }

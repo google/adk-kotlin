@@ -45,8 +45,8 @@ class Secret(@Transient private val value: String) {
   override fun toString(): String = REDACTED
 }
 
-/** The placeholder that [Secret] and [redacted] show in place of a value. */
-private const val REDACTED = "<redacted>"
+/** The placeholder that [Secret], [CredentialKey] and [redacted] show in place of a value. */
+internal const val REDACTED = "<redacted>"
 
 /** Returns [REDACTED] if this value is set, or null if not: whether it is set, never what it is. */
 internal fun String?.redacted(): String? = if (this == null) null else REDACTED

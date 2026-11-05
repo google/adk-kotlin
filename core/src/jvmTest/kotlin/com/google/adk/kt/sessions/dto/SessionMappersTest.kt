@@ -17,10 +17,7 @@
 package com.google.adk.kt.sessions.dto
 
 import com.google.adk.kt.agents.TypedData
-import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.auth.AuthConfig
-import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
@@ -29,6 +26,7 @@ import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.testHttpBearerConfig
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Citation
@@ -447,7 +445,7 @@ class SessionMappersTest {
     assertThat(keys).containsExactly("text", "finished")
   }
 
-  @OptIn(FrameworkInternalApi::class, ExperimentalAuthApi::class)
+  @OptIn(FrameworkInternalApi::class)
   @Test
   fun event_roundTripThroughRawEvent_restoresWholeEvent() {
     val original =
@@ -517,10 +515,7 @@ class SessionMappersTest {
                   endTimestamp = 1_700_000_000_200L,
                   compactedContent = modelMessage("summary"),
                 ),
-              requestedAuthConfigs =
-                mutableMapOf(
-                  "call-2" to AuthConfig(AuthScheme.Http.bearer(), credentialKey = "key")
-                ),
+              requestedAuthConfigs = mutableMapOf("call-2" to testHttpBearerConfig()),
             )
             .apply {
               stateDelta["k"] = "v"

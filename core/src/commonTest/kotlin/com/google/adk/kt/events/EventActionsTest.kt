@@ -22,6 +22,7 @@ import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthScheme
+import com.google.adk.kt.auth.CredentialKey
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.modelMessage
@@ -136,7 +137,7 @@ class EventActionsTest {
 
   @Test
   fun mergeWith_requestedAuthConfigs_mergesBothWithOthersWinning() {
-    val other = AUTH_CONFIG.copy(credentialKey = "other")
+    val other = AUTH_CONFIG.copy(credentialKey = CredentialKey("other"))
     val ea1 =
       EventActions(requestedAuthConfigs = mutableMapOf("a" to AUTH_CONFIG, "b" to AUTH_CONFIG))
     val ea2 = EventActions(requestedAuthConfigs = mutableMapOf("b" to other))
@@ -309,6 +310,6 @@ class EventActionsTest {
   }
 
   private companion object {
-    val AUTH_CONFIG = AuthConfig(AuthScheme.Http.bearer(), credentialKey = "k")
+    val AUTH_CONFIG = AuthConfig(AuthScheme.Http.bearer(), credentialKey = CredentialKey("k"))
   }
 }

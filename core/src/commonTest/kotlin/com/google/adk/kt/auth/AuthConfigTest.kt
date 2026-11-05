@@ -46,21 +46,9 @@ class AuthConfigTest {
   @Test
   fun builder_withoutCredentialKey_derivesKey() {
     assertEquals(
-      deriveCredentialKey(SCHEME, AUTH_CONFIG.rawAuthCredential),
-      AUTH_CONFIG.toBuilder().credentialKey(null).build().credentialKey,
+      deriveCredentialKey(SCHEME, AUTH_CONFIG.rawAuthCredential).value,
+      AUTH_CONFIG.toBuilder().credentialKey(null).build().credentialKey.value,
     )
-  }
-
-  @Test
-  fun constructor_emptyCredentialKey_throws() {
-    assertFailsWith<IllegalArgumentException> {
-      AuthConfig(authScheme = SCHEME, credentialKey = "")
-    }
-  }
-
-  @Test
-  fun constructor_blankCredentialKey_keepsKey() {
-    assertEquals(" ", AuthConfig(authScheme = SCHEME, credentialKey = " ").credentialKey)
   }
 
   @Test
@@ -68,8 +56,8 @@ class AuthConfigTest {
     val raw = AUTH_CONFIG.rawAuthCredential
 
     assertEquals(
-      deriveCredentialKey(SCHEME, raw),
-      AuthConfig(authScheme = SCHEME, rawAuthCredential = raw).credentialKey,
+      deriveCredentialKey(SCHEME, raw).value,
+      AuthConfig(authScheme = SCHEME, rawAuthCredential = raw).credentialKey.value,
     )
   }
 
@@ -78,8 +66,8 @@ class AuthConfigTest {
     val config = AuthConfig(authScheme = SCHEME)
 
     assertEquals(
-      config.credentialKey,
-      config.copy(rawAuthCredential = AUTH_CONFIG.rawAuthCredential).credentialKey,
+      config.credentialKey.value,
+      config.copy(rawAuthCredential = AUTH_CONFIG.rawAuthCredential).credentialKey.value,
     )
   }
 
@@ -98,7 +86,7 @@ class AuthConfigTest {
   }
 
   private companion object {
-    const val CREDENTIAL_KEY = "adk_openIdConnect_key"
+    val CREDENTIAL_KEY = CredentialKey("adk_openIdConnect_key")
     const val CLIENT_SECRET = "sentinel-client-secret"
     const val ACCESS_TOKEN = "sentinel-access-token"
 

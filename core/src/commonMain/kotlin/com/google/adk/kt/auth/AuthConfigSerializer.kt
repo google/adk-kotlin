@@ -76,16 +76,16 @@ internal object AuthConfigSerializer : KSerializer<AuthConfig> {
       config.authScheme,
       config.rawAuthCredential,
       config.exchangedAuthCredential,
-      config.credentialKey,
+      config.credentialKey.value,
     )
 
-    // AuthConfig rejects an empty key, which then reads as malformed.
+    // CredentialKey rejects an empty key, which then reads as malformed.
     fun toConfig(): AuthConfig =
       AuthConfig(
         authScheme,
         rawAuthCredential,
         exchangedAuthCredential,
-        credentialKey ?: deriveCredentialKey(authScheme, rawAuthCredential),
+        credentialKey?.let(::CredentialKey) ?: deriveCredentialKey(authScheme, rawAuthCredential),
       )
   }
 }

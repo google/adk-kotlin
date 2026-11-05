@@ -23,7 +23,6 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
-import com.google.adk.kt.sessions.State
 
 private object AuthHandler
 
@@ -51,7 +50,7 @@ internal fun AuthConfig.signInConfig(): AuthConfig {
  * credential, its client ID and secret replace the stored ones, which came back through the app.
  */
 internal fun AuthConfig.storedCredential(state: Map<String, Any>): AuthCredential? =
-  listOf(State.TEMP_PREFIX + credentialKey, credentialKey)
+  credentialKey.stateKeys
     .firstNotNullOfOrNull { key -> credentialFrom(state[key]) }
     ?.withConfiguredClient(rawAuthCredential)
 

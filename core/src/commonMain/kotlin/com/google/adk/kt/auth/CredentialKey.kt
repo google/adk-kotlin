@@ -22,12 +22,41 @@ import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.crypto.sha256Hex
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.State
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+
+/**
+ * The key under which ADK stores and looks up the credential an [AuthConfig] describes; configs
+ * with the same key share it. [toString] redacts it, because a derived key is a digest of the raw
+ * credential: build storage keys from [value].
+ *
+ * @property value The key as session state and credential stores use it.
+ * @throws IllegalArgumentException if [value] is empty.
+ */
+@ExperimentalAuthApi
+class CredentialKey(val value: String) {
+  init {
+    require(value.isNotEmpty()) { "CredentialKey requires a non-empty value." }
+  }
+
+  /**
+   * The state keys a stored credential is read from: the app's reply, which lasts for one
+   * invocation, then [value].
+   */
+  internal val stateKeys: List<String>
+    get() = listOf(State.TEMP_PREFIX + value, value)
+
+  override fun equals(other: Any?): Boolean = other is CredentialKey && other.value == value
+
+  override fun hashCode(): Int = value.hashCode()
+
+  override fun toString(): String = REDACTED
+}
 
 /**
  * Returns a credential key in the form ADK Python's `AuthConfig` derives: the type and digest of
@@ -37,13 +66,13 @@ import kotlinx.serialization.json.jsonPrimitive
 internal fun deriveCredentialKey(
   authScheme: AuthScheme,
   rawAuthCredential: AuthCredential?,
-): String {
+): CredentialKey {
   val scheme = adkJson.encodeToJsonElement(AuthSchemeSerializer, authScheme.forDigest())
   val credential = rawAuthCredential?.let {
     val json = adkJson.encodeToJsonElement(AuthCredentialSerializer, it.forDigest()).jsonObject
     "${json.getValue("authType").jsonPrimitive.content}_${stableDigest(json)}"
   }
-  return "adk_${authScheme.type}_${stableDigest(scheme)}_${credential.orEmpty()}"
+  return CredentialKey("adk_${authScheme.type}_${stableDigest(scheme)}_${credential.orEmpty()}")
 }
 
 /** ADK Python reads `bearerFormat` only for the `bearer` scheme, and leaves it out otherwise. */

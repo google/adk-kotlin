@@ -19,6 +19,8 @@ package com.google.adk.kt.auth
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.auth.AuthCredential.OAuth2.TokenEndpointAuthMethod
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import org.junit.Test
@@ -26,6 +28,16 @@ import org.junit.Test
 /** Expected digests are what ADK Python's `_stable_model_digest` returns for ADK Kotlin's JSON. */
 @OptIn(ExperimentalAuthApi::class)
 class CredentialKeyTest {
+
+  @Test
+  fun constructor_blankValue_keepsIt() {
+    assertEquals(" ", CredentialKey(" ").value)
+  }
+
+  @Test
+  fun constructor_emptyValue_throws() {
+    assertFailsWith<IllegalArgumentException> { CredentialKey("") }
+  }
 
   @Test
   fun deriveCredentialKey_eachRawCredential_appendsItsTypeAndDigest() {
@@ -77,7 +89,7 @@ class CredentialKeyTest {
     for ((credential, suffix) in expected) {
       assertEquals(
         "adk_http_3e922d755264ee81_$suffix",
-        deriveCredentialKey(BEARER, credential),
+        deriveCredentialKey(BEARER, credential).value,
         credential.toString(),
       )
     }
@@ -112,7 +124,11 @@ class CredentialKeyTest {
       )
 
     for ((scheme, key) in expected) {
-      assertEquals(key, deriveCredentialKey(scheme, rawAuthCredential = null), scheme.toString())
+      assertEquals(
+        key,
+        deriveCredentialKey(scheme, rawAuthCredential = null).value,
+        scheme.toString(),
+      )
     }
   }
 
@@ -143,7 +159,11 @@ class CredentialKeyTest {
       )
 
     for ((scheme, key) in expected) {
-      assertEquals(key, deriveCredentialKey(scheme, rawAuthCredential = null), scheme.toString())
+      assertEquals(
+        key,
+        deriveCredentialKey(scheme, rawAuthCredential = null).value,
+        scheme.toString(),
+      )
     }
   }
 
@@ -164,7 +184,7 @@ class CredentialKeyTest {
 
     assertEquals(
       "adk_http_3e922d755264ee81_oauth2_0833ddacfe0bd302",
-      deriveCredentialKey(BEARER, signedIn),
+      deriveCredentialKey(BEARER, signedIn).value,
     )
   }
 
@@ -172,8 +192,29 @@ class CredentialKeyTest {
   fun deriveCredentialKey_openIdConnectSchemeAndCredential_digestsBoth() {
     assertEquals(
       "adk_openIdConnect_91fdadde054c2ad3_openIdConnect_d62d4f4b945e72e7",
-      deriveCredentialKey(OPEN_ID_CONNECT_SCHEME, OPEN_ID_CONNECT),
+      deriveCredentialKey(OPEN_ID_CONNECT_SCHEME, OPEN_ID_CONNECT).value,
     )
+  }
+
+  @Test
+  fun equals_differentValue_isNotEqual() {
+    assertNotEquals(CredentialKey("k"), CredentialKey("other"))
+  }
+
+  @Test
+  fun equals_sameValue_isEqual() {
+    assertEquals(CredentialKey("k"), CredentialKey("k"))
+    assertEquals(CredentialKey("k").hashCode(), CredentialKey("k").hashCode())
+  }
+
+  @Test
+  fun stateKeys_called_listTheTempKeyThenTheValue() {
+    assertEquals(listOf("temp:k", "k"), CredentialKey("k").stateKeys)
+  }
+
+  @Test
+  fun toString_anyValue_printsPlaceholder() {
+    assertEquals("<redacted>", CredentialKey("k").toString())
   }
 
   private companion object {

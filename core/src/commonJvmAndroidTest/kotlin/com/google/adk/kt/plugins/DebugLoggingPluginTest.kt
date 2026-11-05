@@ -17,11 +17,6 @@
 package com.google.adk.kt.plugins
 
 import com.google.adk.kt.agents.toCallbackContext
-import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.auth.AuthConfig
-import com.google.adk.kt.auth.AuthCredential
-import com.google.adk.kt.auth.AuthScheme
-import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -30,6 +25,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -151,17 +147,11 @@ class DebugLoggingPluginTest {
     assertContains(text, "temperature")
   }
 
-  @OptIn(ExperimentalAuthApi::class)
   @Test
   fun capturesSignInRequestCountWithoutTheConfig() = runBlocking {
     val file = tempFile()
     val plugin = newPlugin(file)
-    val config =
-      AuthConfig(
-        AuthScheme.Http.bearer(),
-        rawAuthCredential = AuthCredential.ApiKey(Secret("sentinel-api-key")),
-        credentialKey = "key",
-      )
+    val config = testApiKeyConfig(rawKey = "sentinel-api-key")
     val event =
       Event(
         author = "test_agent",

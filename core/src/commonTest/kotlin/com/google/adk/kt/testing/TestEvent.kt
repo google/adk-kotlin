@@ -15,9 +15,6 @@
  */
 package com.google.adk.kt.testing
 
-import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.auth.AuthConfig
-import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
@@ -121,17 +118,12 @@ fun eventWithHitlRequest(invocationId: String, timestamp: Long, callId: String):
   )
 
 /** A function response [Event] for [callId] whose tool asks the app for a credential. */
-@OptIn(ExperimentalAuthApi::class)
 fun eventWithSignInRequest(invocationId: String, timestamp: Long, callId: String): Event =
   Event(
     author = Role.USER,
     invocationId = invocationId,
     content = userFunctionResponse(name = "tool", id = callId),
-    actions =
-      EventActions(
-        requestedAuthConfigs =
-          mutableMapOf(callId to AuthConfig(AuthScheme.Http.bearer(), credentialKey = "key"))
-      ),
+    actions = EventActions(requestedAuthConfigs = mutableMapOf(callId to testHttpBearerConfig())),
     timestamp = timestamp,
   )
 

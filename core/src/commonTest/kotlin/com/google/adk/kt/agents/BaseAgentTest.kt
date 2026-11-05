@@ -20,8 +20,6 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
-import com.google.adk.kt.auth.AuthConfig
-import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -30,6 +28,7 @@ import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.testHttpBearerConfig
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.types.Content
 import kotlin.test.Test
@@ -180,7 +179,7 @@ class BaseAgentTest {
   @OptIn(ExperimentalAuthApi::class)
   @Test
   fun runAsync_afterAgentCallbackRequestsCredential_emitsAnEventWithTheRequest() = runBlocking {
-    val config = AuthConfig(AuthScheme.Http.bearer(), credentialKey = "key")
+    val config = testHttpBearerConfig()
     val agent =
       LiveTestAgent(
         afterAgentCallbacks =

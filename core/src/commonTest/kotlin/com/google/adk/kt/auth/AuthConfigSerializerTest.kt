@@ -55,7 +55,7 @@ class AuthConfigSerializerTest {
           "credentialKey": "my-key"}"""
       )
 
-    assertEquals("my-key", config.credentialKey)
+    assertEquals("my-key", config.credentialKey.value)
   }
 
   @Test
@@ -115,7 +115,7 @@ class AuthConfigSerializerTest {
     inputs.forEachIndexed { i, input ->
       assertEquals(
         "adk_http_3e922d755264ee81_apiKey_56c19575f72717f8",
-        decode(input).credentialKey,
+        decode(input).credentialKey.value,
         "input #$i",
       )
     }
@@ -132,7 +132,7 @@ class AuthConfigSerializerTest {
 
     inputs.forEachIndexed { i, input ->
       assertEquals(
-        AuthConfig(AuthScheme.Http.bearer(), credentialKey = "k"),
+        AuthConfig(AuthScheme.Http.bearer(), credentialKey = CredentialKey("k")),
         decode(input),
         "input #$i",
       )
@@ -148,7 +148,7 @@ class AuthConfigSerializerTest {
   fun encode_withoutCredentials_writesSchemeAndKeyOnly() {
     assertEquals(
       json("""{"authScheme": {"type": "http", "scheme": "bearer"}, "credentialKey": "k"}"""),
-      encode(AuthConfig(AuthScheme.Http.bearer(), credentialKey = "k")),
+      encode(AuthConfig(AuthScheme.Http.bearer(), credentialKey = CredentialKey("k"))),
     )
   }
 
@@ -179,7 +179,7 @@ class AuthConfigSerializerTest {
             state = "s",
             redirectUri = "https://app/cb",
           ),
-        credentialKey = KEY,
+        credentialKey = CredentialKey(KEY),
       )
 
     const val SCHEME_JSON =
