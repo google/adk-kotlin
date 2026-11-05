@@ -26,18 +26,41 @@ import com.google.adk.kt.auth.CredentialKey
 import com.google.adk.kt.auth.Secret
 
 /**
- * Returns a config for an API key sent in the `X-Key` header, with [rawKey] as the configured key
- * and a derived credential key.
+ * Returns a config for an API key sent in the `X-Key` header, with [rawKey] as the configured key,
+ * if any, and [credentialKey] as the credential key, else a derived one.
  */
-fun testApiKeyConfig(rawKey: String): AuthConfig =
-  AuthConfig(
-    AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER),
-    AuthCredential.ApiKey(Secret(rawKey)),
-  )
+fun testApiKeyConfig(rawKey: String? = null, credentialKey: String? = null): AuthConfig {
+  val scheme = AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER)
+  val raw = rawKey?.let { AuthCredential.ApiKey(Secret(it)) }
+  return if (credentialKey == null) {
+    AuthConfig(scheme, raw)
+  } else {
+    AuthConfig(scheme, raw, credentialKey = CredentialKey(credentialKey))
+  }
+}
 
 /** Returns a config for an HTTP bearer token, with `key` as the credential key. */
 fun testHttpBearerConfig(): AuthConfig =
   AuthConfig(AuthScheme.Http.bearer(), credentialKey = CredentialKey("key"))
+
+/**
+ * Returns a config for OpenID Connect sign-in with the client `cid`, its secret `sec`, and the
+ * redirect URI `https://app/cb`.
+ */
+fun testOpenIdConnectConfig(): AuthConfig =
+  AuthConfig(
+    AuthScheme.OpenIdConnect(
+      authorizationEndpoint = "https://a/auth",
+      tokenEndpoint = "https://a/token",
+      scopes = listOf("openid"),
+    ),
+    AuthCredential.OAuth2(
+      variant = AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT,
+      clientId = "cid",
+      clientSecret = Secret("sec"),
+      redirectUri = "https://app/cb",
+    ),
+  )
 
 /**
  * The state key under which the app's sign-in reply for this config lasts for one invocation,

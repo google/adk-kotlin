@@ -19,12 +19,29 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.decodeFromPlainOrNull
+import com.google.adk.kt.sessions.State
 
 private object AuthHandler
 
 private val logger = LoggerFactory.getLogger(AuthHandler::class)
+
+/** What [storeSignInReply] did with an app's sign-in reply. */
+internal enum class SignInReplyResult {
+  /** The reply's credential is stored. */
+  STORED,
+
+  /** The reply is malformed or holds no credential, so nothing is stored. */
+  NO_CREDENTIAL,
+
+  /**
+   * The reply holds an OAuth2 credential without an access token for a scheme that signs in through
+   * an authorization URL, so nothing is stored: ADK can't exchange an authorization code yet.
+   */
+  NEEDS_CODE_EXCHANGE,
+}
 
 /**
  * Returns the config that this config's sign-in request carries: for OAuth2 and OpenID Connect, its
@@ -40,6 +57,25 @@ internal fun AuthConfig.signInConfig(): AuthConfig {
   if (!authScheme.usesAuthorizationUrl) return withoutConfiguredSecrets()
   val credential = existingAuthorizationCredential() ?: newAuthorizationCredential()
   return copy(exchangedAuthCredential = credential).withoutConfiguredSecrets()
+}
+
+/**
+ * Stores the credential in [reply], the app's answer to this config's sign-in request, in [state]
+ * under this config's sign-in reply key, where tools read it until the invocation ends. The reply
+ * is an auth config, whose exchanged credential counts, or a credential. Its missing OAuth2 client
+ * ID, redirect URI, code verifier, code challenge method and token endpoint auth method come from
+ * this config's exchanged or raw credential; its client ID always comes from an OAuth2 raw
+ * credential, and no client secret is stored.
+ */
+internal fun AuthConfig.storeSignInReply(reply: Any?, state: State): SignInReplyResult {
+  val answer = signInReply(reply) ?: return SignInReplyResult.NO_CREDENTIAL
+  val credential =
+    answer
+      .withMissingFieldsFrom(exchangedAuthCredential ?: rawAuthCredential)
+      .withConfiguredClient(rawAuthCredential)
+  if (needsCodeExchange(credential)) return SignInReplyResult.NEEDS_CODE_EXCHANGE
+  state[credentialKey.signInReplyStateKey] = credential.withoutClientSecret()
+  return SignInReplyResult.STORED
 }
 
 /**
@@ -81,6 +117,26 @@ private fun AuthConfig.newAuthorizationCredential(): AuthCredential.OAuth2 {
   return raw.withNewAuthUri(authScheme)
 }
 
+/**
+ * Returns the credential in [reply]: an auth config's exchanged credential, or a credential; null
+ * if it holds none.
+ */
+private fun signInReply(reply: Any?): AuthCredential? {
+  val replyConfig = decodeFromPlainOrNull(AuthConfigSerializer, reply)
+  if (replyConfig != null) return replyConfig.exchangedAuthCredential
+  return decodeFromPlainOrNull(AuthCredentialSerializer, reply)
+}
+
+/**
+ * Whether [credential] still needs a token exchange, which ADK can't do yet: an OAuth2 credential
+ * without an access token, for a scheme that signs in through an authorization URL.
+ */
+@OptIn(SecretAccess::class)
+private fun AuthConfig.needsCodeExchange(credential: AuthCredential): Boolean =
+  authScheme.usesAuthorizationUrl &&
+    credential is AuthCredential.OAuth2 &&
+    credential.accessToken?.reveal().isNullOrEmpty()
+
 /** Returns [value] as a credential for this config, or null if there is none or it is malformed. */
 private fun AuthConfig.credentialFrom(value: Any?): AuthCredential? {
   if (value is AuthCredential) return value
@@ -115,6 +171,21 @@ private fun AuthConfig.credentialFromString(value: String): AuthCredential? =
     is AuthScheme.OpenIdConnect,
     is AuthScheme.OpenIdConnectUrl -> AuthCredential.OAuth2(accessToken = Secret(value))
   }
+
+/**
+ * Returns this credential with its missing client ID, redirect URI, code verifier, code challenge
+ * method and token endpoint auth method taken from [source] when both are OAuth2.
+ */
+private fun AuthCredential.withMissingFieldsFrom(source: AuthCredential?): AuthCredential {
+  if (this !is AuthCredential.OAuth2 || source !is AuthCredential.OAuth2) return this
+  return copy(
+    clientId = clientId ?: source.clientId,
+    redirectUri = redirectUri ?: source.redirectUri,
+    codeVerifier = codeVerifier ?: source.codeVerifier,
+    codeChallengeMethod = codeChallengeMethod ?: source.codeChallengeMethod,
+    tokenEndpointAuthMethod = tokenEndpointAuthMethod ?: source.tokenEndpointAuthMethod,
+  )
+}
 
 /** Returns this config without the secrets the agent configured. */
 private fun AuthConfig.withoutConfiguredSecrets(): AuthConfig =
