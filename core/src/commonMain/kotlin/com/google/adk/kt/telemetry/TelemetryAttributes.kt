@@ -38,6 +38,9 @@ internal object TelemetryAttributes {
   const val GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = "gen_ai.usage.cache_read.input_tokens"
   const val GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = "gen_ai.usage.reasoning.output_tokens"
   const val GEN_AI_USAGE_REASONING_TOKENS_LIMIT = "gen_ai.usage.experimental.reasoning_tokens_limit"
+  const val GEN_AI_WORKFLOW_NAME = "gen_ai.workflow.name"
+  /** Set to true on a workflow running inside another workflow; the outermost one omits it. */
+  const val GEN_AI_WORKFLOW_NESTED = "gen_ai.workflow.nested"
 
   // General OpenTelemetry attributes
   const val ERROR_TYPE = "error.type"
@@ -46,11 +49,15 @@ internal object TelemetryAttributes {
   const val SYSTEM_GCP_VERTEX_AGENT = "gcp.vertex.agent"
   const val OPERATION_INVOKE_AGENT = "invoke_agent"
   const val OPERATION_EXECUTE_TOOL = "execute_tool"
+  const val OPERATION_INVOKE_WORKFLOW = "invoke_workflow"
+  const val OPERATION_INVOKE_NODE = "invoke_node"
 
   // Custom ADK attributes
   const val GCP_VERTEX_AGENT_INVOCATION_ID = "gcp.vertex.agent.invocation_id"
   const val GCP_VERTEX_AGENT_SESSION_ID = "gcp.vertex.agent.session_id"
   const val GCP_VERTEX_AGENT_EVENT_ID = "gcp.vertex.agent.event_id"
+  /** The ids of the events a workflow node emitted, on its node or workflow span. */
+  const val GCP_VERTEX_AGENT_ASSOCIATED_EVENT_IDS = "gcp.vertex.agent.associated_event_ids"
   const val GCP_VERTEX_AGENT_TOOL_CALL_ARGS = "gcp.vertex.agent.tool_call_args"
   const val GCP_VERTEX_AGENT_TOOL_RESPONSE = "gcp.vertex.agent.tool_response"
   const val GCP_VERTEX_AGENT_LLM_REQUEST = "gcp.vertex.agent.llm_request"

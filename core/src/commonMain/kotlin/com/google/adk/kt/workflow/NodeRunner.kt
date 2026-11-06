@@ -115,11 +115,30 @@ private constructor(
       resumeInputs
     }
 
+  // Python's runner opens the root workflow's span once per invocation, not once per attempt.
+  private val tracesWholeRun: Boolean = parent == null && node is Workflow
+  private val runSpanEventIds = mutableListOf<String>()
+  private val nestedInWorkflow: Boolean =
+    generateSequence(parent) { it.parent }.any { it.node is Workflow }
+
   /** Runs the node, retrying per its policy, and returns the context of the final attempt. */
   suspend fun run(nodeInput: Any?, validateInput: Boolean = true): Context {
     replayRoot()?.let {
       return it
     }
+    if (!tracesWholeRun) return runAttempts(nodeInput, validateInput)
+    return traceNode(
+      node,
+      invocationContext.session.key.id,
+      nestedInWorkflow,
+      runSpanEventIds,
+      failure = { it.requireNodeState().failure?.cause },
+    ) {
+      runAttempts(nodeInput, validateInput)
+    }
+  }
+
+  private suspend fun runAttempts(nodeInput: Any?, validateInput: Boolean): Context {
     val policy = node.config.retryConfig
     var attempt = 1
     while (true) {
@@ -206,18 +225,14 @@ private constructor(
    */
   private inner class Activation(val context: Context) {
     private val nodeState = context.requireNodeState()
+    private val spanEventIds = if (tracesWholeRun) runSpanEventIds else mutableListOf()
     var canRetry = true
       private set
 
     suspend fun run(nodeInput: Any?, validateInput: Boolean): Context {
       val cancelledNodePaths = context.invocationContext.frameworkData.cancelledNodePaths
       try {
-        try {
-          runAttempt(nodeInput, validateInput)
-        } catch (e: NodeInterruptedException) {
-          // The node asked for input; a request that fails to send fails this node.
-          dispatch((e.request ?: throw e).toEvent())
-        }
+        runAttempt(nodeInput, validateInput)
         flushPending()
       } catch (e: NodeInterruptedException) {
         // A dispatched child paused, or raiseOnWait aborted the run. Any interrupt ids are already
@@ -243,11 +258,36 @@ private constructor(
     }
 
     /**
+     * Runs one attempt in the node's span, or in the root workflow's span when that covers the
+     * whole run. The input request a node raises is sent inside the span too.
+     */
+    private suspend fun runAttempt(nodeInput: Any?, validateInput: Boolean) {
+      suspend fun attempt() {
+        try {
+          runWithinTimeout(nodeInput, validateInput)
+        } catch (e: NodeInterruptedException) {
+          // The node asked for input; a request that fails to send fails this node.
+          dispatch((e.request ?: throw e).toEvent())
+        }
+      }
+      if (tracesWholeRun) return attempt()
+      traceNode(
+        node,
+        invocationContext.session.key.id,
+        nestedInWorkflow,
+        spanEventIds,
+        failure = { nodeState.failure?.cause },
+      ) {
+        attempt()
+      }
+    }
+
+    /**
      * Runs one attempt, bounding it by the node's timeout when one is set. A timeout cancels the
      * attempt and surfaces as a [NodeTimeoutException], which is an ordinary failure the retry
      * policy can act on.
      */
-    private suspend fun runAttempt(nodeInput: Any?, validateInput: Boolean) {
+    private suspend fun runWithinTimeout(nodeInput: Any?, validateInput: Boolean) {
       val timeout = node.config.timeout
       if (timeout == null) {
         withActivationJob {
@@ -289,6 +329,7 @@ private constructor(
      * when a `useAsOutput` child holds this node's output.
      */
     private suspend fun dispatch(event: Event) {
+      spanEventIds += event.id
       val checked = withCheckedStateDelta(event)
       val outputKept = track(checked)
       val outgoing = if (outputKept) checked else withoutDroppedOutput(checked)
