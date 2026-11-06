@@ -1202,12 +1202,12 @@ class LongRunningToolIntegrationTest {
   }
 
   /**
-   * Recovery must not swallow a genuinely unmatched response: an orphaned response whose call is
-   * *not* long-running is left unrecovered, so `rearrangeEventsForLatestFunctionResponse` still
-   * throws.
+   * A compacted call event without `longRunningToolIds` populated (for example, a
+   * confirmation-gated call or a session event restored without `longRunningToolIds`) is still
+   * recovered when its response arrives after the compaction boundary.
    */
   @Test
-  fun rewrite_orphanedNonLongRunningResponse_stillThrows() {
+  fun rewrite_compactedNonLongRunningCall_isRecovered() {
     val regCall =
       eventWithFunctionCall(
         invocationId = "inv2",
@@ -1218,7 +1218,7 @@ class LongRunningToolIntegrationTest {
       )
     // Summarizes away the call event (its later response survives outside the range).
     val compaction = compactionEvent(startTs = 1L, endTs = 2L, timestamp = 3L)
-    val orphanedResponse =
+    val resumedResponse =
       eventWithFunctionResponse(
         invocationId = "inv2",
         timestamp = 4L,
@@ -1227,16 +1227,21 @@ class LongRunningToolIntegrationTest {
         response = mapOf("result" to "done"),
       )
 
-    val error =
-      assertFailsWith<IllegalStateException> {
-        HistoryRewriterProcessor()
-          .rewrite(
-            events = listOf(regCall, compaction, orphanedResponse),
-            agentName = "model",
-            currentBranch = null,
-          )
-      }
-    assertTrue(error.message?.contains("reg-1") == true, "unexpected message: ${error.message}")
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(
+          events = listOf(regCall, compaction, resumedResponse),
+          agentName = "model",
+          currentBranch = null,
+        )
+
+    assertEquals(3, contents.size)
+    assertEquals(Role.MODEL, contents[0].role)
+    assertEquals("summary", contents[0].parts.single().text?.trim())
+    assertEquals(Role.MODEL, contents[1].role)
+    assertEquals("reg-1", contents[1].parts.single().functionCall?.id)
+    assertEquals(Role.USER, contents[2].role)
+    assertEquals(mapOf("result" to "done"), contents[2].parts.single().functionResponse?.response)
   }
 
   /**
