@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.a2a.converters
 
+import com.google.adk.kt.a2a.agent.BaseRemoteA2AAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
@@ -78,7 +79,7 @@ private val AUTH_CONFIG_KEYS =
     "exchanged_auth_credential",
   )
 
-/** Interface for parsing A2A metadata without depending on a specific JSON library. */
+/** Interface for parsing A2A metadata into ADK types. */
 internal interface A2AMetadataParser {
   fun <T : Any> parse(metadata: Any?, clazz: KClass<T>): T?
 }
@@ -121,6 +122,20 @@ internal fun List<Event>.findUserFunctionCall(): Event? {
   return dropLast(1).findLast { it.isUserFunctionCall(functionId) }
 }
 
+/** Whether this event records a failed request: an error without a relayed response. */
+internal val Event.isFailedRequest: Boolean
+  get() = !errorMessage.isNullOrEmpty() && BaseRemoteA2AAgent.RESPONSE !in customMetadata.orEmpty()
+
+/**
+ * Returns the index of this agent's latest event in the session, skipping failed requests, whose
+ * turn the remote may lack. An event for a stream that ended mid-task keeps its task's context and
+ * still counts. Returns -1 if there is none.
+ */
+internal fun InvocationContext.lastResponseIndex(): Int =
+  session.events.indexOfLast {
+    it.author == agent.name && !(it.isFailedRequest && it.contextId.isEmpty())
+  }
+
 /** Returns the preprocessed events that should be sent to the agent. */
 internal fun InvocationContext.extractPreprocessedEvents(): List<Event> {
   val events = session.events
@@ -128,7 +143,7 @@ internal fun InvocationContext.extractPreprocessedEvents(): List<Event> {
     return emptyList()
   }
 
-  val lastResponseIndex = events.indexOfLast { it.author == agent.name }
+  val lastResponseIndex = lastResponseIndex()
   val contextIdValue = if (lastResponseIndex != -1) events[lastResponseIndex].contextId else ""
 
   val credentialCallIds = events.credentialCallIds()

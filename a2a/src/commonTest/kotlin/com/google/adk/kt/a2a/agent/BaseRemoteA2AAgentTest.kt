@@ -285,6 +285,170 @@ class BaseRemoteA2AAgentTest {
   }
 
   @Test
+  fun prepareOutboundEvent_textReplyToPausedTask_resumesIt() {
+    val agent = TestRemoteAgent("my-agent")
+    val context = contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"))
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals(listOf("Blue"), result.content?.parts?.map { it.text })
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyToAuthRequiredTask_resumesIt() {
+    val agent = TestRemoteAgent("my-agent")
+    val context = contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_AUTH_REQUIRED"))
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyToTaskPausedOverA2a03_resumesIt() {
+    val agent = TestRemoteAgent("my-agent")
+    val context = contextReplyingTo(agent, remoteResponse(agent, "input-required"))
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_pausedTaskInOtherContext_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val laterEvent =
+      Event(author = agent.name, customMetadata = mapOf("adk_context_id" to "other-context"))
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), laterEvent)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertNull(result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyAfterErrorWithoutRequest_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    // Earlier versions stored an unfinished task's error without the request.
+    val error =
+      Event(
+        author = agent.name,
+        errorMessage = "A2A response ended before the remote task reached a terminal state",
+        customMetadata = mapOf("adk_context_id" to "ctx-456"),
+      )
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), error)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_otherAgentEventsAfterPause_stillResumesTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val otherAgentsError = Event(author = "other-agent", errorMessage = "failed")
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), otherAgentsError)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyToCompletedTask_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val context = contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_COMPLETED"))
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyAfterPausedTaskCompleted_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val context =
+      contextReplyingTo(
+        agent,
+        remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"),
+        remoteResponse(agent, "TASK_STATE_COMPLETED"),
+      )
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertNull(result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyAfterLocalAgentEvent_resumesPausedTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val callbackEvent = Event(author = agent.name, content = modelMessage("Noted."))
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), callbackEvent)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyAfterUnrecordedResponse_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val unrecorded =
+      Event(
+        author = agent.name,
+        customMetadata =
+          mapOf("adk_context_id" to "ctx-456", BaseRemoteA2AAgent.RESPONSE_ERROR to "failed"),
+      )
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), unrecorded)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertNull(result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyAfterFailedRequest_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val failedRequest =
+      Event(
+        author = agent.name,
+        errorMessage = "A2A request failed (IOException)",
+        customMetadata = mapOf("adk_context_id" to "ctx-456", "a2a:request" to "{}"),
+      )
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), failedRequest)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertNull(result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyToMessageResponse_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val messageResponse =
+      Event(
+        author = agent.name,
+        content = modelMessage("Hi"),
+        customMetadata =
+          mapOf("adk_context_id" to "ctx-456", "a2a:response" to """{"messageId":"m1"}"""),
+      )
+
+    val result = agent.testPrepareOutboundEvent(contextReplyingTo(agent, messageResponse))
+
+    assertNull(result.customMetadata?.get("adk_task_id"))
+  }
+
+  @Test
   fun prepareOutboundEvent_noUserCall_returnsFlattenedParts() {
     val agent = TestRemoteAgent("my-agent")
     val event1 = Event(author = Role.USER, content = userMessage("hi"))
@@ -433,6 +597,35 @@ class BaseRemoteA2AAgentTest {
     )
   }
 
+  /** An event where [agent] relays its remote agent's response leaving task-123 in [state]. */
+  private fun remoteResponse(agent: TestRemoteAgent, state: String) =
+    Event(
+      author = agent.name,
+      content = modelMessage("Which color?"),
+      customMetadata =
+        mapOf(
+          "adk_task_id" to "task-123",
+          "adk_context_id" to "ctx-456",
+          "a2a:response" to
+            """{"id":"task-123","contextId":"ctx-456","status":{"state":"$state"}}""",
+        ),
+    )
+
+  /** A context whose session holds [events], then the user's text reply "Blue". */
+  private fun contextReplyingTo(agent: TestRemoteAgent, vararg events: Event) =
+    contextWith(agent, events.toList() + Event(author = Role.USER, content = userMessage("Blue")))
+
+  private fun contextWith(agent: TestRemoteAgent, events: List<Event>): InvocationContext {
+    val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
+    session.events.addAll(events)
+    return InvocationContext(
+      invocationId = "inv-123",
+      agent = agent,
+      session = session,
+      runConfig = null,
+    )
+  }
+
   /** A session where [agent] made [calls] on a remote task and the user answers with [answer]. */
   private fun contextAnswering(
     agent: TestRemoteAgent,
@@ -447,13 +640,6 @@ class BaseRemoteA2AAgentTest {
       )
     val userAnswer =
       Event(author = Role.USER, content = Content(role = Role.USER, parts = answer.toList()))
-    val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
-    session.events.addAll(listOf(remoteCalls, userAnswer))
-    return InvocationContext(
-      invocationId = "inv-123",
-      agent = agent,
-      session = session,
-      runConfig = null,
-    )
+    return contextWith(agent, listOf(remoteCalls, userAnswer))
   }
 }

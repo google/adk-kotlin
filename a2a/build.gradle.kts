@@ -28,6 +28,7 @@ kotlin {
         dependencies {
           implementation(project(":google-adk-kotlin-core"))
           implementation(libs.kotlinx.coroutines.core)
+          implementation(libs.kotlinx.serialization)
         }
       }
     getByName("commonTest") {
@@ -40,7 +41,6 @@ kotlin {
       create("commonJvmAndroidMain") {
         dependsOn(commonMain)
         dependencies {
-          implementation(libs.kotlinx.serialization)
           implementation(libs.a2a.sdk.client)
           implementation(libs.a2a.sdk.common)
           implementation(libs.a2a.sdk.spec)
