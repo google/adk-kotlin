@@ -44,3 +44,15 @@ internal class StubLiveAgent(
     if (holdOpen) awaitCancellation()
   }
 }
+
+/** The raw upgrade request for a live run of [appName], naming [host]. */
+internal fun liveUpgradeRequest(appName: String, host: String): String =
+  listOf(
+      "GET /run_live?app_name=$appName&user_id=u&session_id=s HTTP/1.1",
+      "Host: $host",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      "Sec-WebSocket-Version: 13",
+    )
+    .joinToString("\r\n", postfix = "\r\n\r\n")

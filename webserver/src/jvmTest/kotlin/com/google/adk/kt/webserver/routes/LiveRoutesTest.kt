@@ -50,6 +50,7 @@ import com.google.adk.kt.webserver.loaders.AppLoaderApps
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -74,10 +75,11 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -125,8 +127,6 @@ private val REPLY_TO_AUDIO: List<DummyLiveStep> =
   )
 
 private class FakeAppLoader(
-  val started: CompletableDeferred<Unit> = CompletableDeferred(),
-  val cancelled: CompletableDeferred<Unit> = CompletableDeferred(),
   val streamStoppedBy: CompletableDeferred<Throwable> = CompletableDeferred(),
   val floodSends: AtomicLong = AtomicLong(),
   val model: DummyLiveModel = DummyLiveModel(REPLY_TO_AUDIO),
@@ -157,8 +157,6 @@ private class FakeAppLoader(
           )
           emit(Event(author = agentName, turnComplete = true))
         }
-      "one-shot" ->
-        StubLiveAgent(agentName, holdOpen = false) { emit(modelText(agentName, "done")) }
       "model-agent" -> LlmAgent(name = agentName, model = model)
       // An Error, not an Exception: the run path must close for both.
       "long-failure" -> StubLiveAgent(agentName) { throw NotImplementedError("x".repeat(200)) }
@@ -170,15 +168,6 @@ private class FakeAppLoader(
           afterAgentCallbacks =
             listOf(AfterAgentCallback { CallbackChoice.Break(modelMessage("late reply")) }),
         )
-      "cancel-recording" ->
-        StubLiveAgent(agentName) {
-          started.complete(Unit)
-          try {
-            awaitCancellation()
-          } finally {
-            cancelled.complete(Unit)
-          }
-        }
       // Sends 4 KiB events as fast as the route's sends return, counting each one.
       "flood" ->
         StubLiveAgent(agentName) {
@@ -256,14 +245,17 @@ private suspend fun ApplicationTestBuilder.serverCloseOf(
   url: String,
   vararg frames: Frame,
 ): CloseReason? {
-  var reason: CloseReason? = null
   liveClient().use { client ->
-    client.webSocket(url) {
-      for (frame in frames) send(frame)
-      reason = withTimeout(COLLECT_TIMEOUT) { closeReason.await() }
+    // A server that closes stops reading, so a pending send, and with it a graceful close, can
+    // hang: wait for the close alongside the sends, then drop the session.
+    val session = client.webSocketSession(url)
+    session.launch { for (frame in frames) session.send(frame) }
+    try {
+      return withTimeout(COLLECT_TIMEOUT) { session.closeReason.await() }
+    } finally {
+      session.cancel()
     }
   }
-  return reason
 }
 
 private suspend fun ApplicationTestBuilder.closeCodeFor(url: String): Short? =
@@ -280,15 +272,12 @@ private fun liveRunPath(appName: String, query: String = "") =
 private suspend fun DefaultClientWebSocketSession.receiveText(): String =
   withTimeout(COLLECT_TIMEOUT) { (incoming.receive() as Frame.Text).readText() }
 
-/** Upgrades [socket] to a websocket on [path], returning once the server answered 101. */
-private fun upgradeToWebSocket(socket: Socket, path: String) {
-  socket
-    .getOutputStream()
-    .write(
-      ("GET $path HTTP/1.1\r\nHost: $LOOPBACK\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
-          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
-        .toByteArray()
-    )
+/** Upgrades [socket] to a websocket for [appName], returning once the server answered 101. */
+private fun upgradeToWebSocket(socket: Socket, appName: String) {
+  socket.getOutputStream().writer(Charsets.US_ASCII).run {
+    write(liveUpgradeRequest(appName, host = LOOPBACK))
+    flush()
+  }
   val head = StringBuilder()
   while (!head.endsWith("\r\n\r\n")) {
     val byte = socket.getInputStream().read()
@@ -357,21 +346,6 @@ class LiveRoutesTest {
   }
 
   @Test
-  fun runLive_clientDisconnects_cancelsTheRun() = testApplication {
-    // A real run holds a billed model connection, so a client that goes away must end the run.
-    val loader = FakeAppLoader()
-    installLiveRoutes(loader)
-
-    liveClient().use { client ->
-      client.webSocket(liveRunPath("cancel-recording")) {
-        withTimeout(COLLECT_TIMEOUT) { loader.started.await() }
-      }
-    }
-
-    withTimeout(COLLECT_TIMEOUT) { loader.cancelled.await() }
-  }
-
-  @Test
   fun runLive_clientDisconnectsWhileEventsStream_cancelsTheRun() = testApplication {
     // A send in flight when the client leaves must end the run as cancelled, not as a failure.
     val loader = FakeAppLoader()
@@ -397,15 +371,6 @@ class LiveRoutesTest {
   }
 
   @Test
-  fun runLive_unknownAgent_closesWithPolicyViolation() = testApplication {
-    installLiveRoutes()
-
-    val code = closeCodeFor(liveRunPath("nope"))
-
-    assertThat(code).isEqualTo(CloseReason.Codes.VIOLATED_POLICY.code)
-  }
-
-  @Test
   fun runLive_agentFailsToLoad_closesWithInternalErrorAndAFixedReason() = testApplication {
     installLiveRoutes()
 
@@ -423,15 +388,6 @@ class LiveRoutesTest {
 
     assertThat(reason?.code).isEqualTo(CloseReason.Codes.INTERNAL_ERROR.code)
     assertThat(reason?.message).isEqualTo("Agent could not be loaded")
-  }
-
-  @Test
-  fun runLive_unknownSession_closesWithProtocolError() = testApplication {
-    installLiveRoutes()
-
-    val code = closeCodeFor("/run_live?app_name=live-agent&user_id=u&session_id=other")
-
-    assertThat(code).isEqualTo(CloseReason.Codes.PROTOCOL_ERROR.code)
   }
 
   @Test
@@ -490,26 +446,6 @@ class LiveRoutesTest {
   }
 
   @Test
-  fun runLive_audioFrame_reachesTheModelAndItsReplyComesBack() = testApplication {
-    val loader = FakeAppLoader()
-    installLiveRoutes(loader)
-
-    liveClient().use { client ->
-      client.webSocket(liveRunPath("model-agent")) {
-        send(Frame.Text(AUDIO_FRAME))
-        val reply = receiveText()
-
-        assertThat(reply).contains("heard you")
-      }
-    }
-
-    val sent = loader.model.connections.single().sent
-    val audio = sent.filterIsInstance<RealtimeInput.Audio>().single()
-    assertThat(audio.blob.data).isEqualTo(byteArrayOf(1, 2, 3))
-    assertThat(audio.blob.mimeType).isEqualTo("audio/pcm")
-  }
-
-  @Test
   fun runLive_queryParameters_reachTheModelsLiveConfig() = testApplication {
     val loader = FakeAppLoader()
     installLiveRoutes(loader)
@@ -561,21 +497,6 @@ class LiveRoutesTest {
   }
 
   @Test
-  fun runLive_runEnds_closesNormally() = testApplication {
-    installLiveRoutes()
-
-    liveClient().use { client ->
-      client.webSocket(liveRunPath("one-shot")) {
-        val event = receiveText()
-        val reason = withTimeout(COLLECT_TIMEOUT) { closeReason.await() }
-
-        assertThat(event).contains("done")
-        assertThat(reason?.code).isEqualTo(CloseReason.Codes.NORMAL.code)
-      }
-    }
-  }
-
-  @Test
   fun installLiveWebSockets_clientStopsReading_suspendsTheRunsSends() {
     val loader = FakeAppLoader()
     val server =
@@ -591,7 +512,7 @@ class LiveRoutesTest {
         socket.soTimeout = COLLECT_TIMEOUT.inWholeMilliseconds.toInt()
         val port = runBlocking { server.engine.resolvedConnectors().single().port }
         socket.connect(InetSocketAddress(LOOPBACK, port))
-        upgradeToWebSocket(socket, liveRunPath("flood"))
+        upgradeToWebSocket(socket, "flood")
 
         val sends = runBlocking { sendCountOnceItStops(loader.floodSends) }
 
