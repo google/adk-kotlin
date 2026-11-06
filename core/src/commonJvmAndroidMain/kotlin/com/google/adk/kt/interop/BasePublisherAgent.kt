@@ -23,14 +23,14 @@ import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.events.Event
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.reactive.asFlow
 import org.reactivestreams.Publisher
 
 /**
  * Java-friendly base for implementing a [BaseAgent]. A Java subclass overrides [runAsyncImplJava],
  * which returns a Reactive Streams [Publisher] of the turn's events; this base adapts it to the
  * `Flow`-returning [runAsyncImpl] contract that Java cannot express. The publisher is subscribed to
- * lazily and honours backpressure.
+ * lazily and asked for one event at a time, the next only after the runner has processed the
+ * previous one, so later events see the state and history that earlier ones changed.
  */
 @AdkJavaInteropApi
 abstract class BasePublisherAgent
@@ -54,10 +54,17 @@ constructor(
     disallowTransferToPeers,
   ) {
 
-  /** Produces this agent's events. Called once per invocation, after the before-agent callbacks. */
+  /**
+   * Called once per invocation, after the before-agent callbacks, to produce this agent's events.
+   * Subscription-time code, such as a `Flowable.defer` inside `Flowable.concat`, can run before
+   * earlier events are stored, so build any event that depends on them when it is requested.
+   * Because events are requested one at a time, a publisher that checks demand itself (such as
+   * `PublishProcessor` or `Flowable.create` with the `ERROR`, `DROP`, or `LATEST` strategy) fails
+   * or loses events when it emits a burst, so apply `onBackpressureBuffer()` to it.
+   */
   @JvmSuppressWildcards
   protected abstract fun runAsyncImplJava(context: InvocationContext): Publisher<Event>
 
   final override fun runAsyncImpl(context: InvocationContext): Flow<Event> =
-    runAsyncImplJava(context).asFlow()
+    runAsyncImplJava(context).asFlowOneAtATime()
 }

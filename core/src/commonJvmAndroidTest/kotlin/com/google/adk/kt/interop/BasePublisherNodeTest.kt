@@ -22,6 +22,7 @@ import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.workflow.LiveOrder
 import com.google.adk.kt.workflow.NodeConfig
 import com.google.adk.kt.workflow.RetryConfig
@@ -29,6 +30,7 @@ import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.StubNode
 import com.google.adk.kt.workflow.runWorkflow
+import com.google.adk.kt.workflow.runWorkflowAsApp
 import com.google.adk.kt.workflow.runWorkflowAsAppCatching
 import com.google.adk.kt.workflow.workflow
 import kotlin.test.Test
@@ -141,6 +143,31 @@ class BasePublisherNodeTest {
 
     // Assert
     assertEquals("boom", error.message)
+  }
+
+  @Test
+  fun outputAfterAStateChangingEvent_seesTheChange() {
+    // Arrange
+    val node =
+      object : BasePublisherNode("writer") {
+        override fun runNodeJava(context: Context, nodeInput: Any?): Publisher<Any> =
+          AsyncJavaHelpers.asPublisher(
+            flow<Any> {
+              emit(Event(actions = EventActions(stateDelta = mutableMapOf("draft" to "v1"))))
+              emit(context.state["draft"] ?: "missing")
+            }
+          )
+      }
+    val graph = workflow("wf") { Start.then(node) }
+
+    // Act
+    val session = runWorkflowAsApp(graph)
+
+    // Assert
+    assertEquals(
+      listOf("v1"),
+      session.events.filter { it.nodeInfo?.path == "wf@1/writer@1" }.mapNotNull { it.output },
+    )
   }
 
   @Test

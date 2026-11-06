@@ -33,7 +33,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.reactive.asFlow
 import org.reactivestreams.Publisher
 
 /**
@@ -77,14 +76,23 @@ constructor(
     config: NodeConfig,
   ) : this(name, description = "", rerunOnResume = false, waitForOutput = false, config = config)
 
-  /** Produces this node's outputs. Reactive Streams forbids null, so publish nothing instead. */
+  /**
+   * Produces this node's outputs; because Reactive Streams forbids null, publish nothing to produce
+   * none. This base requests each output only after the engine has processed the previous one,
+   * whereas subscription-time code, such as a `Flowable.defer` inside `Flowable.concat`, can run
+   * before earlier outputs are processed, so build any output that depends on them when it is
+   * requested. Because this base requests outputs one at a time, a publisher that checks demand
+   * itself (such as `PublishProcessor` or `Flowable.create` with the `ERROR`, `DROP`, or `LATEST`
+   * strategy) fails or loses outputs when it emits a burst, so apply `onBackpressureBuffer()` to
+   * it.
+   */
   protected abstract fun runNodeJava(
     context: Context,
     nodeInput: Any?,
   ): Publisher<out @JvmWildcard Any>
 
   final override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> =
-    runNodeJava(context, nodeInput).asFlow().catch { e ->
+    runNodeJava(context, nodeInput).asFlowOneAtATime().catch { e ->
       val failure = e.unwrapFutureFailure()
       if (failure !is CancellationException) throw failure
       // Only this node's own cancellation may end its run as canceled; any other one fails it.
