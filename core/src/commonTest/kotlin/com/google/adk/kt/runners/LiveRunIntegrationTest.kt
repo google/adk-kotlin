@@ -24,10 +24,12 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.RealtimeInput
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
@@ -46,6 +48,7 @@ import com.google.adk.kt.testing.simpleAudioTurn
 import com.google.adk.kt.testing.spokenModelTurn
 import com.google.adk.kt.testing.turnCompleteStep
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -298,6 +301,44 @@ class LiveRunIntegrationTest {
       .that(connection.sent.any { it.isToolResponseFor("GetWeather", TOOL_CALL_ID) })
       .isTrue()
     model.connections.forEach { it.assertAllWaitsMet() }
+  }
+
+  @Test
+  fun runLive_pluginAfterToolReplacesResult_skipsAgentAfterToolCallbacks(): Unit = runBlocking {
+    var agentCallbackRan = false
+    val model = DummyLiveModel(toolRoundTrip("GetWeather"))
+    val agent =
+      LlmAgent(
+        name = "live_agent",
+        model = model,
+        tools = listOf(DummyTool(name = "GetWeather") { _, _ -> mapOf("tempF" to 72) }),
+        afterToolCallbacks =
+          listOf(
+            AfterToolCallback { _, _, _, _ ->
+              agentCallbackRan = true
+              mapOf("tempF" to 0)
+            }
+          ),
+      )
+    val plugin =
+      object : Plugin {
+        override val name = "after-tool-plugin"
+
+        override suspend fun afterTool(
+          context: ToolContext,
+          tool: BaseTool,
+          args: Map<String, Any?>,
+          result: Map<String, Any?>,
+        ): Map<String, Any?> = mapOf("tempF" to 99)
+      }
+    val runner = InMemoryRunner(agent = agent, plugins = listOf(plugin))
+
+    val unused = runner.runUntilTurnComplete()
+
+    assertThat(model.toolAnswers().map { it.response }).containsExactly(mapOf("tempF" to 99))
+    assertWithMessage("the agent's after-tool callback ran after the plugin answered")
+      .that(agentCallbackRan)
+      .isFalse()
   }
 
   @Test
