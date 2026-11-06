@@ -36,7 +36,7 @@ Keep these when changing the runtime:
 - State changes travel on events (`EventActions.stateDelta`) and are applied when the session service appends the event. `temp:` keys are applied to the live session and never stored.
 - Don't choose a dispatcher on the agent, model or tool path; it inherits the collector's. Always rethrow `CancellationException`.
 - Plugin callbacks run before an agent's own callbacks.
-- `internal` and `@FrameworkInternalApi` symbols are not public API. `@ExperimentalWorkflowApi` marks the experimental graph workflow in the `workflow` package, and `@ExperimentalLiveApi` the experimental live (bidirectional streaming) API.
+- `internal` and `@FrameworkInternalApi` symbols are not public API. `@ExperimentalWorkflowApi` marks the experimental graph workflow in the `workflow` package, `@ExperimentalLiveApi` the experimental live (bidirectional streaming) API, and `@ExperimentalClassifierApi` the experimental classifiers in the `classifiers` package.
 - `@AdkJavaInteropApi` marks builders and bridges for Java callers. Kotlin code
   uses the constructors with named arguments. When adding an optional field to a
   public data class, append it at the end, ensure the primary constructor has
