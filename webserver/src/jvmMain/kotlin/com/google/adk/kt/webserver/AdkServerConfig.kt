@@ -27,6 +27,7 @@ import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.webserver.loaders.AgentLoader
 import com.google.adk.kt.webserver.loaders.AgentLoaderApps
 import com.google.adk.kt.webserver.loaders.AppLoader
@@ -74,6 +75,9 @@ import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
  *   non-loopback and proxied callers regardless of [host], while [AdkApiServer] rejects them when
  *   [host] is loopback (`127.0.0.1` by default) and accepts them when [host] is widened explicitly
  *   (such as `0.0.0.0` behind an authenticating proxy).
+ * @property avatarConfig The avatar for `/run_live` sessions that ask for `VIDEO`. Null gives such
+ *   a session the prebuilt `Kai` avatar, since the Live API rejects video output without one; a
+ *   session without `VIDEO` gets no avatar.
  */
 data class AdkServerConfig(
   @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
@@ -91,6 +95,7 @@ data class AdkServerConfig(
   val appLoader: AppLoader? = null,
   val allowOrigins: List<String> = emptyList(),
   val allowRemoteRequests: Boolean? = null,
+  val avatarConfig: AvatarConfig? = null,
 ) {
   init {
     require((agentLoader == null) != (appLoader == null)) {
@@ -153,6 +158,7 @@ data class AdkServerConfig(
       .includeAppInfo(includeAppInfo)
       .allowOrigins(allowOrigins)
       .allowRemoteRequests(allowRemoteRequests)
+      .avatarConfig(avatarConfig)
 
   /**
    * Fluent builder for [AdkServerConfig], provided primarily for Java callers. Any property left
@@ -175,6 +181,7 @@ data class AdkServerConfig(
     private var appLoader: AppLoader? = null
     private var allowOrigins: List<String> = emptyList()
     private var allowRemoteRequests: Boolean? = null
+    private var avatarConfig: AvatarConfig? = null
 
     @Deprecated("Use appLoader instead. Scheduled for removal in 2.0.")
     fun agentLoader(agentLoader: AgentLoader?): Builder = apply { this.agentLoader = agentLoader }
@@ -222,6 +229,10 @@ data class AdkServerConfig(
       this.allowRemoteRequests = allowRemoteRequests
     }
 
+    fun avatarConfig(avatarConfig: AvatarConfig?): Builder = apply {
+      this.avatarConfig = avatarConfig
+    }
+
     fun build(): AdkServerConfig =
       AdkServerConfig(
         agentLoader = agentLoader,
@@ -238,6 +249,7 @@ data class AdkServerConfig(
         appLoader = appLoader,
         allowOrigins = allowOrigins,
         allowRemoteRequests = allowRemoteRequests,
+        avatarConfig = avatarConfig,
       )
   }
 

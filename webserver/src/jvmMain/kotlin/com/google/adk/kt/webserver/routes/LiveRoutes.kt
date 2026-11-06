@@ -66,8 +66,8 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass())
 
 /**
- * The prebuilt avatar every VIDEO session gets, because the Live API rejects video output without
- * an avatar.
+ * The prebuilt avatar a VIDEO session gets when the server configures none, because the Live API
+ * rejects video output without an avatar.
  */
 private const val DEFAULT_AVATAR_NAME = "Kai"
 
@@ -116,9 +116,13 @@ private fun Parameters.lastValue(name: String): String? =
 
 /**
  * Parses a live handshake's query parameters into the run they ask for; each flag falls back to the
- * [LiveRunConfig] default when unset.
+ * [LiveRunConfig] default when unset. A VIDEO session gets [avatarConfig], or the prebuilt default
+ * avatar when that is null.
  */
-internal fun parseLiveRunParams(parameters: Parameters): LiveRunParamsResult {
+internal fun parseLiveRunParams(
+  parameters: Parameters,
+  avatarConfig: AvatarConfig? = null,
+): LiveRunParamsResult {
   // An empty `app_name` counts as missing.
   val appName =
     parameters.lastValue(APP_NAME_PARAM).orEmpty().ifEmpty {
@@ -168,8 +172,11 @@ internal fun parseLiveRunParams(parameters: Parameters): LiveRunParamsResult {
           saveLiveBlob = flags.getValue(SAVE_LIVE_BLOB_PARAM) ?: false,
           explicitVadSignal = flags.getValue(EXPLICIT_VAD_SIGNAL_PARAM),
           avatarConfig =
-            if (Modality.VIDEO in modalities) AvatarConfig(avatarName = DEFAULT_AVATAR_NAME)
-            else null,
+            if (Modality.VIDEO in modalities) {
+              avatarConfig ?: AvatarConfig(avatarName = DEFAULT_AVATAR_NAME)
+            } else {
+              null
+            },
         )
     )
   return LiveRunParamsResult.Success(LiveRunParams(appName, userId, sessionId, runConfig))
@@ -209,19 +216,24 @@ internal fun DefaultWebSocketServerSession.applyLiveLimits() {
   timeoutMillis = LIVE_PING_PERIOD.inWholeMilliseconds
 }
 
-/** Registers the bidirectional streaming endpoint the live clients connect to. */
+/**
+ * Registers the bidirectional streaming endpoint the live clients connect to.
+ *
+ * @param avatarConfig the avatar for VIDEO sessions, or null for the prebuilt default.
+ */
 internal fun Route.liveRoutes(
   servedApps: ServedApps,
   sessionService: SessionService,
   artifactService: ArtifactService,
   plugins: List<Plugin> = emptyList(),
+  avatarConfig: AvatarConfig? = null,
 ) {
   route("/run_live") {
     webSocket {
       applyLiveLimits()
 
       val params =
-        when (val result = parseLiveRunParams(call.request.queryParameters)) {
+        when (val result = parseLiveRunParams(call.request.queryParameters, avatarConfig)) {
           is LiveRunParamsResult.Success -> result.params
           is LiveRunParamsResult.Invalid ->
             return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, result.reason))

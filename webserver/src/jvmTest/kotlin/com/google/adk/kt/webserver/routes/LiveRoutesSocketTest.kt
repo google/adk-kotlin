@@ -31,6 +31,7 @@ import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
 import com.google.adk.kt.testing.DummyLiveStep.Respond
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
@@ -93,6 +94,8 @@ private const val RUN_FAILED_LOG = "Live run failed"
 private const val AUDIO_FRAME = """{"blob":{"mime_type":"audio/pcm","data":"AQID"}}"""
 
 private val INVALID_REQUEST = CloseReason(CloseReason.Codes.NOT_CONSISTENT, "Invalid live request")
+
+private val SERVER_AVATAR = AvatarConfig(avatarName = "server-avatar")
 
 private val http = HttpClient.newHttpClient()
 
@@ -245,6 +248,7 @@ class LiveRoutesSocketTest {
               ),
             sessionService = sessions,
             artifactService = InMemoryArtifactService(),
+            avatarConfig = SERVER_AVATAR,
           )
         )
         install(
@@ -297,7 +301,12 @@ class LiveRoutesSocketTest {
     }
   }
 
-  private fun connect(app: String, session: String = "s"): SocketClient {
+  /** Opens `/run_live` for [app] and [session], asking for [modalities] when set. */
+  private fun connect(
+    app: String,
+    session: String = "s",
+    modalities: String? = null,
+  ): SocketClient {
     val frames = LinkedBlockingQueue<String>()
     val closed = CompletableFuture<CloseReason>()
     val text = StringBuilder()
@@ -323,11 +332,12 @@ class LiveRoutesSocketTest {
         }
       }
 
+    val query = modalities?.let { "&modalities=$it" }.orEmpty()
     val socket =
       http
         .newWebSocketBuilder()
         .buildAsync(
-          URI("ws://$LOOPBACK:$port/run_live?app_name=$app&user_id=u&session_id=$session"),
+          URI("ws://$LOOPBACK:$port/run_live?app_name=$app&user_id=u&session_id=$session$query"),
           listener,
         )
         .get(TIMEOUT.inWholeMilliseconds, TimeUnit.MILLISECONDS)
@@ -504,6 +514,17 @@ class LiveRoutesSocketTest {
     val audio = sent.filterIsInstance<RealtimeInput.Audio>().single()
     assertThat(audio.blob.data).isEqualTo(byteArrayOf(1, 2, 3))
     assertThat(audio.blob.mimeType).isEqualTo("audio/pcm")
+  }
+
+  @Test
+  fun runLive_videoSession_rendersAsTheServersAvatar() {
+    val client = connect(MODEL_APP, modalities = "VIDEO")
+
+    client.sendText(AUDIO_FRAME)
+    assertThat(client.nextFrameContaining("heard you")).isNotNull()
+
+    val liveConfig = model.connectRequests.single().liveConnectConfig
+    assertThat(liveConfig.avatarConfig).isEqualTo(SERVER_AVATAR)
   }
 
   @Test

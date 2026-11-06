@@ -36,10 +36,13 @@ import org.junit.runners.JUnit4
  * assert that a value taken off the wire reaches the config rather than only that parsing
  * succeeded.
  */
-private fun runConfigFrom(vararg extra: Pair<String, List<String>>): RunConfig {
+private fun runConfigFrom(
+  vararg extra: Pair<String, List<String>>,
+  avatarConfig: AvatarConfig? = null,
+): RunConfig {
   val base =
     listOf("app_name" to listOf("a"), "user_id" to listOf("u"), "session_id" to listOf("s"))
-  val result = parseLiveRunParams(parametersOf(*(base + extra).toTypedArray()))
+  val result = parseLiveRunParams(parametersOf(*(base + extra).toTypedArray()), avatarConfig)
   return (result as LiveRunParamsResult.Success).params.runConfig
 }
 
@@ -98,8 +101,26 @@ class LiveParamsTest {
   }
 
   @Test
+  fun parseLiveRunParams_videoWithAConfiguredAvatar_getsThatAvatar() {
+    val configured = AvatarConfig(avatarName = "avatar-1", videoBitrateBps = 1_000_000)
+
+    val config = runConfigFrom("modalities" to listOf("VIDEO"), avatarConfig = configured)
+
+    assertThat(config.live.avatarConfig).isEqualTo(configured)
+  }
+
+  @Test
   fun parseLiveRunParams_audioOnly_getsNoAvatar() {
     val config = runConfigFrom("modalities" to listOf("AUDIO"))
+
+    assertThat(config.live.avatarConfig).isNull()
+  }
+
+  @Test
+  fun parseLiveRunParams_audioWithAConfiguredAvatar_getsNoAvatar() {
+    val configured = AvatarConfig(avatarName = "avatar-1")
+
+    val config = runConfigFrom("modalities" to listOf("AUDIO"), avatarConfig = configured)
 
     assertThat(config.live.avatarConfig).isNull()
   }

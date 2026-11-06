@@ -254,7 +254,13 @@ internal fun Application.adkApiModule(
       }
       appRoutes(config.servedApps)
       artifactRoutes(config.artifactService)
-      liveRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
+      liveRoutes(
+        config.servedApps,
+        config.sessionService,
+        config.artifactService,
+        config.plugins,
+        avatarConfig = config.avatarConfig,
+      )
       runRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
       sessionRoutes(config.sessionService)
       if (appInfoEnabled) {

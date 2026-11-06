@@ -26,6 +26,7 @@ import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
@@ -211,6 +212,7 @@ class AdkServerConfigTest {
     assertThat(config.includeAppInfo).isNull()
     assertThat(config.allowOrigins).isEmpty()
     assertThat(config.allowRemoteRequests).isNull()
+    assertThat(config.avatarConfig).isNull()
   }
 
   @Test
@@ -233,6 +235,7 @@ class AdkServerConfigTest {
         .includeAppInfo(true)
         .allowOrigins(listOf("https://console.example.com"))
         .allowRemoteRequests(true)
+        .avatarConfig(AvatarConfig(avatarName = "avatar-1"))
         .build()
 
     assertThat(config.agentLoader).isSameInstanceAs(loader)
@@ -246,6 +249,7 @@ class AdkServerConfigTest {
     assertThat(config.includeAppInfo).isTrue()
     assertThat(config.allowOrigins).containsExactly("https://console.example.com")
     assertThat(config.allowRemoteRequests).isTrue()
+    assertThat(config.avatarConfig).isEqualTo(AvatarConfig(avatarName = "avatar-1"))
   }
 
   @Test
@@ -275,6 +279,7 @@ class AdkServerConfigTest {
         includeAppInfo = true,
         allowOrigins = listOf("https://console.example.com"),
         allowRemoteRequests = true,
+        avatarConfig = AvatarConfig(avatarName = "avatar-1"),
       )
 
     assertThat(config.toBuilder().build()).isEqualTo(config.copy())
