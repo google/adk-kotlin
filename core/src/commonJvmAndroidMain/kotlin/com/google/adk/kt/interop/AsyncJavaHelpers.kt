@@ -23,6 +23,7 @@ import java.util.function.Consumer
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow as asFlowFromIterable
 import kotlinx.coroutines.flow.toList
@@ -54,10 +55,11 @@ import org.reactivestreams.Publisher
  *     FlowAdapters.toFlowPublisher(AsyncJavaHelpers.asPublisher(flow));              // JDK
  * ```
  *
- * [await], [async], [collect], and [forEach] run in the caller's OpenTelemetry context (for
- * [async], unless its scope carries one). [await], [collect], and [forEach] over a [Flow] also take
- * an optional `coroutineContext` (such as `MDCContext()` from kotlinx-coroutines-slf4j to carry the
- * caller's MDC), ignoring any `Job` in it. For [async], add such elements to its scope.
+ * [await], [async], [collect], [forEach], and [asPublisher] run in the caller's OpenTelemetry
+ * context (for [async], unless its scope carries one). [await], [collect], [forEach] over a [Flow],
+ * and [asPublisher] also take an optional `coroutineContext` (such as `MDCContext()` from
+ * kotlinx-coroutines-slf4j to carry the caller's MDC), ignoring any `Job` in it. For [async], add
+ * such elements to its scope.
  *
  * Kotlin callers should use the suspending APIs directly instead.
  */
@@ -124,13 +126,22 @@ object AsyncJavaHelpers {
   }
 
   /**
-   * Exposes [flow] as a [Publisher]. Elements must be non-null; Reactive Streams forbids null. For
-   * a single value, use [async] and `Mono.fromFuture(...)` instead.
+   * Exposes [flow] as a [Publisher] of non-null elements, since Reactive Streams forbids null; for
+   * a single value, use [async] and `Mono.fromFuture(...)` instead. The flow and its signals run on
+   * [Dispatchers.IO], or on a dispatcher passed in [coroutineContext], in the OpenTelemetry context
+   * current at this call. Collection starts asynchronously after the first `request`, so values a
+   * hot flow such as `context.getLiveRequests()` emits before then are not seen.
    */
   @AdkJavaInteropApi
   @CheckReturnValue
   @JvmStatic
-  fun <T : Any> asPublisher(flow: Flow<T>): Publisher<T> = flow.asPublisher()
+  @JvmOverloads
+  // Not Unconfined (onNext runs on the emitting thread) or Default (blocking holds a CPU thread).
+  @Suppress("GlobalCoroutineDispatchers")
+  fun <T : Any> asPublisher(
+    flow: Flow<T>,
+    coroutineContext: CoroutineContext = EmptyCoroutineContext,
+  ): Publisher<T> = flow.asPublisher(Dispatchers.IO + callerContext(coroutineContext))
 
   /** Adapts [publisher] to a [Flow], for feeding an Rx or Reactor source into the ADK. */
   @AdkJavaInteropApi
