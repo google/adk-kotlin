@@ -1238,6 +1238,92 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun taskToEvent_completedWithOutput_skipsSummarization() {
+    val result =
+      taskWithStatusParts(TaskState.TASK_STATE_COMPLETED, TextPart("Done."))
+        .toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isTrue()
+  }
+
+  @Test
+  fun taskToEvent_completedWithFunctionResponse_isFinalResponse() {
+    val response =
+      DataPart(
+        mapOf("name" to "lookup", "id" to "fr-1", "response" to mapOf("color" to "blue")),
+        mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_RESPONSE),
+      )
+    val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(response)).build()
+
+    val result =
+      peerTask(TaskState.TASK_STATE_COMPLETED, artifacts = listOf(artifact))
+        .toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isTrue()
+    assertThat(result.isFinalResponse).isTrue()
+  }
+
+  @Test
+  fun taskToEvent_canceledWithOutput_skipsSummarization() {
+    val result =
+      taskWithStatusParts(TaskState.TASK_STATE_CANCELED, TextPart("Stopped."))
+        .toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isTrue()
+  }
+
+  @Test
+  fun taskToEvent_failedWithText_skipsSummarization() {
+    val result =
+      taskWithStatusParts(TaskState.TASK_STATE_FAILED, TextPart("Gave up."))
+        .toAdkEvent(invocationContext)
+
+    assertThat(result.errorMessage).isEqualTo("Gave up.")
+    assertThat(result.actions.skipSummarization).isTrue()
+  }
+
+  @Test
+  fun taskToEvent_completedWithoutOutput_keepsSkipSummarizationOff() {
+    val result = peerTask(TaskState.TASK_STATE_COMPLETED).toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isFalse()
+  }
+
+  @Test
+  fun taskToEvent_failedWithoutOutput_keepsSkipSummarizationOff() {
+    val result = peerTask(TaskState.TASK_STATE_FAILED).toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isFalse()
+  }
+
+  @Test
+  fun taskToEvent_rejectedWithOutput_keepsSkipSummarizationOff() {
+    val result =
+      taskWithStatusParts(TaskState.TASK_STATE_REJECTED, TextPart("No."))
+        .toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isFalse()
+  }
+
+  @Test
+  fun taskToEvent_workingWithOutput_keepsSkipSummarizationOff() {
+    val result =
+      taskWithStatusParts(TaskState.TASK_STATE_WORKING, TextPart("Working."))
+        .toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isFalse()
+  }
+
+  @Test
+  fun taskToEvent_inputRequiredWithOutput_keepsSkipSummarizationOff() {
+    val result =
+      taskWithStatusParts(TaskState.TASK_STATE_INPUT_REQUIRED, TextPart("Which color?"))
+        .toAdkEvent(invocationContext)
+
+    assertThat(result.actions.skipSummarization).isFalse()
+  }
+
+  @Test
   fun taskToEvent_withGroundingMetadata_returnsEvent() {
     val statusMessage =
       Message.builder()
@@ -2003,6 +2089,15 @@ class A2aConvertersTest {
 
   private fun statusWithParts(state: TaskState, parts: List<A2APart<*>>) =
     TaskStatus(state, Message.builder().role(Message.Role.ROLE_AGENT).parts(parts).build(), null)
+
+  /** Task-1 in context-1, in [state], with [artifacts] and no status message. */
+  private fun peerTask(state: TaskState, artifacts: List<Artifact> = emptyList()): Task =
+    Task.builder()
+      .id("task-1")
+      .contextId("context-1")
+      .status(TaskStatus(state))
+      .artifacts(artifacts)
+      .build()
 
   private fun taskWithStatusParts(state: TaskState, vararg parts: A2APart<*>): Task =
     Task.builder()

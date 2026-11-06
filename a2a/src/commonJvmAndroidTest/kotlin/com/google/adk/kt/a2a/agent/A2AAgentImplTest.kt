@@ -16,6 +16,8 @@
 
 package com.google.adk.kt.a2a.agent
 
+import com.google.adk.kt.a2a.converters.MetadataKeys
+import com.google.adk.kt.a2a.converters.TYPE_FUNCTION_RESPONSE
 import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.RunConfig
@@ -958,6 +960,34 @@ class A2AAgentImplTest {
     assertThat(events).isNotEmpty()
     assertThat(events.last().turnComplete).isTrue()
   }
+
+  @Test
+  fun runAsync_blockingTaskCompletedWithFunctionResponse_yieldsFinalResponse() =
+    runBlocking<Unit> {
+      val response =
+        DataPart(
+          mapOf("name" to "lookup", "id" to "fr-1", "response" to mapOf("color" to "blue")),
+          mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_RESPONSE),
+        )
+      val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(response)).build()
+      val task =
+        Task.builder()
+          .id("task-1")
+          .contextId("context-1")
+          .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+          .artifacts(listOf(artifact))
+          .build()
+      mockStreamResponse(this) { consumer -> consumer.accept(TaskEvent(task), agentCard) }
+
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      val events =
+        InMemoryRunner(createTestAgent())
+          .runAsync("user", "s1", newMessage = userMessage("Look it up"), runConfig = blocking)
+          .toList()
+
+      val answer = events.single { it.functionResponses().isNotEmpty() }
+      assertThat(answer.isFinalResponse).isTrue()
+    }
 
   @Test
   fun runAsync_answerToInputRequiredTask_resumesTaskWithAnswerText() =

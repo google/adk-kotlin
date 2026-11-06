@@ -22,6 +22,7 @@ package com.google.adk.kt.a2a.converters
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
@@ -104,6 +105,9 @@ private fun Any.toMetadataJsonElement(): JsonElement =
   if (this is String) adkJson.parseToJsonElement(this) else anyToJsonElement(this)
 
 private val PENDING_STATES = setOf(TaskState.TASK_STATE_WORKING, TaskState.TASK_STATE_SUBMITTED)
+
+private val ANSWER_STATES =
+  setOf(TaskState.TASK_STATE_COMPLETED, TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_CANCELED)
 
 // DataPart types
 internal const val TYPE_FUNCTION_CALL = "function_call"
@@ -238,6 +242,8 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
     }
   }
 
+  // A finished task's output is the remote's answer; the default error message is not output.
+  val isAnswer = status.state() in ANSWER_STATES && (adkParts.isNotEmpty() || errorMessage != null)
   errorMessage =
     errorMessage ?: DEFAULT_ERROR_MESSAGE.takeIf { status.state() == TaskState.TASK_STATE_FAILED }
   val isFinal = status.state().isFinalState() || status.state().isInterruptedState()
@@ -256,6 +262,7 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
           if (status.state().isInterruptedState()) longRunningToolIds else emptySet(),
         turnComplete = isFinal,
         errorMessage = errorMessage,
+        actions = EventActions(skipSummarization = isAnswer),
       )
       .withUserInputCall(status.state())
 
