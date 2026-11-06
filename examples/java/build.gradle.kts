@@ -76,3 +76,11 @@ tasks.register<JavaExec>("runLiveAgentDemoJava") {
   // Enter stops the demo, so the terminal's input must reach it.
   standardInput = System.`in`
 }
+
+// e.g. GOOGLE_CLOUD_PROJECT=... ./gradlew :google-adk-kotlin-examples-java:runLiveServerJava
+tasks.register<JavaExec>("runLiveServerJava") {
+  group = "application"
+  description = "Serves a live agent and the bundled dev UI on localhost."
+  mainClass.set("com.google.adk.kt.examples.live.LiveServerMainJava")
+  classpath = sourceSets["main"].runtimeClasspath
+}

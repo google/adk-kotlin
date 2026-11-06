@@ -375,8 +375,8 @@ Use headphones, as there is no echo cancellation. To start it:
 On macOS, allow your terminal to use the microphone (System Settings, Privacy
 & Security, Microphone), or the demo hears only silence.
 
-The demo talks to `gemini-3.8-live` on Vertex AI in `us-central1`, so it needs
-application default credentials and a project:
+The live examples talk to `gemini-3.8-live` on Vertex AI in `us-central1`, so
+they need application default credentials and a project:
 
 ```shell
 gcloud auth application-default login
@@ -385,11 +385,24 @@ export GOOGLE_CLOUD_PROJECT=your-project
 
 Some projects that work for text generation are refused a live session.
 
-`LiveAgentDemoJava` is the Java port of `LiveAgentDemo` and takes the same
-settings:
+`LiveServerMain` serves one live agent together with the bundled dev UI:
+
+```shell
+./gradlew :google-adk-kotlin-examples:runLiveServer
+```
+
+Open `http://localhost:8080/dev-ui`, pick `room_assistant`, and click the
+microphone button next to the chat box to talk to it. Typing in the chat box
+doesn't work with this agent: typed text reaches the model as a regular,
+non-live request, and `gemini-3.8-live` accepts only live sessions. To use a
+port other than `8080`, add `--args="--port 9000"` to the Gradle command.
+
+`LiveAgentDemoJava` and `LiveServerMainJava` are the Java ports of
+`LiveAgentDemo` and `LiveServerMain` and take the same settings:
 
 ```shell
 ./gradlew :google-adk-kotlin-examples-java:runLiveAgentDemoJava
+./gradlew :google-adk-kotlin-examples-java:runLiveServerJava
 ```
 
 ## 📂 Examples
