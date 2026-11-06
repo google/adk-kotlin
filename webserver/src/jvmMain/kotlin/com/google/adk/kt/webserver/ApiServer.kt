@@ -98,7 +98,7 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
    */
   protected open fun configure(application: Application) {
     val webUiEnabled = application.resolveWebUi(config)
-    application.adkApiModule(config, webUiEnabled)
+    application.adkApiModule(config, webUiEnabled, bindHost = config.host)
     if (webUiEnabled) {
       logger.warn(
         "Serving the Development UI from the API server; its debug, evaluation and graph views " +
@@ -167,13 +167,16 @@ private val requestLogging = requestLoggingPlugin { level, message ->
 /**
  * Installs the ADK agent runtime (health, version, app discovery, sessions, artifacts, the run
  * endpoints including `/run_live`, and app-info when [AdkServerConfig.includeAppInfo] or the
- * `adk.app.info.enabled` property asks for it), installs Ktor `WebSockets` unless the application
- * already did (install your own `WebSockets` before this module, or startup fails), registers
- * OpenTelemetry from the standard `OTEL_*` settings unless the process already has one, and flushes
- * [AdkServerConfig.sessionService] and buffered telemetry when the application stops, waiting up to
- * 3 seconds for a flush that honors cancellation. Your own `WebSockets` should set `maxFrameSize` to
- * at most 16 MiB and bound its outgoing channel: Ktor reads a socket's first frames with the
- * plugin's cap, before `/run_live` sets its own.
+ * `adk.app.info.enabled` property asks for it) with loopback peer and browser-origin guards,
+ * installs Ktor `WebSockets` unless the application already did (install your own `WebSockets`
+ * before this module, or startup fails), registers OpenTelemetry from the standard `OTEL_*` settings
+ * unless the process already has one, and flushes [AdkServerConfig.sessionService] and buffered
+ * telemetry when the application stops, waiting up to 3 seconds for a flush that honors cancellation.
+ * Your own `WebSockets` should set `maxFrameSize` to at most 16 MiB and bound its outgoing channel:
+ * Ktor reads a socket's first frames with the plugin's cap, before `/run_live` sets its own.
+ *
+ * Set [AdkServerConfig.allowRemoteRequests] and [AdkServerConfig.allowOrigins] when serving remote
+ * or cross-origin callers behind your own authentication.
  *
  * The Development UI stays unmounted unless [AdkServerConfig.webUiEnabled] or the
  * `adk.web.ui.enabled` property asks for it; the development surface is installed separately.
@@ -181,12 +184,23 @@ private val requestLogging = requestLoggingPlugin { level, message ->
  * Your engine decides the interface: [AdkServerConfig.host] is read by [AdkApiServer], not here.
  */
 fun Application.adkApiModule(config: AdkServerConfig) {
-  adkApiModule(config, resolveWebUi(config))
+  adkApiModule(config, bindHost = null)
+}
+
+internal fun Application.adkApiModule(config: AdkServerConfig, bindHost: String?) {
+  adkApiModule(config, resolveWebUi(config), bindHost = bindHost)
 }
 
 /** [adkApiModule] with the Development UI decision already made, so it is resolved once. */
 @OptIn(FrameworkInternalApi::class)
-internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boolean) {
+internal fun Application.adkApiModule(
+  config: AdkServerConfig,
+  webUiEnabled: Boolean,
+  bindHost: String? = null,
+) {
+  val allowRemoteRequests =
+    config.allowRemoteRequests ?: (bindHost != null && !isLoopbackAddress(bindHost))
+
   install(requestLogging)
   install(ContentNegotiation) { json(adkJson) }
 
@@ -214,36 +228,42 @@ internal fun Application.adkApiModule(config: AdkServerConfig, webUiEnabled: Boo
   val camelCase = resolveCamelCase(config)
   val appInfoEnabled = resolveAppInfoEnabled(config)
   routing {
-    get("/health") { call.respond(mapOf("status" to "ok")) }
-    if (!camelCase) {
-      logger.warn(
-        "Responses use the mixed spelling: /version emits `language_version` and the " +
-          "development trace endpoints emit `span_id`. This default will change in a future " +
-          "release; set camelCaseEnforced or {}=true to migrate now.",
-        CAMEL_CASE_ENFORCED_PROPERTY,
-      )
-    }
-    get("/version") {
-      call.respond(
-        VersionInfo.of(
-          version = VERSION,
-          language = "kotlin",
-          languageVersion = System.getProperty("java.version") ?: "unknown",
-          camelCase = camelCase,
+    guardedAdkRoutes(
+      allowRemoteRequests = allowRemoteRequests,
+      allowOrigins = config.allowOrigins,
+      bindHost = bindHost,
+    ) {
+      get("/health") { call.respond(mapOf("status" to "ok")) }
+      if (!camelCase) {
+        logger.warn(
+          "Responses use the mixed spelling: /version emits `language_version` and the " +
+            "development trace endpoints emit `span_id`. This default will change in a future " +
+            "release; set camelCaseEnforced or {}=true to migrate now.",
+          CAMEL_CASE_ENFORCED_PROPERTY,
         )
-      )
+      }
+      get("/version") {
+        call.respond(
+          VersionInfo.of(
+            version = VERSION,
+            language = "kotlin",
+            languageVersion = System.getProperty("java.version") ?: "unknown",
+            camelCase = camelCase,
+          )
+        )
+      }
+      appRoutes(config.servedApps)
+      artifactRoutes(config.artifactService)
+      liveRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
+      runRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
+      sessionRoutes(config.sessionService)
+      if (appInfoEnabled) {
+        appInfoRoutes(config.servedApps)
+      }
+      if (webUiEnabled) {
+        staticRoutes(this@adkApiModule)
+      }
     }
-    appRoutes(config.servedApps)
-    artifactRoutes(config.artifactService)
-    runRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
-    sessionRoutes(config.sessionService)
-    if (appInfoEnabled) {
-      appInfoRoutes(config.servedApps)
-    }
-    if (webUiEnabled) {
-      staticRoutes(this@adkApiModule)
-    }
-    liveRoutes(config.servedApps, config.sessionService, config.artifactService, config.plugins)
   }
 }
 

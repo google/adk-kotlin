@@ -24,6 +24,7 @@ import com.google.adk.kt.webserver.dev.routes.evalRoutes
 import com.google.adk.kt.webserver.dev.routes.graphRoutes
 import com.google.adk.kt.webserver.dev.routes.telemetryConfigRoutes
 import com.google.adk.kt.webserver.dev.routes.unimplementedDevRoutes
+import com.google.adk.kt.webserver.guardedAdkRoutes
 import com.google.adk.kt.webserver.resolveCamelCase
 import io.ktor.server.application.Application
 import io.ktor.server.routing.route
@@ -33,12 +34,13 @@ import io.ktor.server.routing.routing
  * The local development server: [AdkApiServer] plus the endpoints the Dev UI drives, and the UI.
  *
  * These endpoints read agent state and run debugging code, so this variant belongs on a development
- * machine; deploy [AdkApiServer] instead.
+ * machine; deploy [AdkApiServer] instead. Non-loopback peers and proxied or tunneled requests are
+ * rejected even when [AdkServerConfig.host] is widened, unless remote access is explicitly enabled.
  */
 class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
   override fun configure(application: Application) {
     // Replaces rather than extends the base: the dev module defaults the UI the other way.
-    application.adkDevModule(config)
+    application.adkDevModule(config, bindHost = config.host)
   }
 }
 
@@ -47,23 +49,40 @@ class AdkDevServer(config: AdkServerConfig) : AdkApiServer(config) {
  *
  * Installs [adkApiModule] itself, so do not install both. Unlike [adkApiModule] this mounts the
  * Development UI, unless [AdkServerConfig.webUiEnabled] or the `adk.web.ui.enabled` property turns
- * it off.
+ * it off, and rejects non-loopback peers by default regardless of [AdkServerConfig.host].
  */
 fun Application.adkDevModule(config: AdkServerConfig) {
-  adkApiModule(config.copy(webUiEnabled = config.webUiEnabled ?: true))
+  adkDevModule(config, bindHost = null)
+}
+
+internal fun Application.adkDevModule(config: AdkServerConfig, bindHost: String?) {
+  val allowRemoteRequests = config.allowRemoteRequests ?: false
+  adkApiModule(
+    config.copy(
+      webUiEnabled = config.webUiEnabled ?: true,
+      allowRemoteRequests = allowRemoteRequests,
+    ),
+    bindHost = bindHost,
+  )
 
   val camelCase = resolveCamelCase(config)
 
   // A second `routing` block merges into the one adkApiModule installed.
   routing {
-    debugRoutes(config.apiServerSpanExporter, camelCase)
-    evalRoutes()
-    graphRoutes(config.servedApps, config.sessionService)
-    telemetryConfigRoutes()
-    // adk-web 1.0 and later call these under ADK Python's `/dev` prefix; the old paths stay.
-    route("/dev/apps/{appName}") {
+    guardedAdkRoutes(
+      allowRemoteRequests = allowRemoteRequests,
+      allowOrigins = config.allowOrigins,
+      bindHost = bindHost,
+    ) {
       debugRoutes(config.apiServerSpanExporter, camelCase)
-      unimplementedDevRoutes()
+      evalRoutes()
+      graphRoutes(config.servedApps, config.sessionService)
+      telemetryConfigRoutes()
+      // adk-web 1.0 and later call these under ADK Python's `/dev` prefix; the old paths stay.
+      route("/dev/apps/{appName}") {
+        debugRoutes(config.apiServerSpanExporter, camelCase)
+        unimplementedDevRoutes()
+      }
     }
   }
 }
