@@ -21,10 +21,6 @@ package com.google.adk.kt.auth
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.encoding.Decoder
-import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonNames
 
 /**
@@ -33,59 +29,41 @@ import kotlinx.serialization.json.JsonNames
  * field's snake_case name, as the server's request bodies do. A config without a credential key
  * gets a derived one, as from the [AuthConfig] constructor.
  */
-internal object AuthConfigSerializer : KSerializer<AuthConfig> {
-  override val descriptor: SerialDescriptor = Wire.serializer().descriptor
+internal object AuthConfigSerializer :
+  KSerializer<AuthConfig> by surrogateSerializer(
+    surrogate = AuthConfigSurrogate.serializer(),
+    toSurrogate = ::AuthConfigSurrogate,
+    fromSurrogate = AuthConfigSurrogate::toAuthConfig,
+  )
 
-  override fun serialize(encoder: Encoder, value: AuthConfig) {
-    encoder.encodeSerializableValue(Wire.serializer(), Wire(value))
-  }
+@Serializable
+private class AuthConfigSurrogate(
+  @JsonNames("auth_scheme")
+  @Serializable(with = AuthSchemeSerializer::class)
+  val authScheme: AuthScheme,
+  @JsonNames("raw_auth_credential")
+  @Serializable(with = AuthCredentialSerializer::class)
+  val rawAuthCredential: AuthCredential? = null,
+  @JsonNames("exchanged_auth_credential")
+  @Serializable(with = AuthCredentialSerializer::class)
+  val exchangedAuthCredential: AuthCredential? = null,
+  @JsonNames("credential_key") val credentialKey: String? = null,
+) {
+  constructor(
+    config: AuthConfig
+  ) : this(
+    config.authScheme,
+    config.rawAuthCredential,
+    config.exchangedAuthCredential,
+    config.credentialKey.value,
+  )
 
-  override fun deserialize(decoder: Decoder): AuthConfig = decodeWithoutInput {
-    decoder.decodeSerializableValue(Wire.serializer()).toConfig()
-  }
-
-  /**
-   * Rethrows a decode failure without its cause, whose message can quote secrets in the input. It
-   * covers only errors inside the config; a caller must hide errors around it, such as trailing
-   * text after the config.
-   */
-  private inline fun <T> decodeWithoutInput(decode: () -> T): T =
-    try {
-      decode()
-    } catch (e: IllegalArgumentException) {
-      // SerializationException extends IllegalArgumentException, so this catches both.
-      throw SerializationException("Malformed auth config.")
-    }
-
-  @Serializable
-  private class Wire(
-    @JsonNames("auth_scheme")
-    @Serializable(with = AuthSchemeSerializer::class)
-    val authScheme: AuthScheme,
-    @JsonNames("raw_auth_credential")
-    @Serializable(with = AuthCredentialSerializer::class)
-    val rawAuthCredential: AuthCredential? = null,
-    @JsonNames("exchanged_auth_credential")
-    @Serializable(with = AuthCredentialSerializer::class)
-    val exchangedAuthCredential: AuthCredential? = null,
-    @JsonNames("credential_key") val credentialKey: String? = null,
-  ) {
-    constructor(
-      config: AuthConfig
-    ) : this(
-      config.authScheme,
-      config.rawAuthCredential,
-      config.exchangedAuthCredential,
-      config.credentialKey.value,
+  // CredentialKey rejects an empty key with its own message.
+  fun toAuthConfig(): AuthConfig =
+    AuthConfig(
+      authScheme,
+      rawAuthCredential,
+      exchangedAuthCredential,
+      credentialKey?.let(::CredentialKey) ?: deriveCredentialKey(authScheme, rawAuthCredential),
     )
-
-    // CredentialKey rejects an empty key, which then reads as malformed.
-    fun toConfig(): AuthConfig =
-      AuthConfig(
-        authScheme,
-        rawAuthCredential,
-        exchangedAuthCredential,
-        credentialKey?.let(::CredentialKey) ?: deriveCredentialKey(authScheme, rawAuthCredential),
-      )
-  }
 }

@@ -26,6 +26,8 @@ import kotlin.test.assertNull
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.serializer
 import org.junit.Test
 
@@ -76,19 +78,12 @@ class AuthSchemeSerializerTest {
 
   @Test
   fun decode_missingType_throws() {
-    val error =
-      assertFailsWith<SerializationException> {
-        decode("""{"location": "header", "name": "key"}""")
-      }
-
-    assertEquals("An auth scheme has no string type.", error.message)
+    assertMalformed("""{"location": "header", "name": "key"}""")
   }
 
   @Test
   fun decode_nonObject_throws() {
-    val error = assertFailsWith<SerializationException> { decode("""["apiKey"]""") }
-
-    assertEquals("An auth scheme is not a JSON object.", error.message)
+    assertMalformed("""["apiKey"]""")
   }
 
   @Test
@@ -155,6 +150,18 @@ class AuthSchemeSerializerTest {
   }
 
   @Test
+  fun decode_openIdConnectUrlNull_readsTheEndpoints() {
+    // A JSON format that writes nulls writes this for the endpoints kind.
+    assertEquals(
+      AuthScheme.OpenIdConnect(authorizationEndpoint = "https://a", tokenEndpoint = "https://t"),
+      decode(
+        """{"type": "openIdConnect", "openIdConnectUrl": null,
+          "authorizationEndpoint": "https://a", "tokenEndpoint": "https://t"}"""
+      ),
+    )
+  }
+
+  @Test
   fun decode_openIdConnectUrl_readsTheUrl() {
     assertEquals(
       AuthScheme.OpenIdConnectUrl("https://o", "d"),
@@ -175,12 +182,14 @@ class AuthSchemeSerializerTest {
 
   @Test
   fun decode_openIdConnectWithOnlyAuthorizationEndpoint_throws() {
-    assertMalformed("""{"type": "openIdConnect", "authorizationEndpoint": "https://a"}""")
+    assertMissingOpenIdConnectFields(
+      """{"type": "openIdConnect", "authorizationEndpoint": "https://a"}"""
+    )
   }
 
   @Test
   fun decode_openIdConnectWithoutUrl_throws() {
-    assertMalformed("""{"type": "openIdConnect"}""")
+    assertMissingOpenIdConnectFields("""{"type": "openIdConnect"}""")
   }
 
   @Test
@@ -189,31 +198,66 @@ class AuthSchemeSerializerTest {
   }
 
   @Test
-  fun decode_typeAdkDoesNotDefine_throws() {
-    val error =
-      assertFailsWith<SerializationException> { decode("""{"type": "x-auth", "tenant": "t"}""") }
+  fun decode_snakeCaseNames_readsThem() {
+    assertEquals(
+      AuthScheme.Http(scheme = "bearer", bearerFormat = "JWT"),
+      decode("""{"type": "http", "scheme": "bearer", "bearer_format": "JWT"}"""),
+    )
+    assertEquals(
+      OAUTH2,
+      decode(
+        """{"type": "oauth2", "flows": {
+          "implicit": {"authorization_url": "https://i/auth", "refresh_url": "https://i/refresh",
+            "scopes": {"a": "A"}},
+          "password": {"token_url": "https://p/token", "refresh_url": "https://p/refresh",
+            "scopes": {"b": "B"}},
+          "client_credentials": {"token_url": "https://c/token",
+            "refresh_url": "https://c/refresh", "scopes": {"e": "E"}},
+          "authorization_code": {"authorization_url": "https://ac/auth",
+            "token_url": "https://ac/token", "refresh_url": "https://ac/refresh",
+            "scopes": {"c": "C", "d": "D"}}},
+          "issuer_url": "https://issuer", "description": "d"}"""
+      ),
+    )
+    assertEquals(
+      AuthScheme.OpenIdConnectUrl("https://o"),
+      decode("""{"type": "openIdConnect", "open_id_connect_url": "https://o"}"""),
+    )
+    assertEquals(
+      OPEN_ID_CONNECT,
+      decode(
+        """{"type": "openIdConnect", "authorization_endpoint": "https://a",
+          "token_endpoint": "https://t", "userinfo_endpoint": "https://u",
+          "revocation_endpoint": "https://r",
+          "token_endpoint_auth_methods_supported": ["client_secret_basic"],
+          "grant_types_supported": ["authorization_code"], "scopes": ["openid", "email"],
+          "description": "d"}"""
+      ),
+    )
+  }
 
-    assertEquals("An auth scheme has an unsupported type.", error.message)
+  @Test
+  fun decode_typeAdkDoesNotDefine_throws() {
+    // The decoder's own message quotes the type.
+    assertMalformed("""{"type": "x-auth", "tenant": "t"}""")
+  }
+
+  @Test
+  fun decode_typeAfterTheFields_readsTheKind() {
+    assertEquals(
+      AuthScheme.ApiKey("key", AuthScheme.ApiKey.Location.HEADER),
+      decode("""{"location": "header", "name": "key", "type": "apiKey"}"""),
+    )
   }
 
   @Test
   fun decode_typeNotString_throws() {
-    val error =
-      assertFailsWith<SerializationException> {
-        decode("""{"type": 1, "location": "header", "name": "key"}""")
-      }
-
-    assertEquals("An auth scheme has no string type.", error.message)
+    assertMalformed("""{"type": 1, "location": "header", "name": "key"}""")
   }
 
   @Test
   fun decode_typeNull_throws() {
-    val error =
-      assertFailsWith<SerializationException> {
-        decode("""{"type": null, "location": "header", "name": "key"}""")
-      }
-
-    assertEquals("An auth scheme has no string type.", error.message)
+    assertMalformed("""{"type": null, "location": "header", "name": "key"}""")
   }
 
   @Test
@@ -236,6 +280,32 @@ class AuthSchemeSerializerTest {
       json("""{"type": "apiKey", "location": "header", "name": "X-Key", "description": "d"}"""),
       encode(AuthScheme.ApiKey("X-Key", AuthScheme.ApiKey.Location.HEADER, "d")),
     )
+  }
+
+  @Test
+  fun encode_explicitNullsJson_roundTripsBothOpenIdConnectKinds() {
+    // Such a Json writes the other kind's fields as null, which still read back as this kind.
+    val nullWriting =
+      Json(adkJson) {
+        explicitNulls = true
+        encodeDefaults = true
+      }
+    val otherKindFields =
+      mapOf(
+        AuthScheme.OpenIdConnectUrl("https://o", "d") to "authorizationEndpoint",
+        OPEN_ID_CONNECT to "openIdConnectUrl",
+      )
+
+    for ((scheme, otherKindField) in otherKindFields) {
+      val encoded = nullWriting.encodeToJsonElement(AuthSchemeSerializer, scheme)
+
+      assertEquals(JsonNull, encoded.jsonObject[otherKindField], otherKindField)
+      assertEquals(
+        scheme,
+        nullWriting.decodeFromJsonElement(AuthSchemeSerializer, encoded),
+        otherKindField,
+      )
+    }
   }
 
   @Test
@@ -399,7 +469,17 @@ class AuthSchemeSerializerTest {
     fun assertMalformed(input: String) {
       val error = assertFailsWith<SerializationException> { decode(input) }
 
-      assertEquals("Malformed auth scheme.", error.message)
+      assertEquals("Malformed auth data.", error.message)
+      assertNull(error.cause)
+    }
+
+    fun assertMissingOpenIdConnectFields(input: String) {
+      val error = assertFailsWith<SerializationException> { decode(input) }
+
+      assertEquals(
+        "An openIdConnect scheme needs an openIdConnectUrl or both endpoints.",
+        error.message,
+      )
       assertNull(error.cause)
     }
   }

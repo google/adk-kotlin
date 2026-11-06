@@ -25,9 +25,6 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
-import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.encoding.Decoder
-import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonNames
 
 /**
@@ -35,85 +32,76 @@ import kotlinx.serialization.json.JsonNames
  * `apiKey`, and the kind's field holds its payload. Input also takes each multi-word field's
  * snake_case name, as the server's request bodies do.
  */
-internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
-  override val descriptor: SerialDescriptor = Wire.serializer().descriptor
+internal object AuthCredentialSerializer :
+  KSerializer<AuthCredential> by surrogateSerializer(
+    surrogate = AuthCredentialSurrogate.serializer(),
+    toSurrogate = AuthCredential::toSurrogate,
+    fromSurrogate = AuthCredentialSurrogate::toAuthCredential,
+  )
 
-  override fun serialize(encoder: Encoder, value: AuthCredential) {
-    encoder.encodeSerializableValue(Wire.serializer(), Wire.of(value))
+private fun AuthCredential.toSurrogate(): AuthCredentialSurrogate =
+  when (this) {
+    is AuthCredential.ApiKey -> AuthCredentialSurrogate(this)
+    is AuthCredential.Http -> AuthCredentialSurrogate(this)
+    is AuthCredential.OAuth2 -> AuthCredentialSurrogate(this)
+    is AuthCredential.ServiceAccount -> AuthCredentialSurrogate(this)
   }
 
-  override fun deserialize(decoder: Decoder): AuthCredential =
-    decodeWithoutInput { decoder.decodeSerializableValue(Wire.serializer()) }.toCredential()
+/**
+ * The credential's JSON object: the kind in [authType], and the payload in that kind's field, which
+ * is `oauth2` for OpenID Connect.
+ */
+@Serializable
+private class AuthCredentialSurrogate(
+  @JsonNames("auth_type") val authType: Type,
+  @JsonNames("api_key") val apiKey: JsonSecret? = null,
+  val http: Http? = null,
+  @JsonNames("service_account") val serviceAccount: ServiceAccount? = null,
+  val oauth2: OAuth2? = null,
+) {
+  constructor(apiKey: AuthCredential.ApiKey) : this(Type.API_KEY, apiKey = apiKey.apiKey)
 
-  /**
-   * Rethrows a decode failure without its cause, whose message can quote secrets in the input. It
-   * covers only errors inside the credential; a caller that decodes a larger document must hide
-   * errors around it, such as trailing text.
-   */
-  private inline fun <T> decodeWithoutInput(decode: () -> T): T =
-    try {
-      decode()
-    } catch (e: IllegalArgumentException) {
-      // SerializationException extends IllegalArgumentException, so this catches both.
-      throw SerializationException("Malformed auth credential.")
+  constructor(http: AuthCredential.Http) : this(Type.HTTP, http = Http(http))
+
+  constructor(
+    oauth2: AuthCredential.OAuth2
+  ) : this(
+    when (oauth2.variant) {
+      AuthCredential.OAuth2.Variant.OAUTH2 -> Type.OAUTH2
+      AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT -> Type.OPEN_ID_CONNECT
+    },
+    oauth2 = OAuth2(oauth2),
+  )
+
+  constructor(
+    serviceAccount: AuthCredential.ServiceAccount
+  ) : this(Type.SERVICE_ACCOUNT, serviceAccount = ServiceAccount(serviceAccount))
+
+  fun toAuthCredential(): AuthCredential =
+    when (authType) {
+      Type.API_KEY -> AuthCredential.ApiKey(apiKey)
+      Type.HTTP -> http.required("http").toHttp()
+      Type.OAUTH2 -> oauth2.required("oauth2").toOAuth2(AuthCredential.OAuth2.Variant.OAUTH2)
+      Type.OPEN_ID_CONNECT ->
+        oauth2.required("oauth2").toOAuth2(AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT)
+      Type.SERVICE_ACCOUNT -> serviceAccount.required("serviceAccount").toServiceAccount()
     }
 
-  /**
-   * The credential's JSON object: the kind in [authType], and the payload in that kind's field,
-   * which is `oauth2` for OpenID Connect.
-   */
+  // Only an API key's payload may be absent; the other kinds are unusable without theirs.
+  private fun <P : Any> P?.required(field: String): P =
+    this ?: throw SerializationException("An auth credential has no $field payload.")
+
   @Serializable
-  private class Wire(
-    @JsonNames("auth_type") val authType: Type,
-    @JsonNames("api_key") val apiKey: JsonSecret? = null,
-    val http: Http? = null,
-    @JsonNames("service_account") val serviceAccount: ServiceAccount? = null,
-    val oauth2: OAuth2? = null,
-  ) {
-    fun toCredential(): AuthCredential =
-      when (authType) {
-        Type.API_KEY -> AuthCredential.ApiKey(apiKey)
-        Type.HTTP -> http.required("http").toHttp()
-        Type.OAUTH2 -> oauth2.required("oauth2").toOAuth2(AuthCredential.OAuth2.Variant.OAUTH2)
-        Type.OPEN_ID_CONNECT ->
-          oauth2.required("oauth2").toOAuth2(AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT)
-        Type.SERVICE_ACCOUNT -> serviceAccount.required("serviceAccount").toServiceAccount()
-      }
-
-    // Only an API key's payload may be absent; the other kinds are unusable without theirs.
-    private fun <P : Any> P?.required(field: String): P =
-      this ?: throw SerializationException("An auth credential has no $field payload.")
-
-    @Serializable
-    enum class Type {
-      @SerialName("apiKey") API_KEY,
-      @SerialName("http") HTTP,
-      @SerialName("oauth2") OAUTH2,
-      @SerialName("openIdConnect") OPEN_ID_CONNECT,
-      @SerialName("serviceAccount") SERVICE_ACCOUNT,
-    }
-
-    companion object {
-      fun of(credential: AuthCredential): Wire =
-        when (credential) {
-          is AuthCredential.ApiKey -> Wire(Type.API_KEY, apiKey = credential.apiKey)
-          is AuthCredential.Http -> Wire(Type.HTTP, http = Http(credential))
-          is AuthCredential.OAuth2 ->
-            Wire(
-              when (credential.variant) {
-                AuthCredential.OAuth2.Variant.OAUTH2 -> Type.OAUTH2
-                AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT -> Type.OPEN_ID_CONNECT
-              },
-              oauth2 = OAuth2(credential),
-            )
-          is AuthCredential.ServiceAccount ->
-            Wire(Type.SERVICE_ACCOUNT, serviceAccount = ServiceAccount(credential))
-        }
-    }
+  enum class Type {
+    @SerialName("apiKey") API_KEY,
+    @SerialName("http") HTTP,
+    @SerialName("oauth2") OAUTH2,
+    @SerialName("openIdConnect") OPEN_ID_CONNECT,
+    @SerialName("serviceAccount") SERVICE_ACCOUNT,
   }
 
   @Serializable
-  private class Http(
+  class Http(
     val scheme: String,
     val credentials: Credentials,
     @JsonNames("additional_headers") val additionalHeaders: Map<String, JsonSecret>? = null,
@@ -142,7 +130,7 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
 
   /** The `oauth2` payload, shared by the `oauth2` and `openIdConnect` kinds. */
   @Serializable
-  private class OAuth2(
+  class OAuth2(
     @JsonNames("client_id") val clientId: String? = null,
     @JsonNames("client_secret") val clientSecret: JsonSecret? = null,
     @JsonNames("auth_uri") val authUri: String? = null,
@@ -214,7 +202,7 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
   }
 
   @Serializable
-  private class ServiceAccount(
+  class ServiceAccount(
     @JsonNames("service_account_credential") val serviceAccountCredential: Credential? = null,
     val scopes: List<String>? = null,
     @JsonNames("use_default_credential") val useDefaultCredential: Boolean = false,
@@ -232,18 +220,13 @@ internal object AuthCredentialSerializer : KSerializer<AuthCredential> {
     )
 
     fun toServiceAccount(): AuthCredential.ServiceAccount =
-      try {
-        AuthCredential.ServiceAccount(
-          serviceAccountCredential = serviceAccountCredential?.toCredential(),
-          scopes = scopes,
-          useDefaultCredential = useDefaultCredential,
-          useIdToken = useIdToken,
-          audience = audience,
-        )
-      } catch (e: IllegalArgumentException) {
-        // The constructor's check messages carry no input.
-        throw SerializationException(e.message, e)
-      }
+      AuthCredential.ServiceAccount(
+        serviceAccountCredential = serviceAccountCredential?.toCredential(),
+        scopes = scopes,
+        useDefaultCredential = useDefaultCredential,
+        useIdToken = useIdToken,
+        audience = audience,
+      )
 
     @Serializable
     class Credential(

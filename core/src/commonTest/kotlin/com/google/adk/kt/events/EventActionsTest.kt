@@ -306,7 +306,7 @@ class EventActionsTest {
         )
       }
 
-    assertEquals("Malformed auth config.", error.message)
+    assertEquals("Malformed auth data.", error.message)
   }
 
   private companion object {

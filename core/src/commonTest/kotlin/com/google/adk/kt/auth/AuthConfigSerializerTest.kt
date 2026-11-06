@@ -36,13 +36,27 @@ class AuthConfigSerializerTest {
   }
 
   @Test
-  fun decode_emptyCredentialKey_throws() {
+  fun decode_credentialWithoutPayload_throwsWithItsCheck() {
+    val error =
+      assertFailsWith<SerializationException> {
+        decode(
+          """{"authScheme": {"type": "http", "scheme": "bearer"},
+            "exchangedAuthCredential": {"authType": "http"}, "credentialKey": "k"}"""
+        )
+      }
+
+    assertEquals("An auth credential has no http payload.", error.message)
+    assertNull(error.cause)
+  }
+
+  @Test
+  fun decode_emptyCredentialKey_throwsWithItsCheck() {
     val error =
       assertFailsWith<SerializationException> {
         decode("""{"authScheme": {"type": "http", "scheme": "bearer"}, "credentialKey": ""}""")
       }
 
-    assertEquals("Malformed auth config.", error.message)
+    assertEquals("CredentialKey requires a non-empty value.", error.message)
     assertNull(error.cause)
   }
 
@@ -65,13 +79,14 @@ class AuthConfigSerializerTest {
         """{"credentialKey": "k"}""",
         """{"authScheme": {"scheme": "bearer"}, "credentialKey": "k"}""",
         """{"authScheme": {"type": "http", "scheme": "bearer"},
-          "exchangedAuthCredential": {"authType": "http"}, "credentialKey": "k"}""",
+          "exchangedAuthCredential": {"authType": "http", "http": {"scheme": "bearer"}},
+          "credentialKey": "k"}""",
       )
 
     inputs.forEachIndexed { i, input ->
       val error = assertFailsWith<SerializationException>("input #$i") { decode(input) }
 
-      assertEquals("Malformed auth config.", error.message, "input #$i")
+      assertEquals("Malformed auth data.", error.message, "input #$i")
       assertNull(error.cause, "input #$i")
     }
   }
@@ -87,7 +102,7 @@ class AuthConfigSerializerTest {
         )
       }
 
-    assertEquals("Malformed auth config.", error.message)
+    assertEquals("Malformed auth data.", error.message)
     assertNull(error.cause)
   }
 

@@ -200,6 +200,7 @@ class AuthCredentialSerializerTest {
       }
 
     assertEquals("ServiceAccount requires audience when useIdToken is true.", error.message)
+    assertNull(error.cause)
   }
 
   @Test
@@ -271,6 +272,7 @@ class AuthCredentialSerializerTest {
       "ServiceAccount requires serviceAccountCredential when useDefaultCredential is false.",
       error.message,
     )
+    assertNull(error.cause)
   }
 
   @Test
@@ -559,7 +561,7 @@ class AuthCredentialSerializerTest {
     fun assertMalformed(input: String) {
       val error = assertFailsWith<SerializationException> { decode(input) }
 
-      assertEquals("Malformed auth credential.", error.message)
+      assertEquals("Malformed auth data.", error.message)
       assertNull(error.cause)
     }
   }

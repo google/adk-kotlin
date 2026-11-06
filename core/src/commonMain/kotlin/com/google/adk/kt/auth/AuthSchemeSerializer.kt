@@ -20,127 +20,84 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
-import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.encoding.Decoder
-import kotlinx.serialization.encoding.Encoder
-import kotlinx.serialization.json.JsonDecoder
-import kotlinx.serialization.json.JsonEncoder
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonClassDiscriminator
+import kotlinx.serialization.json.JsonNames
 
 /**
  * Reads and writes an [AuthScheme] as a JSON object whose `type` picks the kind, such as `apiKey`;
- * an `openIdConnect` scheme with an `openIdConnectUrl` is the discovery URL kind. It rejects a
- * scheme with no `type`, a `type` ADK does not define, or a missing or invalid field its `type`
- * needs.
+ * an `openIdConnect` scheme with an `openIdConnectUrl` is the discovery URL kind. Input also takes
+ * each multi-word field's snake_case name, as the server's request bodies do. It rejects a scheme
+ * with no `type`, a `type` ADK does not define, or a missing or invalid field its `type` needs.
  */
-internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
-  override val descriptor: SerialDescriptor = JsonObject.serializer().descriptor
+internal object AuthSchemeSerializer :
+  KSerializer<AuthScheme> by surrogateSerializer(
+    surrogate = AuthSchemeSurrogate.serializer(),
+    toSurrogate = AuthScheme::toSurrogate,
+    fromSurrogate = AuthSchemeSurrogate::toAuthScheme,
+  )
 
-  override fun serialize(encoder: Encoder, value: AuthScheme) {
-    val jsonEncoder =
-      encoder as? JsonEncoder
-        ?: throw SerializationException("An auth scheme supports JSON formats only.")
-    val json = jsonEncoder.json
-    val fields =
-      when (value) {
-        is AuthScheme.ApiKey -> json.encodeToJsonElement(ApiKey.serializer(), ApiKey(value))
-        is AuthScheme.Http -> json.encodeToJsonElement(Http.serializer(), Http(value))
-        is AuthScheme.OAuth2 -> json.encodeToJsonElement(OAuth2.serializer(), OAuth2(value))
-        is AuthScheme.OpenIdConnectUrl ->
-          json.encodeToJsonElement(OpenIdConnectUrl.serializer(), OpenIdConnectUrl(value))
-        is AuthScheme.OpenIdConnect ->
-          json.encodeToJsonElement(OpenIdConnect.serializer(), OpenIdConnect(value))
-      }
-    jsonEncoder.encodeJsonElement(
-      JsonObject(mapOf("type" to JsonPrimitive(value.type)) + fields.jsonObject)
-    )
+private fun AuthScheme.toSurrogate(): AuthSchemeSurrogate =
+  when (this) {
+    is AuthScheme.ApiKey -> AuthSchemeSurrogate.ApiKey(this)
+    is AuthScheme.Http -> AuthSchemeSurrogate.Http(this)
+    is AuthScheme.OAuth2 -> AuthSchemeSurrogate.OAuth2(this)
+    is AuthScheme.OpenIdConnectUrl -> AuthSchemeSurrogate.OpenIdConnect(this)
+    is AuthScheme.OpenIdConnect -> AuthSchemeSurrogate.OpenIdConnect(this)
   }
 
-  override fun deserialize(decoder: Decoder): AuthScheme {
-    val jsonDecoder =
-      decoder as? JsonDecoder
-        ?: throw SerializationException("An auth scheme supports JSON formats only.")
-    val scheme =
-      decodeWithoutInput { jsonDecoder.decodeJsonElement() } as? JsonObject
-        ?: throw SerializationException("An auth scheme is not a JSON object.")
-    val type =
-      (scheme["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        ?: throw SerializationException("An auth scheme has no string type.")
-    val fields = JsonObject(scheme - "type")
-    fun <W> decode(serializer: KSerializer<W>): W = decodeWithoutInput {
-      jsonDecoder.json.decodeFromJsonElement(serializer, fields)
-    }
-    return when (type) {
-      "apiKey" -> decode(ApiKey.serializer()).toApiKey()
-      "http" -> decode(Http.serializer()).toHttp()
-      "oauth2" -> decode(OAuth2.serializer()).toOAuth2()
-      "openIdConnect" ->
-        if ("openIdConnectUrl" in fields) {
-          decode(OpenIdConnectUrl.serializer()).toOpenIdConnectUrl()
-        } else {
-          decode(OpenIdConnect.serializer()).toOpenIdConnect()
-        }
-      else -> throw SerializationException("An auth scheme has an unsupported type.")
-    }
-  }
-
-  /**
-   * Rethrows a decode failure without its cause, whose message can quote secrets in the input. It
-   * covers only errors inside the scheme; a caller that decodes a larger document must hide errors
-   * around it, such as trailing text.
-   */
-  private inline fun <T> decodeWithoutInput(decode: () -> T): T =
-    try {
-      decode()
-    } catch (e: IllegalArgumentException) {
-      // SerializationException extends IllegalArgumentException, so this catches both.
-      throw SerializationException("Malformed auth scheme.")
-    }
+/** The scheme's JSON object, whose `type` picks the subclass. */
+@Serializable
+@JsonClassDiscriminator("type")
+private sealed interface AuthSchemeSurrogate {
+  fun toAuthScheme(): AuthScheme
 
   @Serializable
-  private class ApiKey(
+  @SerialName("apiKey")
+  class ApiKey(
     val location: AuthScheme.ApiKey.Location,
     val name: String,
     val description: String? = null,
-  ) {
+  ) : AuthSchemeSurrogate {
     constructor(apiKey: AuthScheme.ApiKey) : this(apiKey.location, apiKey.name, apiKey.description)
 
-    fun toApiKey(): AuthScheme.ApiKey = AuthScheme.ApiKey(name, location, description)
+    override fun toAuthScheme(): AuthScheme = AuthScheme.ApiKey(name, location, description)
   }
 
   @Serializable
-  private class Http(
+  @SerialName("http")
+  class Http(
     val scheme: String,
-    val bearerFormat: String? = null,
+    @JsonNames("bearer_format") val bearerFormat: String? = null,
     val description: String? = null,
-  ) {
+  ) : AuthSchemeSurrogate {
     constructor(http: AuthScheme.Http) : this(http.scheme, http.bearerFormat, http.description)
 
-    fun toHttp(): AuthScheme.Http = AuthScheme.Http(scheme, bearerFormat, description)
+    override fun toAuthScheme(): AuthScheme = AuthScheme.Http(scheme, bearerFormat, description)
   }
 
   @Serializable
-  private class OAuth2(
+  @SerialName("oauth2")
+  class OAuth2(
     val flows: Flows,
-    val issuerUrl: String? = null,
+    @JsonNames("issuer_url") val issuerUrl: String? = null,
     val description: String? = null,
-  ) {
+  ) : AuthSchemeSurrogate {
     constructor(
       oauth2: AuthScheme.OAuth2
     ) : this(Flows(oauth2.flows), oauth2.issuerUrl, oauth2.description)
 
-    fun toOAuth2(): AuthScheme.OAuth2 = AuthScheme.OAuth2(flows.toFlows(), issuerUrl, description)
+    override fun toAuthScheme(): AuthScheme =
+      AuthScheme.OAuth2(flows.toFlows(), issuerUrl, description)
 
     @Serializable
     class Flows(
       val implicit: Implicit? = null,
       val password: Password? = null,
-      val clientCredentials: ClientCredentials? = null,
-      val authorizationCode: AuthorizationCode? = null,
+      @JsonNames("client_credentials") val clientCredentials: ClientCredentials? = null,
+      @JsonNames("authorization_code") val authorizationCode: AuthorizationCode? = null,
     ) {
       constructor(
         flows: AuthScheme.OAuth2.Flows
@@ -162,8 +119,8 @@ internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
 
     @Serializable
     class Implicit(
-      val authorizationUrl: String,
-      val refreshUrl: String? = null,
+      @JsonNames("authorization_url") val authorizationUrl: String,
+      @JsonNames("refresh_url") val refreshUrl: String? = null,
       val scopes: Map<String, String> = emptyMap(),
     ) {
       constructor(
@@ -176,8 +133,8 @@ internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
 
     @Serializable
     class Password(
-      val tokenUrl: String,
-      val refreshUrl: String? = null,
+      @JsonNames("token_url") val tokenUrl: String,
+      @JsonNames("refresh_url") val refreshUrl: String? = null,
       val scopes: Map<String, String> = emptyMap(),
     ) {
       constructor(
@@ -190,8 +147,8 @@ internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
 
     @Serializable
     class ClientCredentials(
-      val tokenUrl: String,
-      val refreshUrl: String? = null,
+      @JsonNames("token_url") val tokenUrl: String,
+      @JsonNames("refresh_url") val refreshUrl: String? = null,
       val scopes: Map<String, String> = emptyMap(),
     ) {
       constructor(
@@ -204,9 +161,9 @@ internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
 
     @Serializable
     class AuthorizationCode(
-      val authorizationUrl: String,
-      val tokenUrl: String,
-      val refreshUrl: String? = null,
+      @JsonNames("authorization_url") val authorizationUrl: String,
+      @JsonNames("token_url") val tokenUrl: String,
+      @JsonNames("refresh_url") val refreshUrl: String? = null,
       val scopes: Map<String, String> = emptyMap(),
     ) {
       constructor(
@@ -218,27 +175,28 @@ internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
     }
   }
 
+  /**
+   * Both OpenID Connect kinds, which share the `openIdConnect` type: the discovery URL kind when
+   * [openIdConnectUrl] is set, else the kind that gives the endpoints.
+   */
   @Serializable
-  private class OpenIdConnectUrl(val openIdConnectUrl: String, val description: String? = null) {
-    constructor(
-      scheme: AuthScheme.OpenIdConnectUrl
-    ) : this(scheme.openIdConnectUrl, scheme.description)
-
-    fun toOpenIdConnectUrl(): AuthScheme.OpenIdConnectUrl =
-      AuthScheme.OpenIdConnectUrl(openIdConnectUrl, description)
-  }
-
-  @Serializable
-  private class OpenIdConnect(
-    val authorizationEndpoint: String,
-    val tokenEndpoint: String,
-    val userinfoEndpoint: String? = null,
-    val revocationEndpoint: String? = null,
+  @SerialName("openIdConnect")
+  class OpenIdConnect(
+    @JsonNames("open_id_connect_url") val openIdConnectUrl: String? = null,
+    @JsonNames("authorization_endpoint") val authorizationEndpoint: String? = null,
+    @JsonNames("token_endpoint") val tokenEndpoint: String? = null,
+    @JsonNames("userinfo_endpoint") val userinfoEndpoint: String? = null,
+    @JsonNames("revocation_endpoint") val revocationEndpoint: String? = null,
+    @JsonNames("token_endpoint_auth_methods_supported")
     val tokenEndpointAuthMethodsSupported: List<String>? = null,
-    val grantTypesSupported: List<String>? = null,
+    @JsonNames("grant_types_supported") val grantTypesSupported: List<String>? = null,
     val scopes: List<String>? = null,
     val description: String? = null,
-  ) {
+  ) : AuthSchemeSurrogate {
+    constructor(
+      scheme: AuthScheme.OpenIdConnectUrl
+    ) : this(openIdConnectUrl = scheme.openIdConnectUrl, description = scheme.description)
+
     constructor(
       scheme: AuthScheme.OpenIdConnect
     ) : this(
@@ -252,8 +210,16 @@ internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
       description = scheme.description,
     )
 
-    fun toOpenIdConnect(): AuthScheme.OpenIdConnect =
-      AuthScheme.OpenIdConnect(
+    override fun toAuthScheme(): AuthScheme {
+      if (openIdConnectUrl != null) {
+        return AuthScheme.OpenIdConnectUrl(openIdConnectUrl, description)
+      }
+      if (authorizationEndpoint == null || tokenEndpoint == null) {
+        throw SerializationException(
+          "An openIdConnect scheme needs an openIdConnectUrl or both endpoints."
+        )
+      }
+      return AuthScheme.OpenIdConnect(
         authorizationEndpoint = authorizationEndpoint,
         tokenEndpoint = tokenEndpoint,
         userinfoEndpoint = userinfoEndpoint,
@@ -263,5 +229,6 @@ internal object AuthSchemeSerializer : KSerializer<AuthScheme> {
         scopes = scopes,
         description = description,
       )
+    }
   }
 }
