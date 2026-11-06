@@ -114,7 +114,8 @@ import kotlinx.coroutines.flow.transformWhile
  * @property beforeModelCallbacks List of callbacks to run before each model call.
  * @property afterModelCallbacks List of callbacks to run after each model call.
  * @property beforeToolCallbacks List of callbacks to run before each tool call.
- * @property afterToolCallbacks List of callbacks to run after each tool call.
+ * @property afterToolCallbacks List of callbacks to run after each tool call, skipped when a
+ *   plugin's after-tool callback replaces the result.
  * @property inputSchema The input schema of the agent.
  * @property outputSchema The schema the agent's final response must conform to. Only top-level
  *   object schemas are supported, but a workflow node run also accepts list and primitive schemas

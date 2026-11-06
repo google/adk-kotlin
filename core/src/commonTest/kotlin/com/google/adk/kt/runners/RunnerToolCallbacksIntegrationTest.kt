@@ -21,11 +21,14 @@ import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.ToolContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -272,6 +275,103 @@ class RunnerToolCallbacksIntegrationTest {
     assertEquals("from-after-callback", response.response["result"])
   }
 
+  @Test
+  fun runAsync_pluginAfterToolReplacesResult_skipsAgentAfterToolCallbacks() = runBlocking {
+    var agentCallbackRan = false
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = twoTurnFunctionCallModel("real_tool"),
+        tools =
+          listOf(DummyTool(name = "real_tool", onRun = { _, _ -> mapOf("result" to "from-tool") })),
+        afterToolCallbacks =
+          listOf(
+            AfterToolCallback { _, _, _, _ ->
+              agentCallbackRan = true
+              mapOf("result" to "from-agent")
+            }
+          ),
+      )
+    val plugin = afterToolPlugin { mapOf("result" to "from-plugin") }
+    val runner = InMemoryRunner(agent = agent, plugins = listOf(plugin))
+
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    val response =
+      events.firstOrNull { it.functionResponses().isNotEmpty() }?.functionResponses()?.single()
+        ?: fail("expected a function-response event, got: $events")
+    assertEquals("from-plugin", response.response["result"])
+    assertFalse(agentCallbackRan, "the agent's after-tool callback ran after the plugin answered")
+  }
+
+  @Test
+  fun runAsync_pluginAfterToolReturnsResultItself_agentAfterToolCallbacksStillRun() = runBlocking {
+    var agentSaw: Any? = null
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = twoTurnFunctionCallModel("real_tool"),
+        tools =
+          listOf(DummyTool(name = "real_tool", onRun = { _, _ -> mapOf("result" to "from-tool") })),
+        afterToolCallbacks =
+          listOf(
+            AfterToolCallback { _, _, _, result ->
+              agentSaw = result["result"]
+              mapOf("result" to "from-agent")
+            }
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent, plugins = listOf(afterToolPlugin { it }))
+
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    val response =
+      events.firstOrNull { it.functionResponses().isNotEmpty() }?.functionResponses()?.single()
+        ?: fail("expected a function-response event, got: $events")
+    assertEquals("from-tool", agentSaw)
+    assertEquals("from-agent", response.response["result"])
+  }
+
+  @Test
+  fun runAsync_pluginAfterToolReturnsAnEqualCopy_skipsAgentAfterToolCallbacks() = runBlocking {
+    var agentCallbackRan = false
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = twoTurnFunctionCallModel("real_tool"),
+        tools =
+          listOf(DummyTool(name = "real_tool", onRun = { _, _ -> mapOf("result" to "from-tool") })),
+        afterToolCallbacks =
+          listOf(
+            AfterToolCallback { _, _, _, _ ->
+              agentCallbackRan = true
+              mapOf("result" to "from-agent")
+            }
+          ),
+      )
+    val runner = InMemoryRunner(agent = agent, plugins = listOf(afterToolPlugin { it.toMap() }))
+
+    val events =
+      runner
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+        .toList()
+
+    val response =
+      events.firstOrNull { it.functionResponses().isNotEmpty() }?.functionResponses()?.single()
+        ?: fail("expected a function-response event, got: $events")
+    assertEquals("from-tool", response.response["result"])
+    assertFalse(
+      agentCallbackRan,
+      "the agent's after-tool callback ran after the plugin returned an equal copy",
+    )
+  }
+
   /**
    * If the tool throws and `onToolErrorCallback` returns `Break(fallback)`, the runner converts the
    * failure into a normal `FunctionResponse` and the model still produces its final text.
@@ -374,6 +474,19 @@ class RunnerToolCallbacksIntegrationTest {
         .toList()
     }
   }
+
+  /** A plugin whose after-tool callback returns what [answer] makes of the result it is given. */
+  private fun afterToolPlugin(answer: (Map<String, Any?>) -> Map<String, Any?>): Plugin =
+    object : Plugin {
+      override val name = "after-tool-plugin"
+
+      override suspend fun afterTool(
+        context: ToolContext,
+        tool: BaseTool,
+        args: Map<String, Any?>,
+        result: Map<String, Any?>,
+      ): Map<String, Any?> = answer(result)
+    }
 
   /**
    * A `DummyModel` that emits a `FunctionCall` on turn 1 and a fixed final text on turn 2. Useful

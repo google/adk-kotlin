@@ -844,13 +844,23 @@ data class InvocationContext(
   ): Any? {
     if (llmAgent == null) return null
 
-    val allAfterCallbacks = pluginManager.afterToolCallbacks + llmAgent.afterToolCallbacks
+    val result = toFinalResponseMap(toolResult)
+    val pluginResult =
+      runAfterToolCallbacksPipeline(
+        pluginManager.afterToolCallbacks,
+        toolContext,
+        tool,
+        args,
+        result,
+      )
+    // Any map but the one the plugins were given is an answer, so the agent's callbacks don't run.
+    if (pluginResult !== result) return pluginResult
     return runAfterToolCallbacksPipeline(
-      allAfterCallbacks,
+      llmAgent.afterToolCallbacks,
       toolContext,
       tool,
       args,
-      toFinalResponseMap(toolResult),
+      result,
     )
   }
 
