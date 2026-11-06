@@ -46,6 +46,7 @@ import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.OutputSchemaProcessor
 import com.google.adk.kt.processors.RequestConfirmationProcessor
+import com.google.adk.kt.processors.RequestCredentialProcessor
 import com.google.adk.kt.processors.TaskCompletionProcessor
 import com.google.adk.kt.processors.findTransferTargets
 import com.google.adk.kt.serialization.anyToJsonElement
@@ -251,6 +252,7 @@ class LlmAgent(
   internal val systemBeforeTurnProcessors: List<LlmRequestProcessor> =
     listOf(
       BasicRequestProcessor(),
+      RequestCredentialProcessor(),
       RequestConfirmationProcessor(),
       InstructionsProcessor(),
       IdentityProcessor(),

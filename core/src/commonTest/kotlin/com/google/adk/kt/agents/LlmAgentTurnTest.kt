@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
@@ -75,6 +76,7 @@ import com.google.adk.kt.testing.modelTransferToAgentResponse
 import com.google.adk.kt.testing.outputTranscription
 import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.storedBytes
+import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.testing.transferToAgentCallPart
 import com.google.adk.kt.testing.turnComplete
 import com.google.adk.kt.testing.userFunctionResponse
@@ -944,6 +946,40 @@ class LlmAgentTurnTest {
     assertEquals(
       listOf("my_function"),
       events.flatMap { it.functionResponses() }.mapNotNull { it.name },
+    )
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun runLive_toolRequestingCredential_answersAndRequestsNone() = runBlocking {
+    val config = testApiKeyConfig(credentialKey = "key")
+    val asking =
+      object : FunctionTool("my_function", "Needs a credential.") {
+        override fun declaration() = null
+
+        override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
+          context.requestCredential(config)
+          return mapOf("status" to "pending")
+        }
+      }
+    val agent =
+      LlmAgent(
+        name = "LiveAgent",
+        model = RecordingLiveModel(RecordingLiveConnection(toolCallTurn())),
+        tools = listOf(asking),
+      )
+
+    val events = agent.runLive(liveContextFor(agent)).toList()
+
+    // A live run can't take a sign-in, so it asks for none.
+    assertTrue(
+      events
+        .flatMap { it.functionCalls() }
+        .none { it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME }
+    )
+    assertEquals(
+      mapOf<String, Any?>("status" to "pending"),
+      events.flatMap { it.functionResponses() }.single().response,
     )
   }
 

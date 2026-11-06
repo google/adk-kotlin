@@ -44,12 +44,13 @@ class CredentialKey(val value: String) {
     require(value.isNotEmpty()) { "CredentialKey requires a non-empty value." }
   }
 
-  /**
-   * The state keys a stored credential is read from: the app's reply, which lasts for one
-   * invocation, then [value].
-   */
+  /** The state key of the app's sign-in reply, which lasts for one invocation. */
+  internal val signInReplyStateKey: String
+    get() = State.TEMP_PREFIX + value
+
+  /** The state keys a stored credential is read from: [signInReplyStateKey], then [value]. */
   internal val stateKeys: List<String>
-    get() = listOf(State.TEMP_PREFIX + value, value)
+    get() = listOf(signInReplyStateKey, value)
 
   override fun equals(other: Any?): Boolean = other is CredentialKey && other.value == value
 
