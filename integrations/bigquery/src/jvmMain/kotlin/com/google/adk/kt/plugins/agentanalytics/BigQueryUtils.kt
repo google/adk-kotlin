@@ -179,8 +179,7 @@ internal object BigQueryUtils {
   /**
    * Returns the framework/version string identifying this plugin as the writer of a row.
    *
-   * Not yet used: it belongs on the Storage Write API's `AppendRowsRequest.trace_id`, and the
-   * legacy `insertAll` path this plugin writes through has no equivalent field.
+   * It names this plugin in the Storage Write API trace id and is the write client's user agent.
    */
   fun getVersionHeaderValue(): String = "$FRAMEWORK_PREFIX/$VERSION"
 

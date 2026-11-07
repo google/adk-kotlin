@@ -48,9 +48,8 @@ import com.google.adk.kt.types.Type
 import com.google.adk.kt.types.UsageMetadata
 import com.google.cloud.bigquery.BigQuery
 import com.google.cloud.bigquery.BigQueryException
+import com.google.cloud.bigquery.BigQueryOptions
 import com.google.cloud.bigquery.Field
-import com.google.cloud.bigquery.InsertAllRequest
-import com.google.cloud.bigquery.InsertAllResponse
 import com.google.cloud.bigquery.QueryJobConfiguration
 import com.google.cloud.bigquery.Schema
 import com.google.cloud.bigquery.StandardSQLTypeName
@@ -61,24 +60,36 @@ import com.google.cloud.bigquery.TableInfo
 import com.google.cloud.bigquery.TableResult
 import com.google.cloud.bigquery.TimePartitioning
 import java.io.IOException
+import java.time.Duration
+import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.logging.Handler
 import java.util.logging.LogRecord
 import java.util.logging.Logger
 import java.util.logging.SimpleFormatter
+import kotlin.concurrent.thread
+import kotlin.coroutines.CoroutineContext
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TestTimeSource
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -87,13 +98,14 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.mockito.kotlin.any
-import org.mockito.kotlin.argumentCaptor
-import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.check
 import org.mockito.kotlin.clearInvocations
+import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.stub
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
@@ -102,7 +114,6 @@ class BigQueryAgentAnalyticsPluginTest {
 
   private val mockBigQuery = mock<BigQuery>()
   private val mockTable = mock<Table>()
-  private val mockInsertAllResponse = mock<InsertAllResponse>()
 
   private val config =
     BigQueryLoggerConfig(
@@ -111,42 +122,38 @@ class BigQueryAgentAnalyticsPluginTest {
       tableName = "test-table",
     )
 
-  private val plugin =
-    BigQueryAgentAnalyticsPlugin(config, mockBigQuery, ioContext = Dispatchers.Unconfined)
+  private val plugins = mutableListOf<BigQueryAgentAnalyticsPlugin>()
+  private val rowWriter = RecordingRowWriter()
+  private val plugin = newPlugin()
   private val mockAgent = DummyAgent("test_agent")
   private val invocationContext = testInvocationContext(agent = mockAgent)
+
+  @AfterTest
+  fun closePlugins() {
+    for (plugin in plugins) plugin.close()
+  }
 
   @Test
   fun beforeRun_ensuresTableAndLogsEvent(): Unit = runBlocking {
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenReturn(mockTable)
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(false)
 
     val result = plugin.beforeRun(invocationContext)
 
     assertEquals(CallbackChoice.Continue(Unit), result)
     verify(mockBigQuery).getTable(tableId)
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          assertEquals(TableId.of("test-project", "test-dataset", "test-table"), request.table)
-          val row = request.rows.single().content
-          assertEquals("INVOCATION_STARTING", row["event_type"])
-          assertEquals("test_agent", row["agent"])
-          assertEquals("test_user_id", row["user_id"])
-          assertEquals("test-invocation-id", row["invocation_id"])
-          assertEquals("OK", row["status"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("INVOCATION_STARTING", row["event_type"])
+    assertEquals("test_agent", row["agent"])
+    assertEquals("test_user_id", row["user_id"])
+    assertEquals("test-invocation-id", row["invocation_id"])
+    assertEquals("OK", row["status"])
   }
 
   @Test
   fun beforeRun_createsTableWhenMissing(): Unit = runBlocking {
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenReturn(null)
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(false)
 
     val result = plugin.beforeRun(invocationContext)
 
@@ -166,62 +173,38 @@ class BigQueryAgentAnalyticsPluginTest {
           assertEquals(BigQuerySchema.getDefaultClusteringFields(), definition.clustering?.fields)
         }
       )
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          assertEquals(TableId.of("test-project", "test-dataset", "test-table"), request.table)
-          val row = request.rows.single().content
-          assertEquals("INVOCATION_STARTING", row["event_type"])
-          assertEquals("test_agent", row["agent"])
-          assertEquals("test_user_id", row["user_id"])
-          assertEquals("test-invocation-id", row["invocation_id"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("INVOCATION_STARTING", row["event_type"])
+    assertEquals("test_agent", row["agent"])
+    assertEquals("test_user_id", row["user_id"])
+    assertEquals("test-invocation-id", row["invocation_id"])
   }
 
   @Test
   fun afterRun_logsEvent(): Unit = runBlocking {
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(false)
-
     plugin.afterRun(invocationContext)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          assertEquals(TableId.of("test-project", "test-dataset", "test-table"), request.table)
-          val row = request.rows.single().content
-          assertEquals("INVOCATION_COMPLETED", row["event_type"])
-          assertEquals("test_agent", row["agent"])
-          assertEquals("test_user_id", row["user_id"])
-          assertEquals("test-invocation-id", row["invocation_id"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("INVOCATION_COMPLETED", row["event_type"])
+    assertEquals("test_agent", row["agent"])
+    assertEquals("test_user_id", row["user_id"])
+    assertEquals("test-invocation-id", row["invocation_id"])
   }
 
   @Test
   fun onUserMessage_logsUserMessageReceived(): Unit = runBlocking {
-    stubInsertAll()
-
     val userMessage = Content(role = "user", parts = listOf(Part(text = "Hello")))
     val result = plugin.onUserMessage(invocationContext, userMessage)
 
     assertEquals(userMessage, result)
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("USER_MESSAGE_RECEIVED", row["event_type"])
-          assertEquals("test_agent", row["agent"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("USER_MESSAGE_RECEIVED", row["event_type"])
+    assertEquals("test_agent", row["agent"])
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun beforeAgent_and_afterAgent_logsLifecycleEvents(): Unit = runBlocking {
-    stubInsertAll()
-
     val callbackContext = CallbackContext(invocationContext = invocationContext)
     plugin.beforeAgent(callbackContext)
     plugin.afterAgent(callbackContext)
@@ -234,8 +217,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeModel_and_afterModel_logsModelEvents(): Unit = runBlocking {
-    stubInsertAll()
-
     val callbackContext = CallbackContext(invocationContext = invocationContext)
     val llmRequest = LlmRequest(contents = listOf(Content(parts = listOf(Part(text = "Prompt")))))
     val llmResponse =
@@ -261,8 +242,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeTool_and_afterTool_logsToolEvents(): Unit = runBlocking {
-    stubInsertAll()
-
     val dummyTool = DummyTool("my_tool")
     val toolContext =
       ToolContext(invocationContext = invocationContext, functionCallId = "call-123")
@@ -272,14 +251,15 @@ class BigQueryAgentAnalyticsPluginTest {
     plugin.beforeTool(toolContext, dummyTool, args)
     plugin.afterTool(toolContext, dummyTool, args, res)
 
-    verify(mockBigQuery, times(2)).insertAll(any<InsertAllRequest>())
+    assertEquals(
+      listOf<Any?>("TOOL_STARTING", "TOOL_COMPLETED"),
+      capturedRows().map { it["event_type"] },
+    )
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onToolError_logsToolError(): Unit = runBlocking {
-    stubInsertAll()
-
     val dummyTool = DummyTool("my_tool")
     val toolContext =
       ToolContext(invocationContext = invocationContext, functionCallId = "call-123")
@@ -288,43 +268,30 @@ class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onToolError(toolContext, dummyTool, args, error)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("TOOL_ERROR", row["event_type"])
-          assertEquals("ERROR", row["status"])
-          assertEquals("Tool failed", row["error_message"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("TOOL_ERROR", row["event_type"])
+    assertEquals("ERROR", row["status"])
+    assertEquals("Tool failed", row["error_message"])
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onModelError_logsModelError(): Unit = runBlocking {
-    stubInsertAll()
-
     val callbackContext = CallbackContext(invocationContext = invocationContext)
     val llmRequest = LlmRequest()
     val error = RuntimeException("LLM failed")
 
     plugin.onModelError(callbackContext, llmRequest, error)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("LLM_ERROR", row["event_type"])
-          assertEquals("ERROR", row["status"])
-          assertEquals("LLM failed", row["error_message"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("LLM_ERROR", row["event_type"])
+    assertEquals("ERROR", row["status"])
+    assertEquals("LLM failed", row["error_message"])
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_stateDelta_logsOnlyTheDelta(): Unit = runBlocking {
-    stubInsertAll()
     val actions = EventActions(stateDelta = mutableMapOf("key" to "value"))
     val event = Event(author = "test_agent", content = modelText("answer"), actions = actions)
 
@@ -342,43 +309,28 @@ class BigQueryAgentAnalyticsPluginTest {
   @Suppress("CheckReturnValue")
   fun logEvent_stampsEventIdAndAdkEnvelope(): Unit = runBlocking {
     whenever(mockBigQuery.getTable(any<TableId>())).thenReturn(mockTable)
-    stubInsertAll()
 
     plugin.beforeRun(invocationContext)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertTrue(Regex("[0-9a-f]{32}").matches(row["event_id"] as String))
-          val adk = attributesOf(row).get(BigQuerySchema.ADK_ATTRIBUTE_KEY)
-          assertEquals(
-            BigQuerySchema.ADK_ENVELOPE_SCHEMA_VERSION,
-            adk.get("schema_version").asText(),
-          )
-          assertEquals("test_app_name", adk.get("app_name").asText())
-          assertFalse(adk.has("source_event_id"))
-          assertFalse(adk.has("branch"))
-        }
-      )
+    val row = capturedRows().single()
+    assertTrue(Regex("[0-9a-f]{32}").matches(row["event_id"] as String))
+    val adk = attributesOf(row).get(BigQuerySchema.ADK_ATTRIBUTE_KEY)
+    assertEquals(BigQuerySchema.ADK_ENVELOPE_SCHEMA_VERSION, adk.get("schema_version").asText())
+    assertEquals("test_app_name", adk.get("app_name").asText())
+    assertFalse(adk.has("source_event_id"))
+    assertFalse(adk.has("branch"))
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun logEvent_assignsADistinctEventIdPerRow(): Unit = runBlocking {
     whenever(mockBigQuery.getTable(any<TableId>())).thenReturn(mockTable)
-    stubInsertAll()
 
-    val eventIds = mutableListOf<String>()
     plugin.beforeRun(invocationContext)
     plugin.beforeRun(invocationContext)
 
-    verify(mockBigQuery, times(2))
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          eventIds.add(request.rows.single().content["event_id"] as String)
-        }
-      )
+    val eventIds = capturedRows().map { it["event_id"] as String }
+    assertEquals(2, eventIds.size)
     assertEquals(2, eventIds.toSet().size)
   }
 
@@ -387,8 +339,6 @@ class BigQueryAgentAnalyticsPluginTest {
   fun ensureTableExistsOnce_calledOnlyOnce(): Unit = runBlocking {
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenReturn(mockTable)
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(false)
 
     plugin.beforeRun(invocationContext)
     plugin.beforeRun(invocationContext)
@@ -400,31 +350,36 @@ class BigQueryAgentAnalyticsPluginTest {
   @Suppress("CheckReturnValue")
   fun logEvent_whenDisabled_doesNothing(): Unit = runBlocking {
     val disabledConfig = config.copy(enabled = false)
-    val disabledPlugin = BigQueryAgentAnalyticsPlugin(disabledConfig, mockBigQuery)
+    val disabledPlugin = newPlugin(disabledConfig)
 
     disabledPlugin.beforeRun(invocationContext)
 
-    verify(mockBigQuery, never()).insertAll(any<InsertAllRequest>())
+    assertTrue(capturedRows(disabledPlugin).isEmpty())
   }
 
   @Test
-  fun logEvent_insertAllHasErrors_failsSafe(): Unit = runBlocking {
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(true)
+  fun logEvent_writeHasRowErrors_failsSafe(): Unit = runBlocking {
+    val writer = RecordingRowWriter(WriteResult.Dropped(BatchProcessor.NON_RETRYABLE))
+    val failingPlugin = newPlugin(writer = writer)
 
-    plugin.afterRun(invocationContext)
+    failingPlugin.afterRun(invocationContext)
 
-    verify(mockBigQuery).insertAll(any<InsertAllRequest>())
+    assertEquals(1, capturedRows(failingPlugin, writer).size)
+    assertEquals(mapOf(BatchProcessor.NON_RETRYABLE to 1L), failingPlugin.getDropStats().nonZero())
   }
 
   @Test
-  fun logEvent_insertAllThrows_failsSafe(): Unit = runBlocking {
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>()))
-      .thenThrow(RuntimeException("Bq Error"))
+  fun logEvent_writeThrows_failsSafe(): Unit = runBlocking {
+    val writer = RecordingRowWriter(failure = RuntimeException("Bq Error"))
+    val failingPlugin = newPlugin(writer = writer)
 
-    plugin.afterRun(invocationContext)
+    failingPlugin.afterRun(invocationContext)
 
-    verify(mockBigQuery).insertAll(any<InsertAllRequest>())
+    assertEquals(1, capturedRows(failingPlugin, writer).size)
+    assertEquals(
+      mapOf(BatchProcessor.UNEXPECTED_ERROR to 1L),
+      failingPlugin.getDropStats().nonZero(),
+    )
   }
 
   @Test
@@ -432,13 +387,11 @@ class BigQueryAgentAnalyticsPluginTest {
   fun beforeRun_getTableThrows_failsSafe(): Unit = runBlocking {
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenThrow(RuntimeException("Bq Error"))
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(false)
 
     plugin.beforeRun(invocationContext)
 
     verify(mockBigQuery).getTable(tableId)
-    verify(mockBigQuery, never()).insertAll(any<InsertAllRequest>())
+    assertTrue(capturedRows().isEmpty())
   }
 
   @Test
@@ -481,8 +434,6 @@ class BigQueryAgentAnalyticsPluginTest {
   fun ensureTableExistsOnce_concurrentCalls_calledOnlyOnce(): Unit = runBlocking {
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenReturn(mockTable)
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(false)
 
     val jobs = List(10) { launch(Dispatchers.Default) { plugin.beforeRun(invocationContext) } }
     jobs.joinAll()
@@ -494,13 +445,7 @@ class BigQueryAgentAnalyticsPluginTest {
   @Suppress("CheckReturnValue")
   fun ensureTableExistsOnce_retryInsideWindow_doesNotCallGetTable(): Unit = runBlocking {
     val testTimeSource = TestTimeSource()
-    val testPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config,
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-        timeSource = testTimeSource,
-      )
+    val testPlugin = newPlugin(timeSource = testTimeSource)
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenThrow(RuntimeException("Bq Error"))
 
@@ -518,13 +463,7 @@ class BigQueryAgentAnalyticsPluginTest {
   @Suppress("CheckReturnValue")
   fun ensureTableExistsOnce_retryAfterWindow_callsGetTable(): Unit = runBlocking {
     val testTimeSource = TestTimeSource()
-    val testPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config,
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-        timeSource = testTimeSource,
-      )
+    val testPlugin = newPlugin(timeSource = testTimeSource)
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenThrow(RuntimeException("Bq Error"))
 
@@ -541,8 +480,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_longRunningTool_logsToolPaused(): Unit = runBlocking {
-    stubInsertAll()
-
     val functionCall =
       FunctionCall(name = "my_lr_tool", args = mapOf("param" to "val"), id = "call-lr-1")
     val event =
@@ -554,26 +491,19 @@ class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onEvent(invocationContext, event)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("TOOL_PAUSED", row["event_type"])
-          assertEquals("test_agent", row["agent"])
-          val adk = attributesOf(row).get(BigQuerySchema.ADK_ATTRIBUTE_KEY)
-          assertEquals("tool", adk.get("pause_kind").asText())
-          assertEquals("call-lr-1", adk.get("function_call_id").asText())
-          assertEquals(event.id, adk.get("source_event_id").asText())
-          assertTrue(adk.path("branch").isNull)
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("TOOL_PAUSED", row["event_type"])
+    assertEquals("test_agent", row["agent"])
+    val adk = attributesOf(row).get(BigQuerySchema.ADK_ATTRIBUTE_KEY)
+    assertEquals("tool", adk.get("pause_kind").asText())
+    assertEquals("call-lr-1", adk.get("function_call_id").asText())
+    assertEquals(event.id, adk.get("source_event_id").asText())
+    assertTrue(adk.path("branch").isNull)
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_finalResponse_logsAgentResponse(): Unit = runBlocking {
-    stubInsertAll()
-
     val event =
       Event(
         id = "event-123",
@@ -585,28 +515,21 @@ class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onEvent(invocationContext, event)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("AGENT_RESPONSE", row["event_type"])
-          assertEquals("test_agent", row["agent"])
-          val attributes = attributesOf(row)
-          assertEquals("event-123", attributes.get("source_event_id").asText())
-          assertEquals("root.sub", attributes.get("source_event_branch").asText())
-          val adk = attributes.get(BigQuerySchema.ADK_ATTRIBUTE_KEY)
-          assertEquals("event-123", adk.get("source_event_id").asText())
-          assertEquals("root.sub", adk.get("branch").asText())
-          assertEquals("text: 'Final answer'", contentOf(row).get("response").asText())
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("AGENT_RESPONSE", row["event_type"])
+    assertEquals("test_agent", row["agent"])
+    val attributes = attributesOf(row)
+    assertEquals("event-123", attributes.get("source_event_id").asText())
+    assertEquals("root.sub", attributes.get("source_event_branch").asText())
+    val adk = attributes.get(BigQuerySchema.ADK_ATTRIBUTE_KEY)
+    assertEquals("event-123", adk.get("source_event_id").asText())
+    assertEquals("root.sub", adk.get("branch").asText())
+    assertEquals("text: 'Final answer'", contentOf(row).get("response").asText())
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_finalResponseWithCredentials_preservesClosingQuotes(): Unit = runBlocking {
-    stubInsertAll()
-
     val event =
       Event(
         id = "event-cred",
@@ -625,25 +548,18 @@ class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onEvent(invocationContext, event)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("AGENT_RESPONSE", row["event_type"])
-          assertEquals(
-            "text: 'bearer [REDACTED]' | text: 'api_key=[REDACTED]' | text: 'Authorization: [REDACTED]'",
-            contentOf(row).get("response").asText(),
-          )
-          assertEquals(true, row["is_truncated"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("AGENT_RESPONSE", row["event_type"])
+    assertEquals(
+      "text: 'bearer [REDACTED]' | text: 'api_key=[REDACTED]' | text: 'Authorization: [REDACTED]'",
+      contentOf(row).get("response").asText(),
+    )
+    assertEquals(true, row["is_truncated"])
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_hitlConfirmationRequest_logsHitlEvent(): Unit = runBlocking {
-    stubInsertAll()
-
     val functionCall =
       FunctionCall(
         name = "adk_request_confirmation",
@@ -658,20 +574,13 @@ class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onEvent(invocationContext, event)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("HITL_CONFIRMATION_REQUEST", row["event_type"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("HITL_CONFIRMATION_REQUEST", row["event_type"])
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_hitlFunctionResponse_logsHitlCompleted(): Unit = runBlocking {
-    stubInsertAll()
-
     val functionResponse =
       FunctionResponse(
         name = "adk_request_confirmation",
@@ -686,20 +595,13 @@ class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onEvent(invocationContext, event)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("HITL_CONFIRMATION_REQUEST_COMPLETED", row["event_type"])
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("HITL_CONFIRMATION_REQUEST_COMPLETED", row["event_type"])
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_a2aMetadata_logsA2AInteraction(): Unit = runBlocking {
-    stubInsertAll()
-
     val event =
       Event(
         author = "test_agent",
@@ -712,29 +614,17 @@ class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onEvent(invocationContext, event)
 
-    verify(mockBigQuery)
-      .insertAll(
-        check<InsertAllRequest> { request ->
-          val row = request.rows.single().content
-          assertEquals("A2A_INTERACTION", row["event_type"])
-          val metadata = attributesOf(row).get("a2a_metadata")
-          assertEquals(
-            "do something",
-            metadata.get(BigQueryUtils.A2A_REQUEST_KEY).get("task").asText(),
-          )
-          assertEquals(
-            "completed",
-            metadata.get(BigQueryUtils.A2A_RESPONSE_KEY).get("status").asText(),
-          )
-          assertEquals("completed", contentOf(row).get("status").asText())
-        }
-      )
+    val row = capturedRows().single()
+    assertEquals("A2A_INTERACTION", row["event_type"])
+    val metadata = attributesOf(row).get("a2a_metadata")
+    assertEquals("do something", metadata.get(BigQueryUtils.A2A_REQUEST_KEY).get("task").asText())
+    assertEquals("completed", metadata.get(BigQueryUtils.A2A_RESPONSE_KEY).get("status").asText())
+    assertEquals("completed", contentOf(row).get("status").asText())
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun interleavedInvocations_eachCloseTheirOwnSpans(): Unit = runBlocking {
-    stubInsertAll()
     val first = testInvocationContext(agent = DummyAgent("agent_a"), invocationId = "inv-a")
     val second = testInvocationContext(agent = DummyAgent("agent_b"), invocationId = "inv-b")
 
@@ -755,7 +645,6 @@ class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   fun concurrentRuns_eachCloseTheirOwnSpans(): Unit = runBlocking {
-    stubInsertAll()
     val agent =
       DummyAgent(
         "test_agent",
@@ -781,7 +670,6 @@ class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   fun nestedAgentToolRun_keepsTheParentsSpans(): Unit = runBlocking {
-    stubInsertAll()
     val child =
       LlmAgent(
         name = "child",
@@ -820,7 +708,6 @@ class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   fun parallelToolCalls_eachCloseTheirOwnSpan(): Unit = runBlocking {
-    stubInsertAll()
     // Each tool waits for the other to start, so both calls are in flight at once.
     val bothStarted = CompletableDeferred<Unit>()
     val started = AtomicInteger()
@@ -866,7 +753,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun toolCallsWithoutFunctionCallId_eachCloseTheirOwnSpan(): Unit = runBlocking {
-    stubInsertAll()
     val tool = DummyTool("my_tool")
     val first = ToolContext(invocationContext = invocationContext)
     val second = ToolContext(invocationContext = invocationContext)
@@ -885,7 +771,6 @@ class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   fun failedRun_logsInvocationErrorAndTheNextRunCompletes(): Unit = runBlocking {
-    stubInsertAll()
     var runs = 0
     val agent =
       DummyAgent(
@@ -919,10 +804,9 @@ class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   fun analyticsFailure_neverFailsTheRun(): Unit = runBlocking {
-    // A checked exception gets past the insert's own handler, so only the callback guard stops it.
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenAnswer {
-      throw IOException("connection reset")
-    }
+    // Every write fails; the background writer drops the rows, and the run never sees the failure.
+    val writer = RecordingRowWriter(failure = IOException("connection reset"))
+    val failingPlugin = newPlugin(writer = writer)
     val agent =
       DummyAgent(
         "test_agent",
@@ -930,18 +814,22 @@ class BigQueryAgentAnalyticsPluginTest {
       )
 
     val events =
-      InMemoryRunner(agent, plugins = listOf(plugin)).use { runner ->
+      InMemoryRunner(agent, plugins = listOf(failingPlugin)).use { runner ->
         runner.runAsync(userId = "u", sessionId = "s", newMessage = userText("hi")).toList()
       }
 
     assertEquals("done", events.single().content?.parts?.single()?.text)
-    verify(mockBigQuery, atLeastOnce()).insertAll(any<InsertAllRequest>())
+    val rows = capturedRows(failingPlugin, writer)
+    assertTrue(rows.isNotEmpty())
+    assertEquals(
+      mapOf(BatchProcessor.UNEXPECTED_ERROR to rows.size.toLong()),
+      failingPlugin.getDropStats().nonZero(),
+    )
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun onToolError_redactsCredentialsInTheErrorMessage(): Unit = runBlocking {
-    stubInsertAll()
     val toolContext =
       ToolContext(invocationContext = invocationContext, functionCallId = "call-123")
     val error = RuntimeException("401 from upstream: Bearer ya29.secret-token")
@@ -956,18 +844,12 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun onModelError_boundsALongErrorMessage(): Unit = runBlocking {
-    stubInsertAll()
-    val boundedPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config.copy(maxContentLength = 64),
-        mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val boundedPlugin = newPlugin(config.copy(maxContentLength = 64))
     val callbackContext = CallbackContext(invocationContext = invocationContext)
 
     boundedPlugin.onModelError(callbackContext, LlmRequest(), RuntimeException("x".repeat(1_000)))
 
-    val row = capturedRows().single()
+    val row = capturedRows(boundedPlugin).single()
     val message = row["error_message"] as String
     assertEquals(64, message.length)
     assertTrue(message.endsWith(JsonFormatter.TRUNCATION_SUFFIX))
@@ -977,13 +859,7 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_oversizedStateDelta_isBoundedAndFlagged(): Unit = runBlocking {
-    stubInsertAll()
-    val boundedPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config.copy(maxContentLength = 100),
-        mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val boundedPlugin = newPlugin(config.copy(maxContentLength = 100))
     val event =
       Event(
         author = "test_agent",
@@ -992,7 +868,7 @@ class BigQueryAgentAnalyticsPluginTest {
 
     boundedPlugin.onEvent(invocationContext, event)
 
-    val row = capturedRows().single()
+    val row = capturedRows(boundedPlugin).single()
     val notes = attributesOf(row).at("/state_delta/notes").asText()
     assertEquals(100, notes.length)
     assertTrue(notes.endsWith(JsonFormatter.TRUNCATION_SUFFIX))
@@ -1002,7 +878,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeAgent_logsTheInstructionAndAgentShape(): Unit = runBlocking {
-    stubInsertAll()
     val agent =
       LlmAgent(
         name = "planner",
@@ -1029,7 +904,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeAgent_structuredInstruction_logsItsText(): Unit = runBlocking {
-    stubInsertAll()
     val instruction = Content(parts = listOf(Part(text = "Line 1"), Part(text = "Line 2")))
     val agent =
       LlmAgent(name = "a", model = ScriptedModel("m"), instruction = Instruction(instruction))
@@ -1042,7 +916,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeAgent_instructionProvider_logsItsSourceButNoInstruction(): Unit = runBlocking {
-    stubInsertAll()
     val agent =
       LlmAgent(
         name = "a",
@@ -1060,7 +933,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_pausedForALongRunningTool_logsNoAgentResponse(): Unit = runBlocking {
-    stubInsertAll()
     val event =
       Event(
         author = "test_agent",
@@ -1084,7 +956,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun onEvent_longRunningConfirmationRequest_pausesWithItsHitlKind(): Unit = runBlocking {
-    stubInsertAll()
     val functionCall = FunctionCall(name = "adk_request_confirmation", id = "c2")
     val event =
       Event(
@@ -1108,7 +979,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun onUserMessage_longRunningToolResult_logsPairKeysUnderAdk(): Unit = runBlocking {
-    stubInsertAll()
     val result =
       FunctionResponse(name = "my_lr_tool", id = "call-lr-1", response = mapOf("status" to "done"))
     val message = Content(role = "user", parts = listOf(Part(functionResponse = result)))
@@ -1126,11 +996,9 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun contentFormatterFailure_logsAMarkerInsteadOfTheContent(): Unit = runBlocking {
-    stubInsertAll()
     val failingConfig =
       config.copy(contentFormatter = { content, _ -> error("cannot format $content") })
-    val failingPlugin =
-      BigQueryAgentAnalyticsPlugin(failingConfig, mockBigQuery, ioContext = Dispatchers.Unconfined)
+    val failingPlugin = newPlugin(failingConfig)
     val toolContext =
       ToolContext(invocationContext = invocationContext, functionCallId = "call-123")
     val args = mapOf<String, Any?>("ssn" to "123-45-6789")
@@ -1139,7 +1007,7 @@ class BigQueryAgentAnalyticsPluginTest {
       failingPlugin.onToolError(toolContext, DummyTool("my_tool"), args, RuntimeException("failed"))
     }
 
-    val row = capturedRows().single()
+    val row = capturedRows(failingPlugin).single()
     assertEquals("[FORMATTER_FAILED]", contentOf(row).asText())
     assertEquals("failed; content_formatter raised IllegalStateException", row["error_message"])
     assertEquals("ERROR", row["status"])
@@ -1152,13 +1020,7 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun unlimitedMaxContentLength_logsTheWholeValue(): Unit = runBlocking {
-    stubInsertAll()
-    val unlimitedPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config.copy(maxContentLength = -1),
-        mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val unlimitedPlugin = newPlugin(config.copy(maxContentLength = -1))
     val notes = "n".repeat(1_000)
     val event =
       Event(
@@ -1168,7 +1030,7 @@ class BigQueryAgentAnalyticsPluginTest {
 
     unlimitedPlugin.onEvent(invocationContext, event)
 
-    val row = capturedRows().single()
+    val row = capturedRows(unlimitedPlugin).single()
     assertEquals(notes, attributesOf(row).at("/state_delta/notes").asText())
     assertEquals(false, row["is_truncated"])
   }
@@ -1176,15 +1038,8 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun failedSchemaUpgrade_dropsRowsAndRetriesAfterTheInterval(): Unit = runBlocking {
-    stubInsertAll()
     val testTimeSource = TestTimeSource()
-    val testPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config,
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-        timeSource = testTimeSource,
-      )
+    val testPlugin = newPlugin(timeSource = testTimeSource)
     val outdatedFields = BigQuerySchema.getEventsSchema().fields.filter { it.name != "event_id" }
     val tableBuilder = mock<Table.Builder>()
     whenever(mockTable.getDefinition<StandardTableDefinition>())
@@ -1201,20 +1056,13 @@ class BigQueryAgentAnalyticsPluginTest {
     testPlugin.beforeRun(invocationContext)
 
     verify(mockBigQuery, times(2)).update(any<TableInfo>())
-    verify(mockBigQuery, never()).insertAll(any<InsertAllRequest>())
+    assertTrue(capturedRows(testPlugin).isEmpty())
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun cancelledViewCreation_stopsTheViewsAndRetriesSetupOnTheNextCallback(): Unit = runBlocking {
-    stubInsertAll()
-    val testPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config.copy(createViews = true),
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-        timeSource = TestTimeSource(),
-      )
+    val testPlugin = newPlugin(config.copy(createViews = true), timeSource = TestTimeSource())
     whenever(mockBigQuery.getTable(any<TableId>())).thenReturn(mockTable)
     val run = launch(start = CoroutineStart.LAZY) { testPlugin.beforeRun(invocationContext) }
     stubViewQueries {
@@ -1229,12 +1077,11 @@ class BigQueryAgentAnalyticsPluginTest {
 
     assertTrue(run.isCancelled)
     verify(mockBigQuery, times(2)).getTable(any<TableId>())
-    verify(mockBigQuery, times(1)).insertAll(any<InsertAllRequest>())
+    assertEquals(1, capturedRows(testPlugin).size)
   }
 
   @Test
   fun shortCircuitedModelCall_closesTheAgentAndInvocationSpans(): Unit = runBlocking {
-    stubInsertAll()
     val cached = BeforeModelCallback { _, _ ->
       CallbackChoice.Break(modelResponse(modelText("hit")))
     }
@@ -1256,7 +1103,6 @@ class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   fun longRunningToolCall_closesTheAgentAndInvocationSpans(): Unit = runBlocking {
-    stubInsertAll()
     val startJob = FunctionCall(name = "start_job", id = "call-lr")
     val agent =
       LlmAgent(
@@ -1279,7 +1125,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeModelWithoutAfterModel_parentsTheNextRequestOnTheAgent(): Unit = runBlocking {
-    stubInsertAll()
     val callbackContext = CallbackContext(invocationContext = invocationContext)
 
     plugin.beforeAgent(callbackContext)
@@ -1297,7 +1142,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeModel_logsTheModelConfigLabelsAndTools(): Unit = runBlocking {
-    stubInsertAll()
     val weather =
       FunctionDeclaration(
         name = "get_weather",
@@ -1354,7 +1198,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeModel_toolParametersThatDoNotSerialize_areLeftOff(): Unit = runBlocking {
-    stubInsertAll()
     val tool =
       FunctionDeclaration(
         name = "lookup",
@@ -1378,7 +1221,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeModel_withoutAModelNameOrFunctionDeclarations_logsNeither(): Unit = runBlocking {
-    stubInsertAll()
     val request =
       LlmRequest(model = ScriptedModel(""), config = GenerateContentConfig(tools = listOf(Tool())))
 
@@ -1392,7 +1234,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun afterModel_logsUsageFinishReasonCacheAndError(): Unit = runBlocking {
-    stubInsertAll()
     val callbackContext = CallbackContext(invocationContext = invocationContext)
     val cache =
       CacheMetadata(
@@ -1461,7 +1302,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun afterModel_cacheType_followsTheCachedTokenCount(): Unit = runBlocking {
-    stubInsertAll()
     val callbackContext = CallbackContext(invocationContext = invocationContext)
     val fingerprintOnly = CacheMetadata(fingerprint = "abc123", contentsCount = 2)
 
@@ -1486,8 +1326,7 @@ class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   @Suppress("CheckReturnValue")
-  fun afterModel_streamedResponse_logsOnlyTheFinalChunk(): Unit = runBlocking {
-    stubInsertAll()
+  fun afterModel_streamedResponse_logsEachChunkAndTimesTheFirstToken(): Unit = runBlocking {
     val callbackContext = CallbackContext(invocationContext = invocationContext)
 
     plugin.beforeModel(callbackContext, LlmRequest())
@@ -1495,16 +1334,56 @@ class BigQueryAgentAnalyticsPluginTest {
     delay(50)
     plugin.afterModel(callbackContext, LlmResponse(content = modelText("Hello")))
 
-    val response = capturedRows().ofType("LLM_RESPONSE")
-    val latency = JsonFormatter.mapper.readTree(response["latency_ms"] as String)
+    val responses = capturedRows().filter { it["event_type"] == "LLM_RESPONSE" }
+    assertEquals(2, responses.size)
+    val latency = JsonFormatter.mapper.readTree(responses.last()["latency_ms"] as String)
     val firstTokenMs = latency.get("time_to_first_token_ms").asLong()
     assertTrue(latency.get("total_ms").asLong() - firstTokenMs >= 40)
   }
 
   @Test
   @Suppress("CheckReturnValue")
+  fun afterModel_partialChunk_logsAResponseAndKeepsTheRequestSpanOpen(): Unit = runBlocking {
+    val callbackContext = CallbackContext(invocationContext = invocationContext)
+    val chunk =
+      LlmResponse(
+        content = modelText("Hel"),
+        usageMetadata = UsageMetadata(promptTokenCount = 10, totalTokenCount = 12),
+        partial = true,
+        modelVersion = "fake-model-001",
+      )
+
+    plugin.beforeModel(callbackContext, LlmRequest())
+    plugin.afterModel(callbackContext, chunk)
+    plugin.afterModel(
+      callbackContext,
+      LlmResponse(content = modelText("Hello"), finishReason = FinishReason.STOP),
+    )
+
+    val rows = capturedRows()
+    val requestSpan = rows.ofType("LLM_REQUEST")["span_id"]
+    val responses = rows.filter { it["event_type"] == "LLM_RESPONSE" }
+    assertEquals(2, responses.size)
+    val (chunkRow, finalRow) = responses
+    assertEquals(requestSpan, chunkRow["span_id"])
+    val chunkLatency = JsonFormatter.mapper.readTree(chunkRow["latency_ms"] as String)
+    assertTrue(chunkLatency.has("total_ms"))
+    assertTrue(chunkLatency.has("time_to_first_token_ms"))
+    val chunkAttributes = attributesOf(chunkRow)
+    assertEquals(12, chunkAttributes.at("/usage_metadata/total_token_count").asInt())
+    assertEquals("fake-model-001", chunkAttributes.get("model_version").asText())
+    assertFalse(chunkAttributes.has("finish_reason"))
+    assertFalse(chunkAttributes.has("cache_type"))
+    assertEquals("text: 'Hel'", contentOf(chunkRow).get("response").asText())
+    assertEquals(requestSpan, finalRow["span_id"])
+    val finalAttributes = attributesOf(finalRow)
+    assertEquals("STOP", finalAttributes.get("finish_reason").asText())
+    assertEquals("none", finalAttributes.get("cache_type").asText())
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
   fun beforeTool_logsTheToolOrigin(): Unit = runBlocking {
-    stubInsertAll()
     val localTool =
       object : FunctionTool("local_tool", "A local tool.") {
         override fun declaration(): FunctionDeclaration? = null
@@ -1535,7 +1414,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun toolEvents_giveTheFormatterRedactedAndBoundedPlainValues(): Unit = runBlocking {
-    stubInsertAll()
     val formatted = mutableMapOf<String, Any>()
     val formattingConfig =
       config.copy(
@@ -1545,12 +1423,7 @@ class BigQueryAgentAnalyticsPluginTest {
           content
         },
       )
-    val formattingPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        formattingConfig,
-        mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val formattingPlugin = newPlugin(formattingConfig)
     val toolContext = ToolContext(invocationContext = invocationContext, functionCallId = "call-1")
     val args = mapOf<String, Any?>("api_key" to "secret", "query" to "q".repeat(100))
 
@@ -1560,26 +1433,20 @@ class BigQueryAgentAnalyticsPluginTest {
     val startingArgs = (formatted.getValue("TOOL_STARTING") as Map<*, *>)["args"] as Map<*, *>
     assertEquals("[REDACTED]", startingArgs["api_key"])
     assertEquals(32, (startingArgs["query"] as String).length)
-    assertEquals(true, capturedRows().ofType("TOOL_STARTING")["is_truncated"])
+    assertEquals(true, capturedRows(formattingPlugin).ofType("TOOL_STARTING")["is_truncated"])
     assertEquals(mapOf("hits" to 3), (formatted.getValue("TOOL_COMPLETED") as Map<*, *>)["result"])
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun everyRow_carriesTheRootAgentSessionAndCustomTags(): Unit = runBlocking {
-    stubInsertAll()
-    val taggedPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config.copy(customTags = mapOf("env" to "test")),
-        mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val taggedPlugin = newPlugin(config.copy(customTags = mapOf("env" to "test")))
     val subAgentContext = testInvocationContext(agent = DummyAgent("sub_agent"))
 
     taggedPlugin.beforeRun(invocationContext)
     taggedPlugin.beforeAgent(CallbackContext(invocationContext = subAgentContext))
 
-    val rows = capturedRows()
+    val rows = capturedRows(taggedPlugin)
     assertEquals(2, rows.size)
     for (row in rows) {
       val attributes = attributesOf(row)
@@ -1592,7 +1459,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun resumedRun_closesTheInvocationSpanOnASubAgentBranch(): Unit = runBlocking {
-    stubInsertAll()
     val resumedContext = testInvocationContext(agent = DummyAgent("sub"), branch = "test_agent.sub")
 
     plugin.onUserMessage(invocationContext, userText("approve"))
@@ -1608,7 +1474,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun hitlCompletions_logNoPairKeys(): Unit = runBlocking {
-    stubInsertAll()
     val confirmation =
       FunctionResponse(
         name = "adk_request_confirmation",
@@ -1631,7 +1496,6 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun beforeRun_whenCreateThrows409_refetchesUpgradesAndCreatesViews(): Unit = runBlocking {
-    stubInsertAll()
     stubViewQueries { null }
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     val outdatedFields = BigQuerySchema.getEventsSchema().fields.filter { it.name != "event_id" }
@@ -1646,57 +1510,46 @@ class BigQueryAgentAnalyticsPluginTest {
     whenever(mockBigQuery.create(any<TableInfo>()))
       .thenThrow(BigQueryException(409, "Already Exists"))
 
-    val viewsPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config.copy(createViews = true, autoSchemaUpgrade = true),
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val viewsPlugin = newPlugin(config.copy(createViews = true, autoSchemaUpgrade = true))
 
     viewsPlugin.beforeRun(invocationContext)
 
     verify(mockBigQuery, times(2)).getTable(tableId)
     verify(mockBigQuery).update(any<TableInfo>())
     verifyViewQueries(count = 19)
-    verify(mockBigQuery).insertAll(any<InsertAllRequest>())
+    assertEquals(1, capturedRows(viewsPlugin).size)
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun config_eventAllowlistAndDenylist_filterLoggedEvents(): Unit = runBlocking {
-    stubInsertAll()
     val filteredPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config =
-          config.copy(
-            eventAllowlist = setOf("INVOCATION_STARTING", "INVOCATION_COMPLETED"),
-            eventDenylist = setOf("INVOCATION_COMPLETED"),
-          ),
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
+      newPlugin(
+        config.copy(
+          eventAllowlist = setOf("INVOCATION_STARTING", "INVOCATION_COMPLETED"),
+          eventDenylist = setOf("INVOCATION_COMPLETED"),
+        )
       )
 
     filteredPlugin.beforeRun(invocationContext)
     filteredPlugin.beforeAgent(CallbackContext(invocationContext = invocationContext))
     filteredPlugin.afterRun(invocationContext)
 
-    assertEquals(listOf<Any?>("INVOCATION_STARTING"), capturedRows().map { it["event_type"] })
+    assertEquals(
+      listOf<Any?>("INVOCATION_STARTING"),
+      capturedRows(filteredPlugin).map { it["event_type"] },
+    )
   }
 
   @Test
   @Suppress("CheckReturnValue")
   fun config_logMultiModalContentAndSessionMetadataFalse_omitsBoth(): Unit = runBlocking {
-    stubInsertAll()
     val minimalPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config.copy(logMultiModalContent = false, logSessionMetadata = false),
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+      newPlugin(config.copy(logMultiModalContent = false, logSessionMetadata = false))
 
     minimalPlugin.onUserMessage(invocationContext, userText("Hello"))
 
-    val row = capturedRows().single()
+    val row = capturedRows(minimalPlugin).single()
     assertEquals(emptyList<Any>(), row["content_parts"])
     assertFalse(attributesOf(row).has("session_metadata"))
   }
@@ -1704,15 +1557,9 @@ class BigQueryAgentAnalyticsPluginTest {
   @Test
   @Suppress("CheckReturnValue")
   fun config_customClusteringAndAutoSchemaUpgradeFalse_areRespected(): Unit = runBlocking {
-    stubInsertAll()
     val tableId = TableId.of("test-project", "test-dataset", "test-table")
     whenever(mockBigQuery.getTable(tableId)).thenReturn(null)
-    val customClusterPlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config.copy(clusteringFields = listOf("event_type")),
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val customClusterPlugin = newPlugin(config.copy(clusteringFields = listOf("event_type")))
 
     customClusterPlugin.beforeRun(invocationContext)
 
@@ -1725,28 +1572,325 @@ class BigQueryAgentAnalyticsPluginTest {
       )
 
     clearInvocations(mockBigQuery)
-    stubInsertAll()
     val outdatedFields = BigQuerySchema.getEventsSchema().fields.filter { it.name != "event_id" }
     whenever(mockTable.getDefinition<StandardTableDefinition>())
       .thenReturn(StandardTableDefinition.of(Schema.of(outdatedFields)))
     whenever(mockBigQuery.getTable(tableId)).thenReturn(mockTable)
-    val noUpgradePlugin =
-      BigQueryAgentAnalyticsPlugin(
-        config = config.copy(autoSchemaUpgrade = false),
-        bigQuery = mockBigQuery,
-        ioContext = Dispatchers.Unconfined,
-      )
+    val noUpgradeWriter = RecordingRowWriter()
+    val noUpgradePlugin = newPlugin(config.copy(autoSchemaUpgrade = false), noUpgradeWriter)
 
     noUpgradePlugin.beforeRun(invocationContext)
 
     verify(mockBigQuery, never()).update(any<TableInfo>())
-    verify(mockBigQuery).insertAll(any<InsertAllRequest>())
+    assertEquals(1, capturedRows(noUpgradePlugin, noUpgradeWriter).size)
   }
 
-  private fun stubInsertAll() {
-    whenever(mockBigQuery.insertAll(any<InsertAllRequest>())).thenReturn(mockInsertAllResponse)
-    whenever(mockInsertAllResponse.hasErrors()).thenReturn(false)
+  @Test
+  fun afterRun_flushOnRunEnd_waitsForTheRowsToBeWritten(): Unit = runBlocking {
+    val gate = CompletableDeferred<Unit>()
+    val writer = RecordingRowWriter(gate = gate)
+    val gatedPlugin = newPlugin(writer = writer)
+
+    val run = launch { gatedPlugin.afterRun(invocationContext) }
+    eventually { writer.rows.isNotEmpty() }
+    assertFalse(run.isCompleted)
+    gate.complete(Unit)
+
+    withTimeout(5.seconds) { run.join() }
+    assertEquals(listOf<Any?>("INVOCATION_COMPLETED"), writer.rows.map { it["event_type"] })
   }
+
+  @Test
+  fun afterRun_flushOnRunEndFalse_returnsWithoutWaitingForTheWrite(): Unit = runBlocking {
+    val gate = CompletableDeferred<Unit>()
+    val writer = RecordingRowWriter(gate = gate)
+    val noFlushPlugin = newPlugin(config.copy(flushOnRunEnd = false), writer)
+
+    withTimeout(5.seconds) { noFlushPlugin.afterRun(invocationContext) }
+
+    // The writer has the row, and the gate still holds its write.
+    assertEquals(listOf<Any?>("INVOCATION_COMPLETED"), writer.rows.map { it["event_type"] })
+    gate.complete(Unit)
+    withTimeout(5.seconds) { noFlushPlugin.flush() }
+  }
+
+  @Test
+  fun onRunError_flushOnRunEnd_waitsForTheRowsToBeWritten(): Unit = runBlocking {
+    val gate = CompletableDeferred<Unit>()
+    val writer = RecordingRowWriter(gate = gate)
+    val gatedPlugin = newPlugin(writer = writer)
+
+    val run = launch { gatedPlugin.onRunError(invocationContext, IllegalStateException("failed")) }
+    eventually { writer.rows.isNotEmpty() }
+    assertFalse(run.isCompleted)
+    gate.complete(Unit)
+
+    withTimeout(5.seconds) { run.join() }
+    assertEquals(listOf<Any?>("INVOCATION_ERROR"), writer.rows.map { it["event_type"] })
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun close_writesTheQueuedRows_andTheNextRowStartsANewWriter(): Unit = runBlocking {
+    val writers = listOf(RecordingRowWriter(), RecordingRowWriter())
+    var created = 0
+    // A batch that never fills and a long interval keep the rows queued until close.
+    val batchingConfig = config.copy(batchSize = 100, batchFlushInterval = Duration.ofMinutes(1))
+    val batchingPlugin =
+      BigQueryAgentAnalyticsPlugin(
+          batchingConfig,
+          mockBigQuery,
+          Dispatchers.Unconfined,
+          TimeSource.Monotonic,
+          createRowWriter = { writers[created++] },
+        )
+        .also { plugins += it }
+    val callbackContext = CallbackContext(invocationContext = invocationContext)
+    batchingPlugin.beforeRun(invocationContext)
+    batchingPlugin.beforeAgent(callbackContext)
+    assertTrue(writers[0].rows.isEmpty())
+
+    batchingPlugin.close()
+    batchingPlugin.close()
+
+    assertEquals(
+      listOf<Any?>("INVOCATION_STARTING", "AGENT_STARTING"),
+      writers[0].rows.map { it["event_type"] },
+    )
+    assertEquals(1, writers[0].closeCount.get())
+    // Like Python ADK, a row logged after close starts a new writer.
+    batchingPlugin.afterAgent(callbackContext)
+    withTimeout(5.seconds) { batchingPlugin.flush() }
+    assertEquals(listOf<Any?>("AGENT_COMPLETED"), writers[1].rows.map { it["event_type"] })
+    assertEquals(emptyMap(), batchingPlugin.getDropStats().nonZero())
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun close_rowLoggedWhileItRuns_isDroppedAsCancelled(): Unit = runBlocking {
+    val closeBlocker = CountDownLatch(1)
+    val writer = RecordingRowWriter(closeBlocker = closeBlocker)
+    val closingPlugin = newPlugin(writer = writer)
+    closingPlugin.beforeRun(invocationContext)
+    withTimeout(5.seconds) { closingPlugin.flush() }
+    val closing = thread { closingPlugin.close() }
+    eventually { writer.closeCount.get() == 1 }
+
+    closingPlugin.beforeRun(invocationContext)
+    closeBlocker.countDown()
+    eventually { !closing.isAlive }
+
+    assertEquals(1, writer.rows.size)
+    assertEquals(
+      mapOf(BatchProcessor.SHUTDOWN_CANCELLED to 1L),
+      closingPlugin.getDropStats().nonZero(),
+    )
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun close_writerThatBlocksOnClose_returnsWithinTheShutdownTimeout(): Unit = runBlocking {
+    val closeBlocker = CountDownLatch(1)
+    val writer = RecordingRowWriter(closeBlocker = closeBlocker)
+    val blockingPlugin = newPlugin(config.copy(shutdownTimeout = Duration.ofMillis(200)), writer)
+    blockingPlugin.beforeRun(invocationContext)
+    withTimeout(5.seconds) { blockingPlugin.flush() }
+
+    val closing = thread { blockingPlugin.close() }
+
+    // close() stops waiting for the writer after the shutdown timeout.
+    eventually { !closing.isAlive }
+    eventually { writer.closeCount.get() == 1 }
+    closeBlocker.countDown()
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun flush_whileCloseWaitsForAWrite_waitsForTheRowsToBeWritten(): Unit = runBlocking {
+    val gate = CompletableDeferred<Unit>()
+    val writer = RecordingRowWriter(gate = gate)
+    val closingPlugin = newPlugin(writer = writer)
+    closingPlugin.beforeRun(invocationContext)
+    eventually { writer.rows.isNotEmpty() }
+    val closing = thread { closingPlugin.close() }
+    awaitCloseStarted(closingPlugin)
+
+    val flush = launch { closingPlugin.flush() }
+    delay(100)
+    assertFalse(flush.isCompleted)
+    gate.complete(Unit)
+
+    withTimeout(5.seconds) { flush.join() }
+    eventually { !closing.isAlive }
+    assertEquals(
+      mapOf(BatchProcessor.SHUTDOWN_CANCELLED to 1L),
+      closingPlugin.getDropStats().nonZero(),
+    )
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun close_whileAnotherCloseWaitsForAWrite_waitsAndClosesTheWriterOnce(): Unit = runBlocking {
+    val gate = CompletableDeferred<Unit>()
+    val writer = RecordingRowWriter(gate = gate)
+    val closingPlugin = newPlugin(writer = writer)
+    closingPlugin.beforeRun(invocationContext)
+    eventually { writer.rows.isNotEmpty() }
+    val first = thread { closingPlugin.close() }
+    val second: Thread
+    try {
+      awaitCloseStarted(closingPlugin)
+      // Such as the JVM shutdown hook racing the app's own close.
+      second = thread { closingPlugin.close() }
+      eventually { second.state == Thread.State.BLOCKED }
+      assertEquals(0, writer.closeCount.get())
+    } finally {
+      gate.complete(Unit)
+    }
+
+    eventually { !first.isAlive && !second.isAlive }
+    assertEquals(1, writer.closeCount.get())
+    assertEquals(0L, closingPlugin.getDropStats().getValue(BatchProcessor.SHUTDOWN_TIMEOUT))
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun closeOpenPlugins_closesEachPluginOnceAndInParallel(): Unit = runBlocking {
+    val closeBlocker = CountDownLatch(1)
+    val writers = List(2) { RecordingRowWriter(closeBlocker = closeBlocker) }
+    // Rows stay queued until close, and each close outlasts `eventually` if the closes run in turn.
+    val batchingConfig =
+      config.copy(
+        batchSize = 100,
+        batchFlushInterval = Duration.ofMinutes(1),
+        shutdownTimeout = Duration.ofMinutes(1),
+      )
+    for (writer in writers) newPlugin(batchingConfig, writer).beforeRun(invocationContext)
+
+    val closing = thread { BigQueryAgentAnalyticsPlugin.closeOpenPlugins() }
+    try {
+      // Each writer's close waits on the blocker, so both start only if the closes run in parallel.
+      eventually { writers.all { it.closeCount.get() == 1 } }
+    } finally {
+      closeBlocker.countDown()
+    }
+    eventually { !closing.isAlive }
+    BigQueryAgentAnalyticsPlugin.closeOpenPlugins()
+
+    assertEquals(listOf(1, 1), writers.map { it.rows.size })
+    assertEquals(listOf(1, 1), writers.map { it.closeCount.get() })
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun afterRun_executorShutDownAfterStartup_dropsTheRowWithoutHanging(): Unit = runBlocking {
+    val executor = Executors.newSingleThreadExecutor()
+    val writer = RecordingRowWriter()
+    val executorPlugin = newPlugin(writer = writer, ioContext = executor.asCoroutineDispatcher())
+    executorPlugin.beforeRun(invocationContext)
+    withTimeout(5.seconds) { executorPlugin.flush() }
+    executor.shutdown()
+    eventually { executor.isTerminated }
+
+    withTimeout(5.seconds) { executorPlugin.afterRun(invocationContext) }
+
+    assertEquals(1, writer.rows.size)
+    assertEquals(
+      mapOf(BatchProcessor.UNEXPECTED_ERROR to 1L),
+      executorPlugin.getDropStats().nonZero(),
+    )
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun rows_areWrittenWithTheCredentialsOfTheBigQueryClient(): Unit = runBlocking {
+    val bigQueryOptions = mock<BigQueryOptions> { on { scopedCredentials } doReturn mock() }
+    mockBigQuery.stub { on { options } doReturn bigQueryOptions }
+    val clientCredentials = bigQueryOptions.scopedCredentials
+    var writerCredentials: Any? = null
+    val credentialsPlugin =
+      BigQueryAgentAnalyticsPlugin(
+          config,
+          mockBigQuery,
+          Dispatchers.Unconfined,
+          TimeSource.Monotonic,
+          createRowWriter = { credentials ->
+            writerCredentials = credentials
+            rowWriter
+          },
+        )
+        .also { plugins += it }
+
+    credentialsPlugin.beforeRun(invocationContext)
+
+    assertSame(clientCredentials, writerCredentials)
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun getDropStats_keepsItsCountsAcrossAClose(): Unit = runBlocking {
+    val writer = RecordingRowWriter(WriteResult.Dropped(BatchProcessor.NON_RETRYABLE))
+    val restartingPlugin = newPlugin(writer = writer)
+    restartingPlugin.beforeRun(invocationContext)
+    withTimeout(5.seconds) { restartingPlugin.flush() }
+    restartingPlugin.close()
+
+    restartingPlugin.beforeRun(invocationContext)
+    withTimeout(5.seconds) { restartingPlugin.flush() }
+
+    assertEquals(2, writer.rows.size)
+    assertEquals(
+      mapOf(BatchProcessor.NON_RETRYABLE to 1L),
+      restartingPlugin.getDropStats().nonZero(),
+    )
+  }
+
+  @Test
+  fun getDropStats_listsEveryReasonBeforeAnyDrop() {
+    assertEquals(
+      (BatchProcessor.DROP_REASONS + "setup_unavailable").associateWith { 0L },
+      plugin.getDropStats(),
+    )
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun getDropStats_tableCannotBeCreated_countsTheRowsAsSetupUnavailable(): Unit = runBlocking {
+    whenever(mockBigQuery.getTable(any<TableId>())).thenThrow(BigQueryException(503, "unavailable"))
+
+    plugin.beforeRun(invocationContext)
+    plugin.afterRun(invocationContext)
+
+    assertTrue(capturedRows().isEmpty())
+    assertEquals(mapOf("setup_unavailable" to 2L), plugin.getDropStats().nonZero())
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun logEvent_stampsTheRowWithTheCurrentInstant(): Unit = runBlocking {
+    val before = Instant.now()
+    plugin.beforeRun(invocationContext)
+    val after = Instant.now()
+
+    val timestamp = assertIs<Instant>(capturedRows().single()["timestamp"])
+    assertTrue(timestamp in before..after)
+  }
+
+  /** Returns a plugin that sends its rows to [writer]. */
+  private fun newPlugin(
+    config: BigQueryLoggerConfig = this.config,
+    writer: RecordingRowWriter = rowWriter,
+    timeSource: TimeSource = TimeSource.Monotonic,
+    ioContext: CoroutineContext = Dispatchers.Unconfined,
+  ) =
+    BigQueryAgentAnalyticsPlugin(
+        config,
+        mockBigQuery,
+        ioContext,
+        timeSource,
+        createRowWriter = { writer },
+      )
+      .also { plugins += it }
 
   // Kept out of suspend bodies, since BigQuery.query declares InterruptedException (SuspendBlocks).
   private fun stubViewQueries(answer: () -> TableResult?) {
@@ -1780,11 +1924,28 @@ class BigQueryAgentAnalyticsPluginTest {
     return records
   }
 
-  private fun capturedRows(): List<Map<String, Any?>> {
-    val captor = argumentCaptor<InsertAllRequest>()
-    verify(mockBigQuery, atLeastOnce()).insertAll(captor.capture())
-    return captor.allValues.map { it.rows.single().content }
+  /** Flushes [plugin] and returns the rows [writer] was given. */
+  private suspend fun capturedRows(
+    plugin: BigQueryAgentAnalyticsPlugin = this.plugin,
+    writer: RecordingRowWriter = rowWriter,
+  ): List<Map<String, Any?>> {
+    withTimeout(5.seconds) { plugin.flush() }
+    return writer.rows.toList()
   }
+
+  private suspend fun eventually(condition: () -> Boolean): Unit =
+    withTimeout(5.seconds) { while (!condition()) delay(5) }
+
+  // A row dropped as cancelled shows that a close has stopped taking rows.
+  private suspend fun awaitCloseStarted(plugin: BigQueryAgentAnalyticsPlugin): Unit =
+    withTimeout(5.seconds) {
+      while (plugin.getDropStats().getValue(BatchProcessor.SHUTDOWN_CANCELLED) == 0L) {
+        val unused = plugin.beforeRun(invocationContext)
+        delay(5)
+      }
+    }
+
+  private fun Map<String, Long>.nonZero(): Map<String, Long> = filterValues { it > 0 }
 
   private fun List<Map<String, Any?>>.ofType(eventType: String): Map<String, Any?> = single {
     it["event_type"] == eventType
@@ -1824,4 +1985,34 @@ private class ScriptedModel(override val name: String, vararg responses: LlmResp
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
     flowOf(synchronized(script) { script.removeFirst() })
+}
+
+/**
+ * A [RowWriter] that records every row it is given and answers with [results], then with success.
+ * Each write first waits for [gate], if given, then throws [failure], if given; [close] waits for
+ * [closeBlocker], if given.
+ */
+private class RecordingRowWriter(
+  vararg results: WriteResult,
+  private val gate: CompletableDeferred<Unit>? = null,
+  private val failure: Exception? = null,
+  private val closeBlocker: CountDownLatch? = null,
+) : RowWriter {
+  val rows = CopyOnWriteArrayList<Map<String, Any?>>()
+  val closeCount = AtomicInteger()
+  private val script = ArrayDeque(results.toList())
+
+  override suspend fun write(rows: List<Map<String, Any?>>): WriteResult {
+    this.rows += rows
+    gate?.await()
+    if (failure != null) throw failure
+    return synchronized(script) { script.removeFirstOrNull() } ?: WriteResult.Written
+  }
+
+  override fun release() {}
+
+  override fun close() {
+    closeCount.incrementAndGet()
+    closeBlocker?.await()
+  }
 }

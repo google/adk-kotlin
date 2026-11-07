@@ -18,6 +18,7 @@ package com.google.adk.kt.plugins.agentanalytics
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.auth.Credentials
+import java.time.Duration
 import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 
@@ -29,7 +30,8 @@ import kotlin.jvm.JvmStatic
  * @property enabled Whether the plugin logs anything.
  * @property location BigQuery location of the dataset, such as `US`.
  * @property tableName Events table, created on first use if it does not exist.
- * @property credentials Credentials for BigQuery; `null` uses Application Default Credentials.
+ * @property credentials Credentials of the BigQuery client the plugin creates if no client is
+ *   passed in; `null` uses Application Default Credentials.
  * @property eventAllowlist Event types to log, such as `LLM_REQUEST`; empty logs every type.
  * @property eventDenylist Event types never to log, even when allowlisted.
  * @property maxContentLength Budget for each logged string in UTF-8 bytes, including the
@@ -49,6 +51,17 @@ import kotlin.jvm.JvmStatic
  *   `_` and `-`.
  * @property contentFormatter Called with each event's content and type; its result is logged in
  *   place of the content. If it throws, `[FORMATTER_FAILED]` is logged instead.
+ * @property retryConfig How a batch of rows that fails to write is retried.
+ * @property batchSize Maximum rows per write request; at least 1.
+ * @property batchFlushInterval Longest the background writer waits for a batch to fill once it has
+ *   a row; must be positive.
+ * @property shutdownTimeout How long [BigQueryAgentAnalyticsPlugin.close] waits for queued rows to
+ *   be written; must be positive. Rows still queued after it are dropped.
+ * @property queueMaxSize Maximum rows queued in memory, at least 1; rows logged while it is full
+ *   are dropped. About 1% of the slots, at least 2 but never all of them, are kept for
+ *   `INVOCATION_COMPLETED` and `INVOCATION_ERROR` rows.
+ * @property flushOnRunEnd Whether a run waits, before it completes, for every row logged so far by
+ *   any run to be written or dropped. As in Python ADK, the wait has no time limit.
  */
 data class BigQueryLoggerConfig
 @JvmOverloads
@@ -70,12 +83,26 @@ constructor(
   val createViews: Boolean = false,
   val viewPrefix: String = "v",
   val contentFormatter: ((Any, String) -> Any?)? = null,
+  val retryConfig: RetryConfig = RetryConfig(),
+  val batchSize: Int = 1,
+  val batchFlushInterval: Duration = Duration.ofSeconds(1),
+  val shutdownTimeout: Duration = Duration.ofSeconds(10),
+  val queueMaxSize: Int = 10_000,
+  val flushOnRunEnd: Boolean = true,
 ) {
 
   init {
     require(maxContentLength == -1 || maxContentLength >= 1) {
       "maxContentLength must be -1 (unlimited) or >= 1, got $maxContentLength."
     }
+    require(batchSize >= 1) { "batchSize must be >= 1, got $batchSize." }
+    require(batchFlushInterval > Duration.ZERO) {
+      "batchFlushInterval must be positive, got $batchFlushInterval."
+    }
+    require(shutdownTimeout > Duration.ZERO) {
+      "shutdownTimeout must be positive, got $shutdownTimeout."
+    }
+    require(queueMaxSize >= 1) { "queueMaxSize must be >= 1, got $queueMaxSize." }
   }
 
   /**
@@ -103,11 +130,18 @@ constructor(
       .createViews(createViews)
       .viewPrefix(viewPrefix)
       .contentFormatter(contentFormatter)
+      .retryConfig(retryConfig)
+      .batchSize(batchSize)
+      .batchFlushInterval(batchFlushInterval)
+      .shutdownTimeout(shutdownTimeout)
+      .queueMaxSize(queueMaxSize)
+      .flushOnRunEnd(flushOnRunEnd)
 
   /**
    * Fluent builder for [BigQueryLoggerConfig], provided primarily for Java callers. Any property
    * left unset falls back to the same default as the constructor.
    */
+  @AdkJavaInteropApi
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
     private var projectId: String? = null
@@ -127,6 +161,12 @@ constructor(
     private var createViews: Boolean = false
     private var viewPrefix: String = "v"
     private var contentFormatter: ((Any, String) -> Any?)? = null
+    private var retryConfig: RetryConfig = RetryConfig()
+    private var batchSize: Int = 1
+    private var batchFlushInterval: Duration = Duration.ofSeconds(1)
+    private var shutdownTimeout: Duration = Duration.ofSeconds(10)
+    private var queueMaxSize: Int = 10_000
+    private var flushOnRunEnd: Boolean = true
 
     fun projectId(projectId: String): Builder = apply { this.projectId = projectId }
 
@@ -178,6 +218,24 @@ constructor(
       this.contentFormatter = contentFormatter
     }
 
+    fun retryConfig(retryConfig: RetryConfig): Builder = apply { this.retryConfig = retryConfig }
+
+    fun batchSize(batchSize: Int): Builder = apply { this.batchSize = batchSize }
+
+    fun batchFlushInterval(batchFlushInterval: Duration): Builder = apply {
+      this.batchFlushInterval = batchFlushInterval
+    }
+
+    fun shutdownTimeout(shutdownTimeout: Duration): Builder = apply {
+      this.shutdownTimeout = shutdownTimeout
+    }
+
+    fun queueMaxSize(queueMaxSize: Int): Builder = apply { this.queueMaxSize = queueMaxSize }
+
+    fun flushOnRunEnd(flushOnRunEnd: Boolean): Builder = apply {
+      this.flushOnRunEnd = flushOnRunEnd
+    }
+
     fun build(): BigQueryLoggerConfig =
       BigQueryLoggerConfig(
         projectId = checkNotNull(projectId) { "BigQueryLoggerConfig.Builder requires projectId." },
@@ -197,6 +255,12 @@ constructor(
         createViews = createViews,
         viewPrefix = viewPrefix,
         contentFormatter = contentFormatter,
+        retryConfig = retryConfig,
+        batchSize = batchSize,
+        batchFlushInterval = batchFlushInterval,
+        shutdownTimeout = shutdownTimeout,
+        queueMaxSize = queueMaxSize,
+        flushOnRunEnd = flushOnRunEnd,
       )
   }
 
