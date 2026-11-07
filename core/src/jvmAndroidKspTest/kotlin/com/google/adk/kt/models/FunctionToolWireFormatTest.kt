@@ -28,9 +28,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Verifies the JSON wire format of the `functionResponse` Gemini receives for a [FunctionTool]'s
@@ -120,7 +123,40 @@ class FunctionToolWireFormatTest {
     assertWireResponse(
       RequiresNameTool(),
       args = emptyMap(),
-      expected = """{"error":"Missing required parameter name"}""",
+      expected =
+        errorResponse(
+          "Invoking `requiresName()` failed as the following mandatory input parameters are not " +
+            "present:\nname\nYou could retry calling this tool, but it is IMPORTANT for you to " +
+            "provide all the mandatory parameters."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithSeveralRequiredArgsMissing_namesEachInOneError() = runBlocking {
+    assertWireResponse(
+      RequiresNameAndAgeTool(),
+      args = emptyMap(),
+      expected =
+        errorResponse(
+          "Invoking `requiresNameAndAge()` failed as the following mandatory input parameters " +
+            "are not present:\nname\nage\nYou could retry calling this tool, but it is " +
+            "IMPORTANT for you to provide all the mandatory parameters."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithWrongTypeForRequiredArg_namesItInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresNameAndAgeTool(),
+      args = mapOf("name" to "Bob", "age" to "ten"),
+      expected =
+        errorResponse(
+          "Invoking `requiresNameAndAge()` failed due to argument validation errors:\n" +
+            "Parameter 'age': expected type 'Int'\nYou could retry calling this tool with " +
+            "corrected argument types."
+        ),
     )
   }
 
@@ -228,6 +264,10 @@ class FunctionToolWireFormatTest {
       JsonObject(functionResponse.response ?: emptyMap()),
     )
   }
+
+  /** The JSON of a response that carries only [message] as its error. */
+  private fun errorResponse(message: String): String =
+    buildJsonObject { put("error", message) }.toString()
 
   private fun dummyInvocationContext(): InvocationContext =
     InvocationContext(
