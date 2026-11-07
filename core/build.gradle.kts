@@ -60,7 +60,8 @@ kotlin {
         dependencies {
           implementation(libs.kotlinx.atomicfu)
           implementation(libs.kotlinx.coroutines.core)
-          implementation(libs.kotlinx.serialization)
+          // api: ClassifierContent exposes kotlinx JsonObject and JsonArray in public signatures.
+          api(libs.kotlinx.serialization)
           api(libs.google.genai.kotlin)
           // compileOnly: google-genai-kotlin already brings ktor-http at runtime; a runtime
           // dependency here would raise Android apps to this Ktor and its newer kotlin-stdlib.
