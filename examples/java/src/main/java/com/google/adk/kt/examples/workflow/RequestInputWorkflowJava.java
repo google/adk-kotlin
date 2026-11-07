@@ -36,7 +36,6 @@ import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import reactor.core.publisher.Flux;
 
 /**
@@ -161,12 +160,13 @@ public final class RequestInputWorkflowJava {
         String.class,
         (ctx, draft) ->
             FunctionNodes.requestInput(
-                // Each request needs its own id, which the answer quotes.
-                UUID.randomUUID().toString(),
-                "Please review the following draft email and provide 'approve', 'reject', or"
-                    + " feedback to revise.\n\n---\n"
-                    + draft
-                    + "\n---"));
+                RequestInput.builder()
+                    .message(
+                        "Please review the following draft email and provide 'approve', 'reject',"
+                            + " or feedback to revise.\n\n---\n"
+                            + draft
+                            + "\n---")
+                    .build()));
   }
 
   /** Routes on the reviewer's answer, and stores any feedback for the agent's next draft. */

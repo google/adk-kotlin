@@ -84,7 +84,7 @@ public final class FunctionNodeWorkflowJava {
         });
   }
 
-  /** Runs check_cover on each day, at most two at a time; the next step joins the results. */
+  /** Runs check_cover on each day, at most two at a time, and outputs the covers in day order. */
   private static FunctionNode<List<Integer>, List<DayCover>> checkAllDays() {
     FunctionNode<Integer, DayCover> checkCover =
         FunctionNodes.of(

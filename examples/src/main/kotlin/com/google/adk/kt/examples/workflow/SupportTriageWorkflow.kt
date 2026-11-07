@@ -60,7 +60,7 @@ object SupportTriageWorkflow {
 
     return workflow("support_triage") {
       // An LlmAgent is a Node, so it goes straight into the graph.
-      chain(Start, classifierAgent(model), requestCategory).route {
+      chain(Start, saveRequest, classifierAgent(model), requestCategory).route {
         on("billing") then billing
         on("tech") then tech
         otherwise(summarize)
@@ -69,6 +69,17 @@ object SupportTriageWorkflow {
       tech.then(summarize)
     }
   }
+
+  /**
+   * Stores the customer's request in state so the specialists and the summarizer can read it. After
+   * a specialist, the summarizer sees only that specialist's notes.
+   */
+  private val saveRequest =
+    node<String, String>("save_request") { context, request ->
+      // START hands the first node the user's message, which a String input receives as text.
+      context.updateState("request", request)
+      request
+    }
 
   /** Routes on the category the classifier returned, since an [LlmAgent] node emits no route. */
   private val requestCategory =
@@ -115,6 +126,7 @@ private fun billingAgent(model: Model): LlmAgent =
       Instruction(
         """
         You are a billing specialist. The customer's account ID is {account_id}.
+        The customer wrote: {request}
         Look up their recent charges, then note in two bullets what happened and how to fix it.
         """
           .trimIndent()
@@ -128,8 +140,13 @@ private fun techAgent(model: Model): LlmAgent =
     model = model,
     instruction =
       Instruction(
-        "You are a support engineer. Check the service status, then note in two bullets the" +
-          " likely cause and the fix or workaround."
+        """
+        You are a support engineer.
+        The customer wrote: {request}
+        Check the service status, then note in two bullets the likely cause and the fix or
+        workaround.
+        """
+          .trimIndent()
       ),
     tools = StatusPage().generatedTools(),
   )
@@ -140,8 +157,13 @@ private fun summaryAgent(model: Model): LlmAgent =
     model = model,
     instruction =
       Instruction(
-        "Write the reply to the customer in at most four sentences, based on any specialist" +
-          " notes above. Do not mention internal tools or IDs other than the customer's."
+        """
+        The customer wrote: {request}
+        Write the reply in at most four sentences, based on any specialist notes you are given;
+        without notes, say that a support agent will follow up. Do not mention internal tools or
+        IDs other than the customer's.
+        """
+          .trimIndent()
       ),
   )
 

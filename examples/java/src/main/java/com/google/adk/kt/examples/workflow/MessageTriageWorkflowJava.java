@@ -31,6 +31,7 @@ import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.Arrays;
+import java.util.Locale;
 import reactor.core.publisher.Flux;
 
 /**
@@ -104,7 +105,9 @@ public final class MessageTriageWorkflowJava {
         (ctx, labels) -> {
           ctx.setRoutes(
               Arrays.stream(labels.split(",", -1))
-                  .map(label -> new Route.Tag(label.trim()))
+                  // Normalizes each label, since the model may quote, punctuate or lowercase it.
+                  .map(label -> label.replaceAll("(?U)^[\\s\"'.]+|[\\s\"'.]+$", ""))
+                  .map(label -> new Route.Tag(label.toUpperCase(Locale.ROOT).replace(' ', '_')))
                   .toList());
           return null;
         });

@@ -16,13 +16,14 @@
 
 package com.google.adk.kt.examples.workflow;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.annotations.Param;
 import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
@@ -44,9 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * An order-processing workflow with fraud review, built with the workflow DSL. Nested fraud and
@@ -154,9 +153,37 @@ public final class OrderProcessingWorkflowJava {
    * and says what it did.
    */
   private static final class OrderNodes {
-    final Node parseOrder = new ParseOrder();
+    /**
+     * Parses the order's {@code key=value} fields into state, where the steps and agents read them,
+     * and outputs the credit check's arguments.
+     */
+    final Node parseOrder =
+        FunctionNodes.of(
+            "parse_order",
+            // START hands the first node the user's message as Content.
+            Content.class,
+            new TypeReference<Map<String, Object>>() {},
+            (ctx, message) -> {
+              Map<String, String> fields = new HashMap<>();
+              for (String field : message.text().trim().split("\\s+", -1)) {
+                String[] keyAndValue = field.split("=", 2);
+                fields.put(keyAndValue[0], keyAndValue.length > 1 ? keyAndValue[1] : field);
+              }
+              for (Map.Entry<String, String> field : fields.entrySet()) {
+                String value = field.getValue();
+                ctx.updateState(
+                    field.getKey(), value.matches("-?\\d+") ? Integer.valueOf(value) : value);
+              }
+              // Every fan-out branch receives this output; only the tool reads it as arguments.
+              return Map.of(
+                  "customerId",
+                  fields.get("customer_id"),
+                  "orderTotalUsd",
+                  Integer.parseInt(fields.get("total_usd")));
+            });
+
     final Node geoCheck =
-        new OrderStep(
+        orderStep(
             "geo_check",
             context -> {
               boolean mismatch =
@@ -169,7 +196,7 @@ public final class OrderProcessingWorkflowJava {
                   : "The countries match.";
             });
     final Node fraudScore =
-        new OrderStep(
+        orderStep(
             "fraud_score",
             context -> {
               Map<String, Object> state = context.getState();
@@ -187,7 +214,7 @@ public final class OrderProcessingWorkflowJava {
               return "Fraud score: " + score + " out of 100.";
             });
     final Node reserveInventory =
-        new OrderStep(
+        orderStep(
             "reserve_inventory",
             context -> {
               Object orderId = context.getState().get("order_id");
@@ -196,7 +223,7 @@ public final class OrderProcessingWorkflowJava {
               return "Reserved stock for order " + orderId + " as " + reservation + ".";
             });
     final Node warehouseHold =
-        new OrderStep(
+        orderStep(
             "warehouse_hold",
             context -> {
               String hold =
@@ -208,13 +235,31 @@ public final class OrderProcessingWorkflowJava {
         ToolNodes.asNode(ReflectiveTools.fromMethod(new CreditBureau(), "creditCheck"));
     final JoinNode riskJoin = new JoinNode("risk_join");
     final Node assessRisk;
-    final Node riskDecision = new RiskDecision();
+
+    /** Routes on the risk agent's decision, since an LlmAgent node emits no route. */
+    final Node riskDecision =
+        FunctionNodes.of(
+            "risk_decision",
+            Object.class,
+            Object.class,
+            (ctx, input) -> {
+              Object decision =
+                  ctx.getState().get(RISK_KEY) instanceof Map<?, ?> risk
+                      ? risk.get("decision")
+                      : null;
+              // Without a decision, this node emits no route, so `otherwise` cancels the order.
+              if (decision instanceof String route) {
+                ctx.setRoutes(List.of(new Route.Tag(route)));
+              }
+              return null;
+            });
+
     final Node financeReview;
     final Node complianceReview;
     final JoinNode reviewJoin = new JoinNode("review_join");
-    final Node reviewGate = new OrderReviewGate(2);
+    final Node reviewGate = orderReviewGate(2);
     final Node chargeCard =
-        new OrderStep(
+        orderStep(
             "charge_card",
             context ->
                 "Charged "
@@ -223,7 +268,7 @@ public final class OrderProcessingWorkflowJava {
                     + context.getState().get("order_id")
                     + ".");
     final Node shipOrder =
-        new OrderStep(
+        orderStep(
             "ship_order",
             context -> {
               context.updateState("outcome", "charged and shipped");
@@ -232,14 +277,14 @@ public final class OrderProcessingWorkflowJava {
                   + " from the NJ-2 warehouse.";
             });
     final Node freezeAccount =
-        new OrderStep(
+        orderStep(
             "freeze_account",
             context ->
                 "Froze account "
                     + context.getState().get("customer_id")
                     + " pending an investigation.");
     final Node alertSecOps =
-        new OrderStep(
+        orderStep(
             "alert_sec_ops",
             context ->
                 "Sent SecOps the fraud signals for order "
@@ -247,7 +292,7 @@ public final class OrderProcessingWorkflowJava {
                     + ".");
     final JoinNode auditJoin = new JoinNode("audit_join");
     final Node cancelOrder =
-        new OrderStep(
+        orderStep(
             "cancel_order",
             context -> {
               context.updateState("outcome", "canceled");
@@ -258,7 +303,7 @@ public final class OrderProcessingWorkflowJava {
                   + ".";
             });
     final Node sendReceipt =
-        new OrderStep(
+        orderStep(
             "send_receipt",
             context ->
                 "Emailed customer "
@@ -331,7 +376,7 @@ public final class OrderProcessingWorkflowJava {
   private static final String FINANCE_KEY = "finance_review";
   private static final String COMPLIANCE_KEY = "compliance_review";
 
-  /** The risk agent's structured decision, which {@link RiskDecision} routes on. */
+  /** The risk agent's structured decision, which {@link OrderNodes#riskDecision} routes on. */
   private static final Schema RISK_SCHEMA =
       Schema.builder()
           .type(Type.OBJECT)
@@ -354,7 +399,7 @@ public final class OrderProcessingWorkflowJava {
           .required("decision", "reason")
           .build();
 
-  /** A reviewer's structured verdict, which {@link OrderReviewGate} routes on. */
+  /** A reviewer's structured verdict, which {@link OrderNodes#reviewGate} routes on. */
   private static final Schema REVIEW_SCHEMA =
       Schema.builder()
           .type(Type.OBJECT)
@@ -395,105 +440,42 @@ public final class OrderProcessingWorkflowJava {
   }
 
   /**
-   * Parses the order's {@code key=value} fields into state, where the steps and agents read them,
-   * and outputs the credit check's arguments.
+   * Returns a node that routes on both reviewers' verdicts: it emits approved when both approve,
+   * recheck when either asks for one and fewer than {@code maxRounds} reviews have run, and no
+   * route otherwise, which cancels the order.
    */
-  private static final class ParseOrder extends BasePublisherNode {
-    ParseOrder() {
-      super("parse_order");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      Map<String, String> fields = new HashMap<>();
-      for (String field : ((Content) nodeInput).text().trim().split("\\s+", -1)) {
-        String[] keyAndValue = field.split("=", 2);
-        fields.put(keyAndValue[0], keyAndValue[1]);
-      }
-      for (Map.Entry<String, String> field : fields.entrySet()) {
-        String value = field.getValue();
-        context.updateState(
-            field.getKey(), value.matches("-?\\d+") ? Integer.valueOf(value) : value);
-      }
-      // Every branch of the fan-out gets this output; only the tool reads it, as its arguments.
-      return Mono.just(
-          Map.of(
-              "customerId",
-              fields.get("customer_id"),
-              "orderTotalUsd",
-              Integer.parseInt(fields.get("total_usd"))));
-    }
-  }
-
-  /** Routes on the risk agent's decision, since an LlmAgent node emits no route. */
-  private static final class RiskDecision extends BasePublisherNode {
-    RiskDecision() {
-      super("risk_decision");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Object decision =
-          context.getState().get(RISK_KEY) instanceof Map<?, ?> risk ? risk.get("decision") : null;
-      // Without a decision, this node emits no route, so `otherwise` cancels the order.
-      if (decision instanceof String route) {
-        context.setRoutes(List.of(new Route.Tag(route)));
-      }
-      return Mono.empty();
-    }
+  private static Node orderReviewGate(int maxRounds) {
+    return FunctionNodes.of(
+        "review_gate",
+        Object.class,
+        Object.class,
+        (ctx, input) -> {
+          List<Object> verdicts = new ArrayList<>();
+          for (String key : List.of(FINANCE_KEY, COMPLIANCE_KEY)) {
+            verdicts.add(
+                ctx.getState().get(key) instanceof Map<?, ?> review ? review.get("verdict") : null);
+          }
+          // The run id counts this node's runs in this invocation, so it is the review round.
+          int round = Integer.parseInt(ctx.getRunId());
+          String route = null;
+          if (verdicts.stream().allMatch("approve"::equals)) {
+            route = "approved";
+          } else if (verdicts.contains("recheck") && round < maxRounds) {
+            route = "recheck";
+          }
+          if (route != null) {
+            ctx.setRoutes(List.of(new Route.Tag(route)));
+          }
+          return null;
+        });
   }
 
   /**
-   * Routes on both reviewers' verdicts: emits approved when both approve, recheck when either asks
-   * for one and fewer than {@code maxRounds} reviews have run, and no route otherwise, which
-   * cancels the order.
+   * Returns a step that simulates a backend call by running {@code act} and outputting the returned
+   * line.
    */
-  private static final class OrderReviewGate extends BasePublisherNode {
-    private final int maxRounds;
-
-    OrderReviewGate(int maxRounds) {
-      super("review_gate");
-      this.maxRounds = maxRounds;
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      List<Object> verdicts = new ArrayList<>();
-      for (String key : List.of(FINANCE_KEY, COMPLIANCE_KEY)) {
-        verdicts.add(
-            context.getState().get(key) instanceof Map<?, ?> review ? review.get("verdict") : null);
-      }
-      // The run id counts this node's runs in the current invocation, so it is the review round.
-      int round = Integer.parseInt(context.getRunId());
-      String route = null;
-      if (verdicts.stream().allMatch("approve"::equals)) {
-        route = "approved";
-      } else if (verdicts.contains("recheck") && round < maxRounds) {
-        route = "recheck";
-      }
-      if (route != null) {
-        context.setRoutes(List.of(new Route.Tag(route)));
-      }
-      return Mono.empty();
-    }
-  }
-
-  /**
-   * A step that stands in for a backend call: it runs {@code act} and outputs the line it returns.
-   */
-  private static final class OrderStep extends BasePublisherNode {
-    private final Function<Context, String> act;
-
-    OrderStep(String name, Function<Context, String> act) {
-      super(name);
-      this.act = act;
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Mono.just(act.apply(context));
-    }
+  private static Node orderStep(String name, Function<Context, String> act) {
+    return FunctionNodes.of(name, Object.class, String.class, (ctx, input) -> act.apply(ctx));
   }
 
   private OrderProcessingWorkflowJava() {}

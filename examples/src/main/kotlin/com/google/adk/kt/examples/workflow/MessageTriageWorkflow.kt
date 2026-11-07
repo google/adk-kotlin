@@ -59,7 +59,11 @@ object MessageTriageWorkflow {
   /** Emits a route for each label in the classifier's answer; several routes fan out. */
   private val messageCategories =
     node<String, Unit>("message_categories") { context, labels ->
-      context.routes = labels.split(",").map { Route.Tag(it.trim()) }
+      // Normalizes each label, since the model may quote, punctuate or lowercase it.
+      context.routes =
+        labels.split(",").map {
+          Route.Tag(it.trim { c -> c.isWhitespace() || c in "\"'." }.uppercase().replace(' ', '_'))
+        }
     }
 
   /** Returns a node that tells the user the message is being handled. */

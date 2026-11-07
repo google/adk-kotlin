@@ -76,8 +76,12 @@ public final class LoopSelfWorkflowJava {
       // START hands the first node the user's message as Content.
       int number = Integer.parseInt(((Content) nodeInput).text().trim());
       if (number < 0 || number > 10) {
-        // A synchronous node fails before publishing, so the error carries the message.
-        throw new IllegalArgumentException("Please provide a number between 0 and 10.");
+        Event message =
+            Event.builder()
+                .content(Content.fromText(Role.MODEL, "Please provide a number between 0 and 10."))
+                .build();
+        return Mono.<Object>just(message)
+            .concatWith(Mono.error(new IllegalArgumentException("Invalid input.")));
       }
       context.updateState("target_number", number);
       return Mono.empty();
@@ -95,12 +99,10 @@ public final class LoopSelfWorkflowJava {
       int guess = ThreadLocalRandom.current().nextInt(0, 11);
       Event guessing =
           Event.builder()
-              .author("")
               .content(Content.fromText(Role.MODEL, "Guessing " + guess + "..."))
               .build();
       if (guess == ((Number) context.getState().get("target_number")).intValue()) {
-        Event correct =
-            Event.builder().author("").content(Content.fromText(Role.MODEL, "Correct!")).build();
+        Event correct = Event.builder().content(Content.fromText(Role.MODEL, "Correct!")).build();
         return Flux.just(guessing, correct);
       }
       context.setRoutes(List.of(new Route.Tag("guessed_wrong")));
