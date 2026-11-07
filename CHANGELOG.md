@@ -1,5 +1,91 @@
 # Changelog
 
+## [1.6.0](https://github.com/google/adk-kotlin/compare/v1.5.0...v1.6.0) (2026-11-07)
+
+
+### Features
+
+* add a batch writer for the Storage Write API ([e863fac](https://github.com/google/adk-kotlin/commit/e863facc7faa6ec0b91b2d9080e68bd5d22fda2f))
+* **auth:** add Context.requestCredential and getAuthResponse ([4b84da4](https://github.com/google/adk-kotlin/commit/4b84da42dc1b2504c8e6e8b49bd937bc97b1b8c7))
+* **auth:** add internal authorization URL building ([72b068f](https://github.com/google/adk-kotlin/commit/72b068f81ef890d7272f415313f841b1deb95140))
+* **auth:** add internal PKCE code verifier and S256 challenge ([02b2985](https://github.com/google/adk-kotlin/commit/02b298513435ab5ef54fce5e99a567f0a029362b))
+* **auth:** add internal secure random string generation ([3d2d6aa](https://github.com/google/adk-kotlin/commit/3d2d6aaac26e907cff21441514166ade5baefccc))
+* **auth:** build the sign-in request for a credential ([eb9361b](https://github.com/google/adk-kotlin/commit/eb9361b4000357d76f5d4e5fe35d8b8f869ba1ef))
+* **auth:** make AuthConfig.credentialKey a CredentialKey ([c6c7168](https://github.com/google/adk-kotlin/commit/c6c7168c371eeb08744f4124cd9121c223f5cf8a))
+* carry a Java caller's coroutine context into runs and reflective tools ([73cfb2e](https://github.com/google/adk-kotlin/commit/73cfb2e64de557e1c635cf08b3b0b78e60b76c99))
+* **classifiers:** add the experimental Classifier interface and its question and answer types ([98f6a8e](https://github.com/google/adk-kotlin/commit/98f6a8e762333f27835f5d0a2cb9a090b2fcc85a))
+* **core:** add ToolExecutionMode to RunConfig for sequential tool calls ([f778bff](https://github.com/google/adk-kotlin/commit/f778bffa5da3abd5df65c0e73269ab7abc44d18d))
+* let Java code call a Context's suspend methods through InteropContextView ([d5ee7bf](https://github.com/google/adk-kotlin/commit/d5ee7bf1bd8bbb0d8534b974a7f358f8c88cbf7a))
+* let tools stream through a Reactive Streams Publisher ([5083147](https://github.com/google/adk-kotlin/commit/50831474c063909afb76c90bc40787792f40faa4))
+* **live:** add an avatar configuration for live conversations ([6e45a79](https://github.com/google/adk-kotlin/commit/6e45a791fb371ecd58953c8e4ab849531a99b905))
+* **live:** add BaseTool.behavior to declare tools blocking or non-blocking ([2740a81](https://github.com/google/adk-kotlin/commit/2740a81849866bc936dc99a94eb4fc6fa7620138))
+* **live:** declare streaming tools NON_BLOCKING to the model ([a8c4c7f](https://github.com/google/adk-kotlin/commit/a8c4c7f5753aa3266699d4bad771c3cc1eb193e3))
+* **live:** let a streaming tool read the live input from Context.liveRequests ([248cb5b](https://github.com/google/adk-kotlin/commit/248cb5b03955ce1a200f571f540dac84d2ff1c84))
+* **live:** let the operator pick the avatar for VIDEO sessions ([193b343](https://github.com/google/adk-kotlin/commit/193b343b3df9be33afb5cb3dad92380e8db11147))
+* **live:** serve /run_live from adkApiModule and the servers ([01fa7ad](https://github.com/google/adk-kotlin/commit/01fa7ad040446f7b5ac14bfda37b974405341038))
+* **processor:** let @Tool functions return a Flow ([cabec44](https://github.com/google/adk-kotlin/commit/cabec44d807d25d8dbd3bd4a368bda6463a0c11a))
+* run Java calls in the caller's context ([abe2aa4](https://github.com/google/adk-kotlin/commit/abe2aa4c313c5c13ab72045e30d3f23bc5c09201))
+* **webserver:** export traces over OTLP when OTEL_* endpoints are set ([db1a637](https://github.com/google/adk-kotlin/commit/db1a637c20ba3b39155cc169c47931f4d34cb100))
+* **workflow:** let RetryConfig match exceptions by class ([9948e13](https://github.com/google/adk-kotlin/commit/9948e13039254ad03004a68a77b24d61f32bf4b2))
+* **workflow:** name every node failure by its own class ([45ee185](https://github.com/google/adk-kotlin/commit/45ee1850d4449e857908118168a0f52756e72b6b))
+* **workflow:** trace workflows and nodes as invoke_workflow and invoke_node spans ([e82b358](https://github.com/google/adk-kotlin/commit/e82b358561be70f6ea6a7063d5b32e3278a2ab6d))
+
+
+### Bug Fixes
+
+* **a2a:** carry file names and media control fields over A2A ([c3c003f](https://github.com/google/adk-kotlin/commit/c3c003f28dbc0bb08bb4a95f833b128db3389c8d))
+* **a2a:** let the app answer a remote task that asks for input ([10344ab](https://github.com/google/adk-kotlin/commit/10344ab3c7f902e671d237911d809036fc3c0cec))
+* **a2a:** send untyped data parts back as data parts with their metadata ([05e6155](https://github.com/google/adk-kotlin/commit/05e6155ce21ca7d7a1a3dd070518d0041fd29030))
+* **a2a:** treat a finished remote task's output as its final response ([781d183](https://github.com/google/adk-kotlin/commit/781d1838bf634221b657b8d5a2efbd93241f0aa8))
+* **agents:** make ParallelAgent sub-agents see their own earlier events ([e83085d](https://github.com/google/adk-kotlin/commit/e83085deeea10117c58bd298a1ff3b5ab757c094))
+* carry code execution parts through A2A and agent history ([544489e](https://github.com/google/adk-kotlin/commit/544489ec10295cca4f52dd01e0aa56fd61edceae))
+* carry thought flags and thought signatures over A2A ([2809a83](https://github.com/google/adk-kotlin/commit/2809a837752644f3720eaa759d2cb5144ba1a84e))
+* contain skill names to the skills directory ([d0fc0ad](https://github.com/google/adk-kotlin/commit/d0fc0adcaa830acf0f7586629286e47a16ec7a46))
+* convert tool call and response parts to and from A2A ([8f242e2](https://github.com/google/adk-kotlin/commit/8f242e27a4e503d276b530334c69873a45779974))
+* downgrade kotlinx-coroutines to 1.10.2 and Ktor to 3.4.3 ([db97db5](https://github.com/google/adk-kotlin/commit/db97db5e3992ed531f3fa41b0be8ef4880191ca7))
+* end the run when a blocking remote call returns ([47be658](https://github.com/google/adk-kotlin/commit/47be658ea3f27cf30eaacd2830e3191c3209d411))
+* fail a Flow tool call outside a live run ([7d7f458](https://github.com/google/adk-kotlin/commit/7d7f458893ab9b4e6bea035a6a89b0ce798e1058))
+* fix replay branches and delegated outputs on resume ([5f697a6](https://github.com/google/adk-kotlin/commit/5f697a631d3cab4105f4629692c3e9d329be56b0))
+* **interop:** let Java publisher agents and nodes see state set by their earlier events ([e8933d0](https://github.com/google/adk-kotlin/commit/e8933d00e702ece01d35b9923ecc5e76a1da63cf))
+* keep credentials out of requests to remote agents ([cab085a](https://github.com/google/adk-kotlin/commit/cab085a08d54c80a8af7b469641e2ee464138889))
+* keep the caller's context in background coroutines ([27868ff](https://github.com/google/adk-kotlin/commit/27868ff8b6bd907e7ece8240f37d7b2e703b1e8e))
+* keep whitespace-only text in the LLM context ([299ed66](https://github.com/google/adk-kotlin/commit/299ed66f0ba46910f4ea582b400180dd66079f1b))
+* leave part metadata out of Vertex AI requests ([07689c6](https://github.com/google/adk-kotlin/commit/07689c6ab9353788c2bcc0eda1a3c64183142cd6))
+* **live:** store each answer before the next queued input ([f3bd87c](https://github.com/google/adk-kotlin/commit/f3bd87c540f9abbaca8b6bff955c842c7af183c3))
+* pair reused tool call IDs by occurrence during compaction and history rewrite ([553dd47](https://github.com/google/adk-kotlin/commit/553dd4740e34df8a67ec3b56b83a50c8f6781d1e))
+* propagate non-404 GCS listing errors ([7ef30ff](https://github.com/google/adk-kotlin/commit/7ef30ff8d841d801145db5e85002504bc533ef6c))
+* relay only the parts ADK Python relays from other agents' events ([ab2d83c](https://github.com/google/adk-kotlin/commit/ab2d83c767ca8225d581dd03e376b940d5244724))
+* rerun a resumed workflow agent only for a reply meant for it ([925d87f](https://github.com/google/adk-kotlin/commit/925d87f6a60b858c4429d70019d45ad335acef3e))
+* run agents off the Ktor call thread ([ad1961d](https://github.com/google/adk-kotlin/commit/ad1961d37a067f348231035d927ac1d908e032b8))
+* **runners:** make every message a user turn and keep user content on resume ([970e62d](https://github.com/google/adk-kotlin/commit/970e62d2f209c14e80f03525a9ec3257deca43f5))
+* send Claude only the current turn's thinking blocks ([9e83a53](https://github.com/google/adk-kotlin/commit/9e83a533d69c69eb36eeabf3c912b6693d167e7d))
+* serialize longRunningToolIds as a sorted list ([7fd87c8](https://github.com/google/adk-kotlin/commit/7fd87c8fc0e55d123cd13bf35302017255d988fe))
+* **webserver:** reject remote peers, rebound hosts, and untrusted origins ([b580447](https://github.com/google/adk-kotlin/commit/b58044779e27c9c34854eda4a6a4e04099f2a0ec))
+* **webserver:** serve artifact versions by path ([dd48efa](https://github.com/google/adk-kotlin/commit/dd48efa534a3d2e6a032eb322b94f3e2485d7a31))
+* **workflow:** keep a node waiting on an interrupt it raises again ([4658fb6](https://github.com/google/adk-kotlin/commit/4658fb6918558055d7dd621939638b5073f71eaa))
+* **workflow:** keep an LlmAgent node's history after an earlier node's interrupt ([c0ae040](https://github.com/google/adk-kotlin/commit/c0ae0401be69b7eab52a2f2d0b0f3a8bdab0d582))
+* **workflow:** skip the state schema for keys with a colon ([421718c](https://github.com/google/adk-kotlin/commit/421718cf0849e00880654d6bda16d2d4544c387d))
+
+
+### Documentation
+
+* **examples:** add a voice demo in Kotlin and Java ([f7386a6](https://github.com/google/adk-kotlin/commit/f7386a6aa5c6f75a85b8db83edeed684f878014e))
+* **examples:** add the PCM format and a bounded device open in Kotlin and Java ([e665796](https://github.com/google/adk-kotlin/commit/e66579634f6a12630e1ac1e31ef6953aff4f5a01))
+* **examples:** capture microphone audio in Kotlin and Java ([6b2fba3](https://github.com/google/adk-kotlin/commit/6b2fba34f54394683804b890a770461b0d1cdb15))
+* **examples:** open the workflow examples with their graph ([6c54b6d](https://github.com/google/adk-kotlin/commit/6c54b6dd98698931a3c57e15b7a312b8b1f1b49d))
+* **examples:** pass agent answers between workflow nodes ([7d8a75b](https://github.com/google/adk-kotlin/commit/7d8a75b5b12f9d6a2c0bbfc914674724c95b14cd))
+* **examples:** play the model's voice in Kotlin and Java ([0c04f5b](https://github.com/google/adk-kotlin/commit/0c04f5b97593f5928044ca572e1fa223b3354f9b))
+* **examples:** port the agent_in_workflow and input_output_schema samples ([26feef0](https://github.com/google/adk-kotlin/commit/26feef0ed9d16f078002c2db664cd1e37ace85b8))
+* **examples:** port the dynamic_nodes, dynamic_fan_out_fan_in and use_as_output samples ([f55d84b](https://github.com/google/adk-kotlin/commit/f55d84b5369fcfcacf6f8a6d655e5468df090b2d))
+* **examples:** port the fan_out_fan_in, parallel_worker and request_input_advanced samples ([9b00ef0](https://github.com/google/adk-kotlin/commit/9b00ef083638f6cb8aa5238cdf3522e70537e9c3))
+* **examples:** port the request_input and request_input_rerun workflow samples ([b961c9e](https://github.com/google/adk-kotlin/commit/b961c9e4aa50c79dbf4c17d870ab5629424a5e49))
+* **examples:** port the sequence, route and loop workflow samples ([336add2](https://github.com/google/adk-kotlin/commit/336add2554be275940eb7c2b409e9f24e5741d7f))
+* **examples:** port the task_sub_agent and single_turn_sub_agent samples ([80157fb](https://github.com/google/adk-kotlin/commit/80157fb80449dc3f6994f2298d3cc5874b7fe17e))
+* **examples:** read the user's message as text in three workflow examples ([b557afb](https://github.com/google/adk-kotlin/commit/b557afb8054d829cfc9412206a6101160deb0ad2))
+* **examples:** serve a live agent to the dev UI in Kotlin and Java ([a690ae1](https://github.com/google/adk-kotlin/commit/a690ae19e374f7631baad904a3eb23d7ed16efb0))
+* **firebase:** use the Agent Platform backend in examples and integration tests ([11d6139](https://github.com/google/adk-kotlin/commit/11d613945b1600ae307061d47480949d0e336826))
+* port the Spring Boot WebFlux order-support service to Java ([223dcbb](https://github.com/google/adk-kotlin/commit/223dcbb3b7cdda12bcabf72afaa4da235b06597b))
+
 ## [1.5.0](https://github.com/google/adk-kotlin/compare/v1.4.0...v1.5.0) (2026-10-28)
 
 
