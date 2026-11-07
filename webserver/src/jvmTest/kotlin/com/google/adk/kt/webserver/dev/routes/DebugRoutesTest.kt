@@ -24,6 +24,8 @@ import com.google.adk.kt.webserver.FakeArtifactService
 import com.google.adk.kt.webserver.FakeSessionService
 import com.google.adk.kt.webserver.dev.adkDevModule
 import com.google.adk.kt.webserver.telemetry.ApiServerSpanExporter
+import com.google.adk.kt.webserver.telemetry.endSpan
+import com.google.adk.kt.webserver.telemetry.exporterWith
 import com.google.common.truth.Truth.assertThat
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -33,9 +35,6 @@ import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
-import io.opentelemetry.sdk.trace.SdkTracerProvider
-import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
-import java.util.concurrent.TimeUnit
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -44,22 +43,28 @@ import org.junit.runners.JUnit4
 @RunWith(JUnit4::class)
 class DebugRoutesTest {
 
-  /** Drives the real SDK so the exporter holds a span the session endpoint will render. */
-  private fun exporterWithSpan(sessionId: String): ApiServerSpanExporter {
-    val exporter = ApiServerSpanExporter()
-    SdkTracerProvider.builder()
-      .addSpanProcessor(SimpleSpanProcessor.create(exporter))
-      .build()
-      .use { provider ->
-        provider
-          .get("test")
-          .spanBuilder("call_llm")
-          .setAttribute("gcp.vertex.agent.session_id", sessionId)
-          .startSpan()
-          .end()
-        provider.forceFlush().join(5, TimeUnit.SECONDS)
-      }
-    return exporter
+  /** An exporter holding one `call_llm` span of session [sessionId]. */
+  private fun exporterWithSpan(sessionId: String): ApiServerSpanExporter = exporterWith {
+    endSpan("call_llm", "gcp.vertex.agent.session_id" to sessionId)
+  }
+
+  @Test
+  fun getSessionTrace_traceWithoutModelCall_isLinkedThroughConversationId() = testApplication {
+    // An agent that answers without calling a model ends no call_llm span.
+    val exporter = exporterWith {
+      val invocation = endSpan("invocation")
+      endSpan("invoke_agent replier", "gen_ai.conversation.id" to "s4", parent = invocation)
+    }
+
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { debugRoutes(exporter) }
+    }
+
+    val body = client.get("/debug/trace/session/s4").bodyAsText()
+
+    assertThat(body).contains("\"invoke_agent replier\"")
+    assertThat(body).contains("\"invocation\"")
   }
 
   @Test
