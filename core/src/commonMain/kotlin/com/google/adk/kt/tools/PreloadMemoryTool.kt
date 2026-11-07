@@ -35,6 +35,9 @@ class PreloadMemoryTool : BaseTool(name = "preload_memory", description = "prelo
     return null
   }
 
+  override val hasLocalImplementation: Boolean
+    get() = false
+
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     throw UnsupportedOperationException(
       "PreloadMemoryTool is not meant to be executed by the model - it modifies context instead."

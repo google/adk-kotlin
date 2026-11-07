@@ -55,6 +55,9 @@ class VertexAiRagRetrieval(
 
   override fun declaration(): FunctionDeclaration? = null
 
+  override val hasLocalImplementation: Boolean
+    get() = false
+
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     throw UnsupportedOperationException("VertexAiRagRetrieval does not support local execution")
   }
