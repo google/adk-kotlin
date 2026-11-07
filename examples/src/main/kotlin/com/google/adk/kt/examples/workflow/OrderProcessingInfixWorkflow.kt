@@ -30,8 +30,8 @@ private const val MODEL_NAME = "gemini-3.8-flash"
 
 /**
  * The order-processing workflow from [OrderProcessingWorkflow], with edges declared using the
- * workflow DSL's infix form. Its routing maps give each fan-out target its own entry, because
- * `then` with multiple targets has no infix form.
+ * workflow DSL's infix form. Its routing maps give each fan-out target its own entry, because a
+ * routing map's infix `then` takes a single node.
  */
 object OrderProcessingInfixWorkflow {
 

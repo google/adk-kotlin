@@ -36,7 +36,6 @@ import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import reactor.core.publisher.Flux;
 
 /**
@@ -124,14 +123,14 @@ public final class RequestInputWorkflowJava {
   /**
    * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
    */
-  private static FunctionNode<Content, Object> processInput() {
+  private static FunctionNode<String, Object> processInput() {
     return FunctionNodes.of(
         "process_input",
-        // START hands the first node the user's message as Content.
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
+        String.class,
         Object.class,
-        (ctx, message) -> {
-          ctx.updateState("complaint", message.text());
+        (ctx, complaint) -> {
+          ctx.updateState("complaint", complaint);
           ctx.updateState("feedback", "");
           return null;
         });
@@ -161,12 +160,13 @@ public final class RequestInputWorkflowJava {
         String.class,
         (ctx, draft) ->
             FunctionNodes.requestInput(
-                // Each request needs its own id, which the answer quotes.
-                UUID.randomUUID().toString(),
-                "Please review the following draft email and provide 'approve', 'reject', or"
-                    + " feedback to revise.\n\n---\n"
-                    + draft
-                    + "\n---"));
+                RequestInput.builder()
+                    .message(
+                        "Please review the following draft email and provide 'approve', 'reject',"
+                            + " or feedback to revise.\n\n---\n"
+                            + draft
+                            + "\n---")
+                    .build()));
   }
 
   /** Routes on the reviewer's answer, and stores any feedback for the agent's next draft. */

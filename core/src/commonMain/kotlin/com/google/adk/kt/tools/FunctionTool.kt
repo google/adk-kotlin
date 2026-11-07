@@ -17,8 +17,8 @@
 package com.google.adk.kt.tools
 
 /**
- * Represents a compile-time generated tool that wraps a function annotated with
- * [com.google.adk.kt.annotations.Tool].
+ * Represents a tool that wraps a function annotated with [com.google.adk.kt.annotations.Tool],
+ * whether KSP generates it at compile time or `ReflectiveTools` builds it at runtime on the JVM.
  *
  * The optional confirmation gate (set via the `requiresConfirmation` constructor parameter) makes
  * an invocation pause for human approval before the underlying function runs:
