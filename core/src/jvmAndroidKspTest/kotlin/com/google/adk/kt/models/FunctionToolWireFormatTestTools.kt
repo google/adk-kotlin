@@ -66,6 +66,8 @@ fun returnsProfile(): Profile =
 
 @Tool fun requiresName(name: String): String = "hello, $name"
 
+@Tool fun requiresNameAndAge(name: String, age: Int): String = "$name is $age"
+
 @Tool
 fun returnsStockPrice(): Map<String, Any> =
   mapOf("symbol" to "GOOG", "price" to 123.45, "volume" to 1000)
