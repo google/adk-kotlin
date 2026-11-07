@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.function.BiConsumer
 import java.util.function.Consumer
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -107,6 +108,7 @@ internal class A2AAgentImpl(
     // Alternatively, block the thread using: runBlocking { eventChannel.send(responseEvent) }
     val eventChannel = Channel<ClientEvent>(Channel.UNLIMITED)
     val message = outboundEvent.toA2aMessage()
+    val debugRequest = serializeMessageToJson(message)
 
     // Per-invocation streaming: RunConfig SSE, only if streaming is possible (isStreamingEnabled).
     val streaming = isStreamingEnabled && context.runConfig?.streamingMode == StreamingMode.SSE
@@ -116,33 +118,36 @@ internal class A2AAgentImpl(
     @Suppress("UnsafeCoroutineCrossing")
     val processorJob = launch {
       val a2aAggregator = A2AStreamingResponseAggregator(context.invocationId, name)
-      val debugRequest = serializeMessageToJson(message)
       var lastTask: Task? = null
 
-      for (responseEvent in eventChannel) {
-        val result = processClientEvent(responseEvent, context, debugRequest, a2aAggregator)
+      try {
+        for (responseEvent in eventChannel) {
+          val result = processClientEvent(responseEvent, context, debugRequest, a2aAggregator)
 
-        result.taskId?.let { activeTaskId.set(it) }
-        result.isTerminal?.let { isTaskTerminal.set(it) }
-        responseEvent.taskOrNull?.let { lastTask = it }
+          result.taskId?.let { activeTaskId.set(it) }
+          result.isTerminal?.let { isTaskTerminal.set(it) }
+          responseEvent.taskOrNull?.let { lastTask = it }
 
-        for (event in result.eventsToEmit) {
-          send(event)
+          for (event in result.eventsToEmit) {
+            send(event)
+          }
+
+          if (result.shouldClose) {
+            break
+          }
         }
-
-        if (result.shouldClose) {
-          break
-        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        val errorMessage = "A2A request failed (${e::class.simpleName})"
+        send(failedTurnEvent(context, errorMessage, debugRequest, contextId = null))
+        close(e)
+        return@launch
       }
       // Report an unfinished task as ADK Python does; its context id lets the next turn continue.
       if (lastTask != null && !isTerminal(lastTask.status.state())) {
-        send(
-          remoteAgentEvent(context)
-            .copy(
-              errorMessage = "A2A response ended before the remote task reached a terminal state",
-              customMetadata = mapOf(ADK_METADATA_CONTEXT_ID to lastTask.contextId),
-            )
-        )
+        val errorMessage = "A2A response ended before the remote task reached a terminal state"
+        send(failedTurnEvent(context, errorMessage, debugRequest, lastTask.contextId))
       }
       close()
     }
@@ -155,20 +160,24 @@ internal class A2AAgentImpl(
         eventChannel.trySend(responseEvent).getOrNull()
       }
 
+    // A cancellation closes the flow directly; other failures become an error event.
+    fun failRequest(e: Throwable) {
+      if (e is CancellationException) close(e) else eventChannel.close(e)
+    }
+
     val errorHandler =
       Consumer<Throwable> { ex ->
         val e: Throwable? = ex
-        if (e != null) close(e) else eventChannel.close()
+        if (e != null) failRequest(e) else eventChannel.close()
       }
 
-    // If sendMessage throws synchronously, fail the flow with close(e); awaitClose below still runs
-    // (it fires immediately once the channel is closed), so cleanup happens in one place.
+    // A synchronous throw goes through failRequest, so awaitClose below still does the cleanup.
     try {
       a2aClient.sendMessage(message, listOf(handler), errorHandler, null)
       // A blocking send hands its one response to the handler before it returns.
       if (!streaming) eventChannel.close()
     } catch (e: Exception) {
-      close(e)
+      failRequest(e)
     }
 
     awaitClose {
@@ -211,6 +220,25 @@ internal class A2AAgentImpl(
       shouldClose = responseEvent.isCompleted(),
     )
   }
+
+  /**
+   * Returns an error event that records [request] as failed, with [contextId] if it is not null.
+   */
+  private fun failedTurnEvent(
+    context: InvocationContext,
+    errorMessage: String,
+    request: Result<String>,
+    contextId: String?,
+  ): Event =
+    remoteAgentEvent(context)
+      .copy(
+        errorMessage = errorMessage,
+        customMetadata =
+          buildMap {
+            contextId?.let { put(ADK_METADATA_CONTEXT_ID, it) }
+            request.onSuccess { put(A2AMetadata.REQUEST, it) }
+          },
+      )
 
   /**
    * Cancels [taskId] and closes [a2aClient] on `Dispatchers.IO` without [callerContext]'s [Job], so
