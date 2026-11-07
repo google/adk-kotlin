@@ -446,14 +446,11 @@ internal class LiveStreamingTools(
   private suspend fun sendToCaller(tool: BaseTool, callId: String, event: Event) {
     val content = event.content
     if (content == null) {
-      logger.warn { "Streaming tool ${tool.name} yielded an Event with no content; it is dropped." }
+      warnNotAMessage(tool, "it has no content, so there is nothing to deliver")
       return
     }
     if (event != Event(id = event.id, content = content, timestamp = event.timestamp)) {
-      logger.warn {
-        "Streaming tool ${tool.name} yielded an Event with fields beyond its content; they are " +
-          "ignored."
-      }
+      warnNotAMessage(tool, "it sets fields beyond the message, which are ignored")
     }
     // Built fresh, so the caller gets the message alone and a reused event gets its own id.
     val delivered =
@@ -467,6 +464,13 @@ internal class LiveStreamingTools(
       )
     // A value the tool sends next reaches the model only after the caller has this event.
     if (events.trySend(delivered).isSuccess) delivered.handled.await()
+  }
+
+  private fun warnNotAMessage(tool: BaseTool, problem: String) {
+    logger.warn {
+      "Streaming tool `${tool.name}` yielded an Event that is not a purely user-facing message: " +
+        "$problem. To send a message, use Event(content=...)"
+    }
   }
 
   /** Stops every running call of [toolName] and returns the status message for the model. */
