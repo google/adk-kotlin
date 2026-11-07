@@ -55,7 +55,8 @@ object ResearchWorkflow {
     val plan = plannerAgent(model)
 
     return workflow("research") {
-      Start.then(plan)
+      Start.then(saveQuestion)
+        .then(plan)
         // Fans out; branches share no events, so researchers leave notes in state.
         .then(webResearcherAgent(model), docsResearcherAgent(model))
         .joinTo(JoinNode("gather")) // Waits for both.
@@ -66,6 +67,14 @@ object ResearchWorkflow {
         }
     }
   }
+
+  /** Stores the user's question in state, where the planner, writer and reviewer read it. */
+  private val saveQuestion =
+    node<String, String>("save_question") { context, question ->
+      // START hands the first node the user's message, which a String input receives as text.
+      context.updateState("question", question)
+      question
+    }
 
   /** Outputs the brief the writer stored, which makes it the workflow's output. */
   private val briefPublisher =
@@ -121,9 +130,11 @@ private fun plannerAgent(model: Model): LlmAgent =
     instruction =
       Instruction(
         """
-        Split the user's research question into two focused sub-questions: the first about
+        Split this research question into two focused sub-questions: the first about
         real-world adoption and experience, the second about what the official documentation
-        says. If this review of an earlier brief asks for more, target the gap it names:
+        says.
+        Question: {question}
+        If this review of an earlier brief asks for more, target the gap it names:
         {review?}
         """
           .trimIndent()
@@ -163,9 +174,10 @@ private fun writerAgent(model: Model): LlmAgent =
     instruction =
       Instruction(
         """
-        Write a one-paragraph brief answering the user's question from these notes, and cite
-        the sources you use:
-        {web_notes?}
+        Write a one-paragraph brief answering this question from these notes, and cite the
+        sources you use.
+        Question: {question}
+        Notes: {web_notes?}
         {docs_notes?}
         """
           .trimIndent()
@@ -180,7 +192,8 @@ private fun reviewerAgent(model: Model): LlmAgent =
     instruction =
       Instruction(
         """
-        Review this brief against the user's question and the research notes.
+        Review this brief against the question and the research notes.
+        Question: {question}
         Brief: {brief?}
         Notes: {web_notes?}
         {docs_notes?}
