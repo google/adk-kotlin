@@ -98,10 +98,50 @@ class BigQueryUtilsTest {
       listOf(
         config.copy(projectId = "p`; DROP TABLE x; --"),
         config.copy(datasetId = "d.s"),
+        config.copy(datasetId = "example.com:ds"),
         config.copy(tableName = "t name"),
+        config.copy(tableName = "t.name"),
         config.copy(viewPrefix = "v`"),
+        config.copy(viewPrefix = "v.p"),
       )) {
       BigQueryUtils.createAnalyticsViews(mockBigQuery, unsafe)
+    }
+
+    verify(mockBigQuery, never()).query(any<QueryJobConfiguration>())
+  }
+
+  @Test
+  fun createAnalyticsViews_domainScopedProjectId_createsViews() {
+    for (domainProject in
+      listOf("example.com:my-project", "sub.xn--example-1.co.uk:my_proj-2")) {
+      val localMock = mock<BigQuery>()
+      BigQueryUtils.createAnalyticsViews(localMock, config.copy(projectId = domainProject))
+
+      val captor = argumentCaptor<QueryJobConfiguration>()
+      verify(localMock, atLeast(1)).query(captor.capture())
+      val queries = captor.allValues.map { it.query }
+      assertTrue(queries.all { "`$domainProject.test_dataset." in it })
+      assertTrue(queries.any { "VIEW `$domainProject.test_dataset.v_llm_request`" in it })
+    }
+  }
+
+  @Test
+  fun createAnalyticsViews_malformedDomainScopedProjectId_skipsAllViews() {
+    for (badProject in
+      listOf(
+        ":my-project",
+        "example.com:",
+        "example.com",
+        ".example.com:my-project",
+        "example.com.:my-project",
+        "a..b:my-project",
+        "-bad.com:my-project",
+        "bad-.com:my-project",
+        "a:b:my-project",
+        "example.com:p`; DROP TABLE x; --",
+        "example.com:my.project",
+      )) {
+      BigQueryUtils.createAnalyticsViews(mockBigQuery, config.copy(projectId = badProject))
     }
 
     verify(mockBigQuery, never()).query(any<QueryJobConfiguration>())
