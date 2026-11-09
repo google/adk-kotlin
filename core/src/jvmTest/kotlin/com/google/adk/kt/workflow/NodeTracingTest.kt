@@ -19,13 +19,19 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LoopAgent
+import com.google.adk.kt.agents.ParallelAgent
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.interop.InteropContextView
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
@@ -38,28 +44,37 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.textAgent
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.AgentTool
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import com.google.errorprone.annotations.MustBeClosed
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.trace.StatusCode
+import io.opentelemetry.api.trace.Tracer as OpenTelemetryTracer
+import io.opentelemetry.context.Context as OpenTelemetryContext
+import io.opentelemetry.context.Scope
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
 import io.opentelemetry.sdk.trace.export.SpanExporter
 import java.util.Collections
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.assertFailsWith
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ThreadContextElement
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
@@ -318,6 +333,103 @@ class NodeTracingTest {
   }
 
   @Test
+  fun run_sequentialAgentNode_nestsEverySubAgentUnderIt() {
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, sequential("seq", "a", "b")))))
+
+    assertThat(span("invoke_agent seq").parentSpanId).isEqualTo(span("invoke_workflow wf").spanId)
+    assertAgentsUnder("seq", "a", "b")
+  }
+
+  @Test
+  fun run_sequentialAgentNodeWhoseFirstSubAgentCallsATool_nestsBothUnderIt() {
+    val seq = SequentialAgent("seq", subAgents = listOf(toolCallingAgent(), textAgent("b", "ok")))
+
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, seq))))
+
+    assertAgentsUnder("seq", "helper", "b")
+    val helper = span("invoke_agent helper").spanId
+    assertThat(exported.filter { it.name == "execute_tool dummy_tool" }.map { it.parentSpanId })
+      .containsExactly(helper, helper)
+  }
+
+  @Test
+  fun run_appRootSequentialAgentWhoseFirstSubAgentCallsATool_nestsBothUnderIt() {
+    val seq = SequentialAgent("seq", subAgents = listOf(toolCallingAgent(), textAgent("b", "ok")))
+
+    InMemoryRunner(app = App(appName = APP, rootAgent = seq)).runTurn()
+
+    assertAgentsUnder("seq", "helper", "b")
+  }
+
+  @Test
+  fun run_loopAgentNode_nestsEveryIterationUnderIt() {
+    val loop =
+      LoopAgent(
+        "loop",
+        maxIterations = 2,
+        subAgents = listOf(textAgent("a", "ok"), textAgent("b", "ok")),
+      )
+
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, loop))))
+
+    assertThat(exported.filter { it.name == "invoke_agent a" }).hasSize(2)
+    assertAgentsUnder("loop", "a", "b")
+  }
+
+  @Test
+  fun run_nestedSequentialAgentNode_nestsEachLevelUnderItsParent() {
+    val outer =
+      SequentialAgent(
+        "outer",
+        subAgents = listOf(sequential("inner", "a", "b"), textAgent("c", "ok")),
+      )
+
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, outer))))
+
+    assertAgentsUnder("outer", "inner", "c")
+    assertAgentsUnder("inner", "a", "b")
+  }
+
+  @Test
+  fun run_parallelAgentNode_nestsSubAgentsUnderIt() {
+    val parallel =
+      ParallelAgent("par", subAgents = listOf(textAgent("a", "ok"), textAgent("b", "ok")))
+
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, parallel))))
+
+    assertAgentsUnder("par", "a", "b")
+  }
+
+  @Test
+  fun run_agentNodeTransferringToASequentialAgent_keepsItsSubAgentsUnderIt() {
+    val root =
+      LlmAgent(
+        name = "root",
+        model =
+          DummyModel.createSequential(
+            "test-model",
+            listOf(modelFunctionCallResponse("transfer_to_agent", mapOf("agent_name" to "seq"))),
+          ),
+        subAgents = listOf(sequential("seq", "a", "b")),
+      )
+
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, root))))
+
+    assertAgentsUnder("seq", "a", "b")
+  }
+
+  @Test
+  fun run_agentUnderAUserContextElement_nestsUnderTheUserSpan() {
+    val wrapper = UserSpanAgent(sequential("seq", "a", "b"), provider.get("user"))
+
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, wrapper))))
+
+    assertThat(span("user_span").parentSpanId).isEqualTo(span("invoke_agent wrapper").spanId)
+    assertThat(span("invoke_agent seq").parentSpanId).isEqualTo(span("user_span").spanId)
+    assertAgentsUnder("seq", "a", "b")
+  }
+
+  @Test
   fun run_fannedOutAndDynamicChildren_nestUnderTheirCaller() {
     // Branches without output, since a workflow allows only one terminal output.
     val left = node<Any?, Unit>("left") { _, _ -> }
@@ -500,6 +612,21 @@ class NodeTracingTest {
 
   private fun span(name: String): SpanData = exported.single { it.name == name }
 
+  /**
+   * Asserts every `invoke_agent` span of [children] has the `invoke_agent [parent]` span as parent.
+   */
+  private fun assertAgentsUnder(parent: String, vararg children: String) {
+    val parentId = span("invoke_agent $parent").spanId
+    for (child in children) {
+      assertWithMessage(child)
+        .that(exported.filter { it.name == "invoke_agent $child" }.map { it.parentSpanId }.toSet())
+        .containsExactly(parentId)
+    }
+  }
+
+  private fun sequential(name: String, vararg children: String) =
+    SequentialAgent(name, subAgents = children.map { textAgent(it, "ok") })
+
   /** An agent named `helper` whose model calls `dummy_tool` twice, then answers. */
   private fun toolCallingAgent() =
     LlmAgent(
@@ -543,6 +670,40 @@ private class SwallowingNode(override val name: String) : Node {
       delay(10.seconds)
     } catch (e: CancellationException) {
       // Swallowed on purpose, so the node returns instead of rethrowing.
+    }
+  }
+}
+
+/** Makes [otelContext] current while a coroutine runs, as opentelemetry-extension-kotlin does. */
+private class UserContextElement(private val otelContext: OpenTelemetryContext) :
+  ThreadContextElement<Scope> {
+  companion object Key : CoroutineContext.Key<UserContextElement>
+
+  override val key: CoroutineContext.Key<UserContextElement>
+    get() = Key
+
+  @MustBeClosed
+  override fun updateThreadContext(context: CoroutineContext): Scope = otelContext.makeCurrent()
+
+  override fun restoreThreadContext(context: CoroutineContext, oldState: Scope) {
+    oldState.close()
+  }
+}
+
+/** Runs its one sub-agent under a span of the user's own, installed with a user context element. */
+private class UserSpanAgent(sub: BaseAgent, private val tracer: OpenTelemetryTracer) :
+  BaseAgent(name = "wrapper", subAgents = listOf(sub)) {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+    val userSpan = tracer.spanBuilder("user_span").startSpan()
+    try {
+      emitAll(
+        subAgents
+          .single()
+          .runAsync(context)
+          .flowOn(UserContextElement(OpenTelemetryContext.current().with(userSpan)))
+      )
+    } finally {
+      userSpan.end()
     }
   }
 }
