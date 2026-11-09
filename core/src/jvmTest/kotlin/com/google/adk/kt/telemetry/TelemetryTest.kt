@@ -19,6 +19,7 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.Gemini
@@ -30,6 +31,7 @@ import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.textAgent
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
@@ -46,6 +48,7 @@ import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
 import io.opentelemetry.sdk.trace.export.SpanExporter
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -305,6 +308,35 @@ class TelemetryTest {
       assertThat(callLlm.events.map { it.name }).doesNotContain("exception")
       val tool = exported.single { it.name == "execute_tool quota_tool" }
       assertThat(tool.attributes.get(ERROR_TYPE_KEY)).isEqualTo("429")
+    } finally {
+      provider.close()
+    }
+  }
+
+  @Test
+  fun runAsync_rootSequentialAgentWithASuspendingCollector_keepsSubAgentsUnderIt() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+      val agent =
+        SequentialAgent("seq", subAgents = listOf(textAgent("a", "ok"), textAgent("b", "ok")))
+
+      runBlocking {
+        InMemoryRunner(agent, appName = "telemetryapp")
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi"))
+          // A caller that suspends on each event leaves its context on the resumed thread.
+          .collect { delay(1) }
+      }
+
+      val seq = exported.single { it.name == "invoke_agent seq" }
+      assertThat(exported.map { it.traceId }.toSet()).containsExactly(seq.traceId)
+      assertThat(
+          exported
+            .filter { it.name in setOf("invoke_agent a", "invoke_agent b") }
+            .map { it.parentSpanId }
+        )
+        .containsExactly(seq.spanId, seq.spanId)
     } finally {
       provider.close()
     }
