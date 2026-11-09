@@ -220,7 +220,11 @@ abstract class BaseFuturePlugin(private val pluginName: String) : Plugin {
   ): CompletableFuture<CallbackChoice<Map<String, Any?>, Map<String, Any?>>> =
     CompletableFuture.completedFuture(Choices.proceed(args))
 
-  /** Resolve to a replacement tool result; the default keeps it. */
+  /**
+   * Resolve to a replacement tool result, or to [result] itself to keep it, as the default does.
+   * Any other map, even an equal copy such as `ImmutableMap.copyOf(result)`, replaces it and skips
+   * the agent's after-tool callbacks.
+   */
   @JvmSuppressWildcards
   protected open fun afterToolAsync(
     context: ToolContext,

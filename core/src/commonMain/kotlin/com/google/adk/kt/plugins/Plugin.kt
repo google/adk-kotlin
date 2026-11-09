@@ -222,7 +222,9 @@ interface Plugin : AutoCloseable {
    * @param args The arguments for the tool call, including any changes from before-tool callbacks.
    * @param result The tool's result as a map, or the result a before-tool or on-tool-error callback
    *   supplied instead. Values may be `null`.
-   * @return The potentially modified result map to propagate downstream.
+   * @return The potentially modified result map to propagate downstream. Return [result] itself to
+   *   leave it unchanged; any other map, even an equal copy, replaces it and skips the agent's
+   *   after-tool callbacks.
    */
   suspend fun afterTool(
     context: ToolContext,
