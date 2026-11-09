@@ -882,6 +882,35 @@ public final class FunctionNodeJavaInteropTest {
   }
 
   @Test
+  public void requestInput_requestWithoutAnId_asksWithAGeneratedIdAndTheJsonPayload() {
+    // Arrange
+    FunctionNode<Content, String> ask =
+        FunctionNodes.of(
+            "ask",
+            Content.class,
+            String.class,
+            (ctx, content) ->
+                FunctionNodes.requestInput(
+                    RequestInput.builder()
+                        .message("Approve?")
+                        .payload(new Leave(3, "trip"))
+                        .build()));
+    FunctionNode<String, String> greet =
+        FunctionNodes.of("greet", String.class, String.class, (ctx, name) -> "Hello, " + name);
+
+    // Act
+    List<Event> asked =
+        new JavaAskSession(ask, greet, "request_wf").run(Content.fromText("user", "hi"));
+
+    // Assert
+    Map<String, Object> args =
+        asked.stream().flatMap(e -> e.functionCalls().stream()).findFirst().orElseThrow().getArgs();
+    assertEquals("Approve?", args.get("message"));
+    assertEquals(ImmutableMap.of("days", 3L, "reason", "trip"), args.get("payload"));
+    assertTrue(args.get("interruptId") instanceof String id && !id.isEmpty());
+  }
+
+  @Test
   public void requestInput_payloadJacksonCannotWrite_failsTheAskingNode() {
     // Arrange: Jackson cannot write a bean with no properties.
     FunctionNode<Content, String> ask =

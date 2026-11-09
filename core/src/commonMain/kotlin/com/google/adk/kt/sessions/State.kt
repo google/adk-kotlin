@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.sessions
 
+import kotlin.jvm.JvmField
 import kotlin.jvm.JvmStatic
 
 /**
@@ -143,7 +144,13 @@ class State(
     const val TEMP_PREFIX = "temp:"
 
     /** Sentinel object to mark removed entries in the delta map. */
-    @JvmStatic val REMOVED: Any = RemovedSentinel
+    @JvmField val REMOVED: Any = RemovedSentinel
+
+    /** Returns [REMOVED], for Java code written before it was a field. */
+    @Deprecated("Read the State.REMOVED field instead.", ReplaceWith("REMOVED"))
+    @JvmStatic
+    @Suppress("FunctionName")
+    fun getREMOVED(): Any = REMOVED
   }
 }
 

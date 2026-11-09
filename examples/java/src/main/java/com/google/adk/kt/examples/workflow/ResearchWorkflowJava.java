@@ -230,7 +230,7 @@ public final class ResearchWorkflowJava {
           // Clears the review and notes when the loop ends, so the next question starts fresh.
           if (route.equals("done")) {
             for (String key : List.of("review", "web_notes", "docs_notes")) {
-              ctx.updateState(key, State.getREMOVED());
+              ctx.updateState(key, State.REMOVED);
             }
           }
           ctx.setRoutes(List.of(new Route.Tag(route)));
@@ -247,7 +247,7 @@ public final class ResearchWorkflowJava {
         (ctx, input) -> {
           Object brief = ctx.getState().get("brief");
           // Consumes the brief, so a later question never publishes this one's answer.
-          ctx.updateState("brief", State.getREMOVED());
+          ctx.updateState("brief", State.REMOVED);
           return (String) brief;
         });
   }

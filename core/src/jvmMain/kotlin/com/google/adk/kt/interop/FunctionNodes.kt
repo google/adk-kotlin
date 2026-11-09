@@ -167,6 +167,17 @@ object FunctionNodes {
     throw NodeInterruptedException(RequestInput(interruptId, message, json, responseSchema))
   }
 
+  /**
+   * Asks the user for input with [request] and sends its payload as JSON, like the other
+   * `requestInput` overload. For example, build the request with [RequestInput.builder] to set only
+   * a message.
+   *
+   * @throws IllegalArgumentException if Jackson cannot write the payload of [request].
+   */
+  @JvmStatic
+  fun <T> requestInput(request: RequestInput): T =
+    requestInput(request.interruptId, request.message, request.payload, request.responseSchema)
+
   private fun <I, O> node(
     name: String,
     inputType: JavaType,
