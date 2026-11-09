@@ -828,9 +828,18 @@ internal class LlmAgentTurn(
             // Only a typed turn adds a turn to the session, so only it waits behind the answer.
             val storesTurn = (pending.request.input as? ContentInput)?.storesTurn == true
             if (!pending.persisted && storesTurn) {
-              // yield() lets the receiver record an answer that already arrived; best effort.
-              yield()
-              answerTaken.load()?.await()
+              try {
+                // yield() lets the receiver record an answer that already arrived; best effort.
+                yield()
+                answerTaken.load()?.await()
+              } catch (e: CancellationException) {
+                // A stopped or failed attempt still stores the turn, unless the caller left an
+                // answer untaken: that answer is not stored, and the turn must not go before it.
+                if (!this@channelFlow.isActive && answerTaken.load()?.isCompleted != false) {
+                  storeQuietly(pending)
+                }
+                throw e
+              }
             }
             writeRequest(request, connection, pending, deliver)
             return true
@@ -1286,11 +1295,7 @@ internal class LlmAgentTurn(
    * Partial content is skipped as superseded, and function responses reach the session by their own
    * path. Realtime audio is not stored here; `saveLiveBlob` records it through the audio cache.
    */
-  private suspend fun persistUserTurn(
-    liveRequest: LiveRequest,
-    input: ContentInput,
-    content: Content,
-  ): Boolean {
+  private suspend fun persistUserTurn(liveRequest: LiveRequest, input: ContentInput): Boolean {
     if (!input.storesTurn) return false
     val liveRun = liveRun()
     if (!liveRun.storesEvents) return false
@@ -1298,7 +1303,7 @@ internal class LlmAgentTurn(
       Event(
         invocationId = context.invocationId,
         author = Role.USER,
-        content = content,
+        content = input.contentWithRole(),
         actions = EventActions(stateDelta = liveRequest.stateDelta.toMutableMap()),
       )
     )
@@ -1362,6 +1367,36 @@ internal class LlmAgentTurn(
   }
 
   /**
+   * Records [pending] in the session, as the user's turn or else as its state change alone, and
+   * caches its audio. Marks it persisted, so a replay after a drop redoes none of it.
+   */
+  private suspend fun storeRequest(pending: PendingSend) {
+    val liveRequest = pending.request
+    val input = liveRequest.input
+    if (input is RealtimeInput.Audio) audioCache?.cacheInput(input.blob)
+    val storedTurn = input is ContentInput && persistUserTurn(liveRequest, input)
+    // A state delta reaches the session even when nothing was said to carry it.
+    if (!storedTurn) persistStateDeltaOnly(liveRequest)
+    pendingRequest.store(pendingRequest.load()?.copy(persisted = true, storedTurn = storedTurn))
+  }
+
+  /**
+   * Runs [storeRequest] for a run that is stopping, logging rather than throwing a failure, which
+   * would replace the cancellation unwinding the run.
+   */
+  private suspend fun storeQuietly(pending: PendingSend) {
+    withContext(NonCancellable) {
+      try {
+        storeRequest(pending)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.warn { "Storing a typed turn as the run stopped failed (${e::class.simpleName})." }
+      }
+    }
+  }
+
+  /**
    * Writes one queued request to the connection: records it, screens it with the before-model
    * callbacks unless it only answers tool calls, as ADK Python does, then sends it.
    *
@@ -1375,34 +1410,19 @@ internal class LlmAgentTurn(
     pending: PendingSend,
     emitEvent: suspend (Event) -> Unit,
   ) {
-    val liveRequest = pending.request
-    val input = liveRequest.input
-    val original = (input as? ContentInput)?.content
-    val answersTools = (input as? ContentInput)?.answersTools == true
-    // Content without a role is the user's, as in ADK Python; tool answers keep theirs unset.
-    val content =
-      if (original?.role == null && !answersTools) original?.copy(role = Role.USER) else original
+    val input = pending.request.input
 
     // Skipped on a replay, so a re-sent request does not record the same user turn twice.
-    if (!pending.persisted) {
-      // Cached just before the send, as Python does.
-      if (input is RealtimeInput.Audio) audioCache?.cacheInput(input.blob)
-      val storedTurn =
-        input is ContentInput && content != null && persistUserTurn(liveRequest, input, content)
-      // A state delta reaches the session even when nothing was said to carry it.
-      if (!storedTurn) persistStateDeltaOnly(liveRequest)
-      // Marked before the write, so a replay after a drop redoes none of the above.
-      pendingRequest.store(pendingRequest.load()?.copy(persisted = true, storedTurn = storedTurn))
-    }
+    if (!pending.persisted) storeRequest(pending)
     // A sender cancelled mid-append stops here, so the request replays on the next connection.
     currentCoroutineContext().ensureActive()
     when (input) {
       is RealtimeInput -> sendingToConnection { connection.sendRealtime(input) }
       is ContentInput -> {
-        val sent = checkNotNull(content)
+        val sent = input.contentWithRole()
         val toSend =
           when {
-            answersTools -> sent
+            input.answersTools -> sent
             pending.screened != null -> pending.screened
             else ->
               when (val screened = screenUserContent(request, sent)) {
@@ -2449,6 +2469,10 @@ private val ContentInput.answersTools: Boolean
 /** Whether this input adds a user turn to the session: typed, whole, and not a tool answer. */
 private val ContentInput.storesTurn: Boolean
   get() = !partial && !answersTools
+
+/** The content to store and send: without a role it is the user's; tool answers keep it unset. */
+private fun ContentInput.contentWithRole(): Content =
+  if (content.role == null && !answersTools) content.copy(role = Role.USER) else content
 
 /**
  * The behavior a live run declares for [tool], or null to leave its declaration as it is. A

@@ -1638,6 +1638,76 @@ class RunLiveTest {
   }
 
   @Test
+  fun runLive_stopRightAfterAnAnswer_storesTheTypedTurnQueuedBehindIt(): Unit = runBlocking {
+    // The model answers on connect, so the queued turn waits until that answer is taken.
+    val model =
+      DummyLiveModel(
+        listOf(Respond(LlmResponse(content = modelMessage(FIRST_ANSWER), turnComplete = true)))
+      )
+    val runner = InMemoryRunner(agent = LlmAgent(name = "live_agent", model = model))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage(FIRST_TURN))
+
+    val unused = runner.runLive("u", "s", queue, RunConfig()).first { it.hasText(FIRST_ANSWER) }
+
+    assertThat(runner.storedTexts()).containsExactly(FIRST_ANSWER, FIRST_TURN).inOrder()
+    assertWithMessage("a stopped run does not send the turn")
+      .that(model.connections.single().sent)
+      .isEmpty()
+  }
+
+  @Test
+  fun runLive_typedTurnFailsToStoreAfterAStop_callerStillGetsTheAnswer(): Unit = runBlocking {
+    val model =
+      DummyLiveModel(
+        listOf(Respond(LlmResponse(content = modelMessage(FIRST_ANSWER), turnComplete = true)))
+      )
+    val storeTried = CompletableDeferred<Unit>()
+    val failingStore =
+      AppendRecordingSessionService(
+        beforeAppend = {
+          if (it.hasText(FIRST_TURN)) {
+            storeTried.complete(Unit)
+            error("store unavailable")
+          }
+        }
+      )
+    val runner =
+      InMemoryRunner(
+        agent = LlmAgent(name = "live_agent", model = model),
+        sessionService = failingStore,
+      )
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage(FIRST_TURN))
+
+    // The failed store is only logged, so it does not replace the stop the caller asked for.
+    val answer = runner.runLive("u", "s", queue, RunConfig()).first { it.hasText(FIRST_ANSWER) }
+
+    assertThat(answer.content?.parts?.single()?.text).isEqualTo(FIRST_ANSWER)
+    assertWithMessage("the stop tried to store the turn").that(storeTried.isCompleted).isTrue()
+  }
+
+  @Test
+  fun runLive_stopRightAfterAnAnswer_storesTheQueuedTurnWithItsStateDelta(): Unit = runBlocking {
+    val model =
+      DummyLiveModel(
+        listOf(Respond(LlmResponse(content = modelMessage(FIRST_ANSWER), turnComplete = true)))
+      )
+    val runner = InMemoryRunner(agent = LlmAgent(name = "live_agent", model = model))
+    val queue = LiveRequestQueue()
+    queue.send(
+      LiveRequest(input = ContentInput(userMessage(FIRST_TURN)), stateDelta = mapOf("k" to "v"))
+    )
+
+    val unused = runner.runLive("u", "s", queue, RunConfig()).first { it.hasText(FIRST_ANSWER) }
+
+    // One event carries both the turn and its state change.
+    val turn = runner.storedEvents().filter { it.hasText(FIRST_TURN) }
+    assertThat(turn.map { it.actions.stateDelta }).containsExactly(mapOf("k" to "v"))
+    assertThat(runner.storedEvents().count { it.actions.stateDelta.isNotEmpty() }).isEqualTo(1)
+  }
+
+  @Test
   fun runLive_streamingToolEmitsAnEvent_leavesTheAgentsOutputKeyUnset(): Unit = runBlocking {
     val tool =
       DummyTool(name = "monitor") { _, _ ->
