@@ -43,6 +43,8 @@ import com.google.adk.kt.types.ToolResponse
 import com.google.common.truth.Truth.assertThat
 import java.util.function.BiConsumer
 import java.util.function.Consumer
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -727,16 +729,65 @@ class A2AAgentImplTest {
     }
 
   @Test
-  fun runAsync_handlesClientError() = runTest {
-    val agent = createTestAgent()
+  fun runAsync_streamFails_yieldsErrorEventWithRequestThenFails() =
+    runBlocking<Unit> {
+      val agent = createTestAgent()
+      mockStreamError(this, RuntimeException("Connection failed"))
+      val events = mutableListOf<Event>()
 
-    val error = RuntimeException("Connection failed")
-    mockStreamError(this, error)
+      val error =
+        assertFailsWith<RuntimeException> {
+          withTimeout(5.seconds) { agent.runAsync(invocationContext).toList(events) }
+        }
 
-    val result = runCatching { agent.runAsync(invocationContext).toList() }
-    assertThat(result.isFailure).isTrue()
-    assertThat(result.exceptionOrNull()?.message).contains("Connection failed")
-  }
+      assertThat(error).hasMessageThat().contains("Connection failed")
+      val errorEvent = events.single()
+      assertThat(errorEvent.errorMessage).isEqualTo("A2A request failed (RuntimeException)")
+      assertThat(errorEvent.customMetadata).containsKey("a2a:request")
+    }
+
+  @Test
+  fun runAsync_streamFailsAfterResponse_yieldsResponseThenErrorEvent() =
+    runBlocking<Unit> {
+      val agent = createTestAgent()
+      val working = createStatusUpdateEvent(TaskState.TASK_STATE_WORKING, "working...")
+      mockStreamError(this, RuntimeException("Connection reset"), responses = listOf(working))
+      val events = mutableListOf<Event>()
+
+      val error =
+        assertFailsWith<RuntimeException> {
+          withTimeout(5.seconds) { agent.runAsync(invocationContext).toList(events) }
+        }
+
+      assertThat(error).hasMessageThat().contains("Connection reset")
+      assertThat(events.map { it.content?.parts?.single()?.text ?: it.errorMessage })
+        .containsExactly("working...", "A2A request failed (RuntimeException)")
+        .inOrder()
+      assertThat(events.last().customMetadata).containsKey("a2a:request")
+    }
+
+  @Test
+  fun runAsync_sendMessageCancelled_yieldsNoErrorEvent() =
+    runBlocking<Unit> {
+      val agent = createTestAgent()
+      doThrow(CancellationException("send cancelled"))
+        .whenever(mockClient)
+        .sendMessage(
+          any<Message>(),
+          any<List<BiConsumer<ClientEvent, AgentCard>>>(),
+          any<Consumer<Throwable>>(),
+          isNull(),
+        )
+      val events = mutableListOf<Event>()
+
+      val error =
+        assertFailsWith<CancellationException> {
+          withTimeout(5.seconds) { agent.runAsync(invocationContext).toList(events) }
+        }
+
+      assertThat(error).hasMessageThat().isEqualTo("send cancelled")
+      assertThat(events).isEmpty()
+    }
 
   @Test
   fun runAsync_sendMessageThrows_closesClientAndPropagates() = runTest {
@@ -926,6 +977,7 @@ class A2AAgentImplTest {
       assertThat(events[1].errorMessage).isNotNull()
       // The next turn reads the remote context id from this agent's last event.
       assertThat(events[1].contextId).isEqualTo("context-1")
+      assertThat(events[1].customMetadata).containsKey("a2a:request")
       verify(mockClient, timeout(5000)).cancelTask(any())
     }
 
@@ -944,6 +996,7 @@ class A2AAgentImplTest {
 
       assertThat(events.last().errorMessage).isNotNull()
       assertThat(events.last().contextId).isEqualTo("context-1")
+      assertThat(events.last().customMetadata).containsKey("a2a:request")
     }
 
   @Test
@@ -1026,6 +1079,144 @@ class A2AAgentImplTest {
       assertThat(messages.secondValue.parts.map { (it as TextPart).text }).containsExactly("Blue")
     }
 
+  @Test
+  fun runAsync_firstTurnFailsAfterTaskOpened_nextTurnKeepsItsContext() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val streaming = RunConfig(streamingMode = StreamingMode.SSE)
+      // Like a real server, the stream starts with the task's snapshot, which has no content.
+      val submitted =
+        Task.builder()
+          .id("task-1")
+          .contextId("context-1")
+          .status(TaskStatus(TaskState.TASK_STATE_SUBMITTED))
+          .build()
+      val working = createStatusUpdateEvent(TaskState.TASK_STATE_WORKING)
+      mockStreamError(
+        this,
+        RuntimeException("Connection reset"),
+        responses = listOf(TaskEvent(submitted), working),
+      )
+      assertFailsWith<RuntimeException> {
+        runner
+          .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = streaming)
+          .toList()
+      }
+      // Waits for the abandoned task's cancel to finish before the mock is stubbed again.
+      verify(mockClient, timeout(5000)).close()
+      mockStreamResponse(this) { consumer -> consumer.accept(createFinalEvent("ok"), agentCard) }
+
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Again"), runConfig = streaming)
+        .toList()
+
+      // The snapshot recorded the task's context, which already holds the first turn's text.
+      val messages = sentMessages(2)
+      assertThat(messages.map { it.contextId() }).containsExactly(null, "context-1").inOrder()
+      assertThat(messages[1].parts.map { (it as TextPart).text }).containsExactly("Again")
+    }
+
+  @Test
+  fun runAsync_sendFailsBeforeAnyTask_yieldsErrorEventAndNextTurnKeepsContext() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      var sends = 0
+      doAnswer { invocation ->
+          if (++sends == 2) throw RuntimeException("Connection refused")
+          val consumer = invocation.getArgument<List<BiConsumer<ClientEvent, AgentCard>>>(1)[0]
+          consumer.accept(createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Done."), agentCard)
+          null
+        }
+        .whenever(mockClient)
+        .sendMessage(
+          any<Message>(),
+          any<List<BiConsumer<ClientEvent, AgentCard>>>(),
+          any<Consumer<Throwable>>(),
+          isNull(),
+        )
+
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
+        .toList()
+      val failedTurn = mutableListOf<Event>()
+      assertFailsWith<RuntimeException> {
+        runner
+          .runAsync("user", "s1", newMessage = userMessage("Blue"), runConfig = blocking)
+          .toList(failedTurn)
+      }
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Green"), runConfig = blocking)
+        .toList()
+
+      assertThat(failedTurn.single().customMetadata).containsKey("a2a:request")
+      // The failed request's event has no context, so the third turn keeps the first turn's.
+      val messages = sentMessages(3)
+      assertThat(messages.map { it.contextId() })
+        .containsExactly(null, "context-1", "context-1")
+        .inOrder()
+      assertThat(messages[2].parts.map { (it as TextPart).text }).containsExactly("Blue", "Green")
+    }
+
+  @Test
+  fun runAsync_streamEndsMidTask_nextTurnKeepsItsContext() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      mockStreamResponse(this, endsStream = true) { consumer ->
+        consumer.accept(createStatusUpdateEvent(TaskState.TASK_STATE_WORKING), agentCard)
+      }
+      runner
+        .runAsync(
+          "user",
+          "s1",
+          newMessage = userMessage("Paint"),
+          runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+        )
+        .toList()
+      // Waits for the abandoned task's cancel to finish before the mock is stubbed again.
+      verify(mockClient, timeout(5000)).close()
+      mockStreamResponse(this) { consumer -> consumer.accept(createFinalEvent("ok"), agentCard) }
+
+      runner
+        .runAsync(
+          "user",
+          "s1",
+          newMessage = userMessage("Again"),
+          runConfig = RunConfig(streamingMode = StreamingMode.NONE),
+        )
+        .toList()
+
+      // The remote opened a task, so it has the first turn's text, which is not sent again.
+      val sent = sentMessages(2)[1]
+      assertThat(sent.contextId()).isEqualTo("context-1")
+      // The stream's end cancelled the first turn's task, so the next turn opens a new one.
+      assertThat(sent.taskId()).isNull()
+      assertThat(sent.parts.map { (it as TextPart).text }).containsExactly("Again")
+    }
+
+  @Test
+  fun runAsync_replyAfterResponseWithoutContext_sendsNoContext() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      mockReplies(
+        this,
+        createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Painted."),
+        MessageEvent(agentMessage("Hi")),
+        MessageEvent(agentMessage("Hi again")),
+      )
+
+      for (text in listOf("Paint", "Hello", "Again")) {
+        runner.runAsync("user", "s1", newMessage = userMessage(text), runConfig = blocking).toList()
+      }
+
+      // The second response carried no context id, so the third turn starts without one.
+      val sent = sentMessages(3)
+      assertThat(sent.map { it.contextId() }).containsExactly(null, "context-1", null).inOrder()
+      // The second turn's response still counts, so only the third turn's text is sent.
+      assertThat(sent[2].parts.map { (it as TextPart).text }).containsExactly("Again")
+    }
+
   private fun createTestAgent(
     transportSupportsStreaming: Boolean = true,
     beforeCallbacks: List<BeforeAgentCallback> = emptyList(),
@@ -1048,11 +1239,18 @@ class A2AAgentImplTest {
     assertThat(event?.content?.parts?.firstOrNull()?.text).isEqualTo(expectedText)
   }
 
-  private fun mockStreamError(scope: CoroutineScope, error: Throwable) {
+  /** Streams [responses], then fails with [error]. */
+  private fun mockStreamError(
+    scope: CoroutineScope,
+    error: Throwable,
+    responses: List<ClientEvent> = emptyList(),
+  ) {
     doAnswer { invocation ->
+        val consumer = invocation.getArgument<List<BiConsumer<ClientEvent, AgentCard>>>(1)[0]
         val errorConsumer = invocation.getArgument<Consumer<Throwable>>(2)
         scope.launch {
           delay(10)
+          responses.forEach { consumer.accept(it, agentCard) }
           errorConsumer.accept(error)
         }
         null
@@ -1098,6 +1296,25 @@ class A2AAgentImplTest {
       )
   }
 
+  /** Returns the messages sent to the remote agent, checking that there were [count]. */
+  private fun sentMessages(count: Int): List<Message> {
+    val messages = argumentCaptor<Message>()
+    verify(mockClient, times(count))
+      .sendMessage(
+        messages.capture(),
+        any<List<BiConsumer<ClientEvent, AgentCard>>>(),
+        any<Consumer<Throwable>>(),
+        isNull(),
+      )
+    return messages.allValues
+  }
+
+  /** Answers each request with the next of [replies]. */
+  private fun mockReplies(scope: CoroutineScope, vararg replies: ClientEvent) {
+    val queue = ArrayDeque(replies.toList())
+    mockStreamResponse(scope) { consumer -> consumer.accept(queue.removeFirst(), agentCard) }
+  }
+
   private fun agentMessage(text: String): Message =
     Message.builder().role(Message.Role.ROLE_AGENT).parts(listOf(TextPart(text))).build()
 
@@ -1111,13 +1328,14 @@ class A2AAgentImplTest {
     return TaskEvent(task)
   }
 
-  private fun createStatusUpdateEvent(state: TaskState, text: String): ClientEvent {
+  /** A status update for task-1 in [state]; without [text] it carries no message or event. */
+  private fun createStatusUpdateEvent(state: TaskState, text: String? = null): ClientEvent {
     val task = Task.builder().id("task-1").contextId("context-1").status(TaskStatus(state)).build()
     val update =
       TaskStatusUpdateEvent.builder()
         .taskId("task-1")
         .contextId("context-1")
-        .status(TaskStatus(state, agentMessage(text), null))
+        .status(TaskStatus(state, text?.let { agentMessage(it) }, null))
         .build()
     return TaskUpdateEvent(task, update)
   }

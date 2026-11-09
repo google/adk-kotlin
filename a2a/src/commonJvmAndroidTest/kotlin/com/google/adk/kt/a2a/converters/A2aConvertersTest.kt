@@ -2067,6 +2067,22 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun taskToEvent_submittedWithoutContent_keepsTaskAndContextIds() {
+    val task =
+      Task.builder()
+        .id("task-1")
+        .contextId("context-1")
+        .status(TaskStatus(TaskState.TASK_STATE_SUBMITTED))
+        .build()
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.content?.parts).isEmpty()
+    assertThat(result.taskId).isEqualTo("task-1")
+    assertThat(result.contextId).isEqualTo("context-1")
+  }
+
+  @Test
   fun serializerFor_knownMetadataTypes_returnsSerializer() {
     assertThat(serializerFor(GroundingMetadata::class)).isNotNull()
     assertThat(serializerFor(UsageMetadata::class)).isNotNull()

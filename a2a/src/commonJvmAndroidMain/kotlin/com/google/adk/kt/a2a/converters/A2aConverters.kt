@@ -249,7 +249,9 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
   val isFinal = status.state().isFinalState() || status.state().isInterruptedState()
 
   if (adkParts.isEmpty() && !isFinal) {
+    // Keeps the task's ids, as ADK Python does, so a turn that fails next still has its context.
     return emptyEvent(invocationContext)
+      .updateEventMetadata(metadata, id, contextId, metadataParser)
   }
   // A task still in progress reports progress, not its answer, so ADK Python marks it as thoughts.
   if (status.state() in PENDING_STATES) adkParts.replaceAll { it.copy(thought = true) }
@@ -648,7 +650,7 @@ internal fun InvocationContext.extractA2aParts(): List<A2APart<*>> {
     return emptyList()
   }
 
-  val lastResponseIndex = session.events.indexOfLast { it.author == agent.name }
+  val lastResponseIndex = lastResponseIndex()
 
   return preprocessedEvents.flatMapIndexed { index, event ->
     val actualIndex = lastResponseIndex + 1 + index

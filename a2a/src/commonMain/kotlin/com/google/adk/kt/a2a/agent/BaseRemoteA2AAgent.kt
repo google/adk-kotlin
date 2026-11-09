@@ -102,7 +102,14 @@ abstract class BaseRemoteA2AAgent(
         return responseEvent.copy(author = Role.USER, customMetadata = updatedMetadata)
       }
     }
-    val contextIdValue = context.session.events.findLast { it.author == name }?.contextId
+    // Skips events with neither a context id nor a relayed response, such as a failed request's.
+    val contextIdValue =
+      context.session.events
+        .findLast {
+          it.author == name &&
+            (it.contextId.isNotEmpty() || A2AMetadata.RESPONSE in it.customMetadata.orEmpty())
+        }
+        ?.contextId
     val customMetadata =
       contextIdValue?.takeIf { it.isNotEmpty() }?.let { mapOf(ADK_METADATA_CONTEXT_ID to it) }
     return Event(
