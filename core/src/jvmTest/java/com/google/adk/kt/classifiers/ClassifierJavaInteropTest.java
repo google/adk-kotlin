@@ -16,9 +16,13 @@
 
 package com.google.adk.kt.classifiers;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.kt.interop.BaseFutureClassifier;
+import com.google.adk.kt.interop.CompletableFutureClassifier;
 import com.google.adk.kt.types.Content;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -27,13 +31,14 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import kotlinx.serialization.json.JsonElementKt;
 import kotlinx.serialization.json.JsonObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** Exercises the classifier types and builders from plain Java ({@code javac}). */
+/** Exercises the classifier types, builders, and future bridges from plain Java. */
 @RunWith(JUnit4.class)
 public final class ClassifierJavaInteropTest {
 
@@ -180,6 +185,27 @@ public final class ClassifierJavaInteropTest {
   }
 
   @Test
+  public void futureBridges_javaImplementsAndCallsClassifier() throws Exception {
+    FixedAnswerClassifier impl = new FixedAnswerClassifier();
+    ClassifierRequest request =
+        new ClassifierRequest(
+            "double charge", ImmutableMap.of("urgent", new Binary("Is this destructive?")));
+
+    Classifier delegate;
+    ClassifierResponse response;
+    try (CompletableFutureClassifier client = CompletableFutureClassifier.of(impl)) {
+      delegate = client.asKotlinClassifier();
+      response = client.classify(request).get(5, SECONDS);
+    }
+
+    assertThat(delegate).isSameInstanceAs(impl);
+    assertThat(response)
+        .isEqualTo(
+            new ClassifierResponse(
+                ImmutableMap.of("urgent", new BinaryAnswer(0.75)), "jev-1.13.0"));
+  }
+
+  @Test
   public void nullOrMistypedElementsFromJava_rejectedWithIllegalArgumentException() {
     assertThrows(
         IllegalArgumentException.class, () -> new Score("Urgency", Arrays.asList("low", null)));
@@ -230,5 +256,20 @@ public final class ClassifierJavaInteropTest {
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static Map<Integer, Double> rawScoreProbabilities(Object key, Object value) {
     return (Map) ImmutableMap.of(key, value);
+  }
+
+  /** Answers every question with the same {@link BinaryAnswer}. */
+  private static final class FixedAnswerClassifier extends BaseFutureClassifier {
+    FixedAnswerClassifier() {
+      super("java-jev");
+    }
+
+    @Override
+    protected CompletableFuture<ClassifierResponse> classifyAsync(ClassifierRequest request) {
+      ImmutableMap<String, Answer> answers =
+          request.getQuestions().keySet().stream()
+              .collect(toImmutableMap(name -> name, name -> new BinaryAnswer(0.75)));
+      return CompletableFuture.completedFuture(new ClassifierResponse(answers, "jev-1.13.0"));
+    }
   }
 }
