@@ -57,7 +57,7 @@ object ResearchWorkflow {
     return workflow("research") {
       Start.then(saveQuestion)
         .then(plan)
-        // Fans out; branches share no events, so researchers leave notes in state.
+        // Fans out; notes also go to state, since the reviewer sees only the brief.
         .then(webResearcherAgent(model), docsResearcherAgent(model))
         .joinTo(JoinNode("gather")) // Waits for both.
         .chain(writerAgent(model), reviewerAgent(model), reviewGate(maxRounds = 3))

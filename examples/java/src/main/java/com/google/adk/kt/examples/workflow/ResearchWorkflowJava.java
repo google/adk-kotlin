@@ -16,11 +16,9 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
@@ -40,9 +38,7 @@ import com.google.adk.kt.workflow.Workflow;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A research workflow built with the workflow DSL. A planner fans out to two researchers that
@@ -65,16 +61,16 @@ public final class ResearchWorkflowJava {
                 g.fromStart()
                     .then(saveQuestion())
                     .then(plan)
-                    // Fans out; branches share no events, so researchers leave notes in state.
+                    // Fans out; notes also go to state, since the reviewer sees only the brief.
                     .then(webResearcherAgent(model), docsResearcherAgent(model))
                     // Waits for both.
                     .joinTo(new JoinNode("gather"))
-                    .chain(writerAgent(model), reviewerAgent(model), new ReviewGate(3))
+                    .chain(writerAgent(model), reviewerAgent(model), reviewGate(3))
                     .route(
                         r -> {
                           // Loops back while the reviewer asks for more.
                           r.on("needs-more").then(plan);
-                          r.on("done").then(new BriefPublisher());
+                          r.on("done").then(briefPublisher());
                         }))
         .build();
   }
@@ -176,7 +172,7 @@ public final class ResearchWorkflowJava {
         .build();
   }
 
-  /** The reviewer's structured verdict, which {@link ReviewGate} routes on. */
+  /** The reviewer's structured verdict, which the review gate routes on. */
   private static final Schema REVIEW_SCHEMA =
       Schema.builder()
           .type(Type.OBJECT)
@@ -213,51 +209,47 @@ public final class ResearchWorkflowJava {
   }
 
   /**
-   * Routes on the reviewer's verdict, since an LlmAgent node emits no route. Stops the loop after
-   * {@code maxRounds} research rounds even if the reviewer still asks for more.
+   * Returns a node that routes on the reviewer's verdict, since an LlmAgent node emits no route. It
+   * stops the loop after {@code maxRounds} research rounds even if the reviewer still asks for
+   * more.
    */
-  private static final class ReviewGate extends BasePublisherNode {
-    private final int maxRounds;
-
-    ReviewGate(int maxRounds) {
-      super("review_gate");
-      this.maxRounds = maxRounds;
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Object verdict =
-          context.getState().get("review") instanceof Map<?, ?> review
-              ? review.get("verdict")
-              : null;
-      // The run id counts this node's runs in the current invocation, so it is the round number.
-      int round = Integer.parseInt(context.getRunId());
-      String route =
-          Objects.equals(verdict, "needs-more") && round < maxRounds ? "needs-more" : "done";
-      // Clears the review and notes when the loop ends, so the next question starts fresh.
-      if (route.equals("done")) {
-        for (String key : List.of("review", "web_notes", "docs_notes")) {
-          context.updateState(key, State.getREMOVED());
-        }
-      }
-      context.setRoutes(List.of(new Route.Tag(route)));
-      return Mono.empty();
-    }
+  private static FunctionNode<Object, Object> reviewGate(int maxRounds) {
+    return FunctionNodes.of(
+        "review_gate",
+        Object.class,
+        Object.class,
+        (ctx, input) -> {
+          Object verdict =
+              ctx.getState().get("review") instanceof Map<?, ?> review
+                  ? review.get("verdict")
+                  : null;
+          // The run id counts this node's runs in this invocation, so it is the round number.
+          int round = Integer.parseInt(ctx.getRunId());
+          String route =
+              Objects.equals(verdict, "needs-more") && round < maxRounds ? "needs-more" : "done";
+          // Clears the review and notes when the loop ends, so the next question starts fresh.
+          if (route.equals("done")) {
+            for (String key : List.of("review", "web_notes", "docs_notes")) {
+              ctx.updateState(key, State.getREMOVED());
+            }
+          }
+          ctx.setRoutes(List.of(new Route.Tag(route)));
+          return null;
+        });
   }
 
   /** Outputs the brief the writer stored, which makes it the workflow's output. */
-  private static final class BriefPublisher extends BasePublisherNode {
-    BriefPublisher() {
-      super("publisher");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Object brief = context.getState().get("brief");
-      // Consumes the brief, so a later question never publishes this one's answer.
-      context.updateState("brief", State.getREMOVED());
-      return Mono.justOrEmpty(brief);
-    }
+  private static FunctionNode<Object, String> briefPublisher() {
+    return FunctionNodes.of(
+        "publisher",
+        Object.class,
+        String.class,
+        (ctx, input) -> {
+          Object brief = ctx.getState().get("brief");
+          // Consumes the brief, so a later question never publishes this one's answer.
+          ctx.updateState("brief", State.getREMOVED());
+          return (String) brief;
+        });
   }
 
   private ResearchWorkflowJava() {}

@@ -88,7 +88,7 @@ public final class AgentInWorkflowJava {
     PublisherRunner runner =
         PublisherRunner.inMemory(
             App.builder().appName("task_in_workflow").rootNode(workflow).build());
-    // A retried task agent sees only the latest message, so John Doe's details take two turns.
+    // A retried intake agent starts a new conversation, so Jane Doe gives both details at once.
     Deque<String> replies =
         new ArrayDeque<>(List.of("My name is John Doe", "555-1234", "Jane Doe, 555-1234"));
     Content message = Content.fromText(Role.USER, replies.removeFirst());
