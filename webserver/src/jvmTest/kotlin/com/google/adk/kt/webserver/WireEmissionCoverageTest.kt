@@ -27,13 +27,16 @@ import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.common.truth.Truth.assertThat
 import java.util.Collections
 import java.util.IdentityHashMap
+import kotlinx.serialization.ContextualSerializer
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.descriptors.PolymorphicKind
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.SerialKind
 import kotlinx.serialization.descriptors.StructureKind
+import kotlinx.serialization.descriptors.nonNullOriginal
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -92,12 +95,14 @@ class WireEmissionCoverageTest {
 
   @Test
   fun theSurvey_declinesOnlyFreeFormValues() {
-    // A declined type is a blind spot, so what gets declined is pinned rather than trusted. Pinned
-    // by kind, not by serial name, which is a kotlinx-internal string a library bump could rename.
+    // A declined type is a blind spot, so what gets declined is pinned rather than trusted.
     val survey = surveyAllRoots()
 
-    assertThat(survey.declinedKinds).containsExactly(SerialKind.CONTEXTUAL)
-    assertThat(survey.declined).isNotEmpty()
+    assertThat(survey.declined)
+      .containsExactly(
+        ContextualSerializer(Any::class).descriptor,
+        JsonElement.serializer().descriptor,
+      )
   }
 
   @Test
@@ -158,17 +163,9 @@ class WireEmissionCoverageTest {
   }
 
   private fun surveyAllRoots(): KeySurvey {
-    // One survey per root, so a path is relative to the root it is reported under.
-    val merged = KeySurvey()
-    for ((name, serializer) in responseRoots) {
-      val survey = KeySurvey()
-      survey.visit(serializer.descriptor, name)
-      merged.snakeCase += survey.snakeCase
-      merged.visited += survey.visited
-      merged.declined += survey.declined
-      merged.declinedKinds += survey.declinedKinds
-    }
-    return merged
+    val survey = KeySurvey()
+    for ((name, serializer) in responseRoots) survey.visit(serializer.descriptor, name)
+    return survey
   }
 
   /**
@@ -178,30 +175,36 @@ class WireEmissionCoverageTest {
   private class KeySurvey {
     val snakeCase = mutableSetOf<String>()
     val visited = mutableSetOf<String>()
-    val declined = mutableSetOf<String>()
-    /** Kinds of the declined types, which survive a kotlinx rename of their serial names. */
-    val declinedKinds = mutableSetOf<SerialKind>()
+    val declined = mutableSetOf<SerialDescriptor>()
     // Keyed on identity: two instantiations of one generic share a serial name.
     private val seen = Collections.newSetFromMap(IdentityHashMap<SerialDescriptor, Boolean>())
 
-    fun visit(descriptor: SerialDescriptor, path: String) {
+    /** Surveys the graph under [descriptor], reporting paths from [root]. */
+    fun visit(descriptor: SerialDescriptor, root: String) {
+      seen.clear()
+      enter(descriptor, root)
+    }
+
+    private fun enter(descriptor: SerialDescriptor, path: String) {
       if (!seen.add(descriptor)) return
       // An inline value class contributes its wrapped type's keys, not a nesting level.
-      if (descriptor.isInline) return visit(descriptor.getElementDescriptor(0), path)
+      if (descriptor.isInline) return enter(descriptor.getElementDescriptor(0), path)
+      // JsonElement is sealed, but its variants are caller data.
+      if (descriptor.nonNullOriginal == JsonElement.serializer().descriptor) {
+        declined.add(descriptor.nonNullOriginal)
+        return
+      }
       when (descriptor.kind) {
-        StructureKind.LIST -> visit(descriptor.getElementDescriptor(0), "$path[]")
+        StructureKind.LIST -> enter(descriptor.getElementDescriptor(0), "$path[]")
         // A map's keys are caller data, but its values may still be a schema type of ours.
-        StructureKind.MAP -> visit(descriptor.getElementDescriptor(1), "$path{}")
+        StructureKind.MAP -> enter(descriptor.getElementDescriptor(1), "$path{}")
         // A sealed hierarchy's variants are ours; element 1 holds them.
         PolymorphicKind.SEALED -> {
           val variants = descriptor.getElementDescriptor(1)
-          for (i in 0 until variants.elementsCount) visit(variants.getElementDescriptor(i), path)
+          for (i in 0 until variants.elementsCount) enter(variants.getElementDescriptor(i), path)
         }
         SerialKind.CONTEXTUAL,
-        PolymorphicKind.OPEN -> {
-          declined.add(descriptor.plainName)
-          declinedKinds.add(descriptor.kind)
-        }
+        PolymorphicKind.OPEN -> declined.add(descriptor.nonNullOriginal)
         StructureKind.CLASS,
         StructureKind.OBJECT ->
           for (i in 0 until descriptor.elementsCount) {
@@ -209,16 +212,10 @@ class WireEmissionCoverageTest {
             val child = "$path.$name"
             visited.add(child)
             if (name.contains('_')) snakeCase.add(child)
-            visit(descriptor.getElementDescriptor(i), child)
+            enter(descriptor.getElementDescriptor(i), child)
           }
         else -> {}
       }
     }
-  }
-
-  private companion object {
-    /** The serial name without kotlinx's nullability marker, so `X` and `X?` report as one type. */
-    val SerialDescriptor.plainName: String
-      get() = serialName.removeSuffix("?")
   }
 }

@@ -22,6 +22,7 @@ import com.google.adk.kt.webserver.models.CreateSessionRequest
 import com.google.common.truth.Truth.assertThat
 import java.util.Collections
 import java.util.IdentityHashMap
+import kotlinx.serialization.ContextualSerializer
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.PolymorphicKind
@@ -49,10 +50,6 @@ class WireAliasCoverageTest {
   /**
    * The request bodies the routes decode: `/run` and `/run_sse` take the first, uploads the second,
    * and session creation the third.
-   *
-   * The survey shares one `seen` set across roots, so a type an earlier root already reaches is
-   * surveyed under that root's path - `Part` today, via `AgentRunRequest.newMessage.parts[]`. It
-   * stays listed so coverage holds if `AgentRunRequest` ever stops referencing it.
    */
   private val wireRoots: Map<String, KSerializer<*>> =
     mapOf(
@@ -122,8 +119,8 @@ class WireAliasCoverageTest {
     // above would pass vacuously if it stopped.
     assertThat(survey().notEntered)
       .containsExactly(
-        "kotlinx.serialization.ContextualSerializer<Any>",
-        "kotlinx.serialization.json.JsonElement",
+        ContextualSerializer(Any::class).descriptor,
+        JsonElement.serializer().descriptor,
       )
   }
 
@@ -137,33 +134,41 @@ class WireAliasCoverageTest {
   private class AliasSurvey {
     val missing = mutableSetOf<String>()
     val duplicated = mutableSetOf<String>()
-    val notEntered = mutableSetOf<String>()
+    val notEntered = mutableSetOf<SerialDescriptor>()
     // Keyed on identity, not serial name: List<A> and List<B> share one name, as do Box<A> and
     // Box<B>, so a name-keyed set skips the second of each. A non-generic type is one descriptor
     // however often it is reached, so its cycles terminate; a recursive generic would not.
     private val seen = Collections.newSetFromMap(IdentityHashMap<SerialDescriptor, Boolean>())
 
-    fun visit(descriptor: SerialDescriptor, path: String) {
+    /** Surveys the graph under [descriptor], reporting paths from [root]. */
+    fun visit(descriptor: SerialDescriptor, root: String) {
+      seen.clear()
+      enter(descriptor, root)
+    }
+
+    private fun enter(descriptor: SerialDescriptor, path: String) {
       if (!seen.add(descriptor)) return
       when {
-        descriptor.isInline -> return visit(descriptor.getElementDescriptor(0), path)
-        // A sealed hierarchy's variants are ours, under element 1; JsonElement's are caller data.
-        descriptor.kind == PolymorphicKind.SEALED &&
-          descriptor.nonNullOriginal != JsonElement.serializer().descriptor -> {
+        descriptor.isInline -> return enter(descriptor.getElementDescriptor(0), path)
+        // JsonElement is sealed, but its variants are caller data.
+        descriptor.nonNullOriginal == JsonElement.serializer().descriptor ||
+          descriptor.kind == SerialKind.CONTEXTUAL ||
+          descriptor.kind == PolymorphicKind.OPEN -> {
+          notEntered.add(descriptor.nonNullOriginal)
+          return
+        }
+        // A sealed hierarchy's variants are ours, under element 1.
+        descriptor.kind == PolymorphicKind.SEALED -> {
           val variants = descriptor.getElementDescriptor(1)
           for (index in 0 until variants.elementsCount) {
-            visit(variants.getElementDescriptor(index), path)
+            enter(variants.getElementDescriptor(index), path)
           }
           return
         }
-        descriptor.kind == SerialKind.CONTEXTUAL || descriptor.kind is PolymorphicKind -> {
-          notEntered.add(descriptor.serialName.removeSuffix("?"))
-          return
-        }
         descriptor.kind == StructureKind.MAP ->
-          return visit(descriptor.getElementDescriptor(1), "$path[]")
+          return enter(descriptor.getElementDescriptor(1), "$path{}")
         descriptor.kind == StructureKind.LIST ->
-          return visit(descriptor.getElementDescriptor(0), "$path[]")
+          return enter(descriptor.getElementDescriptor(0), "$path[]")
         descriptor.kind != StructureKind.CLASS && descriptor.kind != StructureKind.OBJECT -> return
       }
       val claimed = mutableMapOf<String, String>()
@@ -183,7 +188,7 @@ class WireAliasCoverageTest {
             duplicated.add("$path: $it and $name share '$alternative'")
           }
         }
-        visit(descriptor.getElementDescriptor(index), "$path.$name")
+        enter(descriptor.getElementDescriptor(index), "$path.$name")
       }
     }
   }
