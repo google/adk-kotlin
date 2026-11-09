@@ -50,14 +50,14 @@ import org.reactivestreams.Publisher
 /**
  * Builds a [BaseTool] from a [Tool]-annotated Java method, on the JVM only, for javac-only modules;
  * prefer the KSP `@Tool` path whenever the code is built with the Kotlin compiler, which processes
- * `.java` sources too. It reads the same [Tool]/[Param] annotations, relying on
- * [Param.name]/[Param.required] because Java retains neither parameter names nor nullability; every
- * parameter needs [Param] except one [Context] or [ToolContext] and one experimental
- * `Publisher<LiveRequest>` (or `Publisher<? extends LiveRequest>`), which carries
- * [ToolContext.liveRequests]. Like a KSP tool, the method runs in the calling coroutine and keeps
- * its context (such as MDC), so run blocking methods on a dispatcher meant for blocking work, such
- * as [PublisherRunner.runAsync]'s default; a returned Reactive Streams [Publisher] acts as a
- * returned Flow does (see [BaseTool.run]).
+ * `.java` sources too. It reads the same [Tool]/[Param] annotations, including
+ * [Tool.requireConfirmation], relying on [Param.name]/[Param.required] because Java retains neither
+ * parameter names nor nullability; every parameter needs [Param] except one [Context] or
+ * [ToolContext] and one experimental `Publisher<LiveRequest>` (or `Publisher<? extends
+ * LiveRequest>`), which carries [ToolContext.liveRequests]. Like a KSP tool, the method runs in the
+ * calling coroutine and keeps its context (such as MDC), so run blocking methods on a dispatcher
+ * meant for blocking work, such as [PublisherRunner.runAsync]'s default; a returned Reactive
+ * Streams [Publisher] acts as a returned Flow does (see [BaseTool.run]).
  */
 @AdkJavaInteropApi
 object ReflectiveTools {
@@ -93,9 +93,8 @@ object ReflectiveTools {
       "@Tool on ${method.name} needs a description; reflection cannot read the KDoc that the KSP" +
         " path falls back to."
     }
-    require(!annotation.isLongRunning && !annotation.requireConfirmation) {
-      "ReflectiveTools builds plain tools only; @Tool.isLongRunning and requireConfirmation on" +
-        " ${method.name} are not supported here."
+    require(!annotation.isLongRunning) {
+      "@Tool.isLongRunning on ${method.name} is not supported by ReflectiveTools."
     }
     // A metadata consumer re-resolves the recorded method by name and picks the @Tool-annotated
     // overload, so exactly one overload sharing this name may carry @Tool.
@@ -112,7 +111,14 @@ object ReflectiveTools {
     }
     val name = annotation.name.ifEmpty { method.name }
     val behavior = annotation.behavior.takeUnless { it == Behavior.UNSPECIFIED }
-    return ReflectiveTool(instance, method, name, annotation.description, behavior)
+    return ReflectiveTool(
+      instance,
+      method,
+      name,
+      annotation.description,
+      behavior,
+      annotation.requireConfirmation,
+    )
   }
 
   private val PASS_THROUGH_ELEMENTS =
@@ -149,15 +155,17 @@ object ReflectiveTools {
     name: String,
     description: String,
     override val behavior: Behavior?,
+    requireConfirmation: Boolean,
   ) :
-    BaseTool(
+    FunctionTool(
       name,
       description,
       customMetadata =
         mapOf(
-          FunctionTool.SOURCE_CLASS_METADATA_KEY to instance.javaClass.name,
-          FunctionTool.SOURCE_METHOD_METADATA_KEY to method.name,
+          SOURCE_CLASS_METADATA_KEY to instance.javaClass.name,
+          SOURCE_METHOD_METADATA_KEY to method.name,
         ),
+      requiresConfirmation = requireConfirmation,
     ) {
 
     // Match either Context or ToolContext explicitly (not isAssignableFrom, which would also match
@@ -261,7 +269,7 @@ object ReflectiveTools {
       return declaration.parameters(schema.build()).build()
     }
 
-    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
+    override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
       val actual = arrayOfNulls<Any>(method.parameterCount)
       if (contextIndex >= 0) {
         actual[contextIndex] = context

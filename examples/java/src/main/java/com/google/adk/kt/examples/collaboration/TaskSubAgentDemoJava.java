@@ -18,11 +18,13 @@ package com.google.adk.kt.examples.collaboration;
 
 import com.google.adk.kt.agents.AgentMode;
 import com.google.adk.kt.agents.LlmAgent;
+import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.events.ToolConfirmation;
 import com.google.adk.kt.interop.BaseFutureTool;
 import com.google.adk.kt.interop.PublisherRunner;
+import com.google.adk.kt.interop.ReflectiveTools;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
@@ -154,7 +156,7 @@ public final class TaskSubAgentDemoJava {
             Do not ask for confirmation in natural language, always use the confirmation tool.
             Once you have their final order and confirmation if needed, finish your task.\
             """)
-        .tools(new ConfirmationTool())
+        .tools(ReflectiveTools.fromMethod(new FoodDelivery(), "confirmation"))
         .build();
   }
 
@@ -234,41 +236,11 @@ public final class TaskSubAgentDemoJava {
     }
   }
 
-  /**
-   * Confirms proceeding with the order once the user approves the call. Hand-written to follow the
-   * protocol of a {@code requireConfirmation} tool, because ReflectiveTools builds no tool that
-   * waits for approval.
-   */
-  private static final class ConfirmationTool extends BaseFutureTool {
-    ConfirmationTool() {
-      super("confirmation", "Confirm proceeding with the order.");
-    }
-
-    @Override
-    public FunctionDeclaration declaration() {
-      return FunctionDeclaration.builder().name(getName()).description(getDescription()).build();
-    }
-
-    @Override
-    protected CompletableFuture<Object> runAsync(ToolContext context, Map<String, Object> args) {
-      ToolConfirmation confirmation = context.getToolConfirmation();
-      if (confirmation == null) {
-        context.requestConfirmation(
-            "Please approve or reject the tool call "
-                + getName()
-                + "() by responding with a FunctionResponse with an expected ToolConfirmation"
-                + " payload.",
-            null);
-        // Ends the turn on the request, as FunctionTool does, instead of calling the model again.
-        context.getActions().setSkipSummarization(true);
-        return CompletableFuture.completedFuture(
-            Map.of(FunctionTool.ERROR_KEY, FunctionTool.CONFIRMATION_REQUIRED_ERROR));
-      }
-      if (!confirmation.getConfirmed()) {
-        return CompletableFuture.completedFuture(
-            Map.of(FunctionTool.ERROR_KEY, FunctionTool.REJECTED_ERROR));
-      }
-      return CompletableFuture.completedFuture("Proceeding with order.");
+  /** A mock food-delivery backend whose order confirmation waits for the user to approve it. */
+  static final class FoodDelivery {
+    @Tool(description = "Confirm proceeding with the order.", requireConfirmation = true)
+    public String confirmation() {
+      return "Proceeding with order.";
     }
   }
 
