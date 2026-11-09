@@ -17,15 +17,22 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.signInReplyStateKey
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import org.junit.Test
 
 /** Expected URLs use `STATE` for the random `state`. */
-@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class AuthHandlerTest {
 
   @Test
@@ -285,6 +292,247 @@ class AuthHandlerTest {
   }
 
   @Test
+  fun storeSignInReply_apiKeyReplyToOAuth2Request_storesItAsIs() {
+    // A credential of another type takes none of the request's OAuth2 fields.
+    val state = State()
+
+    val outcome =
+      SIGN_IN_REQUEST.storeSignInReply(mapOf("authType" to "apiKey", "apiKey" to "user-key"), state)
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(
+      AuthCredential.ApiKey(Secret("user-key")),
+      state[SIGN_IN_REQUEST.signInReplyStateKey],
+    )
+  }
+
+  @Test
+  fun storeSignInReply_apiKeyReply_storesTheKey() {
+    val config = AuthConfig(API_KEY, credentialKey = CredentialKey("api-key"))
+    val state = State()
+
+    val outcome =
+      config.storeSignInReply(mapOf("authType" to "apiKey", "apiKey" to "user-key"), state)
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(json("""{"authType": "apiKey", "apiKey": "user-key"}"""), state.storedJson(config))
+  }
+
+  @Test
+  fun storeSignInReply_authConfigReply_storesItsExchangedCredential() {
+    // The reply's own scheme doesn't count; the request's key does.
+    val state = State()
+
+    val outcome =
+      SIGN_IN_REQUEST.storeSignInReply(
+        mapOf("authScheme" to HTTP_BEARER, "exchangedAuthCredential" to TOKENS),
+        state,
+      )
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(json(STORED_TOKENS), state.storedJson(SIGN_IN_REQUEST))
+  }
+
+  @Test
+  fun storeSignInReply_configuredClientSecret_isNotStored() {
+    val config = AuthConfig(AUTH_CODE, CONFIDENTIAL)
+    val state = State()
+
+    val outcome = config.storeSignInReply(TOKENS, state)
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    val credential = assertIs<AuthCredential.OAuth2>(state[config.signInReplyStateKey])
+    assertEquals("cid", credential.clientId)
+    assertNull(credential.clientSecret)
+  }
+
+  @Test
+  fun storeSignInReply_credentialReply_storesItWithTheRequestsFields() {
+    val state = State()
+
+    val outcome = SIGN_IN_REQUEST.storeSignInReply(TOKENS, state)
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(json(STORED_TOKENS), state.storedJson(SIGN_IN_REQUEST))
+  }
+
+  @Test
+  fun storeSignInReply_oauth2ReplyWithoutAccessToken_needsCodeExchange() {
+    // ADK can't exchange an authorization code yet, so neither reply is stored.
+    val cases =
+      listOf(
+        AuthConfig(AUTH_CODE, CONFIDENTIAL) to
+          mapOf("authType" to "oauth2", "oauth2" to mapOf("authCode" to "code")),
+        SIGN_IN_REQUEST to mapOf("authType" to "oauth2", "oauth2" to mapOf("accessToken" to "")),
+      )
+
+    for ((config, reply) in cases) {
+      val state = State()
+
+      val outcome = config.storeSignInReply(reply, state)
+
+      assertEquals(SignInReplyResult.NEEDS_CODE_EXCHANGE, outcome)
+      assertTrue(state.isEmpty())
+    }
+  }
+
+  @Test
+  fun storeSignInReply_replyNamingTokenEndpointAuthMethod_keepsIt() {
+    val config = SIGN_IN_REQUEST.copy(exchangedAuthCredential = CLIENT_SECRET_POST_REQUEST)
+    val reply =
+      mapOf(
+        "authType" to "openIdConnect",
+        "oauth2" to mapOf("accessToken" to "at", "tokenEndpointAuthMethod" to "client_secret_basic"),
+      )
+    val state = State()
+
+    assertEquals(SignInReplyResult.STORED, config.storeSignInReply(reply, state))
+    assertEquals(
+      AuthCredential.OAuth2.TokenEndpointAuthMethod.CLIENT_SECRET_BASIC,
+      assertIs<AuthCredential.OAuth2>(state[config.signInReplyStateKey]).tokenEndpointAuthMethod,
+    )
+  }
+
+  @Test
+  fun storeSignInReply_replyWithClientFields_pinsTheClientId() {
+    // The reply's redirect URI is kept, and its client secret dropped.
+    val reply =
+      mapOf(
+        "authType" to "openIdConnect",
+        "oauth2" to
+          mapOf(
+            "accessToken" to "at",
+            "clientId" to "evil",
+            "clientSecret" to "evil-sec",
+            "redirectUri" to "https://evil/cb",
+          ),
+      )
+    val state = State()
+
+    val outcome = SIGN_IN_REQUEST.storeSignInReply(reply, state)
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(
+      json(
+        """{"authType": "openIdConnect", "oauth2": {"accessToken": "at", "clientId": "cid",
+          "redirectUri": "https://evil/cb", "tokenEndpointAuthMethod": "client_secret_basic"}}"""
+      ),
+      state.storedJson(SIGN_IN_REQUEST),
+    )
+  }
+
+  @Test
+  fun storeSignInReply_replyWithCodeVerifier_keepsIt() {
+    val exchanged =
+      SIGN_IN_REQUEST.exchangedAuthCredential
+        .oauth2()
+        .copy(codeVerifier = Secret(VERIFIER), codeChallengeMethod = "S256")
+    val config = SIGN_IN_REQUEST.copy(exchangedAuthCredential = exchanged)
+    val replyVerifier = "r".repeat(43)
+    val state = State()
+
+    val outcome =
+      config.storeSignInReply(
+        mapOf(
+          "authType" to "openIdConnect",
+          "oauth2" to
+            mapOf(
+              "accessToken" to "at",
+              "codeVerifier" to replyVerifier,
+              "codeChallengeMethod" to "plain",
+            ),
+        ),
+        state,
+      )
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(
+      json(
+        """{"authType": "openIdConnect", "oauth2": {"accessToken": "at", "clientId": "cid",
+          "codeChallengeMethod": "plain", "codeVerifier": "$replyVerifier",
+          "redirectUri": "https://app/cb", "tokenEndpointAuthMethod": "client_secret_basic"}}"""
+      ),
+      state.storedJson(config),
+    )
+  }
+
+  @Test
+  fun storeSignInReply_replyWithoutCodeVerifier_takesTheRequestsVerifier() {
+    val exchanged =
+      SIGN_IN_REQUEST.exchangedAuthCredential
+        .oauth2()
+        .copy(codeVerifier = Secret(VERIFIER), codeChallengeMethod = "S256")
+    val config = SIGN_IN_REQUEST.copy(exchangedAuthCredential = exchanged)
+    val state = State()
+
+    val outcome =
+      config.storeSignInReply(
+        mapOf("authType" to "openIdConnect", "oauth2" to mapOf("accessToken" to "at")),
+        state,
+      )
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(
+      json(
+        """{"authType": "openIdConnect", "oauth2": {"accessToken": "at", "clientId": "cid",
+          "codeChallengeMethod": "S256", "codeVerifier": "$VERIFIER",
+          "redirectUri": "https://app/cb", "tokenEndpointAuthMethod": "client_secret_basic"}}"""
+      ),
+      state.storedJson(config),
+    )
+  }
+
+  @Test
+  fun storeSignInReply_replyWithoutCredential_storesNothing() {
+    val replies = listOf(mapOf("authScheme" to HTTP_BEARER), mapOf("foo" to 1), "not a map", null)
+
+    for (reply in replies) {
+      val state = State()
+
+      val outcome = SIGN_IN_REQUEST.storeSignInReply(reply, state)
+
+      assertEquals(SignInReplyResult.NO_CREDENTIAL, outcome)
+      assertTrue(state.isEmpty())
+    }
+  }
+
+  @Test
+  fun storeSignInReply_replyWithoutTokenEndpointAuthMethod_takesTheRequestsMethod() {
+    val config = SIGN_IN_REQUEST.copy(exchangedAuthCredential = CLIENT_SECRET_POST_REQUEST)
+    val replies =
+      listOf(TOKENS, mapOf("authScheme" to HTTP_BEARER, "exchangedAuthCredential" to TOKENS))
+
+    for (reply in replies) {
+      val state = State()
+
+      assertEquals(SignInReplyResult.STORED, config.storeSignInReply(reply, state))
+      assertEquals(
+        AuthCredential.OAuth2.TokenEndpointAuthMethod.CLIENT_SECRET_POST,
+        assertIs<AuthCredential.OAuth2>(state[config.signInReplyStateKey]).tokenEndpointAuthMethod,
+      )
+    }
+  }
+
+  @Test
+  fun storeSignInReply_tokenlessOAuth2ReplyOnHttpScheme_storesIt() {
+    // Only OAuth2 and OpenID Connect schemes exchange a code.
+    val config = AuthConfig(AuthScheme.Http.bearer())
+    val state = State()
+
+    val outcome =
+      config.storeSignInReply(
+        mapOf("authType" to "oauth2", "oauth2" to mapOf("authCode" to "code")),
+        state,
+      )
+
+    assertEquals(SignInReplyResult.STORED, outcome)
+    assertEquals(
+      AuthCredential.OAuth2(authCode = Secret("code"), tokenEndpointAuthMethod = null),
+      state[config.signInReplyStateKey],
+    )
+  }
+
+  @Test
   fun storedCredential_credentialUnderBothKeys_prefersTheTempKey() {
     val config = AuthConfig(OIDC)
     val temp = AuthCredential.OAuth2(accessToken = Secret("temp"))
@@ -479,6 +727,58 @@ class AuthHandlerTest {
           universeDomain = "googleapis.com",
         )
       )
+
+    val HTTP_BEARER = mapOf("type" to "http", "scheme" to "bearer")
+
+    /** A sign-in request ADK recorded for [OIDC], without the client secret. */
+    val SIGN_IN_REQUEST =
+      AuthConfig(
+        authScheme = OIDC,
+        rawAuthCredential =
+          AuthCredential.OAuth2(
+            variant = AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT,
+            clientId = "cid",
+            redirectUri = "https://app/cb",
+          ),
+        exchangedAuthCredential =
+          AuthCredential.OAuth2(
+            variant = AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT,
+            clientId = "cid",
+            authUri = "https://o/auth?state=s",
+            state = "s",
+            redirectUri = "https://app/cb",
+          ),
+      )
+
+    /** [SIGN_IN_REQUEST]'s exchanged credential for a client that authenticates in the body. */
+    val CLIENT_SECRET_POST_REQUEST =
+      SIGN_IN_REQUEST.exchangedAuthCredential
+        .oauth2()
+        .copy(
+          tokenEndpointAuthMethod = AuthCredential.OAuth2.TokenEndpointAuthMethod.CLIENT_SECRET_POST
+        )
+
+    val TOKENS =
+      mapOf(
+        "authType" to "openIdConnect",
+        "oauth2" to mapOf("accessToken" to "at", "refreshToken" to "rt", "expiresAt" to 1767225600L),
+      )
+
+    /** What is stored for [TOKENS] in reply to [SIGN_IN_REQUEST], in ADK Kotlin's JSON. */
+    const val STORED_TOKENS =
+      """{"authType": "openIdConnect", "oauth2": {"accessToken": "at", "clientId": "cid",
+        "expiresAt": 1767225600, "redirectUri": "https://app/cb", "refreshToken": "rt",
+        "tokenEndpointAuthMethod": "client_secret_basic"}}"""
+
+    val VERIFIER = "v".repeat(43)
+
+    fun json(text: String): JsonElement = Json.parseToJsonElement(text)
+
+    /** Returns the credential stored as [config]'s sign-in reply, in ADK Kotlin's JSON. */
+    fun State.storedJson(config: AuthConfig): JsonElement? =
+      (this[config.signInReplyStateKey] as AuthCredential?)?.let {
+        adkJson.encodeToJsonElement(AuthCredentialSerializer, it)
+      }
 
     fun AuthCredential?.oauth2(): AuthCredential.OAuth2 = this as AuthCredential.OAuth2
 

@@ -45,11 +45,15 @@ class CredentialKey(val value: String) {
   }
 
   /**
-   * The state keys a stored credential is read from: the app's reply, which lasts for one
-   * invocation, then [value].
+   * The state key of the app's sign-in reply. Its `temp:` prefix keeps the credential out of
+   * persisted session state, so it lasts only for the invocation that received it.
    */
+  internal val signInReplyStateKey: String
+    get() = State.TEMP_PREFIX + value
+
+  /** The state keys a stored credential is read from: [signInReplyStateKey], then [value]. */
   internal val stateKeys: List<String>
-    get() = listOf(State.TEMP_PREFIX + value, value)
+    get() = listOf(signInReplyStateKey, value)
 
   override fun equals(other: Any?): Boolean = other is CredentialKey && other.value == value
 
