@@ -23,7 +23,10 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.adk.kt.interop.BaseFutureClassifier;
 import com.google.adk.kt.interop.CompletableFutureClassifier;
+import com.google.adk.kt.models.LlmResponse;
+import com.google.adk.kt.testing.DummyModel;
 import com.google.adk.kt.types.Content;
+import com.google.adk.kt.types.GenerateContentConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.util.Arrays;
@@ -38,7 +41,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** Exercises the classifier types, builders, and future bridges from plain Java. */
+/** Exercises the classifier types, builders, bridges, and LlmClassifier from plain Java. */
 @RunWith(JUnit4.class)
 public final class ClassifierJavaInteropTest {
 
@@ -203,6 +206,35 @@ public final class ClassifierJavaInteropTest {
         .isEqualTo(
             new ClassifierResponse(
                 ImmutableMap.of("urgent", new BinaryAnswer(0.75)), "jev-1.13.0"));
+  }
+
+  @Test
+  public void llmClassifier_builderAndConstructor_classifyFromJava() throws Exception {
+    LlmResponse response =
+        LlmResponse.builder()
+            .content(Content.fromText("model", "{\"urgent\": {\"probability\": 0.25}}"))
+            .build();
+    DummyModel model = DummyModel.createSequential("m", ImmutableList.of(response, response));
+    GenerateContentConfig config = GenerateContentConfig.builder().temperature(0f).build();
+    LlmClassifier fromConstructor = new LlmClassifier(model);
+    LlmClassifier built =
+        LlmClassifier.builder().model(model).generateContentConfig(config).build();
+    ClassifierRequest request =
+        new ClassifierRequest("Is this urgent?", ImmutableMap.of("urgent", new Binary("Urgent?")));
+
+    ClassifierResponse fromConstructorAnswers;
+    ClassifierResponse builtAnswers;
+    try (CompletableFutureClassifier client = CompletableFutureClassifier.of(fromConstructor)) {
+      fromConstructorAnswers = client.classify(request).get(5, SECONDS);
+    }
+    try (CompletableFutureClassifier client = CompletableFutureClassifier.of(built)) {
+      builtAnswers = client.classify(request).get(5, SECONDS);
+    }
+
+    assertThat(fromConstructor.getModel()).isSameInstanceAs(model);
+    assertThat(built.getGenerateContentConfig()).isEqualTo(config);
+    assertThat(fromConstructorAnswers.getAnswers()).containsEntry("urgent", new BinaryAnswer(0.25));
+    assertThat(builtAnswers.getAnswers()).containsEntry("urgent", new BinaryAnswer(0.25));
   }
 
   @Test
