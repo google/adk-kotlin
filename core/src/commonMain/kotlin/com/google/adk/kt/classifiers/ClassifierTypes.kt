@@ -20,12 +20,14 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalClassifierApi
 import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
+import kotlinx.serialization.Serializable
 
 /**
  * A typed question answered by a [Classifier]: [Choice], [Binary], or [Score]. Its instructions and
  * criteria are [ClassifierContent]: text, or a JSON object or array.
  */
 @ExperimentalClassifierApi
+@Serializable(with = QuestionSerializer::class)
 sealed interface Question {
   /** What to decide, or `null`. */
   val instructions: ClassifierContent?
@@ -35,7 +37,7 @@ sealed interface Question {
  * A [Classifier]'s answer to a [Question]: [ChoiceAnswer], [BinaryAnswer], [ScoreAnswer], or
  * [RefusalAnswer].
  */
-@ExperimentalClassifierApi sealed interface Answer
+@ExperimentalClassifierApi @Serializable(with = AnswerSerializer::class) sealed interface Answer
 
 /**
  * Asks a [Classifier] to pick one of two or more named labels.
@@ -44,6 +46,7 @@ sealed interface Question {
  * @property criteria Maps each label (at least two) to an optional description of when it applies.
  */
 @ExperimentalClassifierApi
+@Serializable(with = ChoiceSerializer::class)
 data class Choice
 @JvmOverloads
 constructor(
@@ -129,6 +132,7 @@ constructor(
  * @property criteria Optional description of what counts as true; anything else counts as false.
  */
 @ExperimentalClassifierApi
+@Serializable(with = BinarySerializer::class)
 data class Binary
 @JvmOverloads
 constructor(
@@ -194,6 +198,7 @@ constructor(
  * @property criteria One description per rubric level (at least two), starting at 0.
  */
 @ExperimentalClassifierApi
+@Serializable(with = ScoreSerializer::class)
 data class Score
 @JvmOverloads
 constructor(
@@ -267,6 +272,7 @@ constructor(
  * @property confidence The provider's confidence in `[0, 1]`, or `null` when unreported.
  */
 @ExperimentalClassifierApi
+@Serializable(with = ChoiceAnswerSerializer::class)
 data class ChoiceAnswer
 @JvmOverloads
 constructor(
@@ -328,6 +334,7 @@ constructor(
  * @property confidence The provider's confidence in `[0, 1]`, or `null` when unreported.
  */
 @ExperimentalClassifierApi
+@Serializable(with = BinaryAnswerSerializer::class)
 data class BinaryAnswer
 @JvmOverloads
 constructor(val probability: Double, val confidence: Double? = null) : Answer {
@@ -379,6 +386,7 @@ constructor(val probability: Double, val confidence: Double? = null) : Answer {
  * @property confidence The provider's confidence in `[0, 1]`, or `null` when unreported.
  */
 @ExperimentalClassifierApi
+@Serializable(with = ScoreAnswerSerializer::class)
 data class ScoreAnswer
 @JvmOverloads
 constructor(
@@ -440,7 +448,9 @@ constructor(
  * Reporting refusals per question lets one [Classifier.classify] batch still return answers for the
  * remaining questions.
  */
-@ExperimentalClassifierApi data object RefusalAnswer : Answer
+@ExperimentalClassifierApi
+@Serializable(with = RefusalAnswerSerializer::class)
+data object RefusalAnswer : Answer
 
 /**
  * The input a [Classifier] answers questions about: [ClassifierContent] (text, or a JSON object or
@@ -589,6 +599,7 @@ data class ClassifierRequest(val input: ClassifierInput, val questions: Map<Stri
  *   unreported.
  */
 @ExperimentalClassifierApi
+@Serializable(with = ClassifierResponseSerializer::class)
 data class ClassifierResponse
 @JvmOverloads
 constructor(val answers: Map<String, Answer>, val modelVersion: String? = null) {
