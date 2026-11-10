@@ -19,17 +19,26 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.interop.InteropContextView
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.AgentTool
 import com.google.common.truth.Truth.assertThat
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import io.opentelemetry.api.common.AttributeKey
@@ -47,6 +56,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
@@ -187,6 +197,90 @@ class NodeTracingTest {
     assertThat(exported.map { it.name }).doesNotContain("invoke_node helper")
     assertThat(span("invoke_agent helper").parentSpanId)
       .isEqualTo(span("invoke_workflow wf").spanId)
+  }
+
+  @Test
+  fun run_agentNodeCallingATool_keepsEveryModelCallUnderItsAgent() {
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, toolCallingAgent()))))
+
+    assertModelCallsAndToolsUnderHelper(modelCalls = 3)
+  }
+
+  @Test
+  fun run_agentAsRootNodeCallingATool_keepsEveryModelCallUnderItsAgent() {
+    runAsApp(toolCallingAgent())
+
+    assertModelCallsAndToolsUnderHelper(modelCalls = 3)
+  }
+
+  @Test
+  fun run_appRootAgentCallingATool_keepsEveryModelCallUnderItsAgent() {
+    InMemoryRunner(app = App(appName = APP, rootAgent = toolCallingAgent())).runTurn()
+
+    assertModelCallsAndToolsUnderHelper(modelCalls = 3)
+  }
+
+  @Test
+  fun run_agentAsRootNodeStreamingAToolCall_keepsEveryModelCallUnderItsAgent() {
+    val model =
+      DummyModel(
+        "test-model",
+        listOf(
+          flowOf(
+            LlmResponse(content = modelMessage("thinking"), partial = true),
+            modelFunctionCallResponse("dummy_tool"),
+          ),
+          flowOf(
+            LlmResponse(content = modelMessage("text "), partial = true),
+            LlmResponse(content = modelMessage("text response")),
+          ),
+        ),
+      )
+    val agent = LlmAgent(name = "helper", model = model, tools = listOf(DummyTool(declares = true)))
+
+    runAsApp(agent, RunConfig(streamingMode = StreamingMode.SSE))
+
+    assertModelCallsAndToolsUnderHelper(modelCalls = 2)
+  }
+
+  @Test
+  fun run_agentNodeCallingAnAgentTool_nestsTheToolsRunUnderItsCall() {
+    val delegate =
+      LlmAgent(
+        name = "delegate",
+        description = "Answers a request.",
+        model =
+          DummyModel.createSequential(
+            "test-model",
+            listOf(LlmResponse(content = modelMessage("answer"))),
+          ),
+      )
+    val caller =
+      LlmAgent(
+        name = "helper",
+        model =
+          DummyModel.createSequential(
+            "test-model",
+            listOf(
+              modelFunctionCallResponse("delegate", mapOf("request" to "question")),
+              LlmResponse(content = modelMessage("done")),
+            ),
+          ),
+        tools = listOf(AgentTool(delegate)),
+      )
+
+    runAsApp(Workflow("wf", edges = listOf(Edge(Start, caller))))
+
+    val callerSpan = span("invoke_agent helper")
+    val toolSpan = span("execute_tool delegate")
+    assertThat(toolSpan.parentSpanId).isEqualTo(callerSpan.spanId)
+    val toolInvocation = exported.single {
+      it.name == "invocation" && it.parentSpanId == toolSpan.spanId
+    }
+    val delegateSpan = span("invoke_agent delegate")
+    assertThat(delegateSpan.parentSpanId).isEqualTo(toolInvocation.spanId)
+    assertThat(exported.filter { it.name == "call_llm" }.map { it.parentSpanId })
+      .containsExactly(callerSpan.spanId, callerSpan.spanId, delegateSpan.spanId)
   }
 
   @Test
@@ -332,14 +426,22 @@ class NodeTracingTest {
     }
 
   /** Runs [root] as an app's root node and returns the session it left. */
-  @CanIgnoreReturnValue private fun runAsApp(root: Node): Session = runnerFor(root).runTurn()
+  @CanIgnoreReturnValue
+  private fun runAsApp(root: Node, runConfig: RunConfig? = null): Session =
+    runnerFor(root).runTurn(runConfig)
 
   private fun runnerFor(root: Node) = InMemoryRunner(app = App(appName = APP, rootNode = root))
 
   /** Runs one turn and returns the session it left. */
   @CanIgnoreReturnValue
-  private fun InMemoryRunner.runTurn(): Session = runBlocking {
-    runAsync(userId = "user", sessionId = SESSION_ID, newMessage = userMessage("go")).toList()
+  private fun InMemoryRunner.runTurn(runConfig: RunConfig? = null): Session = runBlocking {
+    runAsync(
+        userId = "user",
+        sessionId = SESSION_ID,
+        newMessage = userMessage("go"),
+        runConfig = runConfig,
+      )
+      .toList()
     storedSession()
   }
 
@@ -349,6 +451,31 @@ class NodeTracingTest {
     checkNotNull(sessionService.getSession(SessionKey(APP, "user", SESSION_ID)))
 
   private fun span(name: String): SpanData = exported.single { it.name == name }
+
+  /** An agent named `helper` whose model calls `dummy_tool` twice, then answers. */
+  private fun toolCallingAgent() =
+    LlmAgent(
+      name = "helper",
+      model =
+        DummyModel.createSequential(
+          "test-model",
+          listOf(
+            modelFunctionCallResponse("dummy_tool"),
+            modelFunctionCallResponse("dummy_tool"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        ),
+      tools = listOf(DummyTool(declares = true)),
+    )
+
+  /** Asserts [modelCalls] `call_llm` spans and one fewer `dummy_tool` call, all under `helper`. */
+  private fun assertModelCallsAndToolsUnderHelper(modelCalls: Int) {
+    val agentSpanId = span("invoke_agent helper").spanId
+    assertThat(exported.filter { it.name == "call_llm" }.map { it.parentSpanId })
+      .containsExactlyElementsIn(List(modelCalls) { agentSpanId })
+    assertThat(exported.filter { it.name == "execute_tool dummy_tool" }.map { it.parentSpanId })
+      .containsExactlyElementsIn(List(modelCalls - 1) { agentSpanId })
+  }
 
   companion object {
     private const val APP = "app"

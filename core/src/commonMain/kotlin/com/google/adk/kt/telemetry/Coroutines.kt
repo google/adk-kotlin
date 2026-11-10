@@ -18,6 +18,7 @@ package com.google.adk.kt.telemetry
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.emitAll
@@ -130,10 +131,10 @@ internal fun <T> Flow<T>.trace(
  * Builds a [Flow] whose emissions are traced by a new [Span], with synchronous backpressure: every
  * `emit` inside [block] suspends until the downstream collector has fully processed the value.
  *
- * [block] receives the [Span] (for attributes/events) and a [TelemetryContextElement] that can be
- * applied via `.flowOn(spanContext)` to upstream sub-flows that need the span context. Do not wrap
- * `emit` calls in `withContext(spanContext)` — that would re-introduce the flow-invariant problem
- * [withSpan] has.
+ * [block] receives the [Span] and a [TelemetryContextElement] to apply via `.flowOn(spanContext)`
+ * to upstream sub-flows; wrapping `emit` in `withContext(spanContext)` would re-introduce the
+ * flow-invariant problem [withSpan] has. The span's parent is the span on the coroutine context
+ * when there is one, else the thread's current context.
  */
 internal fun <T> tracedFlow(
   name: String,
@@ -141,6 +142,8 @@ internal fun <T> tracedFlow(
   block: suspend FlowCollector<T>.(span: Span, spanContext: TelemetryContextElement) -> Unit,
 ): Flow<T> = flow {
   val spanBuilder = Telemetry.tracer.spanBuilder(name)
+  // After a suspended emit, the thread's context can still hold the collector's span.
+  currentCoroutineContext()[TelemetryContextElement]?.let { spanBuilder.setParent(it.context) }
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
   val spanContext = Telemetry.tracer.contextWithSpan(span).asContextElement()
