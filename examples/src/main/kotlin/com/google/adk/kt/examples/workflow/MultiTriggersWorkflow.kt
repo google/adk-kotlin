@@ -40,7 +40,7 @@ object MultiTriggersWorkflow {
 
   /** Builds the workflow. It calls no model. */
   fun create(): Workflow =
-    // The input schema reads the user's message as text, so START hands each branch a String.
+    // As adk-python's `input_schema=str` does, the workflow reads the user's message as text.
     workflow("multi_triggers", inputSchema = Schema(type = Type.STRING)) {
       Start.then(makeUppercase, countCharacters, reverseString)
       // With no JoinNode in between, each predecessor triggers its own run of send_message.

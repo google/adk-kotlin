@@ -102,7 +102,8 @@ public final class DynamicNodesWorkflowJava {
 
   /**
    * Runs the headline agent and then the grader on its headline until the grade is {@code
-   * tech-related}, and outputs that headline.
+   * tech-related}, and outputs that headline. As in adk-python, nothing limits the number of
+   * rounds.
    */
   private static final class Orchestrator extends BasePublisherNode {
     private final Node generateHeadline;
@@ -127,6 +128,7 @@ public final class DynamicNodesWorkflowJava {
               headline ->
                   Mono.fromFuture(() -> view.runNode(evaluateHeadline, headline))
                       .flatMap(
+                          // The grader's object output schema makes its reply arrive as a map.
                           feedback ->
                               "tech-related".equals(((Map<?, ?>) feedback).get("grade"))
                                   ? Mono.just(headline)

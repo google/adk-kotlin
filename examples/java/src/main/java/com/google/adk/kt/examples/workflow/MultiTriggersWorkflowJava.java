@@ -45,7 +45,7 @@ public final class MultiTriggersWorkflowJava {
 
     return Workflow.builder()
         .name("multi_triggers")
-        // The input schema reads the user's message as text, so START hands each branch a String.
+        // As adk-python's input_schema=str does, the workflow reads the user's message as text.
         .inputSchema(Schema.builder().type(Type.STRING).build())
         .edges(
             g -> {

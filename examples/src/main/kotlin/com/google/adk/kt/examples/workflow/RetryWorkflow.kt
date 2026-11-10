@@ -44,7 +44,7 @@ object RetryWorkflow {
   /** Builds the workflow. It calls no model. */
   fun create(): Workflow = workflow("retry") { chain(Start, getWeather, reportWeather) }
 
-  /** A mock weather lookup that fails 70% of the time, retried with backoff from one second. */
+  /** A mock weather lookup that fails 70% of the time, retried with exponential backoff. */
   private val getWeather =
     node<Any?, String>(
       "get_weather",

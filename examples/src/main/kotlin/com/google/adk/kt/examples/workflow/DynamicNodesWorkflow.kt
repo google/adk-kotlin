@@ -56,7 +56,8 @@ object DynamicNodesWorkflow {
 
   /**
    * Returns the node that runs [generateHeadline] and then [evaluateHeadline] on its headline until
-   * the grade is `tech-related`, and outputs that headline.
+   * the grade is `tech-related`, and outputs that headline. As in adk-python, nothing limits the
+   * number of rounds.
    */
   private fun orchestrate(generateHeadline: Node, evaluateHeadline: Node): Node =
     // A node that calls runNode must rerun on resume, to collect a child's output after a pause.
@@ -66,6 +67,7 @@ object DynamicNodesWorkflow {
       var headline: String
       do {
         headline = context.runNode(generateHeadline) as String
+        // The grader's object output schema makes its reply arrive as a map.
         val feedback = context.runNode(evaluateHeadline, nodeInput = headline) as Map<*, *>
       } while (feedback["grade"] != "tech-related")
       headline

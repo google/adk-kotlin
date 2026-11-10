@@ -33,8 +33,9 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * A port of adk-python's `state` workflow sample: function nodes write session state through the
- * context and through an event, and read it back through the context. ADK's Kotlin function nodes
- * take no parameters from state, so `read_state_via_param` reads its key through the context too.
+ * context and through an event, and read it back through the context. Python fills the parameter of
+ * `read_state_via_param` from state by name, but a Kotlin function node gets no parameters from
+ * state, so this node reads the key through the context too.
  */
 object StateWorkflow {
 

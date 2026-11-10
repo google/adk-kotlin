@@ -32,9 +32,9 @@ import reactor.core.publisher.Flux;
 
 /**
  * A port of adk-python's {@code state} workflow sample: function nodes write session state through
- * the context and through an event, and read it back through the context. ADK's Java function nodes
- * take no parameters from state, so {@code read_state_via_param} reads its key through the context
- * too.
+ * the context and through an event, and read it back through the context. Python fills the
+ * parameter of {@code read_state_via_param} from state by name, but a Java function node gets no
+ * parameters from state, so this node reads the key through the context too.
  */
 public final class StateWorkflowJava {
 

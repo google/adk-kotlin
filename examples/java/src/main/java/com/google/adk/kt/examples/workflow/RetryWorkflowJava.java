@@ -68,7 +68,7 @@ public final class RetryWorkflowJava {
     }
   }
 
-  /** A mock weather lookup that fails 70% of the time, retried with backoff from one second. */
+  /** A mock weather lookup that fails 70% of the time, retried with exponential backoff. */
   private static final class GetWeather extends BasePublisherNode {
     GetWeather() {
       super(
