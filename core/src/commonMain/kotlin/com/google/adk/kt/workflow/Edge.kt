@@ -18,15 +18,16 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import kotlin.jvm.JvmOverloads
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * A connection between two nodes.
  *
- * An edge carries the set of routes that select it. Most edges select on a single route (or none,
- * for an unconditional edge), so the [Route]/`null` constructor is the common way to build one; the
- * [List] form is for the rarer edge that fires on any of several routes.
+ * An edge carries the set of routes that select it. Omit the routes for an unconditional edge, pass
+ * a single [Route] for the usual conditional edge, or a [List] for an edge that fires on any of
+ * several routes.
  *
  * @property from The node whose completion fires this edge.
  * @property to The node this edge triggers.
@@ -34,7 +35,9 @@ import kotlinx.coroutines.flow.emptyFlow
  *   it fires whenever [from] completes.
  */
 @ExperimentalWorkflowApi
-data class Edge(val from: Node, val to: Node, val routes: List<Route> = emptyList()) {
+data class Edge
+@JvmOverloads
+constructor(val from: Node, val to: Node, val routes: List<Route> = emptyList()) {
   /**
    * Builds an edge selected by a single [route], or an unconditional one when [route] is `null`.
    */
