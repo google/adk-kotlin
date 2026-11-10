@@ -25,7 +25,7 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionNotFoundException
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.types.AvatarConfig
 import com.google.adk.kt.types.Modality
@@ -34,6 +34,7 @@ import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.models.decodeLiveRequests
 import com.google.adk.kt.webserver.models.encodeLiveEvent
+import com.google.adk.kt.webserver.routes.SessionRoutesErrors.ERR_SESSION_NOT_FOUND
 import com.google.adk.kt.webserver.routes.SessionRoutesErrors.ERR_SESSION_NOT_LOADED
 import io.ktor.http.Parameters
 import io.ktor.server.application.Application
@@ -57,7 +58,6 @@ import java.nio.CharBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -240,9 +240,16 @@ internal fun Route.liveRoutes(
             return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, result.reason))
         }
 
+      // The runner reads the session once and refuses a missing one, as ADK Python's does.
       val runner =
         try {
-          servedApps.runnerOrNull(params.appName, sessionService, artifactService, plugins)
+          servedApps.runnerOrNull(
+            params.appName,
+            sessionService.taggingReadFailures(),
+            artifactService,
+            plugins,
+            autoCreateSession = false,
+          )
         } catch (e: Exception) {
           return@webSocket closeUnloadedAgent(e)
         } catch (e: LinkageError) {
@@ -252,23 +259,6 @@ internal fun Route.liveRoutes(
           ?: return@webSocket close(
             CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Agent not found")
           )
-
-      val sessionKey = SessionKey(params.appName, params.userId, params.sessionId)
-      val session =
-        try {
-          sessionService.getSession(sessionKey)
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Exception) {
-          logger.warn("Loading the session for a live run failed: {}", e.typeName)
-          return@webSocket close(
-            CloseReason(CloseReason.Codes.INTERNAL_ERROR, ERR_SESSION_NOT_LOADED.message)
-          )
-        }
-      if (session == null) {
-        // The runner would create a missing session, but a live client must name one that exists.
-        return@webSocket close(CloseReason(CloseReason.Codes.PROTOCOL_ERROR, "Session not found"))
-      }
 
       val requests = LiveRequestQueue()
       try {
@@ -376,9 +366,21 @@ private suspend fun DefaultWebSocketServerSession.closeUnloadedAgent(cause: Thro
 
 /**
  * Closes a failed live run with the failure's message, so the client learns why, e.g. that the
- * agent cannot run live.
+ * agent cannot run live. A missing session or a failed session read gets a fixed reason instead.
  */
 private suspend fun DefaultWebSocketServerSession.closeFailedRun(failure: Throwable) {
-  logger.warn("Live run failed: {}", failure.typeName)
-  close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, closeReasonFor(failure.message.orEmpty())))
+  when (failure) {
+    is SessionNotFoundException ->
+      close(CloseReason(CloseReason.Codes.PROTOCOL_ERROR, ERR_SESSION_NOT_FOUND.message))
+    is SessionReadFailure -> {
+      logger.warn("Loading the session for a live run failed: {}", failure.cause.typeName)
+      close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, ERR_SESSION_NOT_LOADED.message))
+    }
+    else -> {
+      logger.warn("Live run failed: {}", failure.typeName)
+      close(
+        CloseReason(CloseReason.Codes.INTERNAL_ERROR, closeReasonFor(failure.message.orEmpty()))
+      )
+    }
+  }
 }

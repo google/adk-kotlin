@@ -32,12 +32,16 @@ internal interface ServedApps {
   /** The root the app [appName] runs, or null if there is no such app. */
   fun loadRoot(appName: String): Node?
 
-  /** A runner for [appName] with [plugins] after the app's own, or null if there is no such app. */
+  /**
+   * A runner for [appName] with [plugins] after the app's own, or null if there is no such app. The
+   * runner creates a session that does not exist only if [autoCreateSession] is set.
+   */
   fun runnerOrNull(
     appName: String,
     sessionService: SessionService,
     artifactService: ArtifactService,
     plugins: List<Plugin>,
+    autoCreateSession: Boolean,
   ): InMemoryRunner?
 }
 
@@ -52,12 +56,14 @@ internal class AppLoaderApps(private val loader: AppLoader) : ServedApps {
     sessionService: SessionService,
     artifactService: ArtifactService,
     plugins: List<Plugin>,
+    autoCreateSession: Boolean,
   ): InMemoryRunner? {
     val app = loader.loadApp(appName) ?: return null
     return InMemoryRunner(
       app = app.copy(appName = appName, plugins = app.plugins + plugins),
       sessionService = sessionService,
       artifactService = artifactService,
+      autoCreateSession = autoCreateSession,
     )
   }
 
@@ -77,6 +83,7 @@ internal class AgentLoaderApps(private val loader: AgentLoader) : ServedApps {
     sessionService: SessionService,
     artifactService: ArtifactService,
     plugins: List<Plugin>,
+    autoCreateSession: Boolean,
   ): InMemoryRunner? {
     val agent = loader.loadAgent(appName) ?: return null
     return InMemoryRunner(
@@ -85,6 +92,7 @@ internal class AgentLoaderApps(private val loader: AgentLoader) : ServedApps {
       sessionService = sessionService,
       artifactService = artifactService,
       plugins = plugins,
+      autoCreateSession = autoCreateSession,
     )
   }
 }

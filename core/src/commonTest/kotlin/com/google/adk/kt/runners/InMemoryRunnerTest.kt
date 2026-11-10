@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
@@ -32,6 +33,7 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionNotFoundException
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -895,6 +897,108 @@ class InMemoryRunnerTest {
     assertThat(finalEvent.finishReason).isEqualTo(FinishReason.STOP)
     assertThat(finalEvent.content).isNull()
   }
+
+  @Test
+  fun runAsync_autoCreateSessionOff_missingSession_throwsWithoutRunningOrCreatingIt(): Unit =
+    runBlocking {
+      var modelCalls = 0
+      val model = helloModel { modelCalls++ }
+      val runner =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model), autoCreateSession = false)
+
+      assertFailsWith<SessionNotFoundException> {
+        runner
+          .runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi"))
+          .toList()
+      }
+
+      assertThat(modelCalls).isEqualTo(0)
+      assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "missing")))
+        .isNull()
+    }
+
+  @Test
+  fun runAsync_autoCreateSessionOff_existingSession_runs(): Unit = runBlocking {
+    var modelCalls = 0
+    val model = helloModel { modelCalls++ }
+    val runner =
+      InMemoryRunner(agent = LlmAgent(name = "agent", model = model), autoCreateSession = false)
+    val unused = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+
+    val events =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    assertThat(modelCalls).isEqualTo(1)
+    assertThat(events.map { it.content?.parts?.single()?.text }).containsExactly("hello")
+  }
+
+  @Test
+  fun runAsync_byDefault_createsMissingSession(): Unit = runBlocking {
+    var modelCalls = 0
+    val model = helloModel { modelCalls++ }
+    val runner = InMemoryRunner(agent = LlmAgent(name = "agent", model = model))
+
+    val unused =
+      runner.runAsync(userId = "u", sessionId = "new", newMessage = userMessage("hi")).toList()
+
+    assertThat(modelCalls).isEqualTo(1)
+    assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "new"))).isNotNull()
+  }
+
+  @Test
+  fun runAsync_constructedFromAppWithAutoCreateSessionOff_missingSession_throws(): Unit =
+    runBlocking {
+      var modelCalls = 0
+      val model = helloModel { modelCalls++ }
+      val app = App(appName = "app", rootAgent = LlmAgent(name = "agent", model = model))
+      val runner = InMemoryRunner(app = app, autoCreateSession = false)
+
+      assertFailsWith<SessionNotFoundException> {
+        runner
+          .runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi"))
+          .toList()
+      }
+
+      assertThat(modelCalls).isEqualTo(0)
+    }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_autoCreateSessionOff_appliesToAgentAndAppRunners(): Unit = runBlocking {
+    var modelCalls = 0
+    val model = helloModel { modelCalls++ }
+    val agent = LlmAgent(name = "agent", model = model)
+    val runners =
+      listOf(
+        InMemoryRunner.builder().agent(agent).autoCreateSession(false).build(),
+        InMemoryRunner.builder()
+          .app(App(appName = "app", rootAgent = agent))
+          .autoCreateSession(false)
+          .build(),
+      )
+
+    for (runner in runners) {
+      assertFailsWith<SessionNotFoundException> {
+        runner
+          .runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi"))
+          .toList()
+      }
+    }
+
+    assertThat(modelCalls).isEqualTo(0)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_byDefault_createsMissingSession(): Unit = runBlocking {
+    val runner =
+      InMemoryRunner.builder().agent(LlmAgent(name = "agent", model = helloModel())).build()
+
+    val unused =
+      runner.runAsync(userId = "u", sessionId = "new", newMessage = userMessage("hi")).toList()
+
+    assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "new"))).isNotNull()
+  }
 }
 
 /** Builds an [LlmAgent] with a stub model, so tests can focus on the tool/toolset wiring. */
@@ -911,6 +1015,13 @@ private fun llmAgent(
     toolsets = toolsets,
     subAgents = subAgents,
   )
+
+/** A [DummyModel] that answers "hello", calling [onCall] for each request. */
+private fun helloModel(onCall: () -> Unit = {}) =
+  DummyModel(name = "model") {
+    onCall()
+    flowOf(LlmResponse(content = modelMessage("hello"), finishReason = FinishReason.STOP))
+  }
 
 /** An [LlmAgent] whose model records each request in [requests] and answers "hi". */
 private fun recordingAgent(requests: MutableList<LlmRequest>) =
