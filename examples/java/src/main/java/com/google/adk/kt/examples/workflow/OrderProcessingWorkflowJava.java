@@ -160,12 +160,12 @@ public final class OrderProcessingWorkflowJava {
     final Node parseOrder =
         FunctionNodes.of(
             "parse_order",
-            // START hands the first node the user's message as Content.
-            Content.class,
+            // START hands the first node the user's message, which a String input receives as text.
+            String.class,
             new TypeReference<Map<String, Object>>() {},
             (ctx, message) -> {
               Map<String, String> fields = new HashMap<>();
-              for (String field : message.text().trim().split("\\s+", -1)) {
+              for (String field : message.trim().split("\\s+", -1)) {
                 String[] keyAndValue = field.split("=", 2);
                 fields.put(keyAndValue[0], keyAndValue.length > 1 ? keyAndValue[1] : field);
               }

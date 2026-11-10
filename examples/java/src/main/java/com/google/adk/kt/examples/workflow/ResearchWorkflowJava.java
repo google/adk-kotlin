@@ -195,14 +195,13 @@ public final class ResearchWorkflowJava {
           .build();
 
   /** Stores the user's question in state, where the planner, writer and reviewer read it. */
-  private static FunctionNode<Content, String> saveQuestion() {
+  private static FunctionNode<String, String> saveQuestion() {
     return FunctionNodes.of(
         "save_question",
-        // START hands the first node the user's message as Content.
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        (ctx, message) -> {
-          String question = message.text();
+        String.class,
+        (ctx, question) -> {
           ctx.updateState("question", question);
           return question;
         });

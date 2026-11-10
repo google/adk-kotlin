@@ -138,10 +138,10 @@ internal class OrderNodes(model: Model) {
    * outputs the credit check's arguments.
    */
   val parseOrder: Node =
-    node<Content, Map<String, Any>>("parse_order") { context, message ->
-      // START hands the first node the user's message as Content.
+    node<String, Map<String, Any>>("parse_order") { context, message ->
+      // START hands the first node the user's message, which a String input receives as text.
       val fields =
-        message.text().trim().split(Regex("\\s+")).associate {
+        message.trim().split(Regex("\\s+")).associate {
           it.substringBefore('=') to it.substringAfter('=')
         }
       for ((key, value) in fields) context.updateState(key, value.toIntOrNull() ?: value)

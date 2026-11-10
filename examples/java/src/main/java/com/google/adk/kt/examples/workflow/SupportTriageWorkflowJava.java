@@ -115,14 +115,13 @@ public final class SupportTriageWorkflowJava {
    * Stores the customer's request in state so the specialists and the summarizer can read it. After
    * a specialist, the summarizer sees only that specialist's notes.
    */
-  private static FunctionNode<Content, String> saveRequest() {
+  private static FunctionNode<String, String> saveRequest() {
     return FunctionNodes.of(
         "save_request",
-        // START hands the first node the user's message as Content.
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        (ctx, message) -> {
-          String request = message.text();
+        String.class,
+        (ctx, request) -> {
           ctx.updateState("request", request);
           return request;
         });

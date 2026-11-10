@@ -70,14 +70,13 @@ public final class StateWorkflowJava {
   }
 
   /** Stores the user's text in state through the context, and outputs it. */
-  private static FunctionNode<Content, String> processInitialInput() {
+  private static FunctionNode<String, String> processInitialInput() {
     return FunctionNodes.of(
         "process_initial_input",
-        // START hands the first node the user's message as Content.
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        (ctx, message) -> {
-          String text = message.text();
+        String.class,
+        (ctx, text) -> {
           ctx.updateState("original_text", text);
           return text;
         });

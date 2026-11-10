@@ -123,14 +123,14 @@ public final class RequestInputRerunWorkflowJava {
   /**
    * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
    */
-  private static FunctionNode<Content, Object> processInput() {
+  private static FunctionNode<String, Object> processInput() {
     return FunctionNodes.of(
         "process_input",
-        // START hands the first node the user's message as Content.
-        Content.class,
+        // START hands the first node the user's message, which a String input receives as text.
+        String.class,
         Object.class,
-        (ctx, message) -> {
-          ctx.updateState("complaint", message.text());
+        (ctx, complaint) -> {
+          ctx.updateState("complaint", complaint);
           ctx.updateState("feedback", "");
           return null;
         });
