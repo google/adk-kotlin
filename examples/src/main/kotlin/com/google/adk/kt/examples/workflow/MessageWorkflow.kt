@@ -110,13 +110,25 @@ object MessageWorkflow {
   private fun message(text: String) = Event(content = Content.fromText(Role.MODEL, text))
 }
 
-/** Runs the workflow once and prints each complete message. */
+/** Runs the workflow once, printing streamed chunks as they arrive and each complete message. */
 fun main() = runBlocking {
   val runner = InMemoryRunner(app = App(appName = "message", rootNode = MessageWorkflow.create()))
   val message = Content.fromText(Role.USER, "go")
+  var midStream = false
   runner.runAsync(userId = "user", sessionId = "session", newMessage = message).collect { event ->
     val text = event.contentText(" ")
-    if (!event.partial && text.isNotBlank()) println(text)
+    if (event.partial) {
+      print(text)
+      System.out.flush()
+      midStream = true
+    } else if (text.isNotBlank()) {
+      // Ends the line of streamed chunks before the complete message that repeats them.
+      if (midStream) {
+        println()
+        midStream = false
+      }
+      println(text)
+    }
   }
 }
 

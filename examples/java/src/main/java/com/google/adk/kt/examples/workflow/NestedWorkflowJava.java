@@ -29,9 +29,12 @@ import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.types.Schema;
+import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.JoinNode;
 import com.google.adk.kt.workflow.Node;
+import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -92,16 +95,25 @@ public final class NestedWorkflowJava {
 
   private static final Pattern YEAR = Pattern.compile("\\b\\d{4}\\b");
 
+  /** An input schema under which a node receives its input, such as a message, as text. */
+  private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
+
   /** Stores the year from the user's message in state, and fails the run if there is none. */
   private static final class ProcessInput extends BasePublisherNode {
     ProcessInput() {
-      super("process_input");
+      super(
+          "process_input",
+          "",
+          /* rerunOnResume= */ false,
+          /* waitForOutput= */ false,
+          NodeConfig.builder().build(),
+          TEXT_INPUT);
     }
 
     @Override
     protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      Matcher year = YEAR.matcher(((Content) nodeInput).text());
+      // START hands the first node the user's message, which TEXT_INPUT reads as text.
+      Matcher year = YEAR.matcher((String) nodeInput);
       if (!year.find()) {
         Event reply =
             Event.builder()

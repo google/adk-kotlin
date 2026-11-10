@@ -29,7 +29,10 @@ import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.types.Schema;
+import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.Node;
+import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.Arrays;
 import java.util.List;
@@ -74,21 +77,30 @@ public final class DynamicFanOutFanInWorkflowJava {
     }
   }
 
+  /** An input schema under which a node receives its input, such as a message, as text. */
+  private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
+
   /** Runs the generator once per topic and tabulates the headlines. */
   private static final class Orchestrator extends BasePublisherNode {
     private final Node generator;
 
     Orchestrator(Node generator) {
       // Runs other nodes, so it reruns on resume to collect a paused child's output.
-      super("orchestrator", "", /* rerunOnResume= */ true);
+      super(
+          "orchestrator",
+          "",
+          /* rerunOnResume= */ true,
+          /* waitForOutput= */ false,
+          NodeConfig.builder().build(),
+          TEXT_INPUT);
       this.generator = generator;
     }
 
     @Override
     protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message as Content.
+      // START hands the first node the user's message, which TEXT_INPUT reads as text.
       List<String> topics =
-          Arrays.stream(((Content) nodeInput).text().split(","))
+          Arrays.stream(((String) nodeInput).split(","))
               .map(String::trim)
               .filter(topic -> !topic.isEmpty())
               .toList();
@@ -96,7 +108,8 @@ public final class DynamicFanOutFanInWorkflowJava {
       // Fans out: each run gets its own sub-branch, so it sees only its own topic.
       Mono<Event> tableMessage =
           Flux.range(0, topics.size())
-              .flatMapSequential(i -> headline(view, topics.get(i), i + 1))
+              // Starts every run at once; flatMapSequential otherwise runs at most 256 at a time.
+              .flatMapSequential(i -> headline(view, topics.get(i), i + 1), Integer.MAX_VALUE)
               .collectList()
               // Fans in: one table row per topic.
               .map(headlines -> message(headlineTable(topics, headlines)));
@@ -108,7 +121,7 @@ public final class DynamicFanOutFanInWorkflowJava {
      * Runs the generator on the topic numbered {@code index}, publishing "" if it has no output.
      */
     private Mono<Object> headline(InteropContextView view, String topic, int index) {
-      // Concurrent runs need explicit run IDs, which must contain a non-digit.
+      // Matches the Kotlin example's run IDs; a run ID must contain a non-digit.
       RunNodeConfig config =
           RunNodeConfig.builder().runId("topic_" + index).useSubBranch(true).build();
       return Mono.fromFuture(() -> view.runNode(generator, topic, config)).defaultIfEmpty("");

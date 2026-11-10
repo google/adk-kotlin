@@ -74,7 +74,8 @@ object DynamicFanOutFanInWorkflow {
       val table = buildString {
         append("### Aggregated Headlines\n\n| Topic | Headline |\n| :--- | :--- |\n")
         for ((topic, headline) in topics.zip(headlines)) {
-          append("| $topic | $headline |\n")
+          // A run with no output leaves its cell empty.
+          append("| $topic | ${headline ?: ""} |\n")
         }
       }
       emit(Content.fromText(Role.MODEL, table))

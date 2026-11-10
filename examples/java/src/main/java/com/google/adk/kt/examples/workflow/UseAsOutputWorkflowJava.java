@@ -30,8 +30,11 @@ import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.types.Schema;
+import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
+import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Workflow;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
@@ -78,20 +81,29 @@ public final class UseAsOutputWorkflowJava {
     }
   }
 
+  /** An input schema under which a node receives its input, such as a message, as text. */
+  private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
+
   /** Runs the summarizer on its input and makes the summary its output. */
   private static final class Orchestrator extends BasePublisherNode {
     private final Node summarizer;
 
     Orchestrator(Node summarizer) {
       // Runs other nodes, so it reruns on resume to collect a paused child's output.
-      super("orchestrate", "", /* rerunOnResume= */ true);
+      super(
+          "orchestrate",
+          "",
+          /* rerunOnResume= */ true,
+          /* waitForOutput= */ false,
+          NodeConfig.builder().build(),
+          TEXT_INPUT);
       this.summarizer = summarizer;
     }
 
     @Override
     protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      String text = ((Content) nodeInput).text();
+      // START hands the first node the user's message, which TEXT_INPUT reads as text.
+      String text = (String) nodeInput;
       // The summary is already this node's output, so publishing it emits no second output.
       RunNodeConfig config = RunNodeConfig.builder().useAsOutput(true).build();
       return Mono.fromFuture(

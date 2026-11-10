@@ -26,6 +26,7 @@ import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
 import com.google.adk.kt.workflow.Workflow;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -35,8 +36,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code message} workflow sample: nodes send the user a text message, a
- * message with an inline image, several messages in a row, and a sentence streamed in chunks. This
- * port publishes each node's messages at once, without the pauses in the Kotlin version.
+ * message with an inline image, several messages in a row, and a sentence streamed in chunks.
  */
 public final class MessageWorkflowJava {
 
@@ -55,14 +55,24 @@ public final class MessageWorkflowJava {
         .build();
   }
 
-  /** Runs the workflow once and prints each complete message. */
+  /** Runs the workflow once, printing streamed chunks as they arrive and each complete message. */
   public static void main(String[] args) {
     PublisherRunner runner =
         PublisherRunner.inMemory(App.builder().appName("message").rootNode(create()).build());
     Content message = Content.fromText(Role.USER, "go");
+    boolean midStream = false;
     for (Event event : Flux.from(runner.runAsync("user", "session", null, message)).toIterable()) {
       String text = event.contentText(" ");
-      if (!event.getPartial() && !text.isBlank()) {
+      if (event.getPartial()) {
+        System.out.print(text);
+        System.out.flush();
+        midStream = true;
+      } else if (!text.isBlank()) {
+        // Ends the line of streamed chunks before the complete message that repeats them.
+        if (midStream) {
+          System.out.println();
+          midStream = false;
+        }
         System.out.println(text);
       }
     }
@@ -81,6 +91,11 @@ public final class MessageWorkflowJava {
 
   private static Part text(String text) {
     return Part.builder().text(text).build();
+  }
+
+  /** Publishes {@code event}, then waits {@code pause} before completing. */
+  private static Flux<Object> thenPause(Event event, Duration pause) {
+    return Mono.<Object>just(event).concatWith(Mono.<Object>empty().delaySubscription(pause));
   }
 
   private static final class SendString extends BasePublisherNode {
@@ -117,11 +132,9 @@ public final class MessageWorkflowJava {
 
     @Override
     protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Flux.just(
-          message(text("#3 Multiple messages")),
-          message(text("Processing step 1...")),
-          message(text("Processing step 2...")),
-          message(text("Done processing.")));
+      return Flux.just("#3 Multiple messages", "Processing step 1...", "Processing step 2...")
+          .concatMap(step -> thenPause(message(text(step)), Duration.ofSeconds(1)))
+          .concatWith(Mono.just(message(text("Done processing."))));
     }
   }
 
@@ -147,14 +160,16 @@ public final class MessageWorkflowJava {
           | Cell 1   | Cell 2   |
           | Cell 3   | Cell 4   |\
           """;
-      List<Object> events = new ArrayList<>();
-      events.add(message(text("#4 Starting to stream...")));
+      List<Event> chunks = new ArrayList<>();
       for (int start = 0; start < sentence.length(); start += 5) {
         String chunk = sentence.substring(start, Math.min(start + 5, sentence.length()));
-        events.add(message(text(chunk)).toBuilder().partial(true).build());
+        chunks.add(message(text(chunk)).toBuilder().partial(true).build());
       }
-      events.add(message(text(sentence)));
-      return Flux.fromIterable(events);
+      return Flux.<Object>just(message(text("#4 Starting to stream...")))
+          .concatWith(
+              Flux.fromIterable(chunks)
+                  .concatMap(chunk -> thenPause(chunk, Duration.ofMillis(200))))
+          .concatWith(Mono.just(message(text(sentence))));
     }
   }
 

@@ -23,7 +23,10 @@ import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.types.Schema;
+import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.Node;
+import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.List;
@@ -65,16 +68,25 @@ public final class LoopSelfWorkflowJava {
     }
   }
 
+  /** An input schema under which a node receives its input, such as a message, as text. */
+  private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
+
   /** Stores the user's number in state, and fails the run if it is out of range. */
   private static final class ValidateInput extends BasePublisherNode {
     ValidateInput() {
-      super("validate_input");
+      super(
+          "validate_input",
+          "",
+          /* rerunOnResume= */ false,
+          /* waitForOutput= */ false,
+          NodeConfig.builder().build(),
+          TEXT_INPUT);
     }
 
     @Override
     protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      int number = Integer.parseInt(((Content) nodeInput).text().trim());
+      // START hands the first node the user's message, which TEXT_INPUT reads as text.
+      int number = Integer.parseInt(((String) nodeInput).trim());
       if (number < 0 || number > 10) {
         Event message =
             Event.builder()
