@@ -28,9 +28,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Verifies the JSON wire format of the `functionResponse` Gemini receives for a [FunctionTool]'s
@@ -120,7 +123,146 @@ class FunctionToolWireFormatTest {
     assertWireResponse(
       RequiresNameTool(),
       args = emptyMap(),
-      expected = """{"error":"Missing required parameter name"}""",
+      expected =
+        errorResponse(
+          "Invoking `requiresName()` failed as the following mandatory input parameters are not " +
+            "present:\nname\nYou could retry calling this tool, but it is IMPORTANT for you to " +
+            "provide all the mandatory parameters."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithSeveralRequiredArgsMissing_namesEachInOneError() = runBlocking {
+    assertWireResponse(
+      RequiresNameAndAgeTool(),
+      args = emptyMap(),
+      expected =
+        errorResponse(
+          "Invoking `requiresNameAndAge()` failed as the following mandatory input parameters " +
+            "are not present:\nname\nage\nYou could retry calling this tool, but it is " +
+            "IMPORTANT for you to provide all the mandatory parameters."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithWrongTypeForRequiredArg_namesItInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresNameAndAgeTool(),
+      args = mapOf("name" to "Bob", "age" to "ten"),
+      expected =
+        errorResponse(
+          "Invoking `requiresNameAndAge()` failed due to argument validation errors:\n" +
+            "Parameter 'age': expected type 'Int'\nYou could retry calling this tool with " +
+            "corrected argument types."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithExplicitNullForRequiredArg_namesItInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresNameAndAgeTool(),
+      args = mapOf("name" to "Bob", "age" to null),
+      expected =
+        errorResponse(
+          "Invoking `requiresNameAndAge()` failed due to argument validation errors:\n" +
+            "Parameter 'age': expected type 'Int'\nYou could retry calling this tool with " +
+            "corrected argument types."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithBadFieldInMapValue_namesTheKeyInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresAddressesTool(),
+      args = mapOf("addresses" to mapOf("home" to mapOf("city" to "NYC"))),
+      expected =
+        errorResponse(
+          "Invoking `requiresAddresses()` failed due to argument validation errors:\n" +
+            "Parameter 'addresses[\"home\"].zip': expected type 'String'\nYou could retry " +
+            "calling this tool with corrected argument types."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithNonObjectMapValue_namesTheKey() = runBlocking {
+    assertWireResponse(
+      RequiresNotesTool(),
+      args = mapOf("notes" to mapOf("todo" to "buy milk")),
+      expected = errorResponse("Missing or invalid value in map notes for key todo"),
+    )
+  }
+
+  @Test
+  fun toolCalledWithWrongTypeForDataClassArg_namesItInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresProfileTool(),
+      args = mapOf("profile" to "alice"),
+      expected =
+        errorResponse(
+          "Invoking `requiresProfile()` failed due to argument validation errors:\n" +
+            "Parameter 'profile': expected type 'Profile'\nYou could retry calling this tool " +
+            "with corrected argument types."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithNestedRequiredFieldMissing_namesItInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresProfileTool(),
+      args =
+        mapOf(
+          "profile" to
+            mapOf("name" to "alice", "tags" to listOf<String>(), "scores" to mapOf<String, Int>())
+        ),
+      expected =
+        errorResponse(
+          "Invoking `requiresProfile()` failed due to argument validation errors:\n" +
+            "Parameter 'profile.address': expected type 'Address'\nYou could retry calling this " +
+            "tool with corrected argument types."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithNestedFieldOfWrongType_namesItInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresProfileTool(),
+      args =
+        mapOf(
+          "profile" to
+            mapOf(
+              "name" to 123,
+              "address" to mapOf("city" to "NYC", "zip" to "10001"),
+              "tags" to listOf<String>(),
+              "scores" to mapOf<String, Int>(),
+            )
+        ),
+      expected =
+        errorResponse(
+          "Invoking `requiresProfile()` failed due to argument validation errors:\n" +
+            "Parameter 'profile.name': expected type 'String'\nYou could retry calling this tool " +
+            "with corrected argument types."
+        ),
+    )
+  }
+
+  @Test
+  fun toolCalledWithSeveralNestedFieldsMissing_namesTheFirstInValidationError() = runBlocking {
+    assertWireResponse(
+      RequiresProfileTool(),
+      args = mapOf("profile" to mapOf("tags" to listOf<String>())),
+      expected =
+        errorResponse(
+          "Invoking `requiresProfile()` failed due to argument validation errors:\n" +
+            "Parameter 'profile.name': expected type 'String'\nYou could retry calling this tool " +
+            "with corrected argument types."
+        ),
     )
   }
 
@@ -207,7 +349,7 @@ class FunctionToolWireFormatTest {
    */
   private suspend fun assertWireResponse(
     tool: FunctionTool,
-    args: Map<String, Any> = emptyMap(),
+    args: Map<String, Any?> = emptyMap(),
     expected: String,
   ) {
     val event =
@@ -228,6 +370,10 @@ class FunctionToolWireFormatTest {
       JsonObject(functionResponse.response ?: emptyMap()),
     )
   }
+
+  /** The JSON of a response that carries only [message] as its error. */
+  private fun errorResponse(message: String): String =
+    buildJsonObject { put("error", message) }.toString()
 
   private fun dummyInvocationContext(): InvocationContext =
     InvocationContext(

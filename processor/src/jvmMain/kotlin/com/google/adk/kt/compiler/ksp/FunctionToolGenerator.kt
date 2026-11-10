@@ -55,6 +55,7 @@ import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.PropertySpec
 import com.squareup.kotlinpoet.TypeSpec
 import com.squareup.kotlinpoet.asClassName
+import com.squareup.kotlinpoet.joinToCode
 import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.writeTo
 
@@ -316,6 +317,20 @@ internal class FunctionToolGenerator(
     if (!validateWireNames(function)) {
       return null
     }
+    // Reports every absent argument at once, before any is read. A present null is a wrong type.
+    val requiredNames =
+      function.parameters
+        .filter { !isInjectedParameter(it.type.resolve()) && executeRequired(it) }
+        .map { CodeBlock.of("%S", wireName(it)) }
+    if (requiredNames.isNotEmpty()) {
+      executeFun.addStatement(
+        "val missing = listOf(%L).filter·{·it·!in·args·}",
+        requiredNames.joinToCode(),
+      )
+      executeFun.beginControlFlow("if (missing.isNotEmpty())")
+      executeFun.addMissingFailure(CodeBlock.of("missing.joinToString(%L)", NEWLINE_LITERAL))
+      executeFun.endControlFlow()
+    }
     val invokeArgs = mutableListOf<String>()
     for (param in function.parameters) {
       val paramName = param.name?.asString() ?: continue
@@ -380,7 +395,7 @@ internal class FunctionToolGenerator(
         }
         typeDeclaration?.isDataClass() == true -> {
           val targetVar = "arg_${paramName}"
-          val origin = "args[%S]"
+          val origin = ARGS_ORIGIN
           if (
             !buildDataClassParameter(
               paramName,
@@ -474,7 +489,7 @@ internal class FunctionToolGenerator(
     executeFun.addStatement("val arg_${paramName} = ${coerceLogic}", keyName)
     if (isRequired) {
       executeFun.beginControlFlow("if (arg_${paramName} == null)")
-      executeFun.addFailure("Missing required parameter ${keyName}")
+      executeFun.addTypeFailure(keyName, typeNameString.orEmpty().substringAfterLast('.'))
       executeFun.endControlFlow()
     }
   }
@@ -490,7 +505,7 @@ internal class FunctionToolGenerator(
     executeFun.addStatement("val raw_${paramName} = args[%S] as? String", keyName)
     if (isRequired) {
       executeFun.beginControlFlow("if (raw_${paramName} == null)")
-      executeFun.addFailure("Missing required parameter ${keyName}")
+      executeFun.addTypeFailure(keyName, typeDeclaration.simpleName.asString())
       executeFun.endControlFlow()
     }
     val safeCall = if (isRequired) "" else "?"
@@ -538,7 +553,7 @@ internal class FunctionToolGenerator(
     }
     if (isRequired) {
       executeFun.beginControlFlow("if (raw_${paramName} == null)")
-      executeFun.addFailure("Missing required parameter ${pathName}")
+      executeFun.addTypeFailure(pathName, typeDeclaration.simpleName.asString())
       executeFun.endControlFlow()
     }
 
@@ -573,7 +588,10 @@ internal class FunctionToolGenerator(
           executeFun.addStatement("val ${tempVarName} = ${coerceLogic}", cpName)
           if (cpIsRequired) {
             executeFun.beginControlFlow("if (${tempVarName} == null)")
-            executeFun.addFailure("Missing required parameter ${pathName}.${cpName}")
+            executeFun.addTypeFailure(
+              "${pathName}.${cpName}",
+              cpTypeNameString.orEmpty().substringAfterLast('.'),
+            )
             executeFun.endControlFlow()
           }
         }
@@ -584,7 +602,10 @@ internal class FunctionToolGenerator(
           )
           if (cpIsRequired) {
             executeFun.beginControlFlow("if (raw_${tempVarName} == null)")
-            executeFun.addFailure("Missing required parameter ${pathName}.${cpName}")
+            executeFun.addTypeFailure(
+              "${pathName}.${cpName}",
+              cpTypeDeclaration.simpleName.asString(),
+            )
             executeFun.endControlFlow()
           }
           executeFun.beginControlFlow("val ${tempVarName} = try")
@@ -678,7 +699,7 @@ internal class FunctionToolGenerator(
     executeFun: FunSpec.Builder,
     param: KSValueParameter,
     visited: MutableSet<String>,
-    origin: String = "args[%S]",
+    origin: String = ARGS_ORIGIN,
     keyName: String = paramName,
     pathName: String = paramName,
   ): Boolean {
@@ -701,7 +722,7 @@ internal class FunctionToolGenerator(
     executeFun.addStatement("val raw_${paramName} = $origin as? List<*>", keyName)
     if (isRequired) {
       executeFun.beginControlFlow("if (raw_${paramName} == null)")
-      executeFun.addFailure("Missing required parameter ${pathName}")
+      executeFun.addTypeFailure(pathName, "List")
       executeFun.endControlFlow()
     }
 
@@ -751,7 +772,7 @@ internal class FunctionToolGenerator(
     isRequired: Boolean,
     executeFun: FunSpec.Builder,
     visited: MutableSet<String>,
-    origin: String = "args[%S]",
+    origin: String = ARGS_ORIGIN,
     keyName: String = paramName,
     pathName: String = paramName,
   ): Boolean {
@@ -763,7 +784,7 @@ internal class FunctionToolGenerator(
     executeFun.addStatement("val raw_${paramName} = $origin as? Map<*, *>", keyName)
     if (isRequired) {
       executeFun.beginControlFlow("if (raw_${paramName} == null)")
-      executeFun.addFailure("Missing required parameter ${pathName}")
+      executeFun.addTypeFailure(pathName, "Map")
       executeFun.endControlFlow()
     }
 
@@ -1368,8 +1389,40 @@ internal class FunctionToolGenerator(
     fileSpecBuilder.build().writeTo(codeGenerator, dependencies)
   }
 
+  // A template (%P), so a map key in [message] (`${key}`) names the actual key.
   private fun FunSpec.Builder.addFailure(message: String) {
-    addStatement("return mapOf(%T.ERROR_KEY to %S)", FunctionTool::class.asClassName(), message)
+    addStatement("return mapOf(%T.ERROR_KEY to %P)", FunctionTool::class.asClassName(), message)
+  }
+
+  /** Returns the missing-argument error naming [names], one per line, so the model can retry. */
+  private fun FunSpec.Builder.addMissingFailure(names: CodeBlock) {
+    addStatement(
+      "return·mapOf(%T.ERROR_KEY·to·listOf(%P, %L, %S).joinToString(%L))",
+      FunctionTool::class.asClassName(),
+      "Invoking `\${this.name}()` failed as the following mandatory input parameters are not " +
+        "present:",
+      names,
+      "You could retry calling this tool, but it is IMPORTANT for you to provide all the " +
+        "mandatory parameters.",
+      NEWLINE_LITERAL,
+    )
+  }
+
+  /**
+   * Returns the error for [name], an argument or a nested field such as `profile.address`, whose
+   * value is not a [typeName]. A top-level argument is known to be present by then; a nested field
+   * may be missing, which is a validation error on its argument rather than a missing argument.
+   */
+  private fun FunSpec.Builder.addTypeFailure(name: String, typeName: String) {
+    addStatement(
+      "return·mapOf(%T.ERROR_KEY·to·listOf(%P, %P, %S).joinToString(%L))",
+      FunctionTool::class.asClassName(),
+      "Invoking `\${this.name}()` failed due to argument validation errors:",
+      // A template, so a map key in the path (`items["${key}"].field`) names the actual key.
+      "Parameter '$name': expected type '$typeName'",
+      "You could retry calling this tool with corrected argument types.",
+      NEWLINE_LITERAL,
+    )
   }
 
   companion object {
@@ -1388,6 +1441,10 @@ internal class FunctionToolGenerator(
     private val LIST_QUALIFIED_NAMES = setOf(LIST_QUALIFIED_NAME, MUTABLE_LIST_QUALIFIED_NAME)
     private val MAP_QUALIFIED_NAMES = setOf(MAP_QUALIFIED_NAME, MUTABLE_MAP_QUALIFIED_NAME)
     private val ANY_QUALIFIED_NAME = Any::class.qualifiedName
+    // The source text of a "\n" literal; `%S` would render a newline as a multi-line raw string.
+    private const val NEWLINE_LITERAL = "\"\\n\""
+    // Where generated code reads a top-level argument; nested fields read their parent's raw map.
+    private const val ARGS_ORIGIN = "args[%S]"
     // Accept an injected context parameter declared as either the base Context or ToolContext.
     private val CONTEXT_QUALIFIED_NAMES =
       setOfNotNull(Context::class.qualifiedName, ToolContext::class.qualifiedName)
