@@ -79,6 +79,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import kotlinx.coroutines.CoroutineDispatcher;
@@ -290,6 +291,45 @@ public final class FunctionNodeJavaInteropTest {
 
     public Object getName() {
       return values.get("name");
+    }
+  }
+
+  /** A concrete port type that a subclass extends with a field of its own. */
+  static class Tagged {
+    public String id = "t1";
+  }
+
+  static final class ColoredTagged extends Tagged {
+    public String color = "red";
+  }
+
+  record TagHolder(Tagged tag) {}
+
+  /** An interface port type that Jackson reads as a class with one more required property. */
+  @JsonDeserialize(as = IssuedBadge.class)
+  interface Badge {
+    String getName();
+  }
+
+  static final class IssuedBadge implements Badge {
+    private final String name;
+    private final String issuer;
+
+    @JsonCreator
+    IssuedBadge(
+        @JsonProperty(value = "name", required = true) String name,
+        @JsonProperty(value = "issuer", required = true) String issuer) {
+      this.name = name;
+      this.issuer = issuer;
+    }
+
+    @Override
+    public String getName() {
+      return name;
+    }
+
+    public String getIssuer() {
+      return issuer;
     }
   }
 
@@ -696,6 +736,61 @@ public final class FunctionNodeJavaInteropTest {
     // Assert
     assertEquals(saved, outputOf(events, "replay"));
     assertEquals("B-7 x2", outputOf(events, "describe"));
+  }
+
+  @Test
+  public void of_subclassOfAConcretePortType_writesOnlyThePortTypesProperties() {
+    // Act
+    List<Object> outputs = writeThenRead(Tagged.class, new ColoredTagged(), t -> t.id);
+
+    // Assert: the port writes the value as Tagged, so without the subclass's color.
+    assertEquals(ImmutableList.of(ImmutableMap.of("id", "t1"), "t1"), outputs);
+  }
+
+  @Test
+  public void of_recordFieldHoldingASubclass_writesTheValuesOwnClass() {
+    // Act
+    List<Object> outputs =
+        writeThenRead(TagHolder.class, new TagHolder(new ColoredTagged()), h -> h.tag().id);
+
+    // Assert: unlike a Kotlin port, a field writes its value's class, so with the color.
+    assertEquals(
+        ImmutableList.of(ImmutableMap.of("tag", ImmutableMap.of("id", "t1", "color", "red")), "t1"),
+        outputs);
+  }
+
+  @Test
+  public void of_abstractPortType_writesTheValueAsItsOwnClass() {
+    // Act
+    List<Object> outputs =
+        writeThenRead(
+            Badge.class, new IssuedBadge("n1", "acme"), badge -> ((IssuedBadge) badge).getIssuer());
+
+    // Assert: Jackson reads a Badge as an IssuedBadge, so the port keeps the issuer.
+    assertEquals(
+        ImmutableList.of(ImmutableMap.of("name", "n1", "issuer", "acme"), "acme"), outputs);
+  }
+
+  @Test
+  public void of_listPortOfAConcreteType_writesEachElementAsItsOwnClass() {
+    // Arrange
+    FunctionNode<Content, List<Tagged>> write =
+        FunctionNodes.of(
+            "write",
+            Content.class,
+            new TypeReference<List<Tagged>>() {},
+            (ctx, m) -> ImmutableList.of(new ColoredTagged()));
+    FunctionNode<List<Tagged>, String> read =
+        FunctionNodes.of(
+            "read", new TypeReference<List<Tagged>>() {}, String.class, (ctx, t) -> t.get(0).id);
+
+    // Act
+    List<Event> events = run("list_subclass_port", "go", write, read);
+
+    // Assert: as in a record, each element writes its own class's fields, color included.
+    assertEquals(
+        ImmutableList.of(ImmutableMap.of("id", "t1", "color", "red")), outputOf(events, "write"));
+    assertEquals("t1", outputOf(events, "read"));
   }
 
   @Test
@@ -2199,27 +2294,38 @@ public final class FunctionNodeJavaInteropTest {
   }
 
   /**
-   * Outputs {@code value} from a node typed as its class into a successor typed the same, and
-   * returns what the node wrote and what the successor read as {@code "Class:value"}, or {@code
-   * "fails"} when the successor rejects it.
+   * Like {@link #writeThenRead}, reading the input as {@code "Class:value"}, or {@code "fails"}
+   * when the successor rejects it.
    */
   private <T> Object roundTrip(T value) {
-    @SuppressWarnings("unchecked") // The class of a value is its type.
-    Class<T> type = (Class<T>) value.getClass();
-    FunctionNode<Content, T> write =
-        FunctionNodes.of("write", Content.class, type, (ctx, m) -> value);
-    FunctionNode<T, String> read =
-        FunctionNodes.of(
-            "read", type, String.class, (ctx, in) -> in.getClass().getSimpleName() + ":" + in);
     try {
-      List<Event> events = run("round_trip", "go", write, read);
-      return ImmutableList.of(outputOf(events, "write"), outputOf(events, "read"));
+      return writeThenRead(value, in -> in.getClass().getSimpleName() + ":" + in);
     } catch (RuntimeException e) {
       if (isRejection(e)) {
         return "fails";
       }
       throw e;
     }
+  }
+
+  /**
+   * Outputs {@code value} from a node typed as its class into a successor typed the same, and
+   * returns what the node wrote and, as text, what {@code read} returns on the successor's input.
+   */
+  private <T> List<Object> writeThenRead(T value, Function<T, Object> read) {
+    @SuppressWarnings("unchecked") // The class of a value is its type.
+    Class<T> type = (Class<T>) value.getClass();
+    return writeThenRead(type, value, read);
+  }
+
+  /** Like {@link #writeThenRead(Object, Function)}, with both ports typed as {@code type}. */
+  private <T> List<Object> writeThenRead(Class<T> type, T value, Function<T, Object> read) {
+    FunctionNode<Content, T> write =
+        FunctionNodes.of("write", Content.class, type, (ctx, m) -> value);
+    FunctionNode<T, String> reader =
+        FunctionNodes.of("read", type, String.class, (ctx, in) -> String.valueOf(read.apply(in)));
+    List<Event> events = run("write_then_read", "go", write, reader);
+    return ImmutableList.of(outputOf(events, "write"), outputOf(events, "read"));
   }
 
   private static String describe(Object value) {

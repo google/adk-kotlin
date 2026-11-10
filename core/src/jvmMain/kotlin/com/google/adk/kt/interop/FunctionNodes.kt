@@ -86,7 +86,11 @@ import kotlinx.coroutines.CoroutineDispatcher
  * trimmed, and `BigInteger`, `BigDecimal`, the `Atomic*` types and primitive arrays stay lenient. A
  * primitive field rejects an explicit null. An enum that Jackson writes as its ordinal, or a
  * boolean it writes as 1 or 0, such as under a numeric `@JsonFormat` shape, reads back from that
- * number.
+ * number. A port writes a record or POJO value as its declared type, as a Kotlin port writes a
+ * top-level value: a subclass value writes only the declared class's properties, and the subclass's
+ * own Jackson annotations, such as `@JsonValue` or `@JsonIgnoreProperties`, do not apply. An
+ * interface or abstract class port, which Jackson reads as another class, and a value in a list, a
+ * map or a record's field keep the value's own class.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi
@@ -635,9 +639,18 @@ private class JacksonCodec<T>(private val type: JavaType) : PortCodec<T> {
     }
     val tree: JsonNode =
       try {
-        MAPPER.valueToTree(value)
-      } catch (e: IllegalArgumentException) {
-        // Jackson's message can quote the value, so no cause.
+        // As valueToTree does, but a concrete bean through the port's type: Jackson reads an
+        // abstract type as another class, which needs the value's own keys. A static container
+        // would change other ports, as Jackson caches one serializer per container type.
+        val writer =
+          if (type.isContainerType || type.isReferenceType || type.isAbstract) MAPPER.writer()
+          else MAPPER.writerFor(type)
+        TokenBuffer(MAPPER, /* hasNativeIds= */ false).use { buffer ->
+          writer.writeValue(buffer, value)
+          buffer.asParser().use { MAPPER.readTree(it) }
+        }
+      } catch (e: Exception) {
+        // An IOException or RuntimeException; Jackson's message can quote the value, so no cause.
         throw IllegalArgumentException("$what has no JSON form as ${type.toCanonical()}.")
       }
     return jsonNative(tree)
