@@ -79,7 +79,7 @@ private val AUTH_CONFIG_KEYS =
     "exchanged_auth_credential",
   )
 
-/** Interface for parsing A2A metadata without depending on a specific JSON library. */
+/** Interface for parsing A2A metadata into ADK types. */
 internal interface A2AMetadataParser {
   fun <T : Any> parse(metadata: Any?, clazz: KClass<T>): T?
 }

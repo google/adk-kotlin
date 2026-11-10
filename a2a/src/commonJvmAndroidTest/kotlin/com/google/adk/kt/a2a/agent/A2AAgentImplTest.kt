@@ -1217,6 +1217,222 @@ class A2AAgentImplTest {
       assertThat(sent[2].parts.map { (it as TextPart).text }).containsExactly("Again")
     }
 
+  @Test
+  fun runAsync_textReplyToInputRequiredTask_resumesTask() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      mockReplies(
+        this,
+        createTaskEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+        createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Painted."),
+      )
+
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
+        .toList()
+      runner.runAsync("user", "s1", newMessage = userMessage("Blue"), runConfig = blocking).toList()
+
+      val messages = sentMessages(2)
+      assertThat(messages[1].taskId()).isEqualTo("task-1")
+      assertThat(messages[1].parts.map { (it as TextPart).text }).containsExactly("Blue")
+    }
+
+  @Test
+  fun runAsync_textReplyAfterAuthAnswer_resumesAuthRequiredTask() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      mockReplies(
+        this,
+        createTaskEvent(TaskState.TASK_STATE_AUTH_REQUIRED, "Sign in first."),
+        createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Done."),
+      )
+
+      val call =
+        runner
+          .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
+          .toList()
+          .flatMap { it.functionCalls() }
+          .single()
+      val authAnswer = userFunctionResponse(call.name, call.id, mapOf("result" to "token"))
+      runner.runAsync("user", "s1", newMessage = authAnswer, runConfig = blocking).toList()
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Signed in"), runConfig = blocking)
+        .toList()
+
+      // The auth answer is never sent, so the plain-text reply is what resumes the task.
+      val messages = sentMessages(2)
+      assertThat(messages[1].taskId()).isEqualTo("task-1")
+      assertThat(messages[1].parts.map { (it as TextPart).text }).containsExactly("Signed in")
+    }
+
+  @Test
+  fun runAsync_emptyAnswerToInputRequiredTask_resumesTaskWithTheAnswer() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      mockReplies(
+        this,
+        createTaskEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+        createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Painted."),
+      )
+
+      val call =
+        runner
+          .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
+          .toList()
+          .flatMap { it.functionCalls() }
+          .single()
+      val emptyAnswer = userFunctionResponse(call.name, call.id, emptyMap())
+      runner.runAsync("user", "s1", newMessage = emptyAnswer, runConfig = blocking).toList()
+
+      // With no text to send, the history goes out on the paused task.
+      val messages = sentMessages(2)
+      assertThat(messages[1].taskId()).isEqualTo("task-1")
+      val sent = messages[1].parts.single() as DataPart
+      assertThat(sent.metadata?.get("adk_type")).isEqualTo("function_response")
+    }
+
+  @Test
+  fun runAsync_textReplyAfterStreamEndedMidTask_startsNewTask() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val streaming = RunConfig(streamingMode = StreamingMode.SSE)
+      mockReplies(
+        this,
+        createStatusUpdateEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+        createStatusUpdateEvent(TaskState.TASK_STATE_WORKING),
+        createStatusUpdateEvent(TaskState.TASK_STATE_COMPLETED, "Done."),
+        endsStream = true,
+      )
+
+      for (text in listOf("Paint", "Blue", "Green")) {
+        runner
+          .runAsync("user", "s1", newMessage = userMessage(text), runConfig = streaming)
+          .toList()
+      }
+
+      // The second turn stored only the error event, and the third must not resume the paused task.
+      val messages = sentMessages(3)
+      assertThat(messages.map { it.taskId() }).containsExactly(null, "task-1", null).inOrder()
+      // Unlike ADK Python, the ended stream's event keeps its context, so its turn is not resent.
+      assertThat(messages[2].parts.map { (it as TextPart).text }).containsExactly("Green")
+    }
+
+  @Test
+  fun runAsync_textRepliesToRepeatedPauses_resumeTheSameTask() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      mockReplies(
+        this,
+        createTaskEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+        createTaskEvent(TaskState.TASK_STATE_AUTH_REQUIRED, "Sign in to paint."),
+        createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Painted."),
+      )
+
+      for (text in listOf("Paint", "Blue", "Signed in")) {
+        runner.runAsync("user", "s1", newMessage = userMessage(text), runConfig = blocking).toList()
+      }
+
+      assertThat(sentMessages(3).map { it.taskId() })
+        .containsExactly(null, "task-1", "task-1")
+        .inOrder()
+    }
+
+  @Test
+  fun runAsync_textReplyToPauseWithoutMessage_resumesTask() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val streaming = RunConfig(streamingMode = StreamingMode.SSE)
+      mockReplies(
+        this,
+        createStatusUpdateEvent(TaskState.TASK_STATE_INPUT_REQUIRED),
+        createStatusUpdateEvent(TaskState.TASK_STATE_COMPLETED, "Done."),
+        endsStream = true,
+      )
+
+      for (text in listOf("Paint", "Blue")) {
+        runner
+          .runAsync("user", "s1", newMessage = userMessage(text), runConfig = streaming)
+          .toList()
+      }
+
+      assertThat(sentMessages(2).map { it.taskId() }).containsExactly(null, "task-1").inOrder()
+    }
+
+  @Test
+  fun runAsync_textReplyAfterFailedResume_startsNewTaskInSameContext() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      var sends = 0
+      doAnswer { invocation ->
+          if (++sends == 2) throw RuntimeException("Task is in a terminal state")
+          val consumer = invocation.getArgument<List<BiConsumer<ClientEvent, AgentCard>>>(1)[0]
+          consumer.accept(
+            createTaskEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+            agentCard,
+          )
+          null
+        }
+        .whenever(mockClient)
+        .sendMessage(
+          any<Message>(),
+          any<List<BiConsumer<ClientEvent, AgentCard>>>(),
+          any<Consumer<Throwable>>(),
+          isNull(),
+        )
+
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
+        .toList()
+      assertFailsWith<RuntimeException> {
+        runner
+          .runAsync("user", "s1", newMessage = userMessage("Blue"), runConfig = blocking)
+          .toList()
+      }
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Green"), runConfig = blocking)
+        .toList()
+
+      // The failed second turn may have resumed the paused task, so the third doesn't retry it.
+      val messages = sentMessages(3)
+      assertThat(messages.map { it.taskId() }).containsExactly(null, "task-1", null).inOrder()
+      assertThat(messages[2].contextId()).isEqualTo("context-1")
+    }
+
+  @Test
+  fun runAsync_textReplyAfterStreamedChunksAndInputRequired_resumesTask() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val streaming = RunConfig(streamingMode = StreamingMode.SSE)
+      val replies =
+        ArrayDeque(
+          listOf(
+            listOf(
+              createPartialEvent("Hello ", true, false),
+              createPartialEvent("World!", true, false),
+              createStatusUpdateEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+            ),
+            listOf(createStatusUpdateEvent(TaskState.TASK_STATE_COMPLETED, "Painted.")),
+          )
+        )
+      mockStreamResponse(this) { consumer ->
+        replies.removeFirst().forEach { consumer.accept(it, agentCard) }
+      }
+
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = streaming)
+        .toList()
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Blue"), runConfig = streaming)
+        .toList()
+
+      assertThat(sentMessages(2)[1].taskId()).isEqualTo("task-1")
+    }
+
   private fun createTestAgent(
     transportSupportsStreaming: Boolean = true,
     beforeCallbacks: List<BeforeAgentCallback> = emptyList(),
@@ -1310,9 +1526,15 @@ class A2AAgentImplTest {
   }
 
   /** Answers each request with the next of [replies]. */
-  private fun mockReplies(scope: CoroutineScope, vararg replies: ClientEvent) {
+  private fun mockReplies(
+    scope: CoroutineScope,
+    vararg replies: ClientEvent,
+    endsStream: Boolean = false,
+  ) {
     val queue = ArrayDeque(replies.toList())
-    mockStreamResponse(scope) { consumer -> consumer.accept(queue.removeFirst(), agentCard) }
+    mockStreamResponse(scope, endsStream) { consumer ->
+      consumer.accept(queue.removeFirst(), agentCard)
+    }
   }
 
   private fun agentMessage(text: String): Message =

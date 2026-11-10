@@ -22,6 +22,7 @@ import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.a2a.converters.credentialCallIds
 import com.google.adk.kt.a2a.converters.extractPreprocessedEvents
 import com.google.adk.kt.a2a.converters.findUserFunctionCall
+import com.google.adk.kt.a2a.converters.isFailedRequest
 import com.google.adk.kt.a2a.converters.taskId
 import com.google.adk.kt.a2a.converters.withMockCallAnswersAsText
 import com.google.adk.kt.a2a.converters.withoutCredentialParts
@@ -35,6 +36,11 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * Abstract base class for Remote A2A Agents. Marker base class for remote agent implementations.
@@ -103,15 +109,23 @@ abstract class BaseRemoteA2AAgent(
       }
     }
     // Skips events with neither a context id nor a relayed response, such as a failed request's.
-    val contextIdValue =
+    val contextId =
       context.session.events
         .findLast {
           it.author == name &&
             (it.contextId.isNotEmpty() || A2AMetadata.RESPONSE in it.customMetadata.orEmpty())
         }
         ?.contextId
+        ?.ifEmpty { null }
     val customMetadata =
-      contextIdValue?.takeIf { it.isNotEmpty() }?.let { mapOf(ADK_METADATA_CONTEXT_ID to it) }
+      if (contextId == null) {
+        null
+      } else {
+        buildMap<String, Any> {
+          put(ADK_METADATA_CONTEXT_ID, contextId)
+          resumableTaskId(context.session.events, contextId)?.let { put(ADK_METADATA_TASK_ID, it) }
+        }
+      }
     return Event(
       invocationId = context.invocationId,
       author = Role.USER,
@@ -126,6 +140,27 @@ abstract class BaseRemoteA2AAgent(
         ),
       customMetadata = customMetadata,
     )
+  }
+
+  /**
+   * Returns the id of the task that the remote agent's latest response left waiting on the user, if
+   * that response is in [contextId], so a reply that answers no call resumes it. Returns null
+   * otherwise.
+   */
+  private fun resumableTaskId(events: List<Event>, contextId: String): String? {
+    for (event in events.asReversed()) {
+      if (event.author != name) continue
+      val metadata = event.customMetadata.orEmpty()
+      // A failed request may have resumed the task, so its recorded state is stale.
+      if (event.isFailedRequest) return null
+      // A response that could not be recorded, or is not text, hides the task's state.
+      if (A2AMetadata.RESPONSE_ERROR in metadata) return null
+      val response = metadata[A2AMetadata.RESPONSE] ?: continue
+      if (response !is String) return null
+      if (event.contextId != contextId || taskState(response) !in PAUSED_TASK_STATES) return null
+      return event.taskId.ifEmpty { null }
+    }
+    return null
   }
 
   /** Adds A2A metadata to the event. */
@@ -169,4 +204,20 @@ abstract class BaseRemoteA2AAgent(
     const val REQUEST_ERROR = "a2a:request_serialization_error"
     const val RESPONSE_ERROR = "a2a:response_serialization_error"
   }
+}
+
+// A2A 1.x names, plus the A2A 0.3 names in sessions recorded by the removed v0.3 JvmA2AAgent.
+private val PAUSED_TASK_STATES =
+  setOf("TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED", "input-required", "auth-required")
+
+/** Returns the task state in a serialized A2A response, or null if it holds no task. */
+private fun taskState(response: String): String? {
+  val root =
+    try {
+      Json.parseToJsonElement(response)
+    } catch (e: SerializationException) {
+      return null
+    }
+  val status = (root as? JsonObject)?.get("status") as? JsonObject
+  return (status?.get("state") as? JsonPrimitive)?.contentOrNull
 }
