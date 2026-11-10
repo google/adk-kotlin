@@ -68,33 +68,44 @@ public final class RequestInputWorkflowJava {
   }
 
   /**
-   * Runs the workflow on one complaint, asks for a revision, and approves the revised draft,
-   * printing each draft and question. Needs {@code GOOGLE_CLOUD_PROJECT} and Application Default
-   * Credentials.
+   * Runs the workflow on one complaint, asks for a revision, and approves the revised draft, then
+   * rejects the draft for a second complaint in a new session, printing each draft and question.
+   * Needs {@code GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
    */
   public static void main(String[] args) {
     Workflow workflow =
         create(new Gemini(MODEL_NAME, VertexCredentials.builder().location("global").build()));
     PublisherRunner runner =
         PublisherRunner.inMemory(App.builder().appName("request_input").rootNode(workflow).build());
-    String interruptId =
-        send(runner, Content.fromText(Role.USER, "My phone battery drains too fast"));
+    List<String> answers = List.of("Make it shorter and offer a free battery check.", "approve");
+    review(runner, "revise", "My phone battery drains too fast", answers);
+    review(runner, "reject", "My phone broke", List.of("reject"));
+  }
+
+  /**
+   * Sends {@code complaint} in session {@code sessionId}, then answers each review request with the
+   * next of {@code answers}.
+   */
+  private static void review(
+      PublisherRunner runner, String sessionId, String complaint, List<String> answers) {
+    String interruptId = send(runner, sessionId, Content.fromText(Role.USER, complaint));
     // Each answer resumes the workflow, which asks again after a revision.
-    for (String answer : List.of("Make it shorter and offer a free battery check.", "approve")) {
+    for (String answer : answers) {
       if (interruptId == null) {
         break;
       }
-      interruptId = send(runner, reviewAnswer(interruptId, answer));
+      interruptId = send(runner, sessionId, reviewAnswer(interruptId, answer));
     }
   }
 
   /**
-   * Sends {@code message}, prints the messages and the question the workflow sends back, and
-   * returns the id of the review request the turn ends with, or null if it ends without one.
+   * Sends {@code message} in session {@code sessionId}, prints the messages and the question the
+   * workflow sends back, and returns the id of the review request the turn ends with, or null if it
+   * ends without one.
    */
-  private static String send(PublisherRunner runner, Content message) {
+  private static String send(PublisherRunner runner, String sessionId, Content message) {
     String interruptId = null;
-    for (Event event : Flux.from(runner.runAsync("user", "session", null, message)).toIterable()) {
+    for (Event event : Flux.from(runner.runAsync("user", sessionId, null, message)).toIterable()) {
       String text = event.contentText(" ");
       if (!text.isBlank()) {
         System.out.println("[" + event.getAuthor() + "] " + text);

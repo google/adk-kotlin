@@ -61,9 +61,9 @@ public final class RequestInputAdvancedWorkflowJava {
   }
 
   /**
-   * Runs the workflow on a one-day request, then on a five-day request that a manager approves for
-   * four days, and prints each decision. Needs {@code GOOGLE_CLOUD_PROJECT} and Application Default
-   * Credentials.
+   * Runs the workflow on a one-day request, a five-day request that a manager approves for four
+   * days, and a three-day request that a manager declines, and prints each decision. Needs {@code
+   * GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
    */
   public static void main(String[] args) {
     Workflow workflow =
@@ -86,6 +86,15 @@ public final class RequestInputAdvancedWorkflowJava {
         runner,
         "vacation",
         managerAnswer("manager_approval", Map.of("approved", true, "approved_days", 4)));
+    // The manager can also decline, and the employee is told the request was denied.
+    send(
+        runner,
+        "conference",
+        Content.fromText(Role.USER, "I need 3 days off next month for a conference."));
+    send(
+        runner,
+        "conference",
+        managerAnswer("manager_approval", Map.of("approved", false, "approved_days", 0)));
   }
 
   /**

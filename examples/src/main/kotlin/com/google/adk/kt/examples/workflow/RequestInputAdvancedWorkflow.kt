@@ -91,9 +91,9 @@ object RequestInputAdvancedWorkflow {
 }
 
 /**
- * Runs the workflow on a one-day request, then on a five-day request that a manager approves for
- * four days, and prints each decision. Needs `GOOGLE_CLOUD_PROJECT` and Application Default
- * Credentials.
+ * Runs the workflow on a one-day request, a five-day request that a manager approves for four days,
+ * and a three-day request that a manager declines, and prints each decision. Needs
+ * `GOOGLE_CLOUD_PROJECT` and Application Default Credentials.
  */
 fun main() = runBlocking {
   val workflow =
@@ -117,6 +117,15 @@ fun main() = runBlocking {
   runner.send(
     "vacation",
     managerAnswer("manager_approval", mapOf("approved" to true, "approved_days" to 4)),
+  )
+  // The manager can also decline, and the employee is told the request was denied.
+  runner.send(
+    "conference",
+    Content.fromText(Role.USER, "I need 3 days off next month for a conference."),
+  )
+  runner.send(
+    "conference",
+    managerAnswer("manager_approval", mapOf("approved" to false, "approved_days" to 0)),
   )
 }
 

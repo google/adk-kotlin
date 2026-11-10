@@ -109,8 +109,9 @@ object RequestInputWorkflow {
 }
 
 /**
- * Runs the workflow on one complaint, asks for a revision, and approves the revised draft, printing
- * each draft and question. Needs `GOOGLE_CLOUD_PROJECT` and Application Default Credentials.
+ * Runs the workflow on one complaint, asks for a revision, and approves the revised draft, then
+ * rejects the draft for a second complaint in a new session, printing each draft and question.
+ * Needs `GOOGLE_CLOUD_PROJECT` and Application Default Credentials.
  */
 fun main() = runBlocking {
   val workflow =
@@ -118,21 +119,36 @@ fun main() = runBlocking {
       Gemini(name = MODEL_NAME, vertexCredentials = VertexCredentials(location = "global"))
     )
   val runner = InMemoryRunner(app = App(appName = "request_input", rootNode = workflow))
-  var interruptId = runner.send(Content.fromText(Role.USER, "My phone battery drains too fast"))
+  val answers = listOf("Make it shorter and offer a free battery check.", "approve")
+  runner.review("revise", "My phone battery drains too fast", answers)
+  runner.review("reject", "My phone broke", listOf("reject"))
+}
+
+/**
+ * Sends [complaint] in session [sessionId], then answers each review request with the next of
+ * [answers].
+ */
+private suspend fun InMemoryRunner.review(
+  sessionId: String,
+  complaint: String,
+  answers: List<String>,
+) {
+  var interruptId = send(sessionId, Content.fromText(Role.USER, complaint))
   // Each answer resumes the workflow, which asks again after a revision.
-  for (answer in listOf("Make it shorter and offer a free battery check.", "approve")) {
+  for (answer in answers) {
     val id = interruptId ?: break
-    interruptId = runner.send(reviewAnswer(id, answer))
+    interruptId = send(sessionId, reviewAnswer(id, answer))
   }
 }
 
 /**
- * Sends [message], prints the messages and the question the workflow sends back, and returns the id
- * of the review request the turn ends with, or null if it ends without one.
+ * Sends [message] in session [sessionId], prints the messages and the question the workflow sends
+ * back, and returns the id of the review request the turn ends with, or null if it ends without
+ * one.
  */
-private suspend fun InMemoryRunner.send(message: Content): String? {
+private suspend fun InMemoryRunner.send(sessionId: String, message: Content): String? {
   var interruptId: String? = null
-  runAsync(userId = "user", sessionId = "session", newMessage = message).collect { event ->
+  runAsync(userId = "user", sessionId = sessionId, newMessage = message).collect { event ->
     val text = event.contentText(" ")
     if (text.isNotBlank()) println("[${event.author}] $text")
     for (call in event.functionCalls()) {

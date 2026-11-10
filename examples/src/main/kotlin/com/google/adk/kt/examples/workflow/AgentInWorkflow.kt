@@ -90,9 +90,9 @@ object AgentInWorkflow {
 }
 
 /**
- * Runs the workflow with a patient who first gives an unknown name, then Jane Doe's details, and
- * approves the orders lookup, printing each message and tool call. Needs `GOOGLE_CLOUD_PROJECT` and
- * Application Default Credentials.
+ * Runs the workflow in two sessions, printing each message and tool call: in one a patient gives an
+ * unknown name, then Jane Doe's details, and approves the orders lookup; in the other Jane Doe
+ * declines it. Needs `GOOGLE_CLOUD_PROJECT` and Application Default Credentials.
  */
 fun main() = runBlocking {
   val workflow =
@@ -101,27 +101,45 @@ fun main() = runBlocking {
     )
   val runner = InMemoryRunner(app = App(appName = "task_in_workflow", rootNode = workflow))
   // A retried intake agent starts a new conversation, so Jane Doe gives both details at once.
-  val replies = ArrayDeque(listOf("My name is John Doe", "555-1234", "Jane Doe, 555-1234"))
-  var message: Content? = Content.fromText(Role.USER, replies.removeFirst())
+  val replies = listOf("My name is John Doe", "555-1234", "Jane Doe, 555-1234")
+  runner.converse("approve", replies, approve = true)
+  runner.converse("decline", listOf("Jane Doe, 555-1234"), approve = false)
+}
+
+/**
+ * Holds a conversation in session [sessionId], sending [replies] in turn. It approves each
+ * confirmation request if [approve] is true; otherwise it rejects the first one and stops.
+ */
+private suspend fun InMemoryRunner.converse(
+  sessionId: String,
+  replies: List<String>,
+  approve: Boolean,
+) {
+  val pending = ArrayDeque(replies)
+  var message: Content? = Content.fromText(Role.USER, pending.removeFirst())
+  var rejected = false
   while (message != null) {
-    val confirmationId = runner.send(message)
-    // Approves a pending confirmation request, or else sends the next reply.
+    val confirmationId = send(sessionId, message)
+    // Stops after one rejection, so a model that keeps retrying the call cannot loop forever.
+    if (rejected) return
+    // Answers a pending confirmation request, or else sends the next reply.
     message =
       if (confirmationId != null) {
-        approval(confirmationId)
+        rejected = !approve
+        confirmation(confirmationId, approve)
       } else {
-        replies.removeFirstOrNull()?.let { Content.fromText(Role.USER, it) }
+        pending.removeFirstOrNull()?.let { Content.fromText(Role.USER, it) }
       }
   }
 }
 
 /**
- * Sends [message], prints the messages and tool calls that follow, and returns the id of the
- * confirmation request the turn ends with, or null if it ends without one.
+ * Sends [message] in session [sessionId], prints the messages and tool calls that follow, and
+ * returns the id of the confirmation request the turn ends with, or null if it ends without one.
  */
-private suspend fun InMemoryRunner.send(message: Content): String? {
+private suspend fun InMemoryRunner.send(sessionId: String, message: Content): String? {
   var confirmationId: String? = null
-  runAsync(userId = "user", sessionId = "session", newMessage = message).collect { event ->
+  runAsync(userId = "user", sessionId = sessionId, newMessage = message).collect { event ->
     val text = event.contentText(" ")
     if (text.isNotBlank()) println("[${event.author}] $text")
     for (call in event.functionCalls()) {
@@ -134,8 +152,8 @@ private suspend fun InMemoryRunner.send(message: Content): String? {
   return confirmationId
 }
 
-/** The user's approval of the tool call for confirmation request [confirmationId]. */
-private fun approval(confirmationId: String): Content =
+/** Answers confirmation request [confirmationId], approving the tool call if [confirmed]. */
+private fun confirmation(confirmationId: String, confirmed: Boolean): Content =
   Content(
     role = Role.USER,
     parts =
@@ -145,7 +163,7 @@ private fun approval(confirmationId: String): Content =
             FunctionResponse(
               id = confirmationId,
               name = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-              response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
+              response = mapOf(ToolConfirmation.CONFIRMED_KEY to confirmed),
             )
         )
       ),

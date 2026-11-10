@@ -75,9 +75,9 @@ public final class AgentInWorkflowJava {
   }
 
   /**
-   * Runs the workflow with a patient who first gives an unknown name, then Jane Doe's details, and
-   * approves the orders lookup, printing each message and tool call. Needs {@code
-   * GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
+   * Runs the workflow in two sessions, printing each message and tool call: in one a patient gives
+   * an unknown name, then Jane Doe's details, and approves the orders lookup; in the other Jane Doe
+   * declines it. Needs {@code GOOGLE_CLOUD_PROJECT} and Application Default Credentials.
    */
   public static void main(String[] args) {
     Workflow workflow =
@@ -86,28 +86,46 @@ public final class AgentInWorkflowJava {
         PublisherRunner.inMemory(
             App.builder().appName("task_in_workflow").rootNode(workflow).build());
     // A retried intake agent starts a new conversation, so Jane Doe gives both details at once.
-    Deque<String> replies =
-        new ArrayDeque<>(List.of("My name is John Doe", "555-1234", "Jane Doe, 555-1234"));
-    Content message = Content.fromText(Role.USER, replies.removeFirst());
+    List<String> replies = List.of("My name is John Doe", "555-1234", "Jane Doe, 555-1234");
+    converse(runner, "approve", replies, /* approve= */ true);
+    converse(runner, "decline", List.of("Jane Doe, 555-1234"), /* approve= */ false);
+  }
+
+  /**
+   * Holds a conversation in session {@code sessionId}, sending {@code replies} in turn. It approves
+   * each confirmation request if {@code approve} is true; otherwise it rejects the first one and
+   * stops.
+   */
+  private static void converse(
+      PublisherRunner runner, String sessionId, List<String> replies, boolean approve) {
+    Deque<String> pending = new ArrayDeque<>(replies);
+    Content message = Content.fromText(Role.USER, pending.removeFirst());
+    boolean rejected = false;
     while (message != null) {
-      String confirmationId = send(runner, message);
-      // Approves a pending confirmation request, or else sends the next reply.
+      String confirmationId = send(runner, sessionId, message);
+      // Stops after one rejection, so a model that keeps retrying the call cannot loop forever.
+      if (rejected) {
+        return;
+      }
+      // Answers a pending confirmation request, or else sends the next reply.
       if (confirmationId != null) {
-        message = approval(confirmationId);
+        rejected = !approve;
+        message = confirmation(confirmationId, approve);
       } else {
-        String reply = replies.pollFirst();
+        String reply = pending.pollFirst();
         message = reply == null ? null : Content.fromText(Role.USER, reply);
       }
     }
   }
 
   /**
-   * Sends {@code message}, prints the messages and tool calls that follow, and returns the id of
-   * the confirmation request the turn ends with, or null if it ends without one.
+   * Sends {@code message} in session {@code sessionId}, prints the messages and tool calls that
+   * follow, and returns the id of the confirmation request the turn ends with, or null if it ends
+   * without one.
    */
-  private static String send(PublisherRunner runner, Content message) {
+  private static String send(PublisherRunner runner, String sessionId, Content message) {
     String confirmationId = null;
-    for (Event event : Flux.from(runner.runAsync("user", "session", null, message)).toIterable()) {
+    for (Event event : Flux.from(runner.runAsync("user", sessionId, null, message)).toIterable()) {
       String text = event.contentText(" ");
       if (!text.isBlank()) {
         System.out.println("[" + event.getAuthor() + "] " + text);
@@ -123,13 +141,15 @@ public final class AgentInWorkflowJava {
     return confirmationId;
   }
 
-  /** The user's approval of the tool call for confirmation request {@code confirmationId}. */
-  private static Content approval(String confirmationId) {
+  /**
+   * Answers confirmation request {@code confirmationId}, approving the call if {@code confirmed}.
+   */
+  private static Content confirmation(String confirmationId, boolean confirmed) {
     FunctionResponse response =
         FunctionResponse.builder()
             .name(FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
             .id(confirmationId)
-            .response(Map.of(ToolConfirmation.CONFIRMED_KEY, true))
+            .response(Map.of(ToolConfirmation.CONFIRMED_KEY, confirmed))
             .build();
     return new Content(Role.USER, List.of(Part.builder().functionResponse(response).build()));
   }
