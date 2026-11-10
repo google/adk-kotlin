@@ -18,10 +18,16 @@ package com.google.adk.kt.telemetry
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.telemetry.otel.OtelTracer
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.common.truth.Truth.assertThat
 import io.opentelemetry.sdk.common.CompletableResultCode
@@ -30,8 +36,10 @@ import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
 import io.opentelemetry.sdk.trace.export.SpanExporter
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Test
@@ -177,6 +185,56 @@ class TelemetryTest {
       val agent = exported.single { it.name == "invoke_agent liveNoopAgent" }
       assertThat(agent.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
       assertThat(agent.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
+    } finally {
+      provider.close()
+    }
+  }
+
+  @Test
+  fun runAsync_modelOpensASpan_nestsUnderGenerateContentAndDoesNotParentTheTool() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+      val inner =
+        DummyModel.createSequential(
+          "test-model",
+          listOf(
+            modelFunctionCallResponse("dummy_tool"),
+            LlmResponse(content = modelMessage("done")),
+          ),
+        )
+      // Like a Python model that yields its responses inside its own `start_as_current_span`.
+      val model =
+        DummyModel("test-model") { request ->
+          flow {
+            val span = Telemetry.tracer.spanBuilder("model_wrapper").startSpan()
+            try {
+              emitAll(
+                inner
+                  .generateContent(request, stream = false)
+                  .flowOn(Telemetry.tracer.contextWithSpan(span).asContextElement())
+              )
+            } finally {
+              span.end()
+            }
+          }
+        }
+      val agent =
+        LlmAgent(name = "helper", model = model, tools = listOf(DummyTool(declares = true)))
+
+      runBlocking {
+        InMemoryRunner(agent, appName = "telemetryapp")
+          .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi"))
+          .collect {}
+      }
+
+      val generateContentIds =
+        exported.filter { it.name == "generate_content test-model" }.map { it.spanId }
+      assertThat(exported.filter { it.name == "model_wrapper" }.map { it.parentSpanId })
+        .containsExactlyElementsIn(generateContentIds)
+      assertThat(exported.single { it.name == "execute_tool dummy_tool" }.parentSpanId)
+        .isEqualTo(exported.single { it.name == "invoke_agent helper" }.spanId)
     } finally {
       provider.close()
     }

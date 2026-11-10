@@ -17,6 +17,7 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.agents.genAiSystemName
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.testing.modelMessage
@@ -106,6 +107,16 @@ class GeminiJvmTest {
     val model = Gemini(name = "gemini-test", vertexCredentials = vertexCredentials)
 
     assertThat(model.client.enterprise).isTrue()
+  }
+
+  @Test
+  fun genAiSystemName_reportsTheBackendTheClientUses() {
+    assertThat(genAiSystemName(Gemini(name = "gemini-test", apiKey = "fake-key")))
+      .isEqualTo("gemini")
+    assertThat(
+        genAiSystemName(Gemini(name = "gemini-test", vertexCredentials = fakeVertexCredentials()))
+      )
+      .isEqualTo("vertex_ai")
   }
 
   @OptIn(AdkJavaInteropApi::class)

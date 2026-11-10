@@ -49,7 +49,6 @@ import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
-import com.google.adk.kt.telemetry.TelemetryContextElement
 import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.noop.NoOpSpan
 import com.google.adk.kt.telemetry.tracedFlow
@@ -69,7 +68,6 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.types.Transcription
-import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.workflow.BranchPath
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.genai.kotlin.GenAiApiException
@@ -105,7 +103,6 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.transform
@@ -1814,7 +1811,7 @@ internal class LlmAgentTurn(
         this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = EMPTY_JSON
         this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
       },
-    ) { span, spanContext ->
+    ) { span, _ ->
       // One context for this step's before/after-model and on-model-error callbacks; their
       // accumulated actions reach the emitted event via withActionsFrom.
       var modelResponseEvent = createModelResponseEvent()
@@ -1853,7 +1850,8 @@ internal class LlmAgentTurn(
       // serialized response) reflect the final value, matching Python's single `trace_call_llm`.
       var lastResponse: LlmResponse? = null
 
-      invokeModel(currentRequest, callbackContext, span, spanContext).collect { response ->
+      invokeModel(currentRequest, callbackContext, span, modelResponseEvent.id).collect { response
+        ->
         // 2. Run after model callbacks
         val allAfterModelCallbacks =
           context.pluginManager.afterModelCallbacks + agent.afterModelCallbacks
@@ -1884,20 +1882,19 @@ internal class LlmAgentTurn(
   /**
    * Streams the model's responses to [request]. Only the model's own failures go to the
    * onModelError callbacks, which may replace a failure with a response, as Python's
-   * `run_and_handle_error` does.
+   * `run_and_handle_error` does. The model client's stream runs in a `generate_content` span under
+   * [span], the `call_llm` span; [eventId] is the id of the event the response will be emitted on.
    */
   private fun invokeModel(
     request: LlmRequest,
     callbackContext: CallbackContext,
     span: Span,
-    spanContext: TelemetryContextElement,
+    eventId: String,
   ): Flow<LlmResponse> {
     val isStreaming = context.runConfig?.streamingMode == StreamingMode.SSE
     // Inside the flow so a model throwing before returning its stream still reaches onModelError.
     return flow { emitAll(agent.model.generateContent(request, stream = isStreaming)) }
-      // flowOn(spanContext) puts the model client's stream under the span without affecting the
-      // outer flow's emission context (which must stay synchronous w.r.t. the collector).
-      .flowOn(spanContext)
+      .traceGenerateContent(span, agent.model, request, agent.name, context, eventId)
       .onEach { span.addEvent("chunk_received") }
       .catch { e ->
         // Recover only Exceptions, as Python does; rethrow cancellation, which is one in Kotlin.
@@ -1950,36 +1947,6 @@ internal class LlmAgentTurn(
       response.toTracePayload()
     }
   }
-
-  /**
-   * Records OTEL token-usage attributes from [usage] (parity with Python
-   * `TokenUsage.to_attributes`).
-   *
-   * Per OTEL GenAI semconv, `input_tokens` aggregates prompt and tool-use tokens, and
-   * `output_tokens` aggregates candidate and reasoning ("thoughts") tokens. Cache-read and
-   * reasoning counts are recorded separately when present.
-   */
-  private fun Span.recordTokenUsage(usage: UsageMetadata) {
-    aggregateTokens(usage.promptTokenCount, usage.toolUsePromptTokenCount)?.let {
-      this[TelemetryAttributes.GEN_AI_USAGE_INPUT_TOKENS] = it.toLong()
-    }
-    aggregateTokens(usage.candidatesTokenCount, usage.thoughtsTokenCount)?.let {
-      this[TelemetryAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] = it.toLong()
-    }
-    usage.cachedContentTokenCount?.let {
-      this[TelemetryAttributes.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = it.toLong()
-    }
-    usage.thoughtsTokenCount?.let {
-      this[TelemetryAttributes.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = it.toLong()
-    }
-  }
-
-  /**
-   * Sums two optional token counts, returning null only when both are absent (parity with Python
-   * `TokenUsage`, which treats a missing pair as "no value" rather than 0).
-   */
-  private fun aggregateTokens(first: Int?, second: Int?): Int? =
-    if (first == null && second == null) null else (first ?: 0) + (second ?: 0)
 
   /**
    * Who a live response is from: the user for an input transcription or user-role content, or this

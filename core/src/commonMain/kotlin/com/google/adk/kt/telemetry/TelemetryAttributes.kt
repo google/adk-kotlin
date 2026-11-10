@@ -47,10 +47,14 @@ internal object TelemetryAttributes {
 
   // Common attribute values
   const val SYSTEM_GCP_VERTEX_AGENT = "gcp.vertex.agent"
+  const val SYSTEM_GEMINI = "gemini"
+  const val SYSTEM_VERTEX_AI = "vertex_ai"
+  const val SYSTEM_ANTHROPIC = "anthropic"
   const val OPERATION_INVOKE_AGENT = "invoke_agent"
   const val OPERATION_EXECUTE_TOOL = "execute_tool"
   const val OPERATION_INVOKE_WORKFLOW = "invoke_workflow"
   const val OPERATION_INVOKE_NODE = "invoke_node"
+  const val OPERATION_GENERATE_CONTENT = "generate_content"
 
   // Custom ADK attributes
   const val GCP_VERTEX_AGENT_INVOCATION_ID = "gcp.vertex.agent.invocation_id"
