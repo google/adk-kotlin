@@ -53,7 +53,10 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
-/** How credential responses are matched to requests and which tool calls re-run. */
+/**
+ * How credential requests are built, how responses are matched to them, and which tool calls
+ * re-run.
+ */
 @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
 class RequestCredentialProcessorTest {
 
@@ -61,6 +64,103 @@ class RequestCredentialProcessorTest {
 
   /** The events the processor emitted, in order. */
   private val emitted = mutableListOf<Event>()
+
+  @Test
+  fun generateRequestCredentialEvent_noRequestedAuthConfigs_returnsNull() {
+    assertNull(generateRequestCredentialEvent(newContext(), toolResponseEvent()))
+  }
+
+  @Test
+  fun generateRequestCredentialEvent_oneRequest_passesTheRequestArgs() {
+    val response = toolResponseEvent("call-1" to REQUEST)
+
+    val event = checkNotNull(generateRequestCredentialEvent(newContext(), response))
+
+    val call = event.functionCalls().single()
+    assertEquals(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, call.name)
+    assertEquals(RequestCredentialArgs("call-1", REQUEST).toMap(), call.args)
+  }
+
+  @Test
+  fun generateRequestCredentialEvent_requestWithoutResponse_isAskedForAfterTheAnsweredOnes() {
+    // Every requested credential is asked for; both orders, as the map keeps none.
+    val other = testApiKeyConfig(credentialKey = "other")
+    val callOrders = listOf("call-1" to "call-2", "call-2" to "call-1")
+
+    for ((answered, unanswered) in callOrders) {
+      val response =
+        toolResponseEvent(answered to REQUEST).apply {
+          actions.requestedAuthConfigs[unanswered] = other
+        }
+
+      val event = checkNotNull(generateRequestCredentialEvent(newContext(), response))
+
+      assertEquals(
+        listOf(answered, unanswered),
+        event.functionCalls().map { it.args["functionCallId"] },
+      )
+    }
+  }
+
+  @Test
+  fun generateRequestCredentialEvent_responseWithStateDelta_carriesOnlyTheRequestedConfigs() {
+    // Sharing the response's actions would apply its state delta twice.
+    val response = toolResponseEvent("call-1" to REQUEST).apply { actions.stateDelta["k"] = "v" }
+
+    val event = checkNotNull(generateRequestCredentialEvent(newContext(), response))
+
+    assertEquals(EventActions().apply { requestedAuthConfigs["call-1"] = REQUEST }, event.actions)
+  }
+
+  @Test
+  fun generateRequestCredentialEvent_sameCredentialKey_makesOneCallWithTheFirstConfig() {
+    // A copy keeps the credential key; both call orders, since the map itself has no order.
+    val sameKey = REQUEST.copy(rawAuthCredential = null)
+    val callOrders = listOf("call-1" to "call-2", "call-2" to "call-1")
+
+    for ((first, second) in callOrders) {
+      val response = toolResponseEvent(first to REQUEST, second to sameKey)
+
+      val event = checkNotNull(generateRequestCredentialEvent(newContext(), response))
+
+      assertEquals(
+        listOf(RequestCredentialArgs(first, REQUEST).toMap()),
+        event.functionCalls().map { it.args },
+      )
+    }
+  }
+
+  @Test
+  fun generateRequestCredentialEvent_twoCredentialKeys_makesLongRunningCallsInCallOrder() {
+    // Both call orders, since one of them always matches the map's own order.
+    val other = testApiKeyConfig(credentialKey = "other")
+    val callOrders = listOf("call-1" to "call-2", "call-2" to "call-1")
+
+    for ((first, second) in callOrders) {
+      val response = toolResponseEvent(first to REQUEST, second to other)
+
+      val event = checkNotNull(generateRequestCredentialEvent(newContext(), response))
+
+      val calls = event.functionCalls()
+      assertEquals(listOf(first, second), calls.map { it.args["functionCallId"] })
+      assertEquals(calls.mapNotNull { it.id }.toSet(), event.longRunningToolIds)
+      assertEquals(2, event.longRunningToolIds.size)
+    }
+  }
+
+  @Test
+  fun generateRequestCredentialEvent_userResponseOnBranch_isTheAgentsWithTheUserRole() {
+    val context = newContext(branch = "parent.test")
+    val response =
+      toolResponseEvent("call-1" to REQUEST).run { copy(content = content?.copy(role = Role.USER)) }
+
+    val event = checkNotNull(generateRequestCredentialEvent(context, response))
+
+    assertEquals(AGENT_NAME, event.author)
+    assertEquals("parent.test", event.branch)
+    assertEquals(context.invocationId, event.invocationId)
+    assertEquals(Role.USER, event.content?.role)
+  }
 
   @Test
   fun process_callFromAnotherAuthor_storesButDoesNotRerunIt() = runBlocking {
@@ -638,7 +738,7 @@ class RequestCredentialProcessorTest {
           )
       )
 
-    /** The events of a tool call that asked for [REQUEST]'s credential, as ADK records them. */
+    /** The events of a tool call that asked for [REQUEST]'s credential: call, request, response. */
     fun credentialRequestEvents(): List<Event> =
       listOf(
         agentEvent(callPart(TOOL_NAME, "call-1")),

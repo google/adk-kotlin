@@ -41,6 +41,7 @@ import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
 import com.google.adk.kt.processors.createFinalModelResponseEvent
 import com.google.adk.kt.processors.findTransferTargets
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
+import com.google.adk.kt.processors.generateRequestCredentialEvent
 import com.google.adk.kt.processors.getStructuredModelResponse
 import com.google.adk.kt.processors.liveTransferTargets
 import com.google.adk.kt.processors.offersTaskCompletedTool
@@ -2124,24 +2125,6 @@ internal class LlmAgentTurn(
     // Execute function calls and code blocks identified in the model response.
     val functionResponseEvent = handleFunctionCalls(actionEvent, tools) { emit(it) }
 
-    // The request turn terminates here because the placeholder function-response carries
-    // `actions.skipSummarization = true` (set by `FunctionTool` on the confirmation gate), so
-    // `Event.isFinalResponse` is true on the merged response event and `LlmAgent.executeTurns`
-    // exits its per-turn loop. This matches ADK Python's behavior. We do NOT mark the invocation
-    // ended (no `context.isEndOfInvocation = true`): doing so would prevent resume, since the
-    // pause has to be observable from outside via the synthetic `adk_request_confirmation`
-    // long-running event. `LlmAgent.runAsync` reads that long-running id per-event and triggers
-    // pause via `InvocationContext.shouldPauseInvocation`, suppressing `endOfAgent` so the
-    // session stays live for the eventual resume call. The same "do NOT mark the invocation
-    // ended" rule applies to the agent-transfer branch below: after the transferred-to agent
-    // finishes, control must return to this (parent) LlmAgent's `executeTurns` loop so the
-    // parent can produce its own follow-up response. This mirrors Java ADK's
-    // `BaseLlmFlow.runOneStep`, which simply concatenates the transferred-to agent's events and
-    // lets the outer flow loop decide whether to continue (based on the last event being a final
-    // response or carrying `endInvocation`). Without this, transferring into a
-    // SequentialAgent/LoopAgent (or any workflow agent that doesn't itself emit a transfer back)
-    // would leave the parent unable to resume.
-
     // A tool's transfer runs the target here, unless a node loop follows it.
     if (!agent.runsInNodeLoop(context)) {
       functionResponseEvent?.actions?.transferToAgent?.let { agentName ->
@@ -2158,6 +2141,7 @@ internal class LlmAgentTurn(
               "Agent '${agent.name}' is not allowed to transfer to the requested agent."
             }
           }
+        // The invocation doesn't end, so this agent can answer after the target returns.
         emitAll(targetAgent.runAsync(context))
       }
     }
@@ -2181,8 +2165,14 @@ internal class LlmAgentTurn(
         ?.copy(liveSessionId = actionEvent.liveSessionId)
 
     functionResponseEvent?.let { responseEvent ->
-      // A live run can't take an approval yet, so it asks for none, as in ADK Python.
+      // A live run can't take approvals or sign-ins yet, so it asks for neither.
       if (context.liveRequestQueue == null) {
+        generateRequestCredentialEvent(context, responseEvent)?.let {
+          emitEvent(it)
+          // The tool's response isn't final, so end the call before another model call.
+          context.isEndOfInvocation = true
+        }
+        // A gated tool's placeholder sets skipSummarization, so the turn ends but the call doesn't.
         generateRequestConfirmationEvent(context, actionEvent, responseEvent)?.let { emitEvent(it) }
       }
       emitEvent(responseEvent)

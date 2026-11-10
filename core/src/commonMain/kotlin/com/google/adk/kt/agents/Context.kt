@@ -518,9 +518,11 @@ open class Context(
   }
 
   /**
-   * Asks the app for the credential [authConfig] describes: the next event carries a sign-in
-   * request for the current tool call. Only a tool call has a [functionCallId], so this can only be
-   * called in a tool context.
+   * Asks the app for the credential [authConfig] describes: when the model called the tool on a
+   * turn-based run, the next event carries a sign-in request for it. A tool re-run after the app
+   * answers asks for nothing, so a tool still without a credential reports that to the model rather
+   * than asking again. Only a tool call has a [functionCallId], so this can only be called in a
+   * tool context.
    *
    * @throws IllegalStateException if [functionCallId] is not set.
    * @throws IllegalArgumentException if an OAuth2 or OpenID Connect [authConfig] can't produce an

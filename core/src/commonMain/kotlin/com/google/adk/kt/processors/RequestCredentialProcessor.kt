@@ -30,11 +30,14 @@ import com.google.adk.kt.auth.RequestCredentialArgs
 import com.google.adk.kt.auth.SignInReplyResult
 import com.google.adk.kt.auth.storeSignInReply
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 
 /**
@@ -143,7 +146,8 @@ private fun List<Event>.findCredentialRequest(
 
 /**
  * Returns the tool calls to re-run: [requestingCallIds], and each other call in the same
- * `requestedAuthConfigs` map of these events whose credential key is in [storedKeys].
+ * `requestedAuthConfigs` map of these events whose credential key is in [storedKeys]. Calls that
+ * share a key get one request, so one reply covers them all.
  */
 private fun List<Event>.callIdsToRerun(
   requestingCallIds: Set<String>,
@@ -161,4 +165,44 @@ private fun List<Event>.callIdsToRerun(
 private suspend fun LlmAgent.toolsByName(context: InvocationContext): Map<String, BaseTool> {
   val toolsetTools = toolsets.flatMap { it.getTools(context.toReadonlyContext()) }
   return (tools + context.extraTools.values + toolsetTools).associateBy { it.name }
+}
+
+/**
+ * Returns the event asking the app for the credentials in [functionResponseEvent]'s
+ * `requestedAuthConfigs`, or null if no tool asked. It holds one `adk_request_credential` call per
+ * credential key, the first tool call's config winning, so the user signs in once for tools that
+ * share a credential. The calls are long-running so that a resumable app pauses, and the event
+ * carries the requested configs so a reply matches its request even if the app stops reading here.
+ */
+internal fun generateRequestCredentialEvent(
+  invocationContext: InvocationContext,
+  functionResponseEvent: Event,
+): Event? {
+  val requested = functionResponseEvent.actions.requestedAuthConfigs
+  val calls =
+    // Call order first, since the map keeps no order, then any other key.
+    (functionResponseEvent.functionResponses().mapNotNull { it.id } + requested.keys)
+      .filter(requested::containsKey)
+      .distinctBy { requested.getValue(it).credentialKey }
+      .map { functionCallId ->
+        FunctionCall(
+          name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+          args = RequestCredentialArgs(functionCallId, requested.getValue(functionCallId)).toMap(),
+          id = FunctionCall.generateId(),
+        )
+      }
+  if (calls.isEmpty()) return null
+  return Event(
+    invocationId = invocationContext.invocationId,
+    author = invocationContext.agent.name,
+    branch = invocationContext.branch,
+    content =
+      Content(
+        role = functionResponseEvent.content?.role,
+        parts = calls.map { Part(functionCall = it) },
+      ),
+    longRunningToolIds = calls.mapNotNullTo(mutableSetOf()) { it.id },
+    // The requested configs only; the response's actions would apply its state delta twice.
+    actions = EventActions().apply { requestedAuthConfigs.putAll(requested) },
+  )
 }

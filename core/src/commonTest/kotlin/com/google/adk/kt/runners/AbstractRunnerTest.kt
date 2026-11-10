@@ -1259,6 +1259,30 @@ class AbstractRunnerTest {
   }
 
   @Test
+  fun createInvocationContext_secondResponseIdMatchesNoCall_throws() = runBlocking {
+    // Arrange
+    val runner = TestRunner(DummyAgent("root"))
+    val session = runner.sessionWithEvents(functionCallEvent("inv-1", "call-1"))
+
+    // Act
+    val exception =
+      assertFailsWith<IllegalArgumentException> {
+        runner.callCreateInvocationContext(
+          session,
+          null,
+          functionResponses("call-1", "call-unknown"),
+        )
+      }
+
+    // Assert
+    assertEquals(
+      "Function call not found for 1 function response id(s). Ensure each function response ID " +
+        "matches an existing function call in the session history.",
+      exception.message,
+    )
+  }
+
+  @Test
   fun createInvocationContext_functionResponseOnNonResumableAgentRoot_startsFreshInvocation() =
     runBlocking {
       // Arrange
