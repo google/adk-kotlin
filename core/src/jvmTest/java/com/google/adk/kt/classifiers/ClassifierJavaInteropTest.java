@@ -21,12 +21,20 @@ import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.kt.apps.App;
+import com.google.adk.kt.events.Event;
+import com.google.adk.kt.interop.AsyncJavaHelpers;
 import com.google.adk.kt.interop.BaseFutureClassifier;
 import com.google.adk.kt.interop.CompletableFutureClassifier;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.models.LlmResponse;
+import com.google.adk.kt.runners.InMemoryRunner;
 import com.google.adk.kt.testing.DummyModel;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.GenerateContentConfig;
+import com.google.adk.kt.workflow.FunctionNode;
+import com.google.adk.kt.workflow.Route;
+import com.google.adk.kt.workflow.Workflow;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.util.Arrays;
@@ -41,7 +49,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/** Exercises the classifier types, builders, bridges, and LlmClassifier from plain Java. */
+/**
+ * Exercises the classifier types, builders, bridges, LlmClassifier and ClassifierNode from Java.
+ */
 @RunWith(JUnit4.class)
 public final class ClassifierJavaInteropTest {
 
@@ -235,6 +245,63 @@ public final class ClassifierJavaInteropTest {
     assertThat(built.getGenerateContentConfig()).isEqualTo(config);
     assertThat(fromConstructorAnswers.getAnswers()).containsEntry("urgent", new BinaryAnswer(0.25));
     assertThat(builtAnswers.getAnswers()).containsEntry("urgent", new BinaryAnswer(0.25));
+  }
+
+  @Test
+  public void classifierNode_builderFromJava_routesAWorkflowOnTheAnswer() {
+    ClassifierNode gate =
+        ClassifierNode.builder()
+            .name("gate")
+            .classifier(new FixedAnswerClassifier())
+            .question(new Binary("Is it urgent?"))
+            .threshold(0.7)
+            .answerKey("gate_answer")
+            .build();
+    FunctionNode<Content, String> urgent =
+        FunctionNodes.of("urgent", Content.class, String.class, (ctx, message) -> message.text());
+    FunctionNode<Content, String> routine =
+        FunctionNodes.of("routine", Content.class, String.class, (ctx, message) -> "routine");
+    Workflow workflow =
+        Workflow.builder()
+            .name("wf")
+            .edges(
+                g -> {
+                  g.fromStart().then(gate);
+                  g.from(gate).on(true).then(urgent);
+                  g.from(gate).on(false).then(routine);
+                })
+            .build();
+
+    List<Event> events;
+    try (InMemoryRunner runner =
+        InMemoryRunner.builder()
+            .app(App.builder().appName("wf").rootNode(workflow).build())
+            .build()) {
+      events =
+          AsyncJavaHelpers.collect(
+              runner.runAsync(
+                  "user",
+                  "session",
+                  /* invocationId= */ null,
+                  Content.fromText("user", "Down!"),
+                  /* stateDelta= */ null,
+                  /* runConfig= */ null));
+    }
+
+    assertThat(gate.getAnswerKey()).isEqualTo("gate_answer");
+    Event routed =
+        events.stream()
+            .filter(e -> e.getNodeInfo() != null && e.getNodeInfo().getPath().endsWith("/gate@1"))
+            .findFirst()
+            .orElseThrow();
+    assertThat(routed.getActions().getRoute()).containsExactly(new Route.Flag(true));
+    assertThat(routed.getActions().getStateDelta()).containsKey("gate_answer");
+    Event urgentEvent =
+        events.stream()
+            .filter(e -> e.getNodeInfo() != null && e.getNodeInfo().getPath().endsWith("/urgent@1"))
+            .findFirst()
+            .orElseThrow();
+    assertThat(urgentEvent.getOutput()).isEqualTo("Down!");
   }
 
   @Test

@@ -134,6 +134,13 @@ abstract class BaseNode(
     val schema = outputSchema ?: return output
     return SchemaUtils.checkedValue(output, schema, "output of node '$name'")
   }
+
+  /**
+   * Checks this node's outgoing [edges] when its graph is validated, throwing
+   * [GraphValidationException] for wiring the node cannot serve, such as a route it never emits.
+   * The default accepts any edges.
+   */
+  internal open fun validateOutgoingEdges(edges: List<Edge>) {}
 }
 
 /**

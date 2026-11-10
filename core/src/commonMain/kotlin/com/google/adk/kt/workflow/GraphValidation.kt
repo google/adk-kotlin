@@ -43,6 +43,7 @@ internal fun validateGraph(nodes: List<Node>, edges: List<Edge>) {
   validateChatAgentWiring(edges)
   validateStaticSchemas(edges)
   validateChildNodeAgentNames(nodes)
+  validateNodeOutgoingEdges(nodes, edges)
 }
 
 private fun fail(message: String): Nothing =
@@ -226,3 +227,12 @@ private fun validateStaticSchemas(edges: List<Edge>) {
 
 @OptIn(FrameworkInternalApi::class)
 private fun Schema.toJson(): String = adkJson.encodeToString(Schema.serializer(), this)
+
+/** Lets each node check its own outgoing edges; see [BaseNode.validateOutgoingEdges]. */
+@OptIn(FrameworkInternalApi::class)
+private fun validateNodeOutgoingEdges(nodes: List<Node>, edges: List<Edge>) {
+  val outgoing = edges.groupBy { it.from.name }
+  for (node in nodes) {
+    (node as? BaseNode)?.validateOutgoingEdges(outgoing[node.name].orEmpty())
+  }
+}

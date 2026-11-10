@@ -197,7 +197,7 @@ private fun checkJsonTextDepth(json: String) {
   }
 }
 
-private fun checkContainerDepth(depth: Int) {
+internal fun checkContainerDepth(depth: Int) {
   require(depth < MAX_JSON_CONTENT_DEPTH) {
     "JSON content exceeds maximum nesting depth of $MAX_JSON_CONTENT_DEPTH."
   }
