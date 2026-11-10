@@ -52,6 +52,9 @@ private const val THOUGHT_SIGNATURES_KEY = "thoughtSignatures"
 /** Metadata key the Spring AI Google GenAI provider uses to flag a generation as thought text. */
 private const val IS_THOUGHT_KEY = "isThought"
 
+/** Package of the Anthropic SDK, whose usage object Spring AI's Anthropic provider passes along. */
+private const val ANTHROPIC_PACKAGE_PREFIX = "com.anthropic."
+
 /** Converts an ADK [LlmRequest] into a Spring AI [Prompt]. */
 internal fun LlmRequest.toSpringAiPrompt(defaultOptions: ChatOptions?): Prompt {
   val systemTexts = mutableListOf<String>()
@@ -267,12 +270,19 @@ private fun String.toMimeTypeOrNull(): MimeType? =
 private fun AssistantMessage.thoughtSignatures(): List<ByteArray> =
   (metadata?.get(THOUGHT_SIGNATURES_KEY) as? List<*>)?.filterIsInstance<ByteArray>() ?: emptyList()
 
-private fun Usage.toUsageMetadata(): UsageMetadata =
-  UsageMetadata(
-    promptTokenCount = promptTokens,
+private fun Usage.toUsageMetadata(): UsageMetadata {
+  // Anthropic's input_tokens excludes cache reads and writes; ADK counts them in the prompt.
+  val isAnthropic =
+    nativeUsage?.javaClass?.packageName?.startsWith(ANTHROPIC_PACKAGE_PREFIX) == true
+  val cacheTokensOutsidePrompt =
+    if (isAnthropic) ((cacheReadInputTokens ?: 0L) + (cacheWriteInputTokens ?: 0L)).toInt() else 0
+  return UsageMetadata(
+    promptTokenCount = promptTokens + cacheTokensOutsidePrompt,
     candidatesTokenCount = completionTokens,
-    totalTokenCount = totalTokens,
+    totalTokenCount = totalTokens + cacheTokensOutsidePrompt,
+    cachedContentTokenCount = cacheReadInputTokens?.toInt(),
   )
+}
 
 /**
  * Maps a provider finish-reason string to the ADK [FinishReason]. Gemini reasons match a

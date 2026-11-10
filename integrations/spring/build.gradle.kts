@@ -61,4 +61,7 @@ dependencies {
   // exercise buildChatOptions against a concrete provider option type, and it backs the opt-in live
   // check against Vertex Gemini.
   testImplementation(libs.spring.ai.google.genai)
+  // Real Anthropic SDK usage types: the usage tests pass them as Spring AI's native usage, as the
+  // Spring AI Anthropic provider does.
+  testImplementation(libs.anthropic.java)
 }

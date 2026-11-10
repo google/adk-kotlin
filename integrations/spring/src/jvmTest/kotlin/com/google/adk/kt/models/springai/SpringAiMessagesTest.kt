@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.models.springai
 
+import com.anthropic.models.messages.Usage
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -27,6 +28,7 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import java.net.URI
+import java.util.Optional
 import kotlin.test.Test
 import org.springframework.ai.chat.messages.AssistantMessage
 import org.springframework.ai.chat.messages.SystemMessage
@@ -275,6 +277,62 @@ class SpringAiMessagesTest {
     assertThat(usage.promptTokenCount).isEqualTo(10)
     assertThat(usage.candidatesTokenCount).isEqualTo(5)
     assertThat(usage.totalTokenCount).isEqualTo(15)
+  }
+
+  @Test
+  fun usage_anthropicCacheRead_foldsIntoPromptAndTotal() {
+    val springUsage =
+      DefaultUsage(
+        /* promptTokens= */ 86,
+        /* completionTokens= */ 300,
+        /* totalTokens= */ 386,
+        /* nativeUsage= */ anthropicUsage(inputTokens = 86, outputTokens = 300, cacheRead = 1920),
+        /* cacheReadInputTokens= */ 1920L,
+        /* cacheWriteInputTokens= */ null,
+      )
+    val metadata = ChatResponseMetadata.builder().usage(springUsage).build()
+
+    val response =
+      ChatResponse(listOf(Generation(AssistantMessage("hi"))), metadata).toLlmResponse()
+
+    val usage = response.usageMetadata!!
+    assertThat(usage.promptTokenCount).isEqualTo(2006)
+    assertThat(usage.candidatesTokenCount).isEqualTo(300)
+    assertThat(usage.totalTokenCount).isEqualTo(2306)
+    assertThat(usage.cachedContentTokenCount).isEqualTo(1920)
+  }
+
+  @Test
+  fun usage_anthropicCacheWrite_foldsIntoPromptAndTotalWithoutCachedCount() {
+    val springUsage =
+      DefaultUsage(
+        /* promptTokens= */ 40,
+        /* completionTokens= */ 10,
+        /* totalTokens= */ 50,
+        /* nativeUsage= */ anthropicUsage(inputTokens = 40, outputTokens = 10, cacheWrite = 5000),
+        /* cacheReadInputTokens= */ null,
+        /* cacheWriteInputTokens= */ 5000L,
+      )
+    val metadata = ChatResponseMetadata.builder().usage(springUsage).build()
+
+    val response =
+      ChatResponse(listOf(Generation(AssistantMessage("hi"))), metadata).toLlmResponse()
+
+    val usage = response.usageMetadata!!
+    assertThat(usage.promptTokenCount).isEqualTo(5040)
+    assertThat(usage.totalTokenCount).isEqualTo(5050)
+    assertThat(usage.cachedContentTokenCount).isNull()
+  }
+
+  @Test
+  fun usage_withoutCacheReadTokens_leavesCachedContentTokenCountNull() {
+    val metadata = ChatResponseMetadata.builder().usage(DefaultUsage(10, 5, 15)).build()
+
+    val response =
+      ChatResponse(listOf(Generation(AssistantMessage("hi"))), metadata).toLlmResponse()
+
+    val usage = response.usageMetadata!!
+    assertThat(usage.cachedContentTokenCount).isNull()
   }
 
   @Test
@@ -534,4 +592,23 @@ class SpringAiMessagesTest {
     assertThat(assistant.media).hasSize(1)
     assertThat(assistant.media.single().mimeType.toString()).isEqualTo("image/png")
   }
+
+  /** The Anthropic SDK usage object that Spring AI's Anthropic provider reports as native usage. */
+  private fun anthropicUsage(
+    inputTokens: Long,
+    outputTokens: Long,
+    cacheRead: Long? = null,
+    cacheWrite: Long? = null,
+  ): Usage =
+    Usage.builder()
+      .inputTokens(inputTokens)
+      .outputTokens(outputTokens)
+      .cacheReadInputTokens(cacheRead)
+      .cacheCreationInputTokens(cacheWrite)
+      .cacheCreation(Optional.empty())
+      .inferenceGeo(Optional.empty())
+      .outputTokensDetails(Optional.empty())
+      .serverToolUse(Optional.empty())
+      .serviceTier(Optional.empty())
+      .build()
 }
