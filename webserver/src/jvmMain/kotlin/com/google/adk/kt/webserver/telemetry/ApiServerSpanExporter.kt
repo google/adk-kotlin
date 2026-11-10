@@ -29,12 +29,9 @@ internal const val TRACE_ID_ATTRIBUTE = "trace_id"
 internal const val SPAN_ID_ATTRIBUTE = "span_id"
 
 /**
- * A custom SpanExporter that stores relevant span data. It handles two types of trace data storage:
- * 1. Event-ID based: Stores attributes of specific spans (call_llm, send_data, tool_response) keyed
- *    by `gcp.vertex.agent.event_id`. This is used for debugging individual events.
- * 2. Session-ID based: Stores all exported spans and maintains a mapping from `session_id`
- *    (extracted from `call_llm` spans) to a list of `trace_id`s. This is used for retrieving all
- *    spans related to a session.
+ * Stores exported spans for the Development UI's trace views. It keeps the attributes of event
+ * spans (`call_llm`, `send_data`, tool spans) by `gcp.vertex.agent.event_id`, and each session's
+ * distinct trace ids, taken from any span that carries the session id.
  */
 class ApiServerSpanExporter : SpanExporter {
 
@@ -42,6 +39,8 @@ class ApiServerSpanExporter : SpanExporter {
     private const val MAX_EVENTS_TO_STORE = 1000
     private const val MAX_SESSIONS_TO_STORE = 1000
     private const val MAX_TOTAL_SPANS_TO_STORE = 10000
+    private val SESSION_ID_KEY = AttributeKey.stringKey("gcp.vertex.agent.session_id")
+    private val CONVERSATION_ID_KEY = AttributeKey.stringKey("gen_ai.conversation.id")
   }
 
   internal val eventIdTraceStorage: MutableMap<String, Map<String, Any>> =
@@ -55,16 +54,12 @@ class ApiServerSpanExporter : SpanExporter {
       }
     )
 
-  internal val sessionToTraceIdsMap: MutableMap<String, MutableList<String>> =
-    Collections.synchronizedMap(
-      object : LinkedHashMap<String, MutableList<String>>(MAX_SESSIONS_TO_STORE, 0.75f, true) {
-        override fun removeEldestEntry(
-          eldest: MutableMap.MutableEntry<String, MutableList<String>>
-        ): Boolean {
-          return size > MAX_SESSIONS_TO_STORE
-        }
-      }
-    )
+  // Guarded by itself: export writes it while the session trace route reads it.
+  private val sessionToTraceIdsMap =
+    object : LinkedHashMap<String, MutableSet<String>>(MAX_SESSIONS_TO_STORE, 0.75f, true) {
+      override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableSet<String>>) =
+        size > MAX_SESSIONS_TO_STORE
+    }
 
   private val allExportedSpans = Collections.synchronizedList(mutableListOf<SpanData>())
 
@@ -72,9 +67,11 @@ class ApiServerSpanExporter : SpanExporter {
     return eventIdTraceStorage[eventId]
   }
 
-  fun getSessionToTraceIdsMap(): Map<String, List<String>> {
-    return sessionToTraceIdsMap
-  }
+  /** A copy of each session's trace ids, safe to iterate while spans are exported. */
+  fun getSessionToTraceIdsMap(): Map<String, List<String>> =
+    synchronized(sessionToTraceIdsMap) {
+      sessionToTraceIdsMap.mapValues { (_, traceIds) -> traceIds.toList() }
+    }
 
   fun getAllExportedSpans(): List<SpanData> {
     synchronized(allExportedSpans) {
@@ -111,19 +108,19 @@ class ApiServerSpanExporter : SpanExporter {
         }
       }
 
-      if (spanName == "call_llm") {
-        val sessionId = span.attributes.get(AttributeKey.stringKey("gcp.vertex.agent.session_id"))
-        if (!sessionId.isNullOrEmpty()) {
-          val traceId = span.spanContext.traceId
-          sessionToTraceIdsMap
-            .computeIfAbsent(sessionId) { Collections.synchronizedList(mutableListOf()) }
-            .add(traceId)
-        }
+      val sessionId = sessionIdOf(span) ?: continue
+      synchronized(sessionToTraceIdsMap) {
+        sessionToTraceIdsMap.getOrPut(sessionId) { LinkedHashSet() }.add(span.spanContext.traceId)
       }
     }
 
     return CompletableResultCode.ofSuccess()
   }
+
+  /** The session id on [span]: `gcp.vertex.agent.session_id`, else `gen_ai.conversation.id`. */
+  private fun sessionIdOf(span: SpanData): String? =
+    span.attributes.get(SESSION_ID_KEY)?.takeIf { it.isNotEmpty() }
+      ?: span.attributes.get(CONVERSATION_ID_KEY)?.takeIf { it.isNotEmpty() }
 
   override fun flush(): CompletableResultCode {
     return CompletableResultCode.ofSuccess()
