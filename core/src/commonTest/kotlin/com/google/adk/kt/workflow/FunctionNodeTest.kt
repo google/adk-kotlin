@@ -1774,6 +1774,26 @@ class FunctionNodeTest {
 
   @OptIn(AdkJavaInteropApi::class)
   @Test
+  fun toBuilder_rerunOnResumeOfANodeFromTheDsl_copiesOnlyAnExplicitValue() {
+    // Arrange
+    val derived = node<String, String>("derived", requireConfirmation = true) { _, text -> text }
+    val explicitFalse =
+      node<String, String>("explicit_false", rerunOnResume = false) { _, text -> text }
+
+    // Act
+    val derivedCopy = derived.toBuilder().requireConfirmation(false).build()
+    val confirmedCopyError =
+      assertFailsWith<WorkflowConfigurationException> {
+        explicitFalse.toBuilder().requireConfirmation(true).build()
+      }
+
+    // Assert
+    assertFalse(derivedCopy.rerunOnResume)
+    assertContains(confirmedCopyError.message.orEmpty(), "must rerun on resume")
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
   fun builder_missingNameOrBody_throwsIllegalStateException() {
     // Act
     val noName =
@@ -1812,6 +1832,8 @@ class FunctionNodeTest {
         .inputSchema(inSchema)
         .outputSchema(outSchema)
         .stateSchema(stateSchema)
+        .requireConfirmation(true)
+        .requireConfirmation { _, _ -> false }
         .body { _, text -> "v2=$text" }
         .build()
     val outputs = runOutputs(copy, "x")
@@ -1846,6 +1868,8 @@ class FunctionNodeTest {
           { parallel.toBuilder().rerunOnResume(false).build() },
           { parallel.toBuilder().config(NodeConfig(timeout = 5.seconds)).build() },
           { parallel.toBuilder().body { _, _ -> emptyList() }.build() },
+          { parallel.toBuilder().requireConfirmation(true).build() },
+          { parallel.toBuilder().requireConfirmation { _, _ -> true }.build() },
         )
         .map { build -> assertFailsWith<WorkflowConfigurationException> { build() }.message }
 
@@ -1855,9 +1879,16 @@ class FunctionNodeTest {
     assertEquals(listOf<Any?>(listOf("v=3", "v=5")), copyOutputs)
     val suffix = " cannot be set on parallel node 'label'; configure its item node instead."
     assertEquals(
-      listOf("inputSchema", "outputSchema", "rerunOnResume(false)", "config", "body").map {
-        it + suffix
-      },
+      listOf(
+          "inputSchema",
+          "outputSchema",
+          "rerunOnResume(false)",
+          "config",
+          "body",
+          "requireConfirmation",
+          "requireConfirmation",
+        )
+        .map { it + suffix },
       errors,
     )
   }

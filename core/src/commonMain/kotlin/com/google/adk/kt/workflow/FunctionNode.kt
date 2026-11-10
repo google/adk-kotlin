@@ -72,7 +72,8 @@ class FunctionNode<I, O>
 private constructor(
   name: String,
   description: String,
-  rerunOnResume: Boolean,
+  /** Whether a resume reruns the node, or `null` to rerun exactly when it asks for confirmation. */
+  private val explicitRerunOnResume: Boolean?,
   waitForOutput: Boolean,
   config: NodeConfig,
   private val explicitInputSchema: Schema?,
@@ -92,7 +93,9 @@ private constructor(
   BaseNode(
     name = name,
     description = description,
-    rerunOnResume = rerunOnResume || itemNode != null,
+    rerunOnResume =
+      (explicitRerunOnResume ?: (requireConfirmation || confirmationPredicate != null)) ||
+        itemNode != null,
     waitForOutput = waitForOutput,
     config = config,
     // A parallel node declares no port schemas; its item node keeps its own.
@@ -106,7 +109,7 @@ private constructor(
   internal constructor(
     name: String,
     description: String = "",
-    rerunOnResume: Boolean = false,
+    rerunOnResume: Boolean? = null,
     waitForOutput: Boolean = false,
     config: NodeConfig = NodeConfig(),
     inputSchema: Schema? = null,
@@ -122,7 +125,7 @@ private constructor(
   ) : this(
     name = name,
     description = description,
-    rerunOnResume = rerunOnResume,
+    explicitRerunOnResume = rerunOnResume,
     waitForOutput = waitForOutput,
     config = config,
     explicitInputSchema = inputSchema,
@@ -155,8 +158,8 @@ private constructor(
     checkMaxParallelWorkers(maxParallelWorkers)
     if (asksForConfirmation && !this.rerunOnResume) {
       throw WorkflowConfigurationException(
-        "node '$name' requires confirmation, so it needs rerunOnResume = true to run again once " +
-          "the user answers."
+        "node '$name' requires confirmation, so it must rerun on resume to run once the user " +
+          "answers; leave rerunOnResume unset or turn it on."
       )
     }
   }
@@ -311,8 +314,9 @@ private constructor(
 
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
-   * Only explicitly set schemas are copied, not inferred ones, so the copy enforces the same
-   * schemas as this node.
+   * Only explicitly set schemas and `rerunOnResume` are copied, not inferred or derived ones, so
+   * the copy enforces the same schemas as this node and, unless `rerunOnResume` was set, derives it
+   * from its own confirmation.
    */
   @AdkJavaInteropApi
   @ExperimentalWorkflowApi
@@ -320,7 +324,8 @@ private constructor(
     Builder.create<I, O>()
       .name(name)
       .description(description)
-      .rerunOnResume(rerunOnResume)
+      // Left unset when this node derived it, so the copy derives it from its own confirmation.
+      .let { builder -> explicitRerunOnResume?.let(builder::rerunOnResume) ?: builder }
       .waitForOutput(waitForOutput)
       .config(config)
       .inputSchema(explicitInputSchema)
@@ -346,6 +351,7 @@ private constructor(
     private var name: String? = null
     private var description: String = ""
     private var rerunOnResume: Boolean = false
+    private var rerunOnResumeSet = false
     private var waitForOutput: Boolean = false
     private var config: NodeConfig = NodeConfig()
     private var inputSchema: Schema? = null
@@ -372,11 +378,13 @@ private constructor(
     fun description(description: String): Builder<I, O> = apply { this.description = description }
 
     /**
-     * Sets whether a resume runs the node again rather than using the resuming answer. A parallel
-     * node always reruns, so [build] rejects `false` for one.
+     * Sets whether a resume runs the node again rather than using the resuming answer. Unset, it is
+     * true when the node requires confirmation. A parallel node always reruns, so [build] rejects
+     * `false` for one.
      */
     fun rerunOnResume(rerunOnResume: Boolean): Builder<I, O> = apply {
       this.rerunOnResume = rerunOnResume
+      this.rerunOnResumeSet = true
     }
 
     /** Sets whether the node stays re-triggerable until it produces an output or a route. */
@@ -411,6 +419,25 @@ private constructor(
     internal fun outputCodec(outputCodec: PortCodec<*>): Builder<I, O> = apply {
       this.outputCodec = outputCodec
     }
+
+    /**
+     * Sets whether each run first asks the user to approve it, which makes the node rerun on resume
+     * unless [rerunOnResume] is set; either overload replaces the other. An approved run reads the
+     * answer from [Context.toolConfirmation], and a rejected one skips the body and outputs
+     * `{"error": "This tool call is rejected."}`, unchecked against [O]. A successor typed to a
+     * scalar or list then fails its input check and one typed to a record gets unset fields, so
+     * type it as `Object` to handle a rejection.
+     */
+    fun requireConfirmation(requireConfirmation: Boolean): Builder<I, O> =
+      confirmation(requireConfirmation, null)
+
+    /**
+     * Sets a predicate that decides for each input whether a run asks the user to approve it, as
+     * the `Boolean` overload does for every input. It runs until the node has asked; from then on,
+     * the user's answer decides.
+     */
+    fun requireConfirmation(predicate: ConfirmationPredicate<I>): Builder<I, O> =
+      confirmation(false) { context, input -> predicate.test(context, input) }
 
     internal fun confirmation(
       requireConfirmation: Boolean,
@@ -448,8 +475,9 @@ private constructor(
      *
      * @throws IllegalStateException if [name] or [body] is not set.
      * @throws WorkflowConfigurationException if a parallel node, such as one from [parallelOf], has
-     *   an input or output schema, `rerunOnResume(false)`, a non-default [config], or a body set
-     *   with [body].
+     *   an input or output schema, `rerunOnResume(false)`, a non-default [config], a body set with
+     *   [body], or a confirmation, or if a node that requires confirmation has
+     *   `rerunOnResume(false)`.
      */
     fun build(): FunctionNode<I, O> {
       val resolvedName = checkNotNull(name) { "FunctionNode.Builder requires name to be set." }
@@ -461,9 +489,10 @@ private constructor(
         val rejected = buildList {
           if (inputSchema != null) add("inputSchema")
           if (outputSchema != null) add("outputSchema")
-          if (!rerunOnResume) add("rerunOnResume(false)")
+          if (rerunOnResumeSet && !rerunOnResume) add("rerunOnResume(false)")
           if (config != NodeConfig()) add("config")
           if (bodySetByCaller) add("body")
+          if (requireConfirmation || confirmationPredicate != null) add("requireConfirmation")
         }
         if (rejected.isNotEmpty()) {
           throw WorkflowConfigurationException(
@@ -476,7 +505,7 @@ private constructor(
       return FunctionNode(
         name = resolvedName,
         description = description,
-        rerunOnResume = rerunOnResume,
+        explicitRerunOnResume = if (rerunOnResumeSet) rerunOnResume else null,
         waitForOutput = waitForOutput,
         config = config,
         explicitInputSchema = inputSchema,
@@ -561,6 +590,17 @@ fun interface NodeBody<I, O> {
     ): T =
       throw NodeInterruptedException(RequestInput(interruptId, message, payload, responseSchema))
   }
+}
+
+/**
+ * Decides for each input whether a [FunctionNode] run asks the user to approve it, set through
+ * [FunctionNode.Builder.requireConfirmation]. It runs on the workflow's coroutine before the body,
+ * so it must not block, and an exception it throws fails the run.
+ */
+@AdkJavaInteropApi
+@ExperimentalWorkflowApi
+fun interface ConfirmationPredicate<in I> {
+  @Throws(Exception::class) fun test(context: Context, input: I): Boolean
 }
 
 /** The JSON form of [content], as a session saves it. */
@@ -739,7 +779,7 @@ internal inline fun <reified I, reified O> buildFunctionNode(
   return FunctionNode(
     name = name,
     description = description,
-    rerunOnResume = rerunOnResume ?: (requireConfirmation || confirmationPredicate != null),
+    rerunOnResume = rerunOnResume,
     waitForOutput = waitForOutput,
     config = config,
     inputSchema = inputSchema,

@@ -17,6 +17,7 @@
 package com.google.adk.kt.workflow;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -51,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -1020,6 +1022,324 @@ public final class FunctionNodeJavaInteropTest {
         String.valueOf(error.getMessage()), error.getMessage().contains("payload of requestInput"));
   }
 
+  @Test
+  public void builder_requireConfirmation_asksThenRunsTheBodyWithTheApproval() {
+    // Arrange: rerunOnResume is left unset, so the confirmation turns it on.
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, Map<String, Object>> remove =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body(
+                (ctx, content) -> {
+                  runs.incrementAndGet();
+                  return ImmutableMap.of("hint", ctx.getToolConfirmation().getHint());
+                })
+            .requireConfirmation(true)
+            .build();
+    JavaAskSession session = new JavaAskSession(remove, echo(), "confirm_wf");
+
+    // Act
+    List<Event> asked = session.run(Content.fromText("user", "rm /tmp/a"));
+    List<Event> approved =
+        session.run(
+            answer(confirmationId(asked), ImmutableMap.of("confirmed", true, "hint", "ok")));
+
+    // Assert
+    assertEquals(
+        "Please approve or reject the tool call remove().",
+        asked.stream()
+            .flatMap(e -> e.functionCalls().stream())
+            .findFirst()
+            .orElseThrow()
+            .getArgs()
+            .get("message"));
+    assertEquals(ImmutableMap.of("hint", "ok"), outputOf(approved, "reply"));
+    assertEquals(1, runs.get());
+  }
+
+  @Test
+  public void builder_requireConfirmation_rejected_outputsTheRejectionWithoutRunningTheBody() {
+    // Arrange
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, Map<String, Object>> remove =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body(
+                (ctx, content) -> {
+                  runs.incrementAndGet();
+                  return ImmutableMap.of("removed", true);
+                })
+            .requireConfirmation(true)
+            .build();
+    JavaAskSession session = new JavaAskSession(remove, echo(), "reject_wf");
+    List<Event> asked = session.run(Content.fromText("user", "rm /tmp/a"));
+
+    // Act
+    List<Event> rejected =
+        session.run(answer(confirmationId(asked), ImmutableMap.of("confirmed", false)));
+
+    // Assert
+    assertEquals(
+        ImmutableMap.of("error", "This tool call is rejected."), outputOf(rejected, "reply"));
+    assertEquals(0, runs.get());
+  }
+
+  @Test
+  public void builder_requireConfirmationPredicate_asksOnlyWhenItReturnsTrue() {
+    // Arrange: only a message naming /etc needs approval.
+    FunctionNode<Content, Map<String, Object>> remove =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body((ctx, content) -> ImmutableMap.of("removed", content.text()))
+            .requireConfirmation((ctx, content) -> content.text().contains("/etc"))
+            .build();
+
+    // Act
+    List<Event> safe =
+        new JavaAskSession(remove, echo(), "safe_wf").run(Content.fromText("user", "/tmp/a"));
+    List<Event> risky =
+        new JavaAskSession(remove, echo(), "risky_wf").run(Content.fromText("user", "/etc/a"));
+
+    // Assert
+    assertTrue(safe.stream().allMatch(e -> e.functionCalls().isEmpty()));
+    assertEquals(ImmutableMap.of("removed", "/tmp/a"), outputOf(safe, "reply"));
+    assertTrue(confirmationId(risky).startsWith("wf_tool_confirmation:"));
+    assertTrue(risky.stream().allMatch(e -> e.getOutput() == null));
+  }
+
+  @Test
+  public void builder_requireConfirmationPredicate_runsOnceAcrossAnApprovedResume() {
+    // Arrange
+    AtomicInteger checks = new AtomicInteger();
+    FunctionNode<Content, Map<String, Object>> remove =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body((ctx, content) -> ImmutableMap.of("removed", content.text()))
+            .requireConfirmation(
+                (ctx, content) -> {
+                  checks.incrementAndGet();
+                  return true;
+                })
+            .build();
+    JavaAskSession session = new JavaAskSession(remove, echo(), "predicate_once_wf");
+    List<Event> asked = session.run(Content.fromText("user", "/etc/a"));
+
+    // Act
+    List<Event> approved =
+        session.run(answer(confirmationId(asked), ImmutableMap.of("confirmed", true)));
+
+    // Assert: the answer decides the resumed run, so the predicate is not asked again.
+    assertEquals(ImmutableMap.of("removed", "/etc/a"), outputOf(approved, "reply"));
+    assertEquals(1, checks.get());
+  }
+
+  @Test
+  public void parallelOf_itemThatRequiresConfirmation_asksForEachItem() {
+    // Arrange
+    FunctionNode<Content, List<String>> paths =
+        FunctionNodes.of(
+            "paths",
+            Content.class,
+            new TypeReference<List<String>>() {},
+            (ctx, content) -> ImmutableList.of("/etc/a", "/etc/b"));
+    FunctionNode<Object, Object> remove =
+        FunctionNodes.builder(Object.class, Object.class)
+            .name("remove")
+            .body((ctx, path) -> "removed " + path)
+            .requireConfirmation(true)
+            .build();
+
+    // Act
+    List<Event> asked =
+        new JavaAskSession(paths, FunctionNode.parallelOf(remove), "parallel_confirm_wf")
+            .run(Content.fromText("user", "go"));
+
+    // Assert
+    List<String> ids =
+        asked.stream()
+            .flatMap(e -> e.functionCalls().stream())
+            .map(call -> call.getId())
+            .distinct()
+            .toList();
+    assertEquals(2, ids.size());
+    assertTrue(ids.stream().allMatch(id -> id.startsWith("wf_tool_confirmation:")));
+  }
+
+  @Test
+  public void builder_requireConfirmationPredicateThrows_failsTheRunWithoutRunningTheBody() {
+    // Arrange
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, Map<String, Object>> remove =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body(
+                (ctx, content) -> {
+                  runs.incrementAndGet();
+                  return ImmutableMap.of("removed", true);
+                })
+            .requireConfirmation(
+                (ctx, content) -> {
+                  throw new IOException("policy unavailable");
+                })
+            .build();
+    JavaAskSession session = new JavaAskSession(remove, echo(), "throwing_wf");
+    Content message = Content.fromText("user", "/etc/a");
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> session.run(message));
+
+    // Assert
+    boolean causedByPredicate = false;
+    for (Throwable t = error; t != null; t = t.getCause()) {
+      causedByPredicate |= "policy unavailable".equals(t.getMessage());
+    }
+    assertTrue(String.valueOf(error), causedByPredicate);
+    assertEquals(0, runs.get());
+  }
+
+  @Test
+  public void builder_requireConfirmationFalse_clearsAnEarlierPredicate() {
+    // Arrange
+    FunctionNode<Content, Map<String, Object>> remove =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body((ctx, content) -> ImmutableMap.of("removed", content.text()))
+            .requireConfirmation((ctx, content) -> true)
+            .requireConfirmation(false)
+            .build();
+
+    // Act
+    List<Event> events =
+        new JavaAskSession(remove, echo(), "cleared_wf").run(Content.fromText("user", "/etc/a"));
+
+    // Assert
+    assertTrue(events.stream().allMatch(e -> e.functionCalls().isEmpty()));
+    assertEquals(ImmutableMap.of("removed", "/etc/a"), outputOf(events, "reply"));
+  }
+
+  @Test
+  public void toBuilder_requireConfirmationOnANodeFromOf_asks() {
+    // Arrange: the node from of() does not rerun on resume, and its copy adds a confirmation.
+    FunctionNode<Content, Map<String, Object>> remove =
+        FunctionNodes.of(
+                "remove",
+                Content.class,
+                JSON_OBJECT,
+                (ctx, content) -> ImmutableMap.of("removed", content.text()))
+            .toBuilder()
+            .requireConfirmation(true)
+            .build();
+
+    // Act
+    List<Event> asked =
+        new JavaAskSession(remove, echo(), "copy_wf").run(Content.fromText("user", "/tmp/a"));
+
+    // Assert
+    assertTrue(confirmationId(asked).startsWith("wf_tool_confirmation:"));
+    assertTrue(asked.stream().allMatch(e -> e.getOutput() == null));
+  }
+
+  @Test
+  public void toBuilder_rerunOnResume_copiesOnlyAnExplicitValue() {
+    // Arrange
+    FunctionNode.Builder<Content, Map<String, Object>> remove =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body((ctx, content) -> ImmutableMap.of())
+            .requireConfirmation(true);
+    FunctionNode<Content, Map<String, Object>> derived = remove.build();
+    FunctionNode<Content, Map<String, Object>> explicit = remove.rerunOnResume(true).build();
+
+    // Act
+    FunctionNode<Content, Map<String, Object>> derivedCopy =
+        derived.toBuilder().requireConfirmation(false).build();
+    FunctionNode<Content, Map<String, Object>> explicitCopy =
+        explicit.toBuilder().requireConfirmation(false).build();
+
+    // Assert
+    assertFalse(derivedCopy.getRerunOnResume());
+    assertTrue(explicitCopy.getRerunOnResume());
+  }
+
+  @Test
+  public void builder_requireConfirmationRejected_failsAStringSuccessorAndUnsetsARecordsFields() {
+    // Arrange
+    FunctionNode<Content, String> book =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("book")
+            .body((ctx, content) -> "booked")
+            .requireConfirmation(true)
+            .build();
+    FunctionNode<String, String> notify =
+        FunctionNodes.of("notify", String.class, String.class, (ctx, text) -> text);
+    FunctionNode<Leave, String> file =
+        FunctionNodes.of(
+            "file", Leave.class, String.class, (ctx, leave) -> leave.days() + " " + leave.reason());
+    JavaAskSession stringSession = new JavaAskSession(book, notify, "string_reject_wf");
+    JavaAskSession recordSession = new JavaAskSession(book, file, "record_reject_wf");
+    Map<String, Object> no = ImmutableMap.of("confirmed", false);
+    Content stringRejection =
+        answer(confirmationId(stringSession.run(Content.fromText("user", "trip"))), no);
+    Content recordRejection =
+        answer(confirmationId(recordSession.run(Content.fromText("user", "trip"))), no);
+
+    // Act
+    boolean stringInputRejected = rejected(() -> stringSession.run(stringRejection));
+    List<Event> recordEvents = recordSession.run(recordRejection);
+
+    // Assert
+    assertTrue(stringInputRejected);
+    assertEquals("0 null", outputOf(recordEvents, "file"));
+  }
+
+  @Test
+  public void builder_requireConfirmationOnARecordPort_asksWithTheInputsJsonForm() {
+    // Arrange
+    FunctionNode<Content, Leave> parse =
+        FunctionNodes.of(
+            "parse", Content.class, Leave.class, (ctx, content) -> new Leave(3, "trip"));
+    FunctionNode<Leave, String> book =
+        FunctionNodes.builder(Leave.class, String.class)
+            .name("book")
+            .body((ctx, leave) -> "booked " + leave.days())
+            .requireConfirmation(true)
+            .build();
+
+    // Act
+    List<Event> asked =
+        new JavaAskSession(parse, book, "record_confirm_wf").run(Content.fromText("user", "hi"));
+
+    // Assert
+    Object payload =
+        asked.stream()
+            .flatMap(e -> e.functionCalls().stream())
+            .findFirst()
+            .orElseThrow()
+            .getArgs()
+            .get("payload");
+    assertEquals(
+        ImmutableMap.of("tool_name", "book", "args", ImmutableMap.of("days", 3L, "reason", "trip")),
+        payload);
+  }
+
+  @Test
+  public void builder_requireConfirmationWithRerunOnResumeFalse_failsAtBuild() {
+    // Arrange
+    FunctionNode.Builder<Content, Map<String, Object>> builder =
+        FunctionNodes.builder(Content.class, JSON_OBJECT)
+            .name("remove")
+            .body((ctx, content) -> ImmutableMap.of())
+            .rerunOnResume(false)
+            .requireConfirmation(true);
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, builder::build);
+
+    // Assert
+    assertTrue(error.getMessage(), error.getMessage().contains("must rerun on resume"));
+  }
+
   /** A resumable app running {@code first} then {@code second}, driven a turn at a time. */
   private static final class JavaAskSession {
     private final InMemoryRunner runner;
@@ -1047,6 +1367,11 @@ public final class FunctionNodeJavaInteropTest {
 
   /** The user's answer to the request {@code interruptId}. */
   private static Content answer(String interruptId, String text) {
+    return answer(interruptId, ImmutableMap.of("result", text));
+  }
+
+  /** The user's answer to the request {@code interruptId}, as a {@code response} object. */
+  private static Content answer(String interruptId, Map<String, Object> response) {
     return new Content(
         "user",
         ImmutableList.of(
@@ -1054,7 +1379,7 @@ public final class FunctionNodeJavaInteropTest {
                 .functionResponse(
                     FunctionResponse.builder()
                         .name(RequestInput.FUNCTION_CALL_NAME)
-                        .response(ImmutableMap.of("result", text))
+                        .response(response)
                         .id(interruptId)
                         .build())
                 .build()));
@@ -1185,6 +1510,22 @@ public final class FunctionNodeJavaInteropTest {
 
   private static String describe(Object value) {
     return value instanceof String ? "\"" + value + "\"" : String.valueOf(value);
+  }
+
+  private static final TypeReference<Map<String, Object>> JSON_OBJECT = new TypeReference<>() {};
+
+  /** A node named {@code reply} that outputs its input. */
+  private static FunctionNode<Map<String, Object>, Map<String, Object>> echo() {
+    return FunctionNodes.of("reply", JSON_OBJECT, JSON_OBJECT, (ctx, value) -> value);
+  }
+
+  /** The id of the confirmation request in {@code events}. */
+  private static String confirmationId(List<Event> events) {
+    return events.stream()
+        .flatMap(e -> e.functionCalls().stream())
+        .findFirst()
+        .orElseThrow()
+        .getId();
   }
 
   /**

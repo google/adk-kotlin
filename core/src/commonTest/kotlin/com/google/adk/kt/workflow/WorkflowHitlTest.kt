@@ -4640,7 +4640,7 @@ class WorkflowHitlTest {
       node<Any?, Any?>("defaulted", requireConfirmation = { _, _ -> true }) { _, x -> x }
 
     // Assert
-    assertContains(noRerunError.message.orEmpty(), "needs rerunOnResume = true")
+    assertContains(noRerunError.message.orEmpty(), "must rerun on resume")
     assertTrue(defaulted.rerunOnResume)
   }
 
@@ -4683,7 +4683,7 @@ class WorkflowHitlTest {
 
     // Assert
     assertTrue(built.rerunOnResume)
-    for (error in errors) assertContains(error.message.orEmpty(), "needs rerunOnResume = true")
+    for (error in errors) assertContains(error.message.orEmpty(), "must rerun on resume")
   }
 
   @Test
