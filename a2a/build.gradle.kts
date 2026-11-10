@@ -31,12 +31,13 @@ kotlin {
           implementation(libs.kotlinx.serialization)
         }
       }
-    getByName("commonTest") {
-      dependencies {
-        implementation(project(":google-adk-kotlin-testing"))
-        implementation(kotlin("test"))
+    val commonTest =
+      getByName("commonTest") {
+        dependencies {
+          implementation(project(":google-adk-kotlin-testing"))
+          implementation(kotlin("test"))
+        }
       }
-    }
     val commonJvmAndroidMain =
       create("commonJvmAndroidMain") {
         dependsOn(commonMain)
@@ -50,6 +51,7 @@ kotlin {
           compileOnly(libs.jspecify)
         }
       }
+    val commonJvmAndroidTest = create("commonJvmAndroidTest") { dependsOn(commonTest) }
     getByName("jvmMain") {
       dependsOn(commonJvmAndroidMain)
       dependencies {
@@ -59,6 +61,7 @@ kotlin {
       }
     }
     getByName("jvmTest") {
+      dependsOn(commonJvmAndroidTest)
       dependencies {
         implementation(libs.junit)
         implementation(libs.google.truth)
