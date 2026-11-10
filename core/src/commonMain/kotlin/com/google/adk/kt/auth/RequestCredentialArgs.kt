@@ -27,8 +27,10 @@ import kotlinx.serialization.json.JsonNames
 /**
  * The arguments of an `adk_request_credential` call. Input also takes each field's snake_case name.
  *
- * @property functionCallId The id of the tool call that asked for the credential.
+ * @property functionCallId The id of the tool call, or of the workflow node's sign-in request, that
+ *   asked for the credential.
  * @property authConfig The sign-in request for the credential.
+ * @property message What the user is asked to provide, which only a workflow node's request has.
  */
 @Serializable
 internal data class RequestCredentialArgs(
@@ -36,6 +38,7 @@ internal data class RequestCredentialArgs(
   @JsonNames("auth_config")
   @Serializable(with = AuthConfigSerializer::class)
   val authConfig: AuthConfig,
+  val message: String? = null,
 ) {
   /** Returns these arguments as function call args. */
   fun toMap(): Map<String, Any?> = encodeToPlainMap(serializer(), this)
