@@ -208,27 +208,14 @@ private constructor(
    * [Context.toolConfirmation], or null when [confirmationPredicate] decides not to ask. Without an
    * answer yet, asks for one and ends the run.
    */
-  private suspend fun FlowCollector<Nothing>.confirmation(
-    context: Context,
-    input: I,
-  ): ToolConfirmation? {
-    val interruptId = "$CONFIRMATION_INTERRUPT_PREFIX${context.nodePath}"
-    val answer = context.resumeInputs[interruptId]
+  private suspend fun confirmation(context: Context, input: I): ToolConfirmation? {
+    val answer = context.resumeInputs[confirmationInterruptId(context.nodePath)]
     if (answer == null) {
       if (!requireConfirmation && confirmationPredicate?.invoke(context, input) != true) return null
-      requestInput(
-        interruptId = interruptId,
-        message = "Please approve or reject the tool call $name().",
-        payload =
-          mapOf("tool_name" to name, "args" to inputCodec.encode(input, "input of node '$name'")),
-        responseSchema = TOOL_CONFIRMATION_SCHEMA,
-      )
+      val args = inputCodec.encode(input, "input of node '$name'")
+      throw NodeInterruptedException(confirmationRequest(context.nodePath, name, args))
     }
-    val confirmation =
-      (answer as? Map<*, *>)?.let(::parseToolConfirmation)
-        ?: throw IllegalArgumentException(
-          "node '$name' got an answer to its confirmation request that is not a ToolConfirmation."
-        )
+    val confirmation = readConfirmationAnswer(name, answer)
     context.toolConfirmation = confirmation
     return confirmation
   }
@@ -573,9 +560,69 @@ private const val CONFIRMATION_INTERRUPT_PREFIX = "wf_tool_confirmation:"
 /** The output of a run the user rejected. */
 private val REJECTED_OUTPUT: Map<String, Any?> = mapOf("error" to "This tool call is rejected.")
 
-/** The schema of a confirmation answer. */
+/** The schema of a confirmation answer, which may leave out `confirmed` to reject the call. */
 private val TOOL_CONFIRMATION_SCHEMA: Schema? by lazy {
-  SchemaUtils.inferSchema(typeOf<ToolConfirmation>())
+  SchemaUtils.inferSchema(typeOf<ToolConfirmation>())?.let { schema ->
+    schema.copy(
+      required = schema.required?.minus(ToolConfirmation.CONFIRMED_KEY)?.takeIf { it.isNotEmpty() }
+    )
+  }
+}
+
+/**
+ * The keys of a confirmation answer. An answer omitting `confirmed` may contain only these keys, so
+ * the ADK client's `{"response": ...}` wrapper is still parsed rather than read as a rejection.
+ */
+private val CONFIRMATION_FIELDS =
+  setOf(ToolConfirmation.CONFIRMED_KEY, ToolConfirmation.HINT_KEY, ToolConfirmation.PAYLOAD_KEY)
+
+/** Returns the interrupt id for the confirmation request of the node run at [nodePath]. */
+internal fun confirmationInterruptId(nodePath: String): String =
+  "$CONFIRMATION_INTERRUPT_PREFIX$nodePath"
+
+/**
+ * Returns the request that asks the user to approve or reject the call to [toolName] with [args]
+ * made by the node run at [nodePath]. Without a [hint], the message names the tool.
+ */
+internal fun confirmationRequest(
+  nodePath: String,
+  toolName: String,
+  args: Any?,
+  hint: String? = null,
+  confirmationPayload: Any? = null,
+): RequestInput =
+  RequestInput(
+    interruptId = confirmationInterruptId(nodePath),
+    message =
+      hint?.takeIf { it.isNotEmpty() } ?: "Please approve or reject the tool call $toolName().",
+    payload =
+      buildMap {
+        put("tool_name", toolName)
+        put("args", args)
+        confirmationPayload?.let { put("confirmation_payload", it) }
+      },
+    responseSchema = TOOL_CONFIRMATION_SCHEMA,
+  )
+
+/**
+ * Reads [answer], the answer to the confirmation request for the node named [nodeName]. An answer
+ * that leaves out `confirmed` rejects the call, as in Python.
+ *
+ * @throws IllegalArgumentException if [answer] is not a confirmation.
+ */
+internal fun readConfirmationAnswer(nodeName: String, answer: Any): ToolConfirmation {
+  val fields = answer as? Map<*, *>
+  val confirmation =
+    when {
+      fields == null -> null
+      fields[ToolConfirmation.CONFIRMED_KEY] == null &&
+        CONFIRMATION_FIELDS.containsAll(fields.keys) ->
+        parseToolConfirmation(fields + (ToolConfirmation.CONFIRMED_KEY to false))
+      else -> parseToolConfirmation(fields)
+    }
+  return requireNotNull(confirmation) {
+    "node '$nodeName' got an answer to its confirmation request that is not a ToolConfirmation."
+  }
 }
 
 /** Whether this value is already in the form a schema checks: JSON-native, or a message. */
