@@ -132,7 +132,7 @@ private fun signInReply(reply: Any?): AuthCredential? {
  * without an access token, for a scheme that signs in through an authorization URL.
  */
 @OptIn(SecretAccess::class)
-private fun AuthConfig.needsCodeExchange(credential: AuthCredential): Boolean =
+internal fun AuthConfig.needsCodeExchange(credential: AuthCredential): Boolean =
   authScheme.usesAuthorizationUrl &&
     credential is AuthCredential.OAuth2 &&
     credential.accessToken?.reveal().isNullOrEmpty()

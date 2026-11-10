@@ -17,6 +17,9 @@
 package com.google.adk.kt.events
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.RequestCredentialArgs
+import com.google.adk.kt.auth.SignInRequest
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.serialization.LenientEpochMillisSerializer
@@ -150,6 +153,20 @@ constructor(
   /** Returns all function responses from this event. */
   fun functionResponses(): List<FunctionResponse> =
     content?.parts?.mapNotNull { it.functionResponse } ?: emptyList()
+
+  /** Returns the requests ADK made in this event for credentials its tools need, if any. */
+  @ExperimentalAuthApi
+  fun signInRequests(): List<SignInRequest> =
+    functionCalls()
+      // ADK marks its own requests long-running; a call the model wrote never is.
+      .filter {
+        it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME && it.id in longRunningToolIds
+      }
+      .mapNotNull { call ->
+        val id = call.id ?: return@mapNotNull null
+        val requestArgs = RequestCredentialArgs.fromMap(call.args) ?: return@mapNotNull null
+        SignInRequest(id = id, authConfig = requestArgs.authConfig)
+      }
 
   /**
    * Returns this event's [content] text joined with [separator] (none by default), or "" when the

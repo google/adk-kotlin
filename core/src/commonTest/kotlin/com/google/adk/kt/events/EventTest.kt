@@ -19,13 +19,18 @@ package com.google.adk.kt.events
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.AuthConfig
+import com.google.adk.kt.auth.RequestCredentialArgs
+import com.google.adk.kt.auth.SignInRequest
 import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.processors.generateRequestConfirmationEvent
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyAgent
+import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
@@ -187,6 +192,94 @@ class EventTest {
     )
   }
 
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun signInRequests_adkRequests_returnsOnePerRequest() {
+    val first = testApiKeyConfig(credentialKey = "key-1")
+    val second = testApiKeyConfig(credentialKey = "key-2")
+    val event =
+      Event(
+        author = "agent",
+        content =
+          Content(
+            parts =
+              listOf(
+                Part(functionCall = credentialCall("req-1", "call-1", first)),
+                Part(functionCall = credentialCall("req-2", "call-2", second)),
+              )
+          ),
+        longRunningToolIds = setOf("req-1", "req-2"),
+      )
+
+    assertEquals(
+      listOf(
+        SignInRequest(id = "req-1", authConfig = first),
+        SignInRequest(id = "req-2", authConfig = second),
+      ),
+      event.signInRequests(),
+    )
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun signInRequests_malformedArguments_skipsTheCall() {
+    val call =
+      FunctionCall(
+        name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+        args = mapOf("functionCallId" to "call-1"),
+        id = "req-1",
+      )
+    val event =
+      Event(
+        author = "agent",
+        content = Content(parts = listOf(Part(functionCall = call))),
+        longRunningToolIds = setOf("req-1"),
+      )
+
+    assertEquals(emptyList(), event.signInRequests())
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun signInRequests_notLongRunning_skipsTheCall() {
+    // A call the model wrote itself, beside a long-running one; ADK never marks the former.
+    val event =
+      Event(
+        author = "agent",
+        content =
+          Content(
+            parts =
+              listOf(
+                Part(functionCall = FunctionCall(name = "tool_x", id = "call-1")),
+                Part(
+                  functionCall =
+                    credentialCall("req-1", "call-2", testApiKeyConfig(credentialKey = "key"))
+                ),
+              )
+          ),
+        longRunningToolIds = setOf("call-1"),
+      )
+
+    assertEquals(emptyList(), event.signInRequests())
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun signInRequests_otherLongRunningCall_skipsTheCall() {
+    // A long-running tool call is not a sign-in request, even with a request's arguments.
+    val call =
+      credentialCall("req-1", "call-1", testApiKeyConfig(credentialKey = "key"))
+        .copy(name = "tool_x")
+    val event =
+      Event(
+        author = "agent",
+        content = Content(parts = listOf(Part(functionCall = call))),
+        longRunningToolIds = setOf("req-1"),
+      )
+
+    assertEquals(emptyList(), event.signInRequests())
+  }
+
   @OptIn(AdkJavaInteropApi::class)
   @Test
   fun toBuilder_matchesCopy() {
@@ -274,4 +367,18 @@ class EventTest {
     // Assert
     assertEquals("task-1", decoded.isolationScope)
   }
+
+  /** Returns an `adk_request_credential` call [id] for [authConfig], as ADK makes it. */
+  @OptIn(ExperimentalAuthApi::class)
+  private fun credentialCall(
+    id: String,
+    functionCallId: String,
+    authConfig: AuthConfig,
+  ): FunctionCall =
+    FunctionCall(
+      name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+      args =
+        RequestCredentialArgs(functionCallId = functionCallId, authConfig = authConfig).toMap(),
+      id = id,
+    )
 }

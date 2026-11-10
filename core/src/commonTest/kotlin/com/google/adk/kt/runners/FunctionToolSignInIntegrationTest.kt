@@ -26,6 +26,7 @@ import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.auth.RequestCredentialArgs
 import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.auth.SignInRequest
 import com.google.adk.kt.auth.signInConfig
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmResponse
@@ -44,6 +45,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -54,8 +56,8 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * End-to-end sign-in for a tool through the public Runner: the tool asks for a credential, ADK
- * emits an `adk_request_credential` request and ends the agent call, and the app's response stores
- * the credential and re-runs the tool.
+ * emits a sign-in request and ends the agent call, and the app answers with [SignInRequest.reply],
+ * so ADK stores the credential and re-runs the tool.
  */
 @OptIn(ExperimentalAuthApi::class)
 class FunctionToolSignInIntegrationTest {
@@ -82,10 +84,10 @@ class FunctionToolSignInIntegrationTest {
             resumabilityConfig = ResumabilityConfig(isResumable = true),
           )
       )
-    val requestIds = runner.send(userMessage("hi")).signInRequestIdsByCall()
-    val unused = runner.send(signInResponse(requestIds.getValue("call-a")))
+    val (requestA, requestB) = runner.send(userMessage("hi")).signInRequests()
+    val unused = runner.send(requestA.reply(API_KEY))
 
-    val second = runner.send(signInResponse(requestIds.getValue("call-b")))
+    val second = runner.send(requestB.reply(API_KEY))
 
     assertEquals(
       listOf(
@@ -102,20 +104,20 @@ class FunctionToolSignInIntegrationTest {
   fun runAsync_rerunToolAsksAgain_emitsNoNewRequest() = runBlocking {
     // Only the model's own tool calls turn a credential request into an event.
     val runner = InMemoryRunner(agent = agent(SignInTool(TOOL_NAME, CONFIG, alwaysAsks = true)))
-    val requestId = runner.send(userMessage("hi")).signInRequestIds().single()
+    val request = runner.send(userMessage("hi")).signInRequests().single()
 
-    val events = runner.send(signInResponse(requestId))
+    val events = runner.send(request.reply(API_KEY))
 
-    assertEquals(emptyList(), events.signInRequestIds())
+    assertEquals(emptyList(), events.flatMap { it.credentialCallIds() })
     assertEquals(2, seen.size)
   }
 
   @Test
   fun runAsync_response_rerunsTheToolAndCallsTheModel() = runBlocking {
     val runner = InMemoryRunner(agent = agent(SignInTool(TOOL_NAME, CONFIG)))
-    val requestId = runner.send(userMessage("hi")).signInRequestIds().single()
+    val request = runner.send(userMessage("hi")).signInRequests().single()
 
-    val events = runner.send(signInResponse(requestId))
+    val events = runner.send(request.reply(API_KEY))
 
     assertEquals(
       listOf<Pair<String, AuthCredential?>>(TOOL_NAME to null, TOOL_NAME to API_KEY),
@@ -132,9 +134,9 @@ class FunctionToolSignInIntegrationTest {
   fun runAsync_resumable_pausesAndTheResponseAloneResumes() = runBlocking {
     val runner = resumableRunner(agent(SignInTool(TOOL_NAME, CONFIG)))
     val firstTurn = runner.send(userMessage("hi"))
-    val requestId = firstTurn.signInRequestIds().single()
+    val request = firstTurn.signInRequests().single()
 
-    val resumed = runner.send(signInResponse(requestId))
+    val resumed = runner.send(request.reply(API_KEY))
 
     assertFalse(AGENT_NAME to END_OF_AGENT in simplifyResumableEvents(firstTurn))
     assertEquals(setOf(firstTurn.first().invocationId), resumed.map { it.invocationId }.toSet())
@@ -151,9 +153,9 @@ class FunctionToolSignInIntegrationTest {
   @Test
   fun runAsync_resumable_response_rerunsTheToolOnce() = runBlocking {
     val runner = resumableRunner(agent(SignInTool(TOOL_NAME, CONFIG)))
-    val requestId = runner.send(userMessage("hi")).signInRequestIds().single()
+    val request = runner.send(userMessage("hi")).signInRequests().single()
 
-    val resumed = runner.send(signInResponse(requestId))
+    val resumed = runner.send(request.reply(API_KEY))
 
     assertEquals(
       listOf<Pair<String, AuthCredential?>>(TOOL_NAME to null, TOOL_NAME to API_KEY),
@@ -176,10 +178,10 @@ class FunctionToolSignInIntegrationTest {
           calls = listOf(toolCall("tool_a", "call-a"), toolCall("tool_b", "call-b")),
         )
       )
-    val requestIds = runner.send(userMessage("hi")).signInRequestIdsByCall()
-    val unused = runner.send(signInResponse(requestIds.getValue("call-a")))
+    val (requestA, requestB) = runner.send(userMessage("hi")).signInRequests()
+    val unused = runner.send(requestA.reply(API_KEY))
 
-    val second = runner.send(signInResponse(requestIds.getValue("call-b")))
+    val second = runner.send(requestB.reply(API_KEY))
 
     assertEquals(emptyList(), second)
     assertEquals(listOf("tool_a", "tool_b", "tool_a"), seen.map { (tool, _) -> tool })
@@ -195,15 +197,10 @@ class FunctionToolSignInIntegrationTest {
           calls = listOf(toolCall("tool_a", "call-a"), toolCall("tool_b", "call-b")),
         )
       )
-    val requestIds = runner.send(userMessage("hi")).signInRequestIdsByCall()
+    val requests = runner.send(userMessage("hi")).signInRequests()
 
     val resumed =
-      runner.send(
-        userMessage(
-          signInResponsePart(requestIds.getValue("call-a")),
-          signInResponsePart(requestIds.getValue("call-b")),
-        )
-      )
+      runner.send(Content(role = Role.USER, parts = requests.flatMap { it.reply(API_KEY).parts }))
 
     assertEquals(
       listOf(
@@ -268,9 +265,11 @@ class FunctionToolSignInIntegrationTest {
     val request =
       runner
         .runAsync(userId = USER_ID, sessionId = SESSION_ID, newMessage = userMessage("hi"))
-        .first { it.signInRequestIds().isNotEmpty() }
+        .first { it.signInRequests().isNotEmpty() }
+        .signInRequests()
+        .single()
 
-    val events = runner.send(signInResponse(request.signInRequestIds().single()))
+    val events = runner.send(request.reply(API_KEY))
 
     assertEquals(
       listOf(AGENT_NAME to toolResponsePart(TOOL_NAME, "ok"), AGENT_NAME to "done"),
@@ -300,8 +299,9 @@ class FunctionToolSignInIntegrationTest {
       ),
       simplifyEvents(events),
     )
-    val signInEvent = events.single { it.signInRequestIds().isNotEmpty() }
-    assertEquals(signInEvent.signInRequestIds().toSet(), signInEvent.longRunningToolIds)
+    // Event.signInRequests lists only long-running calls, so ADK must mark each of its own.
+    val signInEvent = events.single { it.credentialCallIds().isNotEmpty() }
+    assertEquals(signInEvent.credentialCallIds().toSet(), signInEvent.longRunningToolIds)
   }
 
   @Test
@@ -385,30 +385,13 @@ class FunctionToolSignInIntegrationTest {
     fun toolResponsePart(name: String, status: String): Part =
       Part(functionResponse = FunctionResponse(name = name, response = mapOf("status" to status)))
 
-    /** The app's response to sign-in request [requestId], carrying the user's API key. */
-    fun signInResponsePart(requestId: String): Part =
-      Part(
-        functionResponse =
-          FunctionResponse(
-            name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
-            id = requestId,
-            response = mapOf("authType" to "apiKey", "apiKey" to "user-key"),
-          )
-      )
+    /** Returns the sign-in requests in these events, in order. */
+    fun List<Event>.signInRequests(): List<SignInRequest> = flatMap { it.signInRequests() }
 
-    fun signInResponse(requestId: String): Content = userMessage(signInResponsePart(requestId))
-
-    fun Event.signInRequestIds(): List<String> = listOf(this).signInRequestIds()
-
-    fun List<Event>.signInRequestIds(): List<String> =
-      flatMap { it.functionCalls() }
+    /** Returns the ids of this event's `adk_request_credential` calls, long-running or not. */
+    fun Event.credentialCallIds(): List<String> =
+      functionCalls()
         .filter { it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME }
         .mapNotNull { it.id }
-
-    /** Returns the ids of the sign-in requests in these events, by the tool call each is for. */
-    fun List<Event>.signInRequestIdsByCall(): Map<String, String> =
-      flatMap { it.functionCalls() }
-        .filter { it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME }
-        .associate { it.args["functionCallId"] as String to checkNotNull(it.id) }
   }
 }
