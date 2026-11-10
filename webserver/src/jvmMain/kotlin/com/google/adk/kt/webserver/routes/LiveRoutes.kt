@@ -34,6 +34,7 @@ import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.models.decodeLiveRequests
 import com.google.adk.kt.webserver.models.encodeLiveEvent
+import com.google.adk.kt.webserver.routes.SessionRoutesErrors.ERR_SESSION_NOT_LOADED
 import io.ktor.http.Parameters
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
@@ -259,10 +260,9 @@ internal fun Route.liveRoutes(
         } catch (e: CancellationException) {
           throw e
         } catch (e: Exception) {
-          // A fixed reason: the store's message can carry connection details.
           logger.warn("Loading the session for a live run failed: {}", e.typeName)
           return@webSocket close(
-            CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Session could not be loaded")
+            CloseReason(CloseReason.Codes.INTERNAL_ERROR, ERR_SESSION_NOT_LOADED.message)
           )
         }
       if (session == null) {
@@ -382,7 +382,3 @@ private suspend fun DefaultWebSocketServerSession.closeFailedRun(failure: Throwa
   logger.warn("Live run failed: {}", failure.typeName)
   close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, closeReasonFor(failure.message.orEmpty())))
 }
-
-/** The failure's type, for a log line: the failure's message can carry user or model content. */
-private val Throwable.typeName: String
-  get() = this::class.simpleName ?: this::class.java.name

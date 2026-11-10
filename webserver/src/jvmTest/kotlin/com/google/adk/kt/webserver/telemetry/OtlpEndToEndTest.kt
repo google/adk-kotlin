@@ -22,6 +22,7 @@ import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.AdkApiServer
@@ -37,6 +38,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -86,13 +88,19 @@ class OtlpEndToEndTest {
     }
   }
 
-  private fun config(port: Int) =
-    AdkServerConfig(
+  private fun config(port: Int): AdkServerConfig {
+    val sessions = InMemorySessionService()
+    // `/run` runs only on a session that exists.
+    runBlocking {
+      val unused = sessions.createSession(SessionKey(AGENT, USER_ID, SESSION_ID))
+    }
+    return AdkServerConfig(
       appLoader = InMemoryAppLoader(App(appName = AGENT, rootAgent = ReplyingAgent())),
-      sessionService = InMemorySessionService(),
+      sessionService = sessions,
       artifactService = InMemoryArtifactService(),
       port = port,
     )
+  }
 
   /** Answers every turn with one event, so a run needs no model. */
   private class ReplyingAgent : BaseAgent(name = AGENT, description = "Replies once") {
@@ -151,8 +159,10 @@ class OtlpEndToEndTest {
   private companion object {
     const val AGENT = "e2e-agent"
     const val AGENT_SPAN = "invoke_agent $AGENT"
+    const val USER_ID = "u"
+    const val SESSION_ID = "s"
     const val RUN_BODY =
-      """{"appName":"$AGENT","userId":"u","sessionId":"s","newMessage":""" +
+      """{"appName":"$AGENT","userId":"$USER_ID","sessionId":"$SESSION_ID","newMessage":""" +
         """{"role":"user","parts":[{"text":"hi"}]}}"""
     val TIMEOUT = 5.seconds
     val POLL_INTERVAL = 50.milliseconds

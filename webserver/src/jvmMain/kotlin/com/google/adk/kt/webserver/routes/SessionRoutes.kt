@@ -51,6 +51,9 @@ internal object SessionRoutesErrors {
   val ERR_MISSING_USER_ID = SessionRoutesError("Missing userId", HttpStatusCode.BadRequest)
   val ERR_MISSING_SESSION_ID = SessionRoutesError("Missing sessionId", HttpStatusCode.BadRequest)
   val ERR_SESSION_NOT_FOUND = SessionRoutesError("Session not found", HttpStatusCode.NotFound)
+  // A fixed message: the store's own can carry connection details.
+  val ERR_SESSION_NOT_LOADED =
+    SessionRoutesError("Session could not be loaded", HttpStatusCode.InternalServerError)
   val ERR_SESSION_ALREADY_EXISTS =
     SessionRoutesError("Session already exists", HttpStatusCode.Conflict)
   val ERR_MALFORMED_BODY =

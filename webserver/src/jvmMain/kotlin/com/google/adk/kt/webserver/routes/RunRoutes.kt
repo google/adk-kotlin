@@ -22,10 +22,14 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.GetSessionConfig
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.models.AgentRunRequest
 import com.google.adk.kt.webserver.models.SseError
+import com.google.adk.kt.webserver.routes.SessionRoutesErrors.ERR_SESSION_NOT_FOUND
+import com.google.adk.kt.webserver.routes.SessionRoutesErrors.ERR_SESSION_NOT_LOADED
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.response.respond
@@ -36,6 +40,7 @@ import io.ktor.server.routing.route
 import io.ktor.utils.io.writeStringUtf8
 import java.lang.invoke.MethodHandles
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOn
@@ -58,6 +63,10 @@ internal fun Route.runRoutes(
       val runner =
         servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
           ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
+
+      sessionError(sessionService, request)?.let { error ->
+        return@post call.respond(error.code, error.message)
+      }
 
       // The /run endpoint always returns the full event list; SSE is handled by /run_sse.
       val runConfig = RunConfig(streamingMode = StreamingMode.NONE)
@@ -87,6 +96,10 @@ internal fun Route.runRoutes(
     val runner =
       servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
         ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
+    // Checked before the stream opens, since the status line leaves with the first byte.
+    sessionError(sessionService, request)?.let { error ->
+      return@post call.respond(error.code, error.message)
+    }
 
     val runConfig =
       RunConfig(streamingMode = if (request.streaming) StreamingMode.SSE else StreamingMode.NONE)
@@ -109,7 +122,7 @@ internal fun Route.runRoutes(
         .map { event -> adkJson.encodeToString(event) }
         // Upstream only, so a failed write below is not reported as a failed run.
         .catch { failure ->
-          val type = failure::class.simpleName ?: failure::class.java.name
+          val type = failure.typeName
           // Type only: the message can carry caller or model content, which a log must not.
           logger.warn("Run failed after the stream opened: {}", type)
           // The status line left with the headers, so the caller hears about this in the stream.
@@ -123,4 +136,27 @@ internal fun Route.runRoutes(
         }
     }
   }
+}
+
+/**
+ * The error to answer instead of running [request]: its session is missing, which the runner would
+ * otherwise create, or failed to load. Null when the request can run: its session exists, or it
+ * names none and runs in a new one.
+ */
+private suspend fun sessionError(
+  sessionService: SessionService,
+  request: AgentRunRequest,
+): SessionRoutesError? {
+  val sessionId = request.sessionId ?: return null
+  val key = SessionKey(request.appName, request.userId, sessionId)
+  val session =
+    try {
+      sessionService.getSession(key, GetSessionConfig(numRecentEvents = 0))
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      logger.warn("Loading the session for a run failed: {}", e.typeName)
+      return ERR_SESSION_NOT_LOADED
+    }
+  return if (session == null) ERR_SESSION_NOT_FOUND else null
 }

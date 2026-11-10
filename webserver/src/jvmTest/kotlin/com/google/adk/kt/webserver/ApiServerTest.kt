@@ -30,7 +30,9 @@ import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.InMemorySessionService
@@ -80,6 +82,7 @@ import io.ktor.server.websocket.timeout
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -89,11 +92,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
 
-class FakeSessionService : SessionService {
+/** Finds only the sessions whose id is in [existingSessionIds], under any app and user. */
+class FakeSessionService(private val existingSessionIds: Set<String> = emptySet()) :
+  SessionService {
   override suspend fun createSession(key: SessionKey, state: Map<String, Any>?) =
     Session(SessionKey(key.appName, key.userId, key.id ?: "gen-id"))
 
-  override suspend fun getSession(key: SessionKey, config: GetSessionConfig?) = null
+  override suspend fun getSession(key: SessionKey, config: GetSessionConfig?) =
+    if (key.id in existingSessionIds) Session(key) else null
 
   override suspend fun listSessions(appName: String, userId: String) =
     ListSessionsResponse(emptyList())
@@ -185,7 +191,7 @@ private class OrderRecordingPlugin(
 
 @RunWith(JUnit4::class)
 class ApiServerTest {
-  private val sessionService = FakeSessionService()
+  private val sessionService = FakeSessionService(existingSessionIds = setOf("testSession"))
   private val artifactService = FakeArtifactService()
   private val appLoader = FakeAppLoader()
 
@@ -348,6 +354,79 @@ class ApiServerTest {
   }
 
   @Test
+  fun runRoute_unknownSession_returnsNotFoundWithoutRunningTheAgent() = testApplication {
+    // Arrange
+    val sessions = InMemorySessionService()
+    val model = CountingModel()
+    application { adkApiModule(countingModelConfig(sessions, model)) }
+
+    // Act
+    val response = client.post("/run") { runBody(COUNTED_APP) }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.NotFound)
+    assertThat(response.bodyAsText()).isEqualTo("Session not found")
+    assertThat(model.calls.get()).isEqualTo(0)
+    assertThat(sessions.getSession(SessionKey(COUNTED_APP, "testUser", "testSession"))).isNull()
+  }
+
+  @Test
+  fun runSseRoute_unknownSession_returnsNotFoundBeforeStreaming() = testApplication {
+    // Arrange
+    val sessions = InMemorySessionService()
+    val model = CountingModel()
+    application { adkApiModule(countingModelConfig(sessions, model)) }
+
+    // Act
+    val response = client.post("/run_sse") { runBody(COUNTED_APP) }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.NotFound)
+    assertThat(response.bodyAsText()).isEqualTo("Session not found")
+    assertThat(model.calls.get()).isEqualTo(0)
+    assertThat(sessions.getSession(SessionKey(COUNTED_APP, "testUser", "testSession"))).isNull()
+  }
+
+  @Test
+  fun runRoute_existingSession_runsTheAgent() = testApplication {
+    // Arrange
+    val sessions = InMemorySessionService()
+    val unused = sessions.createSession(SessionKey(COUNTED_APP, "testUser", "testSession"))
+    val model = CountingModel()
+    application { adkApiModule(countingModelConfig(sessions, model)) }
+
+    // Act
+    val response = client.post("/run") { runBody(COUNTED_APP) }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(response.bodyAsText()).contains("counted answer")
+    assertThat(model.calls.get()).isEqualTo(1)
+  }
+
+  @Test
+  fun runRoute_noSessionId_runsTheAgentInANewSession() = testApplication {
+    // Arrange
+    val sessions = InMemorySessionService()
+    val model = CountingModel()
+    application { adkApiModule(countingModelConfig(sessions, model)) }
+
+    // Act
+    val response =
+      client.post("/run") {
+        contentType(ContentType.Application.Json)
+        setBody(
+          "{\"appName\":\"$COUNTED_APP\",\"userId\":\"testUser\",\"newMessage\":{\"role\":\"user\",\"parts\":[{\"text\":\"Hi\"}]}}"
+        )
+      }
+
+    // Assert
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertThat(model.calls.get()).isEqualTo(1)
+    assertThat(sessions.listSessions(COUNTED_APP, "testUser").sessions).hasSize(1)
+  }
+
+  @Test
   fun runRoute_resumableApp_emitsTheWorkflowCheckpoints() = testApplication {
     // Arrange
     application {
@@ -489,6 +568,8 @@ class ApiServerTest {
     testApplication {
       // Arrange
       val sessions = InMemorySessionService()
+      val requestedKey = SessionKey("greeter", "testUser", "testSession")
+      val unused = sessions.createSession(requestedKey)
       val loader =
         object : AppLoader {
           override fun listApps() = listOf("greeter")
@@ -514,7 +595,7 @@ class ApiServerTest {
 
       // Assert
       assertThat(response.status).isEqualTo(HttpStatusCode.OK)
-      assertThat(sessions.getSession(SessionKey("greeter", "testUser", "testSession"))).isNotNull()
+      assertThat(checkNotNull(sessions.getSession(requestedKey)).events).isNotEmpty()
       assertThat(sessions.getSession(SessionKey("internal_name", "testUser", "testSession")))
         .isNull()
     }
@@ -706,7 +787,31 @@ class ApiServerTest {
       appLoader = appLoader.takeIf { agentLoader == null },
     )
 
+  /** Serves an agent on [model] as the app [COUNTED_APP], keeping its sessions in [sessions]. */
+  private fun countingModelConfig(sessions: SessionService, model: Model) =
+    AdkServerConfig(
+      appLoader =
+        InMemoryAppLoader(
+          App(appName = COUNTED_APP, rootAgent = LlmAgent(name = "counted", model = model))
+        ),
+      sessionService = sessions,
+      artifactService = artifactService,
+      apiServerSpanExporter = ApiServerSpanExporter(),
+    )
+
+  /** Answers every request with "counted answer" and counts the requests in [calls]. */
+  private class CountingModel : Model {
+    override val name = "counting"
+    val calls = AtomicInteger()
+
+    override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> {
+      calls.incrementAndGet()
+      return flowOf(LlmResponse(content = modelMessage("counted answer")))
+    }
+  }
+
   companion object {
+    private const val COUNTED_APP = "counted"
     private val LIVE_TIMEOUT = 10.seconds
 
     /** The close code `/run_live` sends a client that names [appName] and an unknown session. */

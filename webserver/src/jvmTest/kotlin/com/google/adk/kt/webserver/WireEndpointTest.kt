@@ -71,7 +71,7 @@ import org.junit.runners.JUnit4
  */
 @RunWith(JUnit4::class)
 class WireEndpointTest {
-  private val sessionService = FakeSessionService()
+  private val sessionService = FakeSessionService(existingSessionIds = setOf("testSession"))
   private val artifactService = FakeArtifactService()
   private val appLoader = FakeAppLoader("echo-agent") { EchoAgent() }
 
