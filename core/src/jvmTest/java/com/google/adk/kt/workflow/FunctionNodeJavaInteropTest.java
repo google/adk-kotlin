@@ -46,6 +46,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -134,6 +135,14 @@ public final class FunctionNodeJavaInteropTest {
 
   /** A record whose {@code token} Jackson reads but never writes. */
   record Secret(String name, @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String token) {}
+
+  record Rush(int qty, boolean rush, boolean urgent) {}
+
+  record Ledger(long cents) {}
+
+  enum Color {
+    RED
+  }
 
   /** A POJO whose {@code tier} field is written as {@code loyalty_tier}. */
   public static final class Customer {
@@ -1049,6 +1058,133 @@ public final class FunctionNodeJavaInteropTest {
                         .id(interruptId)
                         .build())
                 .build()));
+  }
+
+  @Test
+  public void scalarPorts_acceptOnlyTheJsonTypeAQuotedLiteralOrAWholeNumber() {
+    // Arrange
+    Object[][] rows = {
+      {"3", Integer.class, "Integer:3"},
+      {"1e2", Integer.class, "Integer:100"},
+      {"3.0", Integer.class, "Integer:3"},
+      {3.0, Integer.class, "Integer:3"},
+      {3L, Long.class, "Long:3"},
+      {"003", Integer.class, "fails"},
+      {"+3", Integer.class, "fails"},
+      {"1_000", Integer.class, "fails"},
+      {" 3", Integer.class, "fails"},
+      {3.5, Integer.class, "fails"},
+      {"3.5", Integer.class, "fails"},
+      {true, Integer.class, "fails"},
+      // Quoted numbers parse as doubles, as on a Kotlin port: tiny ones round to 0, big ones lose
+      // precision, and an exponent costs no time.
+      {"1e-99999999", Integer.class, "Integer:0"},
+      {"1.00000000000000001", Integer.class, "Integer:1"},
+      {"9007199254740993.0", Long.class, "Long:9007199254740992"},
+      {"3000000000", Integer.class, "fails"},
+      {"300", Short.class, "Short:300"},
+      {40000L, Short.class, "fails"},
+      {200L, Byte.class, "fails"},
+      {"1.5", Double.class, "Double:1.5"},
+      {3L, Double.class, "Double:3.0"},
+      {"NaN", Double.class, "fails"},
+      {"Infinity", Double.class, "fails"},
+      {"1e999", Double.class, "fails"},
+      {1e39, Float.class, "fails"},
+      {true, Double.class, "fails"},
+      {"true", Boolean.class, "Boolean:true"},
+      {false, Boolean.class, "Boolean:false"},
+      {"TRUE", Boolean.class, "fails"},
+      {"yes", Boolean.class, "fails"},
+      {1L, Boolean.class, "fails"},
+      {"RED", Color.class, "Color:RED"},
+      {"red", Color.class, "fails"},
+      {0L, Color.class, "fails"},
+      // Exceptions that keep Jackson's readers.
+      {" RED", Color.class, "Color:RED"},
+      {65L, Character.class, "Character:A"},
+    };
+    Map<String, String> expected = new LinkedHashMap<>();
+    Map<String, String> actual = new LinkedHashMap<>();
+
+    // Act
+    for (Object[] row : rows) {
+      String key = describe(row[0]) + " -> " + ((Class<?>) row[1]).getSimpleName();
+      expected.put(key, (String) row[2]);
+      actual.put(key, readAs(row[0], (Class<?>) row[1]));
+    }
+
+    // Assert
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  public void recordPort_appliesTheTableToEachField() {
+    // Arrange
+    Map<String, Object> typed = ImmutableMap.of("qty", 3, "rush", true);
+    Map<String, Object> relaxed = ImmutableMap.of("qty", 3.0, "rush", "true", "note", "yes");
+    Map<String, Object> padded = ImmutableMap.of("qty", "003", "rush", true);
+    Map<String, Object> nullQty = new HashMap<>();
+    nullQty.put("qty", null);
+    nullQty.put("rush", true);
+
+    Map<String, Object> bigLong = ImmutableMap.of("cents", 9007199254740993L);
+
+    // Act
+    String typedRead = readAs(typed, Rush.class);
+    String relaxedRead = readAs(relaxed, Rush.class);
+    String paddedRead = readAs(padded, Rush.class);
+    String nullRead = readAs(nullQty, Rush.class);
+    String bigLongRead = readAs(bigLong, Ledger.class);
+
+    // Assert
+    // An absent primitive keeps its default, as a Kotlin field with a default value would.
+    assertEquals("Rush:Rush[qty=3, rush=true, urgent=false]", typedRead);
+    assertEquals("Rush:Rush[qty=3, rush=true, urgent=false]", relaxedRead);
+    assertEquals("fails", paddedRead);
+    assertEquals("fails", nullRead);
+    assertEquals("Ledger:Ledger[cents=9007199254740993]", bigLongRead);
+  }
+
+  @Test
+  public void recordPort_stringFieldRejectsANumber() {
+    // Arrange
+    Map<String, Object> text = ImmutableMap.of("days", 3, "reason", "trip");
+    Map<String, Object> number = ImmutableMap.of("days", 3, "reason", 5);
+
+    // Act
+    String textRead = readAs(text, Leave.class);
+    String numberRead = readAs(number, Leave.class);
+
+    // Assert
+    assertEquals("Leave:Leave[days=3, reason=trip]", textRead);
+    assertEquals("fails", numberRead);
+  }
+
+  /**
+   * Feeds {@code value} to a node whose input port is {@code type} and returns what the node read
+   * as {@code "Class:value"}, or {@code "fails"} when the port rejects it.
+   */
+  private static <T> String readAs(Object value, Class<T> type) {
+    FunctionNode<Object, Object> feed =
+        FunctionNodes.of("feed", Object.class, Object.class, (ctx, in) -> value);
+    FunctionNode<T, String> read =
+        FunctionNodes.of(
+            "read", type, String.class, (ctx, in) -> in.getClass().getSimpleName() + ":" + in);
+    try {
+      return (String) outputOf(run("coercion", "go", feed, read), "read");
+    } catch (RuntimeException e) {
+      for (Throwable t = e; t != null; t = t.getCause()) {
+        if (t instanceof NodeInputValidationException) {
+          return "fails";
+        }
+      }
+      throw e;
+    }
+  }
+
+  private static String describe(Object value) {
+    return value instanceof String ? "\"" + value + "\"" : String.valueOf(value);
   }
 
   /**

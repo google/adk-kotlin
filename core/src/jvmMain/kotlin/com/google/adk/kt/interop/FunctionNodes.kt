@@ -18,22 +18,31 @@
 
 package com.google.adk.kt.interop
 
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.core.JsonToken
 import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.databind.DeserializationContext
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JavaType
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.databind.cfg.CoercionAction
+import com.fasterxml.jackson.databind.cfg.CoercionInputShape
 import com.fasterxml.jackson.databind.deser.AbstractDeserializer
 import com.fasterxml.jackson.databind.deser.BeanDeserializerBase
 import com.fasterxml.jackson.databind.deser.DefaultDeserializationContext
 import com.fasterxml.jackson.databind.deser.ValueInstantiator
 import com.fasterxml.jackson.databind.deser.impl.UnsupportedTypeDeserializer
+import com.fasterxml.jackson.databind.deser.std.StdScalarDeserializer
 import com.fasterxml.jackson.databind.json.JsonMapper
+import com.fasterxml.jackson.databind.module.SimpleModule
 import com.fasterxml.jackson.databind.ser.impl.UnknownSerializer
 import com.fasterxml.jackson.databind.ser.impl.UnsupportedTypeSerializer
 import com.fasterxml.jackson.databind.ser.std.BeanSerializerBase
+import com.fasterxml.jackson.databind.type.LogicalType
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
+import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
@@ -59,6 +68,12 @@ import kotlin.reflect.typeOf
  * port passes values unchanged, and a `String` port reads a message as its text, passes null
  * through, rejects any other non-text value, and infers a string schema. To run a node on each item
  * of a list, wrap it with [FunctionNode.parallelOf].
+ *
+ * Numbers, booleans, enums, and text inside a record follow the coercion rules of Kotlin ports: a
+ * value of the JSON type, the same literal quoted, or a whole number into an integer. The
+ * exceptions keep Jackson's readers: a `char` reads a number as a code point, an enum name is
+ * trimmed, and `BigInteger`, `BigDecimal`, the `Atomic*` types and primitive arrays stay lenient. A
+ * primitive field rejects an explicit null.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi
@@ -211,8 +226,9 @@ object FunctionNodes {
 private const val BUILDER = "a FunctionNodes.builder node"
 
 /**
- * One mapper for every Java port: unknown properties are ignored, null fields are written, and
- * `java.time` values are read and written as ISO-8601 strings.
+ * One mapper for every Java port: unknown properties are ignored, null fields are written,
+ * `java.time` values travel as ISO-8601 strings, and scalars follow the typed-port coercion table
+ * with the exceptions listed on [FunctionNodes].
  */
 private val MAPPER: ObjectMapper =
   JsonMapper.builder()
@@ -220,7 +236,80 @@ private val MAPPER: ObjectMapper =
     .addModule(JavaTimeModule())
     .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
     .disable(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS)
+    .withCoercionConfig(LogicalType.Textual) {
+      it.setCoercion(CoercionInputShape.Integer, CoercionAction.Fail)
+      it.setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
+      it.setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail)
+    }
+    .enable(DeserializationFeature.FAIL_ON_NUMBERS_FOR_ENUMS)
+    .addModule(tableScalars())
     .build()
+
+/**
+ * Number and boolean readers for the table, which read a scalar as the Kotlin port of that type
+ * does. Jackson's coercion configs cannot limit text to JSON literals or floats to whole numbers,
+ * so these replace its readers.
+ */
+private fun tableScalars(): SimpleModule =
+  SimpleModule("AdkPortScalars").apply {
+    scalar(0L) { wholeLong(it) }
+    scalar(0) { wholeLong(it)?.takeIf { n -> n.toInt().toLong() == n }?.toInt() }
+    scalar(0.toShort()) { wholeLong(it)?.takeIf { n -> n.toShort().toLong() == n }?.toShort() }
+    scalar(0.toByte()) { wholeLong(it)?.takeIf { n -> n.toByte().toLong() == n }?.toByte() }
+    scalar(0.0) { ValueCoercer.numberLiteral(scalarValue(it))?.toDouble() }
+    scalar(0f) {
+      ValueCoercer.numberLiteral(scalarValue(it))?.toFloat()?.takeIf { f -> f.isFinite() }
+    }
+    scalar(false) { ValueCoercer.booleanLiteral(scalarValue(it)) }
+  }
+
+private inline fun <reified T : Any> SimpleModule.scalar(
+  primitiveDefault: T,
+  noinline read: (JsonParser) -> T?,
+) {
+  addDeserializer(
+    T::class.javaObjectType,
+    TableScalarDeserializer(T::class.javaObjectType, null, read),
+  )
+  addDeserializer(
+    T::class.javaPrimitiveType!!,
+    TableScalarDeserializer(T::class.javaObjectType, primitiveDefault, read),
+  )
+}
+
+private fun wholeLong(p: JsonParser): Long? = ValueCoercer.integerLiteral(scalarValue(p))?.toLong()
+
+/** The current scalar token as the value a Kotlin port reads from the same JSON, else null. */
+private fun scalarValue(p: JsonParser): Any? =
+  when (p.currentToken()) {
+    JsonToken.VALUE_NUMBER_INT ->
+      if (p.numberType == JsonParser.NumberType.BIG_INTEGER) p.doubleValue else p.longValue
+    JsonToken.VALUE_NUMBER_FLOAT -> p.doubleValue
+    JsonToken.VALUE_STRING -> p.text
+    JsonToken.VALUE_TRUE -> true
+    JsonToken.VALUE_FALSE -> false
+    else -> null
+  }
+
+/**
+ * Reads a [type] with [read]; a primitive field takes no null and keeps its default when absent.
+ */
+private class TableScalarDeserializer<T : Any>(
+  private val type: Class<T>,
+  private val primitiveDefault: T?,
+  private val read: (JsonParser) -> T?,
+) : StdScalarDeserializer<T>(type) {
+  @Suppress("UNCHECKED_CAST")
+  override fun deserialize(p: JsonParser, ctxt: DeserializationContext): T =
+    read(p) ?: ctxt.handleUnexpectedToken(type, p) as T
+
+  override fun getNullValue(ctxt: DeserializationContext): T? {
+    if (primitiveDefault != null) ctxt.reportInputMismatch<Any>(this, "null for a primitive")
+    return null
+  }
+
+  override fun getAbsentValue(ctxt: DeserializationContext): Any? = primitiveDefault
+}
 
 /** Port classes that keep the codec of the matching Kotlin port type. */
 private val KOTLIN_CODEC_TYPES: Map<Class<*>, KType> =
