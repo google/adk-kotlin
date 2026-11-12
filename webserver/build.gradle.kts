@@ -73,16 +73,15 @@ tasks.withType<Test>().configureEach {
   setEnvironment(System.getenv().filterKeys { !it.startsWith("OTEL_") })
 }
 
-// Core resolves its tracer once per JVM, so the test exporting through it needs a JVM of its own.
-val otlpEndToEndTestClass = "com.google.adk.kt.webserver.telemetry.OtlpEndToEndTest"
-
-val otlpEndToEndTest =
-  tasks.register<Test>("otlpEndToEndTest") {
+// Core resolves its tracer once per JVM, so each test exporting through it needs a JVM of its own.
+val endToEndTest =
+  tasks.register<Test>("endToEndTest") {
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
-    filter { includeTestsMatching(otlpEndToEndTestClass) }
+    filter { includeTestsMatching("*EndToEndTest") }
+    forkEvery = 1
   }
 
-tasks.test { filter { excludeTestsMatching(otlpEndToEndTestClass) } }
+tasks.test { filter { excludeTestsMatching("*EndToEndTest") } }
 
-tasks.check { dependsOn(otlpEndToEndTest) }
+tasks.check { dependsOn(endToEndTest) }

@@ -93,7 +93,36 @@ class ApiServerSpanExporterTest {
     assertThat(exporter.getSessionToTraceIdsMap().getValue("s1")).hasSize(2)
   }
 
+  @Test
+  fun sessionSpans_returnsEverySpanOfTheSessionsTracesOnly_inExportOrder() {
+    val exporter = exporterWith {
+      val agent = endSpan("invoke_agent replier", CONVERSATION_ID to "s1")
+      endSpan("execute_tool t", parent = agent)
+      endSpan("invoke_agent other", SESSION_ID to "s2")
+    }
+
+    assertThat(exporter.sessionSpans("s1").map { it.name })
+      .containsExactly("invoke_agent replier", "execute_tool t")
+      .inOrder()
+    assertThat(exporter.sessionSpans("never-seen")).isEmpty()
+  }
+
+  @Test
+  fun export_overTheSpanCap_evictsTheOldestSpansAndTheirSessionsSpans() {
+    val exporter = exporterWith {
+      endSpan("span 0", SESSION_ID to "s1")
+      for (i in 1..SPAN_CAP) endSpan("span $i")
+    }
+
+    assertThat(exporter.sessionSpans("s1")).isEmpty()
+    val stored = exporter.getAllExportedSpans()
+    assertThat(stored).hasSize(SPAN_CAP)
+    assertThat(stored.first().name).isEqualTo("span 1")
+    assertThat(stored.last().name).isEqualTo("span $SPAN_CAP")
+  }
+
   companion object {
+    private const val SPAN_CAP = 10_000
     private const val SESSION_ID = "gcp.vertex.agent.session_id"
     private const val CONVERSATION_ID = "gen_ai.conversation.id"
   }

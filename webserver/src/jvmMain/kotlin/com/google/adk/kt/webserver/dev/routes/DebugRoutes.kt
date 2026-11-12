@@ -23,6 +23,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
+import io.opentelemetry.api.trace.SpanId
 
 internal fun Route.debugRoutes(exporter: ApiServerSpanExporter, camelCase: Boolean = false) {
 
@@ -52,42 +53,19 @@ internal fun Route.debugRoutes(exporter: ApiServerSpanExporter, camelCase: Boole
       return@get
     }
 
-    val traceIdsForSession = exporter.getSessionToTraceIdsMap()[sessionId]
-
-    if (traceIdsForSession.isNullOrEmpty()) {
-      call.respond(HttpStatusCode.OK, emptyList<Any>())
-      return@get
-    }
-
-    val allSpansSnapshot = exporter.getAllExportedSpans()
-    val relevantTraceIds = traceIdsForSession.toSet()
-    val resultSpans = mutableListOf<Map<String, Any?>>()
-
-    for (span in allSpansSnapshot) {
-      if (relevantTraceIds.contains(span.spanContext.traceId)) {
-        val spanMap =
-          mutableMapOf<String, Any?>(
-            "name" to span.name,
-            key(SPAN_ID_ATTRIBUTE, "spanId", camelCase) to span.spanContext.spanId,
-            key(TRACE_ID_ATTRIBUTE, "traceId", camelCase) to span.spanContext.traceId,
-            key("start_time", "startTime", camelCase) to span.startEpochNanos,
-            key("end_time", "endTime", camelCase) to span.endEpochNanos,
-          )
-
-        val attributesMap = mutableMapOf<String, Any>()
-        span.attributes.forEach { key, value -> attributesMap[key.key] = value }
-        spanMap["attributes"] = attributesMap
-
-        val parentKey = key("parent_span_id", "parentSpanId", camelCase)
-        val parentSpanId = span.parentSpanId
-        if (parentSpanId != io.opentelemetry.api.trace.SpanId.getInvalid()) {
-          spanMap[parentKey] = parentSpanId
-        } else {
-          spanMap[parentKey] = null
-        }
-        resultSpans.add(spanMap)
+    val resultSpans =
+      exporter.sessionSpans(sessionId).map { span ->
+        mapOf(
+          "name" to span.name,
+          key(SPAN_ID_ATTRIBUTE, "spanId", camelCase) to span.spanContext.spanId,
+          key(TRACE_ID_ATTRIBUTE, "traceId", camelCase) to span.spanContext.traceId,
+          key("start_time", "startTime", camelCase) to span.startEpochNanos,
+          key("end_time", "endTime", camelCase) to span.endEpochNanos,
+          "attributes" to span.attributes.asMap().mapKeys { it.key.key },
+          key("parent_span_id", "parentSpanId", camelCase) to
+            span.parentSpanId.takeIf { SpanId.isValid(it) },
+        )
       }
-    }
 
     call.respond(HttpStatusCode.OK, resultSpans)
   }

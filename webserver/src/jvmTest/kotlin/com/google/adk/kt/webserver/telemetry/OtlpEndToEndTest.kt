@@ -29,13 +29,7 @@ import com.google.adk.kt.webserver.AdkApiServer
 import com.google.adk.kt.webserver.AdkServerConfig
 import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
 import com.google.common.truth.Truth.assertThat
-import java.io.IOException
 import java.net.HttpURLConnection
-import java.net.ServerSocket
-import java.net.URI
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeSource
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -47,7 +41,7 @@ import org.junit.runners.JUnit4
  * Spans from a real run reach an OTLP endpoint named by the standard settings.
  *
  * Core resolves its tracer once per JVM, so this class needs a JVM of its own, which the
- * `otlpEndToEndTest` Gradle task gives it.
+ * `endToEndTest` Gradle task gives it.
  */
 @RunWith(JUnit4::class)
 class OtlpEndToEndTest {
@@ -82,7 +76,7 @@ class OtlpEndToEndTest {
     try {
       server.start()
       awaitHealthy(port)
-      assertThat(postRun(port)).isEqualTo(HttpURLConnection.HTTP_OK)
+      assertThat(postRun(port, AGENT)).isEqualTo(HttpURLConnection.HTTP_OK)
     } finally {
       server.stop()
     }
@@ -90,9 +84,8 @@ class OtlpEndToEndTest {
 
   private fun config(port: Int): AdkServerConfig {
     val sessions = InMemorySessionService()
-    // `/run` runs only on a session that exists.
     runBlocking {
-      val unused = sessions.createSession(SessionKey(AGENT, USER_ID, SESSION_ID))
+      val unused = sessions.createSession(SessionKey(AGENT, RUN_USER_ID, RUN_SESSION_ID))
     }
     return AdkServerConfig(
       appLoader = InMemoryAppLoader(App(appName = AGENT, rootAgent = ReplyingAgent())),
@@ -115,57 +108,8 @@ class OtlpEndToEndTest {
       )
   }
 
-  private fun postRun(port: Int): Int {
-    val connection = URI("http://127.0.0.1:$port/run").toURL().openConnection() as HttpURLConnection
-    connection.requestMethod = "POST"
-    connection.doOutput = true
-    connection.setRequestProperty("Content-Type", "application/json")
-    connection.connectTimeout = TIMEOUT.inWholeMilliseconds.toInt()
-    connection.readTimeout = TIMEOUT.inWholeMilliseconds.toInt()
-    return try {
-      connection.outputStream.use { it.write(RUN_BODY.toByteArray()) }
-      connection.responseCode
-    } finally {
-      connection.disconnect()
-    }
-  }
-
-  private fun awaitHealthy(port: Int) {
-    val deadline = TimeSource.Monotonic.markNow() + STARTUP_TIMEOUT
-    while (deadline.hasNotPassedNow()) {
-      if (healthStatusOrNull(port) == HttpURLConnection.HTTP_OK) return
-      Thread.sleep(POLL_INTERVAL.inWholeMilliseconds)
-    }
-    throw AssertionError("Server did not serve /health in time")
-  }
-
-  private fun healthStatusOrNull(port: Int): Int? =
-    try {
-      val connection =
-        URI("http://127.0.0.1:$port/health").toURL().openConnection() as HttpURLConnection
-      connection.connectTimeout = TIMEOUT.inWholeMilliseconds.toInt()
-      connection.readTimeout = TIMEOUT.inWholeMilliseconds.toInt()
-      try {
-        connection.responseCode
-      } finally {
-        connection.disconnect()
-      }
-    } catch (_: IOException) {
-      null
-    }
-
-  private fun freePort(): Int = ServerSocket(0).use { it.localPort }
-
   private companion object {
     const val AGENT = "e2e-agent"
     const val AGENT_SPAN = "invoke_agent $AGENT"
-    const val USER_ID = "u"
-    const val SESSION_ID = "s"
-    const val RUN_BODY =
-      """{"appName":"$AGENT","userId":"$USER_ID","sessionId":"$SESSION_ID","newMessage":""" +
-        """{"role":"user","parts":[{"text":"hi"}]}}"""
-    val TIMEOUT = 5.seconds
-    val POLL_INTERVAL = 50.milliseconds
-    val STARTUP_TIMEOUT = 20.seconds
   }
 }

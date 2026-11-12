@@ -54,14 +54,16 @@ class ApiServerSpanExporter : SpanExporter {
       }
     )
 
-  // Guarded by itself: export writes it while the session trace route reads it.
+  // Guards the spans and the session index together, so a reader sees them in step.
+  private val sessionLock = Any()
+
   private val sessionToTraceIdsMap =
     object : LinkedHashMap<String, MutableSet<String>>(MAX_SESSIONS_TO_STORE, 0.75f, true) {
       override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableSet<String>>) =
         size > MAX_SESSIONS_TO_STORE
     }
 
-  private val allExportedSpans = Collections.synchronizedList(mutableListOf<SpanData>())
+  private val allExportedSpans = ArrayDeque<SpanData>()
 
   fun getEventTraceAttributes(eventId: String): Map<String, Any>? {
     return eventIdTraceStorage[eventId]
@@ -69,24 +71,30 @@ class ApiServerSpanExporter : SpanExporter {
 
   /** A copy of each session's trace ids, safe to iterate while spans are exported. */
   fun getSessionToTraceIdsMap(): Map<String, List<String>> =
-    synchronized(sessionToTraceIdsMap) {
+    synchronized(sessionLock) {
       sessionToTraceIdsMap.mapValues { (_, traceIds) -> traceIds.toList() }
     }
 
-  fun getAllExportedSpans(): List<SpanData> {
-    synchronized(allExportedSpans) {
-      return allExportedSpans.toList()
+  /** Returns a copy of the most recently exported spans, in export order. */
+  fun getAllExportedSpans(): List<SpanData> =
+    synchronized(sessionLock) { allExportedSpans.toList() }
+
+  /** Returns the stored spans of [sessionId]'s traces, in export order. */
+  internal fun sessionSpans(sessionId: String): List<SpanData> =
+    synchronized(sessionLock) {
+      val traceIds = sessionToTraceIdsMap[sessionId] ?: return emptyList()
+      allExportedSpans.filter { it.spanContext.traceId in traceIds }
     }
-  }
 
   override fun export(spans: Collection<SpanData>): CompletableResultCode {
     val currentBatch = spans.toList()
-    allExportedSpans.addAll(currentBatch)
-    synchronized(allExportedSpans) {
-      if (allExportedSpans.size > MAX_TOTAL_SPANS_TO_STORE) {
-        val toRemove = allExportedSpans.size - MAX_TOTAL_SPANS_TO_STORE
-        allExportedSpans.subList(0, toRemove).clear()
+    synchronized(sessionLock) {
+      for (span in currentBatch) {
+        allExportedSpans.addLast(span)
+        val sessionId = sessionIdOf(span) ?: continue
+        sessionToTraceIdsMap.getOrPut(sessionId) { LinkedHashSet() }.add(span.spanContext.traceId)
       }
+      while (allExportedSpans.size > MAX_TOTAL_SPANS_TO_STORE) allExportedSpans.removeFirst()
     }
 
     for (span in currentBatch) {
@@ -106,11 +114,6 @@ class ApiServerSpanExporter : SpanExporter {
           attributesMap.putIfAbsent("gcp.vertex.agent.event_id", eventId)
           eventIdTraceStorage[eventId] = attributesMap
         }
-      }
-
-      val sessionId = sessionIdOf(span) ?: continue
-      synchronized(sessionToTraceIdsMap) {
-        sessionToTraceIdsMap.getOrPut(sessionId) { LinkedHashSet() }.add(span.spanContext.traceId)
       }
     }
 

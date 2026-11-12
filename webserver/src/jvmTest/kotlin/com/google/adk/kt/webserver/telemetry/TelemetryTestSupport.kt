@@ -17,11 +17,18 @@
 package com.google.adk.kt.webserver.telemetry
 
 import com.sun.net.httpserver.HttpServer
+import java.io.IOException
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.URI
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.logging.Handler
 import java.util.logging.LogRecord
 import java.util.logging.Logger
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 import org.slf4j.event.Level
 
 /** A local OTLP/HTTP endpoint that records every request and answers it with an empty 200. */
@@ -133,4 +140,75 @@ internal fun captureOpenTelemetryLogs(block: () -> Unit): String {
     otelLogger.level = previousLevel
   }
   return synchronized(logged) { logged.toString() }
+}
+
+private val HTTP_TIMEOUT = 5.seconds
+private val POLL_INTERVAL = 50.milliseconds
+private val STARTUP_TIMEOUT = 20.seconds
+
+internal fun freePort(): Int = ServerSocket(0).use { it.localPort }
+
+/** Waits until the server on [port] answers `/health`. */
+internal fun awaitHealthy(port: Int) {
+  val deadline = TimeSource.Monotonic.markNow() + STARTUP_TIMEOUT
+  while (deadline.hasNotPassedNow()) {
+    if (healthStatusOrNull(port) == HttpURLConnection.HTTP_OK) return
+    Thread.sleep(POLL_INTERVAL.inWholeMilliseconds)
+  }
+  throw AssertionError("Server did not serve /health in time")
+}
+
+/** User that [postRun] posts as. */
+internal const val RUN_USER_ID = "u"
+
+/** Session that [postRun] posts to; `/run` answers 404 unless it exists. */
+internal const val RUN_SESSION_ID = "s"
+
+/** Posts one `hi` turn to [RUN_SESSION_ID] of [appName], returning the status code. */
+internal fun postRun(port: Int, appName: String): Int {
+  val connection = openHttp(port, "/run")
+  connection.requestMethod = "POST"
+  connection.doOutput = true
+  connection.setRequestProperty("Content-Type", "application/json")
+  val body =
+    """{"appName":"$appName","userId":"$RUN_USER_ID","sessionId":"$RUN_SESSION_ID",""" +
+      """"newMessage":{"role":"user","parts":[{"text":"hi"}]}}"""
+  return try {
+    connection.outputStream.use { it.write(body.toByteArray()) }
+    connection.responseCode
+  } finally {
+    connection.disconnect()
+  }
+}
+
+/** Returns the body of a successful GET of [path]. */
+internal fun httpGet(port: Int, path: String): String {
+  val connection = openHttp(port, path)
+  return try {
+    check(connection.responseCode == HttpURLConnection.HTTP_OK) {
+      "GET $path: ${connection.responseCode}"
+    }
+    connection.inputStream.bufferedReader().use { it.readText() }
+  } finally {
+    connection.disconnect()
+  }
+}
+
+private fun healthStatusOrNull(port: Int): Int? =
+  try {
+    val connection = openHttp(port, "/health")
+    try {
+      connection.responseCode
+    } finally {
+      connection.disconnect()
+    }
+  } catch (_: IOException) {
+    null
+  }
+
+private fun openHttp(port: Int, path: String): HttpURLConnection {
+  val connection = URI("http://127.0.0.1:$port$path").toURL().openConnection() as HttpURLConnection
+  connection.connectTimeout = HTTP_TIMEOUT.inWholeMilliseconds.toInt()
+  connection.readTimeout = HTTP_TIMEOUT.inWholeMilliseconds.toInt()
+  return connection
 }
