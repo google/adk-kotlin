@@ -25,16 +25,10 @@ import com.google.adk.kt.webserver.models.SessionDto
 import com.google.adk.kt.webserver.models.SseError
 import com.google.adk.kt.webserver.models.VersionInfo
 import com.google.common.truth.Truth.assertThat
-import java.util.Collections
-import java.util.IdentityHashMap
 import kotlinx.serialization.ContextualSerializer
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.descriptors.PolymorphicKind
-import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.descriptors.SerialKind
-import kotlinx.serialization.descriptors.StructureKind
-import kotlinx.serialization.descriptors.nonNullOriginal
+import kotlinx.serialization.descriptors.elementNames
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import org.junit.Test
@@ -46,9 +40,10 @@ import org.junit.runners.JUnit4
  * field no response happens to populate - which an endpoint test structurally cannot see.
  *
  * The rule governs the keys the schema introduces, not a free-form map's keys, which are caller or
- * model data. Every check is therefore driven by a [SerialDescriptor], which knows the difference,
- * rather than by scanning response text, which does not. [WireEndpointTest] exercises the same rule
- * against real responses; [WireAliasCoverageTest] is the intake counterpart of this survey.
+ * model data. Every check is therefore driven by a
+ * [kotlinx.serialization.descriptors.SerialDescriptor], which knows the difference, rather than by
+ * scanning response text, which does not. [WireEndpointTest] exercises the same rule against real
+ * responses; [WireAliasCoverageTest] is the intake counterpart of this survey.
  */
 @OptIn(FrameworkInternalApi::class)
 @RunWith(JUnit4::class)
@@ -71,17 +66,13 @@ class WireEmissionCoverageTest {
 
   @Test
   fun noSchemaKeyOnTheResponseGraph_isSnakeCase() {
-    val survey = surveyAllRoots()
-
-    assertThat(survey.snakeCase).containsExactlyElementsIn(KNOWN_LEGACY_ALIASES.keys)
-    assertThat(survey.visited).containsAtLeastElementsIn(KNOWN_LEGACY_ALIASES.values)
+    assertThat(schemaKeys { '_' in it }).containsExactlyElementsIn(KNOWN_LEGACY_ALIASES.keys)
+    assertThat(schemaKeys()).containsAtLeastElementsIn(KNOWN_LEGACY_ALIASES.values)
   }
 
   @Test
   fun theSurvey_reachesTheTypesItClaimsTo() {
-    val survey = surveyAllRoots()
-
-    assertThat(survey.visited)
+    assertThat(schemaKeys())
       .containsAtLeast(
         "VersionInfo.languageVersion",
         "Part.inlineData.mimeType",
@@ -96,9 +87,7 @@ class WireEmissionCoverageTest {
   @Test
   fun theSurvey_declinesOnlyFreeFormValues() {
     // A declined type is a blind spot, so what gets declined is pinned rather than trusted.
-    val survey = surveyAllRoots()
-
-    assertThat(survey.declined)
+    assertThat(WireSchemaSurvey(responseRoots).declined)
       .containsExactly(
         ContextualSerializer(Any::class).descriptor,
         JsonElement.serializer().descriptor,
@@ -162,60 +151,9 @@ class WireEmissionCoverageTest {
     assertThat(walk.shapeMismatches).containsExactly("Event[].content")
   }
 
-  private fun surveyAllRoots(): KeySurvey {
-    val survey = KeySurvey()
-    for ((name, serializer) in responseRoots) survey.visit(serializer.descriptor, name)
-    return survey
-  }
-
-  /**
-   * Walks a descriptor graph and records every schema key, so a snake_case one is caught even on a
-   * field no response happens to populate.
-   */
-  private class KeySurvey {
-    val snakeCase = mutableSetOf<String>()
-    val visited = mutableSetOf<String>()
-    val declined = mutableSetOf<SerialDescriptor>()
-    // Keyed on identity: two instantiations of one generic share a serial name.
-    private val seen = Collections.newSetFromMap(IdentityHashMap<SerialDescriptor, Boolean>())
-
-    /** Surveys the graph under [descriptor], reporting paths from [root]. */
-    fun visit(descriptor: SerialDescriptor, root: String) {
-      seen.clear()
-      enter(descriptor, root)
+  /** The path of every schema key the response graph reaches whose name passes [matching]. */
+  private fun schemaKeys(matching: (String) -> Boolean = { true }): Set<String> =
+    WireSchemaSurvey(responseRoots).types.flatMapTo(mutableSetOf()) { surveyed ->
+      surveyed.type.elementNames.filter(matching).map { "${surveyed.path}.$it" }
     }
-
-    private fun enter(descriptor: SerialDescriptor, path: String) {
-      if (!seen.add(descriptor)) return
-      // An inline value class contributes its wrapped type's keys, not a nesting level.
-      if (descriptor.isInline) return enter(descriptor.getElementDescriptor(0), path)
-      // JsonElement is sealed, but its variants are caller data.
-      if (descriptor.nonNullOriginal == JsonElement.serializer().descriptor) {
-        declined.add(descriptor.nonNullOriginal)
-        return
-      }
-      when (descriptor.kind) {
-        StructureKind.LIST -> enter(descriptor.getElementDescriptor(0), "$path[]")
-        // A map's keys are caller data, but its values may still be a schema type of ours.
-        StructureKind.MAP -> enter(descriptor.getElementDescriptor(1), "$path{}")
-        // A sealed hierarchy's variants are ours; element 1 holds them.
-        PolymorphicKind.SEALED -> {
-          val variants = descriptor.getElementDescriptor(1)
-          for (i in 0 until variants.elementsCount) enter(variants.getElementDescriptor(i), path)
-        }
-        SerialKind.CONTEXTUAL,
-        PolymorphicKind.OPEN -> declined.add(descriptor.nonNullOriginal)
-        StructureKind.CLASS,
-        StructureKind.OBJECT ->
-          for (i in 0 until descriptor.elementsCount) {
-            val name = descriptor.getElementName(i)
-            val child = "$path.$name"
-            visited.add(child)
-            if (name.contains('_')) snakeCase.add(child)
-            enter(descriptor.getElementDescriptor(i), child)
-          }
-        else -> {}
-      }
-    }
-  }
 }

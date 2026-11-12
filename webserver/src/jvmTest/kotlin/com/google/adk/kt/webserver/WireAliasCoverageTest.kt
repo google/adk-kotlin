@@ -20,16 +20,12 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.webserver.models.AgentRunRequest
 import com.google.adk.kt.webserver.models.CreateSessionRequest
 import com.google.common.truth.Truth.assertThat
-import java.util.Collections
-import java.util.IdentityHashMap
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.serialization.ContextualSerializer
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.descriptors.PolymorphicKind
 import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.descriptors.SerialKind
-import kotlinx.serialization.descriptors.StructureKind
-import kotlinx.serialization.descriptors.nonNullOriginal
+import kotlinx.serialization.descriptors.elementNames
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNames
 import kotlinx.serialization.json.JsonNamingStrategy
@@ -60,14 +56,19 @@ class WireAliasCoverageTest {
 
   @Test
   fun everyMultiWordWireProperty_declaresItsSnakeCaseSpelling() {
-    assertThat(survey().missing).isEmpty()
+    assertThat(WireSchemaSurvey(wireRoots).missingAliases()).isEmpty()
   }
 
   @Test
   fun noTwoPropertiesInAClass_shareAnAlternativeName() {
     // kotlinx builds its alias map only for a key that misses every declared name, so a duplicate
     // can sit unreported until some request happens to carry one.
-    assertThat(survey().duplicated).isEmpty()
+    for (surveyed in WireSchemaSurvey(wireRoots).types) {
+      val type = surveyed.type
+      val claimed =
+        type.elementNames.flatMapIndexed { index, name -> type.alternatives(index) + name }
+      assertWithMessage(surveyed.path).that(claimed).containsNoDuplicates()
+    }
   }
 
   @Test
@@ -76,11 +77,9 @@ class WireAliasCoverageTest {
     // serial name, and so do two instantiations of one generic, so a survey keyed on the name
     // rather than the descriptor skips the second of each - a hole exactly where the real graph
     // happens to have none.
-    val survey = AliasSurvey()
+    val survey = WireSchemaSurvey(mapOf("SharedNames" to SharedNames.serializer()))
 
-    survey.visit(SharedNames.serializer().descriptor, "SharedNames")
-
-    assertThat(survey.missing)
+    assertThat(survey.missingAliases())
       .containsExactly(
         """SharedNames.beta[].inAList (needs @JsonNames("in_a_list"))""",
         """SharedNames.delta.held.inABox (needs @JsonNames("in_a_box"))""",
@@ -91,21 +90,17 @@ class WireAliasCoverageTest {
   fun theSurvey_asksForTheAliasTheStrategyWouldDerive() {
     // An acronym is where a hand-rolled transform and the library's part company: a survey that
     // asked for file_u_r_i would have someone declare an alias no client ever sends.
-    val survey = AliasSurvey()
+    val survey = WireSchemaSurvey(mapOf("Acronyms" to Acronyms.serializer()))
 
-    survey.visit(Acronyms.serializer().descriptor, "Acronyms")
-
-    assertThat(survey.missing)
+    assertThat(survey.missingAliases())
       .containsExactly("""Acronyms.fileURI (needs @JsonNames("file_uri"))""")
   }
 
   @Test
   fun theSurvey_entersEveryVariantOfASealedHierarchy() {
-    val survey = AliasSurvey()
+    val survey = WireSchemaSurvey(mapOf("Variants" to Variants.serializer()))
 
-    survey.visit(Variants.serializer().descriptor, "Variants")
-
-    assertThat(survey.missing)
+    assertThat(survey.missingAliases())
       .containsExactly(
         """Variants.bareName (needs @JsonNames("bare_name"))""",
         """Variants.unaliasedName (needs @JsonNames("unaliased_name"))""",
@@ -117,81 +112,27 @@ class WireAliasCoverageTest {
     // These carry caller data, so they name no fields to alias. JsonElement is reachable only
     // through EventActions, so this also pins that the survey gets there - the coverage assertion
     // above would pass vacuously if it stopped.
-    assertThat(survey().notEntered)
+    assertThat(WireSchemaSurvey(wireRoots).declined)
       .containsExactly(
         ContextualSerializer(Any::class).descriptor,
         JsonElement.serializer().descriptor,
       )
   }
 
-  private fun survey(): AliasSurvey {
-    val survey = AliasSurvey()
-    for ((name, serializer) in wireRoots) survey.visit(serializer.descriptor, name)
-    return survey
-  }
-
-  /** Collects properties missing an alias, duplicate aliases, and types it declines to enter. */
-  private class AliasSurvey {
-    val missing = mutableSetOf<String>()
-    val duplicated = mutableSetOf<String>()
-    val notEntered = mutableSetOf<SerialDescriptor>()
-    // Keyed on identity, not serial name: List<A> and List<B> share one name, as do Box<A> and
-    // Box<B>, so a name-keyed set skips the second of each. A non-generic type is one descriptor
-    // however often it is reached, so its cycles terminate; a recursive generic would not.
-    private val seen = Collections.newSetFromMap(IdentityHashMap<SerialDescriptor, Boolean>())
-
-    /** Surveys the graph under [descriptor], reporting paths from [root]. */
-    fun visit(descriptor: SerialDescriptor, root: String) {
-      seen.clear()
-      enter(descriptor, root)
-    }
-
-    private fun enter(descriptor: SerialDescriptor, path: String) {
-      if (!seen.add(descriptor)) return
-      when {
-        descriptor.isInline -> return enter(descriptor.getElementDescriptor(0), path)
-        // JsonElement is sealed, but its variants are caller data.
-        descriptor.nonNullOriginal == JsonElement.serializer().descriptor ||
-          descriptor.kind == SerialKind.CONTEXTUAL ||
-          descriptor.kind == PolymorphicKind.OPEN -> {
-          notEntered.add(descriptor.nonNullOriginal)
-          return
-        }
-        // A sealed hierarchy's variants are ours, under element 1.
-        descriptor.kind == PolymorphicKind.SEALED -> {
-          val variants = descriptor.getElementDescriptor(1)
-          for (index in 0 until variants.elementsCount) {
-            enter(variants.getElementDescriptor(index), path)
-          }
-          return
-        }
-        descriptor.kind == StructureKind.MAP ->
-          return enter(descriptor.getElementDescriptor(1), "$path{}")
-        descriptor.kind == StructureKind.LIST ->
-          return enter(descriptor.getElementDescriptor(0), "$path[]")
-        descriptor.kind != StructureKind.CLASS && descriptor.kind != StructureKind.OBJECT -> return
-      }
-      val claimed = mutableMapOf<String, String>()
-      for (index in 0 until descriptor.elementsCount) {
-        val name = descriptor.getElementName(index)
-        val alternatives =
-          descriptor.getElementAnnotations(index).filterIsInstance<JsonNames>().flatMap {
-            it.names.asList()
-          }
+  /** Each multi-word property the survey reached without its snake_case alternative name. */
+  private fun WireSchemaSurvey.missingAliases(): Set<String> =
+    types.flatMapTo(mutableSetOf()) { surveyed ->
+      val type = surveyed.type
+      type.elementNames.mapIndexedNotNull { index, name ->
         // Derived from the declared name, so a @SerialName override decides the expected spelling.
-        val snakeCase = JsonNamingStrategy.SnakeCase.serialNameForJson(descriptor, index, name)
-        if (snakeCase != name && snakeCase !in alternatives) {
-          missing.add("""$path.$name (needs @JsonNames("$snakeCase"))""")
-        }
-        for (alternative in alternatives + name) {
-          claimed.put(alternative, name)?.let {
-            duplicated.add("$path: $it and $name share '$alternative'")
-          }
-        }
-        enter(descriptor.getElementDescriptor(index), "$path.$name")
+        val snakeCase = JsonNamingStrategy.SnakeCase.serialNameForJson(type, index, name)
+        if (snakeCase == name || snakeCase in type.alternatives(index)) null
+        else """${surveyed.path}.$name (needs @JsonNames("$snakeCase"))"""
       }
     }
-  }
+
+  private fun SerialDescriptor.alternatives(index: Int): List<String> =
+    getElementAnnotations(index).filterIsInstance<JsonNames>().flatMap { it.names.asList() }
 }
 
 @Serializable private data class Aliased(@JsonNames("well_formed") val wellFormed: String? = null)
