@@ -17,6 +17,9 @@
 package com.google.adk.kt.plugins
 
 import com.google.adk.kt.agents.toCallbackContext
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.SignInRequest
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -26,12 +29,14 @@ import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.testApiKeyConfig
+import com.google.adk.kt.testing.testHttpBearerConfig
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import java.io.File
+import java.math.BigInteger
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
@@ -40,6 +45,8 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class DebugLoggingPluginTest {
 
@@ -103,6 +110,23 @@ class DebugLoggingPluginTest {
     assertContains(text, "hello world")
   }
 
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun onUserMessage_signInReply_writesItWithoutTheToken() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val request = SignInRequest(id = "req-1", authConfig = testHttpBearerConfig())
+    val reply = request.reply(AuthCredential.Http.bearer(SENTINEL))
+
+    plugin.startInvocation()
+    assertEquals(reply, plugin.onUserMessage(invocationContext, reply))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "adk_request_credential")
+    assertFalse(text.contains(SENTINEL))
+  }
+
   @Test
   fun capturesLlmRequestAndResponse() = runBlocking {
     val file = tempFile()
@@ -145,6 +169,88 @@ class DebugLoggingPluginTest {
     assertContains(text, "Zurich")
     assertContains(text, "entry_type: tool_response")
     assertContains(text, "temperature")
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun afterTool_contentInResult_writesItWithoutTheToken() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val request = SignInRequest(id = "req-1", authConfig = testHttpBearerConfig())
+    val result: Map<String, Any?> =
+      mapOf("reply" to request.reply(AuthCredential.Http.bearer(SENTINEL)))
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "adk_request_credential")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterTool_credentialInResult_writesItWithoutItsSecrets() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val result: Map<String, Any?> =
+      mapOf("credential" to mapOf("authType" to "apiKey", "apiKey" to SENTINEL))
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "authType")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterTool_jsonObjectCredentialInResult_writesItWithoutItsSecrets() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val credential = buildJsonObject {
+      put("authType", "apiKey")
+      put("apiKey", SENTINEL)
+    }
+    val result: Map<String, Any?> = mapOf("credential" to credential)
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "authType: apiKey")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterTool_resultShapedLikeAStateMarker_writesItAsAMap() = runBlocking {
+    // Must not become ADK's removed-state marker, which YAML can't write.
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val result: Map<String, Any?> = mapOf("value" to mapOf("__ADK_SENTINEL_REMOVED__" to true))
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    assertContains(file.readText(), "__ADK_SENTINEL_REMOVED__: true")
+  }
+
+  @Test
+  fun beforeTool_argJsonCannotRepresent_writesARedactionMarker() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val args: Map<String, Any?> = mapOf("amount" to BigInteger(UNREPRESENTABLE_NUMBER))
+
+    plugin.startInvocation()
+    assertEquals(CallbackChoice.Continue(args), plugin.beforeTool(toolContext, tool, args))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "redaction_failed: true")
+    assertFalse(text.contains(UNREPRESENTABLE_NUMBER))
   }
 
   @Test
@@ -229,5 +335,12 @@ class DebugLoggingPluginTest {
       assertFalse(permissions.contains(PosixFilePermission.GROUP_READ))
       assertFalse(permissions.contains(PosixFilePermission.OTHERS_READ))
     }
+  }
+
+  private companion object {
+    const val SENTINEL = "secret-sentinel"
+
+    // Longer than any digit run in a timestamp, so its absence can't be a coincidence.
+    const val UNREPRESENTABLE_NUMBER = "98765432109876543210"
   }
 }

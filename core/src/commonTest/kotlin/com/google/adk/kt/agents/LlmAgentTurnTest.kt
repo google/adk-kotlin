@@ -1227,6 +1227,48 @@ class LlmAgentTurnTest {
   }
 
   @Test
+  fun runLive_sendDataSpan_leavesOutCredentialSecrets() = runBlocking {
+    val tracer = DummyTracer()
+    Telemetry.setTracerForTest(tracer)
+    TelemetryConfig.captureMessageContent = true
+    try {
+      val connection = RecordingLiveConnection(listOf(turnComplete()))
+      val agent = liveAgent(connection)
+      val credential = mapOf("authType" to "apiKey", "apiKey" to "secret-sentinel")
+      val response = mapOf("credential" to credential)
+      // A response with no matching call is dropped from the history, so both are stored.
+      val sessionService = InMemorySessionService()
+      val key = SessionKey("app", "user", "live-session")
+      val session = sessionService.createSession(key)
+      val unusedCall =
+        sessionService.appendEvent(
+          session,
+          Event(author = agent.name, content = modelFunctionCall("get_key", id = "c1")),
+        )
+      val unusedResponse =
+        sessionService.appendEvent(
+          session,
+          Event(author = agent.name, content = userFunctionResponse("get_key", "c1", response)),
+        )
+
+      agent
+        .runLive(liveContextFor(agent, session = checkNotNull(sessionService.getSession(key))))
+        .toList()
+
+      val data =
+        tracer.recordedSpans
+          .single { it.name == "send_data" }
+          .attributes[TelemetryAttributes.GCP_VERTEX_AGENT_DATA]
+          .toString()
+      assertTrue("\"credential\":{\"authType\":\"apiKey\"}" in data)
+      assertTrue("secret-sentinel" !in data)
+    } finally {
+      TelemetryConfig.captureMessageContent = false
+      Telemetry.resetTracer()
+    }
+  }
+
+  @Test
   fun runLive_sendDataSpan_summarizesInlineMediaAndLeavesOutThoughtSignatures() = runBlocking {
     val tracer = DummyTracer()
     Telemetry.setTracerForTest(tracer)

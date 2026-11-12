@@ -21,6 +21,7 @@ package com.google.adk.kt.webserver.models
 import com.google.adk.kt.agents.LiveRequest
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.sessions.State
@@ -506,6 +507,21 @@ class LiveWireTest {
       )
 
     assertThat(encoded).contains("\"data\":\"AQID\"")
+  }
+
+  @Test
+  fun encodeLiveEvent_credentialInStateDelta_leavesOutItsSecret() {
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "secret-sentinel")
+    val event =
+      Event(
+        author = "agent",
+        actions = EventActions(stateDelta = mutableMapOf("user:credential" to credential)),
+      )
+
+    val encoded = encodeLiveEvent(event)
+
+    assertThat(encoded).contains("\"authType\":\"apiKey\"")
+    assertThat(encoded).doesNotContain("secret-sentinel")
   }
 
   @Test

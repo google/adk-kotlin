@@ -28,6 +28,7 @@ import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.webserver.redactedJson
 import java.lang.invoke.MethodHandles
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
@@ -164,12 +165,12 @@ private fun LiveRequestFrame.toLiveRequests(): List<LiveRequest> {
 }
 
 /**
- * Encodes one agent event as the single JSON text frame a live client expects.
+ * Encodes one agent event, without credential secrets, as the single JSON text frame a live client
+ * expects.
  *
  * Inline media is encoded as base64 so browser clients can decode it.
  */
-@OptIn(FrameworkInternalApi::class)
-internal fun encodeLiveEvent(event: Event): String = adkJson.encodeToString(event)
+internal fun encodeLiveEvent(event: Event): String = redactedJson(event).toString()
 
 /**
  * Audio and image media as realtime input; any other blob is dropped with a warning, since the

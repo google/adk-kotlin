@@ -27,6 +27,7 @@ import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.webserver.models.CreateSessionRequest
 import com.google.adk.kt.webserver.models.SessionDto
+import com.google.adk.kt.webserver.redactedJson
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -276,7 +277,7 @@ private suspend fun ApplicationCall.createSessionFromBody(
         body.rawEvents,
       )
   ) {
-    is CreateSessionOutcome.Created -> respond(outcome.session.toDto())
+    is CreateSessionOutcome.Created -> respond(redactedJson(outcome.session.toDto()))
     is CreateSessionOutcome.Failed -> respond(outcome.error.code, outcome.error.message)
   }
 }
@@ -333,7 +334,7 @@ internal fun Route.sessionRoutes(sessionService: SessionService) {
 
       val sessionsResponse = sessionService.listSessions(appName, userId)
 
-      call.respond(sessionsResponse.sessions.map { it.toDto() })
+      call.respond(redactedJson(sessionsResponse.sessions.map { it.toDto() }))
     }
 
     post {
@@ -374,7 +375,7 @@ internal fun Route.sessionRoutes(sessionService: SessionService) {
             SessionRoutesErrors.ERR_SESSION_NOT_FOUND.message,
           )
         }
-        call.respond(session.toDto())
+        call.respond(redactedJson(session.toDto()))
       }
 
       post {

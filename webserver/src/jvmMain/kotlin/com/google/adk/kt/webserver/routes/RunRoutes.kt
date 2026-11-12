@@ -28,6 +28,7 @@ import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.models.AgentRunRequest
 import com.google.adk.kt.webserver.models.SseError
+import com.google.adk.kt.webserver.redactedJson
 import com.google.adk.kt.webserver.routes.SessionRoutesErrors.ERR_SESSION_NOT_FOUND
 import com.google.adk.kt.webserver.routes.SessionRoutesErrors.ERR_SESSION_NOT_LOADED
 import io.ktor.http.ContentType
@@ -87,7 +88,7 @@ internal fun Route.runRoutes(
           .flowOn(Dispatchers.IO)
           .toList()
 
-      call.respond(events)
+      call.respond(redactedJson(events))
     }
   }
 
@@ -119,7 +120,7 @@ internal fun Route.runRoutes(
           runConfig,
         )
         // An event that cannot be encoded is reported rather than ending the stream in silence.
-        .map { event -> adkJson.encodeToString(event) }
+        .map { event -> redactedJson(event).toString() }
         // Upstream only, so a failed write below is not reported as a failed run.
         .catch { failure ->
           val type = failure.typeName

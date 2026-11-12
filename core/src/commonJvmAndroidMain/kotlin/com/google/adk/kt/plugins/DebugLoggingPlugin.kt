@@ -20,12 +20,15 @@ import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.withoutCredentialSecrets
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -34,6 +37,15 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.jvm.JvmStatic
 import kotlin.time.Clock
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 import org.yaml.snakeyaml.DumperOptions
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
@@ -57,7 +69,7 @@ import org.yaml.snakeyaml.representer.Representer
  *
  * **CAUTION**: The plugin writes raw requests / responses, including user prompts, tool arguments,
  * and session state, to disk. Be mindful of sensitive data disclosure and protect the output file
- * accordingly.
+ * accordingly. Secret fields of credentials, sign-in requests and sign-in replies are left out.
  *
  * @property outputPath Path to the output file. Defaults to `adk_debug.yaml`.
  * @property includeSessionState Whether to include a session-state snapshot for each invocation.
@@ -395,7 +407,7 @@ class DebugLoggingPlugin(
         entryType = entryType,
         invocationId = invocationId,
         agentName = agentName,
-        data = data,
+        data = redacted(data),
       )
     synchronized(state) { state.entries.add(entry) }
   }
@@ -474,6 +486,9 @@ class DebugLoggingPlugin(
       is Boolean,
       is Number -> obj
       is ByteArray -> "<bytes: ${obj.size} bytes>"
+      // Kept structured, so the redaction in addEntry still sees a credential inside them.
+      is JsonElement -> plainValue(obj)
+      is Content -> serializeContent(obj)
       is Map<*, *> -> obj.entries.associate { (k, v) -> k.toString() to safeSerialize(v) }
       is Collection<*> -> obj.map { safeSerialize(it) }
       is Array<*> -> obj.map { safeSerialize(it) }
@@ -490,6 +505,35 @@ class DebugLoggingPlugin(
     linkedMapOf(*pairs).filterValues { it != null }
 
   private fun timestamp(): String = Clock.System.now().toString()
+
+  /**
+   * Returns [data] without credential secrets, or a marker in its place if it holds a value JSON
+   * can't represent.
+   */
+  @OptIn(FrameworkInternalApi::class)
+  private fun redacted(data: Map<String, Any?>): Map<String, Any?> =
+    try {
+      anyToJsonElement(data).withoutCredentialSecrets().jsonObject.mapValues {
+        plainValue(it.value)
+      }
+    } catch (e: IllegalArgumentException) {
+      // Left out rather than written unredacted.
+      mapOf("redaction_failed" to true)
+    }
+
+  /**
+   * Returns [element] as the plain values YAML writes. Unlike `jsonElementToAny`, it keeps an ADK
+   * state marker as the map it is, since YAML can't write the decoded marker.
+   */
+  private fun plainValue(element: JsonElement): Any? =
+    when (element) {
+      is JsonNull -> null
+      is JsonObject -> element.mapValues { plainValue(it.value) }
+      is JsonArray -> element.map { plainValue(it) }
+      is JsonPrimitive ->
+        if (element.isString) element.content
+        else element.booleanOrNull ?: element.longOrNull ?: element.doubleOrNull ?: element.content
+    }
 
   private data class DebugEntry(
     val timestamp: String,
