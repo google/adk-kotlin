@@ -17,12 +17,15 @@
 package com.google.adk.kt.telemetry
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 
 /**
  * Executes [block] within a new [Span], installing the span on the coroutine context via
@@ -94,19 +97,46 @@ internal inline fun <T> inSpan(
  * applying it to the contextual execution of the upstream flow, recording the flow's own failure
  * but not the collector's, and ensuring the span is ended when collection finishes.
  *
+ * The collector keeps its own thread context while it handles a value, as with Python ADK's
+ * `stream_in_scope`: through its telemetry context element, or else one this adds downstream.
+ *
  * @param name the name of the new span.
  * @param parent optional explicit parent context. When provided, the span is parented to it (e.g.
  *   the caller's ambient span captured at an entry point) so the resulting trace joins the caller's
- *   trace. When null, the span inherits the ambient context active at collection time.
+ *   trace. When null, the span takes its parent as [parentInCoroutine] chooses.
+ * @param restoresCollectorContext whether the span roots a run, such as a runner's invocation,
+ *   whose collector also gets its thread context back when the run ends, even nested inside ADK.
  * @param builder a lambda to configure the [SpanBuilder] before starting the span.
  */
 internal fun <T> Flow<T>.trace(
   name: String,
   parent: TelemetryContext? = null,
+  restoresCollectorContext: Boolean = false,
   builder: SpanBuilder.() -> Unit = {},
 ): Flow<T> = flow {
+  val collectorElement = currentCoroutineContext()[TelemetryContextElement]
+  val traced = traceWithParent(name, parent ?: parentInCoroutine(collectorElement), builder)
+  val collectorContext = collectorElement?.context ?: Telemetry.tracer.currentContext()
+  try {
+    // Without an element, the collector would keep whatever thread context ADK left.
+    emitAll(
+      if (collectorElement != null) traced else traced.flowOn(collectorContext.asContextElement())
+    )
+  } finally {
+    // A resumed ADK coroutine's span stays current until its task ends, so end the task.
+    if (restoresCollectorContext && threadAdkSpanDiffersFrom(collectorContext)) {
+      withContext(NonCancellable) { yield() }
+    }
+  }
+}
+
+private fun <T> Flow<T>.traceWithParent(
+  name: String,
+  parent: TelemetryContext?,
+  builder: SpanBuilder.() -> Unit,
+): Flow<T> = flow {
   val spanBuilder = Telemetry.tracer.spanBuilder(name)
-  if (parent != null) spanBuilder.setParent(parent)
+  parent?.let { spanBuilder.setParent(it) }
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
 
@@ -116,7 +146,7 @@ internal fun <T> Flow<T>.trace(
     // We use flowOn to inject the span into the upstream coroutine context safely,
     // honoring Kotlin's Flow context preservation invariants without affecting the
     // downstream emission context.
-    this@trace.flowOn(Telemetry.tracer.contextWithSpan(span).asContextElement()).collect {
+    this@traceWithParent.flowOn(Telemetry.tracer.contextWithSpan(span).asContextElement()).collect {
       try {
         emit(it)
       } catch (e: Throwable) {

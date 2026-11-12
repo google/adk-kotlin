@@ -216,7 +216,7 @@ abstract class AbstractRunner : Runner {
           runInvocation(session, invocationId, newMessage, stateDelta, runConfig)
         }
       }
-      .trace("invocation", parent = parentContext)
+      .trace("invocation", parent = parentContext, restoresCollectorContext = true)
   }
 
   /** Runs one invocation on [session] and emits its events; [runAsync] flushes once it ends. */

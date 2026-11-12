@@ -35,6 +35,20 @@ internal expect fun internalResetTestTracer()
  */
 internal expect fun currentTelemetryContext(): TelemetryContext
 
+/**
+ * Returns null, so a span started under [element] uses the thread's context, when that context's
+ * innermost ADK span is [element]'s, as when a caller installs its own context on top. Otherwise
+ * returns [element]'s context: after a suspended emit the thread can still hold the collector's
+ * span.
+ */
+internal expect fun parentInCoroutine(element: TelemetryContextElement?): TelemetryContext?
+
+/**
+ * Whether the thread's innermost ADK span, if any, differs from [context]'s; false for a
+ * non-OpenTelemetry context.
+ */
+internal expect fun threadAdkSpanDiffersFrom(context: TelemetryContext): Boolean
+
 /** Global entry point for the Telemetry abstraction. */
 object Telemetry {
   // In actual implementation, defaultTracer() provides the platform default
