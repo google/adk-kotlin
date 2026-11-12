@@ -37,13 +37,9 @@ import org.junit.runners.JUnit4
 
 /**
  * Holds the emission rule to the response types themselves, so a snake_case key is caught on a
- * field no response happens to populate - which an endpoint test structurally cannot see.
- *
- * The rule governs the keys the schema introduces, not a free-form map's keys, which are caller or
- * model data. Every check is therefore driven by a
- * [kotlinx.serialization.descriptors.SerialDescriptor], which knows the difference, rather than by
- * scanning response text, which does not. [WireEndpointTest] exercises the same rule against real
- * responses; [WireAliasCoverageTest] is the intake counterpart of this survey.
+ * field no response happens to populate. The rule covers schema keys, not a free-form map's keys,
+ * so every check is driven by a [kotlinx.serialization.descriptors.SerialDescriptor] rather than a
+ * scan of response text. [WireEndpointTest] applies the same rule to real responses.
  */
 @OptIn(FrameworkInternalApi::class)
 @RunWith(JUnit4::class)
@@ -65,46 +61,29 @@ class WireEmissionCoverageTest {
     )
 
   @Test
-  fun noSchemaKeyOnTheResponseGraph_isSnakeCase() {
-    assertThat(schemaKeys { '_' in it }).containsExactlyElementsIn(KNOWN_LEGACY_ALIASES.keys)
-    assertThat(schemaKeys()).containsAtLeastElementsIn(KNOWN_LEGACY_ALIASES.values)
-  }
-
-  @Test
-  fun theSurvey_reachesTheTypesItClaimsTo() {
-    assertThat(schemaKeys())
-      .containsAtLeast(
-        "VersionInfo.languageVersion",
-        "Part.inlineData.mimeType",
-        "Event[].content.parts[].functionCall.name",
-        "Event[].actions.requestedToolConfirmations{}.hint",
-        "Event[].content.parts[].functionCall.partialArgs[].value.value",
-        "AppInfo.agents{}.subAgents",
-        "AppInfo.agents{}.tools[].functionDeclarations[].parameters.properties{}.type",
-      )
-  }
-
-  @Test
-  fun theSurvey_declinesOnlyFreeFormValues() {
-    // A declined type is a blind spot, so what gets declined is pinned rather than trusted.
-    assertThat(WireSchemaSurvey(responseRoots).declined)
-      .containsExactly(
-        ContextualSerializer(Any::class).descriptor,
-        JsonElement.serializer().descriptor,
-      )
-  }
-
-  @Test
-  fun adkJson_stillOmitsNullFields() {
-    // This setting alone excludes null fields. `encodeDefaults` omits non-null defaults and
-    // excludes no null, so it is deliberately not pinned here.
+  fun adkJson_configuration_omitsNullFields() {
+    // This alone drops every null field; encodeDefaults drops only values equal to a default.
     assertThat(adkJson.configuration.explicitNulls).isFalse()
   }
 
   @Test
-  fun theWalk_reportsANullSchemaFieldButNotANullInsideAMap() {
-    // No endpoint fixture emits a null schema field - adkJson omits them - so the null half of the
-    // rule is only falsifiable against a body written by hand.
+  fun emissionWalk_inlineValueClassAsWrappedValue_reportsNoMismatch() {
+    // ToolType is a value class, so a real response writes "toolType":"agent", not an object.
+    val walk = EmissionWalk()
+
+    walk.visit(
+      Json.parseToJsonElement("""{"toolCall":{"id":"1","toolType":"agent"}}"""),
+      Part.serializer().descriptor,
+      "Part",
+    )
+
+    assertThat(walk.shapeMismatches).isEmpty()
+    assertThat(walk.snakeCaseKeys).isEmpty()
+  }
+
+  @Test
+  fun emissionWalk_nullSchemaFieldAndNullMapValue_reportsOnlyTheField() {
+    // adkJson omits null fields, so only a hand-written body can falsify the null half of the rule.
     val walk = EmissionWalk()
 
     walk.visit(
@@ -121,25 +100,8 @@ class WireEmissionCoverageTest {
   }
 
   @Test
-  fun theWalk_acceptsAnInlineValueClassWrittenAsItsWrappedValue() {
-    // ToolType is a value class, so a real response writes "toolType":"agent" rather than an
-    // object. Treating that as a shape mismatch would fail the guard on legitimate traffic.
-    val walk = EmissionWalk()
-
-    walk.visit(
-      Json.parseToJsonElement("""{"toolCall":{"id":"1","toolType":"agent"}}"""),
-      Part.serializer().descriptor,
-      "Part",
-    )
-
-    assertThat(walk.shapeMismatches).isEmpty()
-    assertThat(walk.snakeCaseKeys).isEmpty()
-  }
-
-  @Test
-  fun theWalk_reportsASubtreeItCouldNotEnter() {
-    // Nothing else exercises this: every real fixture matches its descriptor, so without a
-    // hand-written mismatch the walk could go back to skipping silently and stay green.
+  fun emissionWalk_wrongShapedSubtree_reportsMismatch() {
+    // Every real fixture matches its descriptor, so only this body proves mismatches are reported.
     val walk = EmissionWalk()
 
     walk.visit(
@@ -149,6 +111,36 @@ class WireEmissionCoverageTest {
     )
 
     assertThat(walk.shapeMismatches).containsExactly("Event[].content")
+  }
+
+  @Test
+  fun responseTypes_schemaKeys_areCamelCaseOrKnownAliases() {
+    assertThat(schemaKeys { '_' in it }).containsExactlyElementsIn(KNOWN_LEGACY_ALIASES.keys)
+    assertThat(schemaKeys()).containsAtLeastElementsIn(KNOWN_LEGACY_ALIASES.values)
+  }
+
+  @Test
+  fun survey_responseTypes_declinesOnlyFreeFormValues() {
+    // A declined type is a blind spot, so what gets declined is pinned rather than trusted.
+    assertThat(WireSchemaSurvey(responseRoots).declined)
+      .containsExactly(
+        ContextualSerializer(Any::class).descriptor,
+        JsonElement.serializer().descriptor,
+      )
+  }
+
+  @Test
+  fun survey_responseTypes_reachesPinnedKeys() {
+    assertThat(schemaKeys())
+      .containsAtLeast(
+        "VersionInfo.languageVersion",
+        "Part.inlineData.mimeType",
+        "Event[].content.parts[].functionCall.name",
+        "Event[].actions.requestedToolConfirmations{}.hint",
+        "Event[].content.parts[].functionCall.partialArgs[].value.value",
+        "AppInfo.agents{}.subAgents",
+        "AppInfo.agents{}.tools[].functionDeclarations[].parameters.properties{}.type",
+      )
   }
 
   /** The path of every schema key the response graph reaches whose name passes [matching]. */
