@@ -96,38 +96,39 @@ public final class BigQueryAnalyticsDemoAgentJava {
     System.out.printf("Target BigQuery table: %s.%s.%s%n", projectId, datasetId, tableName);
 
     App app = createApp(projectId, datasetId, tableName);
-    PublisherRunner runner = PublisherRunner.inMemory(app);
-
-    // RxJava users can adapt the same Publisher with Flowable.fromPublisher(eventStream).
-    Publisher<Event> eventStream =
-        runner.runAsync(
-            "user_123",
-            "session_" + System.currentTimeMillis(),
-            null,
-            Content.fromText(Role.USER, "What are some of the key features of the Kotlin ADK?"));
-    int eventCount = 0;
-    for (Event event : Flux.from(eventStream).toIterable()) {
-      eventCount++;
-      String text = firstText(event);
-      if (text != null && !text.isBlank()) {
-        System.out.println("[" + event.getAuthor() + "]: " + text);
+    // Closing the runner closes the plugin, which writes the rows still queued.
+    try (PublisherRunner runner = PublisherRunner.inMemory(app)) {
+      // RxJava users can adapt the same Publisher with Flowable.fromPublisher(eventStream).
+      Publisher<Event> eventStream =
+          runner.runAsync(
+              "user_123",
+              "session_" + System.currentTimeMillis(),
+              null,
+              Content.fromText(Role.USER, "What are some of the key features of the Kotlin ADK?"));
+      int eventCount = 0;
+      for (Event event : Flux.from(eventStream).toIterable()) {
+        eventCount++;
+        String text = firstText(event);
+        if (!text.isBlank()) {
+          System.out.println("[" + event.getAuthor() + "]: " + text);
+        }
       }
+      System.out.println("Agent execution finished. Events collected: " + eventCount);
     }
-    System.out.println("Agent execution finished. Events collected: " + eventCount);
   }
 
-  /** Returns the first text part of an event's content, or {@code null} if there is none. */
+  /** Returns the first text part of an event's content, or {@code ""} if there is none. */
   private static String firstText(Event event) {
     Content content = event.getContent();
     if (content == null || content.getParts() == null) {
-      return null;
+      return "";
     }
     for (Part part : content.getParts()) {
       if (part.getText() != null) {
         return part.getText();
       }
     }
-    return null;
+    return "";
   }
 
   private static boolean isNullOrBlank(String value) {

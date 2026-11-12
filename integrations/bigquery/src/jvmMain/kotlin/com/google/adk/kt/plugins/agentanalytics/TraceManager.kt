@@ -201,6 +201,12 @@ internal class TraceManager(private val maxTrackedInvocations: Int = MAX_TRACKED
     return Duration.between(record.startTime, firstTokenTime)
   }
 
+  /** Returns the time since span [spanId] started, if it is still open. */
+  fun elapsed(context: InvocationContext, spanId: String): Duration? {
+    val record = findSpanRecord(context, spanId) ?: return null
+    return Duration.between(record.startTime, Instant.now())
+  }
+
   /** Drops all span and tool-call state of the context's invocation. */
   fun endInvocation(context: InvocationContext) {
     synchronized(invocations) { invocations.remove(context.invocationId) }

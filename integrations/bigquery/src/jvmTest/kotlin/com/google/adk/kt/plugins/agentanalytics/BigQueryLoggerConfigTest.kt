@@ -18,9 +18,11 @@ package com.google.adk.kt.plugins.agentanalytics
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.auth.Credentials
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import org.mockito.kotlin.mock
 
 class BigQueryLoggerConfigTest {
@@ -47,10 +49,52 @@ class BigQueryLoggerConfigTest {
         createViews = true,
         viewPrefix = "custom",
         contentFormatter = { content, _ -> content },
+        retryConfig = RetryConfig(maxRetries = 1),
+        batchSize = 50,
+        batchFlushInterval = Duration.ofMillis(500),
+        shutdownTimeout = Duration.ofSeconds(3),
+        queueMaxSize = 200,
+        flushOnRunEnd = false,
       )
 
     assertEquals(config.copy(), config.toBuilder().build())
     assertEquals(config.copy(enabled = true), config.toBuilder().enabled(true).build())
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_defaultsMatchTheConstructor() {
+    assertEquals(
+      BigQueryLoggerConfig("p", "d"),
+      BigQueryLoggerConfig.builder().projectId("p").datasetId("d").build(),
+    )
+  }
+
+  @Test
+  fun batchingDefaults_matchPythonAdk() {
+    val config = BigQueryLoggerConfig("p", "d")
+
+    assertEquals(RetryConfig(), config.retryConfig)
+    assertEquals(1, config.batchSize)
+    assertEquals(Duration.ofSeconds(1), config.batchFlushInterval)
+    assertEquals(Duration.ofSeconds(10), config.shutdownTimeout)
+    assertEquals(10_000, config.queueMaxSize)
+    assertTrue(config.flushOnRunEnd)
+  }
+
+  @Test
+  fun invalidBatchingValues_areRejected() {
+    assertFailsWith<IllegalArgumentException> { BigQueryLoggerConfig("p", "d", batchSize = 0) }
+    assertFailsWith<IllegalArgumentException> {
+      BigQueryLoggerConfig("p", "d", batchFlushInterval = Duration.ZERO)
+    }
+    assertFailsWith<IllegalArgumentException> {
+      BigQueryLoggerConfig("p", "d", batchFlushInterval = Duration.ofSeconds(-1))
+    }
+    assertFailsWith<IllegalArgumentException> {
+      BigQueryLoggerConfig("p", "d", shutdownTimeout = Duration.ZERO)
+    }
+    assertFailsWith<IllegalArgumentException> { BigQueryLoggerConfig("p", "d", queueMaxSize = 0) }
   }
 
   @Test
@@ -62,10 +106,11 @@ class BigQueryLoggerConfigTest {
 
   @Test
   fun maxContentLength_rejectsZeroAndOtherNegatives() {
-    for (invalid in listOf(0, -2)) {
-      assertFailsWith<IllegalArgumentException> {
-        BigQueryLoggerConfig("p", "d", maxContentLength = invalid)
-      }
+    assertFailsWith<IllegalArgumentException> {
+      BigQueryLoggerConfig("p", "d", maxContentLength = 0)
+    }
+    assertFailsWith<IllegalArgumentException> {
+      BigQueryLoggerConfig("p", "d", maxContentLength = -2)
     }
   }
 

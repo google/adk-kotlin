@@ -226,6 +226,19 @@ class TraceManagerTest {
   }
 
   @Test
+  fun elapsed_isTheTimeSinceAnOpenSpanStarted() {
+    val spanId = traceManager.pushSpan(context, "llm_request")
+    Thread.sleep(50)
+
+    val elapsed = traceManager.elapsed(context, spanId)
+    assertNotNull(elapsed)
+    assertTrue(elapsed.toMillis() >= 40, "elapsed $elapsed")
+    assertNotNull(traceManager.popSpan(context, "llm_request"))
+
+    assertNull(traceManager.elapsed(context, spanId))
+  }
+
+  @Test
   fun invocationsNeverSeeEachOthersSpans() {
     val other = testInvocationContext(agent = DummyAgent("other_agent"), invocationId = "inv-2")
     traceManager.ensureInvocationSpan(context)
