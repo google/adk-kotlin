@@ -28,12 +28,18 @@ internal fun isFailure(e: Throwable): Boolean =
   e !is CancellationException && e !is NodeInterruptedException
 
 /**
- * Records [e] on this span with its `error.type`, as Python ADK does for an error escaping a span.
+ * Records [e] on this span with its `error.type` and an ERROR status saying [statusDescription], as
+ * Python ADK does for an error escaping a span.
  */
-internal fun Span.recordFailure(e: Throwable) {
+internal fun Span.recordFailure(e: Throwable, statusDescription: String = failureDescription(e)) {
   recordException(e)
   this[TelemetryAttributes.ERROR_TYPE] = errorType(e)
+  setErrorStatus(statusDescription)
 }
+
+/** Describes [e] for an ERROR status as OpenTelemetry does: `<class name>: <message>`. */
+internal fun failureDescription(e: Throwable): String =
+  "${e::class.simpleName ?: "Exception"}: ${e.message.orEmpty()}"
 
 /**
  * Returns the `error.type` for [e]: the HTTP status code of a GenAI API error, since the SDK raises

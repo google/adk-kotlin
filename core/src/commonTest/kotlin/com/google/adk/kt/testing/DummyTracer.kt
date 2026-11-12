@@ -86,6 +86,7 @@ class DummySpan(
   val onSpanEnd: (DummySpan) -> Unit,
 ) : Span {
   var isEnded = false
+  var errorStatus: String? = null
   val events = mutableListOf<String>()
   val recordedExceptions = mutableListOf<Throwable>()
   val attributes = initialAttributes.toMutableMap()
@@ -122,6 +123,11 @@ class DummySpan(
 
   override fun recordException(exception: Throwable): Span {
     recordedExceptions.add(exception)
+    return this
+  }
+
+  override fun setErrorStatus(description: String): Span {
+    errorStatus = description
     return this
   }
 

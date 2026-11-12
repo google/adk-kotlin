@@ -719,8 +719,10 @@ data class InvocationContext(
       span.recordExecuteToolMeta(tool, toolContext, responseEventId, args)
       // Python raises a ValueError here; IllegalArgumentException is its Kotlin counterpart.
       val error = IllegalArgumentException(TOOL_NOT_FOUND_ERROR)
-      span[TelemetryAttributes.ERROR_TYPE] = errorType(error)
       val recovered = runErrorBaseToolCallbacks(llmAgent, tool, args, toolContext, error)
+      // Marked only after the callbacks return, so a cancelled callback leaves the span unset.
+      span[TelemetryAttributes.ERROR_TYPE] = errorType(error)
+      span.setErrorStatus(errorType(error))
       val response =
         recovered
           ?: run {

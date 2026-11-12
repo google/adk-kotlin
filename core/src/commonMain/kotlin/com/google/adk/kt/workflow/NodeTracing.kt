@@ -39,6 +39,8 @@ import kotlinx.coroutines.withContext
  * @param nested whether a workflow encloses [node] in the node tree. A workflow started in another
  *   workflow's span, such as the root of a runner a node started, is flagged nested even when this
  *   is false.
+ * @param statusDescription describes the failure [failure] reads for the span's ERROR status; by
+ *   default the failure's message, as Python ADK describes a nested workflow's failed child.
  */
 internal suspend fun <T> traceNode(
   node: Node,
@@ -46,6 +48,7 @@ internal suspend fun <T> traceNode(
   nested: Boolean,
   eventIds: List<String>,
   failure: (T) -> Throwable?,
+  statusDescription: (Throwable) -> String = { it.message.orEmpty() },
   block: suspend () -> T,
 ): T {
   if (node is BaseAgent) return block()
@@ -77,7 +80,7 @@ internal suspend fun <T> traceNode(
         // withContext throws on exit once cancelled; a node that swallowed it still returns.
         (outcome ?: throw e).getOrThrow()
       }
-    failure(result)?.let { span.recordFailure(it) }
+    failure(result)?.let { span.recordFailure(it, statusDescription(it)) }
     return result
   } catch (e: Throwable) {
     // A node that asks for input pauses rather than fails.

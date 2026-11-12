@@ -41,8 +41,10 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.AgentTool
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import io.opentelemetry.api.common.AttributeKey
+import io.opentelemetry.api.trace.StatusCode
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.data.SpanData
@@ -312,6 +314,7 @@ class NodeTracingTest {
     assertThat(exported.map { it.name }).contains("execute_tool helper")
     assertThat(exported.filter { it.attributes[ERROR_TYPE] != null }.map { it.name }).isEmpty()
     assertThat(exported.filter { span -> span.events.any { it.name == "exception" } }).isEmpty()
+    assertThat(exported.map { it.status.statusCode }.toSet()).containsExactly(StatusCode.UNSET)
   }
 
   @Test
@@ -355,7 +358,10 @@ class NodeTracingTest {
     assertThat(attempts).hasSize(2)
     assertThat(attempts[0].attributes[ERROR_TYPE]).isEqualTo("TestNodeException")
     assertThat(attempts[0].events.map { it.name }).contains("exception")
+    assertThat(attempts[0].status.statusCode).isEqualTo(StatusCode.ERROR)
+    assertThat(attempts[0].status.description).isEqualTo("TestNodeException: first try")
     assertThat(attempts[1].attributes[ERROR_TYPE]).isNull()
+    assertThat(attempts[1].status.statusCode).isEqualTo(StatusCode.UNSET)
   }
 
   @Test
@@ -370,6 +376,16 @@ class NodeTracingTest {
     assertThat(span("invoke_node boom").attributes[ERROR_TYPE]).isEqualTo("TestNodeException")
     assertThat(span("invoke_workflow inner").attributes[ERROR_TYPE]).isEqualTo("TestNodeException")
     assertThat(span("invoke_workflow outer").attributes[ERROR_TYPE]).isEqualTo("TestNodeException")
+    for (name in listOf("invoke_node boom", "invoke_workflow inner", "invoke_workflow outer")) {
+      assertWithMessage(name).that(span(name).status.statusCode).isEqualTo(StatusCode.ERROR)
+    }
+    assertThat(span("invoke_node boom").status.description).isEqualTo("TestNodeException: boom")
+    // A nested workflow gets its child's failure back as data, which Python describes by the
+    // message.
+    assertThat(span("invoke_workflow inner").status.description).isEqualTo("boom")
+    // Python raises the root's failure through its span.
+    assertThat(span("invoke_workflow outer").status.description)
+      .isEqualTo("TestNodeException: boom")
   }
 
   @Test
@@ -427,6 +443,7 @@ class NodeTracingTest {
     }
 
     assertThat(span("invoke_node waiter").attributes[ERROR_TYPE]).isNull()
+    assertThat(span("invoke_node waiter").status.statusCode).isEqualTo(StatusCode.UNSET)
   }
 
   @Test

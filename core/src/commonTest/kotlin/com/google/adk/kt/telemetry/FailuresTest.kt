@@ -19,6 +19,8 @@
 package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.testing.DummySpan
+import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.genai.kotlin.ClientException
 import kotlin.test.Test
@@ -39,6 +41,18 @@ class FailuresTest {
   @Test
   fun errorType_otherError_isItsClassName() {
     assertEquals("IllegalStateException", errorType(IllegalStateException("boom")))
+  }
+
+  @Test
+  fun recordFailure_recordsTheErrorItsTypeAndAnErrorStatus() {
+    val span = DummyTracer().spanBuilder("span").startSpan() as DummySpan
+    val error = IllegalStateException("boom")
+
+    span.recordFailure(error)
+
+    assertEquals(listOf<Throwable>(error), span.recordedExceptions)
+    assertEquals("IllegalStateException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertEquals("IllegalStateException: boom", span.errorStatus)
   }
 
   @Test

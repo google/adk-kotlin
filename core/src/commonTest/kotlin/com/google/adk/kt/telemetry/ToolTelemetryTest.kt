@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummySpan
 import com.google.adk.kt.testing.DummyTracer
@@ -40,6 +41,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
@@ -265,7 +267,7 @@ class ToolTelemetryTest {
   }
 
   @Test
-  fun executeSingleFunctionCall_setsErrorTypeWhenToolThrows() = runTest {
+  fun executeSingleFunctionCall_toolThrows_marksTheSpanFailed() = runTest {
     assertFailsWith<IllegalStateException> {
       createInvocationContext()
         .executeSingleFunctionCall(
@@ -278,6 +280,7 @@ class ToolTelemetryTest {
     val span = fakeTracer.recordedSpans[0]
     assertEquals("IllegalStateException", span.attributes[TelemetryAttributes.ERROR_TYPE])
     assertEquals(listOf("boom"), span.recordedExceptions.map { it.message })
+    assertEquals("IllegalStateException: boom", span.errorStatus)
   }
 
   @Test
@@ -286,6 +289,7 @@ class ToolTelemetryTest {
 
     assertTrue(span.recordedExceptions.isEmpty())
     assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertNull(span.errorStatus)
   }
 
   @Test
@@ -312,7 +316,7 @@ class ToolTelemetryTest {
     }
 
   @Test
-  fun executeSingleFunctionCall_unregisteredToolUnanswered_setsErrorTypeAndAnswersTheModel() =
+  fun executeSingleFunctionCall_unregisteredToolUnanswered_marksTheSpanFailedAndAnswersTheModel() =
     runBlocking {
       val event =
         createInvocationContext()
@@ -324,8 +328,62 @@ class ToolTelemetryTest {
       assertNotNull(event)
       val span = fakeTracer.recordedSpans.single { it.name == "execute_tool missing_tool" }
       assertEquals("IllegalArgumentException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+      assertEquals("IllegalArgumentException", span.errorStatus)
       assertEquals("Tool not found", span.attributes[TelemetryAttributes.GEN_AI_TOOL_DESCRIPTION])
       assertEquals(event.id, span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID])
+    }
+
+  @Test
+  fun executeSingleFunctionCall_unregisteredToolAnsweredByErrorCallback_stillMarksTheSpanFailed() =
+    runBlocking {
+      val agent =
+        LlmAgent(
+          name = "test_agent",
+          model = DummyModel("mock_model"),
+          onToolErrorCallbacks =
+            listOf(
+              OnToolErrorCallback { _, _, _, _ -> CallbackChoice.Break(mapOf("fallback" to "ok")) }
+            ),
+        )
+
+      val event =
+        testInvocationContext(agent = agent)
+          .executeSingleFunctionCall(
+            FunctionCall(name = "missing_tool", args = emptyMap(), id = "call_1"),
+            emptyMap(),
+          )
+
+      assertEquals(
+        mapOf("fallback" to "ok"),
+        event?.content?.parts?.single()?.functionResponse?.response,
+      )
+      val span = fakeTracer.recordedSpans.single { it.name == "execute_tool missing_tool" }
+      assertEquals("IllegalArgumentException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+      assertEquals("IllegalArgumentException", span.errorStatus)
+    }
+
+  @Test
+  fun executeSingleFunctionCall_unregisteredToolErrorCallbackCancelled_leavesTheSpanUnset() =
+    runBlocking {
+      val agent =
+        LlmAgent(
+          name = "test_agent",
+          model = DummyModel("mock_model"),
+          onToolErrorCallbacks =
+            listOf(OnToolErrorCallback { _, _, _, _ -> throw CancellationException("stop") }),
+        )
+
+      assertFailsWith<CancellationException> {
+        testInvocationContext(agent = agent)
+          .executeSingleFunctionCall(
+            FunctionCall(name = "missing_tool", args = emptyMap(), id = "call_1"),
+            emptyMap(),
+          )
+      }
+
+      val span = fakeTracer.recordedSpans.single { it.name == "execute_tool missing_tool" }
+      assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+      assertNull(span.errorStatus)
     }
 
   @Test

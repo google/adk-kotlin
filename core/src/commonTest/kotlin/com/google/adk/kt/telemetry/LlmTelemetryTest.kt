@@ -690,6 +690,7 @@ class LlmTelemetryTest {
     val span = dummyTracer.recordedSpans.single { it.name == "generate_content test-model" }
     assertEquals(listOf<Throwable>(failure), span.recordedExceptions)
     assertEquals("IllegalStateException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertEquals("IllegalStateException: model boom", span.errorStatus)
     // The recovered response is the callback's, not the model's.
     assertNull(span.attributes[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS])
   }
@@ -735,7 +736,7 @@ class LlmTelemetryTest {
   }
 
   @Test
-  fun runAsync_toolFailure_setsErrorTypeOnTheToolSpanNotCallLlm() = runBlocking {
+  fun runAsync_toolFailure_marksTheToolSpanFailedNotCallLlm() = runBlocking {
     val agent =
       LlmAgent(
         name = "test-agent",
@@ -752,8 +753,10 @@ class LlmTelemetryTest {
     val callLlm = dummyTracer.recordedSpans.single { it.name == "call_llm" }
     assertNull(callLlm.attributes[TelemetryAttributes.ERROR_TYPE])
     assertTrue(callLlm.recordedExceptions.isEmpty())
+    assertNull(callLlm.errorStatus)
     val tool = dummyTracer.recordedSpans.single { it.name == "execute_tool dummy_tool" }
     assertEquals("IllegalStateException", tool.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertEquals("IllegalStateException: tool boom", tool.errorStatus)
   }
 
   @Test

@@ -74,6 +74,14 @@ interface Span {
    */
   @CanIgnoreReturnValue fun recordException(exception: Throwable): Span
 
+  /**
+   * Marks the span failed with an ERROR status. The default does nothing; override it to record the
+   * status.
+   *
+   * @param description why the span failed.
+   */
+  @CanIgnoreReturnValue fun setErrorStatus(description: String): Span = this
+
   /** Ends the span. */
   fun end()
 }

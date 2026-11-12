@@ -49,6 +49,7 @@ import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.genai.kotlin.ClientException
+import io.opentelemetry.api.trace.StatusCode
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.data.SpanData
@@ -68,9 +69,9 @@ import org.junit.runners.JUnit4
 /**
  * Compares the spans of Python ADK's functional telemetry scenarios, re-created in Kotlin, with
  * hand copies of Python's schema v1 goldens in adk-python's
- * `tests/unittests/telemetry/functional_goldens/`: span names, nesting, attribute keys and pinned
- * values. [DIVERGENCES] lists where Kotlin differs on purpose. Span status and log records are not
- * compared: Kotlin spans have no status, and Kotlin emits no log records.
+ * `tests/unittests/telemetry/functional_goldens/`: span names, nesting, attribute keys, pinned
+ * values and status. [DIVERGENCES] lists where Kotlin differs on purpose. Log records are not
+ * compared: Kotlin emits no log records.
  */
 @RunWith(JUnit4::class)
 class PythonGoldenParityTest {
@@ -197,11 +198,20 @@ class PythonGoldenParityTest {
               Expected(
                 "call_llm",
                 error,
-                listOf(Expected("generate_content $MODEL", error + generateContentRequest())),
+                listOf(
+                  Expected(
+                    "generate_content $MODEL",
+                    error + generateContentRequest(),
+                    status = StatusCode.ERROR,
+                  )
+                ),
+                status = StatusCode.ERROR,
               )
             ),
+            status = StatusCode.ERROR,
           )
         ),
+        status = StatusCode.ERROR,
       ),
       DIVERGENCES + FAILED_CALL_LLM_DIVERGENCES,
     )
@@ -372,6 +382,10 @@ class PythonGoldenParityTest {
         for (key in attributes.keys - expected.attributes.keys - allowed) {
           add("$name: extra $key=${attributes[key]}")
         }
+        val status = actual.status.statusCode
+        if (status != expected.status) {
+          add("$name: status is $status, golden has ${expected.status}")
+        }
         val children = byParent[actual.spanId].orEmpty().sortedBy { it.startEpochNanos }
         if (children.map { it.name } != expected.children.map { it.name }) {
           add(
@@ -391,6 +405,7 @@ class PythonGoldenParityTest {
     val name: String,
     val attributes: Map<String, Any>,
     val children: List<Expected> = emptyList(),
+    val status: StatusCode = StatusCode.UNSET,
   )
 
   /** An attribute Kotlin reports differently from Python's golden, on purpose. */
