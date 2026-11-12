@@ -15,8 +15,7 @@
  */
 package com.google.adk.kt.a2a.agent
 
-import com.google.adk.kt.a2a.converters.ADK_METADATA_CONTEXT_ID
-import com.google.adk.kt.a2a.converters.ADK_METADATA_TASK_ID
+import com.google.adk.kt.a2a.converters.RemoteIdKeys
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -114,10 +113,7 @@ internal class A2AStreamingResponseAggregator(
   private fun createAggregatedEvent(flushedBy: Event): Event {
     val parts = aggregatedParts.toList()
     clearBuffer()
-    val ids =
-      flushedBy.customMetadata.orEmpty().filterKeys {
-        it == ADK_METADATA_TASK_ID || it == ADK_METADATA_CONTEXT_ID
-      }
+    val ids = flushedBy.customMetadata.orEmpty().filterKeys { it in RemoteIdKeys.ALL }
     return Event(
       invocationId = invocationId,
       author = agentName,

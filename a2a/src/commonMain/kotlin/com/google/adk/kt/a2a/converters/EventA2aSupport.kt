@@ -47,8 +47,32 @@ internal object MetadataKeys {
   const val MEDIA_RESOLUTION = "adk_media_resolution"
 }
 
-internal const val ADK_METADATA_TASK_ID = "adk_task_id"
-internal const val ADK_METADATA_CONTEXT_ID = "adk_context_id"
+/**
+ * Event metadata keys for a response's remote task and context ids: ADK Python's, and the legacy
+ * ones earlier versions used. Readers use the legacy keys only for an event with neither new key,
+ * so a hook that edits or blanks a new key changes the next request's ids, as in ADK Python. To
+ * clear the ids, a hook blanks the new keys or removes all four.
+ */
+internal object RemoteIdKeys {
+  const val TASK_ID = "a2a:task_id"
+  const val CONTEXT_ID = "a2a:context_id"
+  const val LEGACY_TASK_ID = "adk_task_id"
+  const val LEGACY_CONTEXT_ID = "adk_context_id"
+  val ALL = setOf(TASK_ID, CONTEXT_ID, LEGACY_TASK_ID, LEGACY_CONTEXT_ID)
+}
+
+/** Returns [taskId] and [contextId], each if not null, under both the new and the legacy keys. */
+internal fun remoteIdsMetadata(taskId: String?, contextId: String?): Map<String, String> =
+  buildMap {
+    if (taskId != null) {
+      put(RemoteIdKeys.TASK_ID, taskId)
+      put(RemoteIdKeys.LEGACY_TASK_ID, taskId)
+    }
+    if (contextId != null) {
+      put(RemoteIdKeys.CONTEXT_ID, contextId)
+      put(RemoteIdKeys.LEGACY_CONTEXT_ID, contextId)
+    }
+  }
 
 /** Name of the call made up for a remote task waiting on user input. */
 internal const val MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT =
@@ -105,11 +129,18 @@ internal fun LlmResponse.toEvent(context: InvocationContext): Event {
 
 /** Returns the task ID from the event. */
 internal val Event.taskId: String
-  get() = metadataValue(ADK_METADATA_TASK_ID)
+  get() = remoteId(RemoteIdKeys.TASK_ID, RemoteIdKeys.LEGACY_TASK_ID)
 
 /** Returns the context ID from the event. */
 internal val Event.contextId: String
-  get() = metadataValue(ADK_METADATA_CONTEXT_ID)
+  get() = remoteId(RemoteIdKeys.CONTEXT_ID, RemoteIdKeys.LEGACY_CONTEXT_ID)
+
+/** Returns the id under [key], or under [legacyKey] if the event has neither new key. */
+private fun Event.remoteId(key: String, legacyKey: String): String {
+  val metadata = customMetadata.orEmpty()
+  val hasNewKeys = RemoteIdKeys.TASK_ID in metadata || RemoteIdKeys.CONTEXT_ID in metadata
+  return metadataValue(if (hasNewKeys) key else legacyKey)
+}
 
 /** Returns the last user function call event from the list of events. */
 internal fun List<Event>.findUserFunctionCall(): Event? {
@@ -171,13 +202,10 @@ internal fun Event.updateEventMetadata(
   }
 
   val metadata = clientMetadata ?: emptyMap()
-  val customMetadataMap =
-    buildMap<String, Any> {
-      put(ADK_METADATA_TASK_ID, taskId)
-      put(ADK_METADATA_CONTEXT_ID, contextId)
-      @Suppress("UNCHECKED_CAST")
-      (metadata[MetadataKeys.CUSTOM] as? Map<String, Any>)?.let { putAll(it) }
-    }
+  @Suppress("UNCHECKED_CAST")
+  val forwarded = (metadata[MetadataKeys.CUSTOM] as? Map<String, Any>).orEmpty()
+  // Last, so ids a remote agent forwards from its own remote call cannot replace this task's.
+  val customMetadataMap = forwarded + remoteIdsMetadata(taskId, contextId)
 
   return copy(
     groundingMetadata = parser.parse(metadata[MetadataKeys.GROUNDING], GroundingMetadata::class),
@@ -191,7 +219,7 @@ internal fun Event.updateEventMetadata(
 internal fun presentAsUserMessage(event: Event, contextId: String, invocationId: String): Event {
   val parts = event.content?.parts?.filter { it.thought != true } ?: emptyList()
   val rephrasedParts = parts.mapNotNull { remoteCallAsUserPart(event.author, it) }
-  val customMetadata = mapOf(ADK_METADATA_CONTEXT_ID to contextId)
+  val customMetadata = remoteIdsMetadata(taskId = null, contextId)
 
   if (rephrasedParts.isEmpty()) {
     return Event(invocationId = invocationId, author = Role.USER, customMetadata = customMetadata)

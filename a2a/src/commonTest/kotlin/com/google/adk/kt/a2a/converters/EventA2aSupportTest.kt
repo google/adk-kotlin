@@ -50,7 +50,7 @@ class EventA2aSupportTest {
 
   @Test
   fun taskId_hasCustomMetadata_returnsTaskId() {
-    val event = Event(author = "test", customMetadata = mapOf("adk_task_id" to "task-123"))
+    val event = Event(author = "test", customMetadata = mapOf("a2a:task_id" to "task-123"))
     assertEquals("task-123", event.taskId)
   }
 
@@ -62,13 +62,56 @@ class EventA2aSupportTest {
 
   @Test
   fun contextId_hasCustomMetadata_returnsContextId() {
-    val event = Event(author = "test", customMetadata = mapOf("adk_context_id" to "context-456"))
+    val event = Event(author = "test", customMetadata = mapOf("a2a:context_id" to "context-456"))
     assertEquals("context-456", event.contextId)
   }
 
   @Test
   fun contextId_noCustomMetadata_returnsEmpty() {
     val event = Event(author = "test")
+    assertEquals("", event.contextId)
+  }
+
+  @Test
+  fun taskIdAndContextId_legacyKeys_returnIds() {
+    // Sessions recorded by earlier versions hold the ids under these keys.
+    val event =
+      Event(
+        author = "test",
+        customMetadata = mapOf("adk_task_id" to "task-123", "adk_context_id" to "context-456"),
+      )
+    assertEquals("task-123", event.taskId)
+    assertEquals("context-456", event.contextId)
+  }
+
+  @Test
+  fun taskIdAndContextId_bothKeySetsDiffer_returnNewKeys() {
+    // As in ADK Python, ids a hook or plugin wrote under the new keys are the ones used.
+    val event =
+      Event(
+        author = "test",
+        customMetadata =
+          mapOf(
+            "adk_task_id" to "task-123",
+            "adk_context_id" to "context-456",
+            "a2a:task_id" to "edited-task",
+            "a2a:context_id" to "edited-context",
+          ),
+      )
+    assertEquals("edited-task", event.taskId)
+    assertEquals("edited-context", event.contextId)
+  }
+
+  @Test
+  fun taskIdAndContextId_newKeysBlankedOrRemoved_ignoreLegacyKeys() {
+    // A hook blanked a2a:task_id and removed a2a:context_id; as in ADK Python, no ids remain.
+    val event =
+      Event(
+        author = "test",
+        customMetadata =
+          mapOf("adk_task_id" to "task-123", "adk_context_id" to "context-456", "a2a:task_id" to ""),
+      )
+    assertEquals("", event.taskId)
     assertEquals("", event.contextId)
   }
 
@@ -575,7 +618,7 @@ class EventA2aSupportTest {
   fun extractPreprocessedEvents_propagatesContextIdFromLastAgentResponse() {
     val agent = DummyAgent(name = "my-agent")
     val lastAgentResponse =
-      Event(author = "my-agent", customMetadata = mapOf("adk_context_id" to "parent-context-id"))
+      Event(author = "my-agent", customMetadata = mapOf("a2a:context_id" to "parent-context-id"))
     val otherAgentCall = Event(author = "other-agent", content = modelMessage("work done"))
 
     val session = Session(key = SessionKey(appName = "demo", userId = "user", id = "session-1"))
@@ -592,7 +635,7 @@ class EventA2aSupportTest {
     val result = context.extractPreprocessedEvents()
     assertEquals(1, result.size)
     assertEquals("user", result[0].author)
-    assertEquals("parent-context-id", result[0].contextId)
+    assertEquals("parent-context-id", result[0].customMetadata?.get("a2a:context_id"))
   }
 
   private fun Part.isDroppedFromEvent(credentialCallIds: Set<String?>): Boolean {

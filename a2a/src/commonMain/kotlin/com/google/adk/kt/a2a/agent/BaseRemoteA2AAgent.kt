@@ -16,13 +16,12 @@
 
 package com.google.adk.kt.a2a.agent
 
-import com.google.adk.kt.a2a.converters.ADK_METADATA_CONTEXT_ID
-import com.google.adk.kt.a2a.converters.ADK_METADATA_TASK_ID
 import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.a2a.converters.credentialCallIds
 import com.google.adk.kt.a2a.converters.extractPreprocessedEvents
 import com.google.adk.kt.a2a.converters.findUserFunctionCall
 import com.google.adk.kt.a2a.converters.isFailedRequest
+import com.google.adk.kt.a2a.converters.remoteIdsMetadata
 import com.google.adk.kt.a2a.converters.taskId
 import com.google.adk.kt.a2a.converters.withMockCallAnswersAsText
 import com.google.adk.kt.a2a.converters.withoutCredentialParts
@@ -101,9 +100,9 @@ abstract class BaseRemoteA2AAgent(
           .withMockCallAnswersAsText(callEvent.functionCalls())
       // With nothing left to resume with, the scrubbed history below is sent instead.
       if (!responseEvent.content?.parts.isNullOrEmpty()) {
-        val updatedMetadata = (responseEvent.customMetadata ?: emptyMap()).toMutableMap()
-        updatedMetadata[ADK_METADATA_TASK_ID] = callEvent.taskId
-        updatedMetadata[ADK_METADATA_CONTEXT_ID] = callEvent.contextId
+        val updatedMetadata =
+          responseEvent.customMetadata.orEmpty() +
+            remoteIdsMetadata(callEvent.taskId, callEvent.contextId)
 
         return responseEvent.copy(author = Role.USER, customMetadata = updatedMetadata)
       }
@@ -117,15 +116,9 @@ abstract class BaseRemoteA2AAgent(
         }
         ?.contextId
         ?.ifEmpty { null }
-    val customMetadata =
-      if (contextId == null) {
-        null
-      } else {
-        buildMap<String, Any> {
-          put(ADK_METADATA_CONTEXT_ID, contextId)
-          resumableTaskId(context.session.events, contextId)?.let { put(ADK_METADATA_TASK_ID, it) }
-        }
-      }
+    val customMetadata = contextId?.let {
+      remoteIdsMetadata(resumableTaskId(context.session.events, it), it)
+    }
     return Event(
       invocationId = context.invocationId,
       author = Role.USER,

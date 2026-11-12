@@ -1366,9 +1366,42 @@ class A2aConvertersTest {
 
     val result = task.toAdkEvent(invocationContext)
     assertThat(result).isNotNull()
-    assertThat(result.customMetadata?.get(ADK_METADATA_TASK_ID)).isEqualTo("task-1")
-    assertThat(result.customMetadata?.get(ADK_METADATA_CONTEXT_ID)).isEqualTo("context-1")
+    assertThat(result.customMetadata?.get("a2a:task_id")).isEqualTo("task-1")
+    assertThat(result.customMetadata?.get("a2a:context_id")).isEqualTo("context-1")
     assertThat(result.customMetadata?.get("test-key")).isEqualTo("test-value")
+  }
+
+  @Test
+  fun taskToEvent_customMetadataWithIds_keepsThisTasksIds() {
+    // A remote agent that itself calls a remote agent forwards that call's ids in its metadata.
+    val forwarded =
+      mapOf(
+        "a2a:task_id" to "downstream-task",
+        "a2a:context_id" to "downstream-context",
+        "adk_task_id" to "legacy-task",
+        "adk_context_id" to "legacy-context",
+      )
+    val task =
+      Task.builder()
+        .id("task-1")
+        .contextId("context-1")
+        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .metadata(mapOf(MetadataKeys.CUSTOM to forwarded))
+        .build()
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.customMetadata)
+      .containsAtLeast(
+        "a2a:task_id",
+        "task-1",
+        "a2a:context_id",
+        "context-1",
+        "adk_task_id",
+        "task-1",
+        "adk_context_id",
+        "context-1",
+      )
   }
 
   @Test

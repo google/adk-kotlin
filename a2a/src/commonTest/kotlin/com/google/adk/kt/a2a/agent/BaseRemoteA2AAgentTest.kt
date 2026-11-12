@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.a2a.agent
 
+import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.sessions.Session
@@ -67,7 +68,7 @@ class BaseRemoteA2AAgentTest {
       Event(
         author = Role.USER,
         content = userMessage(Part(functionCall = fc)),
-        customMetadata = mapOf("adk_task_id" to "task-123", "adk_context_id" to "ctx-456"),
+        customMetadata = mapOf("a2a:task_id" to "task-123", "a2a:context_id" to "ctx-456"),
       )
     val userResponse =
       Event(author = Role.USER, content = userFunctionResponse(name = "my-func", id = "fc-id"))
@@ -86,8 +87,61 @@ class BaseRemoteA2AAgentTest {
     val result = agent.testPrepareOutboundEvent(context)
     assertEquals(Role.USER, result.author)
     assertEquals(userResponse.content, result.content)
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
-    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("a2a:context_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_answerCarryingLegacyIds_sendsTheCallsTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val fc = FunctionCall(name = "my-func", id = "fc-id")
+    val call =
+      Event(
+        author = agent.name,
+        content = modelMessage(Part(functionCall = fc)),
+        customMetadata = mapOf("a2a:task_id" to "task-123", "a2a:context_id" to "ctx-456"),
+      )
+    // The runner merges RunConfig.customMetadata into the user's event, so it may hold any key.
+    val answer =
+      Event(
+        author = Role.USER,
+        content = userFunctionResponse(name = "my-func", id = "fc-id"),
+        customMetadata = mapOf("adk_task_id" to "stale-task", "adk_context_id" to "stale-ctx"),
+      )
+
+    val result = agent.testPrepareOutboundEvent(contextWith(agent, listOf(call, answer)))
+
+    assertEquals(
+      mapOf(
+        "a2a:task_id" to "task-123",
+        "a2a:context_id" to "ctx-456",
+        "adk_task_id" to "task-123",
+        "adk_context_id" to "ctx-456",
+      ),
+      result.customMetadata,
+    )
+  }
+
+  @Test
+  fun prepareOutboundEvent_contextEditedUnderPythonKey_sendsEditedContext() {
+    val agent = TestRemoteAgent("my-agent")
+    // A hook or plugin changed a2a:context_id after the event was recorded, which ADK Python
+    // allows.
+    val edited =
+      Event(
+        author = agent.name,
+        content = modelMessage("Done"),
+        customMetadata =
+          mapOf(
+            "adk_context_id" to "ctx-456",
+            "a2a:context_id" to "edited-ctx",
+            "a2a:response" to """{"id":"task-123","status":{"state":"TASK_STATE_COMPLETED"}}""",
+          ),
+      )
+
+    val result = agent.testPrepareOutboundEvent(contextReplyingTo(agent, edited))
+
+    assertEquals("edited-ctx", result.contextId)
   }
 
   @Test
@@ -175,7 +229,7 @@ class BaseRemoteA2AAgentTest {
       agent.testPrepareOutboundEvent(contextAnswering(agent, listOf(MOCK_INPUT_CALL), answer))
 
     assertEquals(listOf(Part(text = "Blue")), result.content?.parts)
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -198,7 +252,7 @@ class BaseRemoteA2AAgentTest {
       agent.testPrepareOutboundEvent(contextAnswering(agent, listOf(MOCK_INPUT_CALL), answer))
 
     assertEquals(listOf(Part(text = """{"company_name":"Okta"}""")), result.content?.parts)
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -213,7 +267,7 @@ class BaseRemoteA2AAgentTest {
 
     // With no text to resume with, the history goes out instead, carrying the function response.
     assertEquals(listOf(Part(functionResponse = answer)), result.content?.parts)
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -227,7 +281,7 @@ class BaseRemoteA2AAgentTest {
       )
 
     assertEquals(listOf(Part(functionResponse = answer)), result.content?.parts)
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -292,7 +346,15 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals(
+      mapOf(
+        "a2a:task_id" to "task-123",
+        "a2a:context_id" to "ctx-456",
+        "adk_task_id" to "task-123",
+        "adk_context_id" to "ctx-456",
+      ),
+      result.customMetadata,
+    )
     assertEquals(listOf("Blue"), result.content?.parts?.map { it.text })
   }
 
@@ -303,7 +365,28 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyToTaskPausedInLegacySession_resumesIt() {
+    val agent = TestRemoteAgent("my-agent")
+    val paused = remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED")
+    // Earlier versions recorded the ids under adk_task_id and adk_context_id.
+    val legacyPaused =
+      paused.copy(
+        customMetadata =
+          mapOf(
+            "adk_task_id" to "task-123",
+            "adk_context_id" to "ctx-456",
+            "a2a:response" to paused.customMetadata?.get("a2a:response"),
+          )
+      )
+
+    val result = agent.testPrepareOutboundEvent(contextReplyingTo(agent, legacyPaused))
+
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("a2a:context_id"))
   }
 
   @Test
@@ -313,20 +396,20 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
   fun prepareOutboundEvent_pausedTaskInOtherContext_startsNewTask() {
     val agent = TestRemoteAgent("my-agent")
     val laterEvent =
-      Event(author = agent.name, customMetadata = mapOf("adk_context_id" to "other-context"))
+      Event(author = agent.name, customMetadata = mapOf("a2a:context_id" to "other-context"))
     val context =
       contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), laterEvent)
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -337,15 +420,15 @@ class BaseRemoteA2AAgentTest {
       Event(
         author = agent.name,
         errorMessage = "A2A response ended before the remote task reached a terminal state",
-        customMetadata = mapOf("adk_context_id" to "ctx-456"),
+        customMetadata = mapOf("a2a:context_id" to "ctx-456"),
       )
     val context =
       contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), error)
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
-    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("a2a:context_id"))
   }
 
   @Test
@@ -357,7 +440,7 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -367,8 +450,8 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
-    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("a2a:context_id"))
   }
 
   @Test
@@ -389,7 +472,7 @@ class BaseRemoteA2AAgentTest {
 
       val result = agent.testPrepareOutboundEvent(context)
 
-      assertNull(result.customMetadata?.get("adk_task_id"), state)
+      assertNull(result.customMetadata?.get("a2a:task_id"), state)
     }
   }
 
@@ -404,7 +487,7 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -419,7 +502,7 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -431,8 +514,8 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertEquals("task-123", result.customMetadata?.get("adk_task_id"))
-    assertEquals("ctx-456", result.customMetadata?.get("adk_context_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
+    assertEquals("ctx-456", result.customMetadata?.get("a2a:context_id"))
   }
 
   @Test
@@ -442,14 +525,14 @@ class BaseRemoteA2AAgentTest {
       Event(
         author = agent.name,
         customMetadata =
-          mapOf("adk_context_id" to "ctx-456", BaseRemoteA2AAgent.RESPONSE_ERROR to "failed"),
+          mapOf("a2a:context_id" to "ctx-456", BaseRemoteA2AAgent.RESPONSE_ERROR to "failed"),
       )
     val context =
       contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), unrecorded)
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -459,14 +542,14 @@ class BaseRemoteA2AAgentTest {
       Event(
         author = agent.name,
         customMetadata =
-          mapOf("adk_context_id" to "ctx-456", "a2a:response" to mapOf("id" to "task-123")),
+          mapOf("a2a:context_id" to "ctx-456", "a2a:response" to mapOf("id" to "task-123")),
       )
     val context =
       contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), unreadable)
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -475,14 +558,14 @@ class BaseRemoteA2AAgentTest {
     val malformed =
       Event(
         author = agent.name,
-        customMetadata = mapOf("adk_context_id" to "ctx-456", "a2a:response" to "{"),
+        customMetadata = mapOf("a2a:context_id" to "ctx-456", "a2a:response" to "{"),
       )
     val context =
       contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), malformed)
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
     assertEquals(listOf("Blue"), result.content?.parts?.map { it.text })
   }
 
@@ -493,14 +576,14 @@ class BaseRemoteA2AAgentTest {
       Event(
         author = agent.name,
         errorMessage = "A2A request failed (IOException)",
-        customMetadata = mapOf("adk_context_id" to "ctx-456", "a2a:request" to "{}"),
+        customMetadata = mapOf("a2a:context_id" to "ctx-456", "a2a:request" to "{}"),
       )
     val context =
       contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), failedRequest)
 
     val result = agent.testPrepareOutboundEvent(context)
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -511,12 +594,12 @@ class BaseRemoteA2AAgentTest {
         author = agent.name,
         content = modelMessage("Hi"),
         customMetadata =
-          mapOf("adk_context_id" to "ctx-456", "a2a:response" to """{"messageId":"m1"}"""),
+          mapOf("a2a:context_id" to "ctx-456", "a2a:response" to """{"messageId":"m1"}"""),
       )
 
     val result = agent.testPrepareOutboundEvent(contextReplyingTo(agent, messageResponse))
 
-    assertNull(result.customMetadata?.get("adk_task_id"))
+    assertNull(result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -548,7 +631,7 @@ class BaseRemoteA2AAgentTest {
       Event(
         author = "my-agent",
         content = modelMessage("reply"),
-        customMetadata = mapOf("adk_context_id" to "parent-context-123"),
+        customMetadata = mapOf("a2a:context_id" to "parent-context-123"),
       )
     val nextUserEvent = Event(author = Role.USER, content = userMessage("how are you?"))
 
@@ -565,7 +648,7 @@ class BaseRemoteA2AAgentTest {
 
     val result = agent.testPrepareOutboundEvent(context)
     assertEquals(Role.USER, result.author)
-    assertEquals("parent-context-123", result.customMetadata?.get("adk_context_id"))
+    assertEquals("parent-context-123", result.customMetadata?.get("a2a:context_id"))
   }
 
   @Test
@@ -675,8 +758,8 @@ class BaseRemoteA2AAgentTest {
       content = modelMessage("Which color?"),
       customMetadata =
         mapOf(
-          "adk_task_id" to "task-123",
-          "adk_context_id" to "ctx-456",
+          "a2a:task_id" to "task-123",
+          "a2a:context_id" to "ctx-456",
           "a2a:response" to
             """{"id":"task-123","contextId":"ctx-456","status":{"state":"$state"}}""",
         ),
@@ -707,7 +790,7 @@ class BaseRemoteA2AAgentTest {
       Event(
         author = agent.name,
         content = Content(role = Role.MODEL, parts = calls.map { Part(functionCall = it) }),
-        customMetadata = mapOf("adk_task_id" to "task-123", "adk_context_id" to "ctx-456"),
+        customMetadata = mapOf("a2a:task_id" to "task-123", "a2a:context_id" to "ctx-456"),
       )
     val userAnswer =
       Event(author = Role.USER, content = Content(role = Role.USER, parts = answer.toList()))

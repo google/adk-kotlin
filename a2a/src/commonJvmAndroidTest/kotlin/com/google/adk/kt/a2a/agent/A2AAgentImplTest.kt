@@ -699,7 +699,7 @@ class A2AAgentImplTest {
                 invocationId = "invocation-1",
                 author = "remote-agent",
                 content = modelMessage(Part(functionCall = credentialCall)),
-                customMetadata = mapOf("adk_context_id" to "context-1"),
+                customMetadata = mapOf("a2a:context_id" to "context-1"),
               ),
               Event(
                 invocationId = "invocation-1",
@@ -977,7 +977,8 @@ class A2AAgentImplTest {
       assertThat(events[0].content?.parts?.single()?.thought).isTrue()
       assertThat(events[1].errorMessage).isNotNull()
       // The next turn reads the remote context id from this agent's last event.
-      assertThat(events[1].contextId).isEqualTo("context-1")
+      assertThat(events[1].customMetadata)
+        .containsAtLeast("a2a:context_id", "context-1", "adk_context_id", "context-1")
       assertThat(events[1].customMetadata).containsKey("a2a:request")
       verify(mockClient, timeout(5000)).cancelTask(any())
     }
@@ -996,7 +997,8 @@ class A2AAgentImplTest {
       val events = withTimeout(5.seconds) { agent.runAsync(invocationContext).toList() }
 
       assertThat(events.last().errorMessage).isNotNull()
-      assertThat(events.last().contextId).isEqualTo("context-1")
+      assertThat(events.last().customMetadata)
+        .containsAtLeast("a2a:context_id", "context-1", "adk_context_id", "context-1")
       assertThat(events.last().customMetadata).containsKey("a2a:request")
     }
 

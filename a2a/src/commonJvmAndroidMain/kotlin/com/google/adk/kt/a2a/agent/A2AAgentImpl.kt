@@ -16,12 +16,12 @@
 
 package com.google.adk.kt.a2a.agent
 
-import com.google.adk.kt.a2a.converters.ADK_METADATA_CONTEXT_ID
 import com.google.adk.kt.a2a.converters.isCompleted
 import com.google.adk.kt.a2a.converters.isFinalState
 import com.google.adk.kt.a2a.converters.isInterruptedState
 import com.google.adk.kt.a2a.converters.isLastChunk
 import com.google.adk.kt.a2a.converters.remoteAgentEvent
+import com.google.adk.kt.a2a.converters.remoteIdsMetadata
 import com.google.adk.kt.a2a.converters.shouldBuffer
 import com.google.adk.kt.a2a.converters.shouldResetBuffer
 import com.google.adk.kt.a2a.converters.toA2aMessage
@@ -236,7 +236,7 @@ internal class A2AAgentImpl(
         errorMessage = errorMessage,
         customMetadata =
           buildMap {
-            contextId?.let { put(ADK_METADATA_CONTEXT_ID, it) }
+            putAll(remoteIdsMetadata(taskId = null, contextId))
             request.onSuccess { put(A2AMetadata.REQUEST, it) }
           },
       )

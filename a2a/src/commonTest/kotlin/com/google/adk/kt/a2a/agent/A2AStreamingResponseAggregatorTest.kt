@@ -548,4 +548,43 @@ class A2AStreamingResponseAggregatorTest {
     assertEquals(partialEvent2, result[0])
     assertEquals("Part 1Part 2", result[1].content?.parts?.get(0)?.text)
   }
+
+  @Test
+  fun processEvent_nonPartialFlushesBuffer_keepsRemoteIds() {
+    val ids =
+      mapOf(
+        "a2a:task_id" to "task-1",
+        "a2a:context_id" to "context-1",
+        "adk_task_id" to "task-1",
+        "adk_context_id" to "context-1",
+      )
+    val unused =
+      aggregator.processEvent(
+        Event(
+          author = agentName,
+          invocationId = invocationId,
+          partial = true,
+          content = modelMessage("Part 1"),
+          customMetadata = ids,
+        ),
+        isCompleted = false,
+        shouldBuffer = true,
+        shouldResetBuffer = false,
+      )
+
+    val result =
+      aggregator.processEvent(
+        Event(
+          author = agentName,
+          invocationId = invocationId,
+          content = modelMessage("Part 2"),
+          customMetadata = ids,
+        ),
+        isCompleted = false,
+        shouldBuffer = false,
+        shouldResetBuffer = false,
+      )
+
+    assertEquals(ids + ("a2a:aggregated" to "true"), result[0].customMetadata)
+  }
 }
