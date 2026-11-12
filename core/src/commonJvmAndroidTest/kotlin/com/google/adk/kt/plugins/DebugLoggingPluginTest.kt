@@ -104,6 +104,24 @@ class DebugLoggingPluginTest {
   }
 
   @Test
+  fun onUserMessage_privateKeyWithoutEndLine_redactsItToTheEnd() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val message =
+      Content(
+        parts = listOf(Part(text = "key follows: -----BEGIN PGP PRIVATE KEY BLOCK-----\n$SENTINEL"))
+      )
+
+    plugin.startInvocation()
+    assertEquals(message, plugin.onUserMessage(invocationContext, message))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "key follows: <redacted>")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
   fun capturesLlmRequestAndResponse() = runBlocking {
     val file = tempFile()
     val plugin = newPlugin(file)
@@ -145,6 +163,25 @@ class DebugLoggingPluginTest {
     assertContains(text, "Zurich")
     assertContains(text, "entry_type: tool_response")
     assertContains(text, "temperature")
+  }
+
+  @Test
+  fun beforeTool_keyFileInArg_writesItWithoutThePrivateKey() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val keyFile =
+      """{"private_key": "-----BEGIN PRIVATE KEY-----\n$SENTINEL\n-----END PRIVATE KEY-----\n",""" +
+        """ "client_email": "agent@example.com"}"""
+    val args: Map<String, Any?> = mapOf("key_file" to keyFile)
+
+    plugin.startInvocation()
+    assertEquals(CallbackChoice.Continue(args), plugin.beforeTool(toolContext, tool, args))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "<redacted>")
+    assertContains(text, "agent@example.com")
+    assertFalse(text.contains(SENTINEL))
   }
 
   @Test
@@ -229,5 +266,9 @@ class DebugLoggingPluginTest {
       assertFalse(permissions.contains(PosixFilePermission.GROUP_READ))
       assertFalse(permissions.contains(PosixFilePermission.OTHERS_READ))
     }
+  }
+
+  private companion object {
+    const val SENTINEL = "secret-sentinel"
   }
 }

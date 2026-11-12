@@ -293,6 +293,7 @@ data class LlmRequest(
  * traces -- no more, no less:
  * - content parts carrying binary [Part.inlineData] are dropped (raw image/audio/video/file bytes
  *   are never sent to traces);
+ * - thought signatures, which the history repeats on every request, are dropped;
  * - the request [GenerateContentConfig.responseSchema] is excluded.
  *
  * Everything else is preserved. The result is built with the shared [adkJson] serializer, which
@@ -306,7 +307,10 @@ internal fun LlmRequest.toTracePayload(): JsonObject {
   fields["contents"] =
     adkJson.encodeToJsonElement(
       contents.map { content ->
-        content.copy(parts = content.parts.filter { it.inlineData == null })
+        content.copy(
+          parts =
+            content.parts.filter { it.inlineData == null }.map { it.withoutThoughtSignature() }
+        )
       }
     )
   return JsonObject(fields)

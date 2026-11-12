@@ -32,6 +32,7 @@ import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Serialization of the four content payloads recorded on `call_llm`/`execute_tool` spans
@@ -42,6 +43,24 @@ import kotlin.test.assertFalse
  * on JVM and Android, which is what this suite guards.
  */
 class TracePayloadSerializationTest {
+
+  @Test
+  fun llmResponse_summarizesInlineData_andLeavesOutThoughtSignature() {
+    val response =
+      LlmResponse(
+        content =
+          modelMessage(
+            Part(text = "signed", thoughtSignature = ByteArray(8)),
+            Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3))),
+          )
+      )
+
+    assertEquals(
+      "{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"signed\"}," +
+        "{\"text\":\"<inline_data: image/png, 3 bytes>\"}]}}",
+      response.toTracePayload().toString(),
+    )
+  }
 
   @Test
   fun llmResponse_serializesStructuredJson_excludingNulls() {
@@ -91,6 +110,19 @@ class TracePayloadSerializationTest {
         "\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hello\"}]}]}",
       request.toTracePayload().toString(),
     )
+  }
+
+  @Test
+  fun llmRequest_thoughtSignature_isLeftOut() {
+    val request =
+      LlmRequest(
+        contents = listOf(userMessage(Part(text = "signed", thoughtSignature = ByteArray(8))))
+      )
+
+    val json = request.toTracePayload().toString()
+
+    assertTrue("{\"text\":\"signed\"}" in json)
+    assertFalse("thoughtSignature" in json)
   }
 
   @OptIn(FrameworkInternalApi::class)

@@ -308,10 +308,12 @@ constructor(
 }
 
 /**
- * Serializes this response for the `call_llm` span's `gcp.vertex.agent.llm_response` attribute.
+ * Serializes this response for the `call_llm` span's `gcp.vertex.agent.llm_response` attribute,
+ * with its inline media summarized and without thought signatures.
  *
  * Uses the shared [adkJson] serializer, which omits null/empty fields (`exclude_none`) and produces
  * byte-identical JSON on every platform.
  */
 @OptIn(FrameworkInternalApi::class)
-internal fun LlmResponse.toTracePayload(): JsonElement = adkJson.encodeToJsonElement(this)
+internal fun LlmResponse.toTracePayload(): JsonElement =
+  adkJson.encodeToJsonElement(copy(content = content?.withInlineDataSummarized()))
