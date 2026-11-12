@@ -20,9 +20,10 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
-import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.isFailure
+import com.google.adk.kt.telemetry.recordFailure
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
@@ -80,7 +81,7 @@ internal suspend fun <T> traceNode(
     return result
   } catch (e: Throwable) {
     // A node that asks for input pauses rather than fails.
-    if (e !is CancellationException && e !is NodeInterruptedException) span.recordFailure(e)
+    if (isFailure(e)) span.recordFailure(e)
     throw e
   } finally {
     if (eventIds.isNotEmpty()) {
@@ -88,11 +89,6 @@ internal suspend fun <T> traceNode(
     }
     span.end()
   }
-}
-
-private fun Span.recordFailure(e: Throwable) {
-  recordException(e)
-  this[TelemetryAttributes.ERROR_TYPE] = e::class.simpleName ?: "Exception"
 }
 
 /** Marks code running in a workflow's span, so a workflow started there is flagged nested. */

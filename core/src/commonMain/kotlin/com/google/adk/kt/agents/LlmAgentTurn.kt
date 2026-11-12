@@ -140,6 +140,13 @@ internal class LlmAgentTurn(
 ) {
 
   /**
+   * Whether this step's response processing (response processors, tool calls, transfers) or the
+   * caller handling an event failed in [passOn]. Python runs both outside its `call_llm` span, so
+   * neither sets that span's `error.type`.
+   */
+  private var passOnFailed = false
+
+  /**
    * Keeps the run's audio when `LiveRunConfig.saveLiveBlob` asks for it; null records nothing. It
    * is also null without an artifact service, which leaves nowhere to save a recording.
    */
@@ -1798,10 +1805,21 @@ internal class LlmAgentTurn(
         getToolMap(request),
       )
 
+  /** Runs [block], setting [passOnFailed] when a failure escapes it. */
+  private inline fun passOn(block: () -> Unit) {
+    try {
+      block()
+    } catch (e: Throwable) {
+      passOnFailed = true
+      throw e
+    }
+  }
+
   private fun invokeAndProcessModel(request: LlmRequest): Flow<Event> =
     tracedFlow<Event>(
       "call_llm",
-      {
+      isOwnFailure = { !passOnFailed },
+      builder = {
         this[TelemetryAttributes.GEN_AI_SYSTEM] = TelemetryAttributes.SYSTEM_GCP_VERTEX_AGENT
         this[TelemetryAttributes.GEN_AI_REQUEST_MODEL] = agent.model.name
         this[TelemetryAttributes.GCP_VERTEX_AGENT_INVOCATION_ID] = context.invocationId
@@ -1812,6 +1830,7 @@ internal class LlmAgentTurn(
         this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
       },
     ) { span, _ ->
+      passOnFailed = false
       // One context for this step's before/after-model and on-model-error callbacks; their
       // accumulated actions reach the emitted event via withActionsFrom.
       var modelResponseEvent = createModelResponseEvent()
@@ -1833,7 +1852,9 @@ internal class LlmAgentTurn(
           is CallbackChoice.Continue -> result.value
           is CallbackChoice.Break -> {
             modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
-            processModelResponse(request, result.value, modelResponseEvent, span) { emit(it) }
+            passOn {
+              processModelResponse(request, result.value, modelResponseEvent, span) { emit(it) }
+            }
             return@tracedFlow
           }
         }
@@ -1864,14 +1885,16 @@ internal class LlmAgentTurn(
         lastResponse = currentResponse
 
         modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
-        processModelResponse(currentRequest, currentResponse, modelResponseEvent, span) {
-          modelResponseEvent =
-            modelResponseEvent.copy(
-              // A streamed reply keeps one id until its complete event, as in ADK Python.
-              id = if (it.partial) modelResponseEvent.id else Uuid.random(),
-              timestamp = Clock.System.now().toEpochMilliseconds(),
-            )
-          emit(it)
+        passOn {
+          processModelResponse(currentRequest, currentResponse, modelResponseEvent, span) {
+            modelResponseEvent =
+              modelResponseEvent.copy(
+                // A streamed reply keeps one id until its complete event, as in ADK Python.
+                id = if (it.partial) modelResponseEvent.id else Uuid.random(),
+                timestamp = Clock.System.now().toEpochMilliseconds(),
+              )
+            emit(it)
+          }
         }
       }
 

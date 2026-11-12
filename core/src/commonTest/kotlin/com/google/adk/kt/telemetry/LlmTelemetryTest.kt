@@ -49,6 +49,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -691,6 +692,68 @@ class LlmTelemetryTest {
     assertEquals("IllegalStateException", span.attributes[TelemetryAttributes.ERROR_TYPE])
     // The recovered response is the callback's, not the model's.
     assertNull(span.attributes[TelemetryAttributes.GEN_AI_RESPONSE_FINISH_REASONS])
+  }
+
+  @Test
+  fun runAsync_beforeModelCallbackThrows_setsErrorTypeOnCallLlm() = runBlocking {
+    val failing = BeforeModelCallback { _, _ -> throw IllegalStateException("callback boom") }
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = DummyModel.createSequential("test-model", listOf(LlmResponse())),
+        beforeModelCallbacks = listOf(failing),
+      )
+
+    assertFailsWith<IllegalStateException> { agent.runAsync(newContext(agent)).toList() }
+
+    val callLlm = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertEquals("IllegalStateException", callLlm.attributes[TelemetryAttributes.ERROR_TYPE])
+  }
+
+  @Test
+  fun runAsync_callerFailsHandlingAnEvent_setsNoErrorTypeOnTheAgentSpan() = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model =
+          DummyModel.createSequential(
+            "test-model",
+            listOf(LlmResponse(content = modelMessage("Hi"))),
+          ),
+      )
+
+    assertFailsWith<IllegalStateException> {
+      agent.runAsync(newContext(agent)).collect { throw IllegalStateException("caller boom") }
+    }
+
+    val agentSpan = dummyTracer.recordedSpans.single { it.name == "invoke_agent test-agent" }
+    assertNull(agentSpan.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertTrue(agentSpan.recordedExceptions.isEmpty())
+    val callLlm = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertNull(callLlm.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertTrue(callLlm.recordedExceptions.isEmpty())
+  }
+
+  @Test
+  fun runAsync_toolFailure_setsErrorTypeOnTheToolSpanNotCallLlm() = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model =
+          DummyModel.createSequential(
+            "test-model",
+            listOf(modelFunctionCallResponse("dummy_tool")),
+          ),
+        tools = listOf(DummyTool(onRun = { _, _ -> throw IllegalStateException("tool boom") })),
+      )
+
+    assertFailsWith<IllegalStateException> { agent.runAsync(newContext(agent)).toList() }
+
+    val callLlm = dummyTracer.recordedSpans.single { it.name == "call_llm" }
+    assertNull(callLlm.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertTrue(callLlm.recordedExceptions.isEmpty())
+    val tool = dummyTracer.recordedSpans.single { it.name == "execute_tool dummy_tool" }
+    assertEquals("IllegalStateException", tool.attributes[TelemetryAttributes.ERROR_TYPE])
   }
 
   @Test

@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
@@ -281,6 +282,36 @@ class NodeTracingTest {
     assertThat(delegateSpan.parentSpanId).isEqualTo(toolInvocation.spanId)
     assertThat(exported.filter { it.name == "call_llm" }.map { it.parentSpanId })
       .containsExactly(callerSpan.spanId, callerSpan.spanId, delegateSpan.spanId)
+  }
+
+  @Test
+  fun run_singleTurnToolPausedForApproval_recordsNoFailure() {
+    val approve = DummyTool("approve", isLongRunning = true, onRun = { _, _ -> Unit })
+    val helper =
+      LlmAgent(
+        name = "helper",
+        model =
+          DummyModel.createSequential("test-model", listOf(modelFunctionCallResponse("approve"))),
+        description = "A helper.",
+        tools = listOf(approve),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val root =
+      LlmAgent(
+        name = "root_agent",
+        model =
+          DummyModel.createSequential(
+            "test-model",
+            listOf(modelFunctionCallResponse("helper", mapOf("request" to "hi"))),
+          ),
+        subAgents = listOf(helper),
+      )
+
+    runAsApp(root)
+
+    assertThat(exported.map { it.name }).contains("execute_tool helper")
+    assertThat(exported.filter { it.attributes[ERROR_TYPE] != null }.map { it.name }).isEmpty()
+    assertThat(exported.filter { span -> span.events.any { it.name == "exception" } }).isEmpty()
   }
 
   @Test

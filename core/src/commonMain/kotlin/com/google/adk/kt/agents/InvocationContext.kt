@@ -40,6 +40,7 @@ import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.capturedJson
+import com.google.adk.kt.telemetry.errorType
 import com.google.adk.kt.telemetry.withSpan
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -663,13 +664,8 @@ data class InvocationContext(
             // CancellationException is an Exception in Kotlin; rethrow before recovery sees it.
             throw e
           } catch (e: Exception) {
-            val recoveredResult =
-              runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e)
-            if (recoveredResult == null) {
-              span[TelemetryAttributes.ERROR_TYPE] = e::class.simpleName ?: "Exception"
-              throw e
-            }
-            recoveredResult
+            // withSpan records the error that escapes it.
+            runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e) ?: throw e
           }
 
       // A long-running tool returning `Unit` defers: suppress the FR event so the function-call
@@ -721,8 +717,9 @@ data class InvocationContext(
   ): Event =
     withSpan("execute_tool ${tool.name}") { span ->
       span.recordExecuteToolMeta(tool, toolContext, responseEventId, args)
+      // Python raises a ValueError here; IllegalArgumentException is its Kotlin counterpart.
       val error = IllegalArgumentException(TOOL_NOT_FOUND_ERROR)
-      span[TelemetryAttributes.ERROR_TYPE] = error::class.simpleName ?: "Exception"
+      span[TelemetryAttributes.ERROR_TYPE] = errorType(error)
       val recovered = runErrorBaseToolCallbacks(llmAgent, tool, args, toolContext, error)
       val response =
         recovered
@@ -750,6 +747,7 @@ data class InvocationContext(
     this[TelemetryAttributes.GEN_AI_TOOL_NAME] = tool.name
     this[TelemetryAttributes.GEN_AI_TOOL_DESCRIPTION] = tool.description
     this[TelemetryAttributes.GEN_AI_TOOL_TYPE] = tool::class.simpleName ?: "unknown"
+    this[TelemetryAttributes.GEN_AI_AGENT_NAME] = agent.name
     // Associate this client-side span with a remote MCP tool's destination resource (for AppHub),
     // when the tool carries the id in its custom metadata (parity with Python `trace_tool_call`).
     tool.customMetadata[TelemetryAttributes.GCP_MCP_SERVER_DESTINATION_ID]?.let {

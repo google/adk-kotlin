@@ -24,13 +24,16 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 
@@ -134,7 +137,7 @@ class CoroutinesTest {
   @Test
   fun tracedFlow_emitsValuesInOrder() = runTest {
     val result =
-      tracedFlow<String>("traced") { _, _ ->
+      tracedFlow<String>("traced", isOwnFailure = { true }) { _, _ ->
           emit("A")
           emit("B")
           emit("C")
@@ -146,7 +149,8 @@ class CoroutinesTest {
 
   @Test
   fun tracedFlow_startsAndEndsSpanWithConfiguredAttributes() = runTest {
-    tracedFlow<Unit>("call_llm", { this["model"] = "gemini" }) { _, _ -> }.collect {}
+    tracedFlow<Unit>("call_llm", { this["model"] = "gemini" }, isOwnFailure = { true }) { _, _ -> }
+      .collect {}
 
     assertEquals(1, tracer.recordedSpans.size)
     val span = tracer.recordedSpans.single()
@@ -157,7 +161,7 @@ class CoroutinesTest {
 
   @Test
   fun tracedFlow_exposesSpanForEvents() = runTest {
-    tracedFlow<Int>("with_events") { span, _ ->
+    tracedFlow<Int>("with_events", isOwnFailure = { true }) { span, _ ->
         span.addEvent("chunk_received")
         emit(1)
         span.addEvent("chunk_received")
@@ -175,7 +179,7 @@ class CoroutinesTest {
     // collector's start/end entries.
     val trace = mutableListOf<String>()
 
-    tracedFlow<Int>("synchronous") { _, _ ->
+    tracedFlow<Int>("synchronous", isOwnFailure = { true }) { _, _ ->
         trace.add("producer:before-emit-1")
         emit(1)
         trace.add("producer:after-emit-1")
@@ -208,7 +212,7 @@ class CoroutinesTest {
 
     val thrown =
       assertFailsWith<RuntimeException> {
-        tracedFlow<Int>("failing") { _, _ ->
+        tracedFlow<Int>("failing", isOwnFailure = { true }) { _, _ ->
             emit(1)
             throw boom
           }
@@ -222,12 +226,58 @@ class CoroutinesTest {
   }
 
   @Test
+  fun tracedFlow_failureNotItsOwn_recordsNothing() =
+    runBlocking<Unit> {
+      assertFailsWith<RuntimeException> {
+        tracedFlow<Int>("failing", isOwnFailure = { false }) { _, _ -> throw RuntimeException("x") }
+          .toList()
+      }
+
+      val span = tracer.recordedSpans.single()
+      assertTrue(span.isEnded)
+      assertEquals(emptyList(), span.recordedExceptions)
+      assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    }
+
+  @Test
+  fun flowTrace_collectorFails_recordsNothing() =
+    runBlocking<Unit> {
+      assertFailsWith<RuntimeException> {
+        flowOf(1).trace("flow_span").collect { throw RuntimeException("collector boom") }
+      }
+
+      val span = tracer.recordedSpans.single()
+      assertEquals(emptyList(), span.recordedExceptions)
+      assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    }
+
+  @Test
+  fun flowTrace_collectorFailureRethrownAsAnotherInstance_recordsNothing() =
+    runBlocking<Unit> {
+      // An upstream operator may replace the collector's exception, as Gemini does for a 429.
+      val rewrapping = flow {
+        try {
+          emit(1)
+        } catch (e: RuntimeException) {
+          throw IllegalStateException("rewrapped", e)
+        }
+      }
+      assertFailsWith<IllegalStateException> {
+        rewrapping.trace("flow_span").collect { throw RuntimeException("collector boom") }
+      }
+
+      val span = tracer.recordedSpans.single()
+      assertEquals(emptyList(), span.recordedExceptions)
+      assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    }
+
+  @Test
   fun tracedFlow_doesNotInstallSpanIntoCollectorContext() = runTest {
     // The collector runs in the caller's context; callers needing the span on upstream work must
     // opt in via `.flowOn(spanContext)`.
     var collectorSawSpanContext = true
 
-    tracedFlow<Int>("scope_check") { _, _ -> emit(1) }
+    tracedFlow<Int>("scope_check", isOwnFailure = { true }) { _, _ -> emit(1) }
       .collect { collectorSawSpanContext = coroutineContext[TelemetryContextElement.Key] != null }
 
     assertFalse(collectorSawSpanContext)
@@ -237,7 +287,7 @@ class CoroutinesTest {
   fun tracedFlow_handsSpanContextElementToBlock() = runTest {
     var receivedElement: TelemetryContextElement? = null
 
-    tracedFlow<Int>("captures_context") { _, spanContext ->
+    tracedFlow<Int>("captures_context", isOwnFailure = { true }) { _, spanContext ->
         receivedElement = spanContext
         emit(1)
       }

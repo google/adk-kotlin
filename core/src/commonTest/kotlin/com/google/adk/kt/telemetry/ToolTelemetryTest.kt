@@ -28,6 +28,7 @@ import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionCall
+import com.google.genai.kotlin.ClientException
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -38,6 +39,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
@@ -129,6 +131,13 @@ class ToolTelemetryTest {
     val span = recordSingleToolSpan()
 
     assertEquals("A test tool", span.attributes[TelemetryAttributes.GEN_AI_TOOL_DESCRIPTION])
+  }
+
+  @Test
+  fun executeSingleFunctionCall_setsTheCallingAgentsName() = runBlocking {
+    val span = recordSingleToolSpan()
+
+    assertEquals("test_agent", span.attributes[TelemetryAttributes.GEN_AI_AGENT_NAME])
   }
 
   @Test
@@ -268,7 +277,56 @@ class ToolTelemetryTest {
     assertEquals(1, fakeTracer.recordedSpans.size)
     val span = fakeTracer.recordedSpans[0]
     assertEquals("IllegalStateException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertEquals(listOf("boom"), span.recordedExceptions.map { it.message })
   }
+
+  @Test
+  fun executeSingleFunctionCall_toolSucceeds_recordsNoFailure() = runBlocking {
+    val span = recordSingleToolSpan()
+
+    assertTrue(span.recordedExceptions.isEmpty())
+    assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+  }
+
+  @Test
+  fun executeSingleFunctionCall_toolThrowsGenAiApiError_setsItsHttpStatusAsErrorType() =
+    runBlocking {
+      val tool =
+        object : FunctionTool("genai_tool", "A tool calling the GenAI API") {
+          override fun declaration() = null
+
+          override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any =
+            throw ClientException(code = 429, status = "RESOURCE_EXHAUSTED", message = "Slow down.")
+        }
+
+      assertFailsWith<ClientException> {
+        createInvocationContext()
+          .executeSingleFunctionCall(
+            FunctionCall(name = "genai_tool", args = emptyMap(), id = "call_1"),
+            mapOf("genai_tool" to tool),
+          )
+      }
+
+      val span = fakeTracer.recordedSpans.single { it.name == "execute_tool genai_tool" }
+      assertEquals("429", span.attributes[TelemetryAttributes.ERROR_TYPE])
+    }
+
+  @Test
+  fun executeSingleFunctionCall_unregisteredToolUnanswered_setsErrorTypeAndAnswersTheModel() =
+    runBlocking {
+      val event =
+        createInvocationContext()
+          .executeSingleFunctionCall(
+            FunctionCall(name = "missing_tool", args = emptyMap(), id = "call_1"),
+            emptyMap(),
+          )
+
+      assertNotNull(event)
+      val span = fakeTracer.recordedSpans.single { it.name == "execute_tool missing_tool" }
+      assertEquals("IllegalArgumentException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+      assertEquals("Tool not found", span.attributes[TelemetryAttributes.GEN_AI_TOOL_DESCRIPTION])
+      assertEquals(event.id, span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID])
+    }
 
   @Test
   fun handleFunctionCalls_parallelCalls_recordsMergedToolSpan() = runTest {

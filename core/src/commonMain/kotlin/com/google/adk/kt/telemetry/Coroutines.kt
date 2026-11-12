@@ -16,12 +16,10 @@
 
 package com.google.adk.kt.telemetry
 
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
-import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
@@ -46,8 +44,8 @@ internal suspend fun <T> withSpan(
   return try {
     withContext(Telemetry.tracer.contextWithSpan(span).asContextElement()) { block(span) }
   } catch (e: Throwable) {
-    if (e !is CancellationException) {
-      span.recordException(e)
+    if (isFailure(e)) {
+      span.recordFailure(e)
     }
     throw e
   } finally {
@@ -79,8 +77,8 @@ internal inline fun <T> inSpan(
   return try {
     block(span)
   } catch (e: Throwable) {
-    if (e !is CancellationException) {
-      span.recordException(e)
+    if (isFailure(e)) {
+      span.recordFailure(e)
     }
     throw e
   } finally {
@@ -93,8 +91,8 @@ internal inline fun <T> inSpan(
  * An operator that creates a new [Span] around the collection of the given [Flow].
  *
  * This function handles the span lifecycle for a flow: starting the span when collection begins,
- * applying it to the contextual execution of the upstream flow, recording any exceptions, and
- * ensuring the span is ended when collection finishes.
+ * applying it to the contextual execution of the upstream flow, recording the flow's own failure
+ * but not the collector's, and ensuring the span is ended when collection finishes.
  *
  * @param name the name of the new span.
  * @param parent optional explicit parent context. When provided, the span is parented to it (e.g.
@@ -112,15 +110,22 @@ internal fun <T> Flow<T>.trace(
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
 
+  // A failure of the collector handling a value is not this span's own, as in Python ADK.
+  var collectorFailed = false
   try {
     // We use flowOn to inject the span into the upstream coroutine context safely,
     // honoring Kotlin's Flow context preservation invariants without affecting the
     // downstream emission context.
-    emitAll(this@trace.flowOn(Telemetry.tracer.contextWithSpan(span).asContextElement()))
-  } catch (e: Throwable) {
-    if (e !is CancellationException) {
-      span.recordException(e)
+    this@trace.flowOn(Telemetry.tracer.contextWithSpan(span).asContextElement()).collect {
+      try {
+        emit(it)
+      } catch (e: Throwable) {
+        collectorFailed = true
+        throw e
+      }
     }
+  } catch (e: Throwable) {
+    if (isFailure(e) && !collectorFailed) span.recordFailure(e)
     throw e
   } finally {
     span.end()
@@ -135,10 +140,14 @@ internal fun <T> Flow<T>.trace(
  * to upstream sub-flows; wrapping `emit` in `withContext(spanContext)` would re-introduce the
  * flow-invariant problem [withSpan] has. The span's parent is the span on the coroutine context
  * when there is one, else the thread's current context.
+ *
+ * @param isOwnFailure whether the failure escaping [block] is the span's own, which the span
+ *   records; it records nothing for any other, as Python ADK does.
  */
 internal fun <T> tracedFlow(
   name: String,
   builder: SpanBuilder.() -> Unit = {},
+  isOwnFailure: () -> Boolean,
   block: suspend FlowCollector<T>.(span: Span, spanContext: TelemetryContextElement) -> Unit,
 ): Flow<T> = flow {
   val spanBuilder = Telemetry.tracer.spanBuilder(name)
@@ -151,9 +160,7 @@ internal fun <T> tracedFlow(
   try {
     block(span, spanContext)
   } catch (e: Throwable) {
-    if (e !is CancellationException) {
-      span.recordException(e)
-    }
+    if (isFailure(e) && isOwnFailure()) span.recordFailure(e)
     throw e
   } finally {
     span.end()

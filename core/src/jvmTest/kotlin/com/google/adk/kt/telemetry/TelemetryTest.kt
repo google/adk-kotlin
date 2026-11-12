@@ -21,20 +21,31 @@ import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Candidate
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.GenerateContentConfig
+import com.google.adk.kt.types.GenerateContentResponse
 import com.google.common.truth.Truth.assertThat
+import com.google.genai.kotlin.Client
+import com.google.genai.kotlin.ClientException
+import com.google.genai.kotlin.GenAiApiException
+import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
 import io.opentelemetry.sdk.trace.export.SpanExporter
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -240,6 +251,65 @@ class TelemetryTest {
     }
   }
 
+  /** A GenAI error from a tool passes back through `Gemini`, which rewraps a 429 on the way. */
+  @Test
+  fun runAsync_toolThrowsQuotaErrorThroughGemini_setsNoErrorTypeOnCallLlm() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+      val models =
+        object : Gemini.GeminiModels {
+          override fun generateContentStream(
+            model: String,
+            contents: List<Content>,
+            config: GenerateContentConfig,
+          ): Flow<GenerateContentResponse> = throw NotImplementedError()
+
+          override suspend fun generateContent(
+            model: String,
+            contents: List<Content>,
+            config: GenerateContentConfig,
+          ): GenerateContentResponse =
+            GenerateContentResponse(
+              candidates = listOf(Candidate(content = modelFunctionCall("quota_tool")))
+            )
+        }
+      val quotaTool =
+        DummyTool(name = "quota_tool", declares = true) { _, _ ->
+          throw ClientException(code = 429, status = "RESOURCE_EXHAUSTED", message = "Slow down.")
+        }
+      val agent =
+        LlmAgent(
+          name = "quota_agent",
+          model = Gemini(Client(apiKey = "fake"), "gemini-test", models = models),
+          tools = listOf(quotaTool),
+        )
+      val runner = InMemoryRunner(agent, appName = "telemetryapp")
+
+      val thrown =
+        assertFailsWith<GenAiApiException> {
+          runBlocking {
+            runner
+              .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi"))
+              .collect {}
+          }
+        }
+
+      // Gemini rewraps the 429 on its way out, so the failure leaving call_llm is a new instance.
+      assertThat(thrown).isNotInstanceOf(ClientException::class.java)
+      assertThat(thrown.cause).isInstanceOf(ClientException::class.java)
+
+      val callLlm = exported.single { it.name == "call_llm" }
+      assertThat(callLlm.attributes.get(ERROR_TYPE_KEY)).isNull()
+      assertThat(callLlm.events.map { it.name }).doesNotContain("exception")
+      val tool = exported.single { it.name == "execute_tool quota_tool" }
+      assertThat(tool.attributes.get(ERROR_TYPE_KEY)).isEqualTo("429")
+    } finally {
+      provider.close()
+    }
+  }
+
   private fun tracerProvider(sink: MutableList<SpanData>): SdkTracerProvider =
     SdkTracerProvider.builder()
       .addSpanProcessor(SimpleSpanProcessor.create(recordingExporter(sink)))
@@ -268,5 +338,10 @@ class TelemetryTest {
 
     @OptIn(ExperimentalLiveApi::class)
     override fun runLiveImpl(context: InvocationContext): Flow<Event> = flow {}
+  }
+
+  private companion object {
+    val ERROR_TYPE_KEY: AttributeKey<String> =
+      AttributeKey.stringKey(TelemetryAttributes.ERROR_TYPE)
   }
 }

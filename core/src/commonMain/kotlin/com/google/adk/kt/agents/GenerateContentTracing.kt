@@ -24,9 +24,10 @@ import com.google.adk.kt.models.shortName
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.isFailure
+import com.google.adk.kt.telemetry.recordFailure
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.UsageMetadata
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
@@ -79,9 +80,8 @@ internal fun Flow<LlmResponse>.traceGenerateContent(
       this@traceGenerateContent.flowOn(tracer.contextWithSpan(span).asContextElement())
         // catch sees only the model's own failures, not those of the caller handling a response.
         .catch { e ->
-          if (!ended && e !is CancellationException) {
-            span.recordException(e)
-            span[TelemetryAttributes.ERROR_TYPE] = e::class.simpleName ?: "Exception"
+          if (!ended && isFailure(e)) {
+            span.recordFailure(e)
           }
           throw e
         }

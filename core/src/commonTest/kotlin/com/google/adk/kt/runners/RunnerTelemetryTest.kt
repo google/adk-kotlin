@@ -22,9 +22,12 @@ import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.DummyTracer
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -78,6 +81,34 @@ class RunnerTelemetryTest {
       "telemetry-agent",
       invokeAgentSpan.attributes[TelemetryAttributes.GEN_AI_AGENT_NAME],
     )
+  }
+
+  @Test
+  fun runAsync_toolFailure_setsErrorTypeOnTheToolAgentAndInvocationSpans() = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "failing-agent",
+        model =
+          DummyModel.createSequential(
+            "test-model",
+            listOf(modelFunctionCallResponse("dummy_tool")),
+          ),
+        tools = listOf(DummyTool(onRun = { _, _ -> throw IllegalStateException("tool boom") })),
+      )
+
+    assertFailsWith<IllegalStateException> {
+      InMemoryRunner(agent = agent)
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("Hi"))
+        .toList()
+    }
+    val spans = dummyTracer.recordedSpans
+    for (name in listOf("invocation", "invoke_agent failing-agent", "execute_tool dummy_tool")) {
+      assertEquals(
+        name,
+        "IllegalStateException",
+        spans.single { it.name == name }.attributes[TelemetryAttributes.ERROR_TYPE],
+      )
+    }
   }
 
   // ---------------------------------------------------------------------------
