@@ -45,6 +45,7 @@ import java.util.function.BiConsumer
 import java.util.function.Consumer
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -293,6 +294,23 @@ class A2AAgentImplTest {
     assertThat(events[0].content?.parts?.firstOrNull()?.text).isEqualTo("Done")
     assertThat(events[0].turnComplete).isTrue()
   }
+
+  @Test
+  fun runAsync_recordsRequestAndResponseAsObjects() =
+    runBlocking<Unit> {
+      val agent = createTestAgent()
+      mockStreamResponse(this) { consumer ->
+        consumer.accept(createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Done"), agentCard)
+      }
+
+      val event = agent.runAsync(invocationContext).toList().single()
+
+      val response = assertIs<Map<*, *>>(event.customMetadata?.get("a2a:response"))
+      assertThat(response["id"]).isEqualTo("task-1")
+      assertThat(assertIs<Map<*, *>>(response["status"])["state"]).isEqualTo("TASK_STATE_COMPLETED")
+      val request = assertIs<Map<*, *>>(event.customMetadata?.get("a2a:request"))
+      assertThat(request["role"]).isEqualTo("ROLE_USER")
+    }
 
   @Test
   fun runAsync_streamingEnabled_aggregatesPartialEvents() = runTest {
@@ -744,7 +762,7 @@ class A2AAgentImplTest {
       assertThat(error).hasMessageThat().contains("Connection failed")
       val errorEvent = events.single()
       assertThat(errorEvent.errorMessage).isEqualTo("A2A request failed (RuntimeException)")
-      assertThat(errorEvent.customMetadata).containsKey("a2a:request")
+      assertThat(errorEvent.customMetadata?.get("a2a:request")).isInstanceOf(Map::class.java)
     }
 
   @Test

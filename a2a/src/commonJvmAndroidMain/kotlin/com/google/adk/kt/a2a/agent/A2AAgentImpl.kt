@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.a2a.agent
 
+import com.google.adk.kt.a2a.converters.decodeA2aJson
 import com.google.adk.kt.a2a.converters.isCompleted
 import com.google.adk.kt.a2a.converters.isFinalState
 import com.google.adk.kt.a2a.converters.isInterruptedState
@@ -237,7 +238,7 @@ internal class A2AAgentImpl(
         customMetadata =
           buildMap {
             putAll(remoteIdsMetadata(taskId = null, contextId))
-            request.onSuccess { put(A2AMetadata.REQUEST, it) }
+            request.map(::decodeA2aJson).onSuccess { put(A2AMetadata.REQUEST, it) }
           },
       )
 
