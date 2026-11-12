@@ -122,14 +122,16 @@ internal class A2AAgentImpl(
 
       try {
         for (responseEvent in eventChannel) {
-          val result = processClientEvent(responseEvent, context, debugRequest, a2aAggregator)
+          val result = processClientEvent(responseEvent, context, a2aAggregator)
 
           result.taskId?.let { activeTaskId.set(it) }
           result.isTerminal?.let { isTaskTerminal.set(it) }
           responseEvent.taskOrNull?.let { lastTask = it }
 
+          // After aggregation, so a merged event also records the response that flushed it.
+          val debugResponse by lazy { serializeResponse(responseEvent) }
           for (event in result.eventsToEmit) {
-            send(event)
+            send(addA2AMetadata(event, debugRequest, debugResponse))
           }
 
           if (result.shouldClose) {
@@ -195,7 +197,6 @@ internal class A2AAgentImpl(
   private fun processClientEvent(
     responseEvent: ClientEvent,
     context: InvocationContext,
-    debugRequest: Result<String>,
     a2aAggregator: A2AStreamingResponseAggregator,
   ): EventProcessResult {
     val task = responseEvent.taskOrNull
@@ -204,7 +205,7 @@ internal class A2AAgentImpl(
     if (adkEvent != null) {
       events.addAll(
         a2aAggregator.processEvent(
-          adkEvent = addMetadata(adkEvent, responseEvent, debugRequest),
+          adkEvent = adkEvent,
           isCompleted = responseEvent.isCompleted(),
           shouldBuffer = responseEvent.shouldBuffer(),
           shouldResetBuffer = responseEvent.shouldResetBuffer(),
@@ -264,25 +265,16 @@ internal class A2AAgentImpl(
     runCatching { JsonUtil.toJson(message) }
       .onFailure { e -> logger.warn(e) { "Failed to serialize request" } }
 
-  private fun addMetadata(
-    event: Event,
-    responseEvent: ClientEvent?,
-    debugRequest: Result<String>,
-  ): Event {
-    val debugResponse = responseEvent?.let {
-      runCatching { serializeClientEvent(it) }
-        .onFailure { e -> logger.warn(e) { "Failed to serialize response metadata" } }
-    }
-    return addA2AMetadata(event = event, debugRequest = debugRequest, debugResponse = debugResponse)
-  }
-
-  // Unwrap to the underlying spec type, which JsonUtil can serialize (unlike the client wrapper).
-  private fun serializeClientEvent(event: ClientEvent): String =
-    when (event) {
-      is MessageEvent -> JsonUtil.toJson(event.message)
-      is TaskEvent -> JsonUtil.toJson(event.task)
-      is TaskUpdateEvent -> JsonUtil.toJson(event.task)
-    }
+  // Unwraps to the underlying spec type, which JsonUtil can serialize (unlike the client wrapper).
+  private fun serializeResponse(responseEvent: ClientEvent): Result<String> =
+    runCatching {
+        when (responseEvent) {
+          is MessageEvent -> JsonUtil.toJson(responseEvent.message)
+          is TaskEvent -> JsonUtil.toJson(responseEvent.task)
+          is TaskUpdateEvent -> JsonUtil.toJson(responseEvent.task)
+        }
+      }
+      .onFailure { e -> logger.warn(e) { "Failed to serialize response metadata" } }
 
   private fun isTerminal(state: TaskState): Boolean =
     state.isFinalState() || state.isInterruptedState()

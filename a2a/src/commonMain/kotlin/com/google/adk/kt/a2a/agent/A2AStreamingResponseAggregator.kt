@@ -15,6 +15,8 @@
  */
 package com.google.adk.kt.a2a.agent
 
+import com.google.adk.kt.a2a.converters.ADK_METADATA_CONTEXT_ID
+import com.google.adk.kt.a2a.converters.ADK_METADATA_TASK_ID
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -65,20 +67,20 @@ internal class A2AStreamingResponseAggregator(
       if (isLastChunk && hasBufferedContent) {
         // Emit partial last chunk and follow by the non-partial aggregated event.
         add(adkEvent)
-        add(createAggregatedEvent())
+        add(createAggregatedEvent(flushedBy = adkEvent))
         return@buildList
       }
 
       if (!addedToBuffer && hasBufferedContent) {
         // Partial event with no content to buffer (e.g. tool call).
         // Flush buffer before emitting this event.
-        add(createAggregatedEvent())
+        add(createAggregatedEvent(flushedBy = adkEvent))
       }
     } else {
       // Both terminal events with content and intermediate non-partials
       // flush the buffer here if there is buffered content.
       if (hasBufferedContent) {
-        add(createAggregatedEvent())
+        add(createAggregatedEvent(flushedBy = adkEvent))
       }
     }
 
@@ -108,15 +110,20 @@ internal class A2AStreamingResponseAggregator(
     aggregatedParts.clear()
   }
 
-  private fun createAggregatedEvent(): Event {
+  /** Merges the buffered text into one event in the task and context of [flushedBy]. */
+  private fun createAggregatedEvent(flushedBy: Event): Event {
     val parts = aggregatedParts.toList()
     clearBuffer()
+    val ids =
+      flushedBy.customMetadata.orEmpty().filterKeys {
+        it == ADK_METADATA_TASK_ID || it == ADK_METADATA_CONTEXT_ID
+      }
     return Event(
       invocationId = invocationId,
       author = agentName,
       content = Content(role = Role.MODEL, parts = parts),
       turnComplete = false,
-      customMetadata = mapOf(A2A_METADATA_AGGREGATED to "true"),
+      customMetadata = ids + (A2A_METADATA_AGGREGATED to "true"),
     )
   }
 }

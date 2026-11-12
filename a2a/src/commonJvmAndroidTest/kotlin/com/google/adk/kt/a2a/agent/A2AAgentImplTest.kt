@@ -316,6 +316,7 @@ class A2AAgentImplTest {
     assertThat(events[2].content?.parts?.firstOrNull()?.text).isEqualTo("Hello world")
     assertThat(events[2].partial).isFalse()
     assertThat(events[2].turnComplete).isFalse()
+    assertThat(events[2].customMetadata).containsKey("a2a:response")
     assertThat(events[3].content?.parts?.firstOrNull()?.text).isEqualTo("Final")
     assertThat(events[3].partial).isFalse()
     assertThat(events[3].turnComplete).isTrue()
@@ -1431,6 +1432,40 @@ class A2AAgentImplTest {
         .toList()
 
       assertThat(sentMessages(2)[1].taskId()).isEqualTo("task-1")
+    }
+
+  @Test
+  fun runAsync_turnStoppedAtMergedEvent_nextTurnKeepsRemoteContext() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      mockStreamResponse(this) { consumer ->
+        consumer.accept(createPartialEvent("Hello ", true, false), agentCard)
+        consumer.accept(createPartialEvent("World!", true, true), agentCard)
+        consumer.accept(createStatusUpdateEvent(TaskState.TASK_STATE_COMPLETED, "Done."), agentCard)
+      }
+      // An app that stops at the merged answer leaves it as this agent's latest stored event.
+      runner
+        .runAsync(
+          "user",
+          "s1",
+          newMessage = userMessage("Hi"),
+          runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+        )
+        .first { it.content?.parts?.singleOrNull()?.text == "Hello World!" }
+      // Waits for the abandoned task's cancel to finish before the mock is stubbed again.
+      verify(mockClient, timeout(5000)).close()
+      mockStreamResponse(this) { consumer -> consumer.accept(createFinalEvent("ok"), agentCard) }
+
+      runner
+        .runAsync(
+          "user",
+          "s1",
+          newMessage = userMessage("Again"),
+          runConfig = RunConfig(streamingMode = StreamingMode.NONE),
+        )
+        .toList()
+
+      assertThat(sentMessages(2)[1].contextId()).isEqualTo("context-1")
     }
 
   private fun createTestAgent(
