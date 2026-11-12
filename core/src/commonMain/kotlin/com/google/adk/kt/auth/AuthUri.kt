@@ -92,9 +92,8 @@ internal fun AuthCredential.OAuth2.withNewAuthUri(scheme: AuthScheme): AuthCrede
  * Whether this is a public client: as in ADK Python, one with neither a client secret nor a code
  * challenge method. A public client signs in with PKCE `S256`.
  */
-@OptIn(SecretAccess::class)
 internal val AuthCredential.OAuth2.isPublicClient: Boolean
-  get() = clientSecret?.reveal().isNullOrEmpty() && codeChallengeMethod.isNullOrEmpty()
+  get() = clientSecret.isNullOrEmpty() && codeChallengeMethod.isNullOrEmpty()
 
 /**
  * Returns this authorization endpoint, as written, with [query] after its own query.

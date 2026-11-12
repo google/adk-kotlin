@@ -45,6 +45,13 @@ class Secret(@Transient private val value: String) {
   override fun toString(): String = REDACTED
 }
 
+/**
+ * Whether this secret is null or its value is empty. It needs no [SecretAccess] opt-in, since it
+ * shows nothing of the value beyond that.
+ */
+@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+internal fun Secret?.isNullOrEmpty(): Boolean = this == null || reveal().isEmpty()
+
 /** The placeholder that [Secret], [CredentialKey] and [redacted] show in place of a value. */
 internal const val REDACTED = "<redacted>"
 

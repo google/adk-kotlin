@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+@file:OptIn(ExperimentalAuthApi::class)
 
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.auth.AuthCredentialSerializer
 import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.auth.RequestCredentialArgs
+import com.google.adk.kt.auth.isNullOrEmpty
 import com.google.adk.kt.auth.signInConfig
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -51,7 +51,7 @@ internal fun signInRequestEvent(authConfig: AuthConfig, interruptId: String): Ev
     if (!generatedCredential.state.isNullOrEmpty()) {
       stateDelta["adk_oauth_state:$interruptId"] = generatedCredential.state
     }
-    if (!generatedCredential.codeVerifier?.reveal().isNullOrEmpty()) {
+    if (!generatedCredential.codeVerifier.isNullOrEmpty()) {
       stateDelta["adk_oauth_credential:$interruptId"] =
         encodeToPlainMap(
           AuthCredentialSerializer,

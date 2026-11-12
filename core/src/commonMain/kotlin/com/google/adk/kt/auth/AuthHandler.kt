@@ -19,7 +19,6 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.decodeFromPlainOrNull
 import com.google.adk.kt.sessions.State
@@ -131,11 +130,10 @@ private fun signInReply(reply: Any?): AuthCredential? {
  * Whether [credential] still needs a token exchange, which ADK can't do yet: an OAuth2 credential
  * without an access token, for a scheme that signs in through an authorization URL.
  */
-@OptIn(SecretAccess::class)
 internal fun AuthConfig.needsCodeExchange(credential: AuthCredential): Boolean =
   authScheme.usesAuthorizationUrl &&
     credential is AuthCredential.OAuth2 &&
-    credential.accessToken?.reveal().isNullOrEmpty()
+    credential.accessToken.isNullOrEmpty()
 
 /** Returns [value] as a credential for this config, or null if there is none or it is malformed. */
 private fun AuthConfig.credentialFrom(value: Any?): AuthCredential? {

@@ -21,8 +21,10 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.serialization.adkJson
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.serialization.Serializable
 import org.junit.Test
 
@@ -114,6 +116,23 @@ class SecretTest {
   @Test
   fun redacted_value_returnsPlaceholder() {
     assertEquals("<redacted>", "sentinel-state".redacted())
+  }
+
+  @Test
+  fun isNullOrEmpty_null_isTrue() {
+    val secret: Secret? = null
+
+    assertTrue(secret.isNullOrEmpty())
+  }
+
+  @Test
+  fun isNullOrEmpty_emptyValue_isTrue() {
+    assertTrue(Secret("").isNullOrEmpty())
+  }
+
+  @Test
+  fun isNullOrEmpty_value_isFalse() {
+    assertFalse(Secret(SENTINEL).isNullOrEmpty())
   }
 
   @Serializable
