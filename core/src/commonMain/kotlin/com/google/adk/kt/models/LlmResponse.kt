@@ -17,6 +17,7 @@ package com.google.adk.kt.models
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.withoutCredentialSecrets
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.CitationMetadata
 import com.google.adk.kt.types.Content
@@ -308,10 +309,12 @@ constructor(
 }
 
 /**
- * Serializes this response for the `call_llm` span's `gcp.vertex.agent.llm_response` attribute.
+ * Serializes this response, without credential secrets, for the `call_llm` span's
+ * `gcp.vertex.agent.llm_response` attribute.
  *
  * Uses the shared [adkJson] serializer, which omits null/empty fields (`exclude_none`) and produces
  * byte-identical JSON on every platform.
  */
 @OptIn(FrameworkInternalApi::class)
-internal fun LlmResponse.toTracePayload(): JsonElement = adkJson.encodeToJsonElement(this)
+internal fun LlmResponse.toTracePayload(): JsonElement =
+  adkJson.encodeToJsonElement(this).withoutCredentialSecrets()

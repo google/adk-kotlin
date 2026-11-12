@@ -18,6 +18,7 @@ package com.google.adk.kt.models
 import com.google.adk.kt.agents.ContextCacheConfig
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.withoutCredentialSecrets
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Blob
@@ -289,11 +290,11 @@ data class LlmRequest(
  * Builds the filtered view of this request recorded on the `call_llm` span's
  * `gcp.vertex.agent.llm_request` attribute (parity with Python `_build_llm_request_for_trace`).
  *
- * Mirrors Python's deliberate exclusions, so the traced request carries the same fields Python
- * traces -- no more, no less:
- * - content parts carrying binary [Part.inlineData] are dropped (raw image/audio/video/file bytes
- *   are never sent to traces);
- * - the request [GenerateContentConfig.responseSchema] is excluded.
+ * Leaves out:
+ * - content parts carrying binary [Part.inlineData] (raw image/audio/video/file bytes are never
+ *   sent to traces);
+ * - the request [GenerateContentConfig.responseSchema];
+ * - credential secrets in the contents, such as those a tool returned.
  *
  * Everything else is preserved. The result is built with the shared [adkJson] serializer, which
  * omits null/empty fields (`exclude_none`) and produces byte-identical JSON on every platform.
@@ -304,10 +305,12 @@ internal fun LlmRequest.toTracePayload(): JsonObject {
   model?.name?.let { fields["model"] = JsonPrimitive(it) }
   fields["config"] = adkJson.encodeToJsonElement(config.copy(responseSchema = null))
   fields["contents"] =
-    adkJson.encodeToJsonElement(
-      contents.map { content ->
-        content.copy(parts = content.parts.filter { it.inlineData == null })
-      }
-    )
+    adkJson
+      .encodeToJsonElement(
+        contents.map { content ->
+          content.copy(parts = content.parts.filter { it.inlineData == null })
+        }
+      )
+      .withoutCredentialSecrets()
   return JsonObject(fields)
 }

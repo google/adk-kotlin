@@ -25,6 +25,8 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.FinishReason
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Schema
@@ -32,6 +34,7 @@ import com.google.adk.kt.types.UsageMetadata
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Serialization of the four content payloads recorded on `call_llm`/`execute_tool` spans
@@ -42,6 +45,20 @@ import kotlin.test.assertFalse
  * on JVM and Android, which is what this suite guards.
  */
 class TracePayloadSerializationTest {
+
+  @Test
+  fun llmResponse_credentialInFunctionCall_leavesOutItsSecret() {
+    val response =
+      LlmResponse(
+        content =
+          modelMessage(Part(functionCall = FunctionCall(name = "use_key", args = CREDENTIAL_MAP)))
+      )
+
+    val json = response.toTracePayload().toString()
+
+    assertTrue(REDACTED_CREDENTIAL in json)
+    assertFalse(SENTINEL in json)
+  }
 
   @Test
   fun llmResponse_serializesStructuredJson_excludingNulls() {
@@ -69,6 +86,24 @@ class TracePayloadSerializationTest {
     // the domain graph is real JSON instead.
     assertFalse(json.contains("\"value\""), "unexpected degraded payload: $json")
     assertFalse(json.contains("Content("), "unexpected toString payload: $json")
+  }
+
+  @Test
+  fun llmRequest_credentialInFunctionResponse_leavesOutItsSecret() {
+    val request =
+      LlmRequest(
+        contents =
+          listOf(
+            userMessage(
+              Part(functionResponse = FunctionResponse(name = "get_key", response = CREDENTIAL_MAP))
+            )
+          )
+      )
+
+    val json = request.toTracePayload().toString()
+
+    assertTrue(REDACTED_CREDENTIAL in json)
+    assertFalse(SENTINEL in json)
   }
 
   @Test
@@ -111,5 +146,13 @@ class TracePayloadSerializationTest {
       "{\"result\":{\"temp\":20,\"unit\":\"C\"},\"tags\":[\"a\",\"b\"]}",
       anyToJsonElement(response).toString(),
     )
+  }
+
+  private companion object {
+    const val SENTINEL = "secret-sentinel"
+    const val REDACTED_CREDENTIAL = "\"credential\":{\"authType\":\"apiKey\"}"
+
+    val CREDENTIAL_MAP: Map<String, Any?> =
+      mapOf("credential" to mapOf("authType" to "apiKey", "apiKey" to SENTINEL))
   }
 }

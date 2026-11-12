@@ -20,6 +20,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.withoutCredentialSecrets
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterModelCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeModelCallbacksPipeline
@@ -2338,26 +2339,28 @@ private const val SEND_DATA_SPAN = "send_data"
 
 /**
  * Replaces inline media with its MIME type and byte count and drops thought signatures so the span
- * stays small and readable.
+ * stays small and readable. Leaves out credential secrets.
  */
 @OptIn(FrameworkInternalApi::class)
 private fun List<Content>.toLiveTracePayload(): JsonElement =
-  adkJson.encodeToJsonElement(
-    map { content ->
-      content.copy(
-        parts =
-          content.parts.map { part ->
-            val blob = part.inlineData
-            if (blob == null) {
-              part.copy(thoughtSignature = null)
-            } else {
-              val mimeType = blob.mimeType?.takeIf { it.isNotEmpty() } ?: "unknown"
-              Part(text = "<inline_data: $mimeType, ${blob.data?.size ?: 0} bytes>")
+  adkJson
+    .encodeToJsonElement(
+      map { content ->
+        content.copy(
+          parts =
+            content.parts.map { part ->
+              val blob = part.inlineData
+              if (blob == null) {
+                part.copy(thoughtSignature = null)
+              } else {
+                val mimeType = blob.mimeType?.takeIf { it.isNotEmpty() } ?: "unknown"
+                Part(text = "<inline_data: $mimeType, ${blob.data?.size ?: 0} bytes>")
+              }
             }
-          }
-      )
-    }
-  )
+        )
+      }
+    )
+    .withoutCredentialSecrets()
 
 /**
  * Whether this failure is a recoverable live transport drop rather than a server refusal.

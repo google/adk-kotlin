@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummySpan
 import com.google.adk.kt.testing.DummyTracer
@@ -389,6 +390,96 @@ class ToolTelemetryTest {
     assertNull(span.attributes[TelemetryAttributes.GCP_MCP_SERVER_DESTINATION_ID])
   }
 
+  // ---------------------------------------------------------------------------
+  // Credential redaction: tool spans drop credential secrets from tool-call args
+  // and responses.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun executeSingleFunctionCall_credentialInArgs_redactsTheToolCallArgs() = runBlocking {
+    TelemetryConfig.captureMessageContent = true
+
+    val unused =
+      createInvocationContext()
+        .executeSingleFunctionCall(
+          FunctionCall(name = "credential_tool", args = CREDENTIAL_MAP, id = "call_1"),
+          mapOf("credential_tool" to CredentialTool("credential_tool")),
+        )
+
+    val span = fakeTracer.recordedSpans.single { it.name == "execute_tool credential_tool" }
+    assertEquals(
+      REDACTED_CREDENTIAL_JSON,
+      span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS],
+    )
+  }
+
+  @Test
+  fun executeSingleFunctionCall_toolReturnsCredential_redactsTheToolResponse() = runBlocking {
+    TelemetryConfig.captureMessageContent = true
+
+    val unused =
+      createInvocationContext()
+        .executeSingleFunctionCall(
+          FunctionCall(name = "credential_tool", args = emptyMap(), id = "call_1"),
+          mapOf("credential_tool" to CredentialTool("credential_tool")),
+        )
+
+    val span = fakeTracer.recordedSpans.single { it.name == "execute_tool credential_tool" }
+    assertEquals(
+      REDACTED_CREDENTIAL_JSON,
+      span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE],
+    )
+  }
+
+  @Test
+  fun executeSingleFunctionCall_unregisteredToolRecoveredWithCredential_redactsTheToolResponse() =
+    runBlocking {
+      TelemetryConfig.captureMessageContent = true
+      val agent =
+        LlmAgent(
+          name = "test_agent",
+          model = DummyModel("mock_model"),
+          onToolErrorCallbacks =
+            listOf(OnToolErrorCallback { _, _, _, _ -> CallbackChoice.Break(CREDENTIAL_MAP) }),
+        )
+
+      val unused =
+        testInvocationContext(agent = agent)
+          .executeSingleFunctionCall(
+            FunctionCall(name = "missing_tool", args = emptyMap(), id = "call_1"),
+            emptyMap(),
+          )
+
+      val span = fakeTracer.recordedSpans.single { it.name == "execute_tool missing_tool" }
+      assertEquals(
+        REDACTED_CREDENTIAL_JSON,
+        span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE],
+      )
+    }
+
+  @Test
+  fun handleFunctionCalls_parallelToolsReturnCredentials_redactsTheMergedToolResponse() =
+    runBlocking {
+      TelemetryConfig.captureMessageContent = true
+
+      val merged =
+        createInvocationContext()
+          .handleFunctionCalls(
+            listOf(
+              FunctionCall(name = "tool_a", args = emptyMap(), id = "call_a"),
+              FunctionCall(name = "tool_b", args = emptyMap(), id = "call_b"),
+            ),
+            mapOf("tool_a" to CredentialTool("tool_a"), "tool_b" to CredentialTool("tool_b")),
+          )
+      assertNotNull(merged)
+
+      val mergedSpan = fakeTracer.recordedSpans.single { it.name == "execute_tool (merged)" }
+      assertEquals(
+        "[$REDACTED_CREDENTIAL_JSON,$REDACTED_CREDENTIAL_JSON]",
+        mergedSpan.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE],
+      )
+    }
+
   private suspend fun recordSingleToolSpan(): DummySpan {
     val unused =
       createInvocationContext()
@@ -459,5 +550,20 @@ class ToolTelemetryTest {
 
     override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any =
       mapOf("output" to "success")
+  }
+
+  /** A tool whose response holds a credential, as a tool that echoes its sign-in could return. */
+  private class CredentialTool(name: String) : FunctionTool(name, "Returns a credential.") {
+    override fun declaration() = null
+
+    override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any =
+      CREDENTIAL_MAP
+  }
+
+  private companion object {
+    val CREDENTIAL_MAP: Map<String, Any?> =
+      mapOf("credential" to mapOf("authType" to "apiKey", "apiKey" to "secret-sentinel"))
+
+    const val REDACTED_CREDENTIAL_JSON: String = """{"credential":{"authType":"apiKey"}}"""
   }
 }
