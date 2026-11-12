@@ -26,8 +26,8 @@ import com.google.adk.kt.types.Schema
  *
  * This tool lets the model produce its final response when an output schema is configured alongside
  * other tools on a model that cannot use a response schema and tools at the same time (see
- * [com.google.adk.kt.models.canUseOutputSchemaWithTools]). The model is instructed to call this
- * tool with its final answer in the required schema format instead of emitting text directly.
+ * [com.google.adk.kt.models.Model.capabilities]). The model is instructed to call this tool with
+ * its final answer in the required schema format instead of emitting text directly.
  *
  * Follows the Java ADK `SetModelResponseTool`: the [outputSchema] is exposed directly as the tool's
  * parameters, so only top-level object schemas are supported. The Python ADK's

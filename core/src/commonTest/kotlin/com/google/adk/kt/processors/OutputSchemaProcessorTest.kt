@@ -21,7 +21,9 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.openLiveRun
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.LlmCapabilities
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.Model
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
@@ -290,6 +292,90 @@ class OutputSchemaProcessorTest {
     assertEquals("structured-agent", event.author)
     assertEquals(Role.MODEL, event.content?.role)
     assertEquals("""{"answer":"42"}""", event.content?.parts?.firstOrNull()?.text)
+  }
+
+  @Test
+  fun process_modelReportingNoOutputSchemaAndTools_getsSetModelResponse() = runBlocking {
+    // Arrange: a name that alone would get the response schema.
+    val model =
+      object : Model by DummyModel("my-model") {
+        override val capabilities = LlmCapabilities(outputSchemaAndTools = false)
+      }
+
+    // Act
+    val request = requestWithToolAndSchema(model)
+
+    // Assert
+    assertUsesSetModelResponse(request)
+  }
+
+  @Test
+  fun process_modelReportingOutputSchemaAndTools_getsResponseSchema() = runBlocking {
+    // Arrange: a Gemini 2 name that alone would get set_model_response.
+    val model =
+      object : Model by DummyModel("gemini-2.5-flash") {
+        override val capabilities = LlmCapabilities(outputSchemaAndTools = true)
+      }
+
+    // Act
+    val request = requestWithToolAndSchema(model)
+
+    // Assert
+    assertUsesResponseSchema(request)
+  }
+
+  @Test
+  fun process_wrapperWithAGemini2NameOverAnotherModel_getsResponseSchema() = runBlocking {
+    // Arrange: the wrapper forwards its delegate's capabilities, whatever its own name.
+    val model =
+      object : Model by DummyModel("my-model") {
+        override val name = "gemini-2.5-flash"
+      }
+
+    // Act
+    val request = requestWithToolAndSchema(model)
+
+    // Assert
+    assertUsesResponseSchema(request)
+  }
+
+  @Test
+  fun process_wrapperWithAnotherNameOverAGemini2Model_getsSetModelResponse() = runBlocking {
+    // Arrange
+    val model =
+      object : Model by DummyModel("gemini-2.5-flash") {
+        override val name = "my-model"
+      }
+
+    // Act
+    val request = requestWithToolAndSchema(model)
+
+    // Assert
+    assertUsesSetModelResponse(request)
+  }
+
+  /** Runs both schema processors for an agent on [model] with a tool and [outputSchema]. */
+  private suspend fun requestWithToolAndSchema(model: Model): LlmRequest {
+    val agent =
+      LlmAgent(
+        name = "test",
+        model = model,
+        tools = listOf(DummyTool("my_tool")),
+        outputSchema = outputSchema,
+      )
+    val context = contextFor(agent)
+    return OutputSchemaProcessor()
+      .process(context, BasicRequestProcessor().process(context, LlmRequest()))
+  }
+
+  private fun assertUsesSetModelResponse(request: LlmRequest) {
+    assertTrue(request.toolsDict.any { it.name == SetModelResponseTool.NAME })
+    assertEquals(null, request.config.responseSchema)
+  }
+
+  private fun assertUsesResponseSchema(request: LlmRequest) {
+    assertTrue(request.toolsDict.none { it.name == SetModelResponseTool.NAME })
+    assertEquals(outputSchema, request.config.responseSchema)
   }
 
   companion object {

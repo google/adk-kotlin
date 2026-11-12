@@ -24,6 +24,15 @@ interface Model {
   val name: String
 
   /**
+   * The optional features this model supports, which change how ADK builds its requests. By default
+   * only a model whose [name] is a `gemini-2.*` name lacks [LlmCapabilities.outputSchemaAndTools].
+   * Override this to choose, for example `LlmCapabilities(outputSchemaAndTools = false)` to get the
+   * final answer through `set_model_response` beside tools.
+   */
+  val capabilities: LlmCapabilities
+    get() = LlmCapabilities(outputSchemaAndTools = canUseOutputSchemaWithTools)
+
+  /**
    * Generates content for the given [LlmRequest]. This returns a [Flow] of [LlmResponse]s.
    *
    * @param request The request containing prompt and config.
@@ -64,19 +73,27 @@ internal val Model.shortName: String
 private val GEMINI_2_PATTERN = Regex("^gemini-2\\..*")
 
 /**
- * Whether the model supports configuring an output schema together with tools.
+ * The name rule behind the default of [Model.capabilities]: whether the model takes an output
+ * schema together with tools.
  *
  * Follows the Java ADK `ModelNameUtils.canUseOutputSchemaWithTools`: Gemini 2.x models cannot use a
  * response schema while tools are present, so the ADK falls back to the `set_model_response` tool
  * workaround (see `com.google.adk.kt.processors.OutputSchemaProcessor`).
  *
- * NOTE: this is deliberately *not* identical to the Python ADK's
- * `output_schema_utils.can_use_output_schema_with_tools`, which gates on `VERTEX_AI &&
- * is_gemini_eap_or_2_or_above(model)` and therefore returns the opposite answer for Vertex Gemini
- * 2.x. This implementation matches Java's conservative rule instead.
+ * NOTE: this is deliberately *not* identical to the default of the Python ADK's
+ * `BaseLlm.capabilities`, which reports the capability for Gemini models on Vertex AI and therefore
+ * gives the opposite answer for Vertex Gemini 2.x. This implementation matches Java's conservative
+ * rule instead.
  */
 internal val Model.canUseOutputSchemaWithTools: Boolean
   get() = !GEMINI_2_PATTERN.matches(shortName)
+
+/**
+ * Whether ADK applies a response schema beside tools for this model, as [Model.capabilities] says.
+ */
+internal val Model.takesOutputSchemaWithTools: Boolean
+  // A Mockito mock of Model returns null here despite the non-null type.
+  get() = (capabilities as LlmCapabilities?)?.outputSchemaAndTools ?: canUseOutputSchemaWithTools
 
 /** What a model without live support throws from [Model.connect]. */
 internal fun Model.liveConnectionsUnsupported() =

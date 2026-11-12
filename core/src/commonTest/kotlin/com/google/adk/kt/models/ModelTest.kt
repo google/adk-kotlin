@@ -73,4 +73,78 @@ class ModelTest {
 
     assertEquals(1, connection.closeSessionCalls)
   }
+
+  @Test
+  fun capabilities_byDefault_followTheGemini2NameRule() {
+    // Arrange: name to whether a response schema may go beside tools, as before capabilities.
+    val expected =
+      mapOf(
+        "gemini-2.5-flash" to false,
+        "models/gemini-2.0-flash" to false,
+        "projects/p/locations/global/publishers/google/models/gemini-2.5-pro" to false,
+        "gemini-3.8-flash" to true,
+        "models/gemini-3.8-flash" to true,
+        "claude-sonnet-4-5" to true,
+        "GenaiPrompt" to true,
+        "gemini-nano" to true,
+        "my-model" to true,
+      )
+
+    // Act
+    val reported = expected.keys.associateWith { DummyModel(it).capabilities.outputSchemaAndTools }
+    val decided = expected.keys.associateWith { DummyModel(it).takesOutputSchemaWithTools }
+
+    // Assert
+    assertEquals(expected, reported)
+    assertEquals(expected, decided)
+  }
+
+  @Test
+  fun takesOutputSchemaWithTools_renamedDelegatingWrapper_followsItsDelegate() {
+    // Arrange: `Model by delegate` forwards `capabilities`, so each reports its delegate's value.
+    val gemini2Name =
+      object : Model by DummyModel("my-model") {
+        override val name = "gemini-2.5-flash"
+      }
+    val otherName =
+      object : Model by DummyModel("gemini-2.5-flash") {
+        override val name = "my-model"
+      }
+
+    // Act & Assert
+    assertEquals(true, gemini2Name.takesOutputSchemaWithTools)
+    assertEquals(false, otherName.takesOutputSchemaWithTools)
+  }
+
+  @Test
+  fun takesOutputSchemaWithTools_override_winsOverTheName() {
+    // Arrange
+    val forcedOff =
+      object : Model by DummyModel("my-model") {
+        override val capabilities = LlmCapabilities(outputSchemaAndTools = false)
+      }
+    val forcedOn =
+      object : Model by DummyModel("gemini-2.5-flash") {
+        override val capabilities = LlmCapabilities(outputSchemaAndTools = true)
+      }
+
+    // Act & Assert
+    assertEquals(false, forcedOff.takesOutputSchemaWithTools)
+    assertEquals(true, forcedOn.takesOutputSchemaWithTools)
+  }
+
+  @Test
+  fun takesOutputSchemaWithTools_nullCapabilities_isDecidedByTheName() {
+    // Arrange: a getter that breaks its non-null type, as an unstubbed Mockito mock does.
+    val model =
+      object : Model by DummyModel("gemini-2.5-flash") {
+        override val capabilities: LlmCapabilities
+          get() = uncheckedNull()
+      }
+
+    // Act & Assert
+    assertEquals(false, model.takesOutputSchemaWithTools)
+  }
+
+  @Suppress("UNCHECKED_CAST") private fun <T> uncheckedNull(): T = null as T
 }

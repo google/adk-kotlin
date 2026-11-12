@@ -23,7 +23,7 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
-import com.google.adk.kt.models.canUseOutputSchemaWithTools
+import com.google.adk.kt.models.takesOutputSchemaWithTools
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.SetModelResponseTool
 import com.google.adk.kt.tools.ToolContext
@@ -47,8 +47,9 @@ private const val SET_MODEL_RESPONSE_INSTRUCTION =
  * schema is applied directly by [BasicRequestProcessor] and this processor is a no-op.
  *
  * Follows the Java ADK `OutputSchema` processor. The Python ADK's `_OutputSchemaRequestProcessor`
- * is structurally similar but gates on a different rule (see [canUseOutputSchemaWithTools]) and
- * supports non-object schemas; this implementation matches Java's object-schema behavior.
+ * is structurally similar but gates on `BaseLlm.capabilities`, whose default differs for Vertex
+ * Gemini 2.x (see [com.google.adk.kt.models.Model.capabilities]), and supports non-object schemas;
+ * this implementation matches Java's object-schema behavior.
  */
 internal class OutputSchemaProcessor : LlmRequestProcessor {
   override suspend fun process(
@@ -96,13 +97,13 @@ internal fun LlmAgent.hasToolsForOutputSchemaGating(context: InvocationContext):
  * [SetModelResponseTool] workaround.
  *
  * True when the agent has no tools (see [hasToolsForOutputSchemaGating]) or runs on a model that
- * supports a response schema together with tools (see [canUseOutputSchemaWithTools]). Both
- * [BasicRequestProcessor] (which sets the response schema when this holds) and
+ * takes a response schema together with tools (see [com.google.adk.kt.models.Model.capabilities]).
+ * Both [BasicRequestProcessor] (which sets the response schema when this holds) and
  * [OutputSchemaProcessor] (which installs the workaround when it does not) consult this single
  * predicate so their decisions cannot drift apart.
  */
 internal fun LlmAgent.appliesOutputSchemaDirectly(context: InvocationContext): Boolean =
-  !hasToolsForOutputSchemaGating(context) || model.canUseOutputSchemaWithTools
+  !hasToolsForOutputSchemaGating(context) || model.takesOutputSchemaWithTools
 
 /**
  * Returns the JSON-serialized arguments that ADK's own [SetModelResponseTool] in [tools] validated
