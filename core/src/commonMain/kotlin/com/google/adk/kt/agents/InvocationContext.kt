@@ -19,6 +19,7 @@ package com.google.adk.kt.agents
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.auth.withoutCredentialSecrets
 import com.google.adk.kt.callbacks.BeforeToolCallbacksResult
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterToolCallbacksPipeline
@@ -885,10 +886,11 @@ data class InvocationContext(
   /**
    * Converts a tool-call args or tool-response payload (JSON-native maps/lists/primitives) into a
    * [JsonElement] via the shared `adkJson` serializer, so tool span payloads serialize identically
-   * on every platform.
+   * on every platform, without credential secrets.
    */
   @OptIn(FrameworkInternalApi::class)
-  private fun toTraceJson(payload: Any?): JsonElement = anyToJsonElement(payload)
+  private fun toTraceJson(payload: Any?): JsonElement =
+    anyToJsonElement(payload).withoutCredentialSecrets()
 
   /**
    * Coerces an arbitrary payload into the `Map<String, Any?>` shape used by tool arguments and the
