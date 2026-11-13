@@ -737,7 +737,7 @@ internal fun Schema.declaresKeys(): Boolean =
     (additionalProperties != null && additionalProperties != true)
 
 /** This schema's type, or for an untyped schema the shape its keys or items describe. */
-private fun Schema.impliedType(): Type? =
+internal fun Schema.impliedType(): Type? =
   declaredType
     ?: when {
       declaresKeys() -> Type.OBJECT

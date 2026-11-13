@@ -20,6 +20,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.canDescribeAMap
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.extraSchema
+import com.google.adk.kt.impliedType
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
@@ -58,7 +59,14 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
     outputSchema.canDescribeAMap() && (outputSchema.anyOf?.any { it.canDescribeAMap() } ?: true)
 
   override fun declaration(): FunctionDeclaration =
-    FunctionDeclaration(name = name, description = description, parameters = outputSchema)
+    FunctionDeclaration(
+      name = name,
+      description = description,
+      // An untyped schema with object keys describes an object; function parameters need the type.
+      parameters =
+        if (outputSchema.impliedType() == Type.OBJECT) outputSchema.copy(type = Type.OBJECT)
+        else outputSchema,
+    )
 
   /**
    * Validates [args] against [outputSchema] and records them as the final answer, with whole-number

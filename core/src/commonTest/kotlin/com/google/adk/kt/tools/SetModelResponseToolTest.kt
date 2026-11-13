@@ -117,6 +117,18 @@ class SetModelResponseToolTest {
   }
 
   @Test
+  fun declaration_untypedSchemaWithProperties_declaresAnObject() {
+    // Arrange
+    val untyped = Schema(properties = mapOf("answer" to Schema(type = Type.STRING)))
+
+    // Act
+    val parameters = SetModelResponseTool(untyped).declaration().parameters
+
+    // Assert
+    assertEquals(untyped.copy(type = Type.OBJECT), parameters)
+  }
+
+  @Test
   fun run_nonObjectSchema_throws() =
     runBlocking<Unit> {
       val tool = SetModelResponseTool(Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)))
@@ -736,4 +748,43 @@ class SetModelResponseToolTest {
     assertThat(finalEvent.content?.parts?.single()?.text).isEqualTo("""{"answer":"42"}""")
     assertThat(finalEvent.actions.stateDelta["result"]).isEqualTo(mapOf("answer" to "42"))
   }
+
+  @Test
+  fun runAsync_untypedSchemaWithProperties_declaresSetModelResponseParametersAsObject() =
+    runBlocking {
+      // Arrange: the output schema lists fields but no type.
+      val untyped = Schema(properties = mapOf("answer" to Schema(type = Type.STRING)))
+      val requests = mutableListOf<LlmRequest>()
+      val model =
+        DummyModel("gemini-2.5-flash") { request ->
+          requests += request
+          flowOf(
+            modelFunctionCallResponse(SetModelResponseTool.NAME, mapOf("answer" to "42"), "call_1")
+          )
+        }
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model = model,
+          tools = listOf(DummyTool("lookup", declares = true)),
+          outputSchema = untyped,
+        )
+      val runner = InMemoryRunner(agent = agent)
+      val unused = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+
+      // Act
+      val unusedEvents =
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+      // Assert
+      val declaration =
+        requests
+          .first()
+          .config
+          .tools
+          .orEmpty()
+          .flatMap { it.functionDeclarations.orEmpty() }
+          .single { it.name == SetModelResponseTool.NAME }
+      assertEquals(untyped.copy(type = Type.OBJECT), declaration.parameters)
+    }
 }
