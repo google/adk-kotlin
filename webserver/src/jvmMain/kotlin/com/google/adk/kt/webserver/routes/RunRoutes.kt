@@ -24,6 +24,7 @@ import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionNotFoundException
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.models.AgentRunRequest
@@ -60,42 +61,56 @@ internal fun Route.runRoutes(
   route("/run") {
     post {
       val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
+      // The runner reads the session once and refuses a missing one, which a delete can't race.
       val runner =
-        servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
-          ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
-
-      sessionError(sessionService, request)?.let { error ->
-        return@post call.respond(error.code, error.message)
-      }
+        servedApps.runnerOrNull(
+          request.appName,
+          ReadFailureWrappingSessionService(sessionService),
+          artifactService,
+          plugins,
+          autoCreateSession = request.sessionId == null,
+        ) ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
 
       // The /run endpoint always returns the full event list; SSE is handled by /run_sse.
       val runConfig = RunConfig(streamingMode = StreamingMode.NONE)
 
       val sessionId = request.sessionId ?: UUID.randomUUID().toString()
 
-      @Suppress("GlobalCoroutineDispatchers") // A blocking tool must not hold the call thread.
-      val events =
-        runner
-          .runAsync(
-            request.userId,
-            sessionId,
-            request.invocationId,
-            request.newMessage,
-            request.stateDelta,
-            runConfig,
-          )
-          .flowOn(Dispatchers.IO)
-          .toList()
-
-      call.respond(events)
+      try {
+        @Suppress("GlobalCoroutineDispatchers") // A blocking tool must not hold the call thread.
+        val events =
+          runner
+            .runAsync(
+              request.userId,
+              sessionId,
+              request.invocationId,
+              request.newMessage,
+              request.stateDelta,
+              runConfig,
+            )
+            .flowOn(Dispatchers.IO)
+            .toList()
+        call.respond(events)
+      } catch (e: SessionNotFoundException) {
+        call.respond(ERR_SESSION_NOT_FOUND.code, ERR_SESSION_NOT_FOUND.message)
+      } catch (e: SessionReadFailure) {
+        logger.warn("Loading the session for a run failed: {}", e.cause.typeName)
+        call.respond(ERR_SESSION_NOT_LOADED.code, ERR_SESSION_NOT_LOADED.message)
+      }
     }
   }
 
   post("/run_sse") {
     val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
+    // A new id names no session yet; any other must name one, which the runner checks again.
     val runner =
-      servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
-        ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
+      servedApps.runnerOrNull(
+        request.appName,
+        ReadFailureWrappingSessionService(sessionService),
+        artifactService,
+        plugins,
+        autoCreateSession = request.sessionId == null,
+      ) ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
     // Checked before the stream opens, since the status line leaves with the first byte.
     sessionError(sessionService, request)?.let { error ->
       return@post call.respond(error.code, error.message)
@@ -122,11 +137,17 @@ internal fun Route.runRoutes(
         .map { event -> adkJson.encodeToString(event) }
         // Upstream only, so a failed write below is not reported as a failed run.
         .catch { failure ->
-          val type = failure.typeName
-          // Type only: the message can carry caller or model content, which a log must not.
-          logger.warn("Run failed after the stream opened: {}", type)
           // The status line left with the headers, so the caller hears about this in the stream.
-          val error = SseError("$type: ${failure.message.orEmpty()}")
+          val error =
+            if (failure is SessionReadFailure) {
+              logger.warn("Loading the session for a run failed: {}", failure.cause.typeName)
+              SseError(ERR_SESSION_NOT_LOADED.message)
+            } else {
+              val type = failure.typeName
+              // Type only: the message can carry caller or model content, which a log must not.
+              logger.warn("Run failed after the stream opened: {}", type)
+              SseError("$type: ${failure.message.orEmpty()}")
+            }
           writeStringUtf8("data: ${adkJson.encodeToString(error)}\n\n")
           flush()
         }
@@ -139,9 +160,8 @@ internal fun Route.runRoutes(
 }
 
 /**
- * The error to answer instead of running [request]: its session is missing, which the runner would
- * otherwise create, or failed to load. Null when the request can run: its session exists, or it
- * names none and runs in a new one.
+ * The error to answer before [request]'s stream opens: its session is missing or failed to load.
+ * Null when the request can run: its session exists, or it names none and runs in a new one.
  */
 private suspend fun sessionError(
   sessionService: SessionService,

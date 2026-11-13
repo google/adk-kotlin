@@ -70,8 +70,9 @@ import org.junit.runners.JUnit4
 class RunRoutesTest {
   private val bothArrived = CountDownLatch(2)
   private val metTheOtherCall = CopyOnWriteArrayList<Boolean>()
+  private val toolReadFailures = CopyOnWriteArrayList<String>()
   private val model = TwoParallelCallsModel()
-  private val sessions = ReadFailingSessionService()
+  private val sessions = ScriptedSessionService()
   private lateinit var server: EmbeddedServer<*, *>
   private var port = 0
 
@@ -122,6 +123,58 @@ class RunRoutesTest {
     assertThat(response.body()).isEqualTo("Session not found")
     assertThat(model.calls.get()).isEqualTo(0)
     assertThat(send(get(SESSION_PATH)).statusCode()).isEqualTo(404)
+  }
+
+  @Test
+  fun run_existingSession_readsItOnce() {
+    assertThat(send(post(SESSION_PATH, body = null)).statusCode()).isEqualTo(200)
+    sessions.reads.set(0)
+
+    val response = send(post("/run", RUN_BODY))
+
+    assertThat(response.statusCode()).isEqualTo(200)
+    assertThat(sessions.reads.get()).isEqualTo(1)
+  }
+
+  @Test
+  fun runSse_storeFailsOnTheRunnersRead_streamsAFixedErrorAndLogsOnlyTheType() {
+    sessions.failReads = true
+
+    val (response, logs) = capturingLogs { send(post("/run_sse", RUN_BODY_WITHOUT_SESSION)) }
+
+    assertThat(response.statusCode()).isEqualTo(200)
+    assertThat(response.body()).isEqualTo("data: {\"error\":\"Session could not be loaded\"}\n\n")
+    assertThat(model.calls.get()).isEqualTo(0)
+    assertThat(logs).contains(StoreFailure::class.simpleName)
+    assertThat(logs).doesNotContain(STORE_DETAILS)
+  }
+
+  @Test
+  fun runSse_sessionDeletedAfterTheCheck_failsInTheStreamWithoutRecreatingIt() {
+    assertThat(send(post(SESSION_PATH, body = null)).statusCode()).isEqualTo(200)
+    sessions.deleteAfterEventlessRead = true
+
+    val response = send(post("/run_sse", RUN_BODY))
+    sessions.deleteAfterEventlessRead = false
+
+    // The status line left before the run, so the stream carries the error.
+    assertThat(response.statusCode()).isEqualTo(200)
+    assertThat(response.body())
+      .isEqualTo("data: {\"error\":\"SessionNotFoundException: Session not found\"}\n\n")
+    assertThat(model.calls.get()).isEqualTo(0)
+    assertThat(send(get(SESSION_PATH)).statusCode()).isEqualTo(404)
+  }
+
+  @Test
+  fun run_toolsOwnSessionReadFails_toolSeesTheStoresException() {
+    assertThat(send(post(SESSION_PATH, body = null)).statusCode()).isEqualTo(200)
+    sessions.unreadableSessionId = OTHER_SESSION_ID
+
+    val response = send(post("/run", RUN_BODY))
+
+    assertThat(response.statusCode()).isEqualTo(200)
+    val storeFailure = StoreFailure::class.simpleName
+    assertThat(toolReadFailures).containsExactly(storeFailure, storeFailure)
   }
 
   @Test
@@ -207,26 +260,52 @@ class RunRoutesTest {
   private fun send(request: HttpRequest): HttpResponse<String> =
     HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString())
 
-  /** Keeps sessions in memory, but fails every read once [failReads] is set. */
-  private class ReadFailingSessionService(
+  /**
+   * Keeps sessions in memory and counts reads in [reads]. Once [failReads] is set, every read
+   * fails, and reads of [unreadableSessionId] always do; once [deleteAfterEventlessRead] is set, a
+   * read that loads no events deletes the session after returning it, as a concurrent delete right
+   * after the route's check would.
+   */
+  private class ScriptedSessionService(
     private val delegate: SessionService = InMemorySessionService()
   ) : SessionService by delegate {
     @Volatile var failReads = false
+    @Volatile var deleteAfterEventlessRead = false
+    @Volatile var unreadableSessionId: String? = null
+    val reads = AtomicInteger()
 
-    override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? =
-      if (failReads) throw StoreFailure() else delegate.getSession(key, config)
+    override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {
+      reads.incrementAndGet()
+      if (failReads || key.id == unreadableSessionId) throw StoreFailure()
+      val session = delegate.getSession(key, config)
+      if (session != null && deleteAfterEventlessRead && config?.numRecentEvents == 0) {
+        delegate.deleteSession(key)
+      }
+      return session
+    }
   }
 
   /** A store failure whose message carries details a client or log must not see. */
   private class StoreFailure : IllegalStateException(STORE_DETAILS)
 
-  /** Blocks, as a synchronous tool does, until the other parallel call arrives too. */
+  /**
+   * Blocks, as a synchronous tool does, until the other parallel call arrives too. First, if the
+   * store has an unreadable session, reads it and records the failure's type in [toolReadFailures].
+   */
   private inner class WaitForOtherCallTool :
     BaseTool(TOOL_NAME, "Waits for the other parallel call.") {
     override fun declaration() = FunctionDeclaration(name = name, description = description)
 
     @Suppress("SuspendBlocks") // Blocks on purpose to stand in for a synchronous tool.
     override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
+      sessions.unreadableSessionId?.let { id ->
+        try {
+          val unused =
+            context.invocationContext.sessionService?.getSession(SessionKey(APP_NAME, "u", id))
+        } catch (e: Exception) {
+          toolReadFailures += e::class.simpleName.orEmpty()
+        }
+      }
       bothArrived.countDown()
       metTheOtherCall += bothArrived.await(WAIT_MILLIS, MILLISECONDS)
       return mapOf("status" to "ok")
@@ -248,6 +327,7 @@ class RunRoutesTest {
     const val LOOPBACK = "127.0.0.1"
     const val APP_NAME = "app"
     const val SESSION_PATH = "/apps/$APP_NAME/users/u/sessions/s"
+    const val OTHER_SESSION_ID = "other"
     const val TOOL_NAME = "wait_for_other"
     const val RUN_BODY =
       """{"appName":"$APP_NAME","userId":"u","sessionId":"s","newMessage":{"role":"user","parts":[{"text":"go"}]}}"""
