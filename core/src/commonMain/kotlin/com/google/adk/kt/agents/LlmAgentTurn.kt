@@ -35,6 +35,7 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.models.toTracePayload
+import com.google.adk.kt.models.withInlineDataSummarized
 import com.google.adk.kt.processors.LlmRequestProcessor
 import com.google.adk.kt.processors.LlmResponseProcessor
 import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
@@ -2360,27 +2361,12 @@ private fun LlmResponse.asFinishedInput(speech: String): LlmResponse =
 private const val SEND_DATA_SPAN = "send_data"
 
 /**
- * Replaces inline media with its MIME type and byte count and drops thought signatures so the span
- * stays small and readable.
+ * Serializes this history for the span, with its inline media summarized and without thought
+ * signatures.
  */
 @OptIn(FrameworkInternalApi::class)
 private fun List<Content>.toLiveTracePayload(): JsonElement =
-  adkJson.encodeToJsonElement(
-    map { content ->
-      content.copy(
-        parts =
-          content.parts.map { part ->
-            val blob = part.inlineData
-            if (blob == null) {
-              part.copy(thoughtSignature = null)
-            } else {
-              val mimeType = blob.mimeType?.takeIf { it.isNotEmpty() } ?: "unknown"
-              Part(text = "<inline_data: $mimeType, ${blob.data?.size ?: 0} bytes>")
-            }
-          }
-      )
-    }
-  )
+  adkJson.encodeToJsonElement(map { it.withInlineDataSummarized() })
 
 /**
  * Whether this failure is a recoverable live transport drop rather than a server refusal.
