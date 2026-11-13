@@ -252,9 +252,44 @@ class StreamingResponseAggregator {
 
   private class ParsedArg(val value: Any?)
 
-  private fun String.toJsonPathKeys(): List<String> = removePrefix("$.").split('.')
+  /**
+   * The keys of a `jsonPath` such as `$.items[1].name` or `$['a.b']`: names as [String], indices as
+   * [Int]. Tokenizes and unescapes as ADK Python's `_parse_json_path`.
+   */
+  private fun String.toJsonPathKeys(): List<Any> {
+    val path = removePrefix("$").removePrefix(".")
+    return JSON_PATH_TOKEN.findAll(path)
+      .map { match ->
+        val (index, singleQuoted, doubleQuoted, name) = match.destructured
+        when {
+          // An index too large for an Int is out of range, so the value is dropped.
+          index.isNotEmpty() -> index.toIntOrNull() ?: Int.MAX_VALUE
+          match.groups[2] != null -> singleQuoted.unescapeJsonPathKey()
+          match.groups[3] != null -> doubleQuoted.unescapeJsonPathKey()
+          else -> name.unescapeJsonPathKey()
+        }
+      }
+      .toList()
+  }
 
-  private fun parsePartialArg(partialArg: PartialArg, pathKeys: List<String>): ParsedArg? {
+  private fun String.unescapeJsonPathKey(): String =
+    JSON_PATH_ESCAPE.replace(this) { match ->
+      val (hex, char) = match.destructured
+      if (hex.isNotEmpty()) {
+        hex.toInt(16).toChar().toString()
+      } else {
+        when (char) {
+          "n" -> "\n"
+          "r" -> "\r"
+          "t" -> "\t"
+          "b" -> "\b"
+          "f" -> "\u000C"
+          else -> char
+        }
+      }
+    }
+
+  private fun parsePartialArg(partialArg: PartialArg, pathKeys: List<Any>): ParsedArg? {
     return when {
       partialArg.stringValue != null -> {
         val chunk = partialArg.stringValue
@@ -268,20 +303,40 @@ class StreamingResponseAggregator {
     }
   }
 
-  private fun getValueByPathKeys(pathKeys: List<String>): Any? {
+  private fun getValueByPathKeys(pathKeys: List<Any>): Any? {
     return pathKeys.fold(currentFcArgs as Any?) { current, key ->
-      (current as? Map<*, *>)?.get(key)
+      if (key is Int) (current as? List<*>)?.getOrNull(key) else (current as? Map<*, *>)?.get(key)
     }
   }
 
+  /**
+   * Sets [value] at [pathKeys], creating maps and lists on the way and padding a list with nulls up
+   * to an index, as ADK Python does. A key that does not fit the value found there is ignored.
+   */
   @Suppress("UNCHECKED_CAST")
-  private fun setValueByPath(pathKeys: List<String>, value: Any?) {
-    var current = currentFcArgs
-    for (i in 0 until pathKeys.size - 1) {
-      val key = pathKeys[i]
-      current = current.getOrPut(key) { mutableMapOf<String, Any?>() } as MutableMap<String, Any?>
+  private fun setValueByPath(pathKeys: List<Any>, value: Any?) {
+    var current: Any = currentFcArgs
+    for ((i, key) in pathKeys.withIndex()) {
+      val isLast = i == pathKeys.lastIndex
+      val next: Any? =
+        when {
+          isLast -> value
+          pathKeys[i + 1] is Int -> mutableListOf<Any?>()
+          else -> mutableMapOf<String, Any?>()
+        }
+      current =
+        if (key is Int) {
+          val list = current as? MutableList<Any?> ?: return
+          if (key > MAX_ARRAY_INDEX) return
+          while (list.size <= key) list.add(null)
+          if (isLast || list[key] == null) list[key] = next
+          list[key]
+        } else {
+          val map = current as? MutableMap<String, Any?> ?: return
+          if (isLast) map[key as String] = next else map.getOrPut(key as String) { next }
+          map[key]
+        } ?: return
     }
-    current[pathKeys.last()] = value
   }
 
   /**
@@ -291,4 +346,14 @@ class StreamingResponseAggregator {
    */
   private fun Part.isStreamTerminator(): Boolean =
     text?.isEmpty() == true && this == Part(text = "", thought = thought)
+
+  private companion object {
+    // Possessive: java.util.regex would recurse once per character and overflow on a long key.
+    val JSON_PATH_TOKEN =
+      Regex(
+        """\[\s*(\d+)\s*]|\['((?:[^'\\]|\\.)*+)']|\["((?:[^"\\]|\\.)*+)"]|\.?((?:[^.\[\]\\]|\\.)++)"""
+      )
+    val JSON_PATH_ESCAPE = Regex("""\\u([0-9a-fA-F]{4})|\\(.)""")
+    const val MAX_ARRAY_INDEX = 10_000
+  }
 }

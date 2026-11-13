@@ -955,6 +955,127 @@ class StreamingResponseAggregatorTest {
     assertEquals(null, finalResp.errorMessage)
   }
 
+  @Test
+  fun streamedArrayElements_becomeListItems() = runBlocking {
+    // Act
+    val args = aggregateStreamedArgs(listOf(arg("$.tags[0]", "a")), listOf(arg("$.tags[1]", "b")))
+
+    // Assert
+    assertEquals(mapOf("tags" to listOf("a", "b")), args)
+  }
+
+  @Test
+  fun streamedStringInsideAnArrayElement_continuesAcrossChunks() = runBlocking {
+    // Act
+    val args =
+      aggregateStreamedArgs(listOf(arg("$.tags[0]", "Mount")), listOf(arg("$.tags[0]", "ain")))
+
+    // Assert
+    assertEquals(mapOf("tags" to listOf("Mountain")), args)
+  }
+
+  @Test
+  fun streamedObjectsInsideAnArray_outOfOrder_keepTheirIndices() = runBlocking {
+    // Act
+    val args =
+      aggregateStreamedArgs(
+        listOf(arg("$.items[1].name", "second")),
+        listOf(arg("$.items[0].name", "first"), arg("$.tags[99999999999]", "too far")),
+      )
+
+    // Assert: an index too large for an Int is dropped like any index above the cap; as in ADK
+    // Python, the list that would hold it is still created.
+    assertEquals(
+      mapOf(
+        "items" to listOf(mapOf("name" to "first"), mapOf("name" to "second")),
+        "tags" to emptyList<Any?>(),
+      ),
+      args,
+    )
+  }
+
+  @Test
+  fun streamedNestedArraysNumbersAndBooleans_areAssembled() = runBlocking {
+    // Act
+    val args =
+      aggregateStreamedArgs(
+        listOf(
+          PartialArg(jsonPath = "$.matrix[0][1]", value = PartialArgValue.NumberValue(7.0)),
+          PartialArg(jsonPath = "$.flags[0]", value = PartialArgValue.BoolValue(true)),
+        )
+      )
+
+    // Assert
+    assertEquals(mapOf("matrix" to listOf(listOf(null, 7.0)), "flags" to listOf(true)), args)
+  }
+
+  @Test
+  fun streamedSparseIndex_padsWithNulls_andAnIndexAbove10000IsDropped() = runBlocking {
+    // Act
+    val args = aggregateStreamedArgs(listOf(arg("$.tags[2]", "c"), arg("$.tags[20000]", "too far")))
+
+    // Assert
+    assertEquals(mapOf("tags" to listOf(null, null, "c")), args)
+  }
+
+  @Test
+  fun streamedQuotedKeys_areKeysWithDotsOrQuotes() = runBlocking {
+    // Act
+    val args =
+      aggregateStreamedArgs(
+        listOf(
+          arg("$['a.b']", "dotted"),
+          arg("$[\"x\"]", "double-quoted"),
+          arg("""$['it\'s']""", "escaped quote"),
+        )
+      )
+
+    // Assert
+    assertEquals(mapOf("a.b" to "dotted", "x" to "double-quoted", "it's" to "escaped quote"), args)
+  }
+
+  @Test
+  fun streamedVeryLongKey_plainAndQuoted_parses() = runBlocking {
+    // Arrange: a key long enough to overflow the stack of a per-character recursive regex.
+    val key = "k".repeat(100_000)
+
+    // Act
+    val args = aggregateStreamedArgs(listOf(arg("$.$key", "plain"), arg("$['q$key']", "quoted")))
+
+    // Assert
+    assertEquals(mapOf(key to "plain", "q$key" to "quoted"), args)
+  }
+
+  @Test
+  fun streamedIndexWithSpacesOrLeadingZeros_readsAsTheNumber() = runBlocking {
+    // Act
+    val args = aggregateStreamedArgs(listOf(arg("$.tags[ 1 ]", "b"), arg("$.tags[000000]", "a")))
+
+    // Assert
+    assertEquals(mapOf("tags" to listOf("a", "b")), args)
+  }
+
+  /** Streams one `my_tool` call whose chunks carry [chunks] and returns its aggregated args. */
+  private suspend fun aggregateStreamedArgs(vararg chunks: List<PartialArg>): Map<String, Any?> {
+    val aggregator = StreamingResponseAggregator()
+    chunks.forEachIndexed { i, partialArgs ->
+      val unused =
+        aggregator.processResponse(
+          createFcResp(
+            FunctionCall(
+              name = if (i == 0) "my_tool" else "",
+              partialArgs = partialArgs,
+              willContinue = i < chunks.lastIndex,
+            )
+          )
+        )
+    }
+    return assertNotNull(aggregator.aggregate()?.content?.parts?.single()?.functionCall).args
+  }
+
+  private fun arg(jsonPath: String, value: String) =
+    PartialArg(jsonPath = jsonPath, value = PartialArgValue.StringValue(value))
+
   private fun createResp(
     text: String,
     thought: Boolean? = null,

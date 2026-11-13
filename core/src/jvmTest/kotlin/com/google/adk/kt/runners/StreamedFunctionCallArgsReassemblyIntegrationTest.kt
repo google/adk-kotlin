@@ -32,7 +32,9 @@ import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.PartialArg
 import com.google.adk.kt.types.PartialArgValue
+import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.ToolConfig
+import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.Client
 import kotlin.test.Test
@@ -134,6 +136,81 @@ class StreamedFunctionCallArgsReassemblyIntegrationTest {
     val executedTools = events.flatMap { it.functionResponses() }.map { it.name }
     assertThat(executedTools).containsExactly("getTemperature", "getCondition")
   }
+
+  @Test
+  fun runAsync_streamedSetModelResponseWithAnArrayField_endsTheTurnWithTheJson(): Unit =
+    runBlocking {
+      // Arrange: the model streams `set_model_response` with array elements as `$.tags[i]`.
+      val fakeModels =
+        object : Gemini.GeminiModels {
+          override fun generateContentStream(
+            model: String,
+            contents: List<Content>,
+            config: GenerateContentConfig,
+          ): Flow<GenerateContentResponse> =
+            flowOf(
+              fcChunk(FunctionCall(name = "set_model_response", willContinue = true)),
+              fcChunk(partialArg("\$.tags[0]", "red")),
+              fcChunk(partialArg("\$.tags[1]", "blue")),
+              fcChunk(
+                FunctionCall(
+                  partialArgs =
+                    listOf(
+                      PartialArg(value = PartialArgValue.NumberValue(2.0), jsonPath = "\$.count")
+                    ),
+                  willContinue = true,
+                )
+              ),
+              fcChunk(FunctionCall(willContinue = false), finishReason = FinishReason.STOP),
+            )
+
+          override suspend fun generateContent(
+            model: String,
+            contents: List<Content>,
+            config: GenerateContentConfig,
+          ): GenerateContentResponse = throw UnsupportedOperationException("stream only")
+        }
+      val agent =
+        LlmAgent(
+          name = "test-agent",
+          model = Gemini(Client(apiKey = "fake"), "gemini-2.5-flash", models = fakeModels),
+          tools = listOf(DummyTool(name = "lookup", declares = true)),
+          outputSchema =
+            Schema(
+              type = Type.OBJECT,
+              properties =
+                mapOf(
+                  "tags" to Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)),
+                  "count" to Schema(type = Type.INTEGER),
+                ),
+            ),
+          generateContentConfig =
+            GenerateContentConfig(
+              toolConfig =
+                ToolConfig(
+                  functionCallingConfig = FunctionCallingConfig(streamFunctionCallArguments = true)
+                )
+            ),
+        )
+      val runner = InMemoryRunner(agent = agent)
+
+      // Act
+      val events =
+        runner
+          .runAsync(
+            userId = "user1",
+            sessionId = "session1",
+            newMessage = userMessage("Pick colors."),
+            runConfig = RunConfig(streamingMode = StreamingMode.SSE),
+          )
+          .toList()
+
+      // Assert
+      val finalEvent = events.last()
+      assertThat(finalEvent.isFinalResponse).isTrue()
+      assertThat(finalEvent.content?.parts?.single()?.text)
+        .isEqualTo("""{"tags":["red","blue"],"count":2}""")
+    }
 
   private fun partialArg(jsonPath: String, value: String): FunctionCall =
     FunctionCall(
