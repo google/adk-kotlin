@@ -15,12 +15,21 @@
  */
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.testToolContext
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import com.google.common.truth.Truth.assertThat
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
 class SetModelResponseToolTest {
@@ -72,6 +81,396 @@ class SetModelResponseToolTest {
     }
 
   @Test
+  fun run_nullOptionalFields_dropsThemAtEveryDepth() = runBlocking {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "result" to
+              Schema(
+                type = Type.OBJECT,
+                properties =
+                  mapOf(
+                    "answer" to Schema(type = Type.STRING),
+                    "note" to Schema(type = Type.STRING),
+                  ),
+              ),
+            "error" to Schema(type = Type.OBJECT),
+          ),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result =
+      tool.run(
+        testToolContext(),
+        mapOf("result" to mapOf("answer" to "42", "note" to null), "error" to null),
+      )
+
+    assertThat(result).isEqualTo(mapOf("result" to mapOf("answer" to "42")))
+  }
+
+  @Test
+  fun run_validArgsWithOptionalNull_recordsThemWithoutIt() = runBlocking {
+    // The nullable `note` lets the arguments pass as sent.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "answer" to Schema(type = Type.STRING),
+            "note" to Schema(type = Type.STRING, nullable = true),
+          ),
+        required = listOf("answer"),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result =
+      tool.run(testToolContext(functionCallId = "call_1"), mapOf("answer" to "42", "note" to null))
+
+    assertThat(result).isEqualTo(mapOf("answer" to "42"))
+    assertThat(tool.validatedResponseJson("call_1")).isEqualTo("""{"answer":"42"}""")
+  }
+
+  @Test
+  fun run_nullThatOnlyTheRawArgsSatisfy_recordsTheRawArgs() = runBlocking {
+    // Dropping the optional null `a` would leave a value that matches neither union branch.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "kind" to Schema(type = Type.STRING),
+            "a" to Schema(type = Type.STRING, nullable = true),
+            "b" to Schema(type = Type.STRING),
+          ),
+        anyOf =
+          listOf(Schema(required = listOf("kind", "a")), Schema(required = listOf("kind", "b"))),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result = tool.run(testToolContext(), mapOf("kind" to "x", "a" to null))
+
+    assertThat(result).isEqualTo(mapOf("kind" to "x", "a" to null))
+  }
+
+  @Test
+  fun run_nullRequiredNullableField_keepsIt() = runBlocking {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, nullable = true)),
+        required = listOf("answer"),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result = tool.run(testToolContext(), mapOf("answer" to null))
+
+    assertThat(result).isEqualTo(mapOf("answer" to null))
+  }
+
+  @Test
+  fun run_nullRequiredFieldThatAcceptsNull_keepsIt() = runBlocking {
+    // Neither field is marked nullable, but each accepts null: one is untyped, one a union.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "untyped" to Schema(),
+            "union" to Schema(anyOf = listOf(Schema(type = Type.STRING), Schema(type = Type.NULL))),
+          ),
+        required = listOf("untyped", "union"),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result = tool.run(testToolContext(), mapOf("untyped" to null, "union" to null))
+
+    assertThat(result).isEqualTo(mapOf("untyped" to null, "union" to null))
+  }
+
+  @Test
+  fun run_nullThatANestedUnionBranchRequires_keepsIt() = runBlocking {
+    // Only the union's object branch requires `a`; the null `error` rules out the raw arguments.
+    val branch =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("a" to Schema(type = Type.STRING, nullable = true)),
+        required = listOf("a"),
+      )
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "result" to Schema(anyOf = listOf(branch, Schema(type = Type.NULL))),
+            "error" to Schema(type = Type.OBJECT),
+          ),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result = tool.run(testToolContext(), mapOf("result" to mapOf("a" to null), "error" to null))
+
+    assertThat(result).isEqualTo(mapOf("result" to mapOf("a" to null)))
+  }
+
+  @Test
+  fun run_nullOptionalFieldInAListOfObjects_dropsItFromEachItem() = runBlocking {
+    // `note` is optional and not nullable, so only the arguments without it validate.
+    val item =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("name" to Schema(type = Type.STRING), "note" to Schema(type = Type.STRING)),
+      )
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("items" to Schema(type = Type.ARRAY, items = item)),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result =
+      tool.run(testToolContext(), mapOf("items" to listOf(mapOf("name" to "a", "note" to null))))
+
+    assertThat(result).isEqualTo(mapOf("items" to listOf(mapOf("name" to "a"))))
+  }
+
+  @Test
+  fun run_requiredNullUnderAdditionalProperties_keepsIt() = runBlocking {
+    // Arrange: each undeclared key's value requires `a`, which may be null.
+    val value =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("a" to Schema(type = Type.STRING, nullable = true)),
+        required = listOf("a"),
+      )
+    val tool = SetModelResponseTool(Schema(type = Type.OBJECT, additionalProperties = value))
+
+    // Act: validation does not check values under `additionalProperties`, so a wrong drop passes.
+    val result = tool.run(testToolContext(), mapOf("k" to mapOf("a" to null)))
+
+    // Assert
+    assertThat(result).isEqualTo(mapOf("k" to mapOf("a" to null)))
+  }
+
+  @Test
+  fun run_nullOptionalFieldInANestedOneOfTheseFieldsObject_dropsIt() = runBlocking {
+    // Arrange: `outcome` types its own fields; its `anyOf` only says which one to send.
+    val outcome =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("a" to Schema(type = Type.INTEGER), "b" to Schema(type = Type.STRING)),
+        anyOf = listOf(Schema(required = listOf("a")), Schema(required = listOf("b"))),
+      )
+    val tool =
+      SetModelResponseTool(Schema(type = Type.OBJECT, properties = mapOf("outcome" to outcome)))
+
+    // Act
+    val result = tool.run(testToolContext(), mapOf("outcome" to mapOf("a" to 1L, "b" to null)))
+
+    // Assert
+    assertThat(result).isEqualTo(mapOf("outcome" to mapOf("a" to 1L)))
+  }
+
+  @Test
+  fun run_requiredNullOfAParentWithANullBranch_keepsIt() = runBlocking {
+    // Arrange: `outcome` requires the nullable `note` itself; its one non-NULL branch does not.
+    val outcome =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "a" to Schema(type = Type.INTEGER),
+            "note" to Schema(type = Type.STRING, nullable = true),
+          ),
+        required = listOf("note"),
+        anyOf = listOf(Schema(required = listOf("a")), Schema(type = Type.NULL)),
+      )
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("outcome" to outcome, "error" to Schema(type = Type.OBJECT)),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    // Act: the null `error` rules out the raw arguments, so `note` must survive the drop.
+    val result =
+      tool.run(
+        testToolContext(),
+        mapOf("outcome" to mapOf("a" to 1L, "note" to null), "error" to null),
+      )
+
+    // Assert
+    assertThat(result).isEqualTo(mapOf("outcome" to mapOf("a" to 1L, "note" to null)))
+  }
+
+  @Test
+  fun run_nullInsideAFreeFormObject_keepsIt() = runBlocking {
+    // Arrange: `error` declares no properties, so its keys are data, as in a pydantic dict field.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("answer" to Schema(type = Type.STRING), "error" to Schema(type = Type.OBJECT)),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    // Act
+    val result =
+      tool.run(testToolContext(), mapOf("answer" to "42", "error" to mapOf("code" to null)))
+
+    // Assert
+    assertThat(result).isEqualTo(mapOf("answer" to "42", "error" to mapOf("code" to null)))
+  }
+
+  @Test
+  fun run_nullInsideAUnionOfSeveralObjects_keepsIt() = runBlocking {
+    // The union names no single branch, so `note` stays; the null `error` rules out raw args.
+    val withNote =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "a" to Schema(type = Type.STRING),
+            "note" to Schema(type = Type.STRING, nullable = true),
+          ),
+        required = listOf("a", "note"),
+      )
+    val withB =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("b" to Schema(type = Type.STRING)),
+        required = listOf("b"),
+      )
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "result" to Schema(anyOf = listOf(withNote, withB)),
+            "error" to Schema(type = Type.OBJECT),
+          ),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result =
+      tool.run(
+        testToolContext(),
+        mapOf("result" to mapOf("a" to "x", "note" to null), "error" to null),
+      )
+
+    assertThat(result).isEqualTo(mapOf("result" to mapOf("a" to "x", "note" to null)))
+  }
+
+  @Test
+  fun runAsync_requiredNullField_keepsItInFinalTextAndState() = runBlocking {
+    // Arrange: the null `error` rules out the raw arguments, so `answer` must survive the drop.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "answer" to Schema(type = Type.STRING, nullable = true),
+            "error" to Schema(type = Type.OBJECT),
+          ),
+        required = listOf("answer"),
+      )
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.5-flash",
+        listOf(
+          modelFunctionCallResponse(
+            SetModelResponseTool.NAME,
+            mapOf("answer" to null, "error" to null),
+            id = "call_1",
+          )
+        ),
+      )
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(DummyTool("lookup", declares = true)),
+        outputSchema = schema,
+        outputKey = "result",
+      )
+    val runner = InMemoryRunner(agent = agent)
+    val unused = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+
+    // Act
+    val events =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    // Assert
+    val finalEvent = events.last()
+    assertThat(finalEvent.content?.parts?.single()?.text).isEqualTo("""{"answer":null}""")
+    assertThat(finalEvent.actions.stateDelta["result"]).isEqualTo(mapOf("answer" to null))
+  }
+
+  @Test
+  fun run_nullRequiredField_throws() =
+    runBlocking<Unit> {
+      val tool = SetModelResponseTool(outputSchema)
+
+      assertFailsWith<IllegalArgumentException> {
+        tool.run(testToolContext(), mapOf("name" to null, "city" to "NYC"))
+      }
+    }
+
+  @Test
+  fun runAsync_setModelResponseWithNullErrorBranch_endsTurnWithResult() = runBlocking {
+    // Arrange: the model fills the result branch and sends null for the unused error branch.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "result" to
+              Schema(
+                type = Type.OBJECT,
+                properties = mapOf("answer" to Schema(type = Type.STRING)),
+              ),
+            "error" to
+              Schema(type = Type.OBJECT, properties = mapOf("code" to Schema(type = Type.STRING))),
+          ),
+      )
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.5-flash",
+        listOf(
+          modelFunctionCallResponse(
+            SetModelResponseTool.NAME,
+            mapOf("result" to mapOf("answer" to "42"), "error" to null),
+            id = "call_1",
+          )
+        ),
+      )
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(DummyTool("lookup", declares = true)),
+        outputSchema = schema,
+        outputKey = "result",
+      )
+    val runner = InMemoryRunner(agent = agent)
+    val unused = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+
+    // Act
+    val events =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    // Assert
+    val finalEvent = events.last()
+    assertThat(finalEvent.isFinalResponse).isTrue()
+    assertThat(finalEvent.content?.parts?.single()?.text)
+      .isEqualTo("""{"result":{"answer":"42"}}""")
+    assertThat(finalEvent.actions.stateDelta["result"])
+      .isEqualTo(mapOf("result" to mapOf("answer" to "42")))
+  }
+
+  @Test
   fun run_wholeNumberDoubleForInteger_recordsItAsLong() = runBlocking {
     // Arrange: Gson-based decoders read the JSON number 1 as 1.0.
     val optionalInt = Schema(anyOf = listOf(Schema(type = Type.INTEGER), Schema(type = Type.NULL)))
@@ -96,6 +495,7 @@ class SetModelResponseToolTest {
 
     // Assert
     assertEquals(mapOf("n" to 1L, "items" to listOf(2L), "maybe" to 3L), result)
+    assertEquals("""{"n":1,"items":[2],"maybe":3}""", tool.validatedResponseJson("call_1"))
   }
 
   @Test
