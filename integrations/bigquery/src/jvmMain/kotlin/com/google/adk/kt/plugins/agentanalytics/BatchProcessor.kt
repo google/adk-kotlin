@@ -201,11 +201,11 @@ internal class BatchProcessor(
     // A lazy worker must start for invokeOnCompletion to fire; with no rows it returns at once.
     worker.start()
     signalWorker()
-    // After a drain nothing is left to count; otherwise the rows left timed out.
+    // Rows left by a worker that already ended, as on a rejected dispatch, did not time out.
     val reason =
       try {
-        done.await(timeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
-        SHUTDOWN_TIMEOUT
+        val completed = done.await(timeout.inWholeNanoseconds, TimeUnit.NANOSECONDS)
+        if (completed) UNEXPECTED_ERROR else SHUTDOWN_TIMEOUT
       } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
         SHUTDOWN_CANCELLED

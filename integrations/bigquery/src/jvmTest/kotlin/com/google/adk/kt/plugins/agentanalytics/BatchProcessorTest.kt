@@ -368,6 +368,30 @@ class BatchProcessorTest {
   }
 
   @Test
+  fun shutdown_whenWorkerTerminatesWithQueuedRows_countsUnexpectedError(): Unit = runBlocking {
+    val executor = Executors.newSingleThreadExecutor()
+    val writer = FakeRowWriter()
+    val processor =
+      processor(
+        writer,
+        batchSize = 10,
+        flushInterval = 1.minutes,
+        context = executor.asCoroutineDispatcher(),
+      )
+    processor.append(row(0), isTerminal = false)
+    val submitted = executor.submit {}
+    eventually { submitted.isDone }
+    executor.shutdown()
+    eventually { executor.isTerminated }
+
+    val elapsed = measureTime { processor.shutdown(1.minutes) }
+
+    assertTrue(elapsed < 5.seconds, "took $elapsed")
+    assertEquals(emptyList(), writer.batches)
+    assertEquals(mapOf(BatchProcessor.UNEXPECTED_ERROR to 1L), drops.snapshot().nonZero())
+  }
+
+  @Test
   fun shutdown_withNothingAppended_returnsAtOnce() {
     val processor = processor(FakeRowWriter())
 

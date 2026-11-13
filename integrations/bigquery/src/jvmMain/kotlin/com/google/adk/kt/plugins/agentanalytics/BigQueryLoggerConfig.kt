@@ -48,7 +48,7 @@ import kotlin.jvm.JvmStatic
  *   is logged.
  * @property viewPrefix Prefix of the view names, so `v` gives `v_llm_request`. Views are skipped if
  *   this prefix or the table's project, dataset or name has characters other than letters, digits,
- *   `_` and `-`.
+ *   `_` and `-`, apart from the `example.com:` of a domain-scoped project.
  * @property contentFormatter Called with each event's content and type; its result is logged in
  *   place of the content. If it throws, `[FORMATTER_FAILED]` is logged instead.
  * @property retryConfig How a batch of rows that fails to write is retried.
@@ -61,7 +61,13 @@ import kotlin.jvm.JvmStatic
  *   are dropped. About 1% of the slots, at least 2 but never all of them, are kept for
  *   `INVOCATION_COMPLETED` and `INVOCATION_ERROR` rows.
  * @property flushOnRunEnd Whether a run waits, before it completes, for every row logged so far by
- *   any run to be written or dropped. As in Python ADK, the wait has no time limit.
+ *   any run to be written or dropped; the wait has no time limit.
+ * @property gcsBucketName Cloud Storage bucket that binary parts, and text parts over 32 KiB or
+ *   [maxContentLength], are uploaded to with the BigQuery client's credentials, so that
+ *   `content_parts` references them. Needs [logMultiModalContent]; when `null`, binary parts are
+ *   logged as a placeholder and long text is truncated.
+ * @property connectionId BigQuery connection, such as `us.my-connection`, recorded as the
+ *   `authorizer` of each uploaded part's `object_ref`.
  */
 data class BigQueryLoggerConfig
 @JvmOverloads
@@ -89,6 +95,8 @@ constructor(
   val shutdownTimeout: Duration = Duration.ofSeconds(10),
   val queueMaxSize: Int = 10_000,
   val flushOnRunEnd: Boolean = true,
+  val gcsBucketName: String? = null,
+  val connectionId: String? = null,
 ) {
 
   init {
@@ -103,6 +111,9 @@ constructor(
       "shutdownTimeout must be positive, got $shutdownTimeout."
     }
     require(queueMaxSize >= 1) { "queueMaxSize must be >= 1, got $queueMaxSize." }
+    require(gcsBucketName == null || gcsBucketName.isNotBlank()) {
+      "gcsBucketName must not be blank."
+    }
   }
 
   /**
@@ -136,6 +147,8 @@ constructor(
       .shutdownTimeout(shutdownTimeout)
       .queueMaxSize(queueMaxSize)
       .flushOnRunEnd(flushOnRunEnd)
+      .gcsBucketName(gcsBucketName)
+      .connectionId(connectionId)
 
   /**
    * Fluent builder for [BigQueryLoggerConfig], provided primarily for Java callers. Any property
@@ -167,6 +180,8 @@ constructor(
     private var shutdownTimeout: Duration = Duration.ofSeconds(10)
     private var queueMaxSize: Int = 10_000
     private var flushOnRunEnd: Boolean = true
+    private var gcsBucketName: String? = null
+    private var connectionId: String? = null
 
     fun projectId(projectId: String): Builder = apply { this.projectId = projectId }
 
@@ -236,6 +251,12 @@ constructor(
       this.flushOnRunEnd = flushOnRunEnd
     }
 
+    fun gcsBucketName(gcsBucketName: String?): Builder = apply {
+      this.gcsBucketName = gcsBucketName
+    }
+
+    fun connectionId(connectionId: String?): Builder = apply { this.connectionId = connectionId }
+
     fun build(): BigQueryLoggerConfig =
       BigQueryLoggerConfig(
         projectId = checkNotNull(projectId) { "BigQueryLoggerConfig.Builder requires projectId." },
@@ -261,6 +282,8 @@ constructor(
         shutdownTimeout = shutdownTimeout,
         queueMaxSize = queueMaxSize,
         flushOnRunEnd = flushOnRunEnd,
+        gcsBucketName = gcsBucketName,
+        connectionId = connectionId,
       )
   }
 

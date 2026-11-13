@@ -22,6 +22,7 @@ import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.mockito.kotlin.mock
 
@@ -55,6 +56,8 @@ class BigQueryLoggerConfigTest {
         shutdownTimeout = Duration.ofSeconds(3),
         queueMaxSize = 200,
         flushOnRunEnd = false,
+        gcsBucketName = "test-bucket",
+        connectionId = "us.my-connection",
       )
 
     assertEquals(config.copy(), config.toBuilder().build())
@@ -68,6 +71,23 @@ class BigQueryLoggerConfigTest {
       BigQueryLoggerConfig("p", "d"),
       BigQueryLoggerConfig.builder().projectId("p").datasetId("d").build(),
     )
+  }
+
+  @Test
+  fun gcsOffloadDefaults_areNullByDefault() {
+    val config = BigQueryLoggerConfig("p", "d")
+
+    assertNull(config.gcsBucketName)
+    assertNull(config.connectionId)
+  }
+
+  @Test
+  fun blankGcsBucketName_isRejected() {
+    for (blank in listOf("", "  ")) {
+      assertFailsWith<IllegalArgumentException> {
+        BigQueryLoggerConfig("p", "d", gcsBucketName = blank)
+      }
+    }
   }
 
   @Test

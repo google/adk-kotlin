@@ -185,6 +185,9 @@ internal object BigQueryUtils {
 
   private val SAFE_IDENTIFIER = Regex("""[A-Za-z0-9_-]+""")
 
+  // A project id may be scoped to a domain, as in `example.com:my-project`.
+  private val SAFE_PROJECT_ID = Regex("""(?:[a-z0-9.-]+:)?[A-Za-z0-9_-]+""")
+
   private fun isSafeIdentifier(id: String): Boolean = SAFE_IDENTIFIER.matches(id)
 
   /**
@@ -198,7 +201,7 @@ internal object BigQueryUtils {
     throwIfCancelled: () -> Unit = {},
   ) {
     if (
-      !isSafeIdentifier(config.projectId) ||
+      !SAFE_PROJECT_ID.matches(config.projectId) ||
         !isSafeIdentifier(config.datasetId) ||
         !isSafeIdentifier(config.tableName) ||
         !isSafeIdentifier(config.viewPrefix)
@@ -238,7 +241,7 @@ internal object BigQueryUtils {
 
   fun maybeUpgradeSchema(bigQuery: BigQuery, existingTable: Table): Boolean {
     val currentDefinition = existingTable.getDefinition<StandardTableDefinition>() ?: return true
-    val existingFields = currentDefinition.schema?.fields
+    val existingFields = currentDefinition.schema?.fields.orEmpty()
     val desiredFields = BigQuerySchema.getEventsSchema().fields
     val diff = diffFields(existingFields, desiredFields)
 
@@ -278,23 +281,23 @@ internal object BigQueryUtils {
 
   private data class SchemaDiff(val newFields: List<Field>, val updatedRecordFields: List<Field>)
 
-  private fun SchemaDiff.applyTo(existing: FieldList?): List<Field> {
+  private fun SchemaDiff.applyTo(existing: List<Field>): List<Field> {
     val updated = updatedRecordFields.associateBy { it.columnKey() }
-    return existing.orEmpty().map { updated[it.columnKey()] ?: it } + newFields
+    return existing.map { updated[it.columnKey()] ?: it } + newFields
   }
 
   // BigQuery column names are case-insensitive, so fields are matched by their lowercase names.
   private fun Field.columnKey(): String = name.lowercase(Locale.ROOT)
 
-  private fun diffFields(existing: FieldList?, desired: FieldList): SchemaDiff {
-    val existingByName = existing?.associateBy { it.columnKey() } ?: emptyMap()
+  private fun diffFields(existing: List<Field>, desired: List<Field>): SchemaDiff {
+    val existingByName = existing.associateBy { it.columnKey() }
     val added = mutableListOf<Field>()
     val updatedRecords = mutableListOf<Field>()
 
     for (desiredField in desired) {
       val existingField = existingByName[desiredField.columnKey()]
       if (existingField == null) {
-        added.add(desiredField)
+        added.add(desiredField.asAddedField())
         continue
       }
       warnOnIncompatibleDrift(existingField, desiredField)
@@ -303,9 +306,10 @@ internal object BigQueryUtils {
           existingField.type.standardType == StandardSQLTypeName.STRUCT &&
           desiredField.subFields != null
       ) {
-        val subDiff = diffFields(existingField.subFields, desiredField.subFields)
+        val existingSubFields = existingField.subFields.orEmpty()
+        val subDiff = diffFields(existingSubFields, desiredField.subFields)
         if (subDiff.newFields.isNotEmpty() || subDiff.updatedRecordFields.isNotEmpty()) {
-          val mergedSubFields = FieldList.of(subDiff.applyTo(existingField.subFields))
+          val mergedSubFields = FieldList.of(subDiff.applyTo(existingSubFields))
           updatedRecords.add(
             existingField.toBuilder().setType(StandardSQLTypeName.STRUCT, mergedSubFields).build()
           )
@@ -314,6 +318,10 @@ internal object BigQueryUtils {
     }
     return SchemaDiff(added, updatedRecords)
   }
+
+  // BigQuery adds a column or nested field to an existing table only if it is NULLABLE or REPEATED.
+  private fun Field.asAddedField(): Field =
+    if (mode == Field.Mode.REQUIRED) toBuilder().setMode(Field.Mode.NULLABLE).build() else this
 
   private fun warnOnIncompatibleDrift(existingField: Field, desiredField: Field) {
     val typeDrift = desiredField.type.standardType != existingField.type.standardType

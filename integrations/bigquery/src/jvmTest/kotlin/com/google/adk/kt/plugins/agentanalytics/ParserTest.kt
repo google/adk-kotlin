@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.agentanalytics.JsonFormatter.SanitizedText
+import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.CodeExecutionResult
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.ExecutableCode
@@ -31,17 +32,33 @@ import com.google.adk.kt.types.Language
 import com.google.adk.kt.types.Outcome
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.UsageMetadata
+import java.io.IOException
+import java.nio.charset.StandardCharsets.UTF_8
+import java.time.LocalDate
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 
 class ParserTest {
 
   private val parser = Parser(maxLength = 1000)
 
-  private fun parse(vararg parts: Part, maxLength: Int = 1000): Parser.ParsedContent =
-    Parser(maxLength).parse(Content(role = "user", parts = parts.toList()))
+  private fun parse(
+    vararg parts: Part,
+    maxLength: Int = 1000,
+    connectionId: String? = null,
+    traceId: String = "",
+    spanId: String = "",
+    offloader: ContentOffloader? = null,
+  ): Parser.ParsedContent = runBlocking {
+    Parser(maxLength, connectionId, dateProvider = { FIXED_DATE }, uidProvider = { "uid1" })
+      .parse(Content(role = "user", parts = parts.toList()), traceId, spanId, offloader)
+  }
 
   private fun fileUriPart(uri: String): JsonNode =
     parse(Part(fileData = FileData(fileUri = uri, mimeType = "application/pdf"))).parts.single()
@@ -84,6 +101,8 @@ class ParserTest {
     val part = parsed.parts.single()
     assertEquals("gs://bucket/image.png", part.get("uri").asText())
     assertEquals("image/png", part.get("mime_type").asText())
+    assertEquals("EXTERNAL_URI", part.get("storage_mode").asText())
+    assertTrue(part.get("object_ref").isNull)
     assertFalse(parsed.isTruncated)
   }
 
@@ -167,7 +186,7 @@ class ParserTest {
   }
 
   @Test
-  fun stringContent_bracketLedProse_isKept() {
+  fun stringContent_bracketLedProse_isKept(): Unit = runBlocking {
     val parsed = parser.parse("[System] Be brief.")
 
     assertEquals("[System] Be brief.", parsed.content.asText())
@@ -250,7 +269,7 @@ class ParserTest {
   }
 
   @Test
-  fun llmRequest_logsThePromptAndSystemInstruction() {
+  fun llmRequest_logsThePromptAndSystemInstruction(): Unit = runBlocking {
     val request =
       LlmRequest(
         contents = listOf(Content(role = "user", parts = listOf(Part(text = "Hi")))),
@@ -269,7 +288,7 @@ class ParserTest {
   }
 
   @Test
-  fun llmRequest_overBudgetSystemInstruction_isFlagged() {
+  fun llmRequest_overBudgetSystemInstruction_isFlagged(): Unit = runBlocking {
     val request =
       LlmRequest(
         config =
@@ -309,7 +328,7 @@ class ParserTest {
   }
 
   @Test
-  fun llmResponse_formatsResponseStringAndLeavesContentPartsEmpty() {
+  fun llmResponse_formatsResponseStringAndLeavesContentPartsEmpty(): Unit = runBlocking {
     val response =
       LlmResponse(
         content =
@@ -351,7 +370,7 @@ class ParserTest {
   }
 
   @Test
-  fun llmResponse_emptyContentAndRedactedResponse() {
+  fun llmResponse_emptyContentAndRedactedResponse(): Unit = runBlocking {
     val emptyParts = parser.parse(LlmResponse(content = Content(parts = emptyList())))
     assertEquals("None", emptyParts.content.get("response").asText())
 
@@ -424,5 +443,178 @@ class ParserTest {
     assertEquals("[REDACTED_SENSITIVE_TEXT]", responseAttrs.get("out").asText())
     assertEquals("[REDACTED]", responseAttrs.get("access%5Ftoken").asText())
     assertTrue(fnResponse.isTruncated)
+  }
+
+  @Test
+  fun inlineDataPart_offloadsToGcsWithObjectRefAndSanitizedFallbackPaths(): Unit = runBlocking {
+    val noOffload = parse(Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2))))
+    assertEquals("INLINE", noOffload.parts.single().get("storage_mode").asText())
+    assertEquals("[BINARY DATA]", noOffload.parts.single().get("text").asText())
+    assertTrue(noOffload.parts.single().get("object_ref").isNull)
+
+    val offloader = RecordingOffloader()
+    val bytes = byteArrayOf(0x89.toByte(), 0x50)
+    val parsed =
+      parse(
+        Part(inlineData = Blob(mimeType = "image/png", data = bytes)),
+        connectionId = "us.conn",
+        traceId = "tr-1",
+        spanId = "sp-2",
+        offloader = offloader,
+      )
+    val expectedPath = "2026-11-13/tr-1/sp-2_uid1_c0_p0.png"
+    val expectedUri = "gs://b/$expectedPath"
+    assertEquals(expectedPath, offloader.uploads.single().path)
+    assertContentEquals(bytes, offloader.uploads.single().data)
+    val part = parsed.parts.single()
+    assertEquals("GCS_REFERENCE", part.get("storage_mode").asText())
+    assertEquals(expectedUri, part.get("uri").asText())
+    assertEquals("[MEDIA OFFLOADED]", part.get("text").asText())
+    val ref = part.get("object_ref")
+    assertEquals(expectedUri, ref.get("uri").asText())
+    assertTrue(ref.has("version") && ref.get("version").isNull)
+    assertEquals("us.conn", ref.get("authorizer").asText())
+    assertEquals("""{"gcs_metadata":{"content_type":"image/png"}}""", ref.get("details").asText())
+    assertFalse(parsed.isTruncated)
+
+    val fallbackOffloader = RecordingOffloader()
+    val fallback =
+      parse(
+        Part(inlineData = Blob(mimeType = "", data = byteArrayOf(9))),
+        offloader = fallbackOffloader,
+      )
+    assertEquals("application/octet-stream", fallback.parts.single().get("mime_type").asText())
+    assertEquals(
+      "2026-11-13/no_trace/no_span_uid1_c0_p0.bin",
+      fallbackOffloader.uploads.single().path,
+    )
+
+    val reqOffloader = RecordingOffloader()
+    val sysInstruction =
+      Content(
+        parts = listOf(Part(text = "s"), Part(inlineData = Blob(mimeType = "application/pdf")))
+      )
+    val req =
+      LlmRequest(
+        contents = listOf(Content(role = "user", parts = listOf(Part(text = "hi")))),
+        config = GenerateContentConfig(systemInstruction = sysInstruction),
+      )
+    val reqParsed =
+      Parser(1000, dateProvider = { FIXED_DATE }, uidProvider = { "u2" })
+        .parse(req, traceId = "../tr/ace:1", spanId = "sp an?2", offloader = reqOffloader)
+    assertEquals(3, reqParsed.parts.size)
+    assertEquals("2026-11-13/___tr_ace_1/sp_an_2_u2_c1_p1.pdf", reqOffloader.uploads.single().path)
+    assertEquals(0, reqOffloader.uploads.single().data.size)
+  }
+
+  @Test
+  fun largeTextPart_redactsBeforeUploadCutsUtf8PreviewAndExcludesFromSummary() {
+    val offloader = RecordingOffloader()
+    // "Bearer [REDACTED] " is 18 bytes + 181 'a's = 199 bytes, then 3-byte '世' straddles byte 200.
+    val raw = "Bearer ya29.secret " + "a".repeat(181) + "世" + "z".repeat(400)
+    val parsed =
+      parse(
+        Part(text = "Intro"),
+        Part(text = raw),
+        maxLength = 500,
+        connectionId = "us.conn",
+        offloader = offloader,
+      )
+    val upload = offloader.uploads.single()
+    assertEquals("2026-11-13/no_trace/no_span_uid1_c0_p1.txt", upload.path)
+    assertEquals("text/plain", upload.contentType)
+    assertEquals(
+      "Bearer [REDACTED] " + "a".repeat(181) + "世" + "z".repeat(400),
+      upload.data.toString(UTF_8),
+    )
+    val part = parsed.parts[1]
+    assertEquals("GCS_REFERENCE", part.get("storage_mode").asText())
+    assertEquals("text/plain", part.get("mime_type").asText())
+    assertEquals(
+      "Bearer [REDACTED] " + "a".repeat(181) + "... [OFFLOADED]",
+      part.get("text").asText(),
+    )
+    assertEquals(
+      """{"gcs_metadata":{"content_type":"text/plain"}}""",
+      part.at("/object_ref/details").asText(),
+    )
+    assertEquals("Intro", parsed.content.get("text_summary").asText())
+    assertFalse(parsed.isTruncated)
+
+    val unlimitedOffloader = RecordingOffloader()
+    val exact32k =
+      parse(
+        Part(text = "x".repeat(32 * 1024)),
+        maxLength = Int.MAX_VALUE,
+        offloader = unlimitedOffloader,
+      )
+    assertEquals("INLINE", exact32k.parts.single().get("storage_mode").asText())
+    assertTrue(unlimitedOffloader.uploads.isEmpty())
+
+    val over32k =
+      parse(
+        Part(text = "x".repeat(32 * 1024 + 1)),
+        maxLength = Int.MAX_VALUE,
+        offloader = unlimitedOffloader,
+      )
+    assertEquals("GCS_REFERENCE", over32k.parts.single().get("storage_mode").asText())
+    assertEquals("x".repeat(200) + "... [OFFLOADED]", over32k.parts.single().get("text").asText())
+    assertEquals("", over32k.content.get("text_summary").asText())
+    assertFalse(over32k.isTruncated)
+
+    val tinyBudget =
+      parse(Part(text = "abcdefghij"), maxLength = 5, offloader = RecordingOffloader())
+    assertEquals("... [OFFLOADED]", tinyBudget.parts.single().get("text").asText())
+  }
+
+  @Test
+  fun offloadFailure_fallsBackInlineWhileCancellationRethrows() {
+    val failing = RecordingOffloader(failure = IOException("gcs unavailable"))
+    val binaryPart =
+      parse(
+          Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1))),
+          offloader = failing,
+        )
+        .parts
+        .single()
+    assertEquals("INLINE", binaryPart.get("storage_mode").asText())
+    assertTrue(binaryPart.get("object_ref").isNull)
+    assertEquals("[UPLOAD FAILED]", binaryPart.get("text").asText())
+
+    val text = parse(Part(text = "a".repeat(60)), maxLength = 20, offloader = failing)
+    val textPart = text.parts.single()
+    assertEquals("INLINE", textPart.get("storage_mode").asText())
+    assertTrue(textPart.get("object_ref").isNull)
+    assertEquals("aaaaaa...[TRUNCATED]", textPart.get("text").asText())
+    assertEquals("aaaaaa...[TRUNCATED]", text.content.get("text_summary").asText())
+    assertTrue(text.isTruncated)
+
+    val cancelling = RecordingOffloader(failure = CancellationException("cancelled"))
+    assertFailsWith<CancellationException> {
+      val unused =
+        parse(
+          Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1))),
+          offloader = cancelling,
+        )
+    }
+    assertFailsWith<CancellationException> {
+      val unused = parse(Part(text = "a".repeat(60)), maxLength = 20, offloader = cancelling)
+    }
+  }
+
+  private companion object {
+    val FIXED_DATE: LocalDate = LocalDate.of(2026, 11, 13)
+  }
+}
+
+private class RecordingOffloader(private val failure: Exception? = null) : ContentOffloader {
+  class Uploaded(val data: ByteArray, val contentType: String, val path: String)
+
+  val uploads = mutableListOf<Uploaded>()
+
+  override suspend fun uploadContent(data: ByteArray, contentType: String, path: String): String {
+    failure?.let { throw it }
+    uploads += Uploaded(data, contentType, path)
+    return "gs://b/$path"
   }
 }
