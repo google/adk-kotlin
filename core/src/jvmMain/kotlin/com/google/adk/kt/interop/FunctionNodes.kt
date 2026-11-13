@@ -21,19 +21,27 @@ package com.google.adk.kt.interop
 import com.fasterxml.jackson.core.JsonParser
 import com.fasterxml.jackson.core.JsonToken
 import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.databind.BeanDescription
+import com.fasterxml.jackson.databind.BeanProperty
+import com.fasterxml.jackson.databind.DeserializationConfig
 import com.fasterxml.jackson.databind.DeserializationContext
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JavaType
+import com.fasterxml.jackson.databind.JsonDeserializer
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.databind.annotation.JsonSerialize
 import com.fasterxml.jackson.databind.cfg.CoercionAction
 import com.fasterxml.jackson.databind.cfg.CoercionInputShape
 import com.fasterxml.jackson.databind.deser.AbstractDeserializer
 import com.fasterxml.jackson.databind.deser.BeanDeserializerBase
+import com.fasterxml.jackson.databind.deser.BeanDeserializerModifier
 import com.fasterxml.jackson.databind.deser.DefaultDeserializationContext
 import com.fasterxml.jackson.databind.deser.ValueInstantiator
 import com.fasterxml.jackson.databind.deser.impl.UnsupportedTypeDeserializer
+import com.fasterxml.jackson.databind.deser.std.DelegatingDeserializer
+import com.fasterxml.jackson.databind.deser.std.EnumDeserializer
 import com.fasterxml.jackson.databind.deser.std.StdScalarDeserializer
 import com.fasterxml.jackson.databind.json.JsonMapper
 import com.fasterxml.jackson.databind.module.SimpleModule
@@ -41,6 +49,7 @@ import com.fasterxml.jackson.databind.ser.impl.UnknownSerializer
 import com.fasterxml.jackson.databind.ser.impl.UnsupportedTypeSerializer
 import com.fasterxml.jackson.databind.ser.std.BeanSerializerBase
 import com.fasterxml.jackson.databind.type.LogicalType
+import com.fasterxml.jackson.databind.util.TokenBuffer
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.annotations.AdkJavaInteropApi
@@ -73,7 +82,9 @@ import kotlin.reflect.typeOf
  * value of the JSON type, the same literal quoted, or a whole number into an integer. The
  * exceptions keep Jackson's readers: a `char` reads a number as a code point, an enum name is
  * trimmed, and `BigInteger`, `BigDecimal`, the `Atomic*` types and primitive arrays stay lenient. A
- * primitive field rejects an explicit null.
+ * primitive field rejects an explicit null. An enum that Jackson writes as its ordinal, or a
+ * boolean it writes as 1 or 0, such as under a numeric `@JsonFormat` shape, reads back from that
+ * number.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi
@@ -261,6 +272,7 @@ private fun tableScalars(): SimpleModule =
       ValueCoercer.numberLiteral(scalarValue(it))?.toFloat()?.takeIf { f -> f.isFinite() }
     }
     scalar(false) { ValueCoercer.booleanLiteral(scalarValue(it)) }
+    setDeserializerModifier(WrittenNumbers)
   }
 
 private inline fun <reified T : Any> SimpleModule.scalar(
@@ -309,6 +321,92 @@ private class TableScalarDeserializer<T : Any>(
   }
 
   override fun getAbsentValue(ctxt: DeserializationContext): Any? = primitiveDefault
+}
+
+/**
+ * Wraps the enum and boolean readers so that each also reads an enum's ordinal, or 1 and 0 for a
+ * boolean, where Jackson writes those. An enum with a `@JsonCreator` keeps its own reader.
+ */
+private object WrittenNumbers : BeanDeserializerModifier() {
+  override fun modifyEnumDeserializer(
+    config: DeserializationConfig,
+    type: JavaType,
+    beanDesc: BeanDescription,
+    deserializer: JsonDeserializer<*>,
+  ): JsonDeserializer<*> =
+    if (deserializer is EnumDeserializer) {
+      IndexedValueDeserializer(
+        deserializer,
+        type.rawClass.enumConstants.orEmpty().asList(),
+        readsIndex = false,
+      )
+    } else {
+      deserializer
+    }
+
+  override fun modifyDeserializer(
+    config: DeserializationConfig,
+    beanDesc: BeanDescription,
+    deserializer: JsonDeserializer<*>,
+  ): JsonDeserializer<*> =
+    if (beanDesc.beanClass.kotlin.javaObjectType == Boolean::class.javaObjectType) {
+      IndexedValueDeserializer(deserializer, listOf(false, true), readsIndex = false)
+    } else {
+      deserializer
+    }
+}
+
+/**
+ * Reads like its delegate, and where Jackson writes each of [values] as its own index, also reads
+ * an integer n from 0 to `values.size - 1` as `values[n]`. Any other input goes to the delegate.
+ * Jackson reads only the instance [createContextual] returns, which decides [readsIndex].
+ */
+private class IndexedValueDeserializer(
+  delegate: JsonDeserializer<*>,
+  private val values: List<Any>,
+  private val readsIndex: Boolean,
+) : DelegatingDeserializer(delegate) {
+  override fun newDelegatingInstance(newDelegatee: JsonDeserializer<*>): JsonDeserializer<*> =
+    IndexedValueDeserializer(newDelegatee, values, readsIndex)
+
+  override fun createContextual(
+    ctxt: DeserializationContext,
+    property: BeanProperty?,
+  ): JsonDeserializer<*> {
+    val delegate =
+      ctxt.handleSecondaryContextualization(_delegatee, property, ctxt.constructType(handledType()))
+    return IndexedValueDeserializer(delegate, values, writesIndexes(property))
+  }
+
+  override fun deserialize(p: JsonParser, ctxt: DeserializationContext): Any? {
+    val index = if (readsIndex) scalarValue(p) as? Long else null
+    if (index != null && index in values.indices) return values[index.toInt()]
+    return super.deserialize(p, ctxt)
+  }
+
+  /**
+   * Whether Jackson writes each of [values] as its own index in [property], or as a top-level value
+   * when [property] is null. A field with its own `@JsonSerialize`, or a serializer that fails
+   * here, counts as not writing them.
+   */
+  private fun writesIndexes(property: BeanProperty?): Boolean {
+    if (values.isEmpty() || property?.getAnnotation(JsonSerialize::class.java) != null) {
+      return false
+    }
+    val provider = MAPPER.serializerProviderInstance
+    return runCatching {
+        val serializer = provider.findValueSerializer(handledType(), property)
+        values.withIndex().all { (i, value) ->
+          TokenBuffer(MAPPER, false).use { tokens ->
+            serializer.serialize(value, tokens, provider)
+            tokens.asParser().use { parser ->
+              parser.nextToken() == JsonToken.VALUE_NUMBER_INT && parser.longValue == i.toLong()
+            }
+          }
+        }
+      }
+      .getOrDefault(false)
+  }
 }
 
 /** Port classes that keep the codec of the matching Kotlin port type. */

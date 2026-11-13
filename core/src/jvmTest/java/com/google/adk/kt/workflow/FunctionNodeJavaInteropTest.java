@@ -23,12 +23,17 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.google.adk.kt.agents.ResumabilityConfig;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
@@ -143,8 +148,72 @@ public final class FunctionNodeJavaInteropTest {
   record Ledger(long cents) {}
 
   enum Color {
-    RED
+    RED,
+    GREEN
   }
+
+  record Paint(Color color) {}
+
+  /** Written as its ordinal wherever it appears, as its numeric shape asks. */
+  @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+  enum Rank {
+    LOW,
+    HIGH
+  }
+
+  /** Each field is written as a number, through the numeric shape on its type or on itself. */
+  record Ticket(
+      Rank rank,
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) Color color,
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) boolean open,
+      @JsonFormat(shape = JsonFormat.Shape.NUMBER) Boolean paid) {}
+
+  /** Written as its {@code @JsonValue}, which wins over the numeric shape. */
+  @JsonFormat(shape = JsonFormat.Shape.NUMBER)
+  enum Level {
+    LOW(1),
+    HIGH(0);
+
+    private final int code;
+
+    Level(int code) {
+      this.code = code;
+    }
+
+    @JsonValue
+    public int code() {
+      return code;
+    }
+  }
+
+  /** Writes each constant as its ordinal counted from the end. */
+  static final class MirroredSerializer extends StdSerializer<Enum<?>> {
+    MirroredSerializer() {
+      super(Enum.class, false);
+    }
+
+    @Override
+    public void serialize(Enum<?> value, JsonGenerator gen, SerializerProvider provider)
+        throws IOException {
+      gen.writeNumber(value.getDeclaringClass().getEnumConstants().length - 1 - value.ordinal());
+    }
+  }
+
+  /** Written as its mirrored ordinal: only {@code MID} writes its own index. */
+  @JsonSerialize(using = MirroredSerializer.class)
+  enum Coded {
+    LOW,
+    MID,
+    HIGH
+  }
+
+  /** A field whose own serializer writes {@link Rank#HIGH} as 0, not as its ordinal. */
+  record Flipped(@JsonSerialize(using = MirroredSerializer.class) Rank rank) {}
+
+  /** An ARRAY shape makes Jackson write the enum as its ordinal but the boolean as a boolean. */
+  record Packed(
+      @JsonFormat(shape = JsonFormat.Shape.ARRAY) Color color,
+      @JsonFormat(shape = JsonFormat.Shape.ARRAY) boolean lit) {}
 
   /** A POJO whose {@code tier} field is written as {@code loyalty_tier}. */
   public static final class Customer {
@@ -1425,6 +1494,14 @@ public final class FunctionNodeJavaInteropTest {
       {"RED", Color.class, "Color:RED"},
       {"red", Color.class, "fails"},
       {0L, Color.class, "fails"},
+      // An enum written as its ordinal reads no other number.
+      {2L, Rank.class, "fails"},
+      {-1L, Rank.class, "fails"},
+      {1.0, Rank.class, "fails"},
+      // An enum whose numbers are not its ordinals reads none of them.
+      {0L, Coded.class, "fails"},
+      {1L, Coded.class, "fails"},
+      {2L, Coded.class, "fails"},
       // Exceptions that keep Jackson's readers.
       {" RED", Color.class, "Color:RED"},
       {65L, Character.class, "Character:A"},
@@ -1454,6 +1531,11 @@ public final class FunctionNodeJavaInteropTest {
     nullQty.put("rush", true);
 
     Map<String, Object> bigLong = ImmutableMap.of("cents", 9007199254740993L);
+    ImmutableMap<String, Object> numericRush = ImmutableMap.of("qty", 3, "rush", 1L);
+    ImmutableMap<String, Object> numericColor = ImmutableMap.of("color", 1L);
+    ImmutableMap<String, Object> outOfRange =
+        ImmutableMap.of("rank", 1L, "color", 1L, "open", 2L, "paid", 0L);
+    ImmutableMap<String, Object> flipped = ImmutableMap.of("rank", 0L);
 
     // Act
     String typedRead = readAs(typed, Rush.class);
@@ -1461,6 +1543,10 @@ public final class FunctionNodeJavaInteropTest {
     String paddedRead = readAs(padded, Rush.class);
     String nullRead = readAs(nullQty, Rush.class);
     String bigLongRead = readAs(bigLong, Ledger.class);
+    String numericRushRead = readAs(numericRush, Rush.class);
+    String numericColorRead = readAs(numericColor, Paint.class);
+    String outOfRangeRead = readAs(outOfRange, Ticket.class);
+    String flippedRead = readAs(flipped, Flipped.class);
 
     // Assert
     // An absent primitive keeps its default, as a Kotlin field with a default value would.
@@ -1469,6 +1555,13 @@ public final class FunctionNodeJavaInteropTest {
     assertEquals("fails", paddedRead);
     assertEquals("fails", nullRead);
     assertEquals("Ledger:Ledger[cents=9007199254740993]", bigLongRead);
+    // A plain boolean or enum field still rejects a number.
+    assertEquals("fails", numericRushRead);
+    assertEquals("fails", numericColorRead);
+    // A boolean field written as 1 or 0 reads no other number.
+    assertEquals("fails", outOfRangeRead);
+    // A field with its own serializer keeps rejecting numbers, whatever its type's shape.
+    assertEquals("fails", flippedRead);
   }
 
   @Test
@@ -1486,6 +1579,34 @@ public final class FunctionNodeJavaInteropTest {
     assertEquals("fails", numberRead);
   }
 
+  @Test
+  public void typedPort_jacksonAnnotatedValue_roundTripsToASuccessorTypedTheSame() {
+    // Arrange: each value and the JSON form its typed node writes.
+    Object[][] rows = {
+      // Jackson writes a number: under a numeric shape, or ARRAY on an enum.
+      {Rank.HIGH, 1L},
+      {
+        new Ticket(Rank.HIGH, Color.GREEN, true, false),
+        ImmutableMap.of("rank", 1L, "color", 1L, "open", 1L, "paid", 0L)
+      },
+      {new Packed(Color.GREEN, true), ImmutableMap.of("color", 1L, "lit", true)},
+      // Jackson writes the @JsonValue, which wins over a numeric shape; HIGH's 0 is LOW's ordinal.
+      {Level.HIGH, 0L},
+    };
+    Map<String, Object> expected = new LinkedHashMap<>();
+    Map<String, Object> actual = new LinkedHashMap<>();
+
+    // Act
+    for (Object[] row : rows) {
+      String value = row[0].getClass().getSimpleName() + ":" + row[0];
+      expected.put(value, ImmutableList.of(row[1], value));
+      actual.put(value, roundTrip(row[0]));
+    }
+
+    // Assert
+    assertEquals(expected, actual);
+  }
+
   /**
    * Feeds {@code value} to a node whose input port is {@code type} and returns what the node read
    * as {@code "Class:value"}, or {@code "fails"} when the port rejects it.
@@ -1499,10 +1620,32 @@ public final class FunctionNodeJavaInteropTest {
     try {
       return (String) outputOf(run("coercion", "go", feed, read), "read");
     } catch (RuntimeException e) {
-      for (Throwable t = e; t != null; t = t.getCause()) {
-        if (t instanceof NodeInputValidationException) {
-          return "fails";
-        }
+      if (isRejection(e)) {
+        return "fails";
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Outputs {@code value} from a node typed as its class into a successor typed the same, and
+   * returns what the node wrote and what the successor read as {@code "Class:value"}, or {@code
+   * "fails"} when the successor rejects it.
+   */
+  private static <T> Object roundTrip(T value) {
+    @SuppressWarnings("unchecked") // The class of a value is its type.
+    Class<T> type = (Class<T>) value.getClass();
+    FunctionNode<Content, T> write =
+        FunctionNodes.of("write", Content.class, type, (ctx, m) -> value);
+    FunctionNode<T, String> read =
+        FunctionNodes.of(
+            "read", type, String.class, (ctx, in) -> in.getClass().getSimpleName() + ":" + in);
+    try {
+      List<Event> events = run("round_trip", "go", write, read);
+      return ImmutableList.of(outputOf(events, "write"), outputOf(events, "read"));
+    } catch (RuntimeException e) {
+      if (isRejection(e)) {
+        return "fails";
       }
       throw e;
     }
@@ -1561,13 +1704,21 @@ public final class FunctionNodeJavaInteropTest {
       var unused = run.get();
       return false;
     } catch (RuntimeException e) {
-      for (Throwable t = e; t != null; t = t.getCause()) {
-        if (t instanceof NodeInputValidationException) {
-          return true;
-        }
+      if (isRejection(e)) {
+        return true;
       }
       throw e;
     }
+  }
+
+  /** Returns whether {@code e} or one of its causes is a node rejecting its input. */
+  private static boolean isRejection(Throwable e) {
+    for (Throwable t = e; t != null; t = t.getCause()) {
+      if (t instanceof NodeInputValidationException) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Returns the output of the node named {@code name} in {@code events}. */
