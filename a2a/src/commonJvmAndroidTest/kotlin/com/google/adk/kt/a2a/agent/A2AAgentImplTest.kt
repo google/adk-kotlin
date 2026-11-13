@@ -21,6 +21,7 @@ import com.google.adk.kt.a2a.converters.TYPE_FUNCTION_RESPONSE
 import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
@@ -41,6 +42,7 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
 import com.google.common.truth.Truth.assertThat
+import java.io.IOException
 import java.util.function.BiConsumer
 import java.util.function.Consumer
 import kotlin.coroutines.cancellation.CancellationException
@@ -61,6 +63,8 @@ import org.a2aproject.sdk.client.ClientEvent
 import org.a2aproject.sdk.client.MessageEvent
 import org.a2aproject.sdk.client.TaskEvent
 import org.a2aproject.sdk.client.TaskUpdateEvent
+import org.a2aproject.sdk.spec.A2AClientException
+import org.a2aproject.sdk.spec.A2AClientHTTPError
 import org.a2aproject.sdk.spec.AgentCapabilities
 import org.a2aproject.sdk.spec.AgentCard
 import org.a2aproject.sdk.spec.Artifact
@@ -774,21 +778,18 @@ class A2AAgentImplTest {
     }
 
   @Test
-  fun runAsync_streamFails_yieldsErrorEventWithRequestThenFails() =
+  fun runAsync_streamFails_endsWithErrorEventRecordingTheRequest() =
     runBlocking<Unit> {
       val agent = createTestAgent()
       mockStreamError(this, RuntimeException("Connection failed"))
-      val events = mutableListOf<Event>()
 
-      val error =
-        assertFailsWith<RuntimeException> {
-          withTimeout(5.seconds) { agent.runAsync(invocationContext).toList(events) }
-        }
+      val events = withTimeout(5.seconds) { agent.runAsync(invocationContext).toList() }
 
-      assertThat(error).hasMessageThat().contains("Connection failed")
       val errorEvent = events.single()
       assertThat(errorEvent.errorMessage).isEqualTo("A2A request failed (RuntimeException)")
       assertThat(errorEvent.customMetadata).containsKey("a2a:request")
+      assertThat(errorEvent.customMetadata)
+        .containsEntry("a2a:error", "A2A request failed (RuntimeException)")
     }
 
   @Test
@@ -797,14 +798,9 @@ class A2AAgentImplTest {
       val agent = createTestAgent()
       val working = createStatusUpdateEvent(TaskState.TASK_STATE_WORKING, "working...")
       mockStreamError(this, RuntimeException("Connection reset"), responses = listOf(working))
-      val events = mutableListOf<Event>()
 
-      val error =
-        assertFailsWith<RuntimeException> {
-          withTimeout(5.seconds) { agent.runAsync(invocationContext).toList(events) }
-        }
+      val events = withTimeout(5.seconds) { agent.runAsync(invocationContext).toList() }
 
-      assertThat(error).hasMessageThat().contains("Connection reset")
       assertThat(events.map { it.content?.parts?.single()?.text ?: it.errorMessage })
         .containsExactly("working...", "A2A request failed (RuntimeException)")
         .inOrder()
@@ -835,9 +831,9 @@ class A2AAgentImplTest {
     }
 
   @Test
-  fun runAsync_sendMessageThrows_closesClientAndPropagates() = runTest {
+  fun runAsync_sendMessageThrows_closesClientAndEndsWithErrorEvent() = runTest {
     // sendMessage can throw before awaitClose is registered; the client must still be closed (no
-    // leak) and the error must propagate.
+    // leak) and the failure reported.
     val agent = createTestAgent()
     doThrow(RuntimeException("send failed"))
       .whenever(mockClient)
@@ -848,12 +844,92 @@ class A2AAgentImplTest {
         isNull(),
       )
 
-    val result = runCatching { agent.runAsync(invocationContext).toList() }
+    val events = agent.runAsync(invocationContext).toList()
 
-    assertThat(result.isFailure).isTrue()
-    assertThat(result.exceptionOrNull()).hasMessageThat().contains("send failed")
+    assertThat(events.single().errorMessage).isEqualTo("A2A request failed (RuntimeException)")
     verify(mockClient).close()
   }
+
+  @Test
+  fun runAsync_httpFailure_recordsStatusCode() =
+    runBlocking<Unit> {
+      val agent = createTestAgent()
+      // JdkA2AHttpClient wraps an auth failure like this, so the status is two causes deep.
+      val httpError = A2AClientHTTPError(401, "Authentication failed", null, emptyMap())
+      doThrow(A2AClientException("Request failed", IOException("Request failed", httpError)))
+        .whenever(mockClient)
+        .sendMessage(
+          any<Message>(),
+          any<List<BiConsumer<ClientEvent, AgentCard>>>(),
+          any<Consumer<Throwable>>(),
+          isNull(),
+        )
+
+      val event = agent.runAsync(invocationContext).toList().single()
+
+      assertThat(event.errorMessage).isEqualTo("A2A request failed (A2AClientException, HTTP 401)")
+      assertThat(event.customMetadata).containsEntry("a2a:status_code", "401")
+      assertThat(event.customMetadata).containsEntry("a2a:error", event.errorMessage)
+    }
+
+  @Test
+  fun runAsync_failedRequestInSequentialAgent_nextAgentRuns() =
+    runBlocking<Unit> {
+      mockStreamError(this, RuntimeException("Connection failed"))
+      val next =
+        DummyAgent("next") { context ->
+          emit(
+            Event(
+              invocationId = context.invocationId,
+              author = "next",
+              content = modelMessage("Next"),
+            )
+          )
+        }
+      // The mock reports the failure after sendMessage returns, as a stream does.
+      val streaming = RunConfig(streamingMode = StreamingMode.SSE)
+      val sequence = SequentialAgent(name = "sequence", subAgents = listOf(createTestAgent(), next))
+
+      val events =
+        withTimeout(5.seconds) {
+          InMemoryRunner(sequence)
+            .runAsync("user", "s1", newMessage = userMessage("Hi"), runConfig = streaming)
+            .toList()
+        }
+
+      assertThat(events.map { it.author to (it.errorMessage ?: it.content?.parts?.single()?.text) })
+        .containsExactly(
+          "remote-agent" to "A2A request failed (RuntimeException)",
+          "next" to "Next",
+        )
+        .inOrder()
+    }
+
+  @Test
+  fun runAsync_clientCannotBeBuilt_endsWithErrorEvent() =
+    runBlocking<Unit> {
+      val agent =
+        createTestAgent(clientProvider = { throw IllegalStateException("No supported transport") })
+
+      val events = agent.runAsync(invocationContext).toList()
+
+      val errorEvent = events.single()
+      assertThat(errorEvent.errorMessage)
+        .isEqualTo("Failed to initialize remote A2A agent (IllegalStateException)")
+      // As in ADK Python, an event for a request that was never sent carries no metadata.
+      assertThat(errorEvent.customMetadata.orEmpty()).isEmpty()
+    }
+
+  @Test
+  fun runAsync_clientBuildCancelled_propagates() =
+    runBlocking<Unit> {
+      val agent =
+        createTestAgent(clientProvider = { throw CancellationException("Build cancelled") })
+      val events = mutableListOf<Event>()
+
+      assertFailsWith<CancellationException> { agent.runAsync(invocationContext).toList(events) }
+      assertThat(events).isEmpty()
+    }
 
   @Test
   fun runAsync_invokesBeforeAndAfterCallbacks() = runTest {
@@ -1144,11 +1220,9 @@ class A2AAgentImplTest {
         RuntimeException("Connection reset"),
         responses = listOf(TaskEvent(submitted), working),
       )
-      assertFailsWith<RuntimeException> {
-        runner
-          .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = streaming)
-          .toList()
-      }
+      runner
+        .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = streaming)
+        .toList()
       // Waits for the abandoned task's cancel to finish before the mock is stubbed again.
       verify(mockClient, timeout(5000)).close()
       mockStreamResponse(this) { consumer -> consumer.accept(createFinalEvent("ok"), agentCard) }
@@ -1186,12 +1260,10 @@ class A2AAgentImplTest {
       runner
         .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
         .toList()
-      val failedTurn = mutableListOf<Event>()
-      assertFailsWith<RuntimeException> {
+      val failedTurn =
         runner
           .runAsync("user", "s1", newMessage = userMessage("Blue"), runConfig = blocking)
-          .toList(failedTurn)
-      }
+          .toList()
       runner
         .runAsync("user", "s1", newMessage = userMessage("Green"), runConfig = blocking)
         .toList()
@@ -1410,6 +1482,38 @@ class A2AAgentImplTest {
     }
 
   @Test
+  fun runAsync_textReplyAfterClientBuildFailure_resumesTask() =
+    runBlocking<Unit> {
+      var builds = 0
+      val agent =
+        createTestAgent(
+          clientProvider = { streaming ->
+            if (++builds == 2) throw IllegalStateException("No supported transport")
+            capturedStreaming = streaming
+            mockClient
+          }
+        )
+      val runner = InMemoryRunner(agent)
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      mockReplies(
+        this,
+        createTaskEvent(TaskState.TASK_STATE_INPUT_REQUIRED, "Which color?"),
+        createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Painted."),
+      )
+
+      for (text in listOf("Paint", "Blue", "Blue again")) {
+        runner.runAsync("user", "s1", newMessage = userMessage(text), runConfig = blocking).toList()
+      }
+
+      // The second turn sent nothing, so the remote task is still paused.
+      val messages = sentMessages(2)
+      assertThat(messages[1].taskId()).isEqualTo("task-1")
+      assertThat(messages[1].parts.map { (it as TextPart).text })
+        .containsExactly("Blue", "Blue again")
+        .inOrder()
+    }
+
+  @Test
   fun runAsync_textReplyAfterFailedResume_startsNewTaskInSameContext() =
     runBlocking<Unit> {
       val runner = InMemoryRunner(createTestAgent())
@@ -1435,11 +1539,7 @@ class A2AAgentImplTest {
       runner
         .runAsync("user", "s1", newMessage = userMessage("Paint"), runConfig = blocking)
         .toList()
-      assertFailsWith<RuntimeException> {
-        runner
-          .runAsync("user", "s1", newMessage = userMessage("Blue"), runConfig = blocking)
-          .toList()
-      }
+      runner.runAsync("user", "s1", newMessage = userMessage("Blue"), runConfig = blocking).toList()
       runner
         .runAsync("user", "s1", newMessage = userMessage("Green"), runConfig = blocking)
         .toList()
@@ -1518,13 +1618,14 @@ class A2AAgentImplTest {
     transportSupportsStreaming: Boolean = true,
     beforeCallbacks: List<BeforeAgentCallback> = emptyList(),
     afterCallbacks: List<AfterAgentCallback> = emptyList(),
+    clientProvider: (streaming: Boolean) -> Client = { streaming ->
+      capturedStreaming = streaming
+      mockClient
+    },
   ): BaseRemoteA2AAgent {
     return A2AAgentImpl(
       name = "remote-agent",
-      clientProvider = { streaming ->
-        capturedStreaming = streaming
-        mockClient
-      },
+      clientProvider = clientProvider,
       agentCard = agentCard,
       transportSupportsStreaming = transportSupportsStreaming,
       beforeAgentCallbacks = beforeCallbacks,

@@ -587,6 +587,23 @@ class BaseRemoteA2AAgentTest {
   }
 
   @Test
+  fun prepareOutboundEvent_textReplyAfterFailedUnserializableRequest_startsNewTask() {
+    val agent = TestRemoteAgent("my-agent")
+    val failedRequest =
+      Event(
+        author = agent.name,
+        errorMessage = "A2A request failed (IOException)",
+        customMetadata = mapOf("a2a:request_serialization_error" to "unserializable"),
+      )
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), failedRequest)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    assertNull(result.customMetadata?.get("a2a:task_id"))
+  }
+
+  @Test
   fun prepareOutboundEvent_textReplyToMessageResponse_startsNewTask() {
     val agent = TestRemoteAgent("my-agent")
     val messageResponse =

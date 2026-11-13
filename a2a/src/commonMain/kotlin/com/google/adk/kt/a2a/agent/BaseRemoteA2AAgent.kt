@@ -145,8 +145,8 @@ abstract class BaseRemoteA2AAgent(
     for (event in events.asReversed()) {
       if (event.author != name) continue
       val metadata = event.customMetadata.orEmpty()
-      // A failed request may have resumed the task, so its recorded state is stale.
-      if (event.isFailedRequest) return null
+      // A sent request that failed may have resumed the task; one never sent leaves it paused.
+      if (event.isFailedRequest && event.recordsSentRequest) return null
       // A response that could not be recorded, or is not text, hides the task's state.
       if (A2AMetadata.RESPONSE_ERROR in metadata) return null
       val response = metadata[A2AMetadata.RESPONSE] ?: continue
@@ -168,9 +168,7 @@ abstract class BaseRemoteA2AAgent(
         event.customMetadata.orEmpty() +
           buildMap {
             if (debugRequest != null && event.turnComplete) {
-              debugRequest
-                .onSuccess { put(A2AMetadata.REQUEST, it) }
-                .onFailure { put(A2AMetadata.REQUEST_ERROR, it.message ?: it.toString()) }
+              putRequest(debugRequest)
             }
             if (debugResponse != null) {
               debugResponse
@@ -195,10 +193,31 @@ abstract class BaseRemoteA2AAgent(
   internal companion object A2AMetadata {
     const val REQUEST = "a2a:request"
     const val RESPONSE = "a2a:response"
+    const val ERROR = "a2a:error"
+    const val STATUS_CODE = "a2a:status_code"
     const val REQUEST_ERROR = "a2a:request_serialization_error"
     const val RESPONSE_ERROR = "a2a:response_serialization_error"
   }
 }
+
+/** Records [request] under `a2a:request`, or its serialization error if it has none. */
+internal fun MutableMap<String, Any?>.putRequest(request: Result<String>) {
+  request
+    .onSuccess { put(BaseRemoteA2AAgent.REQUEST, it) }
+    .onFailure { put(BaseRemoteA2AAgent.REQUEST_ERROR, it.message ?: it.toString()) }
+}
+
+/**
+ * Whether this event is for a request that was sent: it records the request or its serialization
+ * error, or a context id, since older versions stored a failed turn's context without the request.
+ */
+private val Event.recordsSentRequest: Boolean
+  get() {
+    val metadata = customMetadata.orEmpty()
+    return BaseRemoteA2AAgent.REQUEST in metadata ||
+      BaseRemoteA2AAgent.REQUEST_ERROR in metadata ||
+      contextId.isNotEmpty()
+  }
 
 // A2A 1.x names, plus the A2A 0.3 names in sessions recorded by the removed v0.3 JvmA2AAgent.
 private val PAUSED_TASK_STATES =

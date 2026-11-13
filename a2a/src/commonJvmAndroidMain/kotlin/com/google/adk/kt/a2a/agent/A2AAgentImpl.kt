@@ -52,6 +52,7 @@ import org.a2aproject.sdk.client.MessageEvent
 import org.a2aproject.sdk.client.TaskEvent
 import org.a2aproject.sdk.client.TaskUpdateEvent
 import org.a2aproject.sdk.jsonrpc.common.json.JsonUtil
+import org.a2aproject.sdk.spec.A2AClientHTTPError
 import org.a2aproject.sdk.spec.AgentCard
 import org.a2aproject.sdk.spec.CancelTaskParams
 import org.a2aproject.sdk.spec.Message
@@ -112,7 +113,16 @@ internal class A2AAgentImpl(
 
     // Per-invocation streaming: RunConfig SSE, only if streaming is possible (isStreamingEnabled).
     val streaming = isStreamingEnabled && context.runConfig?.streamingMode == StreamingMode.SSE
-    val a2aClient = clientProvider(streaming)
+    val a2aClient =
+      try {
+        clientProvider(streaming)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        send(reportFailure(context, "Failed to initialize remote A2A agent", e, request = null))
+        close()
+        return@callbackFlow
+      }
 
     // Suppress because processing is serialized via eventChannel, avoiding concurrent execution.
     @Suppress("UnsafeCoroutineCrossing")
@@ -141,9 +151,8 @@ internal class A2AAgentImpl(
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        val errorMessage = "A2A request failed (${e::class.simpleName})"
-        send(failedTurnEvent(context, errorMessage, debugRequest, contextId = null))
-        close(e)
+        send(reportFailure(context, "A2A request failed", e, debugRequest))
+        close()
         return@launch
       }
       // Report an unfinished task as ADK Python does, but keep its context for the next turn.
@@ -222,14 +231,12 @@ internal class A2AAgentImpl(
     )
   }
 
-  /**
-   * Returns an error event that records [request] as failed, with [contextId] if it is not null.
-   */
+  /** Returns an error event that records [request] as failed in [contextId]. */
   private fun failedTurnEvent(
     context: InvocationContext,
     errorMessage: String,
     request: Result<String>,
-    contextId: String?,
+    contextId: String,
   ): Event =
     remoteAgentEvent(context)
       .copy(
@@ -237,9 +244,47 @@ internal class A2AAgentImpl(
         customMetadata =
           buildMap {
             putAll(remoteIdsMetadata(taskId = null, contextId))
-            request.onSuccess { put(A2AMetadata.REQUEST, it) }
+            putRequest(request)
           },
       )
+
+  /**
+   * Logs and returns an error event whose message is [summary], [error]'s class name and any HTTP
+   * status, but not [error]'s message, which can hold URLs or credentials. A null [request] means
+   * nothing was sent, so the event has no metadata; otherwise it records the request, `a2a:error`
+   * and any `a2a:status_code`, as ADK Python does.
+   */
+  private fun reportFailure(
+    context: InvocationContext,
+    summary: String,
+    error: Exception,
+    request: Result<String>?,
+  ): Event {
+    val statusCode = httpStatusCode(error)
+    val status = if (statusCode != null) ", HTTP $statusCode" else ""
+    val errorMessage = "$summary (${error::class.simpleName}$status)"
+    logger.error { errorMessage }
+    return remoteAgentEvent(context)
+      .copy(
+        errorMessage = errorMessage,
+        customMetadata =
+          buildMap {
+            if (request != null) {
+              putRequest(request)
+              put(A2AMetadata.ERROR, errorMessage)
+              if (statusCode != null) put(A2AMetadata.STATUS_CODE, statusCode.toString())
+            }
+          },
+      )
+  }
+
+  // The SDK puts an HTTP failure's status on an A2AClientHTTPError cause; take() bounds a cycle.
+  private fun httpStatusCode(error: Throwable): Int? =
+    generateSequence(error, Throwable::cause)
+      .take(10)
+      .filterIsInstance<A2AClientHTTPError>()
+      .firstOrNull()
+      ?.code
 
   /**
    * Cancels [taskId] and closes [a2aClient] on `Dispatchers.IO` without [callerContext]'s [Job], so
