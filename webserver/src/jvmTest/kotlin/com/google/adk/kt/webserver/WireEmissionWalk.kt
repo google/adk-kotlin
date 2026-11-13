@@ -41,8 +41,8 @@ internal val KNOWN_LEGACY_ALIASES =
  * Fails when [body] carries a snake_case schema key or a null-valued schema field.
  *
  * A pass only means something if the walk reached the response: [minKeys] floors the schema keys it
- * matched, and [EmissionWalk.shapeMismatches] catches a subtree it could not enter, either of which
- * would otherwise let a wrong-shaped body satisfy the walk by being walked into nothing.
+ * matched, and [WireEmissionWalk.shapeMismatches] catches a subtree it could not enter, either of
+ * which would otherwise let a wrong-shaped body satisfy the walk by being walked into nothing.
  */
 internal fun assertEmissionRule(
   body: String,
@@ -50,9 +50,7 @@ internal fun assertEmissionRule(
   root: String,
   minKeys: Int,
 ) {
-  val walk = EmissionWalk()
-
-  walk.visit(Json.parseToJsonElement(body), descriptor, root)
+  val walk = WireEmissionWalk(Json.parseToJsonElement(body), descriptor, root)
 
   assertThat(walk.shapeMismatches).isEmpty()
   assertThat(walk.checkedKeys).isAtLeast(minKeys)
@@ -62,29 +60,43 @@ internal fun assertEmissionRule(
 }
 
 /**
- * Walks a response against its descriptor, recording snake_case keys and null-valued fields. Map
- * keys are caller data and are not schema, so they are never reported.
+ * Walks [json] against [descriptor], reporting paths from [root] and recording snake_case keys and
+ * null-valued fields. Map keys are caller data and are not schema, so they are never reported.
  */
-internal class EmissionWalk {
-  val snakeCaseKeys = mutableSetOf<String>()
-  val nullKeys = mutableSetOf<String>()
-  /** Subtrees whose JSON did not match the descriptor, so the walk could not enter them. */
-  val shapeMismatches = mutableSetOf<String>()
+internal class WireEmissionWalk(json: JsonElement, descriptor: SerialDescriptor, root: String) {
+  private val _snakeCaseKeys = mutableSetOf<String>()
+  private val _nullKeys = mutableSetOf<String>()
+  private val _shapeMismatches = mutableSetOf<String>()
+
   /** Schema keys actually matched against the descriptor, so a vacuous pass is detectable. */
   var checkedKeys = 0
     private set
 
-  fun visit(json: JsonElement, descriptor: SerialDescriptor, path: String) {
+  init {
+    visit(json, descriptor, root)
+  }
+
+  val snakeCaseKeys: Set<String>
+    get() = _snakeCaseKeys
+
+  val nullKeys: Set<String>
+    get() = _nullKeys
+
+  /** Subtrees whose JSON did not match the descriptor, so the walk could not enter them. */
+  val shapeMismatches: Set<String>
+    get() = _shapeMismatches
+
+  private fun visit(json: JsonElement, descriptor: SerialDescriptor, path: String) {
     // An inline value class is written as its wrapped value, which is not a shape mismatch.
     if (descriptor.isInline) return visit(json, descriptor.getElementDescriptor(0), path)
     when (descriptor.kind) {
       StructureKind.LIST ->
-        if (json is JsonArray) visitItems(json, descriptor, path) else shapeMismatches += path
+        if (json is JsonArray) visitItems(json, descriptor, path) else _shapeMismatches += path
       StructureKind.MAP ->
-        if (json is JsonObject) visitValues(json, descriptor, path) else shapeMismatches += path
+        if (json is JsonObject) visitValues(json, descriptor, path) else _shapeMismatches += path
       StructureKind.CLASS,
       StructureKind.OBJECT ->
-        if (json is JsonObject) visitFields(json, descriptor, path) else shapeMismatches += path
+        if (json is JsonObject) visitFields(json, descriptor, path) else _shapeMismatches += path
       // Contextual is caller data; polymorphic is covered by the static survey instead.
       else -> {}
     }
@@ -105,9 +117,9 @@ internal class EmissionWalk {
       val child = "$path.$key"
       val index = descriptor.getElementIndex(key)
       if (index != CompositeDecoder.UNKNOWN_NAME) checkedKeys++
-      if (key.contains('_')) snakeCaseKeys += child
+      if (key.contains('_')) _snakeCaseKeys += child
       when {
-        value is JsonNull -> nullKeys += child
+        value is JsonNull -> _nullKeys += child
         index != CompositeDecoder.UNKNOWN_NAME ->
           visit(value, descriptor.getElementDescriptor(index), child)
       }

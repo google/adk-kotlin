@@ -69,13 +69,12 @@ class WireEmissionCoverageTest {
   @Test
   fun emissionWalk_inlineValueClassAsWrappedValue_reportsNoMismatch() {
     // ToolType is a value class, so a real response writes "toolType":"agent", not an object.
-    val walk = EmissionWalk()
-
-    walk.visit(
-      Json.parseToJsonElement("""{"toolCall":{"id":"1","toolType":"agent"}}"""),
-      Part.serializer().descriptor,
-      "Part",
-    )
+    val walk =
+      WireEmissionWalk(
+        Json.parseToJsonElement("""{"toolCall":{"id":"1","toolType":"agent"}}"""),
+        Part.serializer().descriptor,
+        "Part",
+      )
 
     assertThat(walk.shapeMismatches).isEmpty()
     assertThat(walk.snakeCaseKeys).isEmpty()
@@ -84,15 +83,14 @@ class WireEmissionCoverageTest {
   @Test
   fun emissionWalk_nullSchemaFieldAndNullMapValue_reportsOnlyTheField() {
     // adkJson omits null fields, so only a hand-written body can falsify the null half of the rule.
-    val walk = EmissionWalk()
-
-    walk.visit(
-      Json.parseToJsonElement(
-        """{"id":null,"appName":"a","userId":"u","state":{"user_tier":null},"lastUpdateTime":1}"""
-      ),
-      SessionDto.serializer().descriptor,
-      "SessionDto",
-    )
+    val walk =
+      WireEmissionWalk(
+        Json.parseToJsonElement(
+          """{"id":null,"appName":"a","userId":"u","state":{"user_tier":null},"lastUpdateTime":1}"""
+        ),
+        SessionDto.serializer().descriptor,
+        "SessionDto",
+      )
 
     // The map entry is caller data in both halves: neither its null nor its underscore is reported.
     assertThat(walk.nullKeys).containsExactly("SessionDto.id")
@@ -102,13 +100,12 @@ class WireEmissionCoverageTest {
   @Test
   fun emissionWalk_wrongShapedSubtree_reportsMismatch() {
     // Every real fixture matches its descriptor, so only this body proves mismatches are reported.
-    val walk = EmissionWalk()
-
-    walk.visit(
-      Json.parseToJsonElement("""[{"id":"1","author":"a","content":[{"bad_key":null}]}]"""),
-      ListSerializer(Event.serializer()).descriptor,
-      "Event",
-    )
+    val walk =
+      WireEmissionWalk(
+        Json.parseToJsonElement("""[{"id":"1","author":"a","content":[{"bad_key":null}]}]"""),
+        ListSerializer(Event.serializer()).descriptor,
+        "Event",
+      )
 
     assertThat(walk.shapeMismatches).containsExactly("Event[].content")
   }
