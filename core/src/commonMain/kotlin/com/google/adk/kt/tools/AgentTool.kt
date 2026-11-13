@@ -26,6 +26,7 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ForwardingArtifactService
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.sessions.InMemorySessionService
@@ -40,15 +41,17 @@ import com.google.adk.kt.types.Type
 import com.google.adk.kt.withIntegersAsLongs
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.lastOrNull
+import kotlinx.coroutines.flow.onEach
 
 /**
  * A tool that wraps a [BaseAgent].
  *
  * This tool allows an agent to be called as a tool within a larger application. The agent's input
  * schema is used to define the tool's input parameters, and the agent's output is returned as the
- * tool's result. An [LlmAgent] whose tree sets an agent mode runs as a workflow node; any other
- * agent keeps the classic flow, so its tree may not set a mode. The agent itself can't be a
- * single-turn or task agent.
+ * tool's result: the text, code and code output of its last event with content or, if that has
+ * none, the last error message it reported. An [LlmAgent] whose tree sets an agent mode runs as a
+ * workflow node; any other agent keeps the classic flow, so its tree may not set a mode. The agent
+ * itself can't be a single-turn or task agent.
  *
  * @property agent The agent to wrap.
  * @property skipSummarization Whether to skip summarization of the agent output in the parent
@@ -149,6 +152,9 @@ open class AgentTool(
         state = parentState,
       )
 
+    // As in ADK Python, text and grounding come from the last event with content, not a later one.
+    var lastContentEvent: Event? = null
+    var lastErrorMessage: String? = null
     val lastEvent =
       runner
         .runAsync(
@@ -157,6 +163,10 @@ open class AgentTool(
           newMessage = content,
           runConfig = createChildRunConfig(context.invocationContext.runConfig),
         )
+        .onEach {
+          if (it.content != null) lastContentEvent = it
+          if (!it.errorMessage.isNullOrEmpty()) lastErrorMessage = it.errorMessage
+        }
         .lastOrNull()
 
     if (lastEvent != null) {
@@ -167,24 +177,28 @@ open class AgentTool(
       context.actions.stateDelta.putAll(lastEvent.actions.stateDelta)
 
       if (propagateGroundingMetadata) {
-        lastEvent.groundingMetadata?.let {
+        lastContentEvent?.groundingMetadata?.let {
           context.actions.stateDelta[GROUNDING_METADATA_TEMP_KEY] = it
         }
       }
 
+      // Skips parts with no visible text, such as tool calls, so they can't hide the error message.
       val text =
-        lastEvent.content
+        lastContentEvent
+          ?.content
           ?.parts
           ?.filter { it.thought != true }
-          ?.joinToString("\n") { it.text ?: "" } ?: ""
+          ?.mapNotNull { it.visibleText().ifEmpty { null } }
+          ?.joinToString("\n")
+          .orEmpty()
 
-      return text
+      return text.ifEmpty { lastErrorMessage.orEmpty() }
     }
 
     return ""
   }
 
-  /** Follows [callerRunConfig] but runs unary, as only the last event becomes the result. */
+  /** Follows [callerRunConfig] but runs unary, as partial chunks would not be the final answer. */
   private fun createChildRunConfig(callerRunConfig: RunConfig?): RunConfig? =
     if (callerRunConfig == null || callerRunConfig.streamingMode == StreamingMode.NONE) {
       callerRunConfig
@@ -249,6 +263,12 @@ open class AgentTool(
     private const val GROUNDING_METADATA_TEMP_KEY = "temp:_adk_grounding_metadata"
   }
 }
+
+/** Returns the text a user sees in this part: its text, code execution output, or code. */
+private fun Part.visibleText(): String =
+  text?.ifEmpty { null }
+    ?: codeExecutionResult?.output?.ifEmpty { null }?.trimEnd('\n')
+    ?: executableCode?.code.orEmpty()
 
 /**
  * Returns the declaration of a tool that runs an agent: [inputSchema] as its parameters, or a

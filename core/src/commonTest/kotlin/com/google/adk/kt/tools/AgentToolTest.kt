@@ -46,9 +46,14 @@ import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.CodeExecutionResult
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.ExecutableCode
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.types.Language
+import com.google.adk.kt.types.Outcome
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
@@ -111,6 +116,118 @@ class AgentToolTest {
     val result = tool.run(context, mapOf("request" to "Hello"))
 
     assertEquals("Response from inner agent", result)
+  }
+
+  @Test
+  fun run_agentEndsWithErrorEvent_returnsErrorMessage(): Unit = runBlocking {
+    val result = runWithEvents(Event(author = "inner-agent", errorMessage = "Remote failed"))
+
+    assertEquals("Remote failed", result)
+  }
+
+  @Test
+  fun run_agentRecoversAfterErrorEvent_returnsItsText(): Unit = runBlocking {
+    val result =
+      runWithEvents(
+        Event(author = "inner-agent", errorMessage = "Retrying"),
+        Event(author = "inner-agent", content = modelMessage("Done")),
+      )
+
+    assertEquals("Done", result)
+  }
+
+  @Test
+  fun run_agentFailsAfterParallelToolCalls_returnsErrorMessage(): Unit = runBlocking {
+    val calls =
+      modelParallelFunctionCallsResponse(
+        FunctionCall(name = "tool_a", id = "call_a"),
+        FunctionCall(name = "tool_b", id = "call_b"),
+      )
+    val result =
+      runWithEvents(
+        Event(author = "inner-agent", content = calls.content),
+        Event(author = "inner-agent", errorMessage = "Model failed"),
+      )
+
+    assertEquals("Model failed", result)
+  }
+
+  @Test
+  fun run_agentAnswersAfterErrorThenEmitsEventWithoutContent_returnsAnswer(): Unit = runBlocking {
+    val result =
+      runWithEvents(
+        Event(author = "inner-agent", errorMessage = "Retrying"),
+        Event(author = "inner-agent", content = modelMessage("Done")),
+        // Like the state-only event an after-agent callback adds.
+        Event(author = "inner-agent", actions = EventActions(stateDelta = mutableMapOf("k" to "v"))),
+      )
+
+    assertEquals("Done", result)
+  }
+
+  @Test
+  fun run_agentAnswersWithCodeExecutionOnly_returnsCodeAndOutput(): Unit = runBlocking {
+    val result = runWithFinalParts(executableCodePart("print(2 ** 10)"), codeResultPart("1024\n"))
+
+    assertEquals("print(2 ** 10)\n1024", result)
+  }
+
+  @Test
+  fun run_agentAnswersWithTextAndCodeExecution_joinsThemInOrder(): Unit = runBlocking {
+    val result =
+      runWithFinalParts(
+        Part(text = "Here is the answer:"),
+        executableCodePart("print(2 ** 10)"),
+        codeResultPart("1024\n"),
+      )
+
+    assertEquals("Here is the answer:\nprint(2 ** 10)\n1024", result)
+  }
+
+  @Test
+  fun run_agentAnswersWithExecutableCodeOnly_returnsCode(): Unit = runBlocking {
+    val result = runWithFinalParts(executableCodePart("print(\"hi\")"))
+
+    assertEquals("print(\"hi\")", result)
+  }
+
+  @Test
+  fun run_agentAnswersWithThoughtAndCodeOutput_skipsThought(): Unit = runBlocking {
+    val result =
+      runWithFinalParts(Part(text = "thinking out loud", thought = true), codeResultPart("42\n"))
+
+    assertEquals("42", result)
+  }
+
+  @Test
+  fun run_agentAnswersWithEmptyPartThenText_returnsText(): Unit = runBlocking {
+    val emptyParts =
+      listOf(
+        Part(executableCode = ExecutableCode(code = "")),
+        Part(codeExecutionResult = CodeExecutionResult(output = "")),
+        Part(),
+      )
+    for (emptyPart in emptyParts) {
+      assertEquals("after", runWithFinalParts(emptyPart, Part(text = "after")), "$emptyPart")
+    }
+  }
+
+  @Test
+  fun run_agentFailsAfterOnlyThoughts_returnsErrorMessage(): Unit = runBlocking {
+    val result =
+      runWithEvents(
+        Event(author = "inner-agent", content = thoughtMessage("thinking")),
+        Event(author = "inner-agent", errorMessage = "Remote failed"),
+      )
+
+    assertEquals("Remote failed", result)
+  }
+
+  @Test
+  fun run_agentAnswersWithOnlyThoughts_returnsEmptyString(): Unit = runBlocking {
+    val result = runWithEvents(Event(author = "inner-agent", content = thoughtMessage("thinking")))
+
+    assertEquals("", result)
   }
 
   @Test
@@ -854,6 +971,37 @@ class AgentToolTest {
   }
 
   @Test
+  fun run_withPropagateGroundingMetadata_answerThenEventWithoutContent_propagatesAnswersGrounding():
+    Unit = runBlocking {
+    val grounding = GroundingMetadata()
+    val agent =
+      DummyAgent(
+        name = "inner-agent",
+        onRunAsync = {
+          emit(
+            Event(
+              author = "inner-agent",
+              content = modelMessage("done"),
+              groundingMetadata = grounding,
+            )
+          )
+          emit(
+            Event(
+              author = "inner-agent",
+              actions = EventActions(stateDelta = mutableMapOf("k" to "v")),
+            )
+          )
+        },
+      )
+    val tool = AgentTool(agent, propagateGroundingMetadata = true)
+    val context = testToolContext(testInvocationContext(agent = agent))
+
+    val unused = tool.run(context, mapOf("request" to "Hello"))
+
+    assertEquals(grounding, context.actions.stateDelta["temp:_adk_grounding_metadata"])
+  }
+
+  @Test
   fun run_withoutPropagateGroundingMetadata_doesNotPropagate() = runTest {
     val agent =
       DummyAgent(
@@ -989,4 +1137,25 @@ class AgentToolTest {
 
     assertEquals(listOf("start:tool_a", "end:tool_a", "start:tool_b", "end:tool_b"), executionOrder)
   }
+
+  /** Runs an [AgentTool] whose wrapped agent emits [events], and returns its result. */
+  private suspend fun runWithEvents(vararg events: Event): String {
+    val agent = DummyAgent(name = "inner-agent", onRunAsync = { events.forEach { emit(it) } })
+    val context = testToolContext(testInvocationContext(agent = agent))
+    return AgentTool(agent).run(context, mapOf("request" to "Hello"))
+  }
+
+  private suspend fun runWithFinalParts(vararg parts: Part): String =
+    runWithEvents(
+      Event(author = "inner-agent", content = Content(role = Role.MODEL, parts = parts.toList()))
+    )
+
+  private fun thoughtMessage(text: String) =
+    Content(role = Role.MODEL, parts = listOf(Part(text = text, thought = true)))
+
+  private fun executableCodePart(code: String) =
+    Part(executableCode = ExecutableCode(code = code, language = Language.PYTHON))
+
+  private fun codeResultPart(output: String) =
+    Part(codeExecutionResult = CodeExecutionResult(outcome = Outcome.OUTCOME_OK, output = output))
 }
