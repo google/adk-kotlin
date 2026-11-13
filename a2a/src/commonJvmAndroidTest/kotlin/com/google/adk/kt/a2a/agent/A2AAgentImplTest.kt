@@ -323,6 +323,50 @@ class A2AAgentImplTest {
   }
 
   @Test
+  fun runAsync_streamingInBranch_mergedEventKeepsBranch() =
+    runBlocking<Unit> {
+      val agent = createTestAgent()
+      mockStreamResponse(this) { consumer ->
+        consumer.accept(createPartialEvent("Hello ", true, false), agentCard)
+        consumer.accept(createPartialEvent("world", true, true), agentCard)
+        consumer.accept(createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Final"), agentCard)
+      }
+
+      val events = agent.runAsync(invocationContext.copy(branch = "parallel.remote")).toList()
+
+      // An event without a branch would show in the history of every sibling branch.
+      val merged = events.single { it.content?.parts?.firstOrNull()?.text == "Hello world" }
+      assertThat(merged.branch).isEqualTo("parallel.remote")
+    }
+
+  @Test
+  fun runAsync_noPartsToSendInBranch_eventKeepsBranch() =
+    runBlocking<Unit> {
+      val agent = createTestAgent()
+      // This agent already answered the user's last message, so there is nothing new to send.
+      val answered =
+        Session(
+          key = SessionKey(appName = "demo", userId = "user", id = "session-2"),
+          events =
+            mutableListOf(
+              Event(invocationId = "invocation-0", author = "user", content = userMessage("hello")),
+              Event(
+                invocationId = "invocation-0",
+                author = agent.name,
+                content = modelMessage("hi"),
+              ),
+            ),
+        )
+
+      val events =
+        agent
+          .runAsync(invocationContext.copy(session = answered, branch = "parallel.remote"))
+          .toList()
+
+      assertThat(events.single().branch).isEqualTo("parallel.remote")
+    }
+
+  @Test
   fun runAsync_aggregatesInterleavedFunctionCalls() = runTest {
     val agent = createTestAgent()
     mockStreamResponse(this) { consumer ->

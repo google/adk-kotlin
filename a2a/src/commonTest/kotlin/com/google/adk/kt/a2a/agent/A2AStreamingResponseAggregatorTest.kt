@@ -587,4 +587,72 @@ class A2AStreamingResponseAggregatorTest {
 
     assertEquals(ids + ("a2a:aggregated" to "true"), result[0].customMetadata)
   }
+
+  @Test
+  fun processEvent_nonPartialFlushesBuffer_keepsBranch() {
+    val unused =
+      aggregator.processEvent(
+        Event(
+          author = agentName,
+          invocationId = invocationId,
+          branch = "parallel.remote",
+          partial = true,
+          content = modelMessage("Part 1"),
+        ),
+        isCompleted = false,
+        shouldBuffer = true,
+        shouldResetBuffer = false,
+      )
+
+    val result =
+      aggregator.processEvent(
+        Event(
+          author = agentName,
+          invocationId = invocationId,
+          branch = "parallel.remote",
+          content = modelMessage("Part 2"),
+        ),
+        isCompleted = false,
+        shouldBuffer = false,
+        shouldResetBuffer = false,
+      )
+
+    assertEquals("Part 1", result[0].content?.parts?.get(0)?.text)
+    assertEquals("parallel.remote", result[0].branch)
+  }
+
+  @Test
+  fun processEvent_partialLastChunkFlushesBuffer_keepsBranch() {
+    val unused =
+      aggregator.processEvent(
+        Event(
+          author = agentName,
+          invocationId = invocationId,
+          branch = "parallel.remote",
+          partial = true,
+          content = modelMessage("Part 1"),
+        ),
+        isCompleted = false,
+        shouldBuffer = true,
+        shouldResetBuffer = false,
+      )
+
+    val result =
+      aggregator.processEvent(
+        Event(
+          author = agentName,
+          invocationId = invocationId,
+          branch = "parallel.remote",
+          partial = true,
+          content = modelMessage("Part 2"),
+        ),
+        isCompleted = false,
+        shouldBuffer = true,
+        shouldResetBuffer = false,
+        isLastChunk = true,
+      )
+
+    assertEquals("Part 1Part 2", result[1].content?.parts?.get(0)?.text)
+    assertEquals("parallel.remote", result[1].branch)
+  }
 }

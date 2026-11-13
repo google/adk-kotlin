@@ -109,7 +109,7 @@ internal class A2AStreamingResponseAggregator(
     aggregatedParts.clear()
   }
 
-  /** Merges the buffered text into one event in the task and context of [flushedBy]. */
+  /** Merges the buffered text into one event in the branch, task and context of [flushedBy]. */
   private fun createAggregatedEvent(flushedBy: Event): Event {
     val parts = aggregatedParts.toList()
     clearBuffer()
@@ -117,6 +117,7 @@ internal class A2AStreamingResponseAggregator(
     return Event(
       invocationId = invocationId,
       author = agentName,
+      branch = flushedBy.branch,
       content = Content(role = Role.MODEL, parts = parts),
       turnComplete = false,
       customMetadata = ids + (A2A_METADATA_AGGREGATED to "true"),

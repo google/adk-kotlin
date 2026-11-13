@@ -79,6 +79,7 @@ abstract class BaseRemoteA2AAgent(
         Event(
           invocationId = context.invocationId,
           author = name,
+          branch = context.branch,
           turnComplete = true,
           customMetadata = outboundEvent.customMetadata,
         )
