@@ -185,7 +185,16 @@ internal object BigQueryUtils {
 
   private val SAFE_IDENTIFIER = Regex("""[A-Za-z0-9_-]+""")
 
+  // Standard IDs (`my-project`) or domain-scoped projects (`example.com:my-project`).
+  private val SAFE_PROJECT_ID =
+    Regex(
+      """(?:(?:[A-Za-z0-9]+(?:-+[A-Za-z0-9]+)*\.)+[A-Za-z0-9]+(?:-+[A-Za-z0-9]+)*:)?""" +
+        """[A-Za-z0-9_-]+"""
+    )
+
   private fun isSafeIdentifier(id: String): Boolean = SAFE_IDENTIFIER.matches(id)
+
+  private fun isSafeProjectId(id: String): Boolean = SAFE_PROJECT_ID.matches(id)
 
   /**
    * Creates or replaces one view per event type; a view that fails is logged and skipped.
@@ -198,7 +207,7 @@ internal object BigQueryUtils {
     throwIfCancelled: () -> Unit = {},
   ) {
     if (
-      !isSafeIdentifier(config.projectId) ||
+      !isSafeProjectId(config.projectId) ||
         !isSafeIdentifier(config.datasetId) ||
         !isSafeIdentifier(config.tableName) ||
         !isSafeIdentifier(config.viewPrefix)

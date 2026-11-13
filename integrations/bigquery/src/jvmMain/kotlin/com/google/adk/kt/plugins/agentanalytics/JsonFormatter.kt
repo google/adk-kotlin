@@ -346,14 +346,16 @@ internal object JsonFormatter {
         val node = mapper.createObjectNode()
         var isTruncated = false
         for ((keyObj, value) in obj) {
-          val key = keyObj.toString()
-          if (isSensitiveKey(key)) {
-            node.set<JsonNode>(key, mapper.valueToTree(REDACTED_MESSAGE))
+          val rawKey = keyObj.toString()
+          val safeKey = replaceLoneSurrogates(rawKey)
+          if (isSensitiveKey(rawKey)) {
+            node.set<JsonNode>(safeKey, mapper.valueToTree(REDACTED_MESSAGE))
+            isTruncated = isTruncated || safeKey != rawKey
             continue
           }
           val res = smartTruncate(value, maxLength, visited, depth + 1)
-          node.set<JsonNode>(key, res.node)
-          isTruncated = isTruncated || res.isTruncated
+          node.set<JsonNode>(safeKey, res.node)
+          isTruncated = isTruncated || res.isTruncated || safeKey != rawKey
         }
         return TruncationResult(node, isTruncated)
       } finally {
@@ -420,14 +422,16 @@ internal object JsonFormatter {
         node.isObject -> {
           val newNode = mapper.createObjectNode()
           var isTruncated = false
-          for ((key, value) in node.properties()) {
-            if (isSensitiveKey(key)) {
-              newNode.set<JsonNode>(key, mapper.valueToTree(REDACTED_MESSAGE))
+          for ((rawKey, value) in node.properties()) {
+            val safeKey = replaceLoneSurrogates(rawKey)
+            if (isSensitiveKey(rawKey)) {
+              newNode.set<JsonNode>(safeKey, mapper.valueToTree(REDACTED_MESSAGE))
+              isTruncated = isTruncated || safeKey != rawKey
               continue
             }
             val res = recursiveSmartTruncate(value, maxLength, visited, depth + 1)
-            newNode.set<JsonNode>(key, res.node)
-            isTruncated = isTruncated || res.isTruncated
+            newNode.set<JsonNode>(safeKey, res.node)
+            isTruncated = isTruncated || res.isTruncated || safeKey != rawKey
           }
           TruncationResult(newNode, isTruncated)
         }
@@ -505,19 +509,60 @@ internal object JsonFormatter {
     }
   }
 
+  // Replaces unpaired UTF-16 surrogates with U+FFFD so UTF-8 byte counts and JSON match.
+  private fun replaceLoneSurrogates(s: String): String {
+    var firstBad = -1
+    var i = 0
+    while (i < s.length) {
+      val c = s[i]
+      if (Character.isHighSurrogate(c) && i + 1 < s.length && Character.isLowSurrogate(s[i + 1])) {
+        i += 2
+      } else if (Character.isSurrogate(c)) {
+        firstBad = i
+        break
+      } else {
+        i++
+      }
+    }
+    if (firstBad < 0) return s
+    val out = StringBuilder(s.length)
+    out.append(s, 0, firstBad)
+    i = firstBad
+    while (i < s.length) {
+      val c = s[i]
+      if (Character.isHighSurrogate(c) && i + 1 < s.length && Character.isLowSurrogate(s[i + 1])) {
+        out.append(c).append(s[i + 1])
+        i += 2
+      } else if (Character.isSurrogate(c)) {
+        out.append('\uFFFD')
+        i++
+      } else {
+        out.append(c)
+        i++
+      }
+    }
+    return out.toString()
+  }
+
+  /**
+   * Truncates [s] to fit within [budget] UTF-8 bytes, appending [TRUNCATION_SUFFIX] when shortened,
+   * and replacing any lone UTF-16 surrogates with `\uFFFD` so the result is always valid UTF-8.
+   */
   fun truncate(s: String, budget: Int): String {
-    if (s.toByteArray(Charsets.UTF_8).size <= budget) return s
+    if (budget <= 0) return ""
+    val safe = replaceLoneSurrogates(s)
+    if (safe.toByteArray(Charsets.UTF_8).size <= budget) return safe
 
     val suffixBytes = TRUNCATION_SUFFIX.toByteArray(Charsets.UTF_8).size
     val effectiveBudget = (budget - suffixBytes).coerceAtLeast(0)
     if (effectiveBudget == 0) {
-      return TRUNCATION_SUFFIX.substring(0, budget.coerceAtMost(TRUNCATION_SUFFIX.length))
+      return TRUNCATION_SUFFIX.substring(0, budget.coerceIn(0, TRUNCATION_SUFFIX.length))
     }
 
     var byteCount = 0
     var i = 0
-    while (i < s.length) {
-      val codePoint = s.codePointAt(i)
+    while (i < safe.length) {
+      val codePoint = safe.codePointAt(i)
       val codePointBytes =
         when {
           codePoint < 0x80 -> 1
@@ -530,7 +575,7 @@ internal object JsonFormatter {
       i += Character.charCount(codePoint)
     }
 
-    return s.substring(0, i) + TRUNCATION_SUFFIX
+    return safe.substring(0, i) + TRUNCATION_SUFFIX
   }
 
   fun toKotlinObject(node: JsonNode?): Any? {
