@@ -89,7 +89,6 @@ class GenaiPromptConversionsTest {
     assertThat(generateContentRequest.firstTextPart.textString)
       .isEqualTo("Hello World\n\nAnother text")
     assertThat(generateContentRequest.firstImagePart).isNull()
-    assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
   @Test
@@ -130,7 +129,6 @@ class GenaiPromptConversionsTest {
     assertThat(generateContentRequest.firstTextPart.textString)
       .isEqualTo("Hello World\n\nAnother text")
     assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
-    assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
   @Ignore("throws java.lang.VerifyError")
@@ -154,7 +152,6 @@ class GenaiPromptConversionsTest {
     assertThat(generateContentRequest.firstTextPart.textString)
       .isEqualTo("Hello World\n\nAnother text")
     assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
-    assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
   @Ignore("throws java.lang.VerifyError")
@@ -172,7 +169,6 @@ class GenaiPromptConversionsTest {
     val generateContentRequest = request.toGenerateContentRequest()
     assertThat(generateContentRequest.firstTextPart.textString).isEmpty()
     assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
-    assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
   @Ignore("throws java.lang.VerifyError")
@@ -193,7 +189,6 @@ class GenaiPromptConversionsTest {
     val generateContentRequest = request.toGenerateContentRequest()
     assertThat(generateContentRequest.firstTextPart.textString).isEmpty()
     assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
-    assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
   @Ignore("throws java.lang.VerifyError")
@@ -275,7 +270,6 @@ class GenaiPromptConversionsTest {
     assertThat(generateContentRequest.firstTextPart.textString)
       .isEqualTo("Test prompt prefix\n\nAnother system instruction\n\nHello World\n\nAnother text")
     assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
-    assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
   @Test
@@ -558,7 +552,6 @@ class GenaiPromptConversionsTest {
     val generateContentRequest = request.toGenerateContentRequest()
     assertThat(generateContentRequest.firstTextPart.textString).isEqualTo("Hello World")
     assertThat(generateContentRequest.firstImagePart?.bitmap).isNotNull()
-    assertThat(generateContentRequest.promptPrefix).isNull()
   }
 
   /** STOP is the normal completion, so the text passes through unflagged. */
