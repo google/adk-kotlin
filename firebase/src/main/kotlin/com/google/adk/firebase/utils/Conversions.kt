@@ -619,6 +619,17 @@ internal class Conversions {
       )
     }
 
+  /**
+   * Converts an agent's output schema for the generation config's `responseSchema`.
+   *
+   * Returns `null` when Firebase would describe this schema, or any schema nested in it, with a
+   * different type: an object that declares no properties becomes a string carrying JSON, and an
+   * enum on a non-string type becomes a string enum. Without a schema, the JSON response MIME type
+   * still asks for JSON.
+   */
+  fun toFirebaseResponseSchema(schema: Schema): FirebaseSchema? =
+    if (schema.containsResponseSchemaTypeMismatch()) null else toFirebaseSchema(schema)
+
   fun toFirebaseSchema(schema: Schema): FirebaseSchema =
     with(schema) {
       // Firebase models a union as a schema that carries only `anyOf`, so a typed schema cannot
@@ -661,12 +672,11 @@ internal class Conversions {
             Type.OBJECT,
             Type.TYPE_UNSPECIFIED,
             null -> {
-              val declaredProps = properties
-              if (declaredProps.isNullOrEmpty()) {
+              if (convertsToFreeFormObject()) {
                 freeFormObject(description, isNullable, title)
               } else {
                 FirebaseSchema.obj(
-                  properties = declaredProps.mapValues { toFirebaseSchema(it.value) },
+                  properties = properties.orEmpty().mapValues { toFirebaseSchema(it.value) },
                   description = description,
                   optionalProperties = optionalParameters(this),
                   nullable = isNullable,
@@ -773,6 +783,20 @@ internal class Conversions {
       else -> FirebaseBranch.TYPED
     }
 
+  /** Whether [toFirebaseSchema] converts this schema with [freeFormObject]. */
+  private fun Schema.convertsToFreeFormObject(): Boolean =
+    firebaseBranch() == FirebaseBranch.TYPED &&
+      (type == Type.OBJECT || type == Type.TYPE_UNSPECIFIED || type == null) &&
+      properties.isNullOrEmpty()
+
+  /** Whether this schema or any nested schema would have a different type in a response. */
+  private fun Schema.containsResponseSchemaTypeMismatch(): Boolean =
+    convertsToFreeFormObject() ||
+      substitutesStringForEnumType(this) ||
+      properties.orEmpty().values.any { it.containsResponseSchemaTypeMismatch() } ||
+      items?.containsResponseSchemaTypeMismatch() == true ||
+      anyOf.orEmpty().any { it.containsResponseSchemaTypeMismatch() }
+
   /**
    * Whether Firebase drops this schema's `anyOf` because a type is declared beside it.
    *
@@ -874,9 +898,12 @@ internal class Conversions {
           maxOutputTokens = config.maxOutputTokens
           topP = config.topP
           topK = config.topK
+          presencePenalty = config.presencePenalty
+          frequencyPenalty = config.frequencyPenalty
           stopSequences = config.stopSequences
           candidateCount = config.candidateCount
           responseMimeType = config.responseMimeType
+          responseSchema = config.responseSchema?.let { toFirebaseResponseSchema(it) }
           responseModalities =
             config.responseModalities
               ?.mapNotNull { toFirebaseResponseModality(it) }
