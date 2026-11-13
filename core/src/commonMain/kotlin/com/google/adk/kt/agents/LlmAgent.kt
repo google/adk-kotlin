@@ -855,8 +855,8 @@ class LlmAgent(
    *   empty final stream chunk). If parsing or validation fails, the raw text is stored instead and
    *   an error is logged. Mirrors `validate_schema` in the Python ADK and `validateOutputSchema` in
    *   the Java ADK. Note this best-effort fallback is the direct-schema path only; the
-   *   `set_model_response` workaround instead validates strictly and propagates a tool execution
-   *   error (failing the invocation if unrecovered) rather than saving best-effort text (see
+   *   `set_model_response` workaround instead returns validation errors to the model so it can call
+   *   the tool again, and saves nothing until a call validates (see
    *   [com.google.adk.kt.tools.SetModelResponseTool.run]).
    * - On a single-turn workflow node run, the text is parsed as the node's output is, and a schema
    *   mismatch saves nothing.

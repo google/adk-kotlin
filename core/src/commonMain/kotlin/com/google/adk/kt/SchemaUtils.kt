@@ -179,14 +179,6 @@ object SchemaUtils {
   }
 
   /**
-   * Whether this schema could describe a map at all.
-   *
-   * A schema that declares no type constrains nothing, so it can; one that declares `OBJECT`
-   * obviously can; one that declares any other type cannot, whatever else it says.
-   */
-  private fun Schema.canDescribeAMap(): Boolean = declaredType == null || type == Type.OBJECT
-
-  /**
    * How to name a schema in a validation error.
    *
    * [Schema] has far more fields than a typical one sets, so printing the data class buries the
@@ -725,6 +717,14 @@ private fun exactWholeLong(value: Any?): Long? {
 }
 
 private const val MAX_EXACT_DOUBLE_INTEGER = 9_007_199_254_740_991.0
+
+/**
+ * Whether this schema could describe a map at all.
+ *
+ * A schema that declares no type constrains nothing, so it can; one that declares `OBJECT`
+ * obviously can; one that declares any other type cannot, whatever else it says.
+ */
+internal fun Schema.canDescribeAMap(): Boolean = declaredType == null || type == Type.OBJECT
 
 /** This schema's type, or null when it declares none. */
 internal val Schema.declaredType: Type?

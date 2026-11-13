@@ -23,7 +23,6 @@ import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.OnModelErrorCallback
-import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
@@ -49,7 +48,6 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
-import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -963,41 +961,6 @@ class LlmAgentTest {
   }
 
   @Test
-  fun runAsync_withOutputSchemaAndTools_gemini2_invalidArgs_failsInvocation() =
-    runBlocking<Unit> {
-      val schema =
-        Schema(
-          type = Type.OBJECT,
-          properties = mapOf("answer" to Schema(type = Type.STRING)),
-          required = listOf("answer"),
-        )
-      // The model calls set_model_response with args that violate the schema (missing the required
-      // "answer"). Unlike the best-effort direct-schema path, the workaround validates strictly, so
-      // the tool throws and—absent any onToolError recovery—the failure propagates out of the
-      // invocation rather than being saved as raw text.
-      val setResponseCall =
-        modelFunctionCall("set_model_response", mapOf("wrong" to "value"), id = "call_1")
-      val model =
-        DummyModel.createSequential(
-          "gemini-2.0-flash",
-          listOf(LlmResponse(content = setResponseCall)),
-        )
-      val agent =
-        LlmAgent(
-          name = "test-agent",
-          model = model,
-          tools = listOf(DummyTool("my_tool")),
-          outputSchema = schema,
-          outputKey = "result",
-        )
-      val sessionService = InMemorySessionService()
-      val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
-      val context = InvocationContext(agent = agent, session = session, runConfig = null)
-
-      assertFailsWith<IllegalArgumentException> { agent.runAsync(context).toList() }
-    }
-
-  @Test
   fun runAsync_toolNamedSetModelResponse_modelStillGivesTheFinalAnswer() {
     runBlocking {
       val model =
@@ -1058,52 +1021,6 @@ class LlmAgentTest {
 
       val finalEvent = events.last()
       assertThat(finalEvent.content?.parts?.single()?.text).isEqualTo("""{"answer": "42"}""")
-      assertThat(finalEvent.actions.stateDelta["result"]).isEqualTo(mapOf("answer" to "42"))
-    }
-  }
-
-  @Test
-  fun runAsync_gemini2_onToolErrorAnswersInvalidSetModelResponse_modelRetries() {
-    runBlocking {
-      val schema =
-        Schema(
-          type = Type.OBJECT,
-          properties = mapOf("answer" to Schema(type = Type.STRING)),
-          required = listOf("answer"),
-        )
-      val model =
-        DummyModel.createSequential(
-          "gemini-2.5-flash",
-          listOf(
-            modelFunctionCallResponse(
-              "set_model_response",
-              mapOf("wrong" to "value"),
-              id = "call_1",
-            ),
-            modelFunctionCallResponse("set_model_response", mapOf("answer" to "42"), id = "call_2"),
-          ),
-        )
-      // Like a retry plugin, the callback answers the failed call with guidance for the model.
-      val retryGuidance = OnToolErrorCallback { _, _, _, _ ->
-        CallbackChoice.Break(mapOf("error" to "Fix the arguments and call again."))
-      }
-      val agent =
-        LlmAgent(
-          name = "test-agent",
-          model = model,
-          tools = listOf(DummyTool("my_tool")),
-          outputSchema = schema,
-          outputKey = "result",
-          onToolErrorCallbacks = listOf(retryGuidance),
-        )
-      val session =
-        InMemorySessionService().createSession(SessionKey("app", "user", "test-session"))
-      val context = InvocationContext(agent = agent, session = session, runConfig = null)
-
-      val events = agent.runAsync(context).toList()
-
-      val finalEvent = events.last()
-      assertThat(finalEvent.content?.parts?.single()?.text).isEqualTo("""{"answer":"42"}""")
       assertThat(finalEvent.actions.stateDelta["result"]).isEqualTo(mapOf("answer" to "42"))
     }
   }

@@ -16,6 +16,7 @@
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
@@ -29,6 +30,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
@@ -61,24 +63,141 @@ class SetModelResponseToolTest {
   }
 
   @Test
-  fun run_argsMissingRequiredField_throws() =
-    runBlocking<Unit> {
-      val tool = SetModelResponseTool(outputSchema)
+  fun run_argsMissingRequiredField_returnsFeedbackAndRecordsNothing() = runBlocking {
+    val tool = SetModelResponseTool(outputSchema)
 
-      assertFailsWith<IllegalArgumentException> {
-        tool.run(testToolContext(), mapOf("city" to "NYC"))
-      }
+    val result = tool.run(testToolContext(functionCallId = "call_1"), mapOf("city" to "NYC"))
+
+    assertThat(result)
+      .isEqualTo(
+        mapOf(
+          "error" to
+            "Validation Error found:\nOutput args does not contain required name\nRecall the " +
+              "set_model_response function correctly, fix the errors, and call it again with " +
+              "all required fields using the correct types."
+        )
+      )
+    assertThat(tool.validatedResponseJson("call_1")).isNull()
+  }
+
+  @Test
+  fun run_argsWithUnknownField_returnsFeedbackWithoutTheSchemaDump() = runBlocking {
+    val tool = SetModelResponseTool(outputSchema)
+
+    val result = tool.run(testToolContext(), mapOf("name" to "John", "unknown" to "x"))
+
+    assertThat(result["error"] as String)
+      .startsWith("Validation Error found:\nOutput arg: unknown doesn't exist in output schema\n")
+  }
+
+  @Test
+  fun run_nestedMismatch_feedbackNamesTheNestedCause() = runBlocking {
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "result" to
+              Schema(
+                type = Type.OBJECT,
+                properties = mapOf("answer" to Schema(type = Type.STRING)),
+                required = listOf("answer"),
+              )
+          ),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result = tool.run(testToolContext(), mapOf("result" to emptyMap<String, Any?>()))
+
+    assertThat(result["error"] as String)
+      .startsWith(
+        "Validation Error found:\nOutput arg: result type does not match output schema\n" +
+          "Output args does not contain required answer\n"
+      )
+  }
+
+  @Test
+  fun run_nonObjectSchema_throws() =
+    runBlocking<Unit> {
+      val tool = SetModelResponseTool(Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)))
+
+      assertFailsWith<IllegalArgumentException> { tool.run(testToolContext(), mapOf("x" to "y")) }
     }
 
   @Test
-  fun run_argsWithUnknownField_throws() =
+  fun run_schemaTooComplexToValidate_throws() =
     runBlocking<Unit> {
-      val tool = SetModelResponseTool(outputSchema)
+      // Each level reuses one child on both branches, so validation gives up.
+      var nested = Schema(type = Type.STRING)
+      repeat(24) { nested = Schema(anyOf = listOf(nested, nested)) }
+      val tool = SetModelResponseTool(Schema(type = Type.OBJECT, properties = mapOf("x" to nested)))
 
-      assertFailsWith<IllegalArgumentException> {
-        tool.run(testToolContext(), mapOf("name" to "John", "unknown" to "x"))
-      }
+      val failure =
+        assertFailsWith<IllegalArgumentException> { tool.run(testToolContext(), mapOf("x" to 42)) }
+      assertThat(failure).hasMessageThat().contains("too complex to validate")
     }
+
+  @Test
+  fun run_rawArgsTooComplexToValidate_returnsTheFixableError() =
+    runBlocking<Unit> {
+      // Arrange: without the null `x`, `y` fails as a type mismatch; with it, validation gives up.
+      var nested = Schema(type = Type.STRING)
+      repeat(24) { nested = Schema(anyOf = listOf(nested, nested)) }
+      val schema =
+        Schema(
+          type = Type.OBJECT,
+          properties = mapOf("x" to nested, "y" to Schema(type = Type.STRING)),
+        )
+      val tool = SetModelResponseTool(schema)
+
+      // Act
+      val result = tool.run(testToolContext(), mapOf("x" to null, "y" to 5))
+
+      // Assert: the model can fix `y`, so it gets that error instead of a throw.
+      assertThat(result["error"] as String).contains("y")
+      assertThat(result["error"] as String).doesNotContain("too complex")
+    }
+
+  @Test
+  fun run_topLevelUnionOfObjectsMatchingNoBranch_returnsAnError() = runBlocking {
+    // Arrange: the model can fix arguments that match neither object.
+    val withA =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("a" to Schema(type = Type.STRING)),
+        required = listOf("a"),
+      )
+    val withB =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("b" to Schema(type = Type.STRING)),
+        required = listOf("b"),
+      )
+    val tool = SetModelResponseTool(Schema(anyOf = listOf(withA, withB)))
+
+    // Act
+    val result = tool.run(testToolContext(), mapOf("c" to "x"))
+
+    // Assert
+    assertThat(result["error"] as String).startsWith("Validation Error found:")
+  }
+
+  @Test
+  fun run_untypedObjectSchemaMissingARequiredField_returnsAnError() = runBlocking {
+    // Arrange: a schema with properties but no type describes an object.
+    val schema =
+      Schema(
+        properties = mapOf("answer" to Schema(type = Type.STRING)),
+        required = listOf("answer"),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    // Act
+    val result = tool.run(testToolContext(), emptyMap())
+
+    // Assert
+    assertThat(result["error"] as String).contains("required answer")
+  }
 
   @Test
   fun run_nullOptionalFields_dropsThemAtEveryDepth() = runBlocking {
@@ -409,13 +528,13 @@ class SetModelResponseToolTest {
   }
 
   @Test
-  fun run_nullRequiredField_throws() =
+  fun run_nullRequiredField_returnsFeedback() =
     runBlocking<Unit> {
       val tool = SetModelResponseTool(outputSchema)
 
-      assertFailsWith<IllegalArgumentException> {
-        tool.run(testToolContext(), mapOf("name" to null, "city" to "NYC"))
-      }
+      val result = tool.run(testToolContext(), mapOf("name" to null, "city" to "NYC"))
+
+      assertThat(result.keys).containsExactly("error")
     }
 
   @Test
@@ -566,5 +685,55 @@ class SetModelResponseToolTest {
     // Assert
     assertEquals(mapOf("id" to 7L), result)
     assertEquals("""{"id":7}""", tool.validatedResponseJson("call_1"))
+  }
+
+  @Test
+  fun runAsync_invalidSetModelResponse_modelGetsFeedbackAndRetries() = runBlocking {
+    // Arrange: the first call misses the required field, the second one is valid.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING)),
+        required = listOf("answer"),
+      )
+    val name = SetModelResponseTool.NAME
+    val responses =
+      listOf(
+        modelFunctionCallResponse(name, mapOf("wrong" to "x"), id = "call_1"),
+        modelFunctionCallResponse(name, mapOf("answer" to "42"), id = "call_2"),
+      )
+    val requests = mutableListOf<LlmRequest>()
+    val model =
+      DummyModel("gemini-2.5-flash") { request ->
+        requests += request
+        flowOf(responses[requests.size - 1])
+      }
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(DummyTool("lookup", declares = true)),
+        outputSchema = schema,
+        outputKey = "result",
+      )
+    val runner = InMemoryRunner(agent = agent)
+    val unused = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+
+    // Act
+    val events =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    // Assert
+    val feedback =
+      requests[1].contents.flatMap { it.parts }.mapNotNull { it.functionResponse }.single()
+    assertThat(feedback.name).isEqualTo(SetModelResponseTool.NAME)
+    assertThat(feedback.response["error"] as String).startsWith("Validation Error found:")
+    // The invalid first call ended neither the turn nor the output.
+    assertThat(events.count { it.isFinalResponse }).isEqualTo(1)
+    assertThat(events.count { it.actions.stateDelta.containsKey("result") }).isEqualTo(1)
+    val finalEvent = events.last()
+    assertThat(finalEvent.isFinalResponse).isTrue()
+    assertThat(finalEvent.content?.parts?.single()?.text).isEqualTo("""{"answer":"42"}""")
+    assertThat(finalEvent.actions.stateDelta["result"]).isEqualTo(mapOf("answer" to "42"))
   }
 }
