@@ -20,6 +20,7 @@ import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
+import com.google.adk.kt.withIntegersAsLongs
 
 /**
  * Internal tool used for the output schema workaround.
@@ -53,8 +54,8 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
 
   /**
    * Validates [args] against [outputSchema], records them as the call's structured response, and
-   * returns them unchanged; a callback that answers for this tool without running it never ends the
-   * turn.
+   * returns them with whole-number doubles in integer fields as [Long]; a callback that answers for
+   * this tool without running it never ends the turn.
    *
    * Validation is strict: non-conforming [args] throw a tool execution error that fails the
    * invocation unless an `onToolError` callback recovers, unlike the direct-schema path in
@@ -62,8 +63,9 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
    */
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Map<String, Any?> {
     SchemaUtils.validateMapOnSchema(args, outputSchema, argsName = "Output").getOrThrow()
-    validatedResponses[context.functionCallId.orEmpty()] = args
-    return args
+    val response = args.withIntegersAsLongs(outputSchema)
+    validatedResponses[context.functionCallId.orEmpty()] = response
+    return response
   }
 
   /** Returns the JSON of the arguments [run] validated for [functionCallId], or `null` if none. */

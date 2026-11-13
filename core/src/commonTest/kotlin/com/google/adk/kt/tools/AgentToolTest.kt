@@ -485,6 +485,45 @@ class AgentToolTest {
   }
 
   @Test
+  fun run_throughInMemoryRunner_wholeNumberDoubleForIntegerInput_reachesTheAgentAsAnInteger() =
+    runTest {
+      // Arrange: the parent model sends 1.0, as Gson decodes the JSON number 1 on the JVM.
+      val received = mutableListOf<String>()
+      val inner =
+        LlmAgent(
+          name = "inner-agent",
+          model =
+            DummyModel("inner-model") { request ->
+              received += request.contents.last().parts.single().text.orEmpty()
+              flowOf(LlmResponse(content = modelMessage("done")))
+            },
+          inputSchema =
+            Schema(type = Type.OBJECT, properties = mapOf("n" to Schema(type = Type.INTEGER))),
+        )
+      val mainModel =
+        DummyModel(
+          name = "main-model",
+          flows =
+            listOf(
+              flowOf(modelFunctionCallResponse(name = "inner-agent", args = mapOf("n" to 1.0))),
+              flowOf(LlmResponse(content = modelMessage("Final Answer"))),
+            ),
+        )
+      val mainAgent =
+        LlmAgent(name = "main-agent", model = mainModel, tools = listOf(AgentTool(inner)))
+      val runner = InMemoryRunner(agent = mainAgent)
+
+      // Act
+      val unused =
+        runner
+          .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+          .toList()
+
+      // Assert
+      assertEquals(listOf("""{"n":1}"""), received)
+    }
+
+  @Test
   fun run_withValidInputSchema_executesInnerAgent() = runTest {
     val inputSchema =
       Schema(

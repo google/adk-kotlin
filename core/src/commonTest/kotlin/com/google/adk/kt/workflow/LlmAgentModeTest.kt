@@ -1236,6 +1236,65 @@ class LlmAgentModeTest {
   }
 
   @Test
+  fun finishTask_wholeNumberDoubleForInteger_savesALong() = runBlocking {
+    // Arrange: the score arrives as 9.0, the way Gson decodes the JSON number 9.
+    val worker =
+      taskAgent(
+        "worker",
+        ModeScriptedModel(call("finish_task", mapOf("label" to "spam", "score" to 9.0))),
+        outputSchema = LABEL_SCHEMA,
+        outputKey = "answer",
+      )
+    val root =
+      coordinator(
+        ModeScriptedModel(call("worker", mapOf("request" to "classify")), text("all done")),
+        listOf(worker),
+      )
+    val runner = runnerFor(root)
+
+    // Act
+    val events = runner.send("go").contentful()
+
+    // Assert
+    val expected = mapOf("label" to "spam", "score" to 9L)
+    assertEquals(expected, events.single { it.output != null }.output)
+    val state = checkNotNull(runner.sessionService.getSession(SessionKey("app", "u", "s"))).state
+    assertEquals(expected, state["answer"])
+  }
+
+  @Test
+  fun finishTask_wholeNumberDoubleInOneOfTheseFieldsSchema_savesALong() = runBlocking {
+    // Arrange: the schema's own properties type `score`; its `anyOf` only says which field to send.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("score" to Schema(type = Type.INTEGER), "error" to Schema(type = Type.STRING)),
+        anyOf = listOf(Schema(required = listOf("score")), Schema(required = listOf("error"))),
+      )
+    val worker =
+      taskAgent(
+        "worker",
+        ModeScriptedModel(call("finish_task", mapOf("score" to 9.0))),
+        outputSchema = schema,
+        outputKey = "answer",
+      )
+    val root =
+      coordinator(
+        ModeScriptedModel(call("worker", mapOf("request" to "classify")), text("all done")),
+        listOf(worker),
+      )
+    val runner = runnerFor(root)
+
+    // Act
+    val unused = runner.send("go")
+
+    // Assert
+    val state = checkNotNull(runner.sessionService.getSession(SessionKey("app", "u", "s"))).state
+    assertEquals(mapOf("score" to 9L), state["answer"])
+  }
+
+  @Test
   fun taskMode_delegatedAgent_seesOnlyDelegationAsFirstTurn() = runBlocking {
     // Arrange
     val workerModel = ModeScriptedModel(call("finish_task", mapOf("result" to "done")))

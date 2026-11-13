@@ -118,6 +118,39 @@ class SchemaUtilsTest {
   }
 
   @Test
+  fun validateMapOnSchema_wholeNumberDoubleForInteger_returnsSuccess() {
+    val schema = Schema(type = Type.OBJECT, properties = mapOf("n" to Schema(type = Type.INTEGER)))
+
+    assertTrue(SchemaUtils.validateMapOnSchema(mapOf("n" to 1.0), schema, "Output").isSuccess)
+    assertTrue(SchemaUtils.validateMapOnSchema(mapOf("n" to 2f), schema, "Output").isSuccess)
+  }
+
+  @Test
+  fun validateMapOnSchema_wholeDoubleForInteger_passesOnlyUpTo2To53Minus1() {
+    // A double above 2^53 - 1 may be a rounded JSON integer.
+    val schema = Schema(type = Type.OBJECT, properties = mapOf("n" to Schema(type = Type.INTEGER)))
+    fun valid(n: Double) =
+      SchemaUtils.validateMapOnSchema(mapOf("n" to n), schema, "Output").isSuccess
+
+    assertTrue(valid(9007199254740991.0))
+    assertTrue(valid(-9007199254740991.0))
+    assertFalse(valid(9007199254740992.0))
+    assertFalse(valid(-9007199254740992.0))
+  }
+
+  @Test
+  fun validateMapOnSchema_fractionalOrOutOfRangeDoubleForInteger_returnsFailure() {
+    val schema = Schema(type = Type.OBJECT, properties = mapOf("n" to Schema(type = Type.INTEGER)))
+
+    assertFalse(SchemaUtils.validateMapOnSchema(mapOf("n" to 1.5), schema, "Output").isSuccess)
+    assertFalse(SchemaUtils.validateMapOnSchema(mapOf("n" to 1e20), schema, "Output").isSuccess)
+    assertFalse(
+      SchemaUtils.validateMapOnSchema(mapOf("n" to Double.POSITIVE_INFINITY), schema, "Output")
+        .isSuccess
+    )
+  }
+
+  @Test
   fun validateMapOnSchema_nullValueForNullableProperty_returnsSuccess() {
     val schema =
       Schema(
@@ -500,20 +533,6 @@ class SchemaUtilsTest {
     val result = SchemaUtils.validateMapOnSchema(args, schema, "Input")
 
     assertTrue(result.isSuccess)
-  }
-
-  @Test
-  fun validateMapOnSchema_integerAsDouble_returnsFailure() {
-    // Documents that JSON-parsed numbers (which Gson decodes as Double) are NOT accepted for an
-    // INTEGER schema. Callers must pre-convert to Int/Long before validating.
-    val schema =
-      Schema(type = Type.OBJECT, properties = mapOf("age" to Schema(type = Type.INTEGER)))
-    val args = mapOf("age" to 30.0)
-
-    val result = SchemaUtils.validateMapOnSchema(args, schema, "Input")
-
-    assertTrue(result.isFailure)
-    assertIs<IllegalArgumentException>(result.exceptionOrNull())
   }
 
   @Test
@@ -1480,9 +1499,53 @@ class SchemaUtilsTest {
     assertEquals(listOf(1), SchemaUtils.validateValue(listOf(1), integers).getOrThrow())
     assertEquals("blue", SchemaUtils.validateValue("blue", color).getOrThrow())
     assertTrue(SchemaUtils.validateValue("abc", integer).isFailure)
-    assertTrue(SchemaUtils.validateValue(42.0, integer).isFailure)
+    assertTrue(SchemaUtils.validateValue(42.5, integer).isFailure)
     assertTrue(SchemaUtils.validateValue(listOf("a"), integers).isFailure)
     assertTrue(SchemaUtils.validateValue("""{"count": 1}""", countSchema).isFailure)
+  }
+
+  @Test
+  fun validateValue_wholeNumberDoubleForInteger_returnsItAsLong() {
+    val integer = Schema(type = Type.INTEGER)
+    val counts = Schema(type = Type.OBJECT, properties = mapOf("count" to integer))
+
+    assertEquals(7L, SchemaUtils.validateValue(7.0, integer).getOrThrow())
+    assertEquals(
+      mapOf("count" to 1L),
+      SchemaUtils.validateValue(mapOf("count" to 1.0), counts).getOrThrow(),
+    )
+  }
+
+  @Test
+  fun validateValue_wholeDoubleInAUnionOfObjects_followsTheMatchingBranch() {
+    val n = Schema(properties = mapOf("n" to Schema(type = Type.INTEGER)))
+    val s = Schema(properties = mapOf("s" to Schema(type = Type.STRING)))
+    val schema = Schema(type = Type.OBJECT, properties = mapOf("v" to Schema(anyOf = listOf(s, n))))
+
+    val result = SchemaUtils.validateValue(mapOf("v" to mapOf("n" to 1.0)), schema).getOrThrow()
+
+    assertEquals(mapOf("v" to mapOf("n" to 1L)), result)
+  }
+
+  @Test
+  fun validateValue_wholeDoubleInATopLevelUnionOfObjects_followsTheMatchingBranch() {
+    val n = Schema(type = Type.OBJECT, properties = mapOf("n" to Schema(type = Type.INTEGER)))
+    val s = Schema(type = Type.OBJECT, properties = mapOf("s" to Schema(type = Type.STRING)))
+    val schema = Schema(anyOf = listOf(s, n))
+
+    val result = SchemaUtils.validateValue(mapOf("n" to 1.0), schema).getOrThrow()
+
+    assertEquals(mapOf("n" to 1L), result)
+  }
+
+  @Test
+  fun validateValue_wholeDoubleInAListBranchOfAUnion_followsTheMatchingBranch() {
+    val ints = Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER))
+    val schema = Schema(anyOf = listOf(ints, Schema(type = Type.STRING)))
+
+    val result = SchemaUtils.validateValue(listOf(1.0), schema).getOrThrow()
+
+    assertEquals(listOf(1L), result)
   }
 
   @Test

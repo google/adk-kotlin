@@ -24,6 +24,7 @@ import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import kotlin.math.abs
 import kotlin.reflect.KType
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
@@ -136,7 +137,8 @@ object SchemaUtils {
     val matches =
       when (type) {
         Type.STRING -> value is String
-        Type.INTEGER -> value is Int || value is Long
+        // JSON decoders such as Gson read every number as a double, so `1.0` counts as an integer.
+        Type.INTEGER -> value is Int || value is Long || exactWholeLong(value) != null
         Type.BOOLEAN -> value is Boolean
         Type.NUMBER -> value is Number
         Type.ARRAY -> {
@@ -311,21 +313,23 @@ object SchemaUtils {
    *
    * @param output The model output string to parse and validate.
    * @param schema The schema to validate against.
-   * @return [Result.success] wrapping the parsed map if it is valid JSON matching [schema];
-   *   [Result.failure] if the string is not valid JSON object or does not match the schema.
+   * @return [Result.success] wrapping the parsed map, with whole-number doubles in integer fields
+   *   as [Long], if it is valid JSON matching [schema]; [Result.failure] if the string is not valid
+   *   JSON object or does not match the schema.
    */
   fun validateOutputSchema(output: String, schema: Schema): Result<Map<String, Any?>> =
     runCatching {
       val parsed = Json.fromJsonToMap(output)
       validateMapOnSchema(parsed, schema, "Output").getOrThrow()
-      parsed
+      parsed.withIntegersAsLongs(schema)
     }
 
   /**
    * Checks any [value] against [schema] with the rules [validateMapOnSchema] applies to an
-   * argument, and returns it; a null [value] passes. A [Content] becomes its text, read as JSON
-   * unless [schema] takes a string or the text is not JSON. A failure names [argsName] and, for a
-   * map, a reason that names only parts of the schema, but never the value.
+   * argument, and returns it with whole-number doubles in integer fields as [Long]; a null [value]
+   * passes. A [Content] becomes its text, read as JSON unless [schema] takes a string or the text
+   * is not JSON. A failure names [argsName] and, for a map, a reason that names only parts of the
+   * schema, but never the value.
    */
   internal fun validateValue(
     value: Any?,
@@ -340,7 +344,7 @@ object SchemaUtils {
     if (data is Map<*, *>) {
       val args = data.entries.associate { (k, v) -> k.toString() to v }
       val failure = validateMapOnSchema(args, schema, "Value").exceptionOrNull()
-      if (failure == null) return Result.success(data)
+      if (failure == null) return Result.success(args.withIntegersAsLongs(schema))
       val properties = schema.properties
       // An undeclared key is data, so it goes unnamed; other messages name only the schema's parts.
       detail =
@@ -351,7 +355,7 @@ object SchemaUtils {
         }
     } else {
       val failure = matchType(data, schema, "Value", UnionBudget()).exceptionOrNull()
-      if (failure == null) return Result.success(data)
+      if (failure == null) return Result.success(integersAsLongs(data, schema))
       // A type mismatch message quotes the value; only running out of budget does not.
       detail = (failure as? SchemaTooComplexException)?.message
     }
@@ -669,6 +673,58 @@ private fun Schema.acceptsNull(): Boolean =
   nullable == true ||
     type == Type.NULL ||
     (declaredType == null && enum == null && (anyOf?.any { it.acceptsNull() } ?: true))
+
+/**
+ * Turns each whole-number double that [schema] types as an integer into a [Long], so `1.0` prints
+ * as `1`.
+ */
+internal fun Map<*, *>.withIntegersAsLongs(schema: Schema): Map<String, Any?> =
+  (integersAsLongs(this, schema) as Map<*, *>).entries.associate { (key, value) ->
+    key.toString() to value
+  }
+
+/**
+ * Returns [value] with each whole-number double that [schema] types as an integer as a [Long]. The
+ * schema's own `properties`, `additionalProperties` and `items` come first; `anyOf` decides only
+ * where the schema declares none of them, and a map or list follows the first branch that validates
+ * it.
+ *
+ * Not [ValueCoercer.coerceValue], which also rejects enum mismatches and undeclared keys that
+ * validation accepts.
+ */
+internal fun integersAsLongs(value: Any?, schema: Schema?): Any? {
+  if (schema == null) return value
+  val branches = schema.anyOf?.filter { it.type != Type.NULL }.orEmpty()
+  return when {
+    value is Map<*, *> && (schema.properties != null || schema.extraSchema() != null) ->
+      value.entries.associate { (key, item) ->
+        val name = key.toString()
+        name to integersAsLongs(item, schema.properties?.get(name) ?: schema.extraSchema())
+      }
+    value is List<*> && schema.items != null -> value.map { integersAsLongs(it, schema.items) }
+    schema.type == Type.INTEGER -> exactWholeLong(value) ?: value
+    branches.size == 1 -> integersAsLongs(value, branches.single())
+    // Like pydantic's union matching, the first branch that validates a map or list types it.
+    value is Map<*, *> || value is List<*> ->
+      branches.firstNotNullOfOrNull { SchemaUtils.validateValue(value, it).getOrNull() } ?: value
+    // No NUMBER branch, so a whole double can only have matched INTEGER.
+    branches.any { it.type == Type.INTEGER } && branches.none { it.type == Type.NUMBER } ->
+      exactWholeLong(value) ?: value
+    else -> value
+  }
+}
+
+/**
+ * [value] as a [Long] if it is a whole [Double] or [Float] that a double holds exactly, at most
+ * 2^53 - 1 in magnitude; otherwise null. A larger JSON integer may already be rounded.
+ */
+private fun exactWholeLong(value: Any?): Long? {
+  val number = (value as? Double) ?: (value as? Float)?.toDouble() ?: return null
+  if (number % 1.0 != 0.0 || abs(number) > MAX_EXACT_DOUBLE_INTEGER) return null
+  return number.toLong()
+}
+
+private const val MAX_EXACT_DOUBLE_INTEGER = 9_007_199_254_740_991.0
 
 /** This schema's type, or null when it declares none. */
 internal val Schema.declaredType: Type?
