@@ -40,6 +40,7 @@ import com.google.adk.kt.types.ToolConfig
 import com.google.adk.kt.types.ToolType
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.google.firebase.ai.type.Content as FirebaseContent
 import com.google.firebase.ai.type.FileDataPart
 import com.google.firebase.ai.type.FinishReason as FirebaseFinishReason
@@ -753,6 +754,8 @@ class ConversionsTest {
             stopSequences = listOf("foo", "bar"),
             candidateCount = 42,
             responseMimeType = "example/response",
+            presencePenalty = 0.6f,
+            frequencyPenalty = 0.7f,
           )
       )
 
@@ -766,7 +769,182 @@ class ConversionsTest {
       assertThat(stopSequences).containsExactly("foo", "bar")
       assertThat(candidateCount).isEqualTo(42)
       assertThat(responseMimeType).isEqualTo("example/response")
+      assertThat(presencePenalty).isEqualTo(0.6f)
+      assertThat(frequencyPenalty).isEqualTo(0.7f)
     }
+  }
+
+  @Test
+  fun requestConverter_generationConfigBuilder_mapsResponseSchema() {
+    // An agent's output schema arrives as the response schema. Without it the request keeps only
+    // the JSON MIME type, so the model may answer with any JSON shape.
+    val request =
+      LlmRequest(
+        config =
+          GenerateContentConfig(
+            responseMimeType = "application/json",
+            responseSchema =
+              Schema(
+                type = Type.OBJECT,
+                properties =
+                  mapOf(
+                    "city" to Schema(type = Type.STRING),
+                    "population" to Schema(type = Type.INTEGER),
+                  ),
+                required = listOf("city"),
+              ),
+          )
+      )
+
+    val schema = Conversions().forRequest(request).generationConfigBuilder().responseSchema
+
+    assertThat(schema?.type).isEqualTo("OBJECT")
+    assertThat(schema?.properties?.mapValues { it.value.type })
+      .containsExactly("city", "STRING", "population", "INTEGER")
+    assertThat(schema?.required).containsExactly("city")
+  }
+
+  @Test
+  fun requestConverter_generationConfigBuilder_freeFormResponseSchema_isLeftOut() {
+    // A tool argument with no properties becomes a string carrying JSON, but a response with that
+    // schema would be a quoted string. The JSON MIME type alone still asks for an object.
+    val freeFormSchemas =
+      listOf(
+        Schema(type = Type.OBJECT),
+        Schema(type = Type.OBJECT, properties = emptyMap()),
+        Schema(type = Type.TYPE_UNSPECIFIED),
+        Schema(),
+      )
+
+    for (schema in freeFormSchemas) {
+      val request =
+        LlmRequest(
+          config =
+            GenerateContentConfig(responseMimeType = "application/json", responseSchema = schema)
+        )
+
+      val builder = Conversions().forRequest(request).generationConfigBuilder()
+
+      assertWithMessage("responseSchema for $schema").that(builder.responseSchema).isNull()
+      assertThat(builder.responseMimeType).isEqualTo("application/json")
+    }
+  }
+
+  @Test
+  fun requestConverter_generationConfigBuilder_nestedFreeFormResponseSchema_isLeftOut() {
+    // A nested object with no properties would also become a string carrying JSON, so the model
+    // would answer that field with a quoted string that the agent's output schema rejects.
+    val freeForm = Schema(type = Type.OBJECT)
+    val schemas =
+      listOf(
+        Schema(
+          type = Type.OBJECT,
+          properties = mapOf("fruit" to Schema(type = Type.STRING), "counts" to freeForm),
+        ),
+        Schema(
+          type = Type.OBJECT,
+          properties =
+            mapOf("outer" to Schema(type = Type.OBJECT, properties = mapOf("inner" to Schema()))),
+        ),
+        Schema(type = Type.ARRAY, items = freeForm),
+        Schema(
+          type = Type.OBJECT,
+          properties =
+            mapOf("value" to Schema(anyOf = listOf(Schema(type = Type.STRING), freeForm))),
+        ),
+      )
+
+    for (schema in schemas) {
+      val request =
+        LlmRequest(
+          config =
+            GenerateContentConfig(responseMimeType = "application/json", responseSchema = schema)
+        )
+
+      val builder = Conversions().forRequest(request).generationConfigBuilder()
+
+      assertWithMessage("responseSchema for $schema").that(builder.responseSchema).isNull()
+      assertThat(builder.responseMimeType).isEqualTo("application/json")
+    }
+  }
+
+  @Test
+  fun requestConverter_generationConfigBuilder_nonStringEnumResponseSchema_isLeftOut() {
+    val request =
+      LlmRequest(
+        config =
+          GenerateContentConfig(
+            responseMimeType = "application/json",
+            responseSchema =
+              Schema(
+                type = Type.OBJECT,
+                properties =
+                  mapOf(
+                    "rating" to
+                      Schema(type = Type.INTEGER, enum = listOf("1", "2", "3")),
+                  ),
+              ),
+          )
+      )
+
+    val builder = Conversions().forRequest(request).generationConfigBuilder()
+
+    assertThat(builder.responseSchema).isNull()
+    assertThat(builder.responseMimeType).isEqualTo("application/json")
+  }
+
+  @Test
+  fun requestConverter_generationConfigBuilder_nestedObjectWithProperties_isKept() {
+    val request =
+      LlmRequest(
+        config =
+          GenerateContentConfig(
+            responseMimeType = "application/json",
+            responseSchema =
+              Schema(
+                type = Type.OBJECT,
+                properties =
+                  mapOf(
+                    "counts" to
+                      Schema(
+                        type = Type.OBJECT,
+                        properties = mapOf("apples" to Schema(type = Type.INTEGER)),
+                      )
+                  ),
+              ),
+          )
+      )
+
+    val schema = Conversions().forRequest(request).generationConfigBuilder().responseSchema
+    val counts = schema?.properties?.get("counts")
+
+    assertThat(counts?.type).isEqualTo("OBJECT")
+    assertThat(counts?.properties?.mapValues { it.value.type }).containsExactly("apples", "INTEGER")
+  }
+
+  @Test
+  fun requestConverter_generationConfigBuilder_untypedUnionAndEnumResponseSchemas_areKept() {
+    // Neither declares a type or properties, but each has a Firebase shape of its own, so only an
+    // object without properties is left out.
+    fun responseSchemaFor(schema: Schema) =
+      Conversions()
+        .forRequest(
+          LlmRequest(
+            config =
+              GenerateContentConfig(responseMimeType = "application/json", responseSchema = schema)
+          )
+        )
+        .generationConfigBuilder()
+        .responseSchema
+
+    val union =
+      responseSchemaFor(
+        Schema(anyOf = listOf(Schema(type = Type.STRING), Schema(type = Type.INTEGER)))
+      )
+    val enumeration = responseSchemaFor(Schema(enum = listOf("yes", "no")))
+
+    assertThat(union?.anyOf?.map { it.type }).containsExactly("STRING", "INTEGER")
+    assertThat(enumeration?.enum).containsExactly("yes", "no")
   }
 
   @Test
