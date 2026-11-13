@@ -18,6 +18,8 @@ package com.google.adk.kt.plugins.agentanalytics
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ArrayNode
+import com.fasterxml.jackson.databind.node.ObjectNode
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.agentanalytics.JsonFormatter.SanitizedText
@@ -33,12 +35,24 @@ import com.google.adk.kt.types.Part
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets.UTF_8
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.util.UUID
+import kotlinx.coroutines.CancellationException
 
 /**
  * Builds a row's `content` and `content_parts` values, with credentials redacted and each string
  * truncated to [maxLength] bytes.
+ *
+ * A parse given an offloader uploads binary parts, and text parts over 32 KiB or [maxLength], and
+ * references each upload, with [connectionId] as its authorizer, instead of logging it inline.
  */
-internal class Parser(private val maxLength: Int) {
+internal class Parser(
+  private val maxLength: Int,
+  private val connectionId: String? = null,
+  private val dateProvider: () -> LocalDate = { LocalDate.now(ZoneOffset.UTC) },
+  private val uidProvider: () -> String = { UUID.randomUUID().toString().replace("-", "") },
+) {
 
   internal data class ParsedContent(
     val parts: List<JsonNode>,
@@ -52,15 +66,31 @@ internal class Parser(private val maxLength: Int) {
     val isTruncated: Boolean,
   )
 
-  fun parse(content: Any?): ParsedContent {
+  /** Where one parse uploads parts: objects named [prefix], then the content and part ordinals. */
+  private class Upload(val offloader: ContentOffloader, val prefix: String) {
+    fun path(contentOrdinal: Int, partIndex: Int, extension: String): String =
+      "${prefix}_c${contentOrdinal}_p$partIndex$extension"
+  }
+
+  /**
+   * Parses [content]; with an [offloader], parts too large or binary to log inline are uploaded to
+   * objects named after [traceId] and [spanId].
+   */
+  suspend fun parse(
+    content: Any?,
+    traceId: String = "",
+    spanId: String = "",
+    offloader: ContentOffloader? = null,
+  ): ParsedContent {
+    val upload = offloader?.let { Upload(it, objectPrefix(traceId, spanId)) }
     if (content is LlmRequest) {
       val jsonPayload = mapper.createObjectNode()
       val messages = mapper.createArrayNode()
       val contentParts = mapper.createArrayNode()
       var isTruncated = false
 
-      for (c in content.contents) {
-        val res = parseContentObject(c)
+      for ((ordinal, c) in content.contents.withIndex()) {
+        val res = parseContentObject(c, upload, ordinal)
         isTruncated = isTruncated || res.isTruncated
         contentParts.addAll(res.parts)
         val message = mapper.createObjectNode()
@@ -73,7 +103,7 @@ internal class Parser(private val maxLength: Int) {
       }
       val sysInstruction = content.config.systemInstruction
       if (sysInstruction != null) {
-        val res = parseContentObject(sysInstruction)
+        val res = parseContentObject(sysInstruction, upload, content.contents.size)
         isTruncated = isTruncated || res.isTruncated
         contentParts.addAll(res.parts)
         jsonPayload.put("system_prompt", res.summary)
@@ -105,7 +135,7 @@ internal class Parser(private val maxLength: Int) {
     }
 
     if (content is Content || content is Part) {
-      val parsed = parseContentObject(content)
+      val parsed = parseContentObject(content, upload, contentOrdinal = 0)
       val summaryNode = mapper.createObjectNode()
       summaryNode.put("text_summary", parsed.summary)
       return ParsedContent(parsed.parts.toList(), summaryNode, parsed.isTruncated)
@@ -167,7 +197,11 @@ internal class Parser(private val maxLength: Int) {
     return SanitizedText(truncated, isChanged || truncated != joined)
   }
 
-  private fun parseContentObject(content: Any?): ParsedContentObject {
+  private suspend fun parseContentObject(
+    content: Any?,
+    upload: Upload?,
+    contentOrdinal: Int,
+  ): ParsedContentObject {
     val parts: List<Part> =
       when (content) {
         is Content -> content.parts
@@ -180,7 +214,7 @@ internal class Parser(private val maxLength: Int) {
     var isTruncated = false
 
     for ((index, part) in parts.withIndex()) {
-      val res = processPart(part, index)
+      val res = processPart(part, index, upload, contentOrdinal)
       contentParts.add(res.node)
       isTruncated = isTruncated || res.isTruncated
       res.summary?.let { summaries.add(it) }
@@ -194,12 +228,17 @@ internal class Parser(private val maxLength: Int) {
 
   /** A `content_parts` entry and what it adds to the content summary. */
   private data class ProcessedPart(
-    val node: JsonNode,
+    val node: ObjectNode,
     val summary: String?,
     val isTruncated: Boolean,
   )
 
-  private fun processPart(part: Part, index: Int): ProcessedPart {
+  private suspend fun processPart(
+    part: Part,
+    index: Int,
+    upload: Upload?,
+    contentOrdinal: Int,
+  ): ProcessedPart {
     val partNode = mapper.createObjectNode()
     partNode.put("part_index", index)
     partNode.put("mime_type", "text/plain")
@@ -220,18 +259,39 @@ internal class Parser(private val maxLength: Int) {
 
     val inlineData = part.inlineData
     if (inlineData != null) {
-      val mimeType = inlineData.mimeType ?: "application/octet-stream"
-      partNode.put("text", BINARY_DATA_MESSAGE)
+      val mimeType = inlineData.mimeType?.ifEmpty { null } ?: OCTET_STREAM_MIME_TYPE
       partNode.put("mime_type", mimeType)
+      if (upload == null) {
+        partNode.put("text", BINARY_DATA_MESSAGE)
+      } else {
+        val path = upload.path(contentOrdinal, index, GcsOffloader.extensionForMimeType(mimeType))
+        val data = inlineData.data ?: ByteArray(0)
+        val offloaded = offload(upload, data, mimeType, path, partNode, kind = "binary")
+        partNode.put("text", if (offloaded) MEDIA_OFFLOADED_MESSAGE else UPLOAD_FAILED_MESSAGE)
+      }
       return ProcessedPart(partNode, summary = null, isTruncated = false)
     }
 
     val text = part.text
     if (!text.isNullOrEmpty()) {
-      val res = smartTruncateText(text, maxLength)
-      val cleanText = res.node.asText()
+      // Redacted before it can be uploaded; only the inline copy is cut to the budget.
+      val redacted = smartTruncateText(text, Int.MAX_VALUE)
+      val safeText = redacted.node.asText()
+      if (upload != null) {
+        val utf8 = safeText.toByteArray(UTF_8)
+        val path = upload.path(contentOrdinal, index, ".txt")
+        if (
+          (utf8.size > INLINE_TEXT_LIMIT_BYTES || utf8.size > maxLength) &&
+            offload(upload, utf8, TEXT_MIME_TYPE, path, partNode, kind = "text")
+        ) {
+          partNode.put("text", offloadedPreview(utf8))
+          // Offloaded text is referenced from content_parts, so the inline summary leaves it out.
+          return ProcessedPart(partNode, summary = null, redacted.isTruncated)
+        }
+      }
+      val cleanText = truncate(safeText, maxLength)
       partNode.put("text", cleanText)
-      return ProcessedPart(partNode, cleanText, res.isTruncated)
+      return ProcessedPart(partNode, cleanText, redacted.isTruncated || cleanText != safeText)
     }
 
     val fc = part.functionCall
@@ -291,6 +351,61 @@ internal class Parser(private val maxLength: Int) {
 
     return ProcessedPart(partNode, summary = null, isTruncated = false)
   }
+
+  /**
+   * Uploads [data] to [path] and points [partNode] at it, or returns false if the upload fails.
+   *
+   * The warning names only the [kind] of part and the exception class, never the content.
+   */
+  private suspend fun offload(
+    upload: Upload,
+    data: ByteArray,
+    mimeType: String,
+    path: String,
+    partNode: ObjectNode,
+    kind: String,
+  ): Boolean {
+    val uri =
+      try {
+        upload.offloader.uploadContent(data, mimeType, path)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.warn { "Failed to offload $kind content to GCS (${e::class.simpleName})." }
+        return false
+      }
+    partNode.put("storage_mode", GCS_REFERENCE)
+    partNode.put("uri", uri)
+    partNode.set<JsonNode>("object_ref", objectRef(uri, mimeType))
+    return true
+  }
+
+  // BigQuery reads `details` as JSON, so the stream writer expects a JSON string.
+  private fun objectRef(uri: String, mimeType: String): ObjectNode =
+    mapper.createObjectNode().apply {
+      put("uri", uri)
+      putNull("version")
+      put("authorizer", connectionId)
+      put(
+        "details",
+        mapper.writeValueAsString(mapOf("gcs_metadata" to mapOf("content_type" to mimeType))),
+      )
+    }
+
+  // Up to 200 UTF-8 bytes, within the budget and cut at a character boundary.
+  private fun offloadedPreview(utf8: ByteArray): String {
+    var end =
+      minOf(MAX_OFFLOADED_PREVIEW_BYTES, maxLength - OFFLOADED_SUFFIX.length, utf8.size)
+        .coerceAtLeast(0)
+    // A continuation byte (10xxxxxx) at the cut would split a character.
+    while (end in 1 until utf8.size && (utf8[end].toInt() and 0xC0) == 0x80) end--
+    return String(utf8, 0, end, UTF_8) + OFFLOADED_SUFFIX
+  }
+
+  // `<UTC date>/<trace id>/<span id>_<uid>`, where the uid keeps every parse's objects apart.
+  private fun objectPrefix(traceId: String, spanId: String): String =
+    "${dateProvider()}/${pathSegment(traceId, NO_TRACE)}/${pathSegment(spanId, NO_SPAN)}_" +
+      uidProvider()
 
   // Drops null fields, redacts and bounds the rest.
   private fun serializePartModel(
@@ -420,9 +535,26 @@ internal class Parser(private val maxLength: Int) {
 
   companion object {
     private const val BINARY_DATA_MESSAGE = "[BINARY DATA]"
+    private const val MEDIA_OFFLOADED_MESSAGE = "[MEDIA OFFLOADED]"
+    private const val UPLOAD_FAILED_MESSAGE = "[UPLOAD FAILED]"
+    private const val OFFLOADED_SUFFIX = "... [OFFLOADED]"
+    private const val GCS_REFERENCE = "GCS_REFERENCE"
+    private const val TEXT_MIME_TYPE = "text/plain"
+    private const val OCTET_STREAM_MIME_TYPE = "application/octet-stream"
+    private const val NO_TRACE = "no_trace"
+    private const val NO_SPAN = "no_span"
     private const val UNKNOWN = "unknown"
     private const val REDACTED_URI = "[REDACTED_SENSITIVE_URI]"
     private const val ENCODED_REDACTED = "%5BREDACTED%5D"
+
+    // Text longer than this many UTF-8 bytes is uploaded to Cloud Storage instead of inline.
+    private const val INLINE_TEXT_LIMIT_BYTES = 32 * 1024
+    private const val MAX_OFFLOADED_PREVIEW_BYTES = 200
+
+    private val logger = LoggerFactory.getLogger(Parser::class)
+
+    // Object names keep only these characters of the trace and span ids.
+    private val UNSAFE_PATH_CHARS = Regex("[^A-Za-z0-9_-]")
 
     // RFC 3986 appendix B: every component is optional, so any string splits.
     private val URI_RE = Regex("""(?s)(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?""")
@@ -432,6 +564,9 @@ internal class Parser(private val maxLength: Int) {
     private const val PATH_GROUP = 5
     private const val QUERY_GROUP = 7
     private const val FRAGMENT_GROUP = 9
+
+    private fun pathSegment(id: String, fallback: String): String =
+      id.replace(UNSAFE_PATH_CHARS, "_").ifEmpty { fallback }
 
     // Form decoding, so `+` is a space; a malformed escape leaves the text as it was.
     private fun percentDecode(text: String): String =

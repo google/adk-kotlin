@@ -92,7 +92,7 @@ internal class StorageWriteApiWriter(
       logger.warn {
         "BigQuery append of ${rows.size} row(s) timed out after $appendTimeout; dropped them."
       }
-      // Not retried; Python ADK counts writes that keep timing out as retry_exhausted too.
+      // Not retried; writes that keep timing out are counted as retry_exhausted too.
       return WriteResult.Dropped(BatchProcessor.RETRY_EXHAUSTED)
     }
     return WriteResult.Written

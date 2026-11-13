@@ -42,6 +42,7 @@ import kotlin.test.assertTrue
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.atLeast
+import org.mockito.kotlin.clearInvocations
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -201,7 +202,7 @@ class BigQueryUtilsTest {
 
     val merged = table.capturedSchema().fields
     assertEquals(existing.map { it.name }, merged.map { it.name })
-    val contentParts = merged.get("content_parts")
+    val contentParts = merged.single { it.name == "content_parts" }
     assertEquals(Field.Mode.REPEATED, contentParts.mode)
     assertEquals("storage_mode", contentParts.subFields.last().name)
     assertEquals(
@@ -226,7 +227,10 @@ class BigQueryUtilsTest {
 
     val merged = table.capturedSchema().fields
     assertEquals(existing.map { it.name } + "event_id", merged.map { it.name })
-    assertEquals(existing.single { it.name == "CONTENT_PARTS" }, merged.get("CONTENT_PARTS"))
+    assertEquals(
+      existing.single { it.name == "CONTENT_PARTS" },
+      merged.single { it.name == "CONTENT_PARTS" },
+    )
   }
 
   @Test
@@ -303,6 +307,53 @@ class BigQueryUtilsTest {
     }
   }
 
+  @Test
+  fun createAnalyticsViews_domainScopedProjectId_createsViewsAndRejectsUnsafeDomains() {
+    BigQueryUtils.createAnalyticsViews(
+      mockBigQuery,
+      config.copy(projectId = "example.com:my-project"),
+    )
+
+    val queries = capturedViewQueries()
+    assertTrue(queries.all { "`example.com:my-project.test_dataset.v_" in it })
+    assertTrue(queries.all { "`example.com:my-project.test_dataset.test_table`" in it })
+
+    clearInvocations(mockBigQuery)
+    BigQueryUtils.createAnalyticsViews(mockBigQuery, config.copy(projectId = "Example.com:proj"))
+    BigQueryUtils.createAnalyticsViews(mockBigQuery, config.copy(projectId = "bad/domain:proj"))
+    verify(mockBigQuery, never()).query(any<QueryJobConfiguration>())
+  }
+
+  @Test
+  fun maybeUpgradeSchema_missingRequiredAndNestedStructFields_relaxesRequiredToNullable() {
+    assertEquals(Field.Mode.REQUIRED, desiredFields().single { it.name == "timestamp" }.mode)
+    val existing =
+      desiredFields()
+        .filter { it.name != "timestamp" }
+        .map { field ->
+          if (field.name != "content_parts") {
+            field
+          } else {
+            val subFields = field.subFields.filter { it.name != "object_ref" }
+            field.toBuilder().setType(StandardSQLTypeName.STRUCT, FieldList.of(subFields)).build()
+          }
+        }
+    val table = tableWith(existing)
+
+    assertTrue(BigQueryUtils.maybeUpgradeSchema(mockBigQuery, table.table))
+
+    val merged = table.capturedSchema().fields
+    assertEquals(Field.Mode.NULLABLE, merged.single { it.name == "timestamp" }.mode)
+    val objectRef =
+      merged.single { it.name == "content_parts" }.subFields.single { it.name == "object_ref" }
+    assertEquals(StandardSQLTypeName.STRUCT, objectRef.type.standardType)
+    assertEquals(Field.Mode.NULLABLE, objectRef.mode)
+    assertEquals(
+      listOf("uri", "version", "authorizer", "details"),
+      objectRef.subFields.map { it.name },
+    )
+  }
+
   private fun desiredFields(): List<Field> = BigQuerySchema.getEventsSchema().fields.toList()
 
   /** Returns the WARNING messages [BigQueryUtils] logs while [block] runs. */
@@ -343,13 +394,16 @@ class BigQueryUtilsTest {
     }
   }
 
-  private fun tableWith(fields: List<Field>, labels: Map<String, String>? = null): MockedTable {
+  private fun tableWith(
+    fields: List<Field>,
+    labels: Map<String, String> = emptyMap(),
+  ): MockedTable {
     val table = mock<Table>()
     val builder = mock<Table.Builder>()
     val updated = mock<Table>()
     whenever(table.getDefinition<StandardTableDefinition>())
       .thenReturn(StandardTableDefinition.of(Schema.of(fields)))
-    whenever(table.labels).thenReturn(labels)
+    whenever(table.labels).thenReturn(labels.ifEmpty { null })
     whenever(table.tableId).thenReturn(TableId.of("test-project", "test_dataset", "test_table"))
     whenever(table.toBuilder()).thenReturn(builder)
     whenever(builder.setDefinition(any())).thenReturn(builder)

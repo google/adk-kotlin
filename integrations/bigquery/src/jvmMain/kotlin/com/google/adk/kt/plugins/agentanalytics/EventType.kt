@@ -17,11 +17,9 @@
 package com.google.adk.kt.plugins.agentanalytics
 
 /**
- * The `event_type` vocabulary written to the BigQuery events table. Python ADK also writes
- * AGENT_ERROR, AGENT_STATE_CHECKPOINT, AGENT_TRANSFER, EVENT_COMPACTION, NODE_ERROR and
- * NODE_OUTPUT, which this plugin does not. The plugin API has no agent-level error hook, so a
- * failure that ends the run is an INVOCATION_ERROR and a model or tool failure is an ERROR status
- * on its own row.
+ * The `event_type` vocabulary written to the BigQuery events table. The plugin API has no
+ * agent-level error hook, so a failure that ends the run is an INVOCATION_ERROR and a model or tool
+ * failure is an ERROR status on its own row.
  */
 internal object EventType {
 

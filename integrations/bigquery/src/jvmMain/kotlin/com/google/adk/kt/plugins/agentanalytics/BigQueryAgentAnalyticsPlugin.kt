@@ -81,10 +81,14 @@ import kotlinx.coroutines.withContext
 class BigQueryAgentAnalyticsPlugin
 internal constructor(
   private val config: BigQueryLoggerConfig,
-  private val bigQuery: BigQuery,
+  // Null for a disabled plugin, which never looks up credentials.
+  internal val bigQuery: BigQuery?,
   private val ioContext: CoroutineContext,
   private val timeSource: TimeSource,
   private val createRowWriter: (Credentials?) -> RowWriter,
+  private val createOffloader: (Credentials?) -> ContentOffloader = { credentials ->
+    GcsOffloader.create(config, credentials, ioContext)
+  },
 ) : Plugin {
 
   override val name: String = "bigquery_agent_analytics"
@@ -96,32 +100,47 @@ internal constructor(
   // -1 means unlimited.
   private val maxContentLength =
     if (config.maxContentLength == -1) Int.MAX_VALUE else config.maxContentLength
-  private val parser = Parser(maxContentLength)
+  private val parser = Parser(maxContentLength, config.connectionId)
   // Shared by every pipeline, so counts outlive a close; seeded, so its keys never change.
   private val drops = DropCounter().apply { add(SETUP_UNAVAILABLE, count = 0) }
   private val pipelineLock = Any()
   // Guarded by pipelineLock.
   private var pipeline: Pipeline? = null
+  // Guarded by pipelineLock; created for the first row after a close, like the pipeline.
+  private var offloader: ContentOffloader? = null
   // Callers of close wait for one in progress, so that the shutdown hook does not end it early.
   private val closeLock = Any()
+
+  init {
+    // An upload is referenced only from content_parts, which is not logged.
+    if (config.enabled && config.gcsBucketName != null && !config.logMultiModalContent) {
+      logger.warn {
+        "GCS offload disabled: logMultiModalContent is false, so content_parts, which would " +
+          "reference the uploads, is not logged; long text is truncated inline and binary " +
+          "parts are not stored."
+      }
+    }
+  }
 
   /**
    * Creates a plugin that logs to the table [config] names.
    *
    * @param config Where and what to log.
    * @param bigQuery Client that creates and upgrades the table and its views; the Storage Write API
-   *   writes the rows with this client's credentials.
+   *   writes the rows, and parts are uploaded to [BigQueryLoggerConfig.gcsBucketName], with this
+   *   client's credentials. If `null`, a client is created from [config] unless it disables the
+   *   plugin.
    * @param ioContext Context that blocking BigQuery calls and the background writer run in.
    * @param timeSource Clock for the interval between attempts to create the table.
    */
   constructor(
     config: BigQueryLoggerConfig,
-    bigQuery: BigQuery = createBigQuery(config),
+    bigQuery: BigQuery? = null,
     @Suppress("GlobalCoroutineDispatchers") ioContext: CoroutineContext = Dispatchers.IO,
     timeSource: TimeSource = TimeSource.Monotonic,
   ) : this(
     config,
-    bigQuery,
+    bigQuery ?: if (config.enabled) createBigQuery(config) else null,
     ioContext,
     timeSource,
     createRowWriter = { credentials -> StorageWriteApiWriter.create(config, credentials) },
@@ -215,7 +234,7 @@ internal constructor(
               eventData = EventData(sourceEvent = event),
             )
           }
-          if (functionCall.id != null && longRunningIds.contains(functionCall.id)) {
+          if (functionCall.id != null && functionCall.id in longRunningIds) {
             val truncatedResult = smartTruncate(functionCall.args, maxContentLength)
             logEvent(
               eventType = EventType.TOOL_PAUSED,
@@ -324,7 +343,8 @@ internal constructor(
           invocationContext = invocationContext,
           content = mapOf("error_traceback" to traceback.text),
           isContentTruncated = traceback.isChanged,
-          eventData = completedData.copy(status = STATUS_ERROR, errorMessage = error.message),
+          eventData =
+            completedData.copy(status = STATUS_ERROR, errorMessage = formatErrorMessage(error)),
         )
       }
     } finally {
@@ -458,7 +478,7 @@ internal constructor(
       val eventData =
         EventData(
           status = STATUS_ERROR,
-          errorMessage = error.message,
+          errorMessage = formatErrorMessage(error),
           latency = popped?.duration,
           spanIdOverride = popped?.spanId,
           parentSpanIdOverride =
@@ -560,7 +580,7 @@ internal constructor(
       val eventData =
         EventData(
           status = STATUS_ERROR,
-          errorMessage = error.message,
+          errorMessage = formatErrorMessage(error),
           latency = popped?.duration,
           spanIdOverride = popped?.spanId,
           parentSpanIdOverride = popped?.parentSpanId,
@@ -610,6 +630,7 @@ internal constructor(
           synchronized(pipelineLock) { pipeline = null }
         }
       }
+      synchronized(pipelineLock) { offloader.also { offloader = null } }?.let(::closeOffloader)
       traceManager.clear()
     }
   }
@@ -620,7 +641,7 @@ internal constructor(
 
   private fun startPipeline(): Pipeline {
     // Rows are written as the same identity that creates the table.
-    val writer = createRowWriter(bigQuery.options?.scopedCredentials)
+    val writer = createRowWriter(bigQuery?.options?.scopedCredentials)
     val processor =
       BatchProcessor(
         writer = writer,
@@ -658,6 +679,27 @@ internal constructor(
     }
   }
 
+  // Null unless parts can be offloaded: only content_parts references an upload.
+  private fun currentOffloader(): ContentOffloader? {
+    if (config.gcsBucketName == null || !config.logMultiModalContent) return null
+    // Uploads use the identity that creates the table, unscoped so that GCS adds its own scopes.
+    return synchronized(pipelineLock) {
+      offloader ?: createOffloader(bigQuery?.options?.credentials).also { offloader = it }
+    }
+  }
+
+  private fun closeOffloader(offloader: ContentOffloader) {
+    try {
+      offloader.close()
+    } catch (e: Exception) {
+      logger.warn { "Closing the GCS client failed: ${e::class.simpleName}" }
+    }
+  }
+
+  // Message-less exceptions, such as a bare NullPointerException, are named by their class.
+  private fun formatErrorMessage(error: Throwable): String =
+    error.message?.ifEmpty { null } ?: error::class.simpleName ?: error.javaClass.name
+
   private suspend fun logEvent(
     eventType: String,
     invocationContext: InvocationContext,
@@ -666,8 +708,8 @@ internal constructor(
     isContentPreformatted: Boolean = false,
     eventData: EventData = EventData(),
   ) {
-    if (config.eventAllowlist.isNotEmpty() && !config.eventAllowlist.contains(eventType)) return
-    if (config.eventDenylist.contains(eventType)) return
+    if (config.eventAllowlist.isNotEmpty() && eventType !in config.eventAllowlist) return
+    if (eventType in config.eventDenylist) return
 
     val errorMessage =
       eventData.errorMessage?.let { JsonFormatter.sanitizeText(it, maxContentLength) }
@@ -687,11 +729,12 @@ internal constructor(
       }
     }
     val eventError = errorMessage?.text
+    // The note joins a message already cut to the budget, so the two are cut again together.
     val errorText =
       when {
         formatterNote == null -> eventError
-        eventError.isNullOrEmpty() -> formatterNote
-        else -> "$eventError; $formatterNote"
+        eventError.isNullOrEmpty() -> JsonFormatter.truncate(formatterNote, maxContentLength)
+        else -> JsonFormatter.truncate("$eventError; $formatterNote", maxContentLength)
       }
 
     if (!ensureTableExistsOnce()) {
@@ -701,13 +744,15 @@ internal constructor(
     }
 
     val currentSpans = traceManager.getCurrentSpanAndParent(invocationContext)
+    val traceId = traceManager.getTraceId(invocationContext)
+    val spanId = eventData.spanIdOverride ?: currentSpans.spanId
     val latencyMap = extractLatency(eventData)
     val attributes = smartTruncate(getAttributes(eventData, invocationContext), maxContentLength)
     val parsed =
       if (isContentPreformatted && formattedContent === content) {
         Parser.ParsedContent(emptyList(), mapper.valueToTree(formattedContent), isTruncated = false)
       } else {
-        parser.parse(formattedContent)
+        parser.parse(formattedContent, traceId, spanId.orEmpty(), currentOffloader())
       }
 
     val row =
@@ -719,12 +764,13 @@ internal constructor(
         "session_id" to invocationContext.session.key.id,
         "invocation_id" to invocationContext.invocationId,
         "user_id" to invocationContext.session.key.userId,
-        "trace_id" to traceManager.getTraceId(invocationContext),
-        "span_id" to (eventData.spanIdOverride ?: currentSpans.spanId),
+        "trace_id" to traceId,
+        "span_id" to spanId,
         "parent_span_id" to (eventData.parentSpanIdOverride ?: currentSpans.parentSpanId),
         "status" to (eventData.status ?: STATUS_OK),
         "error_message" to errorText,
-        "latency_ms" to if (latencyMap != null) mapper.writeValueAsString(latencyMap) else null,
+        "latency_ms" to
+          if (latencyMap.isNotEmpty()) mapper.writeValueAsString(latencyMap) else null,
         "attributes" to mapper.writeValueAsString(attributes.node),
         "content_parts" to
           if (config.logMultiModalContent) {
@@ -733,10 +779,12 @@ internal constructor(
             emptyList<Any>()
           },
         "content" to if (parsed.content.isNull) null else mapper.writeValueAsString(parsed.content),
+        // A failed formatter replaced the content with the marker.
         "is_truncated" to
           (isContentTruncated ||
             parsed.isTruncated ||
             errorMessage?.isChanged == true ||
+            formatterNote != null ||
             attributes.isTruncated),
       )
 
@@ -766,6 +814,7 @@ internal constructor(
     withContext(ioContext) {
       val tableId = TableId.of(config.projectId, config.datasetId, config.tableName)
       try {
+        val bigQuery = checkNotNull(bigQuery) { "Only a disabled plugin has no BigQuery client." }
         val table = bigQuery.getTable(tableId)
         when {
           table == null -> {
@@ -923,13 +972,12 @@ internal constructor(
       )
       .filterValues { it != null }
 
-  private fun extractLatency(eventData: EventData): Map<String, Any?>? =
+  private fun extractLatency(eventData: EventData): Map<String, Any?> =
     mapOf(
         "total_ms" to eventData.latency?.toMillis(),
         "time_to_first_token_ms" to eventData.timeToFirstToken?.toMillis(),
       )
       .filterValues { it != null }
-      .ifEmpty { null }
 
   private fun getAttributes(
     eventData: EventData,
