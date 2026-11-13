@@ -619,7 +619,21 @@ internal class Conversions {
       )
     }
 
+  /**
+   * Converts an agent's output schema for the generation config's `responseSchema`.
+   *
+   * Returns `null` when Firebase would describe this schema, or any schema nested in it, with a
+   * different shape. Firebase represents objects without properties, arrays without item schemas,
+   * and non-string enums with string schemas. A null-only schema also has no Firebase equivalent.
+   * Without a schema, the JSON response MIME type still asks for JSON.
+   */
+  fun toFirebaseResponseSchema(schema: Schema): FirebaseSchema? =
+    if (schema.containsResponseSchemaTypeMismatch()) null else toFirebaseSchema(schema)
+
   fun toFirebaseSchema(schema: Schema): FirebaseSchema =
+    toFirebaseSchema(schema, nullableFromUnion = false)
+
+  private fun toFirebaseSchema(schema: Schema, nullableFromUnion: Boolean): FirebaseSchema =
     with(schema) {
       // Firebase models a union as a schema that carries only `anyOf`, so a typed schema cannot
       // hold one as well. An untyped union is the shape a server sends, and reaching the `when`
@@ -638,13 +652,21 @@ internal class Conversions {
         }
       }
 
-      val isNullable = nullable == true
+      val isNullable = nullable == true || nullableFromUnion
       val localAnyOf = anyOf
       val localEnum = enum
       // The same three branches [firebaseBranch] names, in the same order.
       when {
-        localAnyOf != null && firebaseBranch() == FirebaseBranch.UNION ->
-          FirebaseSchema.anyOf(schemas = localAnyOf.map { toFirebaseSchema(it) })
+        localAnyOf != null && firebaseBranch() == FirebaseBranch.UNION -> {
+          // Firebase has no NULL type. Express a NULL alternative on the remaining types.
+          val nonNullAlternatives = nonNullUnionAlternatives()?.takeIf { it.isNotEmpty() }
+          val allowNull = nullableFromUnion || nonNullAlternatives != null
+          val schemas =
+            (nonNullAlternatives ?: localAnyOf).map {
+              toFirebaseSchema(it, nullableFromUnion = allowNull)
+            }
+          if (allowNull && schemas.size == 1) schemas.single() else FirebaseSchema.anyOf(schemas)
+        }
         localEnum != null ->
           FirebaseSchema.enumeration(
             values = localEnum,
@@ -661,12 +683,11 @@ internal class Conversions {
             Type.OBJECT,
             Type.TYPE_UNSPECIFIED,
             null -> {
-              val declaredProps = properties
-              if (declaredProps.isNullOrEmpty()) {
+              if (convertsToFreeFormObject()) {
                 freeFormObject(description, isNullable, title)
               } else {
                 FirebaseSchema.obj(
-                  properties = declaredProps.mapValues { toFirebaseSchema(it.value) },
+                  properties = properties.orEmpty().mapValues { toFirebaseSchema(it.value) },
                   description = description,
                   optionalProperties = optionalParameters(this),
                   nullable = isNullable,
@@ -773,6 +794,33 @@ internal class Conversions {
       else -> FirebaseBranch.TYPED
     }
 
+  /** Whether [toFirebaseSchema] converts this schema with [freeFormObject]. */
+  private fun Schema.convertsToFreeFormObject(): Boolean =
+    firebaseBranch() == FirebaseBranch.TYPED &&
+      (type == Type.OBJECT || type == Type.TYPE_UNSPECIFIED || type == null) &&
+      properties.isNullOrEmpty()
+
+  /** The non-null alternatives of an untyped union with an explicit NULL alternative. */
+  private fun Schema.nonNullUnionAlternatives(): List<Schema>? =
+    anyOf
+      ?.takeIf {
+        firebaseBranch() == FirebaseBranch.UNION && it.any { alt -> alt.type == Type.NULL }
+      }
+      ?.filterNot { it.type == Type.NULL }
+
+  /** Whether this schema or any nested schema would have a different type in a response. */
+  private fun Schema.containsResponseSchemaTypeMismatch(): Boolean {
+    val nonNullAlternatives = nonNullUnionAlternatives()
+    return type == Type.NULL ||
+      nonNullAlternatives?.isEmpty() == true ||
+      convertsToFreeFormObject() ||
+      substitutesStringForEnumType(this) ||
+      (type == Type.ARRAY && items == null) ||
+      properties.orEmpty().values.any { it.containsResponseSchemaTypeMismatch() } ||
+      items?.containsResponseSchemaTypeMismatch() == true ||
+      (nonNullAlternatives ?: anyOf.orEmpty()).any { it.containsResponseSchemaTypeMismatch() }
+  }
+
   /**
    * Whether Firebase drops this schema's `anyOf` because a type is declared beside it.
    *
@@ -874,9 +922,12 @@ internal class Conversions {
           maxOutputTokens = config.maxOutputTokens
           topP = config.topP
           topK = config.topK
+          presencePenalty = config.presencePenalty
+          frequencyPenalty = config.frequencyPenalty
           stopSequences = config.stopSequences
           candidateCount = config.candidateCount
           responseMimeType = config.responseMimeType
+          responseSchema = config.responseSchema?.let { toFirebaseResponseSchema(it) }
           responseModalities =
             config.responseModalities
               ?.mapNotNull { toFirebaseResponseModality(it) }
