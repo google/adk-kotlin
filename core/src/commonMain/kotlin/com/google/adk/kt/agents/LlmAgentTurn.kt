@@ -65,6 +65,8 @@ import com.google.adk.kt.tools.createGoogleSearchAgent
 import com.google.adk.kt.tools.createVertexAiSearchAgent
 import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.InteractionStatus
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.SessionResumptionConfig
@@ -98,10 +100,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
@@ -112,6 +116,8 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
@@ -803,12 +809,14 @@ internal class LlmAgentTurn(
         val deliver: suspend (Event) -> Unit = { event -> handOver(Delivery(event)) }
         val saves = RecordingSaves(this, deliver)
         recordingSaves.store(saves)
+        // With resumption on, a drain waits for the handle after the turn, unless it read a call.
+        val drain = GoAwayDrain(resuming = request.liveConnectConfig.sessionResumption != null)
         // A transport drop the sender saw, kept so it surfaces after the saves finish instead of
         // cancelling the scope and its in-flight saves; read once the sender has joined below.
         var sendDrop: Throwable? = null
         val receiver = async {
           try {
-            receiveTurns(request, connection, queue, result) { event ->
+            receiveTurns(request, connection, queue, result, drain) { event ->
               val delivery = Delivery(event)
               answerTaken.store(delivery.taken)
               // Read while the caller holds another event, so a typed turn must not wait on it.
@@ -872,6 +880,8 @@ internal class LlmAgentTurn(
           pendingRequest.load()?.let { pending -> if (!sendOrReplay(pending)) return@launch }
           pendingRequest.store(null)
           while (true) {
+            // Left in the queue, so a restart, transfer or block after the drain still gets it.
+            if (drain.isDraining) return@launch
             val liveRequest = queue.receiveRequest() ?: break
             // Held until the write returns, so a cancellation in between re-sends it.
             val pending = PendingSend(liveRequest, persisted = false, screened = null)
@@ -908,13 +918,34 @@ internal class LlmAgentTurn(
               }
             }
           }
+        val unused = drain.sender.complete(sender)
+        // Ends a drain at its deadline, shortly after the turn or at a hang-up, never mid-response.
+        val deadline = launch {
+          withTimeoutOrNull(drain.readFor.await()) {
+            select {
+              queue.closed.onAwait {}
+              drain.turnEnded.onAwait { delay(DRAIN_GRACE) }
+            }
+          }
+          drain.handling.withLock { receiver.cancel() }
+        }
+        // Ends a drain a second after a call the model does not talk past, rechecked under lock.
+        val callGrace = launch {
+          drain.quietCall.collectLatest { call ->
+            if (call == null) return@collectLatest
+            delay(DRAIN_GRACE)
+            drain.handling.withLock { if (drain.quietCall.value === call) receiver.cancel() }
+          }
+        }
 
         try {
           receiver.await()
         } catch (e: CancellationException) {
-          // Only the sender cancels the receiver; a cancellation of this scope still throws.
+          // Only the sender or a drain's timer cancels the receiver; a scope cancel throws.
           ensureActive()
         }
+        deadline.cancel()
+        callGrace.cancel()
         // Joined so the sender has stopped before the caller restarts or reconnects.
         sender.cancelAndJoin()
         toolEvents?.cancelAndJoin()
@@ -949,35 +980,59 @@ internal class LlmAgentTurn(
 
   /**
    * Reads the model's turns off [connection] and emits their events, answering tool calls through
-   * [queue] as ADK Python does, and records in [result] how the reading stopped.
+   * [queue], and records in [result] how the reading stopped. A go-away that leaves time starts the
+   * [drain], which lets the model finish its turn first.
    */
   private suspend fun receiveTurns(
     request: LlmRequest,
     connection: LiveConnection,
     queue: LiveRequestQueue,
     result: LiveAttemptResult,
+    drain: GoAwayDrain,
     emitEvent: suspend (Event) -> Unit,
   ) {
     spoken = ""
     unfinishedInput = ""
     storedInput = null
+    // Whether the model is partway through a turn; a go-away drains only then.
+    var modelTurnOpen = false
     while (true) {
       var sawResponse = false
       var end: LiveTurnsEnd? = null
       connection
         .receive()
+        // Locked per response, so a go-away's deadline never cuts one short.
+        .transform { response ->
+          drain.handling.withLock {
+            // A lock taken without suspending skips the cancellation check, so check here.
+            currentCoroutineContext().ensureActive()
+            emit(response)
+          }
+        }
         .takeWhile { response ->
           // Store any handle update as-is, so a withdrawn handle clears it, as ADK Python does.
           response.liveSessionResumptionUpdate?.let {
+            // A handle after a call read during the drain would resume a session waiting on it.
+            if (drain.readCall) return@let
             resumptionHandle.store(it.newHandle?.takeIf { h -> h.isNotEmpty() })
           }
-          // A go-away warns of a close: stop and let the loop reconnect; it is not an event.
-          if (response.goAway != null) {
-            end = LiveTurnsEnd.GO_AWAY
-            return@takeWhile false
+          // A go-away warns of a close; it is not an event.
+          val goAway = response.goAway
+          if (goAway != null) {
+            val drainFor = goAway.timeLeft?.minus(GO_AWAY_CLOSE_MARGIN)?.takeIf { it.isPositive() }
+            // With no time to spare or no turn to finish, stop and let the loop reconnect.
+            if (drainFor == null || !modelTurnOpen) {
+              end = LiveTurnsEnd.GO_AWAY
+              return@takeWhile false
+            }
+            // Set now, so a close or a drop before the turn ends still counts as the go-away.
+            result.end = LiveTurnsEnd.GO_AWAY
+            drain.start(drainFor)
+            return@takeWhile true
           }
           sawResponse = true
-          end = handleTurnResponse(request, response, queue, result, emitEvent)
+          modelTurnOpen = response.leavesModelTurnOpen(modelTurnOpen)
+          end = handleTurnResponse(request, response, queue, result, drain, emitEvent)
           end == null
         }
         .collect()
@@ -997,13 +1052,16 @@ internal class LlmAgentTurn(
    * Handles one [response] that [receiveTurns] read: stores or screens the user's speech, emits the
    * response, and releases a held transfer or hands over when it is due.
    *
-   * @return how the reading stops after [response], or null to read on.
+   * @return how the reading stops after [response], including at the end of a go-away's [drain], or
+   *   null to read on.
    */
+  @OptIn(FrameworkInternalApi::class)
   private suspend fun handleTurnResponse(
     request: LlmRequest,
     response: LlmResponse,
     queue: LiveRequestQueue,
     result: LiveAttemptResult,
+    drain: GoAwayDrain,
     emitEvent: suspend (Event) -> Unit,
   ): LiveTurnsEnd? {
     if (response.turnComplete == true) {
@@ -1022,7 +1080,8 @@ internal class LlmAgentTurn(
       if (handover != null) {
         emitEvent(handover.event)
         liveTools?.stopRunning()
-        handOverConnection(handover, queue)
+        // A drain is closing this connection anyway, so it skips the settle pause.
+        if (!drain.isDraining) handOverConnection(handover, queue)
         return LiveTurnsEnd.TRANSFER
       }
       return null
@@ -1032,8 +1091,20 @@ internal class LlmAgentTurn(
     spoken = spokenSoFar(spoken, response)
     unfinishedInput = unfinishedInputSoFar(unfinishedInput, response)
     val screensOutput = shouldScreenModelOutput(response, spoken)
+    val drainCall = drain.isDraining && response.content?.hasFunctionCall() == true
+    if (drainCall) drain.readCall = true
+    // All calls drop when the next connection resumes before them, else only stream-starting ones.
+    val handled =
+      when {
+        !drainCall -> response
+        resumptionHandle.load() != null -> response.withoutFunctionCalls { true }
+        else -> {
+          val tools = getToolMap(request)
+          response.withoutFunctionCalls { tools[it.name]?.isStreaming == true }
+        }
+      }
     // Store and screen the speech before any tool runs.
-    if (unfinishedInput.isNotEmpty() && response.content?.hasFunctionCall() == true) {
+    if (unfinishedInput.isNotEmpty() && handled.content?.hasFunctionCall() == true) {
       val speech = unfinishedInput
       unfinishedInput = ""
       // A blocked question runs no tool; the turn ends and starts over.
@@ -1049,11 +1120,13 @@ internal class LlmAgentTurn(
     val blocked =
       handleLiveResponse(
         request,
-        response,
+        handled,
         spoken.takeIf { screensOutput },
         queue,
         emitEvent,
         holdTransfer,
+        // A call run during the drain is answered in the fresh session's history instead.
+        queuesAnswers = !drainCall,
       )
     // With no before-model callback nothing can block the speech, so it goes out now.
     val unscreenable = heldTransfer != null && !screensUserInput()
@@ -1072,11 +1145,13 @@ internal class LlmAgentTurn(
     if (handover != null) {
       // Stopped before the handover, so this agent's streams reach no other agent.
       liveTools?.stopRunning()
-      handOverConnection(handover, queue)
+      // A drain is closing this connection anyway, so it skips the settle pause.
+      if (!drain.isDraining) handOverConnection(handover, queue)
       return if (handover.transferTo != null) LiveTurnsEnd.TRANSFER else LiveTurnsEnd.TASK_COMPLETED
     }
     // A handover beats a blocked input in the same response: any answer is already queued.
-    return if (blocked) LiveTurnsEnd.BLOCKED else null
+    if (blocked) return LiveTurnsEnd.BLOCKED
+    return if (drain.isDraining && drain.isOverAfter(response)) LiveTurnsEnd.GO_AWAY else null
   }
 
   /**
@@ -1153,10 +1228,11 @@ internal class LlmAgentTurn(
       agent.beforeModelCallbacks.isNotEmpty()
 
   /**
-   * Screens and emits one live [response], answering its tool calls through [queue]. After-model
-   * callbacks screen it with the turn's output so far, [screenedOutput], unless that is null. A
-   * callback's transfer goes to [holdTransfer] instead, when that is set, rather than handing over.
+   * Screens and emits one live [response], answering its tool calls through [queue] when
+   * [queuesAnswers].
    *
+   * @param screenedOutput the turn's output so far for the after-model callbacks, or null to skip.
+   * @param holdTransfer takes a callback's transfer instead of handing over, when set.
    * @return whether a callback blocked the model's output or the user's spoken input.
    */
   private suspend fun handleLiveResponse(
@@ -1166,6 +1242,7 @@ internal class LlmAgentTurn(
     queue: LiveRequestQueue,
     emitEvent: suspend (Event) -> Unit,
     holdTransfer: ((String) -> Unit)? = null,
+    queuesAnswers: Boolean = true,
   ): Boolean {
     val callbackContext = CallbackContext(context)
     if (screenedOutput != null) {
@@ -1211,7 +1288,7 @@ internal class LlmAgentTurn(
       emitEvent(event)
       // Cut-off audio is left out; audio on a turnComplete response is flushed with this turn.
       if (!response.interrupted) cacheModelAudio(event)
-      sendToolResponse(queue, event)
+      if (queuesAnswers) sendToolResponse(queue, event)
     }
     val heard = response.inputTranscription
     if (heard?.finished == true && !heard.text.isNullOrEmpty()) {
@@ -2208,7 +2285,8 @@ private enum class LiveTurnsEnd {
  * How one connection's turn loop ended.
  *
  * @property end why the receive loop stopped; a transport drop is signalled out of band, by a
- *   thrown failure, and leaves this at [LiveTurnsEnd.CLOSED].
+ *   thrown failure, and leaves this at [LiveTurnsEnd.CLOSED], or [LiveTurnsEnd.GO_AWAY] once a
+ *   go-away's drain has started.
  * @property completedATurn whether the connection delivered at least one turn-complete, which marks
  *   a healthy session and resets the reconnect budget.
  * @property closedByCaller whether the sender drained the caller's closed queue, after which
@@ -2259,6 +2337,108 @@ private suspend fun SendChannel<Delivery>.handOver(delivery: Delivery) {
   send(delivery)
   delivery.handled.await()
 }
+
+/**
+ * Lets the model finish its turn on a connection the server is retiring, so the reconnect does not
+ * drop it.
+ *
+ * [start] stops the sender at once, so a cut send and later input go to the next connection; the
+ * reading goes on for [readFor] at most, though the deadline never cuts a response short.
+ */
+private class GoAwayDrain(private val resuming: Boolean) {
+  /** Held by the receive loop while it handles a response. */
+  val handling = Mutex()
+
+  /** The connection's sender, completed once it is launched. */
+  val sender = CompletableDeferred<Job>()
+
+  /** How long the reading may go on, completed once a go-away starts the drain. */
+  val readFor = CompletableDeferred<Duration>()
+
+  /** Whether a go-away has started the drain. */
+  val isDraining: Boolean
+    get() = readFor.isCompleted
+
+  /** Completed once the model's turn ends during the drain, after which only its handle is due. */
+  val turnEnded = CompletableDeferred<Unit>()
+
+  /** Whether the drain read a tool call, after which no handle is kept or waited for. */
+  var readCall = false
+
+  /** A token per tool call the model has said nothing since; its content or turn end clears it. */
+  val quietCall = MutableStateFlow<Any?>(null)
+
+  /**
+   * Records [response] and returns whether the drain is over after it: at an interruption or at the
+   * end of the model's turn; a tool call sets [quietCall]. When [resuming], the turn's end also
+   * waits for the handle sent after it, unless a call was read, so the next connection has it.
+   */
+  fun isOverAfter(response: LlmResponse): Boolean {
+    if (response.interrupted) return true
+    when {
+      response.content?.hasFunctionCall() == true -> quietCall.value = Any()
+      // At the turn's end the deadline's wait for the handle takes over.
+      response.hasModelOutput() || response.endsModelTurn() -> quietCall.value = null
+    }
+    if (response.endsModelTurn()) {
+      val unused = turnEnded.complete(Unit)
+    }
+    return turnEnded.isCompleted && (!resuming || readCall || response.handsOutResumableHandle())
+  }
+
+  /** Starts the reading's deadline, then stops the sender; a repeated call keeps the first time. */
+  suspend fun start(drainFor: Duration) {
+    val unused = readFor.complete(drainFor)
+    sender.await().cancel()
+  }
+}
+
+/** This response without the calls that [drops], and without its content when nothing is left. */
+private fun LlmResponse.withoutFunctionCalls(drops: (FunctionCall) -> Boolean): LlmResponse {
+  val parts = content?.parts ?: return this
+  val rest = parts.filter { part -> part.functionCall?.let(drops) != true }
+  if (rest.size == parts.size) return this
+  return copy(content = content.copy(parts = rest).takeIf { rest.isNotEmpty() })
+}
+
+/** Whether this response ends the model's turn with nothing still in progress. */
+private fun LlmResponse.endsModelTurn(): Boolean =
+  turnComplete == true && interactionStatus != InteractionStatus.IN_PROGRESS
+
+/** Whether this response hands out a handle the next connection can resume from. */
+private fun LlmResponse.handsOutResumableHandle(): Boolean {
+  val update = liveSessionResumptionUpdate
+  return update?.resumable == true && !update.newHandle.isNullOrEmpty()
+}
+
+/**
+ * Whether the model's turn is open after this response, given whether it was before: a tool call,
+ * an interruption or [endsModelTurn] closes it, and its content or a turn end in progress opens it.
+ */
+private fun LlmResponse.leavesModelTurnOpen(wasOpen: Boolean): Boolean =
+  when {
+    interrupted || content?.hasFunctionCall() == true || endsModelTurn() -> false
+    turnComplete == true || hasModelOutput() -> true
+    else -> wasOpen
+  }
+
+/**
+ * Whether this response carries the model's content; its transcript can arrive later, even after a
+ * tool call, so it doesn't count.
+ */
+private fun LlmResponse.hasModelOutput(): Boolean = content?.hasUserRole() == false
+
+/**
+ * The time a go-away still leaves when its drain stops reading, so this side closes the connection
+ * before the server aborts it.
+ */
+private val GO_AWAY_CLOSE_MARGIN = 1.seconds
+
+/**
+ * How long a drain reads on after the model's turn, for the resumption handle the server sends
+ * next, or after a tool call, for the model to talk on.
+ */
+private val DRAIN_GRACE = 1.seconds
 
 /**
  * A request taken off the queue, whether its session writes have run, and the content the
