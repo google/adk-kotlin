@@ -24,6 +24,7 @@ import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionNotFoundException
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.webserver.loaders.ServedApps
 import com.google.adk.kt.webserver.models.AgentRunRequest
@@ -60,13 +61,15 @@ internal fun Route.runRoutes(
   route("/run") {
     post {
       val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
+      // The runner reads the session once and refuses a missing one, which a delete can't race.
       val runner =
-        servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
-          ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
-
-      sessionError(sessionService, request)?.let { error ->
-        return@post call.respond(error.code, error.message)
-      }
+        servedApps.runnerOrNull(
+          request.appName,
+          sessionService.taggingReadFailures(),
+          artifactService,
+          plugins,
+          autoCreateSession = request.sessionId == null,
+        ) ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
 
       // The /run endpoint always returns the full event list; SSE is handled by /run_sse.
       val runConfig = RunConfig(streamingMode = StreamingMode.NONE)
@@ -75,17 +78,24 @@ internal fun Route.runRoutes(
 
       @Suppress("GlobalCoroutineDispatchers") // A blocking tool must not hold the call thread.
       val events =
-        runner
-          .runAsync(
-            request.userId,
-            sessionId,
-            request.invocationId,
-            request.newMessage,
-            request.stateDelta,
-            runConfig,
-          )
-          .flowOn(Dispatchers.IO)
-          .toList()
+        try {
+          runner
+            .runAsync(
+              request.userId,
+              sessionId,
+              request.invocationId,
+              request.newMessage,
+              request.stateDelta,
+              runConfig,
+            )
+            .flowOn(Dispatchers.IO)
+            .toList()
+        } catch (e: SessionNotFoundException) {
+          return@post call.respond(ERR_SESSION_NOT_FOUND.code, ERR_SESSION_NOT_FOUND.message)
+        } catch (e: SessionReadFailure) {
+          logger.warn("Loading the session for a run failed: {}", e.cause.typeName)
+          return@post call.respond(ERR_SESSION_NOT_LOADED.code, ERR_SESSION_NOT_LOADED.message)
+        }
 
       call.respond(events)
     }
@@ -93,10 +103,17 @@ internal fun Route.runRoutes(
 
   post("/run_sse") {
     val request = call.receiveRequiredBodyOrRespond<AgentRunRequest>() ?: return@post
+    // A new id names no session yet; any other must name one, which the runner checks again.
     val runner =
-      servedApps.runnerOrNull(request.appName, sessionService, artifactService, plugins)
-        ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
-    // Checked before the stream opens, since the status line leaves with the first byte.
+      servedApps.runnerOrNull(
+        request.appName,
+        sessionService,
+        artifactService,
+        plugins,
+        autoCreateSession = request.sessionId == null,
+      ) ?: return@post call.respond(HttpStatusCode.NotFound, "Agent not found")
+    // Checked before the stream opens, since the status line leaves with the first byte. A session
+    // deleted after this check fails the run in the stream rather than being created again.
     sessionError(sessionService, request)?.let { error ->
       return@post call.respond(error.code, error.message)
     }

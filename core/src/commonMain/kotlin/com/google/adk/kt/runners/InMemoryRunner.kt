@@ -27,6 +27,7 @@ import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.plugins.PluginManager
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionService
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 
 /**
@@ -43,7 +44,12 @@ open class InMemoryRunner : AbstractRunner {
    * [appName] is used as given, whereas the [App]-based constructor validates it against the
    * [App.appName] grammar. Resumability, compaction and context caching are configurable only
    * through an [App].
+   *
+   * @param autoCreateSession Whether a run creates a session that does not exist yet; when false,
+   *   it throws [SessionNotFoundException][com.google.adk.kt.sessions.SessionNotFoundException]
+   *   instead.
    */
+  @JvmOverloads
   constructor(
     agent: BaseAgent,
     appName: String = "InMemoryRunner",
@@ -51,7 +57,16 @@ open class InMemoryRunner : AbstractRunner {
     artifactService: ArtifactService? = InMemoryArtifactService(),
     memoryService: MemoryService? = InMemoryMemoryService(),
     plugins: List<Plugin> = emptyList(),
-  ) : super(appName, agent, sessionService, artifactService, memoryService, PluginManager(plugins))
+    autoCreateSession: Boolean = true,
+  ) : super(
+    appName,
+    agent,
+    sessionService,
+    artifactService,
+    memoryService,
+    PluginManager(plugins),
+    autoCreateSession = autoCreateSession,
+  )
 
   /**
    * Creates an [InMemoryRunner] from an [App], deriving its [App.appName], [App.rootAgent],
@@ -61,14 +76,26 @@ open class InMemoryRunner : AbstractRunner {
    *
    * @param skipClosingPlugins See [PluginManager.skipClosingPlugins]. Set to `true` when the
    *   [App.plugins] are shared with another (parent) runner whose lifecycle owns them.
+   * @param autoCreateSession Whether a run creates a session that does not exist yet; when false,
+   *   it throws [SessionNotFoundException][com.google.adk.kt.sessions.SessionNotFoundException]
+   *   instead.
    */
+  @JvmOverloads
   constructor(
     app: App,
     sessionService: SessionService = InMemorySessionService(),
     artifactService: ArtifactService? = InMemoryArtifactService(),
     memoryService: MemoryService? = InMemoryMemoryService(),
     skipClosingPlugins: Boolean = false,
-  ) : super(app, sessionService, artifactService, memoryService, skipClosingPlugins)
+    autoCreateSession: Boolean = true,
+  ) : super(
+    app,
+    sessionService,
+    artifactService,
+    memoryService,
+    skipClosingPlugins,
+    autoCreateSession,
+  )
 
   /**
    * Fluent builder for [InMemoryRunner], provided primarily for Java callers. Any property left
@@ -84,6 +111,7 @@ open class InMemoryRunner : AbstractRunner {
     private var memoryService: MemoryService? = InMemoryMemoryService()
     private var plugins: List<Plugin>? = null
     private var skipClosingPlugins: Boolean? = null
+    private var autoCreateSession: Boolean = true
 
     fun agent(agent: BaseAgent): Builder = apply { this.agent = agent }
 
@@ -112,6 +140,10 @@ open class InMemoryRunner : AbstractRunner {
       this.skipClosingPlugins = skipClosingPlugins
     }
 
+    fun autoCreateSession(autoCreateSession: Boolean): Builder = apply {
+      this.autoCreateSession = autoCreateSession
+    }
+
     fun build(): InMemoryRunner {
       val agent = agent
       val app = app
@@ -131,6 +163,7 @@ open class InMemoryRunner : AbstractRunner {
           artifactService = artifactService,
           memoryService = memoryService,
           skipClosingPlugins = skipClosingPlugins ?: false,
+          autoCreateSession = autoCreateSession,
         )
       } else {
         check(skipClosingPlugins == null) {
@@ -143,6 +176,7 @@ open class InMemoryRunner : AbstractRunner {
           artifactService = artifactService,
           memoryService = memoryService,
           plugins = plugins ?: emptyList(),
+          autoCreateSession = autoCreateSession,
         )
       }
     }

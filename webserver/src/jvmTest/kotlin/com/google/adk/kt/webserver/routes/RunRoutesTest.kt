@@ -71,7 +71,7 @@ class RunRoutesTest {
   private val bothArrived = CountDownLatch(2)
   private val metTheOtherCall = CopyOnWriteArrayList<Boolean>()
   private val model = TwoParallelCallsModel()
-  private val sessions = ReadFailingSessionService()
+  private val sessions = ScriptedSessionService()
   private lateinit var server: EmbeddedServer<*, *>
   private var port = 0
 
@@ -120,6 +120,33 @@ class RunRoutesTest {
 
     assertThat(response.statusCode()).isEqualTo(404)
     assertThat(response.body()).isEqualTo("Session not found")
+    assertThat(model.calls.get()).isEqualTo(0)
+    assertThat(send(get(SESSION_PATH)).statusCode()).isEqualTo(404)
+  }
+
+  @Test
+  fun run_existingSession_readsItOnce() {
+    assertThat(send(post(SESSION_PATH, body = null)).statusCode()).isEqualTo(200)
+    sessions.reads.set(0)
+
+    val response = send(post("/run", RUN_BODY))
+
+    assertThat(response.statusCode()).isEqualTo(200)
+    assertThat(sessions.reads.get()).isEqualTo(1)
+  }
+
+  @Test
+  fun runSse_sessionDeletedAfterTheCheck_failsInTheStreamWithoutRecreatingIt() {
+    assertThat(send(post(SESSION_PATH, body = null)).statusCode()).isEqualTo(200)
+    sessions.deleteAfterEventlessRead = true
+
+    val response = send(post("/run_sse", RUN_BODY))
+    sessions.deleteAfterEventlessRead = false
+
+    // The status line left before the run, so the stream carries the error.
+    assertThat(response.statusCode()).isEqualTo(200)
+    assertThat(response.body())
+      .isEqualTo("data: {\"error\":\"SessionNotFoundException: Session not found\"}\n\n")
     assertThat(model.calls.get()).isEqualTo(0)
     assertThat(send(get(SESSION_PATH)).statusCode()).isEqualTo(404)
   }
@@ -207,14 +234,27 @@ class RunRoutesTest {
   private fun send(request: HttpRequest): HttpResponse<String> =
     HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString())
 
-  /** Keeps sessions in memory, but fails every read once [failReads] is set. */
-  private class ReadFailingSessionService(
+  /**
+   * Keeps sessions in memory and counts reads in [reads]. Once [failReads] is set, every read
+   * fails; once [deleteAfterEventlessRead] is set, a read that loads no events deletes the session
+   * after returning it, as a concurrent delete right after the route's check would.
+   */
+  private class ScriptedSessionService(
     private val delegate: SessionService = InMemorySessionService()
   ) : SessionService by delegate {
     @Volatile var failReads = false
+    @Volatile var deleteAfterEventlessRead = false
+    val reads = AtomicInteger()
 
-    override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? =
-      if (failReads) throw StoreFailure() else delegate.getSession(key, config)
+    override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {
+      reads.incrementAndGet()
+      if (failReads) throw StoreFailure()
+      val session = delegate.getSession(key, config)
+      if (session != null && deleteAfterEventlessRead && config?.numRecentEvents == 0) {
+        delegate.deleteSession(key)
+      }
+      return session
+    }
   }
 
   /** A store failure whose message carries details a client or log must not see. */

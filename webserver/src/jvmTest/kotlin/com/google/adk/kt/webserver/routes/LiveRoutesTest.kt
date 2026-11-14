@@ -69,6 +69,7 @@ import io.ktor.websocket.readText
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -199,6 +200,18 @@ private class FakeAppLoader(
 private class FakeSessionService : SessionService by SharedFakeSessionService() {
   override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? =
     if (key.id == KNOWN_SESSION_ID) Session(key) else null
+}
+
+/** Counts the reads of a [FakeSessionService] in [reads]. */
+private class ReadCountingSessionService(
+  private val delegate: SessionService = FakeSessionService()
+) : SessionService by delegate {
+  val reads = AtomicInteger()
+
+  override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {
+    reads.incrementAndGet()
+    return delegate.getSession(key, config)
+  }
 }
 
 /** A session store that fails, as one whose database is down does. */
@@ -443,6 +456,18 @@ class LiveRoutesTest {
 
     assertThat(reason?.code).isEqualTo(CloseReason.Codes.INTERNAL_ERROR.code)
     assertThat(reason?.message).isEqualTo("Session could not be loaded")
+  }
+
+  @Test
+  fun runLive_knownSession_readsItOnce() = testApplication {
+    val sessions = ReadCountingSessionService()
+    installLiveRoutes(sessionService = sessions)
+
+    liveClient().use { client ->
+      client.webSocket(liveRunPath("echo-agent")) { assertThat(receiveText()).contains("pong") }
+    }
+
+    assertThat(sessions.reads.get()).isEqualTo(1)
   }
 
   @Test

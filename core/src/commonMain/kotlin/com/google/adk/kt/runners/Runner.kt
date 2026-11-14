@@ -103,7 +103,8 @@ interface Runner : AutoCloseable {
    * this fails with [UnsupportedOperationException] when the flow is collected.
    *
    * @param userId The user ID of the session.
-   * @param sessionId The session ID, fetched or created when collection starts.
+   * @param sessionId The session ID, fetched (or created, if the runner creates missing sessions)
+   *   when collection starts.
    * @param liveRequestQueue The queue for content, media, and activity signals.
    * @param runConfig The run configuration, or `null` for the `RunConfig()` defaults.
    * @return The run's events.
