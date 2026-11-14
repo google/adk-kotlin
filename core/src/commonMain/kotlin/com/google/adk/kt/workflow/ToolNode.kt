@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.DEFAULT_TOOL_RUNNER
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.tools.BaseTool
@@ -61,15 +62,20 @@ import kotlinx.coroutines.flow.flow
  * **Output.** The tool's return value, unchanged, is the node's output; a tool that returns
  * nothing, including a long-running tool that defers its result, gives the node no output. The
  * tool's state and artifact changes travel on the node's output event. Actions that only a model
- * call can honor are dropped: a confirmation request, an agent transfer, and the skip-summarization
- * flag.
+ * call can honor are dropped: an agent transfer and the skip-summarization flag.
+ *
+ * **Confirmation.** A tool that asks for confirmation, such as a
+ * [FunctionTool][com.google.adk.kt.tools.FunctionTool] that requires it, pauses the workflow with
+ * an `adk_request_input` request instead of giving an output. Once the user answers, the node runs
+ * the tool again with the answer as [Context.toolConfirmation], and a rejected call outputs what
+ * the tool returns for it.
  *
  * **Errors.** An exception the tool throws fails the node, and the retry policy in `config`
  * applies. A retry runs the tool again, so a tool with side effects should be safe to repeat. A
  * tool may instead report a problem, such as a missing required parameter, by returning an error
  * map for a model to read. In a graph no model reads it: the error map becomes the node's output
- * and reaches the next node like any other value. A tool that requires confirmation returns its
- * placeholder error the same way. A tool that returns a [Flow] fails the node as if it had thrown.
+ * and reaches the next node like any other value. A tool that returns a [Flow] fails the node as if
+ * it had thrown.
  *
  * **Identity.** Each call returns a new node. To use one tool at several places in a graph, convert
  * it once and reuse the returned node: two conversions share the tool's name, and a graph rejects
@@ -88,7 +94,13 @@ fun BaseTool.asNode(name: String = this.name, config: NodeConfig = NodeConfig())
 
 /** Runs a [BaseTool] as a workflow node. Created by [asNode], which documents its behavior. */
 internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeConfig) :
-  BaseNode(name = name, description = tool.description, config = config) {
+  BaseNode(
+    name = name,
+    description = tool.description,
+    // Reruns on resume so that a call paused for confirmation runs once the user answers.
+    rerunOnResume = true,
+    config = config,
+  ) {
 
   init {
     validateNodeName(name)
@@ -100,9 +112,16 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
     for (param in tool.declaration()?.parameters?.required.orEmpty()) {
       if (param !in args && param in state) args[param] = state[param]
     }
-    val toolContext = ToolContext(context.invocationContext, functionCallId = Uuid.random())
-    // As in a turn outside a live run, a returned Flow fails the node.
-    val result = DEFAULT_TOOL_RUNNER(tool, toolContext, args)
+    val answer = context.resumeInputs[confirmationInterruptId(context.nodePath)]
+    val functionCallId = Uuid.random()
+    val toolContext =
+      ToolContext(
+        context.invocationContext,
+        functionCallId = functionCallId,
+        toolConfirmation = answer?.let { readConfirmationAnswer(name, it) },
+      )
+    // As in a turn outside a live run, a returned Flow fails the node. A Java tool can return null.
+    val result: Any? = DEFAULT_TOOL_RUNNER(tool, toolContext, args)
     // Only the tool's deltas carry over; a node can't honor its other actions, such as a transfer.
     context.mergeEventActions(
       EventActions(
@@ -110,7 +129,16 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
         artifactDelta = toolContext.actions.artifactDelta,
       )
     )
-    emit(result)
+    val requested = toolContext.actions.requestedToolConfirmations[functionCallId]
+    when {
+      requested != null ->
+        emit(
+          confirmationRequest(context.nodePath, tool.name, args, requested.hint, requested.payload)
+        )
+      // An event marks a run that output nothing as finished, so a resume does not run it again.
+      result == Unit || result == null -> emit(Event())
+      else -> emit(result)
+    }
   }
 
   /** Reads the tool's arguments from [nodeInput]; [asNode] lists the accepted shapes. */
