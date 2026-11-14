@@ -97,7 +97,7 @@ internal inline fun <T> inSpan(
  * @param name the name of the new span.
  * @param parent optional explicit parent context. When provided, the span is parented to it (e.g.
  *   the caller's ambient span captured at an entry point) so the resulting trace joins the caller's
- *   trace. When null, the span inherits the ambient context active at collection time.
+ *   trace. When null, the span takes its parent as [parentInCoroutine] chooses.
  * @param builder a lambda to configure the [SpanBuilder] before starting the span.
  */
 internal fun <T> Flow<T>.trace(
@@ -106,7 +106,9 @@ internal fun <T> Flow<T>.trace(
   builder: SpanBuilder.() -> Unit = {},
 ): Flow<T> = flow {
   val spanBuilder = Telemetry.tracer.spanBuilder(name)
-  if (parent != null) spanBuilder.setParent(parent)
+  (parent ?: parentInCoroutine(currentCoroutineContext()[TelemetryContextElement]))?.let {
+    spanBuilder.setParent(it)
+  }
   spanBuilder.apply(builder)
   val span = spanBuilder.startSpan()
 
