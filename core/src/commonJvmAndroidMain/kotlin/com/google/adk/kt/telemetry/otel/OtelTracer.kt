@@ -22,6 +22,7 @@ import com.google.adk.kt.telemetry.Tracer
 import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
 import io.opentelemetry.api.trace.Tracer as OpenTelemetryTracer
 import io.opentelemetry.context.Context
+import io.opentelemetry.context.ContextKey
 
 /** OpenTelemetry implementation of [Tracer]. */
 internal class OtelTracer(private val otelTracer: OpenTelemetryTracer) : Tracer {
@@ -37,10 +38,15 @@ internal class OtelTracer(private val otelTracer: OpenTelemetryTracer) : Tracer 
   override fun contextWithSpan(span: Span): TelemetryContext {
     val otelContext =
       if (span is OtelSpan) {
-        Context.current().with(span.otelSpan)
+        Context.current().with(span.otelSpan).with(ADK_SPAN, span.otelSpan)
       } else {
         Context.current().with(OpenTelemetrySpan.getInvalid())
       }
     return OtelTelemetryContext(otelContext)
+  }
+
+  companion object {
+    /** The innermost span ADK opened, kept on every context derived from it. */
+    internal val ADK_SPAN: ContextKey<OpenTelemetrySpan> = ContextKey.named("adk-span")
   }
 }
