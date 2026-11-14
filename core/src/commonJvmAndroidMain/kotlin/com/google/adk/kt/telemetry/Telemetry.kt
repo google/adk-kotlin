@@ -18,6 +18,7 @@ package com.google.adk.kt.telemetry
 import com.google.adk.kt.VERSION
 import com.google.adk.kt.telemetry.otel.OtelTelemetryContext
 import com.google.adk.kt.telemetry.otel.OtelTracer
+import com.google.adk.kt.telemetry.otel.OtelTracer.Companion.ADK_SPAN
 import io.opentelemetry.api.GlobalOpenTelemetry
 import io.opentelemetry.context.Context
 import java.lang.ThreadLocal
@@ -45,6 +46,22 @@ internal actual fun defaultTracer(): Tracer =
 /** Captures the ambient OpenTelemetry [Context] (the host's active span, if any) on this thread. */
 internal actual fun currentTelemetryContext(): TelemetryContext =
   OtelTelemetryContext(Context.current())
+
+internal actual fun parentInCoroutine(element: TelemetryContextElement?): TelemetryContext? {
+  val context = element?.context ?: return null
+  val elementContext = (context as? OtelTelemetryContext)?.otelContext ?: return context
+  if (elementContext.get(ADK_SPAN) == null) return context
+  return if (threadHoldsAdkSpanOf(elementContext)) null else context
+}
+
+internal actual fun threadAdkSpanDiffersFrom(context: TelemetryContext): Boolean {
+  val otelContext = (context as? OtelTelemetryContext)?.otelContext ?: return false
+  return !threadHoldsAdkSpanOf(otelContext)
+}
+
+/** Whether the thread's context has the same innermost ADK span as [context], or both have none. */
+private fun threadHoldsAdkSpanOf(context: Context): Boolean =
+  Context.current().get(ADK_SPAN) === context.get(ADK_SPAN)
 
 private val testTracerOverride = ThreadLocal<Tracer>()
 
