@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.REDACTED
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -57,7 +58,7 @@ import org.yaml.snakeyaml.representer.Representer
  *
  * **CAUTION**: The plugin writes raw requests / responses, including user prompts, tool arguments,
  * and session state, to disk. Be mindful of sensitive data disclosure and protect the output file
- * accordingly.
+ * accordingly. Any private key block in a string is left out.
  *
  * @property outputPath Path to the output file. Defaults to `adk_debug.yaml`.
  * @property includeSessionState Whether to include a session-state snapshot for each invocation.
@@ -395,7 +396,7 @@ class DebugLoggingPlugin(
         entryType = entryType,
         invocationId = invocationId,
         agentName = agentName,
-        data = data,
+        data = data.mapValues { withoutPrivateKeys(it.value) },
       )
     synchronized(state) { state.entries.add(entry) }
   }
@@ -491,6 +492,15 @@ class DebugLoggingPlugin(
 
   private fun timestamp(): String = Clock.System.now().toString()
 
+  /** Returns [value] with each private key block in a string replaced by [REDACTED]. */
+  private fun withoutPrivateKeys(value: Any?): Any? =
+    when (value) {
+      is String -> value.replace(PRIVATE_KEY_BLOCK, REDACTED)
+      is Map<*, *> -> value.mapValues { withoutPrivateKeys(it.value) }
+      is List<*> -> value.map { withoutPrivateKeys(it) }
+      else -> value
+    }
+
   private data class DebugEntry(
     val timestamp: String,
     val entryType: String,
@@ -544,5 +554,13 @@ class DebugLoggingPlugin(
     @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
 
     private val logger = LoggerFactory.getLogger(DebugLoggingPlugin::class)
+
+    // Only the armored block goes; one with no END line is redacted to the end of the string.
+    private val PRIVATE_KEY_BLOCK =
+      Regex(
+        "-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----.*?" +
+          "(-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|\\z)",
+        RegexOption.DOT_MATCHES_ALL,
+      )
   }
 }
