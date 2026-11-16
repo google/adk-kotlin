@@ -488,6 +488,49 @@ class NodeTracingTest {
   }
 
   @Test
+  fun run_failedNodeAttempt_listsNoAssociatedEvents() {
+    var calls = 0
+    val flaky =
+      node<Any?, String>(
+        "flaky",
+        config = NodeConfig(RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO)),
+      ) { _, _ ->
+        calls += 1
+        emit(Event(content = modelMessage("attempt $calls")))
+        if (calls == 1) throw TestNodeException("first try")
+        "ok"
+      }
+
+    val session = runAsApp(Workflow("wf", edges = listOf(Edge(Start, flaky))))
+
+    val attempts =
+      exported.filter { it.name == "invoke_node flaky" }.sortedBy { it.startEpochNanos }
+    assertThat(attempts.map { it.attributes[ERROR_TYPE] })
+      .containsExactly("TestNodeException", null)
+      .inOrder()
+    assertThat(attempts[0].attributes[ASSOCIATED_EVENT_IDS]).isNull()
+    val second = session.events.single { it.content?.parts?.firstOrNull()?.text == "attempt 2" }
+    assertThat(attempts[1].attributes[ASSOCIATED_EVENT_IDS]).contains(second.id)
+  }
+
+  @Test
+  fun run_nodeWhoseChildPauses_listsItsEvents() {
+    val ask =
+      node<Any?, String>("ask") { _, _ -> requestInput(interruptId = "ask_1", message = "name?") }
+    val caller =
+      node<Any?, Any?>("caller", rerunOnResume = true) { context, _ ->
+        emit(Event(content = modelMessage("before the child")))
+        context.runNode(ask)
+      }
+
+    val session = runAsApp(Workflow("wf", edges = listOf(Edge(Start, caller))))
+
+    val emitted =
+      session.events.single { it.content?.parts?.firstOrNull()?.text == "before the child" }
+    assertThat(span("invoke_node caller").attributes[ASSOCIATED_EVENT_IDS]).contains(emitted.id)
+  }
+
+  @Test
   fun run_childFailure_marksEveryEnclosingWorkflowSpan() {
     val boom = node<Any?, String>("boom") { _, _ -> throw TestNodeException("boom") }
     val inner = Workflow("inner", edges = listOf(Edge(Start, boom)))
@@ -546,6 +589,7 @@ class NodeTracingTest {
   fun run_timedOutNode_recordsNodeTimeoutException() {
     val slow =
       node<Any?, String>("slow", config = NodeConfig(timeout = 10.milliseconds)) { _, _ ->
+        emit(Event(content = modelMessage("started")))
         delay(10.seconds)
         "late"
       }
@@ -555,11 +599,16 @@ class NodeTracingTest {
     }
 
     assertThat(span("invoke_node slow").attributes[ERROR_TYPE]).isEqualTo("NodeTimeoutException")
+    assertThat(span("invoke_node slow").attributes[ASSOCIATED_EVENT_IDS]).isNull()
   }
 
   @Test
   fun run_nodeCancelledByAFailingSibling_isNotMarkedFailed() {
-    val waiter = node<Any?, Unit>("waiter") { _, _ -> delay(10.seconds) }
+    val waiter =
+      node<Any?, Unit>("waiter") { _, _ ->
+        emit(Event(content = modelMessage("waiting")))
+        delay(10.seconds)
+      }
 
     assertFailsWith<TestNodeException> {
       runAsApp(Workflow("wf", edges = listOf(Edge(Start, waiter), Edge(Start, failingSibling()))))
@@ -567,6 +616,7 @@ class NodeTracingTest {
 
     assertThat(span("invoke_node waiter").attributes[ERROR_TYPE]).isNull()
     assertThat(span("invoke_node waiter").status.statusCode).isEqualTo(StatusCode.UNSET)
+    assertThat(span("invoke_node waiter").attributes[ASSOCIATED_EVENT_IDS]).isNull()
   }
 
   @Test

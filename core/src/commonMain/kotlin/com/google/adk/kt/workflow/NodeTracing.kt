@@ -20,6 +20,7 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.isFailure
@@ -34,7 +35,7 @@ import kotlinx.coroutines.withContext
  * Runs [block] in the span Python ADK opens for [node]: none for an agent, which opens its own
  * `invoke_agent` span; `invoke_workflow` for a workflow; `invoke_node` for any other node. The span
  * records an exception [block] throws, or else the failure [failure] reads from its result, since a
- * workflow hands a child's failure back as data. [eventIds] is read when the span ends.
+ * workflow hands a child's failure back as data. [eventIds] is read when [block] returns or pauses.
  *
  * @param nested whether a workflow encloses [node] in the node tree. A workflow started in another
  *   workflow's span, such as the root of a runner a node started, is flagged nested even when this
@@ -81,16 +82,25 @@ internal suspend fun <T> traceNode(
         (outcome ?: throw e).getOrThrow()
       }
     failure(result)?.let { span.recordFailure(it, statusDescription(it)) }
+    span.recordAssociatedEvents(eventIds)
     return result
   } catch (e: Throwable) {
     // A node that asks for input pauses rather than fails.
     if (isFailure(e)) span.recordFailure(e)
+    if (e is NodeInterruptedException) span.recordAssociatedEvents(eventIds)
     throw e
   } finally {
-    if (eventIds.isNotEmpty()) {
-      span[TelemetryAttributes.GCP_VERTEX_AGENT_ASSOCIATED_EVENT_IDS] = eventIds.toList()
-    }
     span.end()
+  }
+}
+
+/**
+ * Lists [eventIds] on this span once its node returns or pauses, as Python ADK does; an attempt
+ * that raises lists none.
+ */
+private fun Span.recordAssociatedEvents(eventIds: List<String>) {
+  if (eventIds.isNotEmpty()) {
+    this[TelemetryAttributes.GCP_VERTEX_AGENT_ASSOCIATED_EVENT_IDS] = eventIds.toList()
   }
 }
 
