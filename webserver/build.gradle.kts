@@ -42,7 +42,7 @@ publishing {
 
 sourceSets {
   main { java.srcDirs("src/jvmMain/kotlin") }
-  test { java.srcDirs("src/jvmTest/kotlin") }
+  test { java.srcDirs("src/jvmTest/kotlin", "src/jvmTest/java") }
 }
 
 dependencies {

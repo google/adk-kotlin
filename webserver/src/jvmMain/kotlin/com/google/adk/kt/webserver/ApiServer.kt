@@ -107,6 +107,12 @@ open class AdkApiServer(protected val config: AdkServerConfig) {
     }
   }
 
+  /**
+   * Starts the server on [AdkServerConfig.host] and [AdkServerConfig.port]; when [wait] is true,
+   * blocks until the server stops. Calling it again before [stop] does nothing, even after a failed
+   * start.
+   */
+  @JvmOverloads
   fun start(wait: Boolean = false) {
     // Released before the blocking call below, so stop() can still take it.
     val engine =
@@ -169,11 +175,12 @@ private val requestLogging = requestLoggingPlugin { level, message ->
  * endpoints including `/run_live`, and app-info when [AdkServerConfig.includeAppInfo] or the
  * `adk.app.info.enabled` property asks for it) with loopback peer and browser-origin guards,
  * installs Ktor `WebSockets` unless the application already did (install your own `WebSockets`
- * before this module, or startup fails), registers OpenTelemetry from the standard `OTEL_*` settings
- * unless the process already has one, and flushes [AdkServerConfig.sessionService] and buffered
- * telemetry when the application stops, waiting up to 3 seconds for a flush that honors cancellation.
- * Your own `WebSockets` should set `maxFrameSize` to at most 16 MiB and bound its outgoing channel:
- * Ktor reads a socket's first frames with the plugin's cap, before `/run_live` sets its own.
+ * before this module, or startup fails), registers OpenTelemetry from the standard `OTEL_*`
+ * settings unless the process already has one, and flushes [AdkServerConfig.sessionService] and
+ * buffered telemetry when the application stops, waiting up to 3 seconds for a flush that honors
+ * cancellation. Your own `WebSockets` should set `maxFrameSize` to at most 16 MiB and bound its
+ * outgoing channel: Ktor reads a socket's first frames with the plugin's cap, before `/run_live`
+ * sets its own.
  *
  * Set [AdkServerConfig.allowRemoteRequests] and [AdkServerConfig.allowOrigins] when serving remote
  * or cross-origin callers behind your own authentication.
