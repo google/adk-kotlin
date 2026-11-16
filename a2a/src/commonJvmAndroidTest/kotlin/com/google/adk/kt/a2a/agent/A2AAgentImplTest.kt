@@ -1337,6 +1337,28 @@ class A2AAgentImplTest {
     }
 
   @Test
+  fun runAsync_messageReplyWithContext_nextTurnKeepsIt() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      val reply =
+        Message.builder()
+          .role(Message.Role.ROLE_AGENT)
+          .contextId("context-1")
+          .parts(listOf(TextPart("Hi")))
+          .build()
+      mockReplies(this, MessageEvent(reply), createTaskEvent(TaskState.TASK_STATE_COMPLETED, "Ok"))
+
+      for (text in listOf("Hello", "Again")) {
+        runner.runAsync("user", "s1", newMessage = userMessage(text), runConfig = blocking).toList()
+      }
+
+      val sent = sentMessages(2)
+      assertThat(sent.map { it.contextId() }).containsExactly(null, "context-1").inOrder()
+      assertThat(sent[1].parts.map { (it as TextPart).text }).containsExactly("Again")
+    }
+
+  @Test
   fun runAsync_textReplyToInputRequiredTask_resumesTask() =
     runBlocking<Unit> {
       val runner = InMemoryRunner(createTestAgent())

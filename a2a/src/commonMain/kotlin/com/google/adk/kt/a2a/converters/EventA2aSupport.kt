@@ -190,22 +190,22 @@ internal fun InvocationContext.extractPreprocessedEvents(): List<Event> {
   }
 }
 
-/** Updates event metadata using the provided parser. */
+/**
+ * Returns a copy of this event with the grounding, usage, custom metadata and error code in
+ * [clientMetadata], plus [taskId] and [contextId] where not null (a message reply may have
+ * neither). Task and context ids in the custom metadata are dropped: they belong to calls the
+ * remote agent made to other agents.
+ */
 internal fun Event.updateEventMetadata(
   clientMetadata: Map<String, Any?>?,
   taskId: String?,
   contextId: String?,
   parser: A2AMetadataParser,
 ): Event {
-  if (taskId == null || contextId == null) {
-    return this
-  }
-
   val metadata = clientMetadata ?: emptyMap()
   @Suppress("UNCHECKED_CAST")
   val forwarded = (metadata[MetadataKeys.CUSTOM] as? Map<String, Any>).orEmpty()
-  // Last, so ids a remote agent forwards from its own remote call cannot replace this task's.
-  val customMetadataMap = forwarded + remoteIdsMetadata(taskId, contextId)
+  val customMetadataMap = (forwarded - RemoteIdKeys.ALL) + remoteIdsMetadata(taskId, contextId)
 
   return copy(
     groundingMetadata = parser.parse(metadata[MetadataKeys.GROUNDING], GroundingMetadata::class),

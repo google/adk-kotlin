@@ -920,6 +920,63 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun messageToEvent_withoutTaskId_recordsContextIdAndForwardedMetadata() {
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .contextId("context-1")
+        .parts(listOf(TextPart("Hi")))
+        .metadata(mapOf(MetadataKeys.CUSTOM to mapOf("trace" to "t-1")))
+        .build()
+
+    val result = a2aMessage.toAdkEvent(invocationContext)
+
+    assertThat(result!!.customMetadata)
+      .containsExactly("a2a:context_id", "context-1", "adk_context_id", "context-1", "trace", "t-1")
+  }
+
+  @Test
+  fun messageToEvent_withoutTaskIdButForwardedIds_keepsOnlyItsOwnIds() {
+    val forwarded = mapOf("a2a:task_id" to "downstream-task", "adk_task_id" to "downstream-task")
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .contextId("context-1")
+        .parts(listOf(TextPart("Hi")))
+        .metadata(mapOf(MetadataKeys.CUSTOM to forwarded))
+        .build()
+
+    val result = a2aMessage.toAdkEvent(invocationContext)
+
+    assertThat(result!!.customMetadata)
+      .containsExactly("a2a:context_id", "context-1", "adk_context_id", "context-1")
+  }
+
+  @Test
+  fun messageToEvent_withoutIdsButForwardedIds_recordsNoIds() {
+    val forwarded =
+      mapOf(
+        "a2a:task_id" to "downstream-task",
+        "a2a:context_id" to "downstream-context",
+        "adk_task_id" to "downstream-task",
+        "adk_context_id" to "downstream-context",
+      )
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(TextPart("Hi")))
+        .metadata(mapOf(MetadataKeys.CUSTOM to forwarded))
+        .build()
+
+    val result = a2aMessage.toAdkEvent(invocationContext)
+
+    assertThat(result!!.customMetadata).isEmpty()
+  }
+
+  @Test
   fun taskToEvent_withArtifacts_returnsEventFromLastArtifact() {
     val a2aPart = TextPart("Artifact content")
     val artifact = Artifact.builder().artifactId("artifact-1").parts(listOf(a2aPart)).build()
