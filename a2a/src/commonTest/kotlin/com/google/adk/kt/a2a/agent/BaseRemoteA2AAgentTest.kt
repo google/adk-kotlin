@@ -32,6 +32,7 @@ import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
@@ -536,20 +537,17 @@ class BaseRemoteA2AAgentTest {
   }
 
   @Test
-  fun prepareOutboundEvent_textReplyAfterResponseThatIsNotText_startsNewTask() {
+  fun prepareOutboundEvent_textReplyToPauseRecordedAsJson_resumesIt() {
     val agent = TestRemoteAgent("my-agent")
-    val unreadable =
-      Event(
-        author = agent.name,
-        customMetadata =
-          mapOf("a2a:context_id" to "ctx-456", "a2a:response" to mapOf("id" to "task-123")),
-      )
-    val context =
-      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), unreadable)
+    val paused = remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED")
+    // Earlier versions recorded the response as its JSON string.
+    val json = """{"id":"task-123","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}"""
+    val recordedAsJson =
+      paused.copy(customMetadata = paused.customMetadata.orEmpty() + ("a2a:response" to json))
 
-    val result = agent.testPrepareOutboundEvent(context)
+    val result = agent.testPrepareOutboundEvent(contextReplyingTo(agent, recordedAsJson))
 
-    assertNull(result.customMetadata?.get("a2a:task_id"))
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -567,6 +565,23 @@ class BaseRemoteA2AAgentTest {
 
     assertNull(result.customMetadata?.get("a2a:task_id"))
     assertEquals(listOf("Blue"), result.content?.parts?.map { it.text })
+  }
+
+  @Test
+  fun prepareOutboundEvent_textReplyAfterNullResponse_resumesEarlierPause() {
+    val agent = TestRemoteAgent("my-agent")
+    val nullResponse =
+      Event(
+        author = agent.name,
+        customMetadata = mapOf("a2a:context_id" to "ctx-456", "a2a:response" to null),
+      )
+    val context =
+      contextReplyingTo(agent, remoteResponse(agent, "TASK_STATE_INPUT_REQUIRED"), nullResponse)
+
+    val result = agent.testPrepareOutboundEvent(context)
+
+    // As in ADK Python, a response that holds nothing is skipped.
+    assertEquals("task-123", result.customMetadata?.get("a2a:task_id"))
   }
 
   @Test
@@ -611,7 +626,7 @@ class BaseRemoteA2AAgentTest {
         author = agent.name,
         content = modelMessage("Hi"),
         customMetadata =
-          mapOf("a2a:context_id" to "ctx-456", "a2a:response" to """{"messageId":"m1"}"""),
+          mapOf("a2a:context_id" to "ctx-456", "a2a:response" to mapOf("messageId" to "m1")),
       )
 
     val result = agent.testPrepareOutboundEvent(contextReplyingTo(agent, messageResponse))
@@ -734,8 +749,97 @@ class BaseRemoteA2AAgentTest {
         debugResponse = Result.success("{\"res\":2}"),
       )
 
-    assertEquals("{\"req\":1}", result.customMetadata?.get("a2a:request"))
-    assertEquals("{\"res\":2}", result.customMetadata?.get("a2a:response"))
+    assertEquals(mapOf("req" to 1L), result.customMetadata?.get("a2a:request"))
+    assertEquals(mapOf("res" to 2L), result.customMetadata?.get("a2a:response"))
+  }
+
+  @Test
+  fun addA2AMetadata_responseThatIsNotJson_recordsText() {
+    val agent = TestRemoteAgent("test-agent")
+    val result =
+      agent.testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success("sent: hi"))
+
+    assertEquals("sent: hi", result.customMetadata?.get("a2a:response"))
+    assertNull(result.customMetadata?.get(BaseRemoteA2AAgent.RESPONSE_ERROR))
+  }
+
+  @Test
+  fun addA2AMetadata_responseWithUnquotedWord_recordsText() {
+    val agent = TestRemoteAgent("test-agent")
+    val response = "[INFO]"
+    val result =
+      agent.testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success(response))
+
+    assertEquals(response, result.customMetadata?.get("a2a:response"))
+  }
+
+  @Test
+  fun addA2AMetadata_responseWithLeadingZero_recordsText() {
+    val agent = TestRemoteAgent("test-agent")
+    val response = "007"
+    val result =
+      agent.testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success(response))
+
+    assertEquals(response, result.customMetadata?.get("a2a:response"))
+  }
+
+  @Test
+  fun addA2AMetadata_responseWithUnquotedValue_recordsText() {
+    val agent = TestRemoteAgent("test-agent")
+    val response = """{"level":warn}"""
+    val result =
+      agent.testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success(response))
+
+    assertEquals(response, result.customMetadata?.get("a2a:response"))
+  }
+
+  @Test
+  fun addA2AMetadata_responseNestedTooDeep_recordsText() {
+    val agent = TestRemoteAgent("test-agent")
+    val response = "[".repeat(20_000) + "]".repeat(20_000)
+    val result =
+      agent.testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success(response))
+
+    // Decoding recurses once per level, so text nested this deep is kept rather than decoded.
+    assertEquals(response, result.customMetadata?.get("a2a:response"))
+  }
+
+  @Test
+  fun addA2AMetadata_responseAtDepthLimit_decodes() {
+    val atLimit = "[".repeat(512) + "]".repeat(512)
+
+    assertTrue(recordedResponse(atLimit) is List<*>)
+    assertEquals("[$atLimit]", recordedResponse("[$atLimit]"))
+  }
+
+  @Test
+  fun addA2AMetadata_responseWithBracketsInStrings_countsOnlyBracketsOutsideStrings() {
+    // With the outer object or list, the deepest list sits at the limit or one past it.
+    val nested = "[".repeat(511) + "]".repeat(511)
+    // Brackets in a string, also after an escaped quote, don't count; those after it do.
+    val inString = """{"text":"\"[\"","list":$nested}"""
+    val afterString = """["text","[",[$nested]]"""
+
+    assertTrue(recordedResponse(inString) is Map<*, *>)
+    assertEquals(afterString, recordedResponse(afterString))
+  }
+
+  @Test
+  fun addA2AMetadata_responseWithLongFlatList_decodes() {
+    val response = List(600) { "0" }.joinToString(",", "[", "]")
+
+    assertEquals(List(600) { 0L }, recordedResponse(response))
+  }
+
+  @Test
+  fun addA2AMetadata_responseWithNaN_recordsText() {
+    val agent = TestRemoteAgent("test-agent")
+    val response = """{"score":NaN}"""
+    val result =
+      agent.testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success(response))
+
+    // Sessions cannot store NaN, so the text is kept rather than the decoded number.
+    assertEquals(response, result.customMetadata?.get("a2a:response"))
   }
 
   @Test
@@ -769,6 +873,13 @@ class BaseRemoteA2AAgentTest {
   }
 
   /** An event where [agent] relays its remote agent's response leaving task-123 in [state]. */
+  /** Returns the `a2a:response` that [addA2AMetadata] records for [response]. */
+  private fun recordedResponse(response: String): Any? =
+    TestRemoteAgent("test-agent")
+      .testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success(response))
+      .customMetadata
+      ?.get("a2a:response")
+
   private fun remoteResponse(agent: TestRemoteAgent, state: String) =
     Event(
       author = agent.name,
@@ -777,8 +888,7 @@ class BaseRemoteA2AAgentTest {
         mapOf(
           "a2a:task_id" to "task-123",
           "a2a:context_id" to "ctx-456",
-          "a2a:response" to
-            """{"id":"task-123","contextId":"ctx-456","status":{"state":"$state"}}""",
+          "a2a:response" to mapOf("id" to "task-123", "status" to mapOf("state" to state)),
         ),
     )
 

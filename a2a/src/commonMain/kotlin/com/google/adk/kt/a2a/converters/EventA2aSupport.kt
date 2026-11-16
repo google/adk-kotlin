@@ -22,6 +22,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -31,6 +32,13 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.UsageMetadata
 import kotlin.reflect.KClass
 import kotlin.time.Clock
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 internal object MetadataKeys {
   const val GROUNDING = "adk_grounding_metadata"
@@ -339,6 +347,60 @@ private fun answerText(response: Map<String, Any?>): String? {
     }
   return value as? String ?: anyToJsonElement(value).toString()
 }
+
+/**
+ * Decodes [text] as JSON into maps, lists and primitives, the form in which ADK Python records A2A
+ * requests and responses. Returns [text] unchanged if it is not strict JSON, holds a number too
+ * large to store, or nests deeper than [MAX_JSON_DEPTH], since decoding recurses once per level.
+ */
+@OptIn(FrameworkInternalApi::class)
+internal fun decodeA2aJson(text: String): Any? {
+  if (nestsDeeperThan(text, MAX_JSON_DEPTH)) return text
+  val element =
+    try {
+      Json.parseToJsonElement(text)
+    } catch (e: SerializationException) {
+      return text
+    }
+  return if (element.isStrictJson()) jsonElementToAny(element) else text
+}
+
+private const val MAX_JSON_DEPTH = 512
+
+/**
+ * Whether [text] opens more than [limit] arrays or objects at once, ignoring brackets in strings.
+ */
+private fun nestsDeeperThan(text: String, limit: Int): Boolean {
+  var depth = 0
+  var inString = false
+  var escaped = false
+  for (c in text) {
+    when {
+      escaped -> escaped = false
+      inString && c == '\\' -> escaped = true
+      inString -> inString = c != '"'
+      c == '"' -> inString = true
+      c == '[' || c == '{' -> if (++depth > limit) return true
+      c == ']' || c == '}' -> depth--
+    }
+  }
+  return false
+}
+
+private val JSON_NUMBER = Regex("""-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?""")
+
+// The parser also accepts unquoted values such as `INFO`, `007` or `NaN`, which JSON does not.
+private fun JsonElement.isStrictJson(): Boolean =
+  when (this) {
+    is JsonObject -> values.all { it.isStrictJson() }
+    is JsonArray -> all { it.isStrictJson() }
+    is JsonPrimitive ->
+      isString ||
+        this is JsonNull ||
+        content == "true" ||
+        content == "false" ||
+        (JSON_NUMBER.matches(content) && content.toDouble().isFinite())
+  }
 
 // A serialized AuthConfig, bare or wrapped as {"result": ...}, has at least one of these keys.
 private fun isAuthConfig(payload: Any?): Boolean {

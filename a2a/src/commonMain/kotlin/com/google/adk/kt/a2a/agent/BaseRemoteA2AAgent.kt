@@ -18,6 +18,7 @@ package com.google.adk.kt.a2a.agent
 
 import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.a2a.converters.credentialCallIds
+import com.google.adk.kt.a2a.converters.decodeA2aJson
 import com.google.adk.kt.a2a.converters.extractPreprocessedEvents
 import com.google.adk.kt.a2a.converters.findUserFunctionCall
 import com.google.adk.kt.a2a.converters.isFailedRequest
@@ -35,11 +36,6 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 
 /**
  * Abstract base class for Remote A2A Agents. Marker base class for remote agent implementations.
@@ -147,17 +143,22 @@ abstract class BaseRemoteA2AAgent(
       val metadata = event.customMetadata.orEmpty()
       // A sent request that failed may have resumed the task; one never sent leaves it paused.
       if (event.isFailedRequest && event.recordsSentRequest) return null
-      // A response that could not be recorded, or is not text, hides the task's state.
+      // A response that could not be recorded hides the task's state.
       if (A2AMetadata.RESPONSE_ERROR in metadata) return null
       val response = metadata[A2AMetadata.RESPONSE] ?: continue
-      if (response !is String) return null
       if (event.contextId != contextId || taskState(response) !in PAUSED_TASK_STATES) return null
       return event.taskId.ifEmpty { null }
     }
     return null
   }
 
-  /** Adds A2A metadata to the event. */
+  /**
+   * Returns a copy of [event] whose metadata records [debugRequest] (only if the event is
+   * turn-complete) and [debugResponse], decoded from JSON into maps, lists and primitives as ADK
+   * Python records them; text it cannot decode, such as invalid JSON or JSON nested more than 512
+   * levels deep, is recorded as is. A failed result is recorded under the matching
+   * `*_serialization_error` key.
+   */
   protected fun addA2AMetadata(
     event: Event,
     debugRequest: Result<String>? = null,
@@ -172,6 +173,7 @@ abstract class BaseRemoteA2AAgent(
             }
             if (debugResponse != null) {
               debugResponse
+                .map(::decodeA2aJson)
                 .onSuccess { put(A2AMetadata.RESPONSE, it) }
                 .onFailure { put(A2AMetadata.RESPONSE_ERROR, it.message ?: it.toString()) }
             }
@@ -200,9 +202,10 @@ abstract class BaseRemoteA2AAgent(
   }
 }
 
-/** Records [request] under `a2a:request`, or its serialization error if it has none. */
+/** Records [request] under `a2a:request`, decoded from JSON, or its serialization error. */
 internal fun MutableMap<String, Any?>.putRequest(request: Result<String>) {
   request
+    .map(::decodeA2aJson)
     .onSuccess { put(BaseRemoteA2AAgent.REQUEST, it) }
     .onFailure { put(BaseRemoteA2AAgent.REQUEST_ERROR, it.message ?: it.toString()) }
 }
@@ -223,14 +226,12 @@ private val Event.recordsSentRequest: Boolean
 private val PAUSED_TASK_STATES =
   setOf("TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED", "input-required", "auth-required")
 
-/** Returns the task state in a serialized A2A response, or null if it holds no task. */
-private fun taskState(response: String): String? {
-  val root =
-    try {
-      Json.parseToJsonElement(response)
-    } catch (e: SerializationException) {
-      return null
-    }
-  val status = (root as? JsonObject)?.get("status") as? JsonObject
-  return (status?.get("state") as? JsonPrimitive)?.contentOrNull
+/**
+ * Returns the task state in a recorded A2A response, or null if it holds no task. Reads both the
+ * decoded object and the JSON string that earlier versions recorded.
+ */
+private fun taskState(response: Any): String? {
+  val root = if (response is String) decodeA2aJson(response) else response
+  val status = (root as? Map<*, *>)?.get("status") as? Map<*, *>
+  return status?.get("state") as? String
 }
