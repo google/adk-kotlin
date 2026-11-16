@@ -54,9 +54,12 @@ dependencies {
 
   ksp(project(":google-adk-kotlin-processor"))
 
+  // The workflow tests run each sample's Java port with the same assertions.
+  testImplementation(project(":google-adk-kotlin-examples-java"))
   testImplementation(libs.google.truth)
   testImplementation(libs.junit)
   testImplementation(libs.kotlin.test.junit)
+  testImplementation(libs.kotlinx.coroutines.test)
 }
 
 // Convenience task to run the BigQuery Analytics Demo sample, e.g.:
