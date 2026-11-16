@@ -41,6 +41,7 @@ import kotlin.reflect.KClass
 import kotlin.reflect.KClassifier
 import kotlin.reflect.KType
 import kotlin.reflect.typeOf
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
@@ -89,6 +90,7 @@ private constructor(
   /** Decides per input whether a run asks the user to approve it, or `null` to not decide. */
   private val confirmationPredicate: (suspend (Context, I) -> Boolean)?,
   private val body: suspend FlowCollector<Event>.(Context, I) -> O,
+  private val bodyDispatcher: CoroutineDispatcher? = null,
 ) :
   BaseNode(
     name = name,
@@ -322,6 +324,7 @@ private constructor(
       .itemNode(itemNode)
       .maxParallelWorkers(maxParallelWorkers)
       .confirmation(requireConfirmation, confirmationPredicate)
+      .bodyDispatcher(bodyDispatcher)
       .flowBody(body)
 
   /**
@@ -351,6 +354,7 @@ private constructor(
     private var confirmationPredicate: (suspend (Context, I) -> Boolean)? = null
     private var flowBody: (suspend FlowCollector<Event>.(Context, I) -> O)? = null
     private var bodySetByCaller = false
+    private var bodyDispatcher: CoroutineDispatcher? = null
 
     internal companion object {
       // Synthetic, so Java cannot build a node whose port types it has no codec for.
@@ -442,12 +446,17 @@ private constructor(
     }
 
     /**
-     * Sets the function the node runs on each input. Required, except on a parallel node, which
-     * runs its item node and so [build] rejects a body for one.
+     * Sets the function the node runs on each input, on a thread of the dispatcher given to
+     * `FunctionNodes.builder`, or of the default (see [NodeBody]). Required, except on a parallel
+     * node, which runs its item node and so [build] rejects a body for one.
      */
     fun body(body: NodeBody<I, O>): Builder<I, O> = apply {
-      this.flowBody = { context, input -> body.apply(context, input) }
+      this.flowBody = body.onWorker(bodyDispatcher)
       this.bodySetByCaller = true
+    }
+
+    internal fun bodyDispatcher(dispatcher: CoroutineDispatcher?): Builder<I, O> = apply {
+      this.bodyDispatcher = dispatcher
     }
 
     internal fun flowBody(flowBody: suspend FlowCollector<Event>.(Context, I) -> O): Builder<I, O> =
@@ -504,6 +513,7 @@ private constructor(
         requireConfirmation = requireConfirmation,
         confirmationPredicate = confirmationPredicate,
         body = resolvedBody,
+        bodyDispatcher = bodyDispatcher,
       )
     }
   }
@@ -544,14 +554,29 @@ private constructor(
 }
 
 /**
- * The body of a [FunctionNode] set through [FunctionNode.Builder.body]; it runs on the workflow's
- * coroutine, so it must not block, and asynchronous work belongs in a `BasePublisherNode`. `input`
- * arrives as the node's input type, in JSON form on an untyped port (a whole number as a `Long`, a
- * fraction as a `Double`, an object as a `Map`), or as a [Content] message, and may be a
- * predecessor's own collection, so the body must not mutate it. Return `null` for no output, a
- * value of the output type, or an [Event] to emit as it is (an `Event` with content sends a
- * message, and an output goes in the return value, not in the `Event`), and ask the user with
- * [requestInput].
+ * The body of a [FunctionNode] set through [FunctionNode.Builder.body]. A Java body is blocking
+ * code, so it does not run on the dispatcher of the coroutine that collects the run: it runs on the
+ * dispatcher passed to `FunctionNodes`, by default a view of `Dispatchers.IO` without its thread
+ * limit, so it may block, for example to wait for a child, without stalling the workflow. A waiting
+ * body holds its thread: the default starts one thread per body that waits at the same time, and a
+ * dispatcher an app passes needs a free thread for every such body, so a single-threaded or small
+ * bounded one can hang the run. Bound a fan-out with the `maxParallelWorkers` of `parallelOf`, or
+ * pass a bounded dispatcher when bodies wait for nothing.
+ *
+ * Cancelling the node, for example on its timeout, interrupts the thread and waits for the body to
+ * return. A body that ignores the interrupt, or waits in `join()`, keeps the node, its timeout and
+ * the run going until it returns. A `CancellationException` the body throws without such a cancel
+ * fails the node. A failure wrapped in a `CompletionException` or `ExecutionException`, as `join()`
+ * and `get()` throw, fails the node with its cause, which error events and [RetryConfig] name, so a
+ * child's pause from `InteropContextView.runNode` makes the node wait. `input` arrives as the
+ * node's input type, in JSON form on an untyped port (a whole number as a `Long`, a fraction as a
+ * `Double`, an object as a `Map`), or as a [Content] message, and may be a predecessor's own
+ * collection, so the body must not mutate it.
+ *
+ * Return `null` for no output, a value of the output type, or an [Event] to emit as it is (an
+ * `Event` with content sends a message, and an output goes in the return value, not in the
+ * `Event`), and ask the user with [requestInput]. A body rerun after a pause runs from the top
+ * again.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi
@@ -577,6 +602,12 @@ fun interface NodeBody<I, O> {
       throw NodeInterruptedException(RequestInput(interruptId, message, payload, responseSchema))
   }
 }
+
+/** This body as a [FunctionNode] body that runs it on [dispatcher], or on the default if null. */
+@OptIn(AdkJavaInteropApi::class)
+internal expect fun <I, O> NodeBody<I, O>.onWorker(
+  dispatcher: CoroutineDispatcher?
+): suspend FlowCollector<Event>.(Context, I) -> O
 
 /**
  * Decides for each input whether a [FunctionNode] run asks the user to approve it, set through

@@ -16,8 +16,11 @@
 
 package com.google.adk.kt.workflow;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -39,7 +42,10 @@ import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.AsyncJavaHelpers;
 import com.google.adk.kt.interop.FunctionNodes;
+import com.google.adk.kt.interop.InteropContextView;
+import com.google.adk.kt.interop.RunNodeConfig;
 import com.google.adk.kt.runners.InMemoryRunner;
+import com.google.adk.kt.sessions.Session;
 import com.google.adk.kt.sessions.SessionKey;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.FunctionResponse;
@@ -48,6 +54,11 @@ import com.google.adk.kt.types.Schema;
 import com.google.adk.kt.types.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.TraceFlags;
+import io.opentelemetry.api.trace.TraceState;
+import io.opentelemetry.context.Scope;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
@@ -57,8 +68,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
+import kotlinx.coroutines.CoroutineDispatcher;
+import kotlinx.coroutines.ExecutorsKt;
+import kotlinx.coroutines.ThreadContextElementKt;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -1409,6 +1434,552 @@ public final class FunctionNodeJavaInteropTest {
     assertTrue(error.getMessage(), error.getMessage().contains("must rerun on resume"));
   }
 
+  @Test
+  public void body_blockingSiblingsWaitingForEachOther_bothFinish() {
+    // Arrange: each body blocks until the other has started, which needs two threads.
+    CountDownLatch leftStarted = new CountDownLatch(1);
+    CountDownLatch rightStarted = new CountDownLatch(1);
+    AtomicBoolean leftSawRight = new AtomicBoolean();
+    AtomicBoolean rightSawLeft = new AtomicBoolean();
+    FunctionNode<Content, Object> left =
+        FunctionNodes.of(
+            "left",
+            Content.class,
+            Object.class,
+            (ctx, content) -> {
+              leftStarted.countDown();
+              leftSawRight.set(rightStarted.await(5, TimeUnit.SECONDS));
+              return null;
+            });
+    FunctionNode<Content, Object> right =
+        FunctionNodes.of(
+            "right",
+            Content.class,
+            Object.class,
+            (ctx, content) -> {
+              rightStarted.countDown();
+              rightSawLeft.set(leftStarted.await(5, TimeUnit.SECONDS));
+              return null;
+            });
+    Workflow workflow =
+        Workflow.builder().name("siblings_wf").edges(g -> g.fromStart().then(left, right)).build();
+
+    // Act
+    var unused = run(workflow, "go");
+
+    // Assert
+    assertTrue(leftSawRight.get());
+    assertTrue(rightSawLeft.get());
+  }
+
+  @Test
+  public void body_timedOutWithoutCatchingTheInterrupt_failsWithATimeout() {
+    // Arrange: the interrupt from the timeout propagates out of the body.
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .config(NodeConfig.builder().timeoutMillis(500).build())
+            .body((ctx, content) -> {
+              Thread.sleep(60_000);
+              throw new AssertionError("the timeout did not interrupt the body");
+            })
+            .build();
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("sleep_timeout_wf", "go", sleeper));
+
+    // Assert
+    assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+  }
+
+  @Test
+  public void body_moreParallelBodiesThanIoThreadsEachWaitingForAChild_finishOnTheDefault() {
+    // Arrange: every body joins a child, so each holds a thread until its child runs; plain
+    // Dispatchers.IO runs out of threads and hangs.
+    int bodies = Math.max(64, Runtime.getRuntime().availableProcessors()) + 8;
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "c" + in);
+    FunctionNode<Integer, String> waiter =
+        FunctionNodes.builder(Integer.class, String.class)
+            .name("waiter")
+            .rerunOnResume(true)
+            .body((ctx, n) ->
+                String.valueOf(
+                    InteropContextView.of(ctx)
+                        .runNode(child, n, RunNodeConfig.builder().runId("n" + n).build())
+                        .join()))
+            .build();
+    FunctionNode<Content, List<Integer>> items =
+        FunctionNodes.of(
+            "items",
+            Content.class,
+            new TypeReference<List<Integer>>() {},
+            (ctx, message) -> IntStream.range(0, bodies).boxed().collect(toImmutableList()));
+    FunctionNode<List<Integer>, List<String>> fanOut = FunctionNode.parallelOf(waiter);
+
+    // Act: one thread collects the run, as AsyncJavaHelpers.collect does.
+    List<Event> events =
+        assertTimeoutPreemptively(() -> run("wide_fan_out_wf", "go", items, fanOut));
+
+    // Assert: the fan-out's list output holds every item's result.
+    assertTrue(
+        events.stream()
+            .anyMatch(e -> e.getOutput() instanceof List<?> list && list.size() == bodies));
+  }
+
+  @Test
+  public void body_givenADispatcherThroughOfBuilderOrACopy_runsOnIt() {
+    // Arrange
+    AtomicReference<String> ofThread = new AtomicReference<>();
+    AtomicReference<String> builderThread = new AtomicReference<>();
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "app-body"));
+    try {
+      CoroutineDispatcher dispatcher = ExecutorsKt.from(executor);
+      FunctionNode<Content, String> viaOf =
+          FunctionNodes.of(
+              "via_of",
+              Content.class,
+              String.class,
+              dispatcher,
+              (ctx, content) -> {
+                ofThread.set(Thread.currentThread().getName());
+                return "of";
+              });
+      FunctionNode<String, String> viaBuilder =
+          FunctionNodes.builder(String.class, String.class, dispatcher)
+              .name("via_builder")
+              .body((ctx, in) -> {
+                builderThread.set(Thread.currentThread().getName());
+                return in + " builder";
+              })
+              .build();
+
+      AtomicReference<String> copyThread = new AtomicReference<>();
+      FunctionNode<String, String> viaCopy =
+          viaBuilder.toBuilder()
+              .name("via_copy")
+              .body((ctx, in) -> {
+                copyThread.set(Thread.currentThread().getName());
+                return in + " copy";
+              })
+              .build();
+
+      // Act
+      List<Event> events = run("app_dispatcher_wf", "go", viaOf, viaBuilder, viaCopy);
+
+      // Assert: a copy from toBuilder keeps the dispatcher too.
+      assertEquals("of builder copy", outputOf(events, "via_copy"));
+      assertTrue(ofThread.get(), ofThread.get().startsWith("app-body"));
+      assertTrue(builderThread.get(), builderThread.get().startsWith("app-body"));
+      assertTrue(copyThread.get(), copyThread.get().startsWith("app-body"));
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void body_onADispatcherThatRejectsIt_failsTheNodeWithTheRejection() {
+    // Arrange: a shut-down executor rejects every task.
+    AtomicBoolean ran = new AtomicBoolean();
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    executor.shutdown();
+    FunctionNode<Content, String> body =
+        FunctionNodes.of(
+            "body",
+            Content.class,
+            String.class,
+            ExecutorsKt.from(executor),
+            (ctx, content) -> {
+              ran.set(true);
+              return "done";
+            });
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("rejected_wf", "go", body));
+
+    // Assert: the node fails with the rejection, not as a stray cancellation.
+    assertFalse(String.valueOf(error), error instanceof CancellationException);
+    assertFalse(ran.get());
+    assertEquals(
+        "RejectedExecutionException",
+        sessionEvents("rejected_wf").stream()
+            .filter(e -> e.getErrorCode() != null)
+            .collect(onlyElement())
+            .getErrorCode());
+  }
+
+  @Test
+  public void body_timedOutOnAGivenDispatcher_isInterrupted() {
+    // Arrange
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      FunctionNode<Content, String> sleeper =
+          FunctionNodes.builder(Content.class, String.class, ExecutorsKt.from(executor))
+              .name("sleeper")
+              .config(NodeConfig.builder().timeoutMillis(500).build())
+              .body((ctx, content) -> {
+                Thread.sleep(60_000);
+                throw new AssertionError("the timeout did not interrupt the body");
+              })
+              .build();
+
+      // Act
+      Throwable error = assertThrows(Throwable.class, () -> run("given_timeout_wf", "go", sleeper));
+
+      // Assert
+      assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void body_timedOutAndWrappingTheInterrupt_failsWithATimeout() {
+    // Arrange: the body turns the interrupt from the timeout into an unchecked exception.
+    FunctionNode<Content, String> wrapper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("wrapper")
+            .config(NodeConfig.builder().timeoutMillis(500).build())
+            .body((ctx, content) -> {
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                throw new IllegalStateException("interrupted", e);
+              }
+              throw new AssertionError("the timeout did not interrupt the body");
+            })
+            .build();
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("wrap_timeout_wf", "go", wrapper));
+
+    // Assert
+    assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+  }
+
+  @Test
+  public void body_timedOut_isInterruptedAndTheRunEndsOnlyAfterItReturns() {
+    // Arrange: the body keeps running for a while after the interrupt.
+    AtomicBoolean interrupted = new AtomicBoolean();
+    AtomicBoolean returned = new AtomicBoolean();
+    FunctionNode<Content, String> slow =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("slow")
+            .config(NodeConfig.builder().timeoutMillis(1_000).build())
+            .body((ctx, content) -> {
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.set(true);
+              }
+              long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
+              while (System.nanoTime() < end) {
+                Thread.onSpinWait();
+              }
+              returned.set(true);
+              return "late";
+            })
+            .build();
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("timeout_wf", "go", slow));
+
+    // Assert
+    assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+    assertTrue(interrupted.get());
+    assertTrue(returned.get());
+  }
+
+  @Test
+  public void body_runCancelledWhileItBlocks_isInterruptedAndTheRunEndsOnlyAfterItReturns()
+      throws InterruptedException {
+    // Arrange: the body has no timeout and keeps running for a while after the interrupt.
+    CountDownLatch started = new CountDownLatch(1);
+    AtomicBoolean interrupted = new AtomicBoolean();
+    AtomicBoolean returned = new AtomicBoolean();
+    FunctionNode<Content, String> slow =
+        FunctionNodes.of(
+            "slow",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.set(true);
+              }
+              long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
+              while (System.nanoTime() < end) {
+                Thread.onSpinWait();
+              }
+              returned.set(true);
+              return "late";
+            });
+    AtomicReference<Throwable> error = new AtomicReference<>();
+    AtomicBoolean returnedWhenTheRunEnded = new AtomicBoolean();
+    Thread caller =
+        new Thread(() -> {
+          try {
+            var unused = run("cancelled_run_wf", "go", slow);
+          } catch (Throwable t) {
+            error.set(t);
+          }
+          returnedWhenTheRunEnded.set(returned.get());
+        });
+
+    // Act: cancel the run by interrupting the thread blocked in AsyncJavaHelpers.collect.
+    caller.start();
+    try {
+      assertTrue(started.await(10, TimeUnit.SECONDS));
+      caller.interrupt();
+      caller.join(30_000);
+    } finally {
+      caller.interrupt();
+    }
+
+    // Assert
+    assertFalse("the run hung", caller.isAlive());
+    assertTrue(String.valueOf(error.get()), causedBy(error.get(), InterruptedException.class));
+    assertTrue(interrupted.get());
+    assertTrue(returnedWhenTheRunEnded.get());
+  }
+
+  /** Stands in for MDC: thread-local state a caller carries into a run through its context. */
+  private static final ThreadLocal<String> requestId = new ThreadLocal<>();
+
+  @Test
+  public void body_runWithACallersThreadContext_seesItOnItsWorkerThread() {
+    // Arrange: the caller passes a thread-local context element, as MDCContext() is, and has an
+    // OpenTelemetry context current.
+    AtomicReference<String> seen = new AtomicReference<>();
+    AtomicReference<String> seenTraceId = new AtomicReference<>();
+    Thread callerThread = Thread.currentThread();
+    SpanContext callerSpan =
+        SpanContext.create(
+            "0af7651916cd43dd8448eb211c80319c",
+            "b7ad6b7169203331",
+            TraceFlags.getSampled(),
+            TraceState.getDefault());
+    AtomicReference<Thread> thread = new AtomicReference<>();
+    FunctionNode<Content, String> body =
+        FunctionNodes.of(
+            "body",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              seen.set(requestId.get());
+              seenTraceId.set(Span.current().getSpanContext().getTraceId());
+              thread.set(Thread.currentThread());
+              return "done";
+            });
+    Workflow workflow =
+        Workflow.builder().name("context_wf").edges(g -> g.fromStart().then(body)).build();
+    InMemoryRunner runner =
+        InMemoryRunner.builder()
+            .app(App.builder().appName("context_wf").rootNode(workflow).build())
+            .build();
+    SessionKey key = new SessionKey("context_wf", "user", "session");
+    var unusedSession =
+        AsyncJavaHelpers.await(
+            c -> runner.getSessionService().createSession(key, ImmutableMap.of(), c));
+
+    // Act: collect on this thread, which runs the workflow but not the body.
+    try (Scope unusedScope = Span.wrap(callerSpan).makeCurrent()) {
+      AsyncJavaHelpers.forEach(
+          runner.runAsync("user", "session", null, Content.fromText("user", "go"), null, null),
+          ThreadContextElementKt.asContextElement(requestId, "request-1"),
+          event -> {});
+    }
+
+    // Assert: the body ran off the caller's thread and still saw the caller's context.
+    assertEquals("request-1", seen.get());
+    assertEquals(callerSpan.getTraceId(), seenTraceId.get());
+    assertNotEquals(callerThread, thread.get());
+  }
+
+  @Test
+  public void body_timedOutThenAsksForInput_failsWithATimeoutInsteadOfWaiting() {
+    // Arrange: the body swallows the interrupt from the timeout and then asks the user.
+    FunctionNode<Content, String> asker =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("asker")
+            .config(NodeConfig.builder().timeoutMillis(500).build())
+            .body((ctx, content) -> {
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                // Swallowed on purpose.
+              }
+              return NodeBody.requestInput("late_ask", "Still there?");
+            })
+            .build();
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("late_ask_wf", "go", asker));
+
+    // Assert: the timeout wins, so the run fails instead of waiting for an answer.
+    assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+    assertTrue(
+        sessionEvents("late_ask_wf").stream()
+            .flatMap(e -> e.functionCalls().stream())
+            .noneMatch(c -> Objects.equals(c.getId(), "late_ask")));
+  }
+
+  @Test
+  public void body_interruptedWithoutACancel_failsTheNodeWithTheInterrupt() {
+    // Arrange: the body interrupts itself, as a helper thread would.
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.of(
+            "sleeper",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              Thread.currentThread().interrupt();
+              Thread.sleep(10_000);
+              throw new AssertionError("the interrupt did not reach the body");
+            });
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("interrupted_wf", "go", sleeper));
+
+    // Assert: the interrupt fails the node as itself, and does not cancel the run.
+    assertTrue(String.valueOf(error), error instanceof InterruptedException);
+    assertEquals(
+        "InterruptedException",
+        sessionEvents("interrupted_wf").stream()
+            .filter(e -> e.getErrorCode() != null)
+            .collect(onlyElement())
+            .getErrorCode());
+  }
+
+  @Test
+  public void body_throwsCancellationWithoutACancel_failsTheNode() {
+    // Arrange: the body throws a CancellationException, as join() on a cancelled future does.
+    FunctionNode<Content, String> joiner =
+        FunctionNodes.of(
+            "joiner",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              throw new CancellationException("cancelled future");
+            });
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("cancelled_future_wf", "go", joiner));
+
+    // Assert: the exception fails the node with it as cause, and does not cancel the run.
+    assertFalse(String.valueOf(error), error instanceof CancellationException);
+    assertTrue(String.valueOf(error), causedBy(error, NodeExecutionException.class));
+    // Coroutine stack-trace recovery may hand back a copy, so look along the cause chain.
+    assertEquals("cancelled future", causeOf(error, CancellationException.class).getMessage());
+    Event errorEvent =
+        sessionEvents("cancelled_future_wf").stream()
+            .filter(e -> e.getErrorCode() != null)
+            .collect(onlyElement());
+    assertEquals("NodeExecutionException", errorEvent.getErrorCode());
+    assertEquals(
+        "The node body threw a CancellationException without a cancel of the node.",
+        errorEvent.getErrorMessage());
+  }
+
+  @Test
+  public void body_throwsAWrappedFailure_failsAndRetriesUnderTheCausesName() {
+    // Arrange: the first attempt fails as join() does, with the cause wrapped.
+    AtomicInteger attempts = new AtomicInteger();
+    FunctionNode<Content, String> flaky =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("flaky")
+            .config(
+                NodeConfig.builder()
+                    .retryConfig(
+                        RetryConfig.builder()
+                            .maxAttempts(2)
+                            .initialDelayMillis(0)
+                            .exceptions("IllegalStateException")
+                            .build())
+                    .build())
+            .body((ctx, content) -> {
+              if (attempts.incrementAndGet() == 1) {
+                throw new CompletionException(new IllegalStateException("busy"));
+              }
+              return "done";
+            })
+            .build();
+
+    // Act
+    List<Event> events = run("wrapped_failure_wf", "go", flaky);
+
+    // Assert: the retry matched the cause's name, and the failed attempt reported that name.
+    assertEquals("done", outputOf(events, "flaky"));
+    assertEquals(2, attempts.get());
+    assertEquals(
+        "IllegalStateException",
+        sessionEvents("wrapped_failure_wf").stream()
+            .filter(e -> e.getErrorCode() != null)
+            .collect(onlyElement())
+            .getErrorCode());
+  }
+
+  @Test
+  public void body_throwsAWrappedCancellationWithoutACancel_failsTheNode() {
+    // Arrange: a composed future wraps a cancellation in a CompletionException.
+    FunctionNode<Content, String> joiner =
+        FunctionNodes.of(
+            "joiner",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              throw new CompletionException(new CancellationException("composed"));
+            });
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("composed_cancel_wf", "go", joiner));
+
+    // Assert: unwrapped, the cancellation still fails the node instead of cancelling the run.
+    assertFalse(String.valueOf(error), error instanceof CancellationException);
+    assertTrue(String.valueOf(error), causedBy(error, NodeExecutionException.class));
+    assertEquals(
+        "NodeExecutionException",
+        sessionEvents("composed_cancel_wf").stream()
+            .filter(e -> e.getErrorCode() != null)
+            .collect(onlyElement())
+            .getErrorCode());
+  }
+
+  @Test
+  public void body_waitingOnAChildThatAsksForInput_waitsThenGetsTheAnswer() {
+    // Arrange: the body blocks on a child that pauses, as join() wraps the pause.
+    FunctionNode<Object, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Object.class,
+            String.class,
+            (ctx, in) -> NodeBody.requestInput("ask_name", "Name?"));
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> "Hello, " + InteropContextView.of(ctx).runNode(asker).join())
+            .build();
+    FunctionNode<String, String> echo =
+        FunctionNodes.of("echo", String.class, String.class, (ctx, s) -> s);
+    JavaAskSession session = new JavaAskSession(parent, echo, "child_asks_wf");
+
+    // Act
+    List<Event> asked = session.run(Content.fromText("user", "hi"));
+    List<Event> answered = session.run(answer("ask_name", "Ada"));
+
+    // Assert: the first turn asks instead of failing, and the answer reaches the body.
+    assertTrue(asked.stream().allMatch(e -> e.getErrorCode() == null));
+    assertTrue(
+        asked.stream()
+            .flatMap(e -> e.functionCalls().stream())
+            .anyMatch(c -> Objects.equals(c.getId(), "ask_name")));
+    assertTrue(answered.stream().map(Event::getOutput).anyMatch("Hello, Ada"::equals));
+  }
+
   /** A resumable app running {@code first} then {@code second}, driven a turn at a time. */
   private static final class JavaAskSession {
     private final InMemoryRunner runner;
@@ -1611,7 +2182,7 @@ public final class FunctionNodeJavaInteropTest {
    * Feeds {@code value} to a node whose input port is {@code type} and returns what the node read
    * as {@code "Class:value"}, or {@code "fails"} when the port rejects it.
    */
-  private static <T> String readAs(Object value, Class<T> type) {
+  private <T> String readAs(Object value, Class<T> type) {
     FunctionNode<Object, Object> feed =
         FunctionNodes.of("feed", Object.class, Object.class, (ctx, in) -> value);
     FunctionNode<T, String> read =
@@ -1632,7 +2203,7 @@ public final class FunctionNodeJavaInteropTest {
    * returns what the node wrote and what the successor read as {@code "Class:value"}, or {@code
    * "fails"} when the successor rejects it.
    */
-  private static <T> Object roundTrip(T value) {
+  private <T> Object roundTrip(T value) {
     @SuppressWarnings("unchecked") // The class of a value is its type.
     Class<T> type = (Class<T>) value.getClass();
     FunctionNode<Content, T> write =
@@ -1674,7 +2245,7 @@ public final class FunctionNodeJavaInteropTest {
   /**
    * Runs {@code steps} in sequence from START on a user {@code message} and returns every event.
    */
-  private static List<Event> run(String appName, String message, Node... steps) {
+  private List<Event> run(String appName, String message, Node... steps) {
     Workflow workflow =
         Workflow.builder()
             .name(appName)
@@ -1686,16 +2257,67 @@ public final class FunctionNodeJavaInteropTest {
                   }
                 })
             .build();
+    return run(workflow, message);
+  }
+
+  /** Runs {@code workflow} as an app on a user {@code message} and returns every event. */
+  private List<Event> run(Workflow workflow, String message) {
+    String appName = workflow.getName();
     InMemoryRunner runner =
         InMemoryRunner.builder()
             .app(App.builder().appName(appName).rootNode(workflow).build())
             .build();
+    runners.put(appName, runner);
     SessionKey key = new SessionKey(appName, "user", "session");
     var unusedSession =
         AsyncJavaHelpers.await(
             c -> runner.getSessionService().createSession(key, ImmutableMap.of(), c));
     return AsyncJavaHelpers.collect(
         runner.runAsync("user", "session", null, Content.fromText("user", message), null, null));
+  }
+
+  /** The runners {@link #run} created, by app name, so a test can read the session back. */
+  private final Map<String, InMemoryRunner> runners = new HashMap<>();
+
+  /** The events of the session that {@link #run} used for {@code appName}. */
+  private List<Event> sessionEvents(String appName) {
+    InMemoryRunner runner = runners.get(appName);
+    SessionKey key = new SessionKey(appName, "user", "session");
+    Session session =
+        AsyncJavaHelpers.<Session>await(c -> runner.getSessionService().getSession(key, null, c));
+    return session.getEvents();
+  }
+
+  /** Runs {@code action}, failing instead of hanging if it takes more than 30 seconds. */
+  private static <T> T assertTimeoutPreemptively(Callable<T> action) {
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      return executor.submit(action).get(30, TimeUnit.SECONDS);
+    } catch (TimeoutException e) {
+      throw new AssertionError("the run hung", e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError(e);
+    } catch (Exception e) {
+      throw new AssertionError(e);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  /** Returns whether {@code error} or one of its causes is a {@code type}. */
+  private static boolean causedBy(Throwable error, Class<? extends Throwable> type) {
+    return causeOf(error, type) != null;
+  }
+
+  /** Returns {@code error} or its first cause that is a {@code type}, or null if none is. */
+  private static <T extends Throwable> T causeOf(Throwable error, Class<T> type) {
+    for (Throwable t = error; t != null; t = t.getCause()) {
+      if (type.isInstance(t)) {
+        return type.cast(t);
+      }
+    }
+    return null;
   }
 
   /** Returns whether {@code run} fails because a node rejected its input. */

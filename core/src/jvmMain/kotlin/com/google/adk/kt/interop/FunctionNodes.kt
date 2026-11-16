@@ -66,9 +66,11 @@ import com.google.adk.kt.workflow.PortCodec
 import com.google.adk.kt.workflow.RequestInput
 import com.google.adk.kt.workflow.ValueCodec
 import com.google.adk.kt.workflow.WorkflowConfigurationException
+import com.google.adk.kt.workflow.defaultBodyDispatcher
 import kotlin.reflect.KClass
 import kotlin.reflect.KType
 import kotlin.reflect.typeOf
+import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * Creates [FunctionNode]s from Java with a type per port. Jackson reads each input into its
@@ -91,80 +93,105 @@ import kotlin.reflect.typeOf
 object FunctionNodes {
   /**
    * Returns a node named [name] that runs [body] on each input read as [inputType] and writes its
-   * [outputType] output as JSON.
+   * [outputType] output as JSON. [body] runs on a thread of [dispatcher], by default of
+   * `Dispatchers.IO` without its thread limit; see [NodeBody]:
+   * ```java
+   * FunctionNodes.of("report", String.class, String.class, myDispatcher, (ctx, city) -> ...);
+   * ```
    *
    * @throws WorkflowConfigurationException if Jackson cannot read and write [inputType] or write
    *   [outputType], or if a port type has no single concrete JSON shape; a field type Jackson
    *   cannot handle fails on the first value instead.
    */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> of(
     name: String,
     inputType: Class<I & Any>,
     outputType: Class<O & Any>,
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
     body: NodeBody<I, O>,
-  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body)
+  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body, dispatcher)
 
   /** Like [of] with classes, for generic port types such as `List<String>`. */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> of(
     name: String,
     inputType: TypeReference<I>,
     outputType: TypeReference<O>,
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
     body: NodeBody<I, O>,
-  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body)
+  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body, dispatcher)
 
   /** Like [of] with classes, for a generic output type. */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> of(
     name: String,
     inputType: Class<I & Any>,
     outputType: TypeReference<O>,
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
     body: NodeBody<I, O>,
-  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body)
+  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body, dispatcher)
 
   /** Like [of] with classes, for a generic input type. */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> of(
     name: String,
     inputType: TypeReference<I>,
     outputType: Class<O & Any>,
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
     body: NodeBody<I, O>,
-  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body)
+  ): FunctionNode<I, O> = node(name, javaType(inputType), javaType(outputType), body, dispatcher)
 
   /**
    * Returns a [FunctionNode.Builder] whose node reads inputs as [inputType] and writes [outputType]
-   * outputs as JSON, for setting properties that [of] does not take.
+   * outputs as JSON, for setting properties that [of] does not take. Its body runs on [dispatcher],
+   * as in [of].
    *
    * @throws WorkflowConfigurationException if Jackson cannot read and write [inputType] or write
    *   [outputType], or if a port type has no single concrete JSON shape.
    */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> builder(
     inputType: Class<I & Any>,
     outputType: Class<O & Any>,
-  ): FunctionNode.Builder<I, O> = typedBuilder(javaType(inputType), javaType(outputType), BUILDER)
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
+  ): FunctionNode.Builder<I, O> =
+    typedBuilder(javaType(inputType), javaType(outputType), BUILDER, dispatcher)
 
   /** Like [builder] with classes, for generic port types such as `List<String>`. */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> builder(
     inputType: TypeReference<I>,
     outputType: TypeReference<O>,
-  ): FunctionNode.Builder<I, O> = typedBuilder(javaType(inputType), javaType(outputType), BUILDER)
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
+  ): FunctionNode.Builder<I, O> =
+    typedBuilder(javaType(inputType), javaType(outputType), BUILDER, dispatcher)
 
   /** Like [builder] with classes, for a generic output type. */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> builder(
     inputType: Class<I & Any>,
     outputType: TypeReference<O>,
-  ): FunctionNode.Builder<I, O> = typedBuilder(javaType(inputType), javaType(outputType), BUILDER)
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
+  ): FunctionNode.Builder<I, O> =
+    typedBuilder(javaType(inputType), javaType(outputType), BUILDER, dispatcher)
 
   /** Like [builder] with classes, for a generic input type. */
   @JvmStatic
+  @JvmOverloads
   fun <I, O> builder(
     inputType: TypeReference<I>,
     outputType: Class<O & Any>,
-  ): FunctionNode.Builder<I, O> = typedBuilder(javaType(inputType), javaType(outputType), BUILDER)
+    dispatcher: CoroutineDispatcher = defaultBodyDispatcher,
+  ): FunctionNode.Builder<I, O> =
+    typedBuilder(javaType(inputType), javaType(outputType), BUILDER, dispatcher)
 
   /**
    * Asks the user for input like [NodeBody.requestInput], and sends [payload] as JSON through the
@@ -211,15 +238,21 @@ object FunctionNodes {
     inputType: JavaType,
     outputType: JavaType,
     body: NodeBody<I, O>,
+    dispatcher: CoroutineDispatcher,
   ): FunctionNode<I, O> =
-    typedBuilder<I, O>(inputType, outputType, "node '$name'").name(name).body(body).build()
+    typedBuilder<I, O>(inputType, outputType, "node '$name'", dispatcher)
+      .name(name)
+      .body(body)
+      .build()
 
   private fun <I, O> typedBuilder(
     inputType: JavaType,
     outputType: JavaType,
     node: String,
+    dispatcher: CoroutineDispatcher,
   ): FunctionNode.Builder<I, O> =
     FunctionNode.Builder.create<I, O>()
+      .bodyDispatcher(dispatcher)
       // An input port also writes: an explicit input schema checks the input in its JSON form.
       .inputCodec(
         portCodec<I>(inputType, "the input of $node", KOTLIN_CODEC_TYPES, ::requireRoundTrip)

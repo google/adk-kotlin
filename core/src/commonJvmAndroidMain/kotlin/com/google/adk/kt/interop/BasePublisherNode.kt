@@ -106,7 +106,7 @@ constructor(
  * [ExecutionException]s, such as a paused child from [InteropContextView.runNode], so the runtime,
  * retry policies, and error events see it.
  */
-private fun Throwable.unwrapFutureFailure(): Throwable {
+internal fun Throwable.unwrapFutureFailure(): Throwable {
   var failure: Throwable = this
   while (failure is CompletionException || failure is ExecutionException) {
     failure = failure.cause ?: return this
