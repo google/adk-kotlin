@@ -50,9 +50,17 @@ internal actual fun currentTelemetryContext(): TelemetryContext =
 internal actual fun parentInCoroutine(element: TelemetryContextElement): TelemetryContext? {
   val context = element.context
   val elementContext = (context as? OtelTelemetryContext)?.otelContext ?: return context
-  val adkSpan = elementContext.get(ADK_SPAN) ?: return context
-  return if (Context.current().get(ADK_SPAN) === adkSpan) null else context
+  return if (threadHoldsAdkSpanOf(elementContext)) null else context
 }
+
+internal actual fun threadAdkSpanDiffersFrom(context: TelemetryContext): Boolean {
+  val otelContext = (context as? OtelTelemetryContext)?.otelContext ?: return false
+  return !threadHoldsAdkSpanOf(otelContext)
+}
+
+/** Whether the thread's context has the same innermost ADK span as [context], or both have none. */
+private fun threadHoldsAdkSpanOf(context: Context): Boolean =
+  Context.current().get(ADK_SPAN) === context.get(ADK_SPAN)
 
 private val testTracerOverride = ThreadLocal<Tracer>()
 
