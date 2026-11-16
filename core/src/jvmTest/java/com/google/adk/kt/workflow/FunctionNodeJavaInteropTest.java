@@ -28,9 +28,11 @@ import static org.junit.Assert.assertTrue;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.fasterxml.jackson.annotation.Nulls;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.SerializerProvider;
@@ -62,6 +64,7 @@ import io.opentelemetry.context.Scope;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,6 +82,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import kotlinx.coroutines.CoroutineDispatcher;
@@ -178,6 +182,37 @@ public final class FunctionNodeJavaInteropTest {
   }
 
   record Paint(Color color) {}
+
+  /** Written with a padded name, which it reads back. */
+  enum Padded {
+    @JsonProperty(" a")
+    A
+  }
+
+  record Keyed(Map<Integer, String> byId) {}
+
+  /** Holds an array in a field, since a record component should not be an array. */
+  static final class Counts {
+    @JsonSetter(nulls = Nulls.AS_EMPTY, contentNulls = Nulls.SKIP)
+    @JsonFormat(with = JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+    public int[] values;
+
+    String show() {
+      return Arrays.toString(values);
+    }
+  }
+
+  /** Reads a null element as 0. */
+  static final class Zeroed {
+    @JsonSetter(contentNulls = Nulls.AS_EMPTY)
+    public int[] values;
+
+    String show() {
+      return Arrays.toString(values);
+    }
+  }
+
+  record Blank(@JsonSetter(nulls = Nulls.AS_EMPTY) int n) {}
 
   /** Written as its ordinal wherever it appears, as its numeric shape asks. */
   @JsonFormat(shape = JsonFormat.Shape.NUMBER)
@@ -2073,9 +2108,14 @@ public final class FunctionNodeJavaInteropTest {
       {0L, Coded.class, "fails"},
       {1L, Coded.class, "fails"},
       {2L, Coded.class, "fails"},
-      // Exceptions that keep Jackson's readers.
-      {" RED", Color.class, "Color:RED"},
-      {65L, Character.class, "Character:A"},
+      // An enum reads a padded name only where Jackson writes it.
+      {" RED", Color.class, "fails"},
+      {"RED\u0001", Color.class, "fails"},
+      {" a", Padded.class, "Padded:A"},
+      // A char reads one character of text, not a code point.
+      {"A", Character.class, "Character:A"},
+      {65L, Character.class, "fails"},
+      {"AB", Character.class, "fails"},
     };
     Map<String, String> expected = new LinkedHashMap<>();
     Map<String, String> actual = new LinkedHashMap<>();
@@ -2100,6 +2140,8 @@ public final class FunctionNodeJavaInteropTest {
     Map<String, Object> nullQty = new HashMap<>();
     nullQty.put("qty", null);
     nullQty.put("rush", true);
+    Map<String, Object> nullN = new HashMap<>();
+    nullN.put("n", null);
 
     Map<String, Object> bigLong = ImmutableMap.of("cents", 9007199254740993L);
     ImmutableMap<String, Object> numericRush = ImmutableMap.of("qty", 3, "rush", 1L);
@@ -2113,6 +2155,7 @@ public final class FunctionNodeJavaInteropTest {
     String relaxedRead = readAs(relaxed, Rush.class);
     String paddedRead = readAs(padded, Rush.class);
     String nullRead = readAs(nullQty, Rush.class);
+    String nullAsEmptyRead = readAs(nullN, Blank.class);
     String bigLongRead = readAs(bigLong, Ledger.class);
     String numericRushRead = readAs(numericRush, Rush.class);
     String numericColorRead = readAs(numericColor, Paint.class);
@@ -2125,6 +2168,8 @@ public final class FunctionNodeJavaInteropTest {
     assertEquals("Rush:Rush[qty=3, rush=true, urgent=false]", relaxedRead);
     assertEquals("fails", paddedRead);
     assertEquals("fails", nullRead);
+    // A primitive field set to read null as empty reads its default.
+    assertEquals("Blank:Blank[n=0]", nullAsEmptyRead);
     assertEquals("Ledger:Ledger[cents=9007199254740993]", bigLongRead);
     // A plain boolean or enum field still rejects a number.
     assertEquals("fails", numericRushRead);
@@ -2148,6 +2193,65 @@ public final class FunctionNodeJavaInteropTest {
     // Assert
     assertEquals("Leave:Leave[days=3, reason=trip]", textRead);
     assertEquals("fails", numberRead);
+  }
+
+  @Test
+  public void primitiveArrayPorts_readEachElementAsItsTypeDoes() {
+    // Arrange
+    Map<String, Object> nullField = new HashMap<>();
+    nullField.put("values", null);
+
+    // Act
+    String literals = readAs(ImmutableList.of("3", 2.0, "1e2"), int[].class, Arrays::toString);
+    String paddedNumber = readAs(ImmutableList.of("003"), int[].class, Arrays::toString);
+    String nullElement = readAs(Arrays.asList(1, null), int[].class, Arrays::toString);
+    String booleans = readAs(ImmutableList.of("true", false), boolean[].class, Arrays::toString);
+    String numberAsBoolean = readAs(ImmutableList.of(1L), boolean[].class, Arrays::toString);
+    String fieldElement =
+        readAs(ImmutableMap.of("values", ImmutableList.of(" 4")), Counts.class, Counts::show);
+    String nullFieldRead = readAs(nullField, Counts.class, Counts::show);
+    String skippedElement =
+        readAs(ImmutableMap.of("values", Arrays.asList(1, null, 2)), Counts.class, Counts::show);
+    String singleValue = readAs(ImmutableMap.of("values", 5L), Counts.class, Counts::show);
+    String zeroedElement =
+        readAs(ImmutableMap.of("values", Arrays.asList(1, null)), Zeroed.class, Zeroed::show);
+
+    // Assert
+    assertEquals("[3, 2, 100]", literals);
+    assertEquals("fails", paddedNumber);
+    assertEquals("fails", nullElement);
+    assertEquals("[true, false]", booleans);
+    assertEquals("fails", numberAsBoolean);
+    assertEquals("fails", fieldElement);
+    // A field's own null settings still apply.
+    assertEquals("[]", nullFieldRead);
+    assertEquals("[1, 2]", skippedElement);
+    assertEquals("[5]", singleValue);
+    assertEquals("[1, 0]", zeroedElement);
+  }
+
+  @Test
+  public void mapKeys_readAsValuesOfTheirTypeDo() {
+    // Arrange
+    Map<String, Object> plain = ImmutableMap.of("byId", ImmutableMap.of("3", "a"));
+    Map<String, Object> exponent = ImmutableMap.of("byId", ImmutableMap.of("1e2", "a"));
+    Map<String, Object> whole = ImmutableMap.of("byId", ImmutableMap.of("3.0", "a"));
+    Map<String, Object> padded = ImmutableMap.of("byId", ImmutableMap.of("003", "a"));
+    Map<String, Object> fraction = ImmutableMap.of("byId", ImmutableMap.of("3.5", "a"));
+
+    // Act
+    String plainRead = readAs(plain, Keyed.class);
+    String exponentRead = readAs(exponent, Keyed.class);
+    String wholeRead = readAs(whole, Keyed.class);
+    String paddedRead = readAs(padded, Keyed.class);
+    String fractionRead = readAs(fraction, Keyed.class);
+
+    // Assert
+    assertEquals("Keyed:Keyed[byId={3=a}]", plainRead);
+    assertEquals("Keyed:Keyed[byId={100=a}]", exponentRead);
+    assertEquals("Keyed:Keyed[byId={3=a}]", wholeRead);
+    assertEquals("fails", paddedRead);
+    assertEquals("fails", fractionRead);
   }
 
   @Test
@@ -2183,11 +2287,15 @@ public final class FunctionNodeJavaInteropTest {
    * as {@code "Class:value"}, or {@code "fails"} when the port rejects it.
    */
   private <T> String readAs(Object value, Class<T> type) {
+    return readAs(value, type, in -> in.getClass().getSimpleName() + ":" + in);
+  }
+
+  /** Like {@link #readAs(Object, Class)}, but returns what the node read as {@code show} does. */
+  private <T> String readAs(Object value, Class<T> type, Function<? super T, String> show) {
     FunctionNode<Object, Object> feed =
         FunctionNodes.of("feed", Object.class, Object.class, (ctx, in) -> value);
     FunctionNode<T, String> read =
-        FunctionNodes.of(
-            "read", type, String.class, (ctx, in) -> in.getClass().getSimpleName() + ":" + in);
+        FunctionNodes.of("read", type, String.class, (ctx, in) -> show.apply(in));
     try {
       return (String) outputOf(run("coercion", "go", feed, read), "read");
     } catch (RuntimeException e) {

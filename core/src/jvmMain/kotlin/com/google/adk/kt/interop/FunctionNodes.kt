@@ -29,6 +29,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JavaType
 import com.fasterxml.jackson.databind.JsonDeserializer
 import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.KeyDeserializer
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
 import com.fasterxml.jackson.databind.annotation.JsonSerialize
@@ -37,11 +38,14 @@ import com.fasterxml.jackson.databind.cfg.CoercionInputShape
 import com.fasterxml.jackson.databind.deser.AbstractDeserializer
 import com.fasterxml.jackson.databind.deser.BeanDeserializerBase
 import com.fasterxml.jackson.databind.deser.BeanDeserializerModifier
+import com.fasterxml.jackson.databind.deser.ContextualDeserializer
 import com.fasterxml.jackson.databind.deser.DefaultDeserializationContext
 import com.fasterxml.jackson.databind.deser.ValueInstantiator
 import com.fasterxml.jackson.databind.deser.impl.UnsupportedTypeDeserializer
 import com.fasterxml.jackson.databind.deser.std.DelegatingDeserializer
 import com.fasterxml.jackson.databind.deser.std.EnumDeserializer
+import com.fasterxml.jackson.databind.deser.std.ObjectArrayDeserializer
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer
 import com.fasterxml.jackson.databind.deser.std.StdScalarDeserializer
 import com.fasterxml.jackson.databind.json.JsonMapper
 import com.fasterxml.jackson.databind.module.SimpleModule
@@ -80,11 +84,11 @@ import kotlinx.coroutines.CoroutineDispatcher
  * through, rejects any other non-text value, and infers a string schema. To run a node on each item
  * of a list, wrap it with [FunctionNode.parallelOf].
  *
- * Numbers, booleans, enums, and text inside a record follow the coercion rules of Kotlin ports: a
- * value of the JSON type, the same literal quoted, or a whole number into an integer. The
- * exceptions keep Jackson's readers: a `char` reads a number as a code point, an enum name is
- * trimmed, and `BigInteger`, `BigDecimal`, the `Atomic*` types and primitive arrays stay lenient. A
- * primitive field rejects an explicit null. An enum that Jackson writes as its ordinal, or a
+ * Numbers, booleans, chars, enums, and text inside a record, also as primitive array elements and
+ * map keys, follow the coercion rules of Kotlin ports: a value of the JSON type, the same literal
+ * quoted, a whole number into an integer, and one character of text into a `char`. `BigInteger`,
+ * `BigDecimal`, the `Atomic*` types, `byte[]` (base64) and `char[]` (text) keep Jackson's readers.
+ * A primitive field rejects an explicit null. An enum that Jackson writes as its ordinal, or a
  * boolean it writes as 1 or 0, such as under a numeric `@JsonFormat` shape, reads back from that
  * number.
  */
@@ -290,9 +294,9 @@ private val MAPPER: ObjectMapper =
     .build()
 
 /**
- * Number and boolean readers for the table, which read a scalar as the Kotlin port of that type
- * does. Jackson's coercion configs cannot limit text to JSON literals or floats to whole numbers,
- * so these replace its readers.
+ * Number, boolean and char readers for the table, also for primitive arrays and map keys, which
+ * read a scalar as the Kotlin port of that type does. Jackson's coercion configs cannot limit text
+ * to JSON literals or floats to whole numbers, so these replace its readers.
  */
 private fun tableScalars(): SimpleModule =
   SimpleModule("AdkPortScalars").apply {
@@ -300,29 +304,44 @@ private fun tableScalars(): SimpleModule =
     scalar(0) { wholeLong(it)?.takeIf { n -> n.toInt().toLong() == n }?.toInt() }
     scalar(0.toShort()) { wholeLong(it)?.takeIf { n -> n.toShort().toLong() == n }?.toShort() }
     scalar(0.toByte()) { wholeLong(it)?.takeIf { n -> n.toByte().toLong() == n }?.toByte() }
-    scalar(0.0) { ValueCoercer.numberLiteral(scalarValue(it))?.toDouble() }
-    scalar(0f) {
-      ValueCoercer.numberLiteral(scalarValue(it))?.toFloat()?.takeIf { f -> f.isFinite() }
-    }
-    scalar(false) { ValueCoercer.booleanLiteral(scalarValue(it)) }
+    scalar(0.0) { ValueCoercer.numberLiteral(it)?.toDouble() }
+    scalar(0f) { ValueCoercer.numberLiteral(it)?.toFloat()?.takeIf { f -> f.isFinite() } }
+    scalar(false) { ValueCoercer.booleanLiteral(it) }
+    scalar('\u0000') { (it as? String)?.singleOrNull() }
+    // byte[] reads base64 and char[] text, as Jackson writes them.
+    primitiveArray(LongArray::class.java) { LongArray(it.size) { i -> it[i] as Long } }
+    primitiveArray(IntArray::class.java) { IntArray(it.size) { i -> it[i] as Int } }
+    primitiveArray(ShortArray::class.java) { ShortArray(it.size) { i -> it[i] as Short } }
+    primitiveArray(DoubleArray::class.java) { DoubleArray(it.size) { i -> it[i] as Double } }
+    primitiveArray(FloatArray::class.java) { FloatArray(it.size) { i -> it[i] as Float } }
+    primitiveArray(BooleanArray::class.java) { BooleanArray(it.size) { i -> it[i] as Boolean } }
     setDeserializerModifier(WrittenNumbers)
   }
 
+/** Registers [read], which takes [scalarValue] or a map key, for a boxed and a primitive [T]. */
 private inline fun <reified T : Any> SimpleModule.scalar(
-  primitiveDefault: T,
-  noinline read: (JsonParser) -> T?,
+  defaultValue: T,
+  noinline read: (Any?) -> T?,
 ) {
   addDeserializer(
     T::class.javaObjectType,
-    TableScalarDeserializer(T::class.javaObjectType, null, read),
+    TableScalarDeserializer(T::class.javaObjectType, defaultValue, isPrimitive = false, read),
   )
   addDeserializer(
     T::class.javaPrimitiveType!!,
-    TableScalarDeserializer(T::class.javaObjectType, primitiveDefault, read),
+    TableScalarDeserializer(T::class.javaObjectType, defaultValue, isPrimitive = true, read),
+  )
+  addKeyDeserializer(
+    T::class.javaObjectType,
+    TableScalarKeyDeserializer(T::class.javaObjectType, read),
   )
 }
 
-private fun wholeLong(p: JsonParser): Long? = ValueCoercer.integerLiteral(scalarValue(p))?.toLong()
+private fun <A : Any> SimpleModule.primitiveArray(type: Class<A>, build: (Array<*>) -> A) {
+  addDeserializer(type, PrimitiveArrayDeserializer(type, build))
+}
+
+private fun wholeLong(value: Any?): Long? = ValueCoercer.integerLiteral(value)?.toLong()
 
 /** The current scalar token as the value a Kotlin port reads from the same JSON, else null. */
 private fun scalarValue(p: JsonParser): Any? =
@@ -341,24 +360,76 @@ private fun scalarValue(p: JsonParser): Any? =
  */
 private class TableScalarDeserializer<T : Any>(
   private val type: Class<T>,
-  private val primitiveDefault: T?,
-  private val read: (JsonParser) -> T?,
+  private val defaultValue: T,
+  private val isPrimitive: Boolean,
+  private val read: (Any?) -> T?,
 ) : StdScalarDeserializer<T>(type) {
   @Suppress("UNCHECKED_CAST")
   override fun deserialize(p: JsonParser, ctxt: DeserializationContext): T =
-    read(p) ?: ctxt.handleUnexpectedToken(type, p) as T
+    read(scalarValue(p)) ?: ctxt.handleUnexpectedToken(type, p) as T
 
   override fun getNullValue(ctxt: DeserializationContext): T? {
-    if (primitiveDefault != null) ctxt.reportInputMismatch<Any>(this, "null for a primitive")
+    if (isPrimitive) ctxt.reportInputMismatch<Any>(this, "null for a primitive")
     return null
   }
 
-  override fun getAbsentValue(ctxt: DeserializationContext): Any? = primitiveDefault
+  override fun getAbsentValue(ctxt: DeserializationContext): Any? = defaultValue.takeIf {
+    isPrimitive
+  }
+
+  // Nulls.AS_EMPTY reads zero or false, as Jackson's own number and boolean readers do.
+  override fun getEmptyValue(ctxt: DeserializationContext): Any = defaultValue
+}
+
+/** Reads a map key, which JSON writes as text, as [read] reads a value of [type]. */
+private class TableScalarKeyDeserializer(
+  private val type: Class<*>,
+  private val read: (Any?) -> Any?,
+) : KeyDeserializer() {
+  override fun deserializeKey(key: String, ctxt: DeserializationContext): Any? =
+    read(key) ?: ctxt.handleWeirdKey(type, key, "does not fit the key type")
+}
+
+/**
+ * Reads a primitive array with Jackson's array reader, which honors the field's content-null
+ * setting and `ACCEPT_SINGLE_VALUE_AS_ARRAY`, each element read as its type is in [tableScalars].
+ */
+private class PrimitiveArrayDeserializer<A : Any>(
+  private val type: Class<A>,
+  private val build: (Array<*>) -> A,
+  private val boxed: JsonDeserializer<*>? = null,
+) : StdDeserializer<A>(type), ContextualDeserializer {
+  override fun createContextual(
+    ctxt: DeserializationContext,
+    property: BeanProperty?,
+  ): JsonDeserializer<*> {
+    val element = type.componentType
+    // The primitive's own reader, so a null element fails.
+    @Suppress("UNCHECKED_CAST") // A value reader reads Objects.
+    val boxed =
+      ObjectArrayDeserializer(
+        ctxt.typeFactory.constructArrayType(element.kotlin.javaObjectType),
+        ctxt.findRootValueDeserializer(ctxt.constructType(element)) as JsonDeserializer<Any>,
+        null,
+      )
+    return PrimitiveArrayDeserializer(type, build, boxed.createContextual(ctxt, property))
+  }
+
+  override fun deserialize(p: JsonParser, ctxt: DeserializationContext): A {
+    val values = checkNotNull(boxed) { "set by createContextual" }.deserialize(p, ctxt) as Array<*>
+    if (values.any { it == null }) {
+      return ctxt.reportInputMismatch(this, "null in a primitive array")
+    }
+    return build(values)
+  }
+
+  override fun getEmptyValue(ctxt: DeserializationContext): Any = build(emptyArray<Any>())
 }
 
 /**
  * Wraps the enum and boolean readers so that each also reads an enum's ordinal, or 1 and 0 for a
- * boolean, where Jackson writes those. An enum with a `@JsonCreator` keeps its own reader.
+ * boolean, where Jackson writes those, and an enum rejects a padded name it does not write. An enum
+ * with a `@JsonCreator` keeps its own reader.
  */
 private object WrittenNumbers : BeanDeserializerModifier() {
   override fun modifyEnumDeserializer(
@@ -390,8 +461,8 @@ private object WrittenNumbers : BeanDeserializerModifier() {
 }
 
 /**
- * Reads like its delegate, and where Jackson writes each of [values] as its own index, also reads
- * an integer n from 0 to `values.size - 1` as `values[n]`. Any other input goes to the delegate.
+ * Reads like its delegate but rejects padded text unless Jackson writes that exact text. Where
+ * Jackson writes each of [values] as its own index, it also reads an index n as `values[n]`.
  * Jackson reads only the instance [createContextual] returns, which decides [readsIndex].
  */
 private class IndexedValueDeserializer(
@@ -414,7 +485,18 @@ private class IndexedValueDeserializer(
   override fun deserialize(p: JsonParser, ctxt: DeserializationContext): Any? {
     val index = if (readsIndex) scalarValue(p) as? Long else null
     if (index != null && index in values.indices) return values[index.toInt()]
-    return super.deserialize(p, ctxt)
+    val text = if (p.hasToken(JsonToken.VALUE_STRING)) p.text else null
+    val value = super.deserialize(p, ctxt)
+    // Jackson's enum reader trims a name it does not find; keep only names the type writes.
+    if (
+      text != null &&
+        value != null &&
+        text != text.trim { it <= ' ' } &&
+        text != MAPPER.valueToTree<JsonNode>(value).asText()
+    ) {
+      return ctxt.handleWeirdStringValue(handledType(), text, "not a name it writes")
+    }
+    return value
   }
 
   /**
