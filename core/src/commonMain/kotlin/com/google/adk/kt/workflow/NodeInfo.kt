@@ -37,7 +37,8 @@ import kotlinx.serialization.json.JsonNames
  *   the workflow of a terminal node). Set on an event carrying the node's output, in `output` or as
  *   message-as-output content.
  * @property messageAsOutput When true this event's content *is* the node's output, so no separate
- *   output event follows.
+ *   output event follows. On an event without content, it marks the output as a message, which a
+ *   stored session holds as its JSON form.
  */
 @Serializable
 data class NodeInfo(

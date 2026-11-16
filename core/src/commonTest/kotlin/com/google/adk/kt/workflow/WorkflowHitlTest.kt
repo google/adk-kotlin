@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
@@ -295,7 +296,7 @@ private class RecordsInputThenAsks(override val name: String, private val interr
 
 @Serializable private data class HitlProfile(val id: String, val age: Int)
 
-/** Answers with a model-style message whose content is its output, the way an agent node does. */
+/** Answers with a model-style message whose content is its output. */
 private class MessageOutput(
   override val name: String,
   private val text: String,
@@ -306,6 +307,20 @@ private class MessageOutput(
     emit(
       Event(
         content = Content(role = Role.MODEL, parts = listOf(Part(text = text, thought = thought))),
+        nodeInfo = NodeInfo(messageAsOutput = true),
+      )
+    )
+  }
+}
+
+/** An agent whose message is its output, which is not an [LlmAgent]. */
+private class MessageAgent(name: String, private val text: String) : BaseAgent(name = name) {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+    emit(
+      Event(
+        author = name,
+        invocationId = context.invocationId,
+        content = modelMessage(text),
         nodeInfo = NodeInfo(messageAsOutput = true),
       )
     )
@@ -3818,8 +3833,9 @@ class WorkflowHitlTest {
     assertFalse("s3cret" in error.message.orEmpty())
   }
 
+  /** A replayed message node gives its successor the message it gave live, not its text. */
   @Test
-  fun resume_messageOutputNode_isRehydratedToItsText() {
+  fun resume_messageOutputNode_isRehydratedToItsMessage() {
     // Arrange: the message node finishes on the first turn while its sibling asks for input.
     val chat = MessageOutput("chat", "agent said hi")
     val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
@@ -3837,12 +3853,15 @@ class WorkflowHitlTest {
 
     // Assert
     val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
-    assertEquals(mapOf("chat" to "agent said hi", "ask" to mapOf("v" to 1L)), joinEvent.output)
+    assertEquals(
+      mapOf("chat" to modelMessage("agent said hi"), "ask" to mapOf("v" to 1L)),
+      joinEvent.output,
+    )
   }
 
-  /** A replayed thought-only message gives no output, as it has no text. */
+  /** A replayed thought-only message keeps its thought part, as the successor got it live. */
   @Test
-  fun resume_replayedThoughtOnlyMessage_givesNoOutput() {
+  fun resume_replayedThoughtOnlyMessage_isReplayedAsTheMessage() {
     // Arrange: the message node finishes on the first turn while its sibling asks for input.
     val chat = MessageOutput("chat", "pondering", thought = true)
     val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
@@ -3860,12 +3879,14 @@ class WorkflowHitlTest {
 
     // Assert
     val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
-    assertEquals(mapOf("chat" to null, "ask" to mapOf("v" to 1L)), joinEvent.output)
+    val thought =
+      Content(role = Role.MODEL, parts = listOf(Part(text = "pondering", thought = true)))
+    assertEquals(mapOf("chat" to thought, "ask" to mapOf("v" to 1L)), joinEvent.output)
   }
 
-  /** The re-sent text of a replayed message reads back as text, so a later resume gets it too. */
+  /** A replayed message is sent again as the output, marked as a message, for the next resume. */
   @Test
-  fun resume_replayedMessageOutput_isResentAsItsTextForTheNextResume() {
+  fun resume_replayedMessageOutput_isResentAsAMessageForTheNextResume() {
     // Arrange: the message node finishes on the first turn while two siblings ask for input.
     val chat = MessageOutput("chat", "agent said hi")
     val first = Ask("first", RequestInput(interruptId = "ask_1", message = "need input"))
@@ -3894,14 +3915,280 @@ class WorkflowHitlTest {
     // Assert
     val resent = resumed.single { it.nodeInfo?.path == "wf@1/chat@1" }
     assertNull(resent.content)
+    assertEquals(true, resent.nodeInfo?.messageAsOutput)
+    val joinEvent = final.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(modelMessage("agent said hi"), (joinEvent.output as Map<*, *>)["chat"])
+  }
+
+  /** A node's message output is marked, so a stored session reads it back as the message. */
+  @Test
+  fun resume_nodeOutputtingAMessage_isRehydratedToTheMessage() {
+    // Arrange: the node emits a message as its output while its sibling asks for input.
+    val chat = RunCountingEmitter("chat", modelMessage("agent said hi"))
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, chat), Edge(Start, ask), Edge(chat, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+
+    // Act
+    val first = session.turn(userMessage("go"))
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val live = first.single { it.nodeInfo?.path == "wf@1/chat@1" && it.output != null }
+    assertEquals(true, live.nodeInfo?.messageAsOutput)
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(
+      mapOf("chat" to modelMessage("agent said hi"), "ask" to mapOf("v" to 1L)),
+      joinEvent.output,
+    )
+  }
+
+  /** A child workflow ending in a message node outputs its checked value after a resume. */
+  @Test
+  fun resume_childWorkflowEndingInAMessageNode_outputsTheCheckedValue() {
+    // Arrange: the child's object schema reads its terminal node's message as JSON.
+    val inner =
+      Workflow(
+        name = "inner",
+        edges = listOf(Edge(Start, MessageOutput("chat", """{"age": 3}"""))),
+        outputSchema = AGE_SCHEMA,
+      )
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, inner), Edge(Start, ask), Edge(inner, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(mapOf("inner" to mapOf("age" to 3L), "ask" to mapOf("v" to 1L)), joinEvent.output)
+  }
+
+  /** A caller that delegates to a node outputting a message replays the message. */
+  @Test
+  fun resume_callerDelegatingToANodeOutputtingAMessage_isRehydratedToTheMessage() {
+    // Arrange: the caller finishes on the first turn while its sibling asks for input.
+    val caller = DelegateToChild("caller", RunCountingEmitter("chat", modelMessage("hi")))
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, caller), Edge(Start, ask), Edge(caller, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(mapOf("caller" to modelMessage("hi"), "ask" to mapOf("v" to 1L)), joinEvent.output)
+  }
+
+  /** A caller that delegates to an agent outputs the agent's text live, and replays it too. */
+  @Test
+  fun resume_callerDelegatingToASingleTurnAgent_isRehydratedToTheAgentsText() {
+    // Arrange: the caller finishes on the first turn while its sibling asks for input.
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel("model") { _ -> flowOf(LlmResponse(content = modelMessage("agent said hi"))) },
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val caller = DelegateToChild("caller", agent)
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, caller), Edge(Start, ask), Edge(caller, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(mapOf("caller" to "agent said hi", "ask" to mapOf("v" to 1L)), joinEvent.output)
+  }
+
+  /** An event marked as a message whose output is not a message keeps that output. */
+  @Test
+  fun scan_eventMarkedAsAMessageWithAPlainOutput_keepsTheOutput() {
+    // Arrange
+    val event =
+      Event(
+        author = "wf",
+        invocationId = "inv",
+        output = "hi",
+        nodeInfo = NodeInfo(path = "wf@1/chat@1", messageAsOutput = true),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(listOf(event), "wf@1", "inv").getValue("chat@1")
+
+    // Assert
+    assertEquals("hi", recovered.output)
+  }
+
+  /** A message in the output field of a stored event reads back as the message. */
+  @Test
+  fun scan_messageInTheOutputFieldOfAStoredEvent_isReadBackAsTheMessage() {
+    // Arrange: the event goes through JSON, as a stored session keeps it.
+    val resent =
+      Event(
+        author = "wf",
+        invocationId = "inv",
+        output = modelMessage("hi"),
+        nodeInfo = NodeInfo(path = "wf@1/chat@1", messageAsOutput = true),
+      )
     val stored =
       adkJson.decodeFromString(
         Event.serializer(),
         adkJson.encodeToString(Event.serializer(), resent),
       )
-    assertEquals("agent said hi", stored.output)
-    val joinEvent = final.single { it.nodeInfo?.path == "wf@1/j@1" }
-    assertEquals("agent said hi", (joinEvent.output as Map<*, *>)["chat"])
+
+    // Act
+    val recovered = ResumeScan.scan(listOf(stored), "wf@1", "inv").getValue("chat@1")
+
+    // Assert
+    assertEquals(modelMessage("hi"), recovered.output)
+  }
+
+  /** An event marked as a message whose output is a map that is not a message keeps the map. */
+  @Test
+  fun scan_eventMarkedAsAMessageWithAMapOutput_keepsTheMap() {
+    // Arrange
+    val event =
+      Event(
+        author = "wf",
+        invocationId = "inv",
+        output = mapOf("v" to 1L),
+        nodeInfo = NodeInfo(path = "wf@1/chat@1", messageAsOutput = true),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(listOf(event), "wf@1", "inv").getValue("chat@1")
+
+    // Assert
+    assertEquals(mapOf("v" to 1L), recovered.output)
+  }
+
+  /** An event marked as a message whose map output does not convert to a message keeps it. */
+  @Test
+  fun scan_eventMarkedAsAMessageWithAMapThatIsNotAMessage_keepsTheMap() {
+    // Arrange
+    val event =
+      Event(
+        author = "wf",
+        invocationId = "inv",
+        output = mapOf("parts" to "x"),
+        nodeInfo = NodeInfo(path = "wf@1/chat@1", messageAsOutput = true),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(listOf(event), "wf@1", "inv").getValue("chat@1")
+
+    // Assert
+    assertEquals(mapOf("parts" to "x"), recovered.output)
+  }
+
+  /** Only an [LlmAgent] outputs its text; any other agent replays the message it output. */
+  @Test
+  fun resume_customAgentMessageOutput_isRehydratedToItsMessage() {
+    // Arrange: the agent finishes on the first turn while its sibling asks for input.
+    val agent = MessageAgent("agent", "agent said hi")
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, agent), Edge(Start, ask), Edge(agent, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(
+      mapOf("agent" to modelMessage("agent said hi"), "ask" to mapOf("v" to 1L)),
+      joinEvent.output,
+    )
+  }
+
+  /** An agent's output is its text, so a replayed agent gives the text, as it did live. */
+  @Test
+  fun resume_singleTurnAgentWithoutOutputSchema_isRehydratedToItsText() {
+    // Arrange: the agent finishes on the first turn while its sibling asks for input.
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel("model") { _ -> flowOf(LlmResponse(content = modelMessage("agent said hi"))) },
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, agent), Edge(Start, ask), Edge(agent, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(mapOf("agent" to "agent said hi", "ask" to mapOf("v" to 1L)), joinEvent.output)
+  }
+
+  /**
+   * A message's JSON text reaches a typed successor that asks to confirm, also after the resume.
+   */
+  @Test
+  fun resume_messageOutputIntoTypedNodeThatConfirms_readsTheMessageAsJson() {
+    // Arrange: the typed node asks to confirm, so it reads the replayed message on the next turn.
+    val chat = MessageOutput("chat", """{"id": "u1", "age": "3"}""")
+    val describe =
+      node<HitlProfile, String>("describe", requireConfirmation = true) { _, profile ->
+        "${profile.id}:${profile.age}"
+      }
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, chat), Edge(chat, describe)))
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events =
+      session.turn(answer("wf_tool_confirmation:wf@1/describe@1", mapOf("confirmed" to true)))
+
+    // Assert
+    assertEquals(
+      "u1:3",
+      events.single { it.nodeInfo?.path == "wf@1/describe@1" && it.output != null }.output,
+    )
   }
 
   /** A message-as-output node's JSON text reaches a typed successor as that type, live. */
@@ -4048,7 +4335,7 @@ class WorkflowHitlTest {
     val stored = Content(role = Role.MODEL, parts = listOf(Part(text = """{"town": "Paris"}""")))
 
     // Act
-    val output = ResumeScan.processRehydratedOutput(node, stored)
+    val output = ResumeScan.processRehydratedOutput(node, stored, delegated = false)
 
     // Assert
     assertEquals(mapOf("town" to "Paris"), output)
@@ -4064,7 +4351,9 @@ class WorkflowHitlTest {
 
     // Act
     val error =
-      assertFailsWith<IllegalArgumentException> { ResumeScan.processRehydratedOutput(node, stored) }
+      assertFailsWith<IllegalArgumentException> {
+        ResumeScan.processRehydratedOutput(node, stored, delegated = false)
+      }
 
     // Assert
     assertContains(error.message!!, "Validation failed for rehydrated output against schema")
@@ -4146,10 +4435,23 @@ class WorkflowHitlTest {
     val stored = Content(role = Role.MODEL, parts = listOf(Part(text = "  ")))
 
     // Act
-    val output = ResumeScan.processRehydratedOutput(node, stored)
+    val output = ResumeScan.processRehydratedOutput(node, stored, delegated = false)
 
     // Assert
     assertNull(output)
+  }
+
+  @Test
+  fun processRehydratedOutput_blankTextWithoutSchema_keepsTheMessage() {
+    // Arrange
+    val node = MessageOutput("chat", "")
+    val stored = Content(role = Role.MODEL, parts = listOf(Part(text = "  ")))
+
+    // Act
+    val output = ResumeScan.processRehydratedOutput(node, stored, delegated = false)
+
+    // Assert
+    assertEquals(stored, output)
   }
 
   @Test
@@ -4159,7 +4461,7 @@ class WorkflowHitlTest {
     val stored = Content(role = Role.MODEL, parts = listOf(Part(text = "42")))
 
     // Act
-    val output = ResumeScan.processRehydratedOutput(node, stored)
+    val output = ResumeScan.processRehydratedOutput(node, stored, delegated = false)
 
     // Assert
     assertEquals("42", output)
@@ -4222,7 +4524,9 @@ class WorkflowHitlTest {
 
     // Act
     val error =
-      assertFailsWith<IllegalArgumentException> { ResumeScan.processRehydratedOutput(node, stored) }
+      assertFailsWith<IllegalArgumentException> {
+        ResumeScan.processRehydratedOutput(node, stored, delegated = false)
+      }
 
     // Assert
     assertContains(error.message!!, "Validation failed for rehydrated output against schema")
