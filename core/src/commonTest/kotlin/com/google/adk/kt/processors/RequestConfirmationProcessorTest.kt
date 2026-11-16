@@ -938,6 +938,105 @@ class RequestConfirmationProcessorTest {
   }
 
   @Test
+  fun process_confirmationWithoutConfirmed_isForwardedAsARejection() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf(ToolConfirmation.HINT_KEY to "no"))
+
+    assertEquals(listOf<Boolean?>(false), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_wrappedConfirmationWithoutConfirmed_isForwardedAsARejection() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf("response" to """{"hint":"no"}"""))
+
+    assertEquals(listOf<Boolean?>(false), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_wrappedConfirmationMap_executesTool() = runBlocking {
+    val (seen, emittedEvents) =
+      confirmWith(mapOf("response" to mapOf(ToolConfirmation.CONFIRMED_KEY to true)))
+
+    assertEquals(listOf<Boolean?>(true), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_wrappedConfirmationWithQuotedTrue_executesTool() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf("response" to """{"confirmed":"true"}"""))
+
+    assertEquals(listOf<Boolean?>(true), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_confirmationWithQuotedFalse_isForwardedAsARejection() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf(ToolConfirmation.CONFIRMED_KEY to "False"))
+
+    assertEquals(listOf<Boolean?>(false), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_confirmationWithOne_executesTool() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf(ToolConfirmation.CONFIRMED_KEY to 1))
+
+    assertEquals(listOf<Boolean?>(true), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_confirmationWithOneAsADouble_executesTool() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf(ToolConfirmation.CONFIRMED_KEY to 1.0))
+
+    assertEquals(listOf<Boolean?>(true), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_wrappedConfirmationWithZero_isForwardedAsARejection() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf("response" to """{"confirmed":0}"""))
+
+    assertEquals(listOf<Boolean?>(false), seen)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_confirmationWithANonBooleanString_dropsConfirmation() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf(ToolConfirmation.CONFIRMED_KEY to "maybe"))
+
+    assertEquals(emptyList(), seen)
+    assertEquals(emptyList(), emittedEvents)
+  }
+
+  @Test
+  fun process_confirmationWithANumberOtherThanZeroOrOne_dropsConfirmation() = runBlocking {
+    val (seen, emittedEvents) = confirmWith(mapOf(ToolConfirmation.CONFIRMED_KEY to 2))
+
+    assertEquals(emptyList(), seen)
+    assertEquals(emptyList(), emittedEvents)
+  }
+
+  @Test
+  fun process_confirmationWithAnUnknownKey_dropsConfirmation() = runBlocking {
+    val (seen, emittedEvents) =
+      confirmWith(mapOf(ToolConfirmation.CONFIRMED_KEY to true, "approved" to true))
+
+    assertEquals(emptyList(), seen)
+    assertEquals(emptyList(), emittedEvents)
+  }
+
+  @Test
+  fun process_confirmationWithANonStringHint_dropsConfirmation() = runBlocking {
+    val (seen, emittedEvents) =
+      confirmWith(mapOf(ToolConfirmation.CONFIRMED_KEY to true, ToolConfirmation.HINT_KEY to 1))
+
+    assertEquals(emptyList(), seen)
+    assertEquals(emptyList(), emittedEvents)
+  }
+
+  @Test
   fun process_approvalOnParallelBranch_doesNotExecuteTool() = runBlocking {
     // An approval answered in a parallel tree is not this branch's, though it names the call.
     val toolName = "risky_tool"
@@ -1157,6 +1256,47 @@ class RequestConfirmationProcessorTest {
           response = mapOf(ToolConfirmation.CONFIRMED_KEY to true),
         )
     )
+
+  /**
+   * Answers the pending confirmation of `risky_tool`'s call `orig_1` with [response], and returns
+   * whether each run of the tool saw a confirmed call, with the events the processor emitted.
+   */
+  private suspend fun confirmWith(response: Map<String, Any?>): Pair<List<Boolean?>, List<Event>> {
+    val toolName = "risky_tool"
+    val seen = mutableListOf<Boolean?>()
+    val (session, context) =
+      newConfirmationContext(
+        tools =
+          listOf(
+            DummyTool(toolName) { toolContext, _ ->
+              seen += toolContext.toolConfirmation?.confirmed
+              mapOf("status" to "ran")
+            }
+          )
+      )
+    session.events.addAll(originalCallEvents(context.invocationId, toolName, "orig_1"))
+    session.events.add(
+      agentEvent(
+        context.invocationId,
+        synthConfirmationCallPart(
+          synthId = "synth_1",
+          originalToolName = toolName,
+          originalCallId = "orig_1",
+        ),
+      )
+    )
+    session.events.add(
+      userEvent(
+        context.invocationId,
+        userFunctionResponse(
+          name = FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+          id = "synth_1",
+          response = response,
+        ),
+      )
+    )
+    return seen to collectEmittedEvents(context)
+  }
 
   /**
    * Runs the processor against [context] and returns the events it emitted (via the `emitEvent`

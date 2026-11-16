@@ -45,7 +45,8 @@ constructor(
    * Asynchronous counterpart of [run]; implement the tool's logic here. Return the future promptly
    * and do any blocking work inside it, not before returning it -- this runs on the engine's
    * coroutine thread. The result must be JSON-native (a [Map], [List], [String], number,
-   * [Boolean]); a non-[Map] result is wrapped under [BaseTool.RESULT_KEY].
+   * [Boolean]); a non-[Map] result is wrapped under [BaseTool.RESULT_KEY]. A Java implementation
+   * that completes the future with `null` returns nothing, like a Kotlin tool returning `Unit`.
    */
   @JvmSuppressWildcards
   protected abstract fun runAsync(
@@ -53,8 +54,10 @@ constructor(
     args: Map<String, Any?>,
   ): CompletableFuture<Any>
 
-  final override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any =
-    runAsync(context, args).await()
+  final override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
+    val result: Any? = runAsync(context, args).await()
+    return result ?: Unit
+  }
 
   /**
    * Asynchronous counterpart of [BaseTool.processLlmRequest]; override to attach instructions,

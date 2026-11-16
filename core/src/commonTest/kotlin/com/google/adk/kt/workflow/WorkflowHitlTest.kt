@@ -46,8 +46,12 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.FunctionTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
@@ -901,14 +905,14 @@ private class EmitThenFailOnceThenWriteState(override val name: String, private 
   }
 }
 
-/** A runner over a resumable app rooted on [root], driven a turn at a time. */
-private class WorkflowSession(root: Node) {
+/** A runner over an app rooted on [root], driven a turn at a time; the app is [resumable]. */
+private class WorkflowSession(root: Node, resumable: Boolean = true) {
   private val runner =
     InMemoryRunner(
       App(
         appName = "wf_test",
         rootNode = root,
-        resumabilityConfig = ResumabilityConfig(isResumable = true),
+        resumabilityConfig = ResumabilityConfig(isResumable = resumable),
       )
     )
   private val sessionId = "s1"
@@ -1007,12 +1011,109 @@ private fun sessionAwaitingAnswer(schema: Schema): WorkflowSession {
 private const val REMOVAL_CONFIRMATION_ID = "wf_tool_confirmation:wf@1/remove_file@1"
 
 /** A workflow passing `{"path": path}` through [remove] into `reply`. */
-private fun removalWorkflow(remove: Node, path: String = "/tmp/a"): Workflow {
-  val target = Emitter("target", mapOf("path" to path))
+private fun removalWorkflow(remove: Node, path: String = "/tmp/a"): Workflow =
+  inputWorkflow(remove, mapOf("path" to path))
+
+/** A workflow passing [input] through [node] into `reply`. */
+private fun inputWorkflow(node: Node, input: Map<String, Any?>): Workflow {
+  val emitter = Emitter("input", input)
   val reply = CaptureInput("reply")
   return Workflow(
     name = "wf",
-    edges = listOf(Edge(Start, target), Edge(target, remove), Edge(remove, reply)),
+    edges = listOf(Edge(Start, emitter), Edge(emitter, node), Edge(node, reply)),
+  )
+}
+
+/** Runs [test] in a resumable app and in a non-resumable one, as Python's tool node tests do. */
+private fun inBothResumabilityModes(test: (resumable: Boolean) -> Unit) {
+  for (resumable in listOf(true, false)) {
+    try {
+      test(resumable)
+    } catch (e: Throwable) {
+      throw AssertionError("with resumable = $resumable: ${e.message}", e)
+    }
+  }
+}
+
+/**
+ * A tool named `remove_file` that records each path it removes and asks for confirmation per
+ * [requiresConfirmation].
+ */
+private class RemoveFileTool(requiresConfirmation: (Map<String, Any?>) -> Boolean = { true }) :
+  FunctionTool(
+    name = "remove_file",
+    description = "",
+    requiresConfirmation = requiresConfirmation,
+  ) {
+  val removed = mutableListOf<Any?>()
+
+  override fun declaration(): FunctionDeclaration? = null
+
+  override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
+    removed += args["path"]
+    return mapOf("removed" to args["path"])
+  }
+}
+
+/**
+ * A tool named `record_call` that counts its [runs] and returns [result], first asking for
+ * confirmation when [requiresConfirmation] is true.
+ */
+private class RecordCallTool(
+  requiresConfirmation: Boolean = false,
+  private val result: () -> Any = { Unit },
+) :
+  FunctionTool(
+    name = "record_call",
+    description = "",
+    requiresConfirmation = requiresConfirmation,
+  ) {
+  var runs = 0
+
+  override fun declaration(): FunctionDeclaration? = null
+
+  override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
+    runs += 1
+    return result()
+  }
+}
+
+/** A tool named `transfer` that asks for its own confirmation and records each amount it moves. */
+private class TransferTool : BaseTool(name = "transfer", description = "") {
+  val transferred = mutableListOf<Any?>()
+
+  override fun declaration(): FunctionDeclaration? = null
+
+  override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
+    val confirmation = context.toolConfirmation
+    if (confirmation == null) {
+      context.requestConfirmation(hint = "Approve the transfer?", payload = mapOf("limit" to 0L))
+      return mapOf("status" to "waiting for approval")
+    }
+    if (!confirmation.confirmed) return mapOf("status" to "declined")
+    transferred += args["amount"]
+    val limit = (confirmation.payload as Map<*, *>)["limit"]
+    return mapOf("transferred" to args["amount"], "limit" to limit)
+  }
+}
+
+/** The interrupt id of the `transfer` tool node's confirmation request in [transferWorkflow]. */
+private const val TRANSFER_CONFIRMATION_ID = "wf_tool_confirmation:wf@1/transfer@1"
+
+/** A workflow passing `{"amount": 5}` through [transfer] into `reply`. */
+private fun transferWorkflow(transfer: Node): Workflow =
+  inputWorkflow(transfer, mapOf("amount" to 5L))
+
+/** Returns null typed as [T], like a Java tool returning null to Kotlin. */
+@Suppress("UNCHECKED_CAST") private fun <T> javaNull(): T = null as T
+
+/** A workflow running [record] with no arguments, then a node that asks the user for a review. */
+private fun reviewAfterWorkflow(record: Node): Workflow {
+  val noArgs = Emitter("no_args", emptyMap<String, Any?>())
+  val review = Ask("review", RequestInput(interruptId = "review", message = "Review?"))
+  return Workflow(
+    name = "wf",
+    edges = listOf(Edge(Start, noArgs), Edge(noArgs, record), Edge(record, review)),
   )
 }
 
@@ -4236,6 +4337,26 @@ class WorkflowHitlTest {
   }
 
   @Test
+  fun requireConfirmation_answerWithoutConfirmed_rejectsTheRun() {
+    // Arrange
+    var runs = 0
+    val remove =
+      node<RemovalTarget, RemovalResult>("remove_file", requireConfirmation = true) { _, _ ->
+        runs += 1
+        RemovalResult(removed = true)
+      }
+    val session = WorkflowSession(removalWorkflow(remove))
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer(REMOVAL_CONFIRMATION_ID, mapOf("hint" to "no")))
+
+    // Assert
+    assertEquals(mapOf("error" to "This tool call is rejected."), events.replyInput())
+    assertEquals(0, runs)
+  }
+
+  @Test
   fun requireConfirmation_confirmedNodeWithNoOutput_isNotRerunWhenALaterNodeResumes() {
     // Arrange
     var runs = 0
@@ -4699,6 +4820,280 @@ class WorkflowHitlTest {
     // Act
     val (_, error) =
       session.failingTurn(answer(REMOVAL_CONFIRMATION_ID, mapOf("confirmed" to "yes")))
+
+    // Assert
+    assertTrue(error is IllegalArgumentException, "expected a validation failure, got $error")
+    assertContains(error.message.orEmpty(), REMOVAL_CONFIRMATION_ID)
+  }
+
+  // -- Tool node confirmation --
+
+  @Test
+  fun toolNode_confirmed_runsTheToolOnceAndContinues() = inBothResumabilityModes { resumable ->
+    // Arrange
+    val tool = RemoveFileTool()
+    val session = WorkflowSession(removalWorkflow(tool.asNode()), resumable)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer(REMOVAL_CONFIRMATION_ID, mapOf("confirmed" to true)))
+
+    // Assert
+    assertEquals(mapOf("removed" to "/tmp/a"), events.replyInput())
+    assertEquals(listOf<Any?>("/tmp/a"), tool.removed)
+  }
+
+  @Test
+  fun toolNode_rejected_outputsTheToolsRejectionWithoutRunningIt() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = RemoveFileTool()
+      val session = WorkflowSession(removalWorkflow(tool.asNode()), resumable)
+      session.advance(userMessage("go"))
+
+      // Act
+      val events = session.turn(answer(REMOVAL_CONFIRMATION_ID, mapOf("confirmed" to false)))
+
+      // Assert
+      assertEquals(mapOf("error" to "This tool call is rejected."), events.replyInput())
+      assertTrue(tool.removed.isEmpty())
+    }
+
+  @Test
+  fun toolNode_answerWithoutConfirmed_rejectsTheCall() = inBothResumabilityModes { resumable ->
+    // Arrange
+    val tool = RemoveFileTool()
+    val session = WorkflowSession(removalWorkflow(tool.asNode()), resumable)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer(REMOVAL_CONFIRMATION_ID, mapOf("hint" to "no")))
+
+    // Assert
+    assertEquals(mapOf("error" to "This tool call is rejected."), events.replyInput())
+    assertTrue(tool.removed.isEmpty())
+  }
+
+  @Test
+  fun toolNode_confirmationNotRequiredForTheArguments_runsTheToolWithoutAsking() {
+    // Arrange
+    val tool = RemoveFileTool(requiresConfirmation = { args -> args["path"] != "/tmp/a" })
+
+    // Act
+    val events = WorkflowSession(removalWorkflow(tool.asNode())).turn(userMessage("go"))
+
+    // Assert
+    assertTrue(events.flatMap { it.functionCalls() }.isEmpty())
+    assertEquals(mapOf("removed" to "/tmp/a"), events.replyInput())
+  }
+
+  @Test
+  fun toolNode_toolRequestsConfirmation_asksWithItsHintAndPayload() {
+    // Arrange
+    val tool = TransferTool()
+
+    // Act
+    val events = WorkflowSession(transferWorkflow(tool.asNode())).turn(userMessage("go"))
+
+    // Assert
+    val call = events.flatMap { it.functionCalls() }.single()
+    assertEquals(TRANSFER_CONFIRMATION_ID, call.id)
+    assertEquals("Approve the transfer?", call.args[RequestInput.MESSAGE_KEY])
+    assertEquals(
+      mapOf(
+        "tool_name" to "transfer",
+        "args" to mapOf("amount" to 5L),
+        "confirmation_payload" to mapOf("limit" to 0L),
+      ),
+      call.args[RequestInput.PAYLOAD_KEY],
+    )
+    assertTrue(tool.transferred.isEmpty())
+    assertTrue(events.none { it.nodeInfo?.path == "wf@1/reply@1" })
+  }
+
+  @Test
+  fun toolNode_toolRequestedConfirmationApproved_rerunsItWithTheAnswer() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = TransferTool()
+      val session = WorkflowSession(transferWorkflow(tool.asNode()), resumable)
+      session.advance(userMessage("go"))
+
+      // Act
+      val events =
+        session.turn(
+          answer(
+            TRANSFER_CONFIRMATION_ID,
+            mapOf("confirmed" to true, "payload" to mapOf("limit" to 10L)),
+          )
+        )
+
+      // Assert
+      assertEquals(mapOf("transferred" to 5L, "limit" to 10L), events.replyInput())
+      assertEquals(listOf<Any?>(5L), tool.transferred)
+    }
+
+  @Test
+  fun toolNode_toolRequestedConfirmationRejected_letsTheToolDecide() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = TransferTool()
+      val session = WorkflowSession(transferWorkflow(tool.asNode()), resumable)
+      session.advance(userMessage("go"))
+
+      // Act
+      val events = session.turn(answer(TRANSFER_CONFIRMATION_ID, mapOf("confirmed" to false)))
+
+      // Assert
+      assertEquals(mapOf("status" to "declined"), events.replyInput())
+      assertTrue(tool.transferred.isEmpty())
+    }
+
+  @Test
+  fun toolNode_confirmedToolWithNoOutput_isNotRerunWhenALaterNodeResumes() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = RecordCallTool(requiresConfirmation = true)
+      val session = WorkflowSession(reviewAfterWorkflow(tool.asNode()), resumable)
+      session.advance(userMessage("go"))
+      session.advance(answer("wf_tool_confirmation:wf@1/record_call@1", mapOf("confirmed" to true)))
+
+      // Act
+      val unused = session.turn(answer("review", mapOf("ok" to true)))
+
+      // Assert
+      assertEquals(1, tool.runs)
+    }
+
+  @Test
+  fun toolNode_toolWithNoOutput_isNotRerunWhenALaterNodeResumes() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = RecordCallTool()
+      val session = WorkflowSession(reviewAfterWorkflow(tool.asNode()), resumable)
+      session.advance(userMessage("go"))
+
+      // Act
+      val unused = session.turn(answer("review", mapOf("ok" to true)))
+
+      // Assert
+      assertEquals(1, tool.runs)
+    }
+
+  @Test
+  fun toolNode_toolReturningNull_isNotRerunWhenALaterNodeResumes() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = RecordCallTool(result = { javaNull() })
+      val session = WorkflowSession(reviewAfterWorkflow(tool.asNode()), resumable)
+      session.advance(userMessage("go"))
+
+      // Act
+      val unused = session.turn(answer("review", mapOf("ok" to true)))
+
+      // Assert
+      assertEquals(1, tool.runs)
+    }
+
+  @Test
+  fun toolNode_dynamicToolWithNoOutput_isNotRerunWhenItsCallerResumes() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = RecordCallTool()
+      val record = tool.asNode()
+      val driver =
+        object : Node {
+          override val name = "driver"
+          override val rerunOnResume = true
+
+          override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+            context.runNode(record, nodeInput = emptyMap<String, Any?>())
+            if ("review" !in context.resumeInputs) requestInput("review", "Please review")
+            emit("done")
+          }
+        }
+      val session =
+        WorkflowSession(
+          Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, driver), Edge(driver, CaptureInput("reply"))),
+          ),
+          resumable,
+        )
+      session.advance(userMessage("go"))
+
+      // Act
+      val events = session.turn(answer("review", mapOf("ok" to true)))
+
+      // Assert
+      assertEquals(1, tool.runs)
+      assertEquals("done", events.replyInput())
+    }
+
+  @Test
+  fun toolNode_dynamicToolAskedForConfirmation_runsItWithTheAnswerAfterItsCallerReruns() =
+    inBothResumabilityModes { resumable ->
+      // Arrange
+      val tool = RemoveFileTool()
+      val remove = tool.asNode()
+      val driver =
+        object : Node {
+          override val name = "driver"
+          override val rerunOnResume = true
+
+          override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+            emit(context.runNode(remove, nodeInput = mapOf("path" to "/tmp/a")))
+          }
+        }
+      val session =
+        WorkflowSession(
+          Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, driver), Edge(driver, CaptureInput("reply"))),
+          ),
+          resumable,
+        )
+      val request = session.turn(userMessage("go")).flatMap { it.functionCalls() }.single()
+
+      // Act
+      val events =
+        session.turn(
+          answer("wf_tool_confirmation:wf@1/driver@1/remove_file@1", mapOf("confirmed" to true))
+        )
+
+      // Assert
+      assertEquals("wf_tool_confirmation:wf@1/driver@1/remove_file@1", request.id)
+      assertEquals(mapOf("removed" to "/tmp/a"), events.replyInput())
+      assertEquals(listOf<Any?>("/tmp/a"), tool.removed)
+    }
+
+  @Test
+  fun toolNode_toolFailsAfterAskingForConfirmation_failsWithoutAsking() {
+    // Arrange
+    val lookup =
+      DummyTool(name = "lookup") { context, _ ->
+        context.requestConfirmation(hint = "Look up the file?")
+        throw IllegalStateException("no data")
+      }
+    val session = WorkflowSession(removalWorkflow(lookup.asNode()))
+
+    // Act
+    val (events, error) = session.failingTurn(userMessage("go"))
+
+    // Assert
+    assertEquals("no data", error.message)
+    assertTrue(events.none { it.functionCalls().isNotEmpty() })
+  }
+
+  @Test
+  fun toolNode_answerThatIsNotAConfirmation_failsTheTurn() = inBothResumabilityModes { resumable ->
+    // Arrange
+    val session = WorkflowSession(removalWorkflow(RemoveFileTool().asNode()), resumable)
+    session.advance(userMessage("go"))
+
+    // Act
+    val (_, error) =
+      session.failingTurn(answer(REMOVAL_CONFIRMATION_ID, mapOf("confirmed" to "maybe")))
 
     // Assert
     assertTrue(error is IllegalArgumentException, "expected a validation failure, got $error")

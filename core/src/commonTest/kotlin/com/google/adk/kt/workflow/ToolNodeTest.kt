@@ -526,19 +526,54 @@ class ToolNodeTest {
   }
 
   @Test
-  fun run_toolRequiresConfirmation_dropsRequestAndOutputsPlaceholderError() {
+  fun run_toolRequiresConfirmation_asksForItInsteadOfRunningTheTool() {
     // Arrange
     val tool = ToolNodeConfirmingTool("confirming")
 
     // Act
-    val events = runToolAfter(null, tool.asNode())
+    val events = runToolAfter(mapOf("path" to "/tmp/a"), tool.asNode())
 
     // Assert
-    val event = events.single { it.nodeInfo?.path == "wf@1/confirming@1" }
-    assertContains((event.output as Map<*, *>).keys, FunctionTool.ERROR_KEY)
-    assertTrue(event.actions.requestedToolConfirmations.isEmpty())
-    assertFalse(event.actions.skipSummarization)
+    val call = events.flatMap { it.functionCalls() }.single()
+    assertEquals(RequestInput.FUNCTION_CALL_NAME, call.name)
+    assertEquals("wf_tool_confirmation:wf@1/confirming@1", call.id)
+    assertEquals(
+      "Please approve or reject the tool call confirming() by responding with a FunctionResponse" +
+        " with an expected ToolConfirmation payload.",
+      call.args[RequestInput.MESSAGE_KEY],
+    )
+    assertEquals(
+      mapOf("tool_name" to "confirming", "args" to mapOf("path" to "/tmp/a")),
+      call.args[RequestInput.PAYLOAD_KEY],
+    )
+    assertNotNull(call.args[RequestInput.RESPONSE_SCHEMA_KEY])
+    assertTrue(events.none { it.nodeInfo?.path == "wf@1/confirming@1" && it.output != null })
     assertFalse(tool.executed)
+  }
+
+  @Test
+  fun run_answerThatIsNotAConfirmation_failsTheNode() {
+    // Arrange
+    val node = ToolNodeConfirmingTool("confirming").asNode()
+    val context =
+      Context(
+        invocationContext = testInvocationContext(),
+        node = node,
+        eventSink = { _, _ -> },
+        resumeInputs = mapOf("wf_tool_confirmation:confirming@1" to "yes"),
+      )
+
+    // Act
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        runBlocking { node.runNode(context, null).toList() }
+      }
+
+    // Assert
+    assertEquals(
+      "node 'confirming' got an answer to its confirmation request that is not a ToolConfirmation.",
+      error.message,
+    )
   }
 
   @Test

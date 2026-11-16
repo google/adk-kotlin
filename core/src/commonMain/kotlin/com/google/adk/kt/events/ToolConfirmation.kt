@@ -15,15 +15,11 @@
  */
 package com.google.adk.kt.events
 
+import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.AdkJavaInteropApi
-import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.serialization.adkJson
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.decodeFromJsonElement
 
 /** Represents a tool confirmation configuration. */
 @Serializable
@@ -82,36 +78,58 @@ data class ToolConfirmation(
   }
 }
 
-/** The single key under which the ADK client nests a [ToolConfirmation] as a JSON string. */
+/**
+ * The single key under which the ADK client nests a [ToolConfirmation], as a JSON string or map.
+ */
 private const val WRAPPED_RESPONSE_KEY = "response"
 
+/** The keys a [ToolConfirmation] answer may hold. */
+private val CONFIRMATION_KEYS =
+  setOf(ToolConfirmation.CONFIRMED_KEY, ToolConfirmation.PAYLOAD_KEY, ToolConfirmation.HINT_KEY)
+
 /**
- * Parses a user's answer to a confirmation request, either the [ToolConfirmation] fields themselves
- * or the ADK client's `{"response": "<json>"}` wrapper. Returns null if [response] is neither.
+ * Parses a user's answer to a confirmation request, given either as the [ToolConfirmation] fields
+ * directly or inside the ADK client's `{"response": ...}` wrapper, as a JSON string or a map.
+ * Returns null if [response] is neither. As in Python's `ToolConfirmation` model, an answer without
+ * `confirmed` parses as `confirmed = false`, and an answer with any key other than `confirmed`,
+ * `hint`, or `payload` is not a confirmation. Besides a Boolean, `confirmed` may be the string
+ * `"true"` or `"false"` (in any case) or the number 0 or 1, a subset of what Python's model
+ * accepts.
  */
-@OptIn(FrameworkInternalApi::class)
 internal fun parseToolConfirmation(response: Map<*, *>?): ToolConfirmation? {
   if (response == null) return null
-  val unwrapped =
-    if (response.size == 1) {
-      (response[WRAPPED_RESPONSE_KEY] as? String)?.let { jsonString ->
-        try {
-          val element = adkJson.parseToJsonElement(jsonString) as? JsonObject ?: return null
-          adkJson.decodeFromJsonElement<ToolConfirmation>(element)
-        } catch (e: SerializationException) {
-          null
-        } catch (e: IllegalArgumentException) {
-          null
-        }
-      }
-    } else {
-      null
-    }
-  if (unwrapped != null) return unwrapped
-  val confirmed = response[ToolConfirmation.CONFIRMED_KEY] as? Boolean ?: return null
+  if (response.size != 1 || WRAPPED_RESPONSE_KEY !in response) return confirmationFrom(response)
+  val wrapped = response[WRAPPED_RESPONSE_KEY]
+  val fields = if (wrapped is String) SchemaUtils.readJson(wrapped).getOrNull() else wrapped
+  return (fields as? Map<*, *>)?.let(::confirmationFrom)
+}
+
+/** Returns the confirmation that [fields] hold, or null if they are not a confirmation's fields. */
+private fun confirmationFrom(fields: Map<*, *>): ToolConfirmation? {
+  if (!CONFIRMATION_KEYS.containsAll(fields.keys)) return null
+  val confirmed = booleanFrom(fields[ToolConfirmation.CONFIRMED_KEY] ?: false)
+  val hint = fields[ToolConfirmation.HINT_KEY]
+  if (confirmed == null || hint !is String?) return null
   return ToolConfirmation(
     confirmed = confirmed,
-    payload = response[ToolConfirmation.PAYLOAD_KEY],
-    hint = response[ToolConfirmation.HINT_KEY] as? String,
+    payload = fields[ToolConfirmation.PAYLOAD_KEY],
+    hint = hint,
   )
 }
+
+/**
+ * Returns [value] as a Boolean, reading `"true"` and `"false"` case-insensitively and the numbers 0
+ * and 1, or null if [value] cannot be converted.
+ */
+private fun booleanFrom(value: Any): Boolean? =
+  when (value) {
+    is Boolean -> value
+    is String -> value.lowercase().toBooleanStrictOrNull()
+    is Number ->
+      when (value.toDouble()) {
+        0.0 -> false
+        1.0 -> true
+        else -> null
+      }
+    else -> null
+  }

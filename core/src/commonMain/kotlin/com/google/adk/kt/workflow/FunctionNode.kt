@@ -211,27 +211,13 @@ private constructor(
    * [Context.toolConfirmation], or null when [confirmationPredicate] decides not to ask. Without an
    * answer yet, asks for one and ends the run.
    */
-  private suspend fun FlowCollector<Nothing>.confirmation(
-    context: Context,
-    input: I,
-  ): ToolConfirmation? {
-    val interruptId = "$CONFIRMATION_INTERRUPT_PREFIX${context.nodePath}"
-    val answer = context.resumeInputs[interruptId]
-    if (answer == null) {
+  private suspend fun confirmation(context: Context, input: I): ToolConfirmation? {
+    val confirmation = context.confirmationAnswer(name)
+    if (confirmation == null) {
       if (!requireConfirmation && confirmationPredicate?.invoke(context, input) != true) return null
-      requestInput(
-        interruptId = interruptId,
-        message = "Please approve or reject the tool call $name().",
-        payload =
-          mapOf("tool_name" to name, "args" to inputCodec.encode(input, "input of node '$name'")),
-        responseSchema = TOOL_CONFIRMATION_SCHEMA,
-      )
+      val args = inputCodec.encode(input, "input of node '$name'")
+      throw NodeInterruptedException(confirmationRequest(context.nodePath, name, args))
     }
-    val confirmation =
-      (answer as? Map<*, *>)?.let(::parseToolConfirmation)
-        ?: throw IllegalArgumentException(
-          "node '$name' got an answer to its confirmation request that is not a ToolConfirmation."
-        )
     context.toolConfirmation = confirmation
     return confirmation
   }
@@ -613,9 +599,54 @@ private const val CONFIRMATION_INTERRUPT_PREFIX = "wf_tool_confirmation:"
 /** The output of a run the user rejected. */
 private val REJECTED_OUTPUT: Map<String, Any?> = mapOf("error" to "This tool call is rejected.")
 
-/** The schema of a confirmation answer. */
+/** The schema of a confirmation answer, which may leave out `confirmed` to reject the call. */
 private val TOOL_CONFIRMATION_SCHEMA: Schema? by lazy {
-  SchemaUtils.inferSchema(typeOf<ToolConfirmation>())
+  SchemaUtils.inferSchema(typeOf<ToolConfirmation>())?.let { schema ->
+    schema.copy(
+      required = schema.required?.minus(ToolConfirmation.CONFIRMED_KEY)?.takeIf { it.isNotEmpty() }
+    )
+  }
+}
+
+/** Returns the interrupt id for the confirmation request of the node run at [nodePath]. */
+private fun confirmationInterruptId(nodePath: String): String =
+  "$CONFIRMATION_INTERRUPT_PREFIX$nodePath"
+
+/**
+ * Returns the request that asks the user to approve or reject the call to [toolName] with [args]
+ * made by the node run at [nodePath]. Without a [hint], the message names the tool.
+ */
+internal fun confirmationRequest(
+  nodePath: String,
+  toolName: String,
+  args: Any?,
+  hint: String? = null,
+  confirmationPayload: Any? = null,
+): RequestInput =
+  RequestInput(
+    interruptId = confirmationInterruptId(nodePath),
+    message =
+      hint?.takeIf { it.isNotEmpty() } ?: "Please approve or reject the tool call $toolName().",
+    payload =
+      buildMap {
+        put("tool_name", toolName)
+        put("args", args)
+        confirmationPayload?.let { put("confirmation_payload", it) }
+      },
+    responseSchema = TOOL_CONFIRMATION_SCHEMA,
+  )
+
+/**
+ * Returns the user's answer to the confirmation request of the node named [nodeName], run in this
+ * context, or null if the user has not answered it yet.
+ *
+ * @throws IllegalArgumentException if the answer is not a confirmation.
+ */
+internal fun Context.confirmationAnswer(nodeName: String): ToolConfirmation? {
+  val answer = resumeInputs[confirmationInterruptId(nodePath)] ?: return null
+  return requireNotNull((answer as? Map<*, *>)?.let(::parseToolConfirmation)) {
+    "node '$nodeName' got an answer to its confirmation request that is not a ToolConfirmation."
+  }
 }
 
 /** Whether this value is already in the form a schema checks: JSON-native, or a message. */
