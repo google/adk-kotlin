@@ -47,6 +47,7 @@ import com.google.adk.kt.workflow.CaptureInput
 import com.google.adk.kt.workflow.Edge
 import com.google.adk.kt.workflow.Emitter
 import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.NodeBody
 import com.google.adk.kt.workflow.NodeConfig
 import com.google.adk.kt.workflow.NodeExecutionException
 import com.google.adk.kt.workflow.NodeTimeoutException
@@ -56,6 +57,7 @@ import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.StubNode
 import com.google.adk.kt.workflow.ThrowingNode
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.runWorkflow
 import java.io.IOException
 import java.util.concurrent.CancellationException
@@ -371,6 +373,65 @@ class InteropContextViewTest {
         .filter { it.output != null && it.nodeInfo?.path != "wf@1/caller@1" }
         .associate { it.nodeInfo?.path to it.output },
     )
+  }
+
+  @Test
+  fun emit_fromAKotlinNodeBody_failsAndNamesTheSuspendingEmit() {
+    // Arrange
+    val count =
+      node<Any?, Int>("count") { context, _ ->
+        InteropContextView.of(context).emit(Content.fromText(Role.MODEL, "counting"))
+        3
+      }
+
+    // Act
+    val error = assertFailsWith<IllegalStateException> { runWorkflow(workflowOf(count)) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "A Kotlin node body calls its suspending emit")
+  }
+
+  @Test
+  fun emit_twoJavaBodiesOneAfterTheOtherOnOneContext_bothSendTheirEvents() {
+    // Arrange: a Kotlin node collects two Java bodies' Node.runNode flows on its own Context, so
+    // the
+    // second body runs only if the first released the Context when it ended.
+    val first =
+      javaBodyNode("first") { context, _ ->
+        InteropContextView.of(context).emit(Content.fromText(Role.MODEL, "from first"))
+        "A"
+      }
+    val second =
+      javaBodyNode("second") { context, _ ->
+        InteropContextView.of(context).emit(Content.fromText(Role.MODEL, "from second"))
+        "B"
+      }
+    val caller =
+      node<Any?, String>("caller") { context, _ ->
+        (first.runNode(context, null).toList() + second.runNode(context, null).toList())
+          .joinToString { if (it is Event) it.content?.text().orEmpty() else it.toString() }
+      }
+
+    // Act
+    val outputs = runWorkflow(workflowOf(caller)).mapNotNull { it.output }
+
+    // Assert
+    assertEquals(listOf<Any>("from first, A, from second, B"), outputs)
+  }
+
+  @Test
+  fun runNodeBlocking_fromAKotlinNodeBody_failsAndNamesTheSuspendingRunNode() {
+    // Arrange
+    val caller =
+      node<Any?, Any?>("caller", rerunOnResume = true) { context, _ ->
+        InteropContextView.of(context).runNodeBlocking(StubNode("child", "C"), null)
+      }
+
+    // Act
+    val error = assertFailsWith<IllegalStateException> { runWorkflow(workflowOf(caller)) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "A Kotlin node body calls the suspending runNode")
   }
 
   @Test
@@ -845,6 +906,10 @@ class InteropContextViewTest {
     assertEquals(RunNodeConfig(), RunNodeConfig.builder().build())
   }
 }
+
+/** A node whose [body] runs as a Java `FunctionNode` body does: blocking, on a worker thread. */
+private fun javaBodyNode(name: String, body: NodeBody<Any?, Any?>): Node =
+  node<Any?, Any?>(name) { _, _ -> null }.toBuilder().body(body).build()
 
 /** A workflow named `wf` that runs [nodes] one after another. */
 private fun workflowOf(vararg nodes: Node): Workflow =

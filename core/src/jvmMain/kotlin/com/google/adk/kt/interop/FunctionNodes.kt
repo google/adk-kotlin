@@ -94,10 +94,14 @@ object FunctionNodes {
   /**
    * Returns a node named [name] that runs [body] on each input read as [inputType] and writes its
    * [outputType] output as JSON. [body] runs on a thread of [dispatcher], by default of
-   * `Dispatchers.IO` without its thread limit; see [NodeBody]:
+   * `Dispatchers.IO` without its thread limit, and may send messages before its output with
+   * [InteropContextView.emit]; see [NodeBody]:
    * ```java
    * FunctionNodes.of("report", String.class, String.class, myDispatcher, (ctx, city) -> ...);
    * ```
+   *
+   * A body that runs child nodes with [InteropContextView.runNodeBlocking] needs a node built with
+   * [builder] and `rerunOnResume(true)`.
    *
    * @throws WorkflowConfigurationException if Jackson cannot read and write [inputType] or write
    *   [outputType], or if a port type has no single concrete JSON shape; a field type Jackson

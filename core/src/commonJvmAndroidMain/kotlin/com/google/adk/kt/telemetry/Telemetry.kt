@@ -20,6 +20,7 @@ import com.google.adk.kt.telemetry.otel.OtelTelemetryContext
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.adk.kt.telemetry.otel.OtelTracer.Companion.ADK_SPAN
 import io.opentelemetry.api.GlobalOpenTelemetry
+import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
 import io.opentelemetry.context.Context
 import java.lang.ThreadLocal
 
@@ -66,6 +67,24 @@ internal actual fun staleThreadContext(element: TelemetryContextElement?): Telem
   val context = element?.context as? OtelTelemetryContext ?: return null
   if (context.otelContext.get(ADK_SPAN) == null) return null
   return parentInCoroutine(element)
+}
+
+/**
+ * The telemetry for a child that this thread starts in a node run with [nodeTelemetry], or `null`
+ * to keep this thread's context. A thread that holds a valid span keeps it; one with an empty
+ * context gets [nodeTelemetry], and one with other entries, such as baggage, gets them plus the
+ * node's ADK span.
+ */
+internal fun childTelemetryOrNull(
+  nodeTelemetry: TelemetryContextElement?
+): TelemetryContextElement? {
+  val current = Context.current()
+  if (OpenTelemetrySpan.fromContext(current).spanContext.isValid) return null
+  if (current == Context.root()) return nodeTelemetry
+  val nodeContext = (nodeTelemetry?.context as? OtelTelemetryContext)?.otelContext ?: return null
+  val adkSpan = nodeContext.get(ADK_SPAN) ?: return null
+  val withSpan = current.with(OpenTelemetrySpan.fromContext(nodeContext))
+  return OtelTelemetryContext(withSpan.with(ADK_SPAN, adkSpan)).asContextElement()
 }
 
 private val testTracerOverride = ThreadLocal<Tracer>()

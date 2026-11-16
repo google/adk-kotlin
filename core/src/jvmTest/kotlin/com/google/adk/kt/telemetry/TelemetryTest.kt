@@ -22,13 +22,20 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.interop.FunctionNodes
+import com.google.adk.kt.interop.InteropContextView
 import com.google.adk.kt.interop.PublisherRunner
+import com.google.adk.kt.interop.RunNodeConfig
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.telemetry.otel.OtelTelemetryContext
 import com.google.adk.kt.telemetry.otel.OtelTracer
+import com.google.adk.kt.telemetry.otel.OtelTracer.Companion.ADK_SPAN
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCall
@@ -40,13 +47,18 @@ import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.genai.kotlin.Client
 import com.google.genai.kotlin.ClientException
 import com.google.genai.kotlin.GenAiApiException
+import io.opentelemetry.api.baggage.Baggage
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
+import io.opentelemetry.api.trace.SpanContext
 import io.opentelemetry.context.Context as OpenTelemetryContext
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.trace.ReadableSpan
@@ -56,10 +68,12 @@ import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
 import io.opentelemetry.sdk.trace.export.SpanExporter
 import java.util.Collections
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.seconds
@@ -78,6 +92,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
@@ -247,6 +262,157 @@ class TelemetryTest {
       val agent = exported.single { it.name == "invoke_agent liveNoopAgent" }
       assertThat(agent.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
       assertThat(agent.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
+    } finally {
+      provider.close()
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class, ExperimentalWorkflowApi::class)
+  @Test
+  fun runNodeBlocking_spanTheBodyMadeCurrent_parentsASpanTheChildStarts() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      // Arrange: the caller's Java body makes its own span current around the call.
+      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+      val child =
+        FunctionNodes.of("child", Any::class.java, Any::class.java) { _, _ ->
+          provider.get("test").spanBuilder("child work").startSpan().end()
+          "done"
+        }
+      val caller =
+        FunctionNodes.builder(Any::class.java, Any::class.java)
+          .name("caller")
+          .rerunOnResume(true)
+          .body { ctx, _ ->
+            val span = provider.get("test").spanBuilder("caller work").startSpan()
+            try {
+              span.makeCurrent().use {
+                InteropContextView.of(ctx).runNodeBlocking(child, "x") ?: "none"
+              }
+            } finally {
+              span.end()
+            }
+          }
+          .build()
+      val workflow = Workflow("span_wf", listOf(Edge(Start, caller)))
+      val runner = InMemoryRunner(App(appName = "span_wf", rootNode = workflow))
+
+      // Act
+      runBlocking {
+        val unused = runner.sessionService.createSession(SessionKey("span_wf", "u", "s"))
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
+      }
+
+      // Assert: the child's span nests under the body's span. In production the child node's own
+      // span sits between them; here the test tracer covers only the test thread.
+      val callerWork = exported.single { it.name == "caller work" }
+      val childWork = exported.single { it.name == "child work" }
+      assertThat(childWork.parentSpanContext.spanId).isEqualTo(callerWork.spanContext.spanId)
+    } finally {
+      provider.close()
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class, ExperimentalWorkflowApi::class)
+  @Test
+  fun runNodeBlocking_calledFromHelperThreads_childrenStayUnderTheNodesSpan() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      // Arrange: the run carries baggage. The caller's Java body runs one child from a helper
+      // thread with baggage of its own and one from a helper thread with an empty context.
+      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+      val childBaggage = ConcurrentHashMap<Any, String>()
+      val child =
+        FunctionNodes.of("child", Any::class.java, Any::class.java) { _, helper ->
+          childBaggage[helper] = Baggage.current().asMap().keys.sorted().joinToString()
+          provider.get("test").spanBuilder("child work $helper").startSpan().end()
+          "done"
+        }
+      val nodeSpan = AtomicReference<SpanContext>()
+      val nodeBaggage = AtomicReference<String>()
+      val caller =
+        FunctionNodes.builder(Any::class.java, Any::class.java)
+          .name("caller")
+          .rerunOnResume(true)
+          .body { ctx, _ ->
+            nodeSpan.set(OpenTelemetrySpan.current().spanContext)
+            nodeBaggage.set(Baggage.current().asMap().keys.sorted().joinToString())
+            val withBaggage = Thread {
+              Baggage.builder().put("helper", "h").build().makeCurrent().use {
+                InteropContextView.of(ctx)
+                  .runNodeBlocking(child, "with baggage", RunNodeConfig(runId = "a"))
+              }
+            }
+            val empty = Thread {
+              InteropContextView.of(ctx).runNodeBlocking(child, "empty", RunNodeConfig(runId = "b"))
+            }
+            for (helper in listOf(withBaggage, empty)) {
+              helper.start()
+              helper.join()
+            }
+            "done"
+          }
+          .build()
+      val workflow = Workflow("helper_span_wf", listOf(Edge(Start, caller)))
+      val runner = InMemoryRunner(App(appName = "helper_span_wf", rootNode = workflow))
+
+      // Act
+      Baggage.builder().put("run", "r").build().makeCurrent().use {
+        runBlocking {
+          val unused = runner.sessionService.createSession(SessionKey("helper_span_wf", "u", "s"))
+          runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
+        }
+      }
+
+      // Assert: both children nest under the node's span, which the body's thread holds. The
+      // child of the thread with baggage sees that baggage; the other sees the node's.
+      assertThat(nodeSpan.get().isValid).isTrue()
+      // In production the child node's own span sits between them; here the test tracer covers only
+      // the test thread.
+      for (helper in listOf("with baggage", "empty")) {
+        val childWork = exported.single { it.name == "child work $helper" }
+        assertThat(childWork.traceId).isEqualTo(nodeSpan.get().traceId)
+        assertThat(childWork.parentSpanContext.spanId).isEqualTo(nodeSpan.get().spanId)
+      }
+      assertThat(nodeBaggage.get()).isEqualTo("run")
+      assertThat(childBaggage).containsExactly("with baggage", "helper", "empty", "run")
+    } finally {
+      provider.close()
+    }
+  }
+
+  @Test
+  fun childTelemetryOrNull_threadContexts_keepTheThreadsSpanOrAddTheNodes() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      // Arrange: a node context that holds an ADK span from an SDK tracer.
+      val tracer = OtelTracer(provider.get("test"))
+      val nodeSpan = tracer.spanBuilder("node").startSpan()
+      val node = tracer.contextWithSpan(nodeSpan).asContextElement()
+      val nodeContext = (node.context as OtelTelemetryContext).otelContext
+      val ownSpan = provider.get("test").spanBuilder("own").startSpan()
+
+      // Act
+      val onRoot = childTelemetryOrNull(node)
+      val withBaggage =
+        Baggage.builder().put("tenant", "t1").build().makeCurrent().use {
+          childTelemetryOrNull(node)
+        }
+      val withOwnSpan = ownSpan.makeCurrent().use { childTelemetryOrNull(node) }
+
+      // Assert
+      assertThat(onRoot).isSameInstanceAs(node)
+      assertThat(withOwnSpan).isNull()
+      val merged = (checkNotNull(withBaggage).context as OtelTelemetryContext).otelContext
+      assertThat(OpenTelemetrySpan.fromContext(merged).spanContext.spanId)
+        .isEqualTo(OpenTelemetrySpan.fromContext(nodeContext).spanContext.spanId)
+      assertThat(merged.get(ADK_SPAN)).isSameInstanceAs(nodeContext.get(ADK_SPAN))
+      assertThat(Baggage.fromContext(merged).getEntryValue("tenant")).isEqualTo("t1")
+      ownSpan.end()
+      nodeSpan.end()
     } finally {
       provider.close()
     }
