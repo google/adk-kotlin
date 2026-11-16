@@ -129,12 +129,195 @@ class SetModelResponseToolTest {
   }
 
   @Test
-  fun run_nonObjectSchema_throws() =
-    runBlocking<Unit> {
-      val tool = SetModelResponseTool(Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)))
+  fun declaration_objectWithAnyOfOfObjects_keepsItAsParameters() {
+    // Arrange: the object's own properties type its fields; its `anyOf` only says which to send.
+    val oneOfTheseFields =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("a" to Schema(type = Type.INTEGER), "b" to Schema(type = Type.STRING)),
+        anyOf = listOf(Schema(required = listOf("a")), Schema(required = listOf("b"))),
+      )
 
-      assertFailsWith<IllegalArgumentException> { tool.run(testToolContext(), mapOf("x" to "y")) }
+    // Act
+    val parameters = SetModelResponseTool(oneOfTheseFields).declaration().parameters
+
+    // Assert
+    assertEquals(oneOfTheseFields, parameters)
+  }
+
+  @Test
+  fun declaration_schemaNotLimitedToObjects_wrapsItInAResponseParameter() {
+    // Arrange
+    val schemas =
+      listOf(
+        Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)),
+        Schema(type = Type.STRING),
+        Schema(anyOf = listOf(Schema(type = Type.INTEGER), Schema(type = Type.STRING))),
+        Schema(
+          anyOf = listOf(Schema(items = Schema(type = Type.STRING)), Schema(type = Type.STRING))
+        ),
+        Schema(anyOf = listOf(outputSchema, Schema(type = Type.STRING))),
+        Schema(anyOf = listOf(outputSchema, Schema(type = Type.NULL))),
+        outputSchema.copy(
+          anyOf = listOf(Schema(required = listOf("city")), Schema(type = Type.NULL))
+        ),
+        Schema(anyOf = listOf(outputSchema, Schema(type = Type.OBJECT))),
+        outputSchema.copy(nullable = true),
+        Schema(
+          properties = mapOf("x" to Schema(type = Type.STRING)),
+          anyOf = listOf(Schema(required = listOf("x")), Schema(type = Type.NULL)),
+        ),
+        Schema(items = Schema(type = Type.INTEGER), anyOf = listOf(Schema(type = Type.STRING))),
+        Schema(enum = listOf("a", "b")),
+        Schema(),
+      )
+
+    for (schema in schemas) {
+      // Act
+      val parameters = SetModelResponseTool(schema).declaration().parameters
+
+      // Assert
+      val wrapped =
+        Schema(
+          type = Type.OBJECT,
+          properties = mapOf("response" to schema),
+          required = listOf("response"),
+        )
+      assertEquals(wrapped, parameters, "for $schema")
     }
+  }
+
+  @Test
+  fun declaration_untypedListSchema_wrapsItAsAnArray() {
+    // Arrange
+    val untypedList = Schema(items = Schema(type = Type.INTEGER))
+
+    // Act
+    val parameters = SetModelResponseTool(untypedList).declaration().parameters
+
+    // Assert
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("response" to untypedList.copy(type = Type.ARRAY)),
+        required = listOf("response"),
+      ),
+      parameters,
+    )
+  }
+
+  @Test
+  fun run_untypedListSchemaWithAWrongItem_returnsFeedbackAndRecordsNothing() = runBlocking {
+    // Arrange
+    val tool = SetModelResponseTool(Schema(items = Schema(type = Type.INTEGER)))
+
+    // Act
+    val result =
+      tool.run(testToolContext(functionCallId = "call_1"), mapOf("response" to listOf("x")))
+
+    // Assert
+    assertThat(result.keys).containsExactly("error")
+    assertThat(tool.validatedResponseJson("call_1")).isNull()
+  }
+
+  @Test
+  fun run_untypedObjectOrNullSchema_recordsANull() = runBlocking {
+    // Arrange: a type on the wrapped schema would rule out its NULL branch.
+    val objectOrNull =
+      Schema(
+        properties = mapOf("x" to Schema(type = Type.STRING)),
+        anyOf = listOf(Schema(required = listOf("x")), Schema(type = Type.NULL)),
+      )
+    val tool = SetModelResponseTool(objectOrNull)
+
+    // Act
+    val result = tool.run(testToolContext(functionCallId = "call_1"), mapOf("response" to null))
+
+    // Assert
+    assertEquals(mapOf("result" to null), result)
+    assertEquals("null", tool.validatedResponseJson("call_1"))
+  }
+
+  @Test
+  fun run_wrappedSchema_recordsTheValueAndAnswersWithAResult() = runBlocking {
+    // Arrange
+    val tool = SetModelResponseTool(Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER)))
+
+    // Act
+    val result =
+      tool.run(testToolContext(functionCallId = "call_1"), mapOf("response" to listOf(1.0, 2.0)))
+
+    // Assert: whole numbers come back as integers, in the function response and the final JSON.
+    assertEquals(mapOf("result" to listOf(1L, 2L)), result)
+    assertEquals("[1,2]", tool.validatedResponseJson("call_1"))
+  }
+
+  @Test
+  fun run_wrappedArrayWithOptionalNull_dropsTheNull() = runBlocking {
+    // Arrange: `city` is optional in each item, and models often send null for it.
+    val tool = SetModelResponseTool(Schema(type = Type.ARRAY, items = outputSchema))
+
+    // Act
+    val result =
+      tool.run(
+        testToolContext(functionCallId = "call_1"),
+        mapOf("response" to listOf(mapOf("name" to "x", "city" to null))),
+      )
+
+    // Assert
+    assertEquals(mapOf("result" to listOf(mapOf("name" to "x"))), result)
+    assertEquals("""[{"name":"x"}]""", tool.validatedResponseJson("call_1"))
+  }
+
+  @Test
+  fun run_wrappedSchemaMismatch_returnsFeedbackAndRecordsNothing() = runBlocking {
+    // Arrange
+    val tool = SetModelResponseTool(Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)))
+
+    // Act
+    val result = tool.run(testToolContext(functionCallId = "call_1"), mapOf("x" to "y"))
+
+    // Assert
+    assertThat(result.keys).containsExactly("error")
+    assertThat(tool.validatedResponseJson("call_1")).isNull()
+  }
+
+  @Test
+  fun runAsync_arraySchema_endsTurnWithTheArrayAndSavesIt() = runBlocking {
+    // Arrange
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.5-flash",
+        listOf(
+          modelFunctionCallResponse(
+            SetModelResponseTool.NAME,
+            mapOf("response" to listOf("a", "b")),
+            id = "call_1",
+          )
+        ),
+      )
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(DummyTool("lookup", declares = true)),
+        outputSchema = Schema(type = Type.ARRAY, items = Schema(type = Type.STRING)),
+        outputKey = "out",
+      )
+    val runner = InMemoryRunner(agent = agent)
+
+    // Act
+    val events =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    // Assert
+    val toolResponse = events.flatMap { it.functionResponses() }.single()
+    assertThat(toolResponse.response).isEqualTo(mapOf("result" to listOf("a", "b")))
+    val finalEvent = events.last()
+    assertThat(finalEvent.isFinalResponse).isTrue()
+    assertThat(finalEvent.content?.parts?.single()?.text).isEqualTo("""["a","b"]""")
+    assertThat(finalEvent.actions.stateDelta["out"]).isEqualTo(listOf("a", "b"))
+  }
 
   @Test
   fun run_schemaTooComplexToValidate_throws() =
@@ -172,7 +355,7 @@ class SetModelResponseToolTest {
 
   @Test
   fun run_topLevelUnionOfObjectsMatchingNoBranch_returnsAnError() = runBlocking {
-    // Arrange: the model can fix arguments that match neither object.
+    // Arrange: the model can fix an answer that matches neither object.
     val withA =
       Schema(
         type = Type.OBJECT,
@@ -188,7 +371,7 @@ class SetModelResponseToolTest {
     val tool = SetModelResponseTool(Schema(anyOf = listOf(withA, withB)))
 
     // Act
-    val result = tool.run(testToolContext(), mapOf("c" to "x"))
+    val result = tool.run(testToolContext(), mapOf("response" to mapOf("c" to "x")))
 
     // Assert
     assertThat(result["error"] as String).startsWith("Validation Error found:")

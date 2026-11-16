@@ -921,6 +921,120 @@ class LlmAgentTest {
   }
 
   @Test
+  fun runAsync_withArrayOutputSchema_savesTheParsedList() = runBlocking {
+    // Arrange
+    val schema = Schema(type = Type.ARRAY, items = Schema(type = Type.STRING))
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage("""["a", "b"]"""))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val session = InMemorySessionService().createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Act
+    val events = agent.runAsync(context).toList()
+
+    // Assert
+    assertEquals(listOf("a", "b"), events.single().actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withArrayOutputSchema_mismatch_savesRawText() = runBlocking {
+    // Arrange
+    val schema = Schema(type = Type.ARRAY, items = Schema(type = Type.STRING))
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage("[1, 2]"))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val session = InMemorySessionService().createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Act
+    val events = agent.runAsync(context).toList()
+
+    // Assert
+    assertEquals("[1, 2]", events.single().actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withStringOutputSchema_savesTheUnquotedText() = runBlocking {
+    // Arrange
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage("\"hello\""))),
+      )
+    val agent =
+      LlmAgent(
+        name = "test-agent",
+        model = model,
+        outputSchema = Schema(type = Type.STRING),
+        outputKey = "result",
+      )
+    val session = InMemorySessionService().createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Act
+    val events = agent.runAsync(context).toList()
+
+    // Assert
+    assertEquals("hello", events.single().actions.stateDelta["result"])
+  }
+
+  @Test
+  fun runAsync_withNullableStringOutputSchema_nullAnswer_savesNothing() = runBlocking {
+    // Arrange: state values are never null.
+    val schema = Schema(type = Type.STRING, nullable = true)
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage("null"))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val session = InMemorySessionService().createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Act
+    val events = agent.runAsync(context).toList()
+
+    // Assert
+    assertFalse("result" in events.single().actions.stateDelta)
+  }
+
+  @Test
+  fun runAsync_withNullableObjectOutputSchema_nullAnswer_savesNothing() = runBlocking {
+    // Arrange: state values are never null.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        nullable = true,
+        properties = mapOf("x" to Schema(type = Type.STRING)),
+      )
+    val model =
+      DummyModel.createSequential(
+        "gemini-2.0-flash",
+        listOf(LlmResponse(content = modelMessage("null"))),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "result")
+    val session = InMemorySessionService().createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    // Act
+    val events = agent.runAsync(context).toList()
+
+    // Assert
+    assertFalse("result" in events.single().actions.stateDelta)
+  }
+
+  @Test
   fun runAsync_withOutputSchemaAndTools_gemini2_usesSetModelResponseWorkaround() = runBlocking {
     val schema =
       Schema(

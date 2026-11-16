@@ -745,6 +745,10 @@ internal fun Schema.impliedType(): Type? =
       else -> null
     }
 
+/** Whether this schema, and each of its `anyOf` members, implies an object and nothing else. */
+internal fun Schema.describesOnlyObjects(): Boolean =
+  (listOf(this) + anyOf.orEmpty()).all { it.impliedType() == Type.OBJECT && it.nullable != true }
+
 /** The schema `additionalProperties` gives each undeclared key: a [Schema], or a JSON object. */
 @OptIn(FrameworkInternalApi::class)
 internal fun Schema.extraSchema(): Schema? =

@@ -17,8 +17,8 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.canDescribeAMap
 import com.google.adk.kt.collections.concurrentMutableMapOf
+import com.google.adk.kt.describesOnlyObjects
 import com.google.adk.kt.extraSchema
 import com.google.adk.kt.impliedType
 import com.google.adk.kt.serialization.anyToJsonElement
@@ -28,17 +28,10 @@ import com.google.adk.kt.types.Type
 import com.google.adk.kt.withIntegersAsLongs
 
 /**
- * Internal tool used for the output schema workaround.
- *
- * This tool lets the model produce its final response when an output schema is configured alongside
- * other tools on a model that cannot use a response schema and tools at the same time (see
- * [com.google.adk.kt.models.Model.capabilities]). The model is instructed to call this tool with
- * its final answer in the required schema format instead of emitting text directly.
- *
- * Follows the Java ADK `SetModelResponseTool`: the [outputSchema] is exposed directly as the tool's
- * parameters, so only top-level object schemas are supported. The Python ADK's
- * `SetModelResponseTool` additionally handles list/primitive schemas by wrapping them in synthetic
- * `items`/`response` parameters; that is intentionally not replicated here.
+ * The tool a model calls with its final answer when an output schema and tools cannot share a
+ * request (see [com.google.adk.kt.models.Model.capabilities]). An [outputSchema] that only
+ * describes objects is the tool's parameters; function parameters must be an object, so any other
+ * schema goes into a single `response` parameter, as in the Python ADK.
  *
  * @property outputSchema The schema the model's final response must conform to.
  */
@@ -51,36 +44,44 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
         "the specified schema format.",
   ) {
 
-  /** The arguments [run] validated, by function call id; only these end the turn. */
-  private val validatedResponses = concurrentMutableMapOf<String, Map<String, Any?>>()
+  /** The JSON of the answers [run] validated, by function call id; only these end the turn. */
+  private val validatedResponses = concurrentMutableMapOf<String, String>()
 
-  /** Whether [outputSchema], or one of its `anyOf` members, could describe the arguments map. */
-  private val describesAMap =
-    outputSchema.canDescribeAMap() && (outputSchema.anyOf?.any { it.canDescribeAMap() } ?: true)
+  /** Whether [outputSchema] goes into a [RESPONSE_PARAMETER], as it may describe a non-object. */
+  private val wrapsOutputSchema = !outputSchema.describesOnlyObjects()
+
+  /** The tool's parameters, which the model's arguments must match. */
+  private val parameters: Schema =
+    if (wrapsOutputSchema) {
+      // The implied type lets validation check an untyped list's items. A schema with `anyOf`
+      // stays untyped, as a type would rule out its other branches.
+      val response =
+        if (outputSchema.anyOf == null) outputSchema.copy(type = outputSchema.impliedType())
+        else outputSchema
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf(RESPONSE_PARAMETER to response),
+        required = listOf(RESPONSE_PARAMETER),
+      )
+    } else {
+      // An untyped schema with object keys describes an object; function parameters need the type.
+      outputSchema.copy(type = Type.OBJECT)
+    }
 
   override fun declaration(): FunctionDeclaration =
-    FunctionDeclaration(
-      name = name,
-      description = description,
-      // An untyped schema with object keys describes an object; function parameters need the type.
-      parameters =
-        if (outputSchema.impliedType() == Type.OBJECT) outputSchema.copy(type = Type.OBJECT)
-        else outputSchema,
-    )
+    FunctionDeclaration(name = name, description = description, parameters = parameters)
 
   /**
-   * Validates [args] against [outputSchema] and records them as the final answer, with whole-number
-   * doubles in integer fields as [Long]. Models often send null for an optional field, so [args]
-   * without those nulls are tried first, then [args] as sent. If neither matches, returns an
-   * `error` entry for the model to retry, as in the Python and Java ADKs. It throws, which reaches
-   * `onToolErrorCallbacks`, only when [outputSchema] is too complex to validate or cannot describe
-   * an object.
+   * Records [args], or their [RESPONSE_PARAMETER], as the final answer if they match the tool's
+   * parameters, trying them first without the nulls models often send for optional fields. A
+   * mismatch returns an `error` entry for the model to retry, as in the Python and Java ADKs, and
+   * only a schema too complex to validate throws, which reaches `onToolErrorCallbacks`.
    */
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Map<String, Any?> {
-    val withoutNulls = args.withoutOptionalNulls(outputSchema)
+    val withoutNulls = args.withoutOptionalNulls(parameters)
     val failure = validate(withoutNulls).exceptionOrNull() ?: return record(context, withoutNulls)
     if (validate(args).isSuccess) return record(context, args)
-    if (failure is SchemaUtils.SchemaTooComplexException || !describesAMap) throw failure
+    if (failure is SchemaUtils.SchemaTooComplexException) throw failure
     return mapOf(
       "error" to
         "Validation Error found:\n${validationFeedback(failure)}\nRecall the set_model_response " +
@@ -89,25 +90,30 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
     )
   }
 
+  @OptIn(FrameworkInternalApi::class)
   private fun record(context: ToolContext, args: Map<String, Any?>): Map<String, Any?> {
-    val response = args.withIntegersAsLongs(outputSchema)
-    validatedResponses[context.functionCallId.orEmpty()] = response
-    return response
+    val validated = args.withIntegersAsLongs(parameters)
+    val answer = if (wrapsOutputSchema) validated[RESPONSE_PARAMETER] else validated
+    validatedResponses[context.functionCallId.orEmpty()] = anyToJsonElement(answer).toString()
+    // The model gets a wrapped answer back as it gets a function tool's non-map result.
+    return if (wrapsOutputSchema) mapOf(BaseTool.RESULT_KEY to answer) else validated
   }
 
   private fun validate(args: Map<String, Any?>): Result<Unit> =
-    SchemaUtils.validateMapOnSchema(args, outputSchema, argsName = "Output")
+    SchemaUtils.validateMapOnSchema(args, parameters, argsName = "Output")
 
   /**
-   * Returns the JSON of the arguments [run] validated for [functionCallId], null fields included,
-   * or `null` if none.
+   * Returns the JSON of the answer [run] validated for [functionCallId], null fields included, or
+   * `null` if none.
    */
-  @OptIn(FrameworkInternalApi::class)
   internal fun validatedResponseJson(functionCallId: String?): String? =
-    validatedResponses[functionCallId.orEmpty()]?.let { anyToJsonElement(it).toString() }
+    validatedResponses[functionCallId.orEmpty()]
 
   companion object {
     const val NAME: String = "set_model_response"
+
+    /** The parameter that carries a non-object answer. */
+    private const val RESPONSE_PARAMETER = "response"
   }
 }
 

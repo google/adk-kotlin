@@ -13,7 +13,7 @@ Prefixes set the scope: none is this session, `user:` is every session of the us
 
 ## outputKey and outputSchema
 
-`outputKey` stores the agent's final text in state. With `outputSchema` (a hand-built `Schema` of type `OBJECT`), the parsed map is stored instead; if parsing fails the raw text is stored, so check the type when reading. Also see the structured-output rule in best-practices.md.
+`outputKey` stores the agent's final text in state. With `outputSchema` (a hand-built `Schema`), the parsed value is stored instead: a map for an object schema, or a list, string, number or boolean for another schema. If parsing fails the raw text is stored, so check the type when reading. A `null` answer that the schema allows leaves `outputKey` unchanged, so an earlier value stays. Also see the structured-output rule in best-practices.md.
 
 ## Sessions
 

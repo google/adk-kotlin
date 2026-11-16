@@ -48,8 +48,7 @@ private const val SET_MODEL_RESPONSE_INSTRUCTION =
  *
  * Follows the Java ADK `OutputSchema` processor. The Python ADK's `_OutputSchemaRequestProcessor`
  * is structurally similar but gates on `BaseLlm.capabilities`, whose default differs for Vertex
- * Gemini 2.x (see [com.google.adk.kt.models.Model.capabilities]), and supports non-object schemas;
- * this implementation matches Java's object-schema behavior.
+ * Gemini 2.x (see [com.google.adk.kt.models.Model.capabilities]).
  */
 internal class OutputSchemaProcessor : LlmRequestProcessor {
   override suspend fun process(
@@ -106,8 +105,8 @@ internal fun LlmAgent.appliesOutputSchemaDirectly(context: InvocationContext): B
   !hasToolsForOutputSchemaGating(context) || model.takesOutputSchemaWithTools
 
 /**
- * Returns the JSON-serialized arguments that ADK's own [SetModelResponseTool] in [tools] validated
- * for a `set_model_response` response in [functionResponseEvent], or `null` if there are none.
+ * Returns the JSON of the answer that ADK's own [SetModelResponseTool] in [tools] validated for a
+ * `set_model_response` response in [functionResponseEvent], or `null` if there is none.
  */
 internal fun getStructuredModelResponse(
   functionResponseEvent: Event,

@@ -31,6 +31,7 @@ import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.OnModelErrorCallback
 import com.google.adk.kt.callbacks.OnToolErrorCallback
+import com.google.adk.kt.describesOnlyObjects
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
 import com.google.adk.kt.logging.LoggerFactory
@@ -118,14 +119,14 @@ import kotlinx.coroutines.flow.transformWhile
  * @property afterToolCallbacks List of callbacks to run after each tool call, skipped when a
  *   plugin's after-tool callback replaces the result.
  * @property inputSchema The input schema of the agent.
- * @property outputSchema The schema the agent's final response must conform to. Only top-level
- *   object schemas are supported, but a workflow node run also accepts list and primitive schemas
- *   when the model applies the schema directly. When set, the agent asks the model to return JSON
- *   matching this schema and validates the final response against it before saving it to
- *   [outputKey]. If the agent also has tools (including the framework's `transfer_to_agent` tool
- *   when sub-agents/peers are reachable), the schema is applied directly on models that support a
- *   response schema together with tools; on models that do not (e.g. Gemini 2.x), the framework
- *   falls back to a `set_model_response` tool to collect the structured output.
+ * @property outputSchema The schema the agent's final response must conform to. When set, the agent
+ *   asks the model to return JSON matching this schema and validates the final response against it
+ *   before saving the parsed value to [outputKey]; in task mode, [outputKey] gets the parsed
+ *   `finish_task` output instead. If the agent also has tools (including the framework's
+ *   `transfer_to_agent` tool when sub-agents/peers are reachable), the schema is applied directly
+ *   on models that support a response schema together with tools; on models that do not (e.g.
+ *   Gemini 2.x), the framework falls back to a `set_model_response` tool to collect the structured
+ *   output.
  * @property outputKey The key in session state to store the final text response of the agent. When
  *   set, the agent's concatenated text output (excluding parts marked as thoughts) is written to
  *   `event.actions.stateDelta[outputKey]` on each final-response event, which the session service
@@ -851,15 +852,17 @@ class LlmAgent(
    *   that values already written by other code paths (e.g. tool-side state updates on
    *   function-response-only events) are not overwritten.
    * - If [outputSchema] is set, the concatenated text is parsed as JSON and validated against the
-   *   schema; the parsed map is stored on success. A blank result is skipped (it represents an
-   *   empty final stream chunk). If parsing or validation fails, the raw text is stored instead and
-   *   an error is logged. Mirrors `validate_schema` in the Python ADK and `validateOutputSchema` in
-   *   the Java ADK. Note this best-effort fallback is the direct-schema path only; the
-   *   `set_model_response` workaround instead returns validation errors to the model so it can call
-   *   the tool again, and saves nothing until a call validates (see
+   *   schema, and the parsed value is stored on success: a map for a schema that describes only
+   *   objects, otherwise whatever the JSON holds, or the text itself for a schema that takes a
+   *   string. A `null` answer the schema allows leaves [outputKey] unchanged. A blank result is
+   *   skipped (it represents an empty final stream chunk). If parsing or validation fails, the raw
+   *   text is stored instead and an error is logged. Mirrors `validate_schema` in the Python ADK.
+   *   Note this best-effort fallback is the direct-schema path only; the `set_model_response`
+   *   workaround instead returns validation errors to the model so it can call the tool again, and
+   *   saves nothing until a call validates (see
    *   [com.google.adk.kt.tools.SetModelResponseTool.run]).
    * - On a single-turn workflow node run, the text is parsed as the node's output is, and a schema
-   *   mismatch saves nothing.
+   *   mismatch or a `null` answer saves nothing.
    *
    * NOTE on long-running tool events: when an event contains text alongside a long-running function
    * call (i.e. [Event.longRunningToolIds] is non-empty), Kotlin's [Event.isFinalResponse] returns
@@ -896,8 +899,12 @@ class LlmAgent(
         // A mismatch saves nothing; markOutputIfFinalTurn fails the node on the final model turn.
         nodeRun ->
           runCatching { SchemaUtils.parseModelOutput(schema, result) }.getOrNull() ?: return
-        else ->
-          SchemaUtils.validateOutputSchema(result, schema).getOrElse { cause ->
+        else -> {
+          // A schema that may describe a non-object is parsed as on a node run.
+          val parsed =
+            if (schema.describesOnlyObjects()) SchemaUtils.validateOutputSchema(result, schema)
+            else runCatching { SchemaUtils.parseModelOutput(schema, result) }
+          val value = parsed.getOrElse { cause ->
             // The cause's message can quote the model's output, so only its type is logged.
             logger.error {
               "LlmAgent output for outputKey '$outputKey' did not match the outputSchema " +
@@ -905,6 +912,9 @@ class LlmAgent(
             }
             result
           }
+          // State values are never null, so a null answer saves nothing, as on a node run.
+          value ?: return
+        }
       }
     event.actions.stateDelta[outputKey] = output
   }
