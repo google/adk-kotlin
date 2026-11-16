@@ -81,16 +81,21 @@ import kotlinx.coroutines.withContext
 class BigQueryAgentAnalyticsPlugin
 internal constructor(
   private val config: BigQueryLoggerConfig,
-  private val bigQuery: BigQuery,
+  explicitBigQuery: BigQuery?,
   private val ioContext: CoroutineContext,
   private val timeSource: TimeSource,
   private val createRowWriter: (Credentials?) -> RowWriter,
   private val createOffloader: (Credentials?) -> ContentOffloader = { credentials ->
     GcsOffloader.create(config, credentials, ioContext)
   },
+  createBigQuery: (BigQueryLoggerConfig) -> BigQuery = Companion::createBigQuery,
 ) : Plugin {
 
   override val name: String = "bigquery_agent_analytics"
+
+  // Null for a disabled plugin, which never looks up credentials.
+  private val bigQuery: BigQuery? =
+    explicitBigQuery ?: if (config.enabled) createBigQuery(config) else null
 
   @Volatile private var tableEnsured = false
   private val mutex = Mutex()
@@ -107,11 +112,11 @@ internal constructor(
   private var pipeline: Pipeline? = null
   // Null unless parts can be offloaded, since only content_parts references an upload.
   private val offloader: ContentOffloader? by lazy {
-    if (config.gcsBucketName == null || !config.logMultiModalContent) {
+    if (!config.enabled || config.gcsBucketName == null || !config.logMultiModalContent) {
       null
     } else {
       // Uploads use the identity that creates the table, unscoped so that GCS adds its own scopes.
-      createOffloader(bigQuery.options?.credentials)
+      createOffloader(bigQuery?.options?.credentials)
     }
   }
   // Callers of close wait for one in progress, so that the shutdown hook does not end it early.
@@ -134,13 +139,14 @@ internal constructor(
    * @param config Where and what to log.
    * @param bigQuery Client that creates and upgrades the table and its views; the Storage Write API
    *   writes the rows, and parts are uploaded to [BigQueryLoggerConfig.gcsBucketName], with this
-   *   client's credentials.
+   *   client's credentials. If `null`, a client is created from [config] unless it disables the
+   *   plugin.
    * @param ioContext Context that blocking BigQuery calls and the background writer run in.
    * @param timeSource Clock for the interval between attempts to create the table.
    */
   constructor(
     config: BigQueryLoggerConfig,
-    bigQuery: BigQuery = createBigQuery(config),
+    bigQuery: BigQuery? = null,
     @Suppress("GlobalCoroutineDispatchers") ioContext: CoroutineContext = Dispatchers.IO,
     timeSource: TimeSource = TimeSource.Monotonic,
   ) : this(
@@ -584,7 +590,7 @@ internal constructor(
       val eventData =
         EventData(
           status = STATUS_ERROR,
-          errorMessage = error.message,
+          errorMessage = formatErrorMessage(error),
           latency = popped?.duration,
           spanIdOverride = popped?.spanId,
           parentSpanIdOverride = popped?.parentSpanId,
@@ -644,7 +650,7 @@ internal constructor(
 
   private fun startPipeline(): Pipeline {
     // Rows are written as the same identity that creates the table.
-    val writer = createRowWriter(bigQuery.options?.scopedCredentials)
+    val writer = createRowWriter(bigQuery?.options?.scopedCredentials)
     val processor =
       BatchProcessor(
         writer = writer,
@@ -680,6 +686,17 @@ internal constructor(
     } catch (e: InterruptedException) {
       Thread.currentThread().interrupt()
     }
+  }
+
+  // Exceptions without a message, or whose message getter throws, are named by their class.
+  private fun formatErrorMessage(error: Throwable): String {
+    val message =
+      try {
+        error.message
+      } catch (e: Exception) {
+        null
+      }
+    return message?.ifEmpty { null } ?: error::class.simpleName ?: error.javaClass.name
   }
 
   private suspend fun logEvent(
@@ -792,6 +809,7 @@ internal constructor(
     withContext(ioContext) {
       val tableId = TableId.of(config.projectId, config.datasetId, config.tableName)
       try {
+        val bigQuery = checkNotNull(bigQuery) { "Only a disabled plugin has no BigQuery client." }
         val table = bigQuery.getTable(tableId)
         when {
           table == null -> {
@@ -1044,7 +1062,7 @@ internal constructor(
 
     fun config(config: BigQueryLoggerConfig): Builder = apply { this.config = config }
 
-    fun bigQuery(bigQuery: BigQuery): Builder = apply { this.bigQuery = bigQuery }
+    fun bigQuery(bigQuery: BigQuery?): Builder = apply { this.bigQuery = bigQuery }
 
     fun ioContext(ioContext: CoroutineContext): Builder = apply { this.ioContext = ioContext }
 
@@ -1052,22 +1070,12 @@ internal constructor(
 
     fun build(): BigQueryAgentAnalyticsPlugin {
       val config = checkNotNull(config) { "BigQueryAgentAnalyticsPlugin.Builder requires config." }
-      // Defer the bigQuery default to the constructor so the two never drift apart.
-      val bigQuery = bigQuery
-      return if (bigQuery == null) {
-        BigQueryAgentAnalyticsPlugin(
-          config = config,
-          ioContext = ioContext,
-          timeSource = timeSource,
-        )
-      } else {
-        BigQueryAgentAnalyticsPlugin(
-          config = config,
-          bigQuery = bigQuery,
-          ioContext = ioContext,
-          timeSource = timeSource,
-        )
-      }
+      return BigQueryAgentAnalyticsPlugin(
+        config = config,
+        bigQuery = bigQuery,
+        ioContext = ioContext,
+        timeSource = timeSource,
+      )
     }
   }
 
