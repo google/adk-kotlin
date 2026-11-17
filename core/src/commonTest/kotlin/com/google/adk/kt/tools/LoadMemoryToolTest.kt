@@ -32,6 +32,7 @@ import com.google.adk.kt.types.Part
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
@@ -255,5 +256,15 @@ class LoadMemoryToolTest {
         "timestamp" to "2026-01-02T03:04:05Z",
         "custom_metadata" to mapOf("source" to "chat"),
       )
+  }
+
+  @Test
+  fun detectErrorInResponse_missingParameter_reportsToolError() = runBlocking {
+    val tool = LoadMemoryTool()
+
+    val result = tool.run(testToolContext(), emptyMap())
+
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(result))
+    assertNull(tool.detectErrorInResponse(mapOf("result" to "ok")))
   }
 }

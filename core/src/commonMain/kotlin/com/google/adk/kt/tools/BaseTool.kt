@@ -102,6 +102,12 @@ abstract class BaseTool(
     return llmRequest.appendTools(listOf(this))
   }
 
+  /**
+   * Returns the `error.type` for a failure this tool reports in its final [response] instead of
+   * throwing, or null when it reports none. The `execute_tool` span is then marked failed with it.
+   */
+  internal open fun detectErrorInResponse(response: Any?): String? = null
+
   override fun close() {}
 
   companion object {

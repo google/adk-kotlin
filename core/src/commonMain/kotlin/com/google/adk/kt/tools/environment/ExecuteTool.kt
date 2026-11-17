@@ -86,4 +86,6 @@ internal class ExecuteTool(private val environment: Environment, private val max
       }
     }
   }
+
+  override fun detectErrorInResponse(response: Any?): String? = statusErrorFailure(response)
 }

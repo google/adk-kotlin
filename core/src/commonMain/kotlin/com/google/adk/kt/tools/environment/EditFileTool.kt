@@ -110,4 +110,6 @@ internal class EditFileTool(private val environment: Environment) :
     /** Matches one line ending; a `\r` followed by `\n` never matches on its own. */
     const val LINE_BREAK_PATTERN = """(?:\r\n|\r(?!\n)|\n)"""
   }
+
+  override fun detectErrorInResponse(response: Any?): String? = statusErrorFailure(response)
 }

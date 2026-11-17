@@ -103,6 +103,8 @@ internal class ReadFileTool(private val environment: Environment, private val ma
     }
   }
 
+  override fun detectErrorInResponse(response: Any?): String? = statusErrorFailure(response)
+
   private companion object {
     const val LINE_NUMBER_WIDTH = 6
 

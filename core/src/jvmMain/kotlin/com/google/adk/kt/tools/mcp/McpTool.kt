@@ -77,6 +77,8 @@ internal constructor(
       throw error.cause ?: error
     }
 
+  override fun detectErrorInResponse(response: Any?): String? = mcpResultFailure(response)
+
   /** The MCP tool annotations as an SDK-neutral value, exposed for framework interop. */
   @FrameworkInternalApi
   val annotations: McpToolAnnotations?

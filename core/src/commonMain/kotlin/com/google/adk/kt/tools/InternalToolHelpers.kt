@@ -16,6 +16,11 @@
 
 package com.google.adk.kt.tools
 
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+
 /**
  * Shared helpers for built-in [BaseTool] implementations (e.g. [RequestInputTool],
  * [GetUserChoiceTool]) that don't go through the KSP [FunctionTool] machinery yet need the same
@@ -42,4 +47,28 @@ internal object InternalToolHelpers {
           "present:\n${missingParams.joinToString("\n")}\nYou could retry calling this tool, " +
           "but it is IMPORTANT for you to provide all the mandatory parameters."
     )
+
+  /** The `error.type` of a failure a tool reports in its response. */
+  const val TOOL_ERROR = "TOOL_ERROR"
+
+  /** Returns [TOOL_ERROR] when [response] is a map with a truthy `error` entry, else null. */
+  fun errorEntryFailure(response: Any?): String? =
+    if (response is Map<*, *> && isTruthy(response[FunctionTool.ERROR_KEY])) TOOL_ERROR else null
+
+  /** Whether [value] is truthy: not null, false, zero or empty. */
+  fun isTruthy(value: Any?): Boolean =
+    when (value) {
+      null -> false
+      is Boolean -> value
+      is String -> value.isNotEmpty()
+      is Number -> value.toDouble() != 0.0
+      is Collection<*> -> value.isNotEmpty()
+      is Map<*, *> -> value.isNotEmpty()
+      is Array<*> -> value.isNotEmpty()
+      is JsonNull -> false
+      is JsonPrimitive ->
+        if (value.isString) value.content.isNotEmpty()
+        else value.booleanOrNull ?: value.doubleOrNull?.let { it != 0.0 } ?: true
+      else -> true
+    }
 }

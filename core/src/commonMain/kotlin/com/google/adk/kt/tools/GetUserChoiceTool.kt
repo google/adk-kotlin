@@ -68,6 +68,9 @@ class GetUserChoiceTool :
     return Unit
   }
 
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
+
   private companion object {
     const val GET_USER_CHOICE_FUNCTION_CALL_NAME = "get_user_choice"
     const val OPTIONS_ARG = "options"

@@ -24,7 +24,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class FunctionToolTest {
 
@@ -207,6 +211,35 @@ class FunctionToolTest {
         return result
       }
     }
+
+  @Test
+  fun detectErrorInResponse_truthyErrorEntry_reportsToolError() = runBlocking {
+    val tool = TestFunctionTool()
+    val rejected =
+      confirmGatedTool(name = "secure")
+        .run(testToolContext(toolConfirmation = ToolConfirmation(confirmed = false)), emptyMap())
+
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(mapOf("error" to "missing arg")))
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(rejected))
+  }
+
+  @Test
+  fun detectErrorInResponse_noTruthyErrorEntry_reportsNothing() {
+    val tool = TestFunctionTool()
+
+    assertNull(tool.detectErrorInResponse(mapOf("result" to "ok")))
+    assertNull(tool.detectErrorInResponse("plain string"))
+    assertNull(tool.detectErrorInResponse(null))
+    assertNull(tool.detectErrorInResponse(mapOf("error" to "")))
+    assertNull(tool.detectErrorInResponse(mapOf("error" to false)))
+    assertNull(tool.detectErrorInResponse(mapOf("error" to emptyArray<String>())))
+    assertNull(tool.detectErrorInResponse(buildJsonObject { put("error", JsonNull) }))
+    assertNull(tool.detectErrorInResponse(buildJsonObject { put("error", false) }))
+    assertNull(tool.detectErrorInResponse(buildJsonObject { put("error", "") }))
+    assertNull(tool.detectErrorInResponse(buildJsonObject { put("error", 0) }))
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(buildJsonObject { put("error", "x") }))
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(buildJsonObject { put("error", 1) }))
+  }
 
   /**
    * Builds a [FunctionTool] with `requiresConfirmation = true` whose [execute] body invokes

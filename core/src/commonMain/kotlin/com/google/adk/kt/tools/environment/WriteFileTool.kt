@@ -64,4 +64,6 @@ internal class WriteFileTool(private val environment: Environment) :
     }
     return mapOf(KEY_STATUS to STATUS_OK, KEY_MESSAGE to "Wrote $path")
   }
+
+  override fun detectErrorInResponse(response: Any?): String? = statusErrorFailure(response)
 }

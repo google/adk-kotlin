@@ -18,6 +18,7 @@ package com.google.adk.kt.tools.environment
 
 import com.google.adk.kt.annotations.ExperimentalEnvironmentApi
 import com.google.adk.kt.environment.EnvironmentException
+import com.google.adk.kt.tools.InternalToolHelpers
 import kotlin.time.Duration.Companion.seconds
 
 // Tool names exposed by EnvironmentToolset.
@@ -58,6 +59,11 @@ internal val DEFAULT_TIMEOUT = 30.seconds
 /** Builds a standard error response map. */
 internal fun errorResult(message: String): Map<String, Any> =
   mapOf(KEY_STATUS to STATUS_ERROR, KEY_ERROR to message)
+
+/** Returns `TOOL_ERROR` when [response] has an `error` status, else null. */
+internal fun statusErrorFailure(response: Any?): String? =
+  if (response is Map<*, *> && response[KEY_STATUS] == STATUS_ERROR) InternalToolHelpers.TOOL_ERROR
+  else null
 
 /**
  * Maps a failure from an environment operation to a tool error response carrying the

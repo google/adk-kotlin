@@ -40,6 +40,8 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
+import io.modelcontextprotocol.kotlin.sdk.types.Tool
+import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -47,6 +49,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -1012,6 +1015,18 @@ class AndroidMcpToolsetTest {
     }
     withTimeout(2.seconds) { httpClientJob.join() }
     assertFalse(httpClientJob.isActive)
+  }
+
+  @Test
+  fun detectErrorInResponse_reportsAnErrorResultAsMcpToolError() {
+    val tool =
+      AndroidMcpTool(Tool(name = "t", inputSchema = ToolSchema())) { _, _ ->
+        emptyMap<String, Any?>()
+      }
+
+    assertEquals("MCP_TOOL_ERROR", tool.detectErrorInResponse(mapOf("isError" to true)))
+    assertEquals("MCP_TOOL_ERROR", tool.detectErrorInResponse(mapOf("is_error" to true)))
+    assertNull(tool.detectErrorInResponse(mapOf("isError" to false, "content" to emptyList<Any>())))
   }
 }
 

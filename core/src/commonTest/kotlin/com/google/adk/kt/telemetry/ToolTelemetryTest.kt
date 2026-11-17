@@ -18,6 +18,9 @@ package com.google.adk.kt.telemetry
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.AuthConfig
+import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -26,6 +29,7 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummySpan
 import com.google.adk.kt.testing.DummyTracer
 import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionCall
@@ -544,6 +548,168 @@ class ToolTelemetryTest {
     assertNull(span.attributes[TelemetryAttributes.GCP_MCP_SERVER_DESTINATION_ID])
   }
 
+  // ---------------------------------------------------------------------------
+  // A failure the tool reports in its response:
+  // test_error_handler.py::test_detect_error_type_for_telemetry_*,
+  // test_spans.py::test_trace_tool_call_with_dict_error_marks_span_as_failed and
+  // test_functions_simple.py's telemetry error-classification tests.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun executeSingleFunctionCall_toolReportsErrorInResponse_marksTheSpanFailedWithoutAnException() =
+    runBlocking {
+      val span =
+        recordToolSpan(ResponseFunctionTool(mapOf("error" to "Internal component timeout")))
+
+      assertEquals("TOOL_ERROR", span.attributes[TelemetryAttributes.ERROR_TYPE])
+      assertEquals("TOOL_ERROR", span.errorStatus)
+      assertTrue(span.recordedExceptions.isEmpty())
+    }
+
+  @Test
+  fun executeSingleFunctionCall_toolReportsSuccessInResponse_recordsNoFailure() = runBlocking {
+    val span = recordToolSpan(ResponseFunctionTool(mapOf("result" to "Execution succeeded")))
+
+    assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertNull(span.errorStatus)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_toolWithoutFailureCheck_recordsNoFailure() = runBlocking {
+    val span = recordToolSpan(ResponseBaseTool(mapOf("error" to "failed")))
+
+    assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertNull(span.errorStatus)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_toolWithFailureCheck_recordsTheTypeItReports() = runBlocking {
+    val failing = ResponseBaseTool(mapOf("error" to "failed"), detect = { "CustomError" })
+    val span = recordToolSpan(failing)
+
+    assertEquals("CustomError", span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertEquals("CustomError", span.errorStatus)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_failureCheckCancelled_staysCancelled() =
+    runBlocking<Unit> {
+      val tool =
+        ResponseBaseTool(mapOf("result" to "ok"), detect = { throw CancellationException("stop") })
+
+      assertFailsWith<CancellationException> {
+        createInvocationContext()
+          .executeSingleFunctionCall(
+            FunctionCall(name = tool.name, args = emptyMap(), id = "call_1"),
+            mapOf(tool.name to tool),
+          )
+      }
+    }
+
+  @Test
+  fun executeSingleFunctionCall_failureCheckThrows_recordsNoFailureAndAnswersTheModel() =
+    runBlocking {
+      val tool = ResponseBaseTool(mapOf("result" to "ok"), detect = { error("detection exploded") })
+
+      val event =
+        createInvocationContext()
+          .executeSingleFunctionCall(
+            FunctionCall(name = tool.name, args = emptyMap(), id = "call_1"),
+            mapOf(tool.name to tool),
+          )
+
+      assertEquals(
+        mapOf("result" to "ok"),
+        event?.content?.parts?.single()?.functionResponse?.response,
+      )
+      val span = fakeTracer.recordedSpans.single { it.name == "execute_tool ${tool.name}" }
+      assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+      assertNull(span.errorStatus)
+    }
+
+  @Test
+  fun executeSingleFunctionCall_toolRequestsConfirmation_recordsNoFailure() = runBlocking {
+    val gated =
+      object : FunctionTool("gated_tool", "A gated tool", requiresConfirmation = true) {
+        override fun declaration() = null
+
+        override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any =
+          mapOf("output" to "success")
+      }
+
+    val span = recordToolSpan(gated)
+
+    assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertNull(span.errorStatus)
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun executeSingleFunctionCall_toolRequestsCredential_recordsNoFailure() = runBlocking {
+    val signIn =
+      ResponseFunctionTool(mapOf("error" to "Please complete OAuth setup.")) { context ->
+        context.actions.requestedAuthConfigs["call_1"] = AuthConfig(AuthScheme.Http.bearer())
+      }
+
+    val span = recordToolSpan(signIn)
+
+    assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertNull(span.errorStatus)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_afterToolCallbackClearsTheError_recordsNoFailure() = runBlocking {
+    val agent =
+      LlmAgent(
+        name = "test_agent",
+        model = DummyModel("mock_model"),
+        afterToolCallbacks = listOf(AfterToolCallback { _, _, _, _ -> mapOf("output" to "fixed") }),
+      )
+    val tool = ResponseFunctionTool(mapOf("error" to "failed"))
+
+    val unused =
+      testInvocationContext(agent = agent)
+        .executeSingleFunctionCall(
+          FunctionCall(name = tool.name, args = emptyMap(), id = "call_1"),
+          mapOf(tool.name to tool),
+        )
+
+    val span = fakeTracer.recordedSpans.single { it.name == "execute_tool ${tool.name}" }
+    assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertNull(span.errorStatus)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_longRunningToolDefers_recordsNoFailure() = runBlocking {
+    val deferring = ResponseBaseTool(Unit, isLongRunning = true, detect = { "CustomError" })
+
+    val span = recordToolSpan(deferring)
+
+    assertNull(span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertNull(span.errorStatus)
+  }
+
+  @Test
+  fun executeSingleFunctionCall_toolThrows_recordsTheExceptionNotAReportedFailure() = runBlocking {
+    val tool = ResponseBaseTool(Unit, detect = { "CustomError" }, failure = IllegalStateException())
+
+    assertFailsWith<IllegalStateException> { recordToolSpan(tool) }
+
+    val span = fakeTracer.recordedSpans.single { it.name == "execute_tool ${tool.name}" }
+    assertEquals("IllegalStateException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertEquals(1, span.recordedExceptions.size)
+  }
+
+  private suspend fun recordToolSpan(tool: BaseTool): DummySpan {
+    val unused =
+      createInvocationContext()
+        .executeSingleFunctionCall(
+          FunctionCall(name = tool.name, args = emptyMap(), id = "call_1"),
+          mapOf(tool.name to tool),
+        )
+    return fakeTracer.recordedSpans.single { it.name == "execute_tool ${tool.name}" }
+  }
+
   private suspend fun recordSingleToolSpan(): DummySpan {
     val unused =
       createInvocationContext()
@@ -562,6 +728,35 @@ class ToolTelemetryTest {
 
     override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any =
       mapOf("output" to "success")
+  }
+
+  /** A function tool that answers with [response], after running [onRun]. */
+  private class ResponseFunctionTool(
+    private val response: Any,
+    private val onRun: (ToolContext) -> Unit = {},
+  ) : FunctionTool("response_tool", "A tool with a fixed response") {
+    override fun declaration() = null
+
+    override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
+      onRun(context)
+      return response
+    }
+  }
+
+  /** A tool that answers with [response] or throws [failure], and checks it with [detect]. */
+  private class ResponseBaseTool(
+    private val response: Any,
+    isLongRunning: Boolean = false,
+    private val detect: ((Any?) -> String?)? = null,
+    private val failure: Exception? = null,
+  ) : BaseTool("base_tool", "A tool with a fixed response", isLongRunning) {
+    override fun declaration() = null
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any =
+      failure?.let { throw it } ?: response
+
+    override fun detectErrorInResponse(response: Any?): String? =
+      detect?.invoke(response) ?: super.detectErrorInResponse(response)
   }
 
   private class NamedFunctionTool(name: String) : FunctionTool(name, "A test tool") {

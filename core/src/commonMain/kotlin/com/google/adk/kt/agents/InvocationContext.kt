@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
@@ -702,6 +703,10 @@ data class InvocationContext(
         toolResult = afterResult
       }
 
+      detectReportedFailure(tool, toolContext, toolResult)?.let { errorType ->
+        span[TelemetryAttributes.ERROR_TYPE] = errorType
+        span.setErrorStatus(errorType)
+      }
       span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
         toTraceJson(toFinalResponseMap(toolResult))
       }
@@ -744,6 +749,36 @@ data class InvocationContext(
       toTraceJson(toFinalResponseMap(response))
     }
     return buildResponseEvent(tool, response, toolContext, responseEventId)
+  }
+
+  /**
+   * Returns the `error.type` of a failure [tool] reports in its final [response] without throwing.
+   * A call asking for credentials or a confirmation is pausing, not failing, and a check that
+   * throws is logged so it cannot fail the call.
+   */
+  @OptIn(ExperimentalAuthApi::class)
+  private fun detectReportedFailure(
+    tool: BaseTool,
+    toolContext: ToolContext,
+    response: Any?,
+  ): String? {
+    val actions = toolContext.actions
+    if (
+      actions.requestedAuthConfigs.isNotEmpty() || actions.requestedToolConfirmations.isNotEmpty()
+    ) {
+      return null
+    }
+    return try {
+      tool.detectErrorInResponse(response)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      // The exception may carry the response, so only its type is logged.
+      logger.warn {
+        "Failure check of a ${tool::class.simpleName} response threw ${e::class.simpleName}."
+      }
+      null
+    }
   }
 
   /** Records the static `execute_tool` span attributes (parity with Python `trace_tool_call`). */

@@ -18,6 +18,8 @@
 
 package com.google.adk.kt.tools.mcp
 
+import com.google.adk.kt.tools.InternalToolHelpers
+
 /**
  * SDK-neutral view of an MCP tool advertised by a server.
  *
@@ -48,6 +50,18 @@ internal fun interface McpToolInvocation {
     context: com.google.adk.kt.tools.ToolContext,
     arguments: Map<String, Any?>,
   ): Any
+}
+
+/**
+ * Returns `MCP_TOOL_ERROR` when [response], a call result as a map, sets `isError`, or `is_error`
+ * as some SDKs spell it; else null.
+ */
+internal fun mcpResultFailure(response: Any?): String? {
+  if (response !is Map<*, *>) return null
+  val isError =
+    InternalToolHelpers.isTruthy(response["isError"]) ||
+      InternalToolHelpers.isTruthy(response["is_error"])
+  return if (isError) "MCP_TOOL_ERROR" else null
 }
 
 /** Per-invocation protocol options shared by the platform client adapters. */

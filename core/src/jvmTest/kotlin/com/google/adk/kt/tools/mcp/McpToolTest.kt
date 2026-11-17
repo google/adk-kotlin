@@ -189,4 +189,25 @@ class McpToolTest {
   ) = McpTool(schemaTool.name(), schemaTool.description().orEmpty(), schemaTool, invocation)
 
   private val toolContext = testToolContext()
+
+  @Test
+  fun detectErrorInResponse_errorResult_reportsMcpToolError() {
+    assertEquals(
+      "MCP_TOOL_ERROR",
+      mcpTool.detectErrorInResponse(mapOf("isError" to true, "content" to emptyList<Any>())),
+    )
+    assertEquals("MCP_TOOL_ERROR", mcpTool.detectErrorInResponse(mapOf("is_error" to true)))
+    assertEquals(
+      "MCP_TOOL_ERROR",
+      mcpTool.detectErrorInResponse(mapOf("isError" to false, "is_error" to true)),
+    )
+  }
+
+  @Test
+  fun detectErrorInResponse_cleanResult_reportsNothing() {
+    assertNull(
+      mcpTool.detectErrorInResponse(mapOf("isError" to false, "content" to emptyList<Any>()))
+    )
+    assertNull(mcpTool.detectErrorInResponse(mapOf("content" to listOf(mapOf("text" to "ok")))))
+  }
 }

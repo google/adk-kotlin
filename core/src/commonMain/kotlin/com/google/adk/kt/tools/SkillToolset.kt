@@ -86,6 +86,9 @@ internal class ListSkillsTool(private val toolset: SkillToolset) :
         onFailure = { e -> e.toSkillSourceErrorResponse(logger) },
       )
   }
+
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
 }
 
 private fun Frontmatter.frontmatterDsl() =
@@ -148,6 +151,9 @@ internal class LoadSkillTool(private val toolset: SkillToolset) :
       SkillToolset.KEY_FRONTMATTER to frontmatter.frontmatterDsl(),
     )
   }
+
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
 }
 
 /** BaseTool responsible for loading resources (references/assets/scripts) from a specific skill. */
@@ -223,6 +229,9 @@ internal class LoadSkillResourceTool(private val toolset: SkillToolset) :
 
     return result
   }
+
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
 }
 
 /**
@@ -380,6 +389,9 @@ internal class RunSkillScriptTool(
   /** An environment failure as `{error}`, like the other skill-tool errors and ADK Python. */
   private fun Throwable.toScriptErrorResponse(): Map<String, Any?> =
     toEnvironmentErrorResponse() - SkillToolset.KEY_STATUS
+
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
 }
 
 /**

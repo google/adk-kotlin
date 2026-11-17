@@ -22,7 +22,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 class RequestInputToolTest {
@@ -117,5 +119,15 @@ class RequestInputToolTest {
 
     assertEquals(Unit, result)
     assertFalse(context.actions.skipSummarization)
+  }
+
+  @Test
+  fun detectErrorInResponse_missingParameter_reportsToolError() = runBlocking {
+    val tool = RequestInputTool()
+
+    val result = tool.run(testToolContext(), emptyMap())
+
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(result))
+    assertNull(tool.detectErrorInResponse(mapOf("result" to "ok")))
   }
 }

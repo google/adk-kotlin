@@ -22,11 +22,13 @@ import com.google.adk.kt.skills.SkillSourceException
 import com.google.adk.kt.testing.testToolContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /** Unit tests for [SkillToolset]. */
@@ -462,9 +464,7 @@ class SkillToolsetTest {
         }
       }
     val tool =
-      SkillToolset(source).getTools(null).first {
-        it.name == SkillToolset.TOOL_NAME_LOAD_SKILL
-      }
+      SkillToolset(source).getTools(null).first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL }
 
     for (name in listOf("../x", "a/b", "a\\b", "..", "C:")) {
       val result =
@@ -478,17 +478,12 @@ class SkillToolsetTest {
   @Test
   fun loadSkillResourceTool_run_emptySkillName_returnsRequired() = runTest {
     val tool =
-      skillToolset.getTools(null).first {
-        it.name == SkillToolset.TOOL_NAME_LOAD_SKILL_RESOURCE
-      }
+      skillToolset.getTools(null).first { it.name == SkillToolset.TOOL_NAME_LOAD_SKILL_RESOURCE }
 
     val result =
       tool.run(
         testToolContext(),
-        mapOf(
-          SkillToolset.PARAM_SKILL_NAME to "",
-          SkillToolset.PARAM_PATH to "references/ref.md",
-        ),
+        mapOf(SkillToolset.PARAM_SKILL_NAME to "", SkillToolset.PARAM_PATH to "references/ref.md"),
       ) as Map<*, *>
 
     assertEquals("Skill name is required.", result[SkillToolset.KEY_ERROR])
@@ -524,6 +519,41 @@ class SkillToolsetTest {
 
       assertTrue((result[SkillToolset.KEY_ERROR] as String).contains("must name a single skill"))
       assertFalse(sourceCalled)
+    }
+  }
+
+  @Test
+  fun detectErrorInResponse_listSkillsWhenTheSourceFails_reportsToolError() = runBlocking {
+    val brokenSource =
+      object : SkillSource by mockSource {
+        override suspend fun listFrontmatters(): Result<List<Frontmatter>> =
+          Result.failure(SkillSourceException("gone"))
+      }
+    val tool =
+      SkillToolset(brokenSource).getTools(null).first {
+        it.name == SkillToolset.TOOL_NAME_LIST_SKILLS
+      }
+
+    val result = tool.run(testToolContext(), emptyMap())
+
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(result))
+    assertNull(tool.detectErrorInResponse(mapOf("skills" to emptyList<Any>())))
+  }
+
+  @Test
+  fun detectErrorInResponse_loadTools_reportErrorEntryAsToolError() = runBlocking {
+    val tools = SkillToolset(mockSource).getTools(null)
+    for (name in
+      listOf(SkillToolset.TOOL_NAME_LOAD_SKILL, SkillToolset.TOOL_NAME_LOAD_SKILL_RESOURCE)) {
+      val tool = tools.first { it.name == name }
+
+      val result = tool.run(testToolContext(), emptyMap())
+
+      assertEquals("TOOL_ERROR", tool.detectErrorInResponse(result), name)
+      assertNull(
+        tool.detectErrorInResponse(mapOf("skill_name" to "x", "instructions" to "y")),
+        name,
+      )
     }
   }
 }

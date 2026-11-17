@@ -77,6 +77,9 @@ class RequestInputTool :
     return Unit
   }
 
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
+
   private companion object {
     const val DESCRIPTION =
       "Ask the user a question and wait for their response. Use this when you need clarification " +

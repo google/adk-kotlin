@@ -527,6 +527,8 @@ internal class AndroidMcpTool(private val tool: Tool, private val invocation: Mc
       )
     }
 
+  override fun detectErrorInResponse(response: Any?): String? = mcpResultFailure(response)
+
   @FrameworkInternalApi
   val annotations: McpToolAnnotations?
     get() = tool.annotations?.toClientToolAnnotations()

@@ -92,6 +92,9 @@ class LoadMemoryTool :
 
     return newRequest.appendInstructions(Content(parts = listOf(Part(text = instructions))))
   }
+
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
 }
 
 /**

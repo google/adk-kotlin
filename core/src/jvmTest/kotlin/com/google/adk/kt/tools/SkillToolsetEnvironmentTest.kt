@@ -782,4 +782,15 @@ class SkillToolsetEnvironmentTest {
     const val CHATTY_SKILL_NAME = "chatty-skill"
     const val OTHER_SKILL_NAME = "other-skill"
   }
+
+  @Test
+  fun detectErrorInResponse_runSkillScript_reportsErrorEntryAsToolError() = runBlocking {
+    val tool =
+      newToolset().getTools(null).first { it.name == SkillToolset.TOOL_NAME_RUN_SKILL_SCRIPT }
+
+    val result = tool.run(testToolContext(), emptyMap())
+
+    assertEquals("TOOL_ERROR", tool.detectErrorInResponse(result))
+    assertNull(tool.detectErrorInResponse(mapOf("stdout" to "", "exit_code" to 1)))
+  }
 }

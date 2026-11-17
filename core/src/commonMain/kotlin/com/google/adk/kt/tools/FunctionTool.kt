@@ -110,6 +110,9 @@ abstract class FunctionTool(
     return execute(context, args)
   }
 
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
+
   companion object {
     /**
      * A `customMetadata` key holding the binary name of the class a tool was generated or built

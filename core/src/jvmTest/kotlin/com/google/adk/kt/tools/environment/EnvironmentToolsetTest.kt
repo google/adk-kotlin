@@ -35,6 +35,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -415,5 +416,24 @@ class EnvironmentToolsetTest {
 
     /** Notice for ReadFile's output of the same text: a 7-char line-number prefix, no newline. */
     const val READ_TRUNCATION_SUFFIX = "\n... (truncated, 40007 total chars)"
+  }
+
+  @Test
+  fun detectErrorInResponse_reportsErrorStatusAsToolError() = runBlocking {
+    for (tool in toolset.getTools(null)) {
+      val result = tool.run(testToolContext(), emptyMap())
+
+      assertEquals("TOOL_ERROR", tool.detectErrorInResponse(result), tool.name)
+      assertEquals(
+        "TOOL_ERROR",
+        tool.detectErrorInResponse(mapOf("status" to "error", "error" to "fail")),
+        tool.name,
+      )
+      assertNull(
+        tool.detectErrorInResponse(mapOf("status" to "ok", "message" to "done")),
+        tool.name,
+      )
+      assertNull(tool.detectErrorInResponse(mapOf("error" to "something")), tool.name)
+    }
   }
 }

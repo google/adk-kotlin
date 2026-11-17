@@ -377,6 +377,21 @@ class AppFunctionsToolsetTest {
     }
 
   @Test
+  fun detectErrorInResponse_appReportsAnError_reportsToolError() =
+    runBlocking<Unit> {
+      val client =
+        FakeAppFunctionClient(listOf(function())) {
+          ExecuteAppFunctionResponse.Error(AppFunctionDeniedException("caller is not allowed"))
+        }
+      val tool = toolset(client).getTools().single()
+
+      val result = tool.run(testToolContext(), emptyMap())
+
+      assertThat(tool.detectErrorInResponse(result)).isEqualTo("TOOL_ERROR")
+      assertThat(tool.detectErrorInResponse(mapOf("result" to "done"))).isNull()
+    }
+
+  @Test
   fun run_appReportsAnErrorWithABlankMessage_returnsAStableCategory() =
     runBlocking<Unit> {
       val client =

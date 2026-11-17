@@ -40,6 +40,7 @@ import com.google.adk.kt.annotations.ExperimentalAppFunctionsFeature
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
+import com.google.adk.kt.tools.InternalToolHelpers
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
 import kotlinx.coroutines.CancellationException
@@ -151,6 +152,9 @@ internal class AppFunctionTool(
     }
     return mapOf(BaseTool.RESULT_KEY to value)
   }
+
+  override fun detectErrorInResponse(response: Any?): String? =
+    InternalToolHelpers.errorEntryFailure(response)
 
   /** Whether the app's converted return value carries nothing the model could read. */
   private fun Any?.isEmpty(): Boolean =
