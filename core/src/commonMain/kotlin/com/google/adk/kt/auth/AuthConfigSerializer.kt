@@ -31,10 +31,11 @@ import kotlinx.serialization.json.JsonNames
  */
 internal object AuthConfigSerializer :
   KSerializer<AuthConfig> by surrogateSerializer(
-    surrogate = AuthConfigSurrogate.serializer(),
-    toSurrogate = ::AuthConfigSurrogate,
-    fromSurrogate = AuthConfigSurrogate::toAuthConfig,
-  )
+      surrogate = AuthConfigSurrogate.serializer(),
+      toSurrogate = ::AuthConfigSurrogate,
+      fromSurrogate = AuthConfigSurrogate::toAuthConfig,
+    )
+    .withCredentialPlaceholders()
 
 @Serializable
 private class AuthConfigSurrogate(

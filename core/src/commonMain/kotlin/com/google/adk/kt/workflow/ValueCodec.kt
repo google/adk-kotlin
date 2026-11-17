@@ -23,6 +23,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.adkSecretRevealingJson
+import com.google.adk.kt.auth.encodeToPlainWithTypedCredentials
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.LenientByteArraySerializer
 import com.google.adk.kt.serialization.LenientEpochMillisSerializer
@@ -118,8 +119,10 @@ internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
   /**
    * Returns the JSON form of [value] as a [T] under [kType]'s serializer: plain maps, lists, and
    * scalars, with a `ByteArray` as base64 and an `Any` value only if it is JSON-native, a [Content]
-   * or [Schema], or a typed credential, which keeps its secrets. Throws [IllegalArgumentException],
-   * naming [what] and not [value], when [value] is not a [T] or has no JSON form.
+   * or [Schema], or a typed credential. A typed credential stays typed, so that output and an LLM
+   * successor's prompt leave its secrets out while storage and other successors keep them. Throws
+   * [IllegalArgumentException], naming [what] and not [value], when [value] is not a [T] or has no
+   * JSON form.
    */
   override fun encode(value: Any?, what: String): Any? {
     if (value == null) return null
@@ -135,15 +138,14 @@ internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
         ?: throw IllegalArgumentException(
           "$what has type $kType, which has no serializer. Mark it @Serializable."
         )
-    val element =
+    val jsonForm =
       try {
-        outputJson.encodeToJsonElement(serializer, typed)
+        outputJson.encodeToPlainWithTypedCredentials(serializer, typed)
       } catch (e: IllegalArgumentException) {
         // Also catches SerializationException; its message can quote the value, so no cause.
         throw IllegalArgumentException("$what has no JSON form as $kType.")
       }
-    if (element is JsonNull) throw IllegalArgumentException("$what encodes to null as $kType.")
-    return jsonElementToAny(element)
+    return jsonForm ?: throw IllegalArgumentException("$what encodes to null as $kType.")
   }
 
   @Suppress("UNCHECKED_CAST")
@@ -288,8 +290,9 @@ private fun readLiterals(element: JsonElement, descriptor: SerialDescriptor): Js
 
 /**
  * [adkJson] that writes every property, `null` and default values included, so a value on either
- * port keeps its class's shape, also when an explicit schema checks it. It keeps credential
- * secrets, since a node's value is ADK's own data.
+ * port keeps its class's shape, also when an explicit schema checks it. It reveals secrets so that
+ * a value it writes is stored as ADK stores its own data; [ValueCodec.encode] keeps typed
+ * credentials typed, so that output still leaves their secrets out.
  */
 @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 private val outputJson: Json =

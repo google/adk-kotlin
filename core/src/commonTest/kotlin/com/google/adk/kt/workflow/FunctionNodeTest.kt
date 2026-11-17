@@ -26,9 +26,11 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.runners.InMemoryRunner
@@ -414,23 +416,43 @@ class FunctionNodeTest {
   }
 
   @Test
-  @OptIn(ExperimentalAuthApi::class)
-  fun node_contentReturnWithATypedCredential_keepsItsSecrets() {
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun node_contentReturnWithATypedCredential_keepsItTyped() {
     // Arrange
-    val call = FunctionCall("f", mapOf("key" to AuthCredential.ApiKey(Secret(secret))))
+    val credential = AuthCredential.ApiKey(Secret(secret))
+    val call = FunctionCall("f", mapOf("key" to credential))
     val answer = Content(role = Role.MODEL, parts = listOf(Part(functionCall = call)))
     val produceContent = node<Any?, Content>("produce_content") { _, _ -> answer }
     val runner = runnerFor(Workflow(name = "wf", edges = listOf(Edge(Start, produceContent))))
 
     // Act
     val unused = runner.runEvents()
-    val output =
-      runner.session().events.single { it.nodeInfo?.path == "wf@1/produce_content@1" }.output
+    val event = runner.session().events.single { it.nodeInfo?.path == "wf@1/produce_content@1" }
 
     // Assert
-    val part = ((output as Map<*, *>)["parts"] as List<*>).single() as Map<*, *>
+    val part = ((event.output as Map<*, *>)["parts"] as List<*>).single() as Map<*, *>
     val args = (part["functionCall"] as Map<*, *>)["args"] as Map<*, *>
-    assertEquals(mapOf("authType" to "apiKey", "apiKey" to secret), args["key"])
+    assertEquals(credential, args["key"])
+    assertFalse(secret in adkJson.encodeToString(Event.serializer(), event))
+    assertTrue(secret in adkSecretRevealingJson.encodeToString(Event.serializer(), event))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun node_mapReturnWithATypedCredential_givesTheNextNodeItsSecret() {
+    // Arrange
+    val credential = AuthCredential.ApiKey(Secret(secret))
+    val produce = node<Any?, Map<String, Any?>>("produce") { _, _ -> mapOf("key" to credential) }
+    var received: Any? = null
+    val consume = node<Map<String, Any?>, Unit>("consume") { _, input -> received = input["key"] }
+    val runner =
+      runnerFor(Workflow(name = "wf", edges = listOf(Edge(Start, produce), Edge(produce, consume))))
+
+    // Act
+    val unused = runner.runEvents()
+
+    // Assert
+    assertEquals(credential, received)
   }
 
   /**

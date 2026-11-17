@@ -18,7 +18,10 @@
 
 package com.google.adk.kt
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -29,6 +32,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ValueCoercerTest {
@@ -328,5 +332,55 @@ class ValueCoercerTest {
 
     // Assert
     assertEquals(emptyMap<String, Any>(), read)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun coerceValue_typedCredential_checksItsJsonFormAndStaysTyped() {
+    // Arrange
+    val credential = AuthCredential.ApiKey(Secret("key"))
+    val credentialSchema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("authType" to Schema(type = Type.STRING)),
+        required = listOf("authType"),
+      )
+
+    // Act
+    val read = coerce(credential, credentialSchema)
+    val asText = ValueCoercer.coerceValue(credential, Schema(type = Type.STRING), "credential")
+
+    // Assert
+    assertSame(credential, read)
+    assertTrue(asText.isFailure)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun coerceValue_typedCredentialsUnderObjectAndArraySchemas_stayTyped() {
+    // Arrange
+    val credential = AuthCredential.ApiKey(Secret("key"))
+    val credentialSchema =
+      Schema(type = Type.OBJECT, properties = mapOf("authType" to Schema(type = Type.STRING)))
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "declared" to credentialSchema,
+            "listed" to Schema(type = Type.ARRAY, items = credentialSchema),
+          ),
+        additionalProperties = credentialSchema,
+      )
+    val value =
+      mapOf("declared" to credential, "listed" to listOf(credential), "extra" to credential)
+
+    // Act
+    val read = coerce(value, schema) as Map<*, *>
+
+    // Assert
+    assertSame(credential, read["declared"])
+    assertSame(credential, (read["listed"] as List<*>).single())
+    assertSame(credential, read["extra"])
   }
 }
