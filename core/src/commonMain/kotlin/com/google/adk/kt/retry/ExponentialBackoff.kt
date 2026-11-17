@@ -22,7 +22,6 @@ import kotlin.math.pow
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * A [RetryPolicy] that retries every failure with exponentially growing, capped and jittered
@@ -152,8 +151,10 @@ data class ExponentialBackoff(
   companion object {
     // Also the workflow RetryConfig's defaults.
     internal const val DEFAULT_MAX_ATTEMPTS: Int = 5
-    internal val DEFAULT_INITIAL_DELAY: Duration = 1.seconds
-    internal val DEFAULT_MAX_DELAY: Duration = 60.seconds
+    internal const val DEFAULT_INITIAL_DELAY_MILLIS: Long = 1_000
+    internal const val DEFAULT_MAX_DELAY_MILLIS: Long = 60_000
+    internal val DEFAULT_INITIAL_DELAY: Duration = DEFAULT_INITIAL_DELAY_MILLIS.milliseconds
+    internal val DEFAULT_MAX_DELAY: Duration = DEFAULT_MAX_DELAY_MILLIS.milliseconds
     internal const val DEFAULT_BACKOFF_FACTOR: Double = 2.0
     internal const val DEFAULT_JITTER: Double = 1.0
 

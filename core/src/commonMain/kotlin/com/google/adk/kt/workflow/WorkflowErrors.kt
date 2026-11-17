@@ -40,12 +40,17 @@ internal data class NodeExecutionFailure(val cause: Throwable, val nodePath: Str
  */
 @ExperimentalWorkflowApi
 class NodeTimeoutException(val nodeName: String, val timeout: Duration, cause: Throwable? = null) :
-  NodeExecutionException("Node '$nodeName' timed out after $timeout.", cause)
+  NodeExecutionException("Node '$nodeName' timed out after $timeout.", cause) {
+
+  /** Returns [timeout] in whole milliseconds. Java cannot read [timeout] (mangled). */
+  fun timeoutMillis(): Long = timeout.inWholeMilliseconds
+}
 
 /** Raised when a node's runtime input fails validation. */
 @ExperimentalWorkflowApi
-class NodeInputValidationException(message: String, cause: Throwable? = null) :
-  NodeExecutionException(message, cause)
+class NodeInputValidationException
+@JvmOverloads
+constructor(message: String, cause: Throwable? = null) : NodeExecutionException(message, cause)
 
 /** A workflow graph failed validation. Raised when the graph is built, not when it runs. */
 @ExperimentalWorkflowApi

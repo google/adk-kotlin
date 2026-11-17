@@ -196,6 +196,14 @@ data class RetryConfig(
     val DEFAULT_MAX_DELAY: Duration = ExponentialBackoff.DEFAULT_MAX_DELAY
 
     /**
+     * [DEFAULT_INITIAL_DELAY] in milliseconds. Java cannot read [DEFAULT_INITIAL_DELAY] (mangled).
+     */
+    const val DEFAULT_INITIAL_DELAY_MILLIS: Long = ExponentialBackoff.DEFAULT_INITIAL_DELAY_MILLIS
+
+    /** [DEFAULT_MAX_DELAY] in milliseconds. Java cannot read [DEFAULT_MAX_DELAY] (mangled). */
+    const val DEFAULT_MAX_DELAY_MILLIS: Long = ExponentialBackoff.DEFAULT_MAX_DELAY_MILLIS
+
+    /**
      * Returns the name reported in a node's error event and matched by [RetryConfig.exceptions]:
      * the failure's simple class name, or "Exception" for an anonymous class.
      */
