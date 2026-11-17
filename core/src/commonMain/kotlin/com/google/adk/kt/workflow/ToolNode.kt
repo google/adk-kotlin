@@ -70,6 +70,11 @@ import kotlinx.coroutines.flow.flow
  * the tool again with the answer as [Context.toolConfirmation], and a rejected call outputs what
  * the tool returns for it.
  *
+ * **User input.** A tool that returns a [RequestInput] pauses the node, and on resume runs again
+ * with the answer in [Context.resumeInputs] under the request's `interruptId`. The default id is
+ * random, and so is the tool's function call id, so give the request one that stays the same when
+ * the tool runs again.
+ *
  * **Errors.** An exception the tool throws fails the node, and the retry policy in `config`
  * applies. A retry runs the tool again, so a tool with side effects should be safe to repeat. A
  * tool may instead report a problem, such as a missing required parameter, by returning an error
@@ -97,7 +102,7 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
   BaseNode(
     name = name,
     description = tool.description,
-    // Reruns on resume so that a call paused for confirmation runs once the user answers.
+    // Reruns on resume, so a call paused for confirmation or input runs once answered.
     rerunOnResume = true,
     config = config,
   ) {
@@ -119,6 +124,7 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
         functionCallId = functionCallId,
         toolConfirmation = context.confirmationAnswer(name),
       )
+    toolContext.resumeInputs = context.resumeInputs
     // As in a turn outside a live run, a returned Flow fails the node. A Java tool that overrides
     // `run` itself can return null.
     val result: Any? = DEFAULT_TOOL_RUNNER(tool, toolContext, args)

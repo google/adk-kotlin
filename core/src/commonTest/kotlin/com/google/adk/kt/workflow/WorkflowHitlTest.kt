@@ -4826,7 +4826,7 @@ class WorkflowHitlTest {
     assertContains(error.message.orEmpty(), REMOVAL_CONFIRMATION_ID)
   }
 
-  // -- Tool node confirmation --
+  // -- Tool nodes --
 
   @Test
   fun toolNode_confirmed_runsTheToolOnceAndContinues() = inBothResumabilityModes { resumable ->
@@ -4948,6 +4948,25 @@ class WorkflowHitlTest {
       assertEquals(mapOf("status" to "declined"), events.replyInput())
       assertTrue(tool.transferred.isEmpty())
     }
+
+  @Test
+  fun toolNode_toolRequestedInput_rerunsItWithTheAnswer() = inBothResumabilityModes { resumable ->
+    // Arrange
+    val forecast =
+      DummyTool(name = "forecast") { context, _ ->
+        val city = context.resumeInputs["city_1"]
+        if (city == null) RequestInput(interruptId = "city_1", message = "Which city?")
+        else "Sunny in $city"
+      }
+    val session = WorkflowSession(inputWorkflow(forecast.asNode(), emptyMap()), resumable)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("city_1", mapOf("result" to "Paris")))
+
+    // Assert
+    assertEquals("Sunny in Paris", events.replyInput())
+  }
 
   @Test
   fun toolNode_confirmedToolWithNoOutput_isNotRerunWhenALaterNodeResumes() =

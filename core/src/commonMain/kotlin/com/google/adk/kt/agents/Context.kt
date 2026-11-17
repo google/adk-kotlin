@@ -199,10 +199,14 @@ open class Context(
   var attemptCount: Int = 1
     private set
 
-  /** Answers to this node's interrupts, keyed by interrupt id. Empty off-graph. */
+  /**
+   * Answers to this node's interrupts, keyed by interrupt id. Empty off-graph, except in a tool run
+   * by a tool node, which gets the node's answers so the rerun tool can read the answer to its own
+   * request.
+   */
   @ExperimentalWorkflowApi
   var resumeInputs: Map<String, Any?> = emptyMap()
-    private set
+    internal set
 
   // Delegate ReadonlyContext members explicitly rather than using `by`, because Kotlin generates
   // delegated interface members as `open` and every member of this class must remain `final`.
