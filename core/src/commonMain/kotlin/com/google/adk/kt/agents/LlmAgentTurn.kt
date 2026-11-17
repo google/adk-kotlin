@@ -1946,10 +1946,8 @@ internal class LlmAgentTurn(
             }
         ) {
           is CallbackChoice.Continue -> throw e
-          is CallbackChoice.Break -> {
-            span.recordException(e)
-            emit(result.value)
-          }
+          // As in Python, only `generate_content` records a recovered failure.
+          is CallbackChoice.Break -> emit(result.value)
         }
       }
   }
