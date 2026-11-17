@@ -21,13 +21,13 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
-import com.google.adk.kt.auth.AuthCredentialSerializer
 import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.auth.CodeChallengeMethod
 import com.google.adk.kt.auth.CredentialKey
 import com.google.adk.kt.auth.Secret
-import com.google.adk.kt.auth.decodeFromPlainOrNull
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.types.Role
 import kotlin.test.assertContains
@@ -38,6 +38,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.junit.Test
 
@@ -171,12 +172,7 @@ class NodeSignInTest {
   fun signInRequestEvent_publicClient_keepsTheVerifierOfTheUrlsChallenge() {
     val event = signInRequestEvent(PUBLIC_OIDC_CONFIG, ID)
 
-    val kept =
-      decodeFromPlainOrNull(
-        AuthCredentialSerializer,
-        event.actions.stateDelta["adk_oauth_credential:$ID"],
-      )
-        as AuthCredential.OAuth2
+    val kept = event.actions.stateDelta["adk_oauth_credential:$ID"] as AuthCredential.OAuth2
     val challenge = CodeChallengeMethod.S256.challenge(assertNotNull(kept.codeVerifier).reveal())
     assertContains(
       assertNotNull(event.signInRequests().single().authUri),
@@ -206,6 +202,21 @@ class NodeSignInTest {
           "adk_oauth_state:$ID": "STATE"}}"""
       ),
       signInRequestEvent(PUBLIC_OIDC_CONFIG, ID).masked(),
+    )
+  }
+
+  @Test
+  fun signInRequestEvent_publicClient_outputLeavesTheVerifierOut() {
+    val event = signInRequestEvent(PUBLIC_OIDC_CONFIG, ID)
+
+    val json = adkJson.encodeToJsonElement(Event.serializer(), event).jsonObject
+    val state = json.getValue("actions").jsonObject.getValue("stateDelta").jsonObject
+    assertEquals(
+      Json.parseToJsonElement(
+        """{"authType": "openIdConnect",
+          "oauth2": {"codeChallengeMethod": "S256", "tokenEndpointAuthMethod": "client_secret_basic"}}"""
+      ),
+      state["adk_oauth_credential:$ID"],
     )
   }
 
@@ -263,20 +274,22 @@ class NodeSignInTest {
       )
 
     /**
-     * Returns this request's call and state delta as JSON. The kept `state` is masked wherever it
-     * appears, so the URL, the request credential and the state delta must agree on it.
+     * Returns this request's call and state delta as JSON, secrets included, as a session stores
+     * them. The kept `state` is masked wherever it appears, so the URL, the request credential and
+     * the state delta must agree on it.
      */
+    @OptIn(SecretAccess::class)
     fun Event.masked(): JsonElement {
       val call = functionCalls().single()
       val dump = buildJsonObject {
-        put("args", anyToJsonElement(call.args))
+        put("args", anyToJsonElement(call.args, adkSecretRevealingJson))
         put("id", call.id)
         put(
           "longRunning",
           buildJsonArray { longRunningToolIds.sorted().forEach { add(JsonPrimitive(it)) } },
         )
         put("name", call.name)
-        put("state", anyToJsonElement(actions.stateDelta))
+        put("state", anyToJsonElement(actions.stateDelta, adkSecretRevealingJson))
       }
       val state = actions.stateDelta["adk_oauth_state:$ID"] as String?
       val text =

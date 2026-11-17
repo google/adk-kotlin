@@ -25,9 +25,14 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
@@ -4196,6 +4201,30 @@ class WorkflowHitlTest {
 
     // Assert
     assertEquals(request.copy(), rebuilt)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun requestInput_typedCredentialInThePayload_sendsAndStoresNoSecret() {
+    // Arrange
+    val ask =
+      node<Any?, String>("ask") { _, _ ->
+        requestInput<Map<String, Any?>>(
+          interruptId = "ask_1",
+          payload = mapOf("credential" to AuthCredential.ApiKey(Secret("SENTINEL-PAYLOAD-KEY"))),
+        )
+      }
+
+    // Act
+    val asked =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask))))
+        .turn(userMessage("go"))
+
+    // Assert: the request event, written as a session service stores it, holds no secret.
+    val request = asked.single { it.functionCalls().isNotEmpty() }
+    val stored = adkSecretRevealingJson.encodeToString(Event.serializer(), request)
+    assertFalse("SENTINEL-PAYLOAD-KEY" in stored)
+    assertContains(stored, "\"authType\":\"apiKey\"")
   }
 
   @Test
