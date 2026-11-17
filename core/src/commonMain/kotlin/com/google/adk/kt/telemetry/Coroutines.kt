@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 
@@ -54,6 +55,24 @@ internal suspend fun <T> withSpan(
   } finally {
     span.end()
   }
+}
+
+/**
+ * Runs [block], such as a user's callback, with [spanContext] current, or else the span on the
+ * coroutine context. A flow that resumed from a suspended emit can have left another span current.
+ */
+internal suspend fun <T> withCoroutineSpanCurrent(
+  spanContext: TelemetryContextElement? = null,
+  block: suspend () -> T,
+): T {
+  val context = currentCoroutineContext()
+  // withContext throws in a cancelled coroutine, so run the callbacks without the switch.
+  if (!context.isActive) return block()
+  val switchTo =
+    spanContext
+      ?: staleThreadContext(context[TelemetryContextElement])?.asContextElement()
+      ?: return block()
+  return withContext(switchTo) { block() }
 }
 
 /**

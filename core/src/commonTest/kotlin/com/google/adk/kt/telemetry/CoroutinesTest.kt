@@ -16,6 +16,7 @@
 
 package com.google.adk.kt.telemetry
 
+import com.google.adk.kt.testing.DummyTelemetryContext
 import com.google.adk.kt.testing.DummyTracer
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -29,6 +30,8 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -119,6 +122,19 @@ class CoroutinesTest {
     val span = tracer.recordedSpans.single()
     assertTrue(span.isEnded)
     assertEquals(emptyList(), span.recordedExceptions)
+  }
+
+  @Test
+  fun withCoroutineSpanCurrent_inACancelledCoroutine_runsTheBlock() = runBlocking {
+    var ran = false
+    val job = launch {
+      currentCoroutineContext().cancel()
+      withCoroutineSpanCurrent(DummyTelemetryContext().asContextElement()) { ran = true }
+    }
+
+    job.join()
+
+    assertTrue(ran)
   }
 
   @Test

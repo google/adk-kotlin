@@ -37,10 +37,9 @@ internal expect fun currentTelemetryContext(): TelemetryContext
 
 /**
  * Returns the parent for a span started in a coroutine that carries [element], or null to use the
- * Returns the parent for a span started in a coroutine that carries [element], or null to use the
  * thread's context. Returns null when the thread's innermost ADK span is [element]'s or both have
- * none, so a context the caller installs on top wins. Otherwise returns [element]'s context, because
- * after a suspended emit the thread can still hold the collector's.
+ * none, so a context the caller installs on top wins. Otherwise returns [element]'s context,
+ * because after a suspended emit the thread can still hold the collector's.
  */
 internal expect fun parentInCoroutine(element: TelemetryContextElement): TelemetryContext?
 
@@ -49,6 +48,12 @@ internal expect fun parentInCoroutine(element: TelemetryContextElement): Telemet
  * non-OpenTelemetry context.
  */
 internal expect fun threadAdkSpanDiffersFrom(context: TelemetryContext): Boolean
+
+/**
+ * Returns [element]'s context when the thread's context lacks [element]'s innermost ADK span, as
+ * after a flow resumed from a suspended emit; otherwise null.
+ */
+internal expect fun staleThreadContext(element: TelemetryContextElement?): TelemetryContext?
 
 /** Global entry point for the Telemetry abstraction. */
 object Telemetry {

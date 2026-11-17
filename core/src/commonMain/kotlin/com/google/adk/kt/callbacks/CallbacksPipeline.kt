@@ -23,6 +23,7 @@ import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.telemetry.withCoroutineSpanCurrent
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -51,6 +52,15 @@ private val logger = LoggerFactory.getLogger(CallbacksPipelineMarker::class)
  * @param executor Lambda executing a specific callback and returning an appropriate [PipelineStep].
  */
 private suspend fun <T : Callback, S, R> runCallbacksPipeline(
+  callbacks: Iterable<T>,
+  initialState: S,
+  onComplete: (S) -> R,
+  executor: suspend (T, S) -> PipelineStep<S, R>,
+): R =
+  // Callbacks see the span of the call they observe as current, as in Python ADK.
+  withCoroutineSpanCurrent { runEachCallback(callbacks, initialState, onComplete, executor) }
+
+private suspend fun <T : Callback, S, R> runEachCallback(
   callbacks: Iterable<T>,
   initialState: S,
   onComplete: (S) -> R,
@@ -241,7 +251,7 @@ internal suspend fun runOnRunErrorCallbacksPipeline(
   callbacks: Iterable<OnRunErrorCallback>,
   context: InvocationContext,
   error: Throwable,
-) {
+): Unit = withCoroutineSpanCurrent {
   for (callback in callbacks) {
     try {
       callback.call(context, error)

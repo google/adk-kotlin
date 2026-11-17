@@ -642,20 +642,29 @@ data class InvocationContext(
     val safeArgs = safeCastToMapStringAny(functionCall.args)
     val responseEventId = Uuid.random()
 
-    // 1. Run before tool callbacks
-    val before = runBeforeToolCallbacks(llmAgent, tool, safeArgs, toolContext)
-    val currentArgs = before.args
-    val replacement = before.replacement
-
-    if (resolvedTool == null && replacement == null) {
-      return respondToolNotFound(llmAgent, tool, tools, currentArgs, toolContext, responseEventId)
-    }
-
-    // 2. Execute the tool within the `execute_tool` span (parity with Python `trace_tool_call`).
+    // The span covers the tool callbacks too, as Python's `record_tool_execution` does.
     return withSpan("execute_tool ${tool.name}") { span ->
-      span.recordExecuteToolMeta(tool, toolContext, responseEventId, currentArgs)
+      // Recorded first, so a span whose callbacks fail still has them, as in Python.
+      span.recordExecuteToolMeta(tool, toolContext, responseEventId, safeArgs)
+      // 1. Run before tool callbacks
+      val before = runBeforeToolCallbacks(llmAgent, tool, safeArgs, toolContext)
+      val currentArgs = before.args
+      val replacement = before.replacement
+      if (currentArgs !== safeArgs) span.recordToolCallArgs(currentArgs)
 
-      // A before-tool replacement skips only the tool; the after-tool callbacks still run.
+      if (resolvedTool == null && replacement == null) {
+        return@withSpan respondToolNotFound(
+          span,
+          llmAgent,
+          tool,
+          tools,
+          currentArgs,
+          toolContext,
+          responseEventId,
+        )
+      }
+
+      // 2. Execute the tool; a before-tool replacement skips it, but the after-tool callbacks run.
       var toolResult: Any =
         replacement
           ?: try {
@@ -708,35 +717,34 @@ data class InvocationContext(
    * after-tool callbacks are skipped, mirroring Python's tool-lookup-failure branch.
    */
   private suspend fun respondToolNotFound(
+    span: Span,
     llmAgent: LlmAgent?,
     tool: BaseTool,
     tools: Map<String, BaseTool>,
     args: Map<String, Any?>,
     toolContext: ToolContext,
     responseEventId: String,
-  ): Event =
-    withSpan("execute_tool ${tool.name}") { span ->
-      span.recordExecuteToolMeta(tool, toolContext, responseEventId, args)
-      // Python raises a ValueError here; IllegalArgumentException is its Kotlin counterpart.
-      val error = IllegalArgumentException(TOOL_NOT_FOUND_ERROR)
-      val recovered = runErrorBaseToolCallbacks(llmAgent, tool, args, toolContext, error)
-      // Marked only after the callbacks return, so a cancelled callback leaves the span unset.
-      span[TelemetryAttributes.ERROR_TYPE] = errorType(error)
-      span.setErrorStatus(errorType(error))
-      val response =
-        recovered
-          ?: run {
-            // The name itself is model-provided, so only the shape of the miss is logged.
-            logger.warn {
-              "Model called a tool name that is not registered; ${tools.size} tool(s) available."
-            }
-            buildToolNotFoundResponse(tool.name, tools)
+  ): Event {
+    // Python raises a ValueError here; IllegalArgumentException is its Kotlin counterpart.
+    val error = IllegalArgumentException(TOOL_NOT_FOUND_ERROR)
+    val recovered = runErrorBaseToolCallbacks(llmAgent, tool, args, toolContext, error)
+    // Marked only after the callbacks return, so a cancelled callback leaves the span unset.
+    span[TelemetryAttributes.ERROR_TYPE] = errorType(error)
+    span.setErrorStatus(errorType(error))
+    val response =
+      recovered
+        ?: run {
+          // The name itself is model-provided, so only the shape of the miss is logged.
+          logger.warn {
+            "Model called a tool name that is not registered; ${tools.size} tool(s) available."
           }
-      span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
-        toTraceJson(toFinalResponseMap(response))
-      }
-      buildResponseEvent(tool, response, toolContext, responseEventId)
+          buildToolNotFoundResponse(tool.name, tools)
+        }
+    span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
+      toTraceJson(toFinalResponseMap(response))
     }
+    return buildResponseEvent(tool, response, toolContext, responseEventId)
+  }
 
   /** Records the static `execute_tool` span attributes (parity with Python `trace_tool_call`). */
   private fun Span.recordExecuteToolMeta(
@@ -763,6 +771,10 @@ data class InvocationContext(
     // Python.)
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = EMPTY_JSON
     this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
+    recordToolCallArgs(args)
+  }
+
+  private fun Span.recordToolCallArgs(args: Map<String, Any?>) {
     this[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = capturedJson { toTraceJson(args) }
   }
 

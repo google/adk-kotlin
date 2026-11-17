@@ -283,6 +283,45 @@ class ToolTelemetryTest {
     assertEquals("IllegalStateException: boom", span.errorStatus)
   }
 
+  /**
+   * The static attributes match Python's. Python records no event id and placeholders for the call
+   * id and response; Kotlin records the call id, an event id it never emits, and no response.
+   */
+  @Test
+  fun executeSingleFunctionCall_beforeToolCallbackThrows_recordsAFailedToolSpan() = runBlocking {
+    TelemetryConfig.captureMessageContent = true
+    val agent =
+      LlmAgent(
+        name = "test_agent",
+        model = DummyModel("mock_model"),
+        beforeToolCallbacks =
+          listOf(BeforeToolCallback { _, _, _ -> throw IllegalStateException("boom") }),
+      )
+
+    assertFailsWith<IllegalStateException> {
+      testInvocationContext(agent = agent)
+        .executeSingleFunctionCall(
+          FunctionCall(name = "test_tool", args = mapOf("param" to "value"), id = "call_1"),
+          mapOf("test_tool" to TestFunctionTool()),
+        )
+    }
+
+    val span = fakeTracer.recordedSpans.single { it.name == "execute_tool test_tool" }
+    assertEquals("execute_tool", span.attributes[TelemetryAttributes.GEN_AI_OPERATION_NAME])
+    assertEquals("test_tool", span.attributes[TelemetryAttributes.GEN_AI_TOOL_NAME])
+    assertEquals("A test tool", span.attributes[TelemetryAttributes.GEN_AI_TOOL_DESCRIPTION])
+    assertEquals("TestFunctionTool", span.attributes[TelemetryAttributes.GEN_AI_TOOL_TYPE])
+    assertEquals("test_agent", span.attributes[TelemetryAttributes.GEN_AI_AGENT_NAME])
+    assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST])
+    assertEquals("{}", span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE])
+    assertEquals(
+      "{\"param\":\"value\"}",
+      span.attributes[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS],
+    )
+    assertEquals("IllegalStateException", span.attributes[TelemetryAttributes.ERROR_TYPE])
+    assertEquals("IllegalStateException: boom", span.errorStatus)
+  }
+
   @Test
   fun executeSingleFunctionCall_toolSucceeds_recordsNoFailure() = runBlocking {
     val span = recordSingleToolSpan()

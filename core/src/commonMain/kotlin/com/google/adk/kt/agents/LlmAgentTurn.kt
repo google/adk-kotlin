@@ -50,9 +50,11 @@ import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.telemetry.EMPTY_JSON
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.TelemetryContextElement
 import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.noop.NoOpSpan
 import com.google.adk.kt.telemetry.tracedFlow
+import com.google.adk.kt.telemetry.withCoroutineSpanCurrent
 import com.google.adk.kt.telemetry.withSpan
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.GoogleSearchAgentTool
@@ -1830,7 +1832,7 @@ internal class LlmAgentTurn(
         this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_REQUEST] = EMPTY_JSON
         this[TelemetryAttributes.GCP_VERTEX_AGENT_LLM_RESPONSE] = EMPTY_JSON
       },
-    ) { span, _ ->
+    ) { span, spanContext ->
       passOnFailed = false
       // One context for this step's before/after-model and on-model-error callbacks; their
       // accumulated actions reach the emitted event via withActionsFrom.
@@ -1844,11 +1846,13 @@ internal class LlmAgentTurn(
       val currentRequest =
         when (
           val result =
-            runBeforeModelCallbacksPipeline(
-              callbacks = allBeforeModelCallbacks,
-              context = callbackContext,
-              request = request,
-            )
+            withCoroutineSpanCurrent(spanContext) {
+              runBeforeModelCallbacksPipeline(
+                callbacks = allBeforeModelCallbacks,
+                context = callbackContext,
+                request = request,
+              )
+            }
         ) {
           is CallbackChoice.Continue -> result.value
           is CallbackChoice.Break -> {
@@ -1872,17 +1876,20 @@ internal class LlmAgentTurn(
       // serialized response) reflect the final value, matching Python's single `trace_call_llm`.
       var lastResponse: LlmResponse? = null
 
-      invokeModel(currentRequest, callbackContext, span, modelResponseEvent.id).collect { response
-        ->
+      val responses =
+        invokeModel(currentRequest, callbackContext, span, spanContext, modelResponseEvent.id)
+      responses.collect { response ->
         // 2. Run after model callbacks
         val allAfterModelCallbacks =
           context.pluginManager.afterModelCallbacks + agent.afterModelCallbacks
         val currentResponse =
-          runAfterModelCallbacksPipeline(
-            callbacks = allAfterModelCallbacks,
-            context = callbackContext,
-            response = response,
-          )
+          withCoroutineSpanCurrent(spanContext) {
+            runAfterModelCallbacksPipeline(
+              callbacks = allAfterModelCallbacks,
+              context = callbackContext,
+              response = response,
+            )
+          }
         lastResponse = currentResponse
 
         modelResponseEvent = modelResponseEvent.withActionsFrom(callbackContext)
@@ -1907,12 +1914,14 @@ internal class LlmAgentTurn(
    * Streams the model's responses to [request]. Only the model's own failures go to the
    * onModelError callbacks, which may replace a failure with a response, as Python's
    * `run_and_handle_error` does. The model client's stream runs in a `generate_content` span under
-   * [span], the `call_llm` span; [eventId] is the id of the event the response will be emitted on.
+   * [span], the `call_llm` span with context [spanContext]; [eventId] is the id of the event the
+   * response will be emitted on.
    */
   private fun invokeModel(
     request: LlmRequest,
     callbackContext: CallbackContext,
     span: Span,
+    spanContext: TelemetryContextElement,
     eventId: String,
   ): Flow<LlmResponse> {
     val isStreaming = context.runConfig?.streamingMode == StreamingMode.SSE
@@ -1927,12 +1936,14 @@ internal class LlmAgentTurn(
           context.pluginManager.onModelErrorCallbacks + agent.onModelErrorCallbacks
         when (
           val result =
-            runOnModelErrorCallbacksPipeline(
-              callbacks = allOnModelErrorCallbacks,
-              context = callbackContext,
-              request = request,
-              error = e,
-            )
+            withCoroutineSpanCurrent(spanContext) {
+              runOnModelErrorCallbacksPipeline(
+                callbacks = allOnModelErrorCallbacks,
+                context = callbackContext,
+                request = request,
+                error = e,
+              )
+            }
         ) {
           is CallbackChoice.Continue -> throw e
           is CallbackChoice.Break -> {
