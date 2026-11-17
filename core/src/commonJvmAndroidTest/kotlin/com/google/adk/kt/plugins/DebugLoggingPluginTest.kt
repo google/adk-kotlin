@@ -66,6 +66,18 @@ class DebugLoggingPluginTest {
     assertEquals(CallbackChoice.Continue(Unit), beforeRun(invocationContext))
   }
 
+  /** Returns the text of the debug file written for one user message holding [text]. */
+  private suspend fun writtenUserMessage(text: String): String {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val message = Content(parts = listOf(Part(text = text)))
+
+    plugin.startInvocation()
+    assertEquals(message, plugin.onUserMessage(invocationContext, message))
+    plugin.afterRun(invocationContext)
+    return file.readText()
+  }
+
   @Test
   fun defaultName_isDebugLoggingPlugin() {
     assertEquals("debug_logging_plugin", DebugLoggingPlugin().name)
@@ -101,6 +113,48 @@ class DebugLoggingPluginTest {
     val text = file.readText()
     assertContains(text, "entry_type: user_message")
     assertContains(text, "hello world")
+  }
+
+  @Test
+  fun onUserMessage_privateKeyWithoutEndLine_redactsItToTheEnd() = runBlocking {
+    val text = writtenUserMessage("key follows: -----BEGIN PGP PRIVATE KEY BLOCK-----\n$SENTINEL")
+
+    assertContains(text, "key follows: <redacted>")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onUserMessage_privateKeyMidString_keepsTheTextAroundIt() = runBlocking {
+    val text = writtenUserMessage("here is my key $PRIVATE_KEY please rotate it")
+
+    assertContains(text, "text: here is my key <redacted> please rotate it\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onUserMessage_rsaPrivateKeyWithEndLine_redactsOnlyTheBlock() = runBlocking {
+    val text = writtenUserMessage("rsa key $RSA_PRIVATE_KEY end of note")
+
+    assertContains(text, "text: rsa key <redacted> end of note\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onUserMessage_twoPrivateKeys_keepsTheTextBetweenThem() = runBlocking {
+    val text = writtenUserMessage("first $PRIVATE_KEY keep this $PGP_PRIVATE_KEY last")
+
+    assertContains(text, "text: first <redacted> keep this <redacted> last\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onUserMessage_proseWithHeaderFragments_writesItUnchanged() = runBlocking {
+    val prose = "notes about a PRIVATE KEY----- and -----BEGIN elsewhere"
+
+    val text = writtenUserMessage(prose)
+
+    assertContains(text, "text: $prose\n")
+    assertFalse(text.contains("<redacted>"))
   }
 
   @Test
@@ -145,6 +199,43 @@ class DebugLoggingPluginTest {
     assertContains(text, "Zurich")
     assertContains(text, "entry_type: tool_response")
     assertContains(text, "temperature")
+  }
+
+  @Test
+  fun beforeTool_keyFileInArg_writesItWithoutThePrivateKey() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val keyFile =
+      """{"private_key": "-----BEGIN PRIVATE KEY-----\n$SENTINEL\n-----END PRIVATE KEY-----\n",""" +
+        """ "client_email": "agent@example.com"}"""
+    val args: Map<String, Any?> = mapOf("key_file" to keyFile)
+
+    plugin.startInvocation()
+    assertEquals(CallbackChoice.Continue(args), plugin.beforeTool(toolContext, tool, args))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "<redacted>")
+    assertContains(text, "agent@example.com")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onToolError_privateKeyInErrorMessage_writesItWithoutThePrivateKey() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val error = IllegalStateException("bad key $PRIVATE_KEY")
+
+    plugin.startInvocation()
+    assertEquals(
+      CallbackChoice.Continue(Unit),
+      plugin.onToolError(toolContext, tool, emptyMap(), error),
+    )
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "error_message: bad key <redacted>\n")
+    assertFalse(text.contains(SENTINEL))
   }
 
   @Test
@@ -229,5 +320,14 @@ class DebugLoggingPluginTest {
       assertFalse(permissions.contains(PosixFilePermission.GROUP_READ))
       assertFalse(permissions.contains(PosixFilePermission.OTHERS_READ))
     }
+  }
+
+  private companion object {
+    const val SENTINEL = "secret-sentinel"
+    const val PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\n$SENTINEL\n-----END PRIVATE KEY-----"
+    const val RSA_PRIVATE_KEY =
+      "-----BEGIN RSA PRIVATE KEY-----\n$SENTINEL\n-----END RSA PRIVATE KEY-----"
+    const val PGP_PRIVATE_KEY =
+      "-----BEGIN PGP PRIVATE KEY BLOCK-----\n$SENTINEL\n-----END PGP PRIVATE KEY BLOCK-----"
   }
 }
