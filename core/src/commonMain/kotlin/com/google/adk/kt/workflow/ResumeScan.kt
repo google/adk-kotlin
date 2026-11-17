@@ -103,9 +103,9 @@ internal data class Interception(
  */
 internal object ResumeScan {
 
-  /** Returns the session events of [context]'s invocation, the only ones a resume reads. */
-  fun invocationEvents(context: InvocationContext): List<Event> =
-    context.session.events.filter { it.invocationId == context.invocationId }
+  /** Returns the session events of [context]'s invocation from [fromIndex] onward. */
+  fun invocationEvents(context: InvocationContext, fromIndex: Int = 0): List<Event> =
+    context.session.events.drop(fromIndex).filter { it.invocationId == context.invocationId }
 
   /** Reconstructs direct child nodes under [basePath], keyed by `name@runId`. */
   fun scan(

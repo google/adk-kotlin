@@ -109,11 +109,13 @@ class LoopAgent(
         // which still needs to be emitted. Mirrors Python ADK 1.x loop_agent.
         subAgent.runAsync(context).collect { event ->
           emit(event)
-          if (event.actions.escalate) {
-            shouldExit = true
-          }
-          if (context.shouldPauseInvocation(event)) {
-            pauseInvocation = true
+          if (event.nodeInfo == null) {
+            if (event.actions.escalate) {
+              shouldExit = true
+            }
+            if (context.shouldPauseInvocation(event)) {
+              pauseInvocation = true
+            }
           }
         }
 

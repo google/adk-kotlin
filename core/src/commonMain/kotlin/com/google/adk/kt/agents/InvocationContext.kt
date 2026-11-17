@@ -50,7 +50,10 @@ import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.ActiveNodeSink
+import com.google.adk.kt.workflow.EventSink
 import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.withCommittedEventSink
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmSynthetic
@@ -59,6 +62,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.JsonElement
 
@@ -512,7 +516,8 @@ data class InvocationContext(
    * Processes a list of function calls by executing them efficiently and safely.
    *
    * This handles parallel or sequential execution (per [RunConfig.toolExecutionMode]), argument
-   * conversion, error processing, and merging all resulting [EventActions] and standard outputs.
+   * conversion, error processing, and merging all resulting [EventActions] and standard outputs. A
+   * tool that calls [Context.runNode] fails unless this runs inside a workflow node.
    *
    * @param functionCalls List of [FunctionCall] instances to process.
    * @param tools A mapping from tool name to the available [BaseTool] instance.
@@ -528,13 +533,18 @@ data class InvocationContext(
     toolConfirmations: Map<String, ToolConfirmation>? = null,
   ): Event? = handleFunctionCallsWith(functionCalls, tools, filters, toolConfirmations.orEmpty())
 
-  /** As [handleFunctionCalls], running each resolved tool through [toolRunner]. */
+  /**
+   * As [handleFunctionCalls], running each resolved tool through [toolRunner]. Child-node events
+   * from [Context.runNode] go to the coroutine context's [ActiveNodeSink] when the agent runs as a
+   * workflow node, or else through [emitEvent].
+   */
   internal suspend fun handleFunctionCallsWith(
     functionCalls: List<FunctionCall>,
     tools: Map<String, BaseTool>,
     filters: Set<String> = emptySet(),
     toolConfirmations: Map<String, ToolConfirmation> = emptyMap(),
     toolRunner: ToolRunner = DEFAULT_TOOL_RUNNER,
+    emitEvent: (suspend (Event) -> Unit)? = null,
   ): Event? {
     // Filter function calls
     val filteredCalls =
@@ -547,8 +557,17 @@ data class InvocationContext(
       return null
     }
 
+    // Match invocationId so a nested Runner (such as AgentTool's) ignores an inherited outer sink.
+    val nodeSink =
+      currentCoroutineContext()[ActiveNodeSink]?.takeIf { it.invocationId == invocationId }?.sink
     val functionResponseEvents =
-      executeFunctionCalls(filteredCalls, tools, toolConfirmations, toolRunner)
+      if (nodeSink == null && emitEvent != null) {
+        withCommittedEventSink(emitEvent) { sink ->
+          executeFunctionCalls(filteredCalls, tools, toolConfirmations, toolRunner, sink)
+        }
+      } else {
+        executeFunctionCalls(filteredCalls, tools, toolConfirmations, toolRunner, nodeSink)
+      }
     if (functionResponseEvents.isEmpty()) {
       return null
     }
@@ -569,6 +588,7 @@ data class InvocationContext(
     tools: Map<String, BaseTool>,
     toolConfirmations: Map<String, ToolConfirmation>,
     toolRunner: ToolRunner,
+    eventSink: EventSink?,
   ): List<Event> =
     when (runConfig?.toolExecutionMode ?: ToolExecutionMode.PARALLEL) {
       ToolExecutionMode.SEQUENTIAL ->
@@ -578,6 +598,7 @@ data class InvocationContext(
             tools,
             toolConfirmations[functionCall.id],
             toolRunner,
+            eventSink,
           )
         }
       ToolExecutionMode.PARALLEL ->
@@ -590,6 +611,7 @@ data class InvocationContext(
                   tools,
                   toolConfirmations[functionCall.id],
                   toolRunner,
+                  eventSink,
                 )
               }
             }
@@ -627,6 +649,7 @@ data class InvocationContext(
     tools: Map<String, BaseTool>,
     toolConfirmation: ToolConfirmation? = null,
     toolRunner: ToolRunner = DEFAULT_TOOL_RUNNER,
+    eventSink: EventSink? = null,
   ): Event? {
     val resolvedTool = tools[functionCall.name]
     // The placeholder lets the tool callbacks answer a call the registry could not resolve.
@@ -634,71 +657,75 @@ data class InvocationContext(
     val llmAgent = this.agent as? LlmAgent
     val toolContext =
       ToolContext(
-        invocationContext = this,
-        functionCallId = functionCall.id,
-        toolConfirmation = toolConfirmation,
-      )
+          invocationContext = this,
+          functionCallId = functionCall.id,
+          toolConfirmation = toolConfirmation,
+        )
+        .apply { toolEventSink = eventSink }
 
     val safeArgs = safeCastToMapStringAny(functionCall.args)
     val responseEventId = Uuid.random()
 
-    // 1. Run before tool callbacks
-    val before = runBeforeToolCallbacks(llmAgent, tool, safeArgs, toolContext)
-    val currentArgs = before.args
-    val replacement = before.replacement
+    try {
+      // 1. Run before tool callbacks
+      val before = runBeforeToolCallbacks(llmAgent, tool, safeArgs, toolContext)
+      val currentArgs = before.args
+      val replacement = before.replacement
 
-    if (resolvedTool == null && replacement == null) {
-      return respondToolNotFound(llmAgent, tool, tools, currentArgs, toolContext, responseEventId)
-    }
-
-    // 2. Execute the tool within the `execute_tool` span (parity with Python `trace_tool_call`).
-    return withSpan("execute_tool ${tool.name}") { span ->
-      span.recordExecuteToolMeta(tool, toolContext, responseEventId, currentArgs)
-
-      // A before-tool replacement skips only the tool; the after-tool callbacks still run.
-      var toolResult: Any =
-        replacement
-          ?: try {
-            toolRunner(tool, toolContext, currentArgs)
-          } catch (e: CancellationException) {
-            // CancellationException is an Exception in Kotlin; rethrow before recovery sees it.
-            throw e
-          } catch (e: Exception) {
-            // withSpan records the error that escapes it.
-            runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e) ?: throw e
-          }
-
-      // A long-running tool returning `Unit` defers: suppress the FR event so the function-call
-      // event (which carries `longRunningToolIds`, hence is the turn's final response) ends the
-      // turn
-      // instead of re-invoking the model with an empty payload -- otherwise a tool that keeps
-      // requesting input (e.g. request_input) loops. Every other value is emitted as a response.
-      // Done before `runAfterToolCallbacks` to avoid wrapping `Unit` as `{result: Unit}`. See
-      // [BaseTool.isLongRunning]. A task delegation's `Unit` defers too: its task node answers
-      // it.
-      if ((tool.isLongRunning || tool is TaskAgentTool) && toolResult === Unit) {
-        return@withSpan null
-      }
-      // A regular tool's `Unit`, or a `null` leaked by a Java tool that breaks the non-null `run`
-      // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires
-      // the
-      // response to be a map. Only a long-running tool's or a task delegation's `Unit` defers.
-      if (toolResult === Unit || (toolResult as Any?) == null) {
-        toolResult = mapOf(BaseTool.RESULT_KEY to null)
+      if (resolvedTool == null && replacement == null) {
+        return respondToolNotFound(llmAgent, tool, tools, currentArgs, toolContext, responseEventId)
       }
 
-      // 3. Run after tool callbacks
-      val afterResult = runAfterToolCallbacks(llmAgent, tool, currentArgs, toolContext, toolResult)
-      if (afterResult != null) {
-        toolResult = afterResult
-      }
+      // 2. Execute the tool within the `execute_tool` span (parity with Python `trace_tool_call`).
+      return withSpan("execute_tool ${tool.name}") { span ->
+        span.recordExecuteToolMeta(tool, toolContext, responseEventId, currentArgs)
 
-      span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
-        toTraceJson(toFinalResponseMap(toolResult))
-      }
+        // A before-tool replacement skips only the tool; the after-tool callbacks still run.
+        var toolResult: Any =
+          replacement
+            ?: try {
+              toolRunner(tool, toolContext, currentArgs)
+            } catch (e: CancellationException) {
+              // CancellationException is an Exception in Kotlin; rethrow before recovery sees it.
+              throw e
+            } catch (e: Exception) {
+              // withSpan records the error that escapes it.
+              runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e) ?: throw e
+            }
 
-      // Build response event
-      buildResponseEvent(tool, toolResult, toolContext, responseEventId)
+        // A long-running tool returning `Unit` defers: suppress the FR event so the function-call
+        // event (which carries `longRunningToolIds`, hence is the turn's final response) ends the
+        // turn instead of re-invoking the model with an empty payload -- otherwise a tool that
+        // keeps requesting input (e.g. request_input) loops. Every other value is emitted as a
+        // response. Done before `runAfterToolCallbacks` to avoid wrapping `Unit` as `{result:
+        // Unit}`. See [BaseTool.isLongRunning]. A task delegation's `Unit` defers too: its task
+        // node answers it.
+        if ((tool.isLongRunning || tool is TaskAgentTool) && toolResult === Unit) {
+          return@withSpan null
+        }
+        // A regular tool's `Unit`, or a `null` leaked by a Java tool that breaks the non-null `run`
+        // contract, is Python's `None`: it answers as `{"result": null}`, since the spec requires a
+        // map response. Only a long-running tool's or a task delegation's `Unit` defers.
+        if (toolResult === Unit || (toolResult as Any?) == null) {
+          toolResult = mapOf(BaseTool.RESULT_KEY to null)
+        }
+
+        // 3. Run after tool callbacks
+        val afterResult =
+          runAfterToolCallbacks(llmAgent, tool, currentArgs, toolContext, toolResult)
+        if (afterResult != null) {
+          toolResult = afterResult
+        }
+
+        span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
+          toTraceJson(toFinalResponseMap(toolResult))
+        }
+
+        // Build response event
+        buildResponseEvent(tool, toolResult, toolContext, responseEventId)
+      }
+    } finally {
+      toolContext.toolEventSink = null
     }
   }
 

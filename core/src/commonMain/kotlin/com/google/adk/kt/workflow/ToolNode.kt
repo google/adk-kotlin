@@ -115,13 +115,19 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
     val functionCallId = Uuid.random()
     val toolContext =
       ToolContext(
-        context.invocationContext,
-        functionCallId = functionCallId,
-        toolConfirmation = context.confirmationAnswer(name),
-      )
+          context.invocationContext,
+          functionCallId = functionCallId,
+          toolConfirmation = context.confirmationAnswer(name),
+        )
+        .apply { toolEventSink = context.requireNodeState().eventSink }
     // As in a turn outside a live run, a returned Flow fails the node. A Java tool that overrides
     // `run` itself can return null.
-    val result: Any? = DEFAULT_TOOL_RUNNER(tool, toolContext, args)
+    val result: Any? =
+      try {
+        DEFAULT_TOOL_RUNNER(tool, toolContext, args)
+      } finally {
+        toolContext.toolEventSink = null
+      }
     // Only the tool's deltas carry over; a node can't honor its other actions, such as a transfer.
     context.mergeEventActions(
       EventActions(

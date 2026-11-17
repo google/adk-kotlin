@@ -1176,6 +1176,11 @@ internal class LlmAgentTurn(
       }
     }
     emitLiveResponse(request, response, callbackContext) { emitted ->
+      // Child-node events from a tool's runNode pass straight out without live turn side effects.
+      if (emitted.nodeInfo != null) {
+        emitEvent(emitted)
+        return@emitLiveResponse
+      }
       val target = emitted.actions.transferToAgent
       // Only a callback's transfer is held; a tool's already follows its screened speech.
       val event =
@@ -2150,7 +2155,7 @@ internal class LlmAgentTurn(
         ?.let { calls ->
           // A live run runs tools through its streaming tools, so a returned Flow streams.
           val runner: ToolRunner = if (liveTools == null) DEFAULT_TOOL_RUNNER else liveTools::run
-          context.handleFunctionCallsWith(calls, tools, toolRunner = runner)
+          context.handleFunctionCallsWith(calls, tools, toolRunner = runner, emitEvent = emitEvent)
         }
         // A live answer names the session its call came from, as in ADK Python.
         ?.copy(liveSessionId = actionEvent.liveSessionId)

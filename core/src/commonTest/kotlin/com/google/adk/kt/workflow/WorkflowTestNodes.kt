@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
@@ -117,10 +118,17 @@ internal val Throwable.allSuppressed: List<Throwable>
 /**
  * Runs [workflow] as an app's root node through [InMemoryRunner] and returns the stored session.
  */
-internal fun runWorkflowAsApp(workflow: Workflow): Session = runBlocking {
-  val runner = InMemoryRunner(app = App(appName = "workflow_app", rootNode = workflow))
+internal fun runWorkflowAsApp(workflow: Workflow): Session =
+  runAppToSession(App(appName = "workflow_app", rootNode = workflow))
+
+/** Runs [agent] as an app's root agent through [InMemoryRunner] and returns the stored session. */
+internal fun runAgentAsApp(agent: BaseAgent): Session =
+  runAppToSession(App(appName = "agent_app", rootAgent = agent))
+
+private fun runAppToSession(app: App): Session = runBlocking {
+  val runner = InMemoryRunner(app = app)
   runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("go")).toList()
-  checkNotNull(runner.sessionService.getSession(SessionKey("workflow_app", "user", "session")))
+  checkNotNull(runner.sessionService.getSession(SessionKey(app.appName, "user", "session")))
 }
 
 /** The session a run left, and what the run threw, if anything. */

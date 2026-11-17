@@ -87,7 +87,7 @@ class SequentialAgent(
       var pauseInvocation = false
       subAgent.runAsync(context).collect { event ->
         emit(event)
-        if (context.shouldPauseInvocation(event)) {
+        if (event.nodeInfo == null && context.shouldPauseInvocation(event)) {
           pauseInvocation = true
         }
       }
