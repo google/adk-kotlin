@@ -319,9 +319,7 @@ class LlmTelemetryTest {
     agent.runAsync(newContext(agent)).toList()
 
     val span = dummyTracer.recordedSpans.single { it.name == "call_llm" }
-    val topP = span.attributes[TelemetryAttributes.GEN_AI_REQUEST_TOP_P]
-    assertNotNull(topP)
-    assertEquals(0.95, topP as Double, absoluteTolerance = 1e-4)
+    assertEquals(0.95, span.attributes[TelemetryAttributes.GEN_AI_REQUEST_TOP_P])
     assertEquals(1024L, span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS])
   }
 
@@ -532,11 +530,7 @@ class LlmTelemetryTest {
     agent.runAsync(newContext(agent)).toList()
 
     val span = dummyTracer.recordedSpans.single { it.name == "generate_content test-model" }
-    assertEquals(
-      0.95,
-      span.attributes[TelemetryAttributes.GEN_AI_REQUEST_TOP_P] as Double,
-      absoluteTolerance = 1e-4,
-    )
+    assertEquals(0.95, span.attributes[TelemetryAttributes.GEN_AI_REQUEST_TOP_P])
     assertEquals(1024L, span.attributes[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS])
   }
 

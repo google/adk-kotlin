@@ -50,12 +50,10 @@ import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.genai.kotlin.ClientException
 import io.opentelemetry.api.trace.StatusCode
-import io.opentelemetry.sdk.common.CompletableResultCode
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
-import io.opentelemetry.sdk.trace.export.SpanExporter
-import java.util.Collections
 import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -76,24 +74,11 @@ import org.junit.runners.JUnit4
 @RunWith(JUnit4::class)
 class PythonGoldenParityTest {
 
-  private val exported: MutableList<SpanData> = Collections.synchronizedList(mutableListOf())
+  private val exporter = InMemorySpanExporter.create()
   private val provider =
-    SdkTracerProvider.builder()
-      .addSpanProcessor(
-        SimpleSpanProcessor.create(
-          object : SpanExporter {
-            override fun export(spans: Collection<SpanData>): CompletableResultCode {
-              exported += spans
-              return CompletableResultCode.ofSuccess()
-            }
-
-            override fun flush(): CompletableResultCode = CompletableResultCode.ofSuccess()
-
-            override fun shutdown(): CompletableResultCode = CompletableResultCode.ofSuccess()
-          }
-        )
-      )
-      .build()
+    SdkTracerProvider.builder().addSpanProcessor(SimpleSpanProcessor.create(exporter)).build()
+  private val exported: List<SpanData>
+    get() = exporter.finishedSpanItems
 
   @Before
   fun setUp() {
