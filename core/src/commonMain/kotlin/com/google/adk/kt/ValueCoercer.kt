@@ -16,8 +16,13 @@
 
 package com.google.adk.kt
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
+import com.google.adk.kt.auth.encodeCredentialOrNull
 import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
@@ -39,11 +44,17 @@ import com.google.adk.kt.types.Type
 internal class ValueCoercer private constructor(private val fillDefaults: Boolean) {
   private val budget = SchemaUtils.UnionBudget()
 
+  @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
   private fun coerce(value: Any?, schema: Schema, path: String = ""): Any? {
     // LLM agents and message-producing nodes emit Content objects; unwrap to raw text or parsed
     // JSON before checking the schema.
     val data = if (value is Content) coerceContent(value, schema) else value
     if (data == null) return coerceNull(schema, path)
+    // A schema checks a credential's JSON form, and the credential stays typed for output.
+    adkSecretRevealingJson.encodeCredentialOrNull(data)?.let { credentialJson ->
+      val unused = coerce(jsonElementToAny(credentialJson), schema, path)
+      return data
+    }
 
     val matched = schema.anyOf?.let { coerceAnyOf(data, it, path) } ?: data
     val result = coerceByType(matched, schema, path)

@@ -26,9 +26,13 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
@@ -4095,6 +4099,33 @@ class WorkflowHitlTest {
     assertEquals(modelMessage("hi"), recovered.output)
   }
 
+  /** A stored message output holding a credential reads back with its secret, for the next node. */
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun scan_storedMessageOutputWithACredential_keepsItsSecret() {
+    // Arrange: stored as a session service writes it, and read back as plain values.
+    val call = FunctionCall("f", mapOf("key" to mapOf("authType" to "apiKey", "apiKey" to "sk-1")))
+    val message = Content(role = Role.MODEL, parts = listOf(Part(functionCall = call)))
+    val resent =
+      Event(
+        author = "wf",
+        invocationId = "inv",
+        output = message,
+        nodeInfo = NodeInfo(path = "wf@1/chat@1", messageAsOutput = true),
+      )
+    val stored =
+      adkJson.decodeFromString(
+        Event.serializer(),
+        adkSecretRevealingJson.encodeToString(Event.serializer(), resent),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(listOf(stored), "wf@1", "inv").getValue("chat@1")
+
+    // Assert
+    assertEquals(message, recovered.output)
+  }
+
   /** An event marked as a message whose output is a map that is not a message keeps the map. */
   @Test
   fun scan_eventMarkedAsAMessageWithAMapOutput_keepsTheMap() {
@@ -4790,6 +4821,59 @@ class WorkflowHitlTest {
   }
 
   @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun requestInput_credentialAsPlainValuesInThePayload_sendsAndStoresNoSecret() {
+    // Arrange: a credential as plain values, as a resumed node's input holds it.
+    val credential =
+      mapOf("authType" to "apiKey", "apiKey" to "SENTINEL-PAYLOAD-KEY", "label" to "Weather")
+    val ask =
+      node<Any?, String>("ask") { _, _ ->
+        requestInput<Map<String, Any?>>(
+          interruptId = "ask_1",
+          payload = mapOf("credentials" to listOf(credential)),
+        )
+      }
+
+    // Act
+    val asked =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask))))
+        .turn(userMessage("go"))
+
+    // Assert
+    val request = asked.single { it.functionCalls().isNotEmpty() }
+    assertEquals(
+      mapOf("credentials" to listOf(mapOf("authType" to "apiKey", "label" to "Weather"))),
+      request.functionCalls().single().args[RequestInput.PAYLOAD_KEY],
+    )
+    val stored = adkSecretRevealingJson.encodeToString(Event.serializer(), request)
+    assertFalse("SENTINEL-PAYLOAD-KEY" in stored)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun requestInput_typedCredentialInThePayload_sendsAndStoresNoSecret() {
+    // Arrange
+    val ask =
+      node<Any?, String>("ask") { _, _ ->
+        requestInput<Map<String, Any?>>(
+          interruptId = "ask_1",
+          payload = mapOf("credential" to AuthCredential.ApiKey.of("SENTINEL-PAYLOAD-KEY")),
+        )
+      }
+
+    // Act
+    val asked =
+      WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, ask))))
+        .turn(userMessage("go"))
+
+    // Assert: the request event, written as a session service stores it, holds no secret.
+    val request = asked.single { it.functionCalls().isNotEmpty() }
+    val stored = adkSecretRevealingJson.encodeToString(Event.serializer(), request)
+    assertFalse("SENTINEL-PAYLOAD-KEY" in stored)
+    assertContains(stored, "\"authType\":\"apiKey\"")
+  }
+
+  @Test
   fun processRehydratedOutput_bareWordForObjectSchema_fails() {
     // Arrange: a lone word is not JSON, so it cannot stand in for the object.
     val node = MessageOutput("chat", "", outputSchema = AGE_SCHEMA)
@@ -4849,6 +4933,33 @@ class WorkflowHitlTest {
     assertTrue(call.args[RequestInput.RESPONSE_SCHEMA_KEY] != null)
     assertEquals(0, runs)
     assertTrue(events.none { it.nodeInfo?.path == "wf@1/reply@1" })
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun requireConfirmation_inputWithACredential_asksWithoutItsSecret() {
+    // Arrange
+    val produce =
+      node<Any?, Map<String, Any?>>("produce") { _, _ ->
+        mapOf("key" to AuthCredential.ApiKey.of("SENTINEL-CONFIRM-KEY"), "path" to "/tmp/a")
+      }
+    val remove =
+      node<Map<String, Any?>, Unit>("remove_file", requireConfirmation = true) { _, _ -> }
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, produce), Edge(produce, remove)))
+
+    // Act
+    val events = WorkflowSession(workflow).turn(userMessage("go"))
+
+    // Assert
+    val call = events.flatMap { it.functionCalls() }.single()
+    assertEquals(
+      mapOf(
+        "tool_name" to "remove_file",
+        "args" to mapOf("key" to mapOf("authType" to "apiKey"), "path" to "/tmp/a"),
+      ),
+      call.args[RequestInput.PAYLOAD_KEY],
+    )
   }
 
   @OptIn(AdkJavaInteropApi::class)

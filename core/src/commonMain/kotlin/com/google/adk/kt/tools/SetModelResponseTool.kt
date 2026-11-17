@@ -17,7 +17,10 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.acceptsNull
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.describesOnlyObjects
 import com.google.adk.kt.extraSchema
@@ -103,10 +106,12 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
     )
   }
 
-  @OptIn(FrameworkInternalApi::class)
+  @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
   private fun record(context: ToolContext, validated: Map<String, Any?>): Map<String, Any?> {
     val answer = if (wrapsOutputSchema) validated[RESPONSE_PARAMETER] else validated
-    validatedResponses[context.functionCallId.orEmpty()] = anyToJsonElement(answer).toString()
+    // Revealing: this is the agent's own answer, kept whole as ADK Python does, not output.
+    validatedResponses[context.functionCallId.orEmpty()] =
+      anyToJsonElement(answer, adkSecretRevealingJson).toString()
     // The model gets a wrapped answer back as it gets a function tool's non-map result.
     return if (wrapsOutputSchema) mapOf(BaseTool.RESULT_KEY to answer) else validated
   }

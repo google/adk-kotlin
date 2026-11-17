@@ -28,6 +28,9 @@ import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.AuthConfig
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
@@ -700,14 +703,21 @@ internal fun Context.confirmationAnswer(nodeName: String): ToolConfirmation? {
   }
 }
 
-/** Whether this value is already in the form a schema checks: JSON-native, or a message. */
+/**
+ * Whether this value is already in the form a schema checks: JSON-native, a message, or a typed
+ * credential, which the schema checks as its JSON form.
+ */
+@OptIn(ExperimentalAuthApi::class)
 private fun Any?.isJsonForm(): Boolean =
   when (this) {
     null,
     is String,
     is Number,
     is Boolean,
-    is Content -> true
+    is Content,
+    is AuthCredential,
+    is AuthConfig,
+    is Secret -> true
     is Map<*, *> -> entries.all { (key, value) -> key is String && value.isJsonForm() }
     is Collection<*> -> all { it.isJsonForm() }
     else -> false

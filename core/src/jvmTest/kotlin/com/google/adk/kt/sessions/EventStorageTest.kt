@@ -60,9 +60,9 @@ class EventStorageTest {
   }
 
   @Test
-  fun forStorage_functionResponseWithATypedCredential_leavesItsSecretOut() {
+  fun forStorage_agentFunctionResponseWithATypedCredential_leavesItsSecretOut() {
     val response = FunctionResponse("f", mapOf("key" to AuthCredential.ApiKey(Secret("sk-123"))))
-    val event = Event(author = "user", content = userMessage(Part(functionResponse = response)))
+    val event = Event(author = "agent", content = userMessage(Part(functionResponse = response)))
 
     val stored = event.forStorage()
 
@@ -70,6 +70,37 @@ class EventStorageTest {
       mapOf("key" to mapOf("authType" to "apiKey")),
       stored.content!!.parts.single().functionResponse!!.response,
     )
+  }
+
+  @Test
+  fun forStorage_agentFunctionResponseWithACredentialMap_leavesItsSecretOut() {
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-123", "label" to "W")
+    val response = FunctionResponse("f", mapOf("key" to credential))
+    val event = Event(author = "agent", content = userMessage(Part(functionResponse = response)))
+
+    val stored = event.forStorage()
+
+    assertEquals(
+      mapOf("key" to mapOf("authType" to "apiKey", "label" to "W")),
+      stored.content!!.parts.single().functionResponse!!.response,
+    )
+  }
+
+  @Test
+  fun forStorage_userFunctionResponseWithACredential_keepsItsSecret() {
+    val response =
+      FunctionResponse(
+        "adk_request_input",
+        mapOf(
+          "typed" to AuthCredential.ApiKey.of("sk-typed"),
+          "plain" to mapOf("authType" to "apiKey", "apiKey" to "sk-plain"),
+        ),
+      )
+    val event = Event(author = "user", content = userMessage(Part(functionResponse = response)))
+
+    val stored = event.forStorage()
+
+    assertEquals(event, stored)
   }
 
   @Test

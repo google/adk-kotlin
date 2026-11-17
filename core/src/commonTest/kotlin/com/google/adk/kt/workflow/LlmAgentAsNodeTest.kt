@@ -24,8 +24,10 @@ import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -38,6 +40,7 @@ import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.CodeExecutionResult
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -396,6 +399,26 @@ class LlmAgentAsNodeTest {
     // Assert
     val texts = captured.flatMap { it.parts }.mapNotNull { it.text }
     assertEquals(listOf("[1,{\"tags\":[\"a\",\"b\"]}]"), texts)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun runAsync_nodeOutputWithACredential_reachesTheModelWithoutItsSecret() = runBlocking {
+    // Arrange
+    val captured = mutableListOf<Content>()
+    val produce =
+      node<Any?, Map<String, Any?>>("produce") { _, _ ->
+        mapOf("key" to AuthCredential.ApiKey.of("SENTINEL-PROMPT-KEY"), "city" to "Kraków")
+      }
+    val agent = LlmAgent(name = "worker", model = RecordingModel(captured))
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, produce), Edge(produce, agent)))
+
+    // Act
+    val unused = workflow.runAsync(testInvocationContext(userContent = userMessage("go"))).toList()
+
+    // Assert
+    val texts = captured.flatMap { it.parts }.mapNotNull { it.text }
+    assertEquals(listOf("{\"key\":{\"authType\":\"apiKey\"},\"city\":\"Kraków\"}"), texts)
   }
 
   @Test

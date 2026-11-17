@@ -170,7 +170,7 @@ class LlmEventSummarizerTest {
 
     val expectedHistory =
       "user: User says...\nmodel: Model replies...\nuser: Another user input\nmodel: More model" +
-        " text\nmodel called tool: tool({k=v})\nTool response from tool: {a=b}"
+        " text\nmodel called tool: tool({\"k\":\"v\"})\nTool response from tool: {\"a\":\"b\"}"
     val expectedPrompt =
       "The following is a conversation history between a user and an AI agent. It may or may not " +
         "start from a compacted history. Please identify and reiterate the user request, " +
@@ -312,6 +312,53 @@ class LlmEventSummarizerTest {
   }
 
   @Test
+  fun summarizeEvents_toolCallAndResponseWithACredentialMap_leaveItsSecretOutOfThePrompt() =
+    runTest {
+      // A user's function response is stored with its secrets and reloads as plain values.
+      val captured = mutableListOf<LlmRequest>()
+      val summarizer =
+        LlmEventSummarizer(
+          model =
+            DummyModel("test-model") { request ->
+              captured.add(request)
+              flowOf(LlmResponse(content = Content(parts = listOf(Part(text = "summary")))))
+            }
+        )
+      val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-1")
+      val events =
+        listOf(
+          Event(
+            author = "model",
+            content = modelFunctionCall(name = "login", args = mapOf("key" to credential)),
+            timestamp = 1L,
+          ),
+          Event(
+            author = "user",
+            content =
+              modelMessage(
+                Part(
+                  functionResponse =
+                    FunctionResponse(name = "login", response = mapOf("key" to credential))
+                )
+              ),
+            timestamp = 2L,
+          ),
+        )
+
+      assertNotNull(summarizer.summarizeEvents(events))
+
+      val promptText = captured.single().contents.single().parts.single().text
+      assertEquals(
+        true,
+        promptText!!.endsWith(
+          """model called tool: login({"key":{"authType":"apiKey"}})""" +
+            "\n" +
+            """Tool response from login: {"key":{"authType":"apiKey"}}"""
+        ),
+      )
+    }
+
+  @Test
   fun summarizeEvents_truncatesLargeToolResponse() = runTest {
     val captured = mutableListOf<LlmRequest>()
     val summarizer =
@@ -344,7 +391,7 @@ class LlmEventSummarizerTest {
     val promptText = captured.single().contents.single().parts.single().text
     assertNotNull(promptText)
 
-    val rendered = mapOf("data" to largeValue).toString()
+    val rendered = """{"data":"$largeValue"}"""
     assertEquals(
       true,
       promptText.endsWith(

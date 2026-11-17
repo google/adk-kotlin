@@ -260,11 +260,11 @@ internal fun remoteCallAsUserPart(author: String, part: Part): Part? {
     }
     part.functionCall != null -> {
       val fc = part.functionCall
-      Part(text = "[$author] called tool ${fc?.name} with parameters: ${fc?.args}")
+      Part(text = "[$author] called tool ${fc?.name} with parameters: ${narrated(fc?.args)}")
     }
     part.functionResponse != null -> {
       val fr = part.functionResponse
-      Part(text = "[$author] ${fr?.name} tool returned result: ${fr?.response}")
+      Part(text = "[$author] ${fr?.name} tool returned result: ${narrated(fr?.response)}")
     }
     part.inlineData != null ||
       part.fileData != null ||
@@ -273,6 +273,18 @@ internal fun remoteCallAsUserPart(author: String, part: Part): Part? {
     else -> null
   }
 }
+
+/**
+ * Returns [value] as JSON without the secrets of the credentials in it. A value with no JSON form
+ * is named by its type only, since its own text can show a credential's secrets.
+ */
+@OptIn(FrameworkInternalApi::class)
+private fun narrated(value: Any?): String =
+  try {
+    anyToJsonElement(value).toString()
+  } catch (e: IllegalArgumentException) {
+    "<${value?.let { it::class.simpleName }}>"
+  }
 
 /**
  * Returns the ids of the calls in these events whose answers carry credentials; null stands for an
