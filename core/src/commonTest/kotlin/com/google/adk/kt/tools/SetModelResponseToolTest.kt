@@ -168,7 +168,6 @@ class SetModelResponseToolTest {
           anyOf = listOf(Schema(required = listOf("x")), Schema(type = Type.NULL)),
         ),
         Schema(items = Schema(type = Type.INTEGER), anyOf = listOf(Schema(type = Type.STRING))),
-        Schema(enum = listOf("a", "b")),
         Schema(),
       )
 
@@ -185,6 +184,25 @@ class SetModelResponseToolTest {
         )
       assertEquals(wrapped, parameters, "for $schema")
     }
+  }
+
+  @Test
+  fun declaration_untypedEnumSchema_wrapsItAsAString() {
+    // Arrange
+    val untypedEnum = Schema(enum = listOf("a", "b"))
+
+    // Act
+    val parameters = SetModelResponseTool(untypedEnum).declaration().parameters
+
+    // Assert
+    assertEquals(
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("response" to untypedEnum.copy(type = Type.STRING)),
+        required = listOf("response"),
+      ),
+      parameters,
+    )
   }
 
   @Test

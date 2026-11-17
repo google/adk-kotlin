@@ -53,11 +53,13 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
   /** The tool's parameters, which the model's arguments must match. */
   private val parameters: Schema =
     if (wrapsOutputSchema) {
-      // The implied type lets validation check an untyped list's items. A schema with `anyOf`
-      // stays untyped, as a type would rule out its other branches.
+      // Vertex AI rejects an `enum` without a type, and the implied type lets validation check an
+      // untyped list's items; enum values are strings. A schema with `anyOf` stays untyped, as a
+      // type would rule out its other branches.
+      val impliedType =
+        outputSchema.impliedType() ?: Type.STRING.takeIf { outputSchema.enum != null }
       val response =
-        if (outputSchema.anyOf == null) outputSchema.copy(type = outputSchema.impliedType())
-        else outputSchema
+        if (outputSchema.anyOf == null) outputSchema.copy(type = impliedType) else outputSchema
       Schema(
         type = Type.OBJECT,
         properties = mapOf(RESPONSE_PARAMETER to response),

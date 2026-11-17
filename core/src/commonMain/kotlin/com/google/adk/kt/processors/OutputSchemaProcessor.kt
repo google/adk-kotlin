@@ -81,9 +81,10 @@ internal class OutputSchemaProcessor : LlmRequestProcessor {
  * Besides the agent's own tools it counts the `transfer_to_agent` tool that
  * [AgentTransferProcessor] attaches whenever the request offers a transfer (see
  * [offeredTransferTargets]) and the `task_completed` tool that [TaskCompletionProcessor] attaches
- * to a live sequential step (see [offersTaskCompletedTool]), since Gemini 2.x can't combine either
- * with a response schema. Counting `transfer_to_agent` is stricter than ADK Python and Java, which
- * inspect only the declared tools.
+ * to a live sequential step (see [offersTaskCompletedTool]), since a model without
+ * [com.google.adk.kt.models.LlmCapabilities.outputSchemaAndTools] gets no response schema beside
+ * tools. A built-in tool such as [com.google.adk.kt.tools.GoogleSearchTool] counts too, as in ADK
+ * Python and Java.
  */
 internal fun LlmAgent.hasToolsForOutputSchemaGating(context: InvocationContext): Boolean =
   tools.isNotEmpty() ||

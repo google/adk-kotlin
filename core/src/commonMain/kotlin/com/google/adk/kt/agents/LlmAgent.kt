@@ -124,9 +124,9 @@ import kotlinx.coroutines.flow.transformWhile
  *   before saving the parsed value to [outputKey]; in task mode, [outputKey] gets the parsed
  *   `finish_task` output instead. If the agent also has tools (including the framework's
  *   `transfer_to_agent` tool when sub-agents/peers are reachable), the schema is applied directly
- *   on models that support a response schema together with tools; on models that do not (e.g.
- *   Gemini 2.x), the framework falls back to a `set_model_response` tool to collect the structured
- *   output.
+ *   on models that take a response schema reliably together with tools; on other models (see
+ *   [Model.capabilities]), the framework falls back to a `set_model_response` tool to collect the
+ *   structured output.
  * @property outputKey The key in session state to store the final text response of the agent. When
  *   set, the agent's concatenated text output (excluding parts marked as thoughts) is written to
  *   `event.actions.stateDelta[outputKey]` on each final-response event, which the session service

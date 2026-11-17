@@ -17,18 +17,24 @@
 package com.google.adk.kt.models
 
 import com.google.adk.kt.VERSION
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.genAiSystemName
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.SetModelResponseTool
 import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.SpeechConfig
+import com.google.adk.kt.types.Type
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.truth.Truth.assertThat
@@ -49,6 +55,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 import kotlin.time.Duration.Companion.minutes
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -655,6 +662,132 @@ class GeminiJvmTest {
     assertThat(created.expireTime).isNull()
   }
 
+  @Test
+  fun capabilities_vertexAi_lackOutputSchemaAndToolsOnlyForGemini2AndListedModels() {
+    // Arrange: model name to whether Vertex AI gets a response schema beside tools.
+    val expected =
+      mapOf(
+        "gemini-2.5-flash" to false,
+        "gemini-3-flash-preview" to false,
+        "gemini-3.5-flash-lite" to false,
+        "gemini-3.8-flash" to false,
+        "gemini-3.8-flash-001" to false,
+        "gemini-4-hydrogen" to false,
+        "models/gemini-3.1-pro-preview" to false,
+        "projects/p/locations/global/publishers/google/models/gemini-3.6-flash" to false,
+        "publishers/google/models/gemini-3.8-flash" to false,
+        // Not listed: a preview, date or other variant of a listed id, and any other model.
+        "gemini-3.1-flash-lite-preview" to true,
+        "gemini-3.1-flash-lite-image" to true,
+        "gemini-3.1-pro-preview-customtools" to true,
+        "gemini-3.8-flash-preview-10-2026" to true,
+        "gemini-4-argon" to true,
+        "gemini-pro-latest" to true,
+        "projects/p/locations/us-central1/endpoints/123" to true,
+      )
+
+    // Act
+    val reported =
+      expected.keys.associateWith { name ->
+        vertexAiClient().use { Gemini(it, name).capabilities.outputSchemaAndTools }
+      }
+
+    // Assert
+    assertThat(reported).containsExactlyEntriesIn(expected)
+  }
+
+  @Test
+  fun runAsync_geminiApi_requestsSetModelResponseUnderAnyName(): Unit = runBlocking {
+    // Arrange
+    val names =
+      listOf("gemini-3.8-flash", "gemini-4-argon", "gemma-4-31b-it", "tunedModels/my-model")
+
+    // Act
+    val paths = names.associateWith { name ->
+      Client(apiKey = "fake", enterprise = false).use { answerPath(it, name) }
+    }
+
+    // Assert
+    assertThat(paths).containsExactlyEntriesIn(names.associateWith { SetModelResponseTool.NAME })
+  }
+
+  @Test
+  fun runAsync_vertexAi_requestsSetModelResponseOnlyForGemini2AndListedModels(): Unit =
+    runBlocking {
+      // Arrange: model name to how the first request asks for the final answer.
+      val expected =
+        mapOf(
+          "gemini-2.5-flash" to SetModelResponseTool.NAME,
+          "gemini-3.1-pro-preview" to SetModelResponseTool.NAME,
+          "gemini-3.8-flash-001" to SetModelResponseTool.NAME,
+          "gemini-4-argon" to RESPONSE_SCHEMA,
+          "projects/p/locations/us-central1/endpoints/123" to RESPONSE_SCHEMA,
+        )
+
+      // Act
+      val paths =
+        expected.keys.associateWith { name -> vertexAiClient().use { answerPath(it, name) } }
+
+      // Assert
+      assertThat(paths).containsExactlyEntriesIn(expected)
+    }
+
+  @Test
+  fun runAsync_wrapperReportingOutputSchemaAndTools_requestsResponseSchema(): Unit = runBlocking {
+    // Arrange: the documented way to keep the response schema, on a listed model.
+    val keepResponseSchema = { gemini: Gemini ->
+      object : Model by gemini {
+        override val capabilities = LlmCapabilities(outputSchemaAndTools = true)
+      }
+    }
+
+    // Act
+    val path = vertexAiClient().use { answerPath(it, "gemini-3.8-flash", keepResponseSchema) }
+
+    // Assert
+    assertThat(path).isEqualTo(RESPONSE_SCHEMA)
+  }
+
+  /**
+   * Runs an agent with a function tool and [ANSWER_SCHEMA] on [modelName] over [client], wrapped by
+   * [wrap], and returns how its first request asks for the final answer:
+   * [SetModelResponseTool.NAME], [RESPONSE_SCHEMA], or a description of neither.
+   */
+  private suspend fun answerPath(
+    client: Client,
+    modelName: String,
+    wrap: (Gemini) -> Model = { it },
+  ): String {
+    val configs = mutableListOf<GenerateContentConfig>()
+    val models = mock<Gemini.GeminiModels>()
+    whenever(models.generateContent(any(), any(), any())).thenAnswer {
+      configs += it.getArgument<GenerateContentConfig>(2)
+      buildResponse("""{"answer": "42"}""", finishReason = FinishReason.STOP)
+    }
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = wrap(Gemini(client, modelName, models = models)),
+        tools = listOf(DummyTool("lookup", declares = true)),
+        outputSchema = ANSWER_SCHEMA,
+      )
+    InMemoryRunner(agent = agent)
+      .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi"))
+      .collect()
+    val config = configs.first()
+    val functions =
+      config.tools.orEmpty().flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
+    return when {
+      functions.toSet() == setOf("lookup", SetModelResponseTool.NAME) &&
+        config.responseSchema == null &&
+        config.responseMimeType == null -> SetModelResponseTool.NAME
+      functions == listOf("lookup") &&
+        config.responseSchema == ANSWER_SCHEMA &&
+        config.responseMimeType == "application/json" -> RESPONSE_SCHEMA
+      else -> "neither: functions=$functions, responseSchema=${config.responseSchema}"
+    }
+  }
+
   /** Creates a cache through [GenaiCacheClient] with an SDK client routed to the mock server. */
   private suspend fun createCache(): GeminiContextCacheManager.CreatedCache =
     Client(apiKey = "fake-key", httpOptions = HttpOptions(baseUrl = mockServer.url("/").toString()))
@@ -838,6 +971,9 @@ class GeminiJvmTest {
   private class CollectorException : RuntimeException("collector failed")
 
   companion object {
+    private val ANSWER_SCHEMA =
+      Schema(type = Type.OBJECT, properties = mapOf("answer" to Schema(type = Type.STRING)))
+    private const val RESPONSE_SCHEMA = "responseSchema"
     private const val GENERATE_CONTENT_RESPONSE =
       """{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"""
     private const val REQUEST_TIMEOUT_SECONDS = 10L

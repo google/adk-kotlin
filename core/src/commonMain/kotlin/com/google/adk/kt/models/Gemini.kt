@@ -82,6 +82,17 @@ internal constructor(
 ) : Model {
 
   /**
+   * Reports [LlmCapabilities.outputSchemaAndTools] on Vertex AI for every model except `gemini-2.*`
+   * and the Gemini models seen to skip tool calls when a request also sets a response schema, such
+   * as `gemini-3.8-flash`. On the Gemini API it never does, as in Python ADK.
+   */
+  override val capabilities: LlmCapabilities =
+    LlmCapabilities(
+      outputSchemaAndTools =
+        client.enterprise && !needsSetModelResponseOnVertexAi(name.substringAfterLast('/'))
+    )
+
+  /**
    * How live sessions are opened. A settable property, not a constructor parameter, because tests
    * construct [Gemini] through its public constructors and swap this afterward.
    */
@@ -449,6 +460,31 @@ internal constructor(
     private val logger = LoggerFactory.getLogger(Gemini::class)
   }
 }
+
+/**
+ * Gemini models seen to skip tool calls on Vertex AI when a request also sets a response schema.
+ */
+private val MODELS_REQUIRING_SCHEMA_SET_MODEL_RESPONSE_TOOL_FALLBACK =
+  setOf(
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-4-hydrogen",
+  )
+
+/** The pinned version at the end of a model id, as in `gemini-3.8-flash-001`. */
+private val PINNED_VERSION_PATTERN = Regex("-\\d+$")
+
+/** Whether [modelId] is a `gemini-2.*` model or a listed one, exactly or with a pinned version. */
+private fun needsSetModelResponseOnVertexAi(modelId: String): Boolean =
+  GEMINI_2_PATTERN.matches(modelId) ||
+    modelId.replace(PINNED_VERSION_PATTERN, "") in
+      MODELS_REQUIRING_SCHEMA_SET_MODEL_RESPONSE_TOOL_FALLBACK
 
 private val RESOURCE_EXHAUSTED_FIX =
   """

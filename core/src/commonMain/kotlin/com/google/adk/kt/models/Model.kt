@@ -70,7 +70,7 @@ internal val Model.shortName: String
       ?: name.removePrefix("models/")
 
 /** Matches Gemini 2.x model names (e.g. `gemini-2.0-flash`, `gemini-2.5-pro`). */
-private val GEMINI_2_PATTERN = Regex("^gemini-2\\..*")
+internal val GEMINI_2_PATTERN = Regex("^gemini-2\\..*")
 
 /**
  * The name rule behind the default of [Model.capabilities]: whether the model takes an output
