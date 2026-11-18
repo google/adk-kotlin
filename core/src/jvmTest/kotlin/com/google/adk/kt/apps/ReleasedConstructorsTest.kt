@@ -49,8 +49,6 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.ContextWindowCompressionConfig
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionDeclaration
-import com.google.adk.kt.types.GoogleMaps
-import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.HarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory
@@ -63,14 +61,12 @@ import com.google.adk.kt.types.PrebuiltVoiceConfig
 import com.google.adk.kt.types.ProactivityConfig
 import com.google.adk.kt.types.RealtimeInputConfig
 import com.google.adk.kt.types.ReplicatedVoiceConfig
-import com.google.adk.kt.types.Retrieval
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.SafetySetting
 import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.types.SpeechConfig
 import com.google.adk.kt.types.ThinkingConfig
 import com.google.adk.kt.types.Tool
-import com.google.adk.kt.types.UrlContext
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceConfig
@@ -83,7 +79,6 @@ import kotlin.io.path.writeText
 import kotlin.jvm.internal.DefaultConstructorMarker
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -737,64 +732,6 @@ class ReleasedConstructorsTest {
 
     // Assert
     assertEquals(1_500L, millis)
-  }
-
-  @Test
-  fun tool_releasedFullConstructor_stillLinks() {
-    // Arrange
-    val urlContext = UrlContext()
-
-    // Act
-    val tool =
-      Tool::class
-        .java
-        .getConstructor(
-          List::class.java,
-          GoogleSearch::class.java,
-          GoogleMaps::class.java,
-          Retrieval::class.java,
-          UrlContext::class.java,
-        )
-        .newInstance(null, null, null, null, urlContext)
-
-    // Assert
-    assertSame(urlContext, tool.urlContext)
-    assertNull(tool.codeExecution)
-  }
-
-  @Test
-  fun tool_releasedNoArgConstructor_stillLinks() {
-    // Arrange / Act: the released class had a no-arg constructor; all its params had defaults.
-    val tool = Tool::class.java.getConstructor().newInstance()
-
-    // Assert
-    assertEquals(Tool(), tool)
-  }
-
-  @Test
-  fun tool_javaSourceWrittenAgainstTheReleasedApi_compiles() {
-    // Arrange
-    val caller =
-      compileJava(
-        "ReleasedToolCaller",
-        """
-        import com.google.adk.kt.types.Tool;
-        import com.google.adk.kt.types.UrlContext;
-
-        public final class ReleasedToolCaller {
-          public static Tool create() {
-            return new Tool(null, null, null, null, new UrlContext());
-          }
-        }
-        """,
-      )
-
-    // Act
-    val tool = caller.getMethod("create").invoke(null) as Tool
-
-    // Assert
-    assertNotNull(tool.urlContext)
-    assertNull(tool.codeExecution)
   }
 
   /** Compiles [source] with javac against the test classpath and loads [className]. */

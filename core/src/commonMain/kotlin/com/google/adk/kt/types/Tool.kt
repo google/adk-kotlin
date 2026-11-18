@@ -16,16 +16,11 @@
 
 package com.google.adk.kt.types
 
-import com.google.adk.kt.annotations.AdkJavaInteropApi
-import kotlin.jvm.JvmOverloads
-import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Serializable
 
 /** Represents a GenAI tool definition. */
 @Serializable
-data class Tool
-@JvmOverloads
-constructor(
+data class Tool(
   /** The function declarations associated with this tool. */
   val functionDeclarations: List<FunctionDeclaration>? = null,
   /** A google search tool. */
@@ -36,68 +31,4 @@ constructor(
   val retrieval: Retrieval? = null,
   /** A URL context tool. */
   val urlContext: UrlContext? = null,
-  /** The model's built-in code-execution tool. */
-  val codeExecution: ToolCodeExecution? = null,
-) {
-  /**
-   * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
-   * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
-   * changes whenever a property is added.
-   */
-  @AdkJavaInteropApi
-  fun toBuilder(): Builder =
-    Builder()
-      .functionDeclarations(functionDeclarations)
-      .googleSearch(googleSearch)
-      .googleMaps(googleMaps)
-      .retrieval(retrieval)
-      .urlContext(urlContext)
-      .codeExecution(codeExecution)
-
-  /**
-   * Fluent builder for [Tool], provided primarily for Java callers. Any property left unset falls
-   * back to the same default as the constructor.
-   */
-  @AdkJavaInteropApi
-  @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
-  class Builder {
-    private var functionDeclarations: List<FunctionDeclaration>? = null
-    private var googleSearch: GoogleSearch? = null
-    private var googleMaps: GoogleMaps? = null
-    private var retrieval: Retrieval? = null
-    private var urlContext: UrlContext? = null
-    private var codeExecution: ToolCodeExecution? = null
-
-    fun functionDeclarations(functionDeclarations: List<FunctionDeclaration>?): Builder = apply {
-      this.functionDeclarations = functionDeclarations
-    }
-
-    fun googleSearch(googleSearch: GoogleSearch?): Builder = apply {
-      this.googleSearch = googleSearch
-    }
-
-    fun googleMaps(googleMaps: GoogleMaps?): Builder = apply { this.googleMaps = googleMaps }
-
-    fun retrieval(retrieval: Retrieval?): Builder = apply { this.retrieval = retrieval }
-
-    fun urlContext(urlContext: UrlContext?): Builder = apply { this.urlContext = urlContext }
-
-    fun codeExecution(codeExecution: ToolCodeExecution?): Builder = apply {
-      this.codeExecution = codeExecution
-    }
-
-    fun build(): Tool =
-      Tool(
-        functionDeclarations = functionDeclarations,
-        googleSearch = googleSearch,
-        googleMaps = googleMaps,
-        retrieval = retrieval,
-        urlContext = urlContext,
-        codeExecution = codeExecution,
-      )
-  }
-
-  companion object {
-    @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
-  }
-}
+)

@@ -60,7 +60,6 @@ kotlin {
         dependencies {
           implementation(libs.kotlinx.atomicfu)
           implementation(libs.kotlinx.coroutines.core)
-          implementation(libs.kotlinx.datetime)
           // api: ClassifierContent exposes kotlinx JsonObject and JsonArray in public signatures.
           api(libs.kotlinx.serialization)
           api(libs.google.genai.kotlin)

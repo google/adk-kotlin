@@ -66,17 +66,9 @@ The signatures of `BaseTool.run` and `FunctionTool.execute` still say `ToolConte
 
 ## Built-in tools
 
-`core/src/*/kotlin/com/google/adk/kt/tools/` holds the built-ins: search and
-grounding tools, `BuiltInCodeExecutionTool`, `ExitLoopTool`, memory and artifact
-tools, human-input tools, `AgentTool`, and `SkillToolset`. Two to know:
+`core/src/*/kotlin/com/google/adk/kt/tools/` holds the built-ins: search and grounding tools, `ExitLoopTool`, memory and artifact tools, human-input tools, `AgentTool`, and `SkillToolset`. Two to know:
 
--   Provider-side tools such as `GoogleSearchTool` and
-    `BuiltInCodeExecutionTool` run inside the model API and generally cannot be
-    combined with function tools in one request. Put them in a dedicated
-    sub-agent or `AgentTool`, or use
-    `GoogleSearchTool(bypassMultiToolsLimit = true)`, which does that wrapping
-    for you. `BuiltInCodeExecutionTool` saves images the code produces as
-    artifacts, so the runner needs an `ArtifactService`.
+- Provider-side tools such as `GoogleSearchTool` run inside the model API and generally cannot be combined with function tools in one request. Put them in a dedicated sub-agent or `AgentTool`, or use `GoogleSearchTool(bypassMultiToolsLimit = true)`, which does that wrapping for you.
 - `transfer_to_agent` is added automatically for agents with transfer targets; you never add it.
 
 ## Agent as a tool

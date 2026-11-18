@@ -38,7 +38,6 @@ import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.processors.AgentTransferProcessor
 import com.google.adk.kt.processors.BasicRequestProcessor
-import com.google.adk.kt.processors.CodeExecutionImageProcessor
 import com.google.adk.kt.processors.CompactionRequestProcessor
 import com.google.adk.kt.processors.ContentsProcessor
 import com.google.adk.kt.processors.ContextCacheRequestProcessor
@@ -269,8 +268,7 @@ class LlmAgent(
       OutputSchemaProcessor(),
     )
 
-  internal val systemAfterTurnProcessors: List<LlmResponseProcessor> =
-    listOf(CodeExecutionImageProcessor())
+  internal val systemAfterTurnProcessors: List<LlmResponseProcessor> = emptyList()
 
   private fun getTransferToAgentOrNull(event: Event, fromAgent: String): BaseAgent? {
     if (event.author == fromAgent) {

@@ -481,17 +481,6 @@ class GenaiConvertersTest {
   }
 
   @Test
-  fun tool_withCodeExecution_convertsCorrectly() {
-    val adkTool = Tool(codeExecution = ToolCodeExecution())
-
-    val genaiTool = adkTool.toGenaiSdk()
-    assertNotNull(genaiTool.codeExecution)
-
-    val convertedBack = genaiTool.fromGenaiSdk()
-    assertNotNull(convertedBack.codeExecution)
-  }
-
-  @Test
   fun promptFeedback_convertsCorrectly() {
     val adkPromptFeedback = PromptFeedback(blockReasonMessage = "msg")
     val genaiPromptFeedback = adkPromptFeedback.toGenaiSdk()
