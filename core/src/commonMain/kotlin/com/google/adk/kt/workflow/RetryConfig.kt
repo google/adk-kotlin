@@ -18,6 +18,9 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.interop.JavaClass
+import com.google.adk.kt.interop.toJavaClass
+import com.google.adk.kt.interop.toKClass
 import com.google.adk.kt.retry.ExponentialBackoff
 import com.google.adk.kt.retry.exponentialBackoffDelay
 import kotlin.jvm.JvmStatic
@@ -94,6 +97,12 @@ data class RetryConfig(
   /** Returns [maxDelay] in whole milliseconds. Java cannot read it (mangled). */
   fun maxDelayMillis(): Long = maxDelay.inWholeMilliseconds
 
+  /** Returns [exceptionClasses] as Java classes, or null when unset, for Java callers. */
+  @AdkJavaInteropApi
+  fun exceptionJavaClasses(): List<JavaClass<out Exception>>? = exceptionClasses?.map {
+    it.toJavaClass()
+  }
+
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
    * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
@@ -160,8 +169,8 @@ data class RetryConfig(
 
     /**
      * Sets [RetryConfig.exceptionClasses], the types of failures to retry on, or unsets it if null.
-     * Leaves [RetryConfig.exceptions] unchanged. Java callers convert each class with
-     * `JvmClassMappingKt.getKotlinClass`.
+     * Leaves [RetryConfig.exceptions] unchanged. Java callers pass `Class` objects, as a list or
+     * one by one, to [exceptionJavaClasses] instead.
      */
     fun exceptionClasses(exceptionClasses: List<KClass<out Exception>>?): Builder = apply {
       // Java callers can pass null elements, which would otherwise throw only when a node fails.
@@ -173,6 +182,21 @@ data class RetryConfig(
       exceptionClass: KClass<out Exception>,
       vararg moreExceptionClasses: KClass<out Exception>,
     ): Builder = exceptionClasses(listOf(exceptionClass, *moreExceptionClasses))
+
+    /**
+     * Sets [RetryConfig.exceptionClasses] from Java classes, or unsets it if null. Leaves
+     * [RetryConfig.exceptions] unchanged.
+     */
+    fun exceptionJavaClasses(exceptionJavaClasses: List<JavaClass<out Exception>>?): Builder =
+      apply {
+        exceptionClasses = exceptionJavaClasses?.requireNoNulls()?.map { it.toKClass() }
+      }
+
+    /** Sets [RetryConfig.exceptionClasses] from the given Java classes, like the list overload. */
+    fun exceptionJavaClasses(
+      exceptionClass: JavaClass<out Exception>,
+      vararg moreExceptionClasses: JavaClass<out Exception>,
+    ): Builder = exceptionJavaClasses(listOf(exceptionClass, *moreExceptionClasses))
 
     fun build(): RetryConfig =
       RetryConfig(

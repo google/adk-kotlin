@@ -253,7 +253,8 @@ subprojects {
       optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
       optIn.add("kotlinx.coroutines.ExperimentalCoroutinesApi")
       freeCompilerArgs.add("-Xskip-metadata-version-check")
-      // `expect`/`actual` classes are Beta (KT-61573); GoogleCredentials relies on them.
+      // `expect`/`actual` classes are Beta (KT-61573); GoogleCredentials and JavaClass rely on
+      // them.
       freeCompilerArgs.add("-Xexpect-actual-classes")
       // Compile with the current Kotlin toolchain but emit metadata/bytecode
       // for kotlinCompatVersion so downstream consumers aren't forced to upgrade.
