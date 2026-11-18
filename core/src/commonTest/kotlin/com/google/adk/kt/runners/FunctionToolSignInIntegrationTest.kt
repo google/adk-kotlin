@@ -56,8 +56,8 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * End-to-end sign-in for a tool through the public Runner: the tool asks for a credential, ADK
- * emits a sign-in request and ends the agent call, and the app answers with [SignInRequest.reply],
- * so ADK stores the credential and re-runs the tool.
+ * emits a sign-in request and ends the agent call, and the app answers with
+ * [SignInRequest.createResponse], so ADK stores the credential and re-runs the tool.
  */
 @OptIn(ExperimentalAuthApi::class)
 class FunctionToolSignInIntegrationTest {
@@ -85,9 +85,9 @@ class FunctionToolSignInIntegrationTest {
           )
       )
     val (requestA, requestB) = runner.send(userMessage("hi")).signInRequests()
-    val unused = runner.send(requestA.reply(API_KEY))
+    val unused = runner.send(requestA.createResponse(API_KEY))
 
-    val second = runner.send(requestB.reply(API_KEY))
+    val second = runner.send(requestB.createResponse(API_KEY))
 
     assertEquals(
       listOf(
@@ -106,7 +106,7 @@ class FunctionToolSignInIntegrationTest {
     val runner = InMemoryRunner(agent = agent(SignInTool(TOOL_NAME, CONFIG, alwaysAsks = true)))
     val request = runner.send(userMessage("hi")).signInRequests().single()
 
-    val events = runner.send(request.reply(API_KEY))
+    val events = runner.send(request.createResponse(API_KEY))
 
     assertEquals(emptyList(), events.flatMap { it.credentialCallIds() })
     assertEquals(2, seen.size)
@@ -117,7 +117,7 @@ class FunctionToolSignInIntegrationTest {
     val runner = InMemoryRunner(agent = agent(SignInTool(TOOL_NAME, CONFIG)))
     val request = runner.send(userMessage("hi")).signInRequests().single()
 
-    val events = runner.send(request.reply(API_KEY))
+    val events = runner.send(request.createResponse(API_KEY))
 
     assertEquals(
       listOf<Pair<String, AuthCredential?>>(TOOL_NAME to null, TOOL_NAME to API_KEY),
@@ -136,7 +136,7 @@ class FunctionToolSignInIntegrationTest {
     val firstTurn = runner.send(userMessage("hi"))
     val request = firstTurn.signInRequests().single()
 
-    val resumed = runner.send(request.reply(API_KEY))
+    val resumed = runner.send(request.createResponse(API_KEY))
 
     assertFalse(AGENT_NAME to END_OF_AGENT in simplifyResumableEvents(firstTurn))
     assertEquals(setOf(firstTurn.first().invocationId), resumed.map { it.invocationId }.toSet())
@@ -155,7 +155,7 @@ class FunctionToolSignInIntegrationTest {
     val runner = resumableRunner(agent(SignInTool(TOOL_NAME, CONFIG)))
     val request = runner.send(userMessage("hi")).signInRequests().single()
 
-    val resumed = runner.send(request.reply(API_KEY))
+    val resumed = runner.send(request.createResponse(API_KEY))
 
     assertEquals(
       listOf<Pair<String, AuthCredential?>>(TOOL_NAME to null, TOOL_NAME to API_KEY),
@@ -179,9 +179,9 @@ class FunctionToolSignInIntegrationTest {
         )
       )
     val (requestA, requestB) = runner.send(userMessage("hi")).signInRequests()
-    val unused = runner.send(requestA.reply(API_KEY))
+    val unused = runner.send(requestA.createResponse(API_KEY))
 
-    val second = runner.send(requestB.reply(API_KEY))
+    val second = runner.send(requestB.createResponse(API_KEY))
 
     assertEquals(emptyList(), second)
     assertEquals(listOf("tool_a", "tool_b", "tool_a"), seen.map { (tool, _) -> tool })
@@ -200,7 +200,9 @@ class FunctionToolSignInIntegrationTest {
     val requests = runner.send(userMessage("hi")).signInRequests()
 
     val resumed =
-      runner.send(Content(role = Role.USER, parts = requests.flatMap { it.reply(API_KEY).parts }))
+      runner.send(
+        Content(role = Role.USER, parts = requests.flatMap { it.createResponse(API_KEY).parts })
+      )
 
     assertEquals(
       listOf(
@@ -269,7 +271,7 @@ class FunctionToolSignInIntegrationTest {
         .signInRequests()
         .single()
 
-    val events = runner.send(request.reply(API_KEY))
+    val events = runner.send(request.createResponse(API_KEY))
 
     assertEquals(
       listOf(AGENT_NAME to toolResponsePart(TOOL_NAME, "ok"), AGENT_NAME to "done"),

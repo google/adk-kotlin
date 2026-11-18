@@ -63,8 +63,8 @@ fun testOpenIdConnectConfig(): AuthConfig =
   )
 
 /**
- * The state key under which the app's sign-in reply for this config lasts for one invocation,
+ * The state key under which the app's sign-in response for this config lasts for one invocation,
  * spelled out rather than taken from the code under test.
  */
-val AuthConfig.signInReplyStateKey: String
+val AuthConfig.signInResponseStateKey: String
   get() = "temp:${credentialKey.value}"

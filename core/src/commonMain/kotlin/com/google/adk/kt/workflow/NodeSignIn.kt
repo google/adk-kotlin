@@ -37,7 +37,7 @@ import com.google.adk.kt.types.Role
 /**
  * Returns the long-running `adk_request_credential` event asking the app for [authConfig]'s
  * credential, with [interruptId] as its call id. Its state delta keeps the OAuth2 `state` and PKCE
- * code verifier for the reply, under keys that outlast the pause, and its request leaves out the
+ * code verifier for the response, under keys that outlast the pause, and its request leaves out the
  * verifier.
  *
  * @throws IllegalArgumentException if an OAuth2 or OpenID Connect [authConfig] can't produce an

@@ -18,7 +18,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.testing.capturingLogs
-import com.google.adk.kt.testing.signInReplyStateKey
+import com.google.adk.kt.testing.signInResponseStateKey
 import java.util.logging.Level
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -33,7 +33,7 @@ class AuthHandlerLoggingTest {
   fun storedCredential_malformedValue_warnsWithoutTheKeyOrTheValue() {
     val storedValue = "stored-credential-value"
     val state =
-      mapOf(CONFIG.signInReplyStateKey to mapOf("authType" to "oauth2", "oauth2" to storedValue))
+      mapOf(CONFIG.signInResponseStateKey to mapOf("authType" to "oauth2", "oauth2" to storedValue))
 
     val (credential, records) =
       capturingLogs(LOGGER, Level.WARNING) { CONFIG.storedCredential(state) }
@@ -53,7 +53,7 @@ class AuthHandlerLoggingTest {
     val values = listOf(mapOf("authType" to "apiKey", "apiKey" to "sk-123"), "sk-123")
 
     for (value in values) {
-      val state = mapOf(CONFIG.signInReplyStateKey to value)
+      val state = mapOf(CONFIG.signInResponseStateKey to value)
 
       val (credential, records) =
         capturingLogs(LOGGER, Level.WARNING) { CONFIG.storedCredential(state) }
@@ -65,7 +65,7 @@ class AuthHandlerLoggingTest {
 
   @Test
   fun storedCredential_emptyOrMissingValue_doesNotWarn() {
-    for (state in listOf(emptyMap(), mapOf(CONFIG.signInReplyStateKey to ""))) {
+    for (state in listOf(emptyMap(), mapOf(CONFIG.signInResponseStateKey to ""))) {
       val (_, records) = capturingLogs(LOGGER, Level.WARNING) { CONFIG.storedCredential(state) }
 
       assertTrue(records.isEmpty())

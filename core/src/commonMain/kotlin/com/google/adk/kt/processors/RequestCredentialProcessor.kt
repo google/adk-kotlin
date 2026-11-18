@@ -23,12 +23,13 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.toReadonlyContext
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthConfigSerializer
 import com.google.adk.kt.auth.CredentialKey
 import com.google.adk.kt.auth.RequestCredentialArgs
-import com.google.adk.kt.auth.SignInReplyResult
-import com.google.adk.kt.auth.storeSignInReply
+import com.google.adk.kt.auth.StoreSignInResponseOutcome
+import com.google.adk.kt.auth.findCredentialRequest
+import com.google.adk.kt.auth.latestSignInResponses
+import com.google.adk.kt.auth.storeSignInResponse
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
@@ -38,13 +39,12 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
-import com.google.adk.kt.types.Role
 
 /**
  * Before each model call, stores the credentials the app sent back for this agent's credential
  * requests and re-runs the tool calls waiting on them. Only the latest event with content counts,
- * and only when the user wrote it, so a reply isn't handled again once its tools have re-run, and
- * the model can't forge one.
+ * and only when the user wrote it, so a response isn't handled again once its tools have re-run,
+ * and the model can't forge one.
  */
 internal class RequestCredentialProcessor : LlmRequestProcessor {
 
@@ -59,8 +59,8 @@ internal class RequestCredentialProcessor : LlmRequestProcessor {
       }
     // All invocations, so a response that starts a new invocation still finds its request.
     val events = context.getEvents(currentInvocation = false, currentBranch = true)
-    val credentialResponses = events.latestCredentialResponses()
-    if (credentialResponses.isEmpty()) return request
+    val signInResponses = events.latestSignInResponses()
+    if (signInResponses.isEmpty()) return request
 
     // Only this agent's events count, so a peer can't choose what is stored or re-run.
     val agentEvents = events.filter { it.author == agent.name }
@@ -76,7 +76,7 @@ internal class RequestCredentialProcessor : LlmRequestProcessor {
         }
     val requestingCallIds = mutableSetOf<String>()
     val storedKeys = mutableSetOf<CredentialKey>()
-    for ((id, response) in credentialResponses) {
+    for ((id, response) in signInResponses) {
       val credentialRequest = agentEvents.findCredentialRequest(id, requestedConfigs)
       if (credentialRequest == null) {
         logger.warn { "Ignoring a credential response that matches no credential request." }
@@ -85,11 +85,11 @@ internal class RequestCredentialProcessor : LlmRequestProcessor {
       requestingCallIds += credentialRequest.functionCallId
       val authConfig = credentialRequest.authConfig
       // Straight into the live session, so ADK copies the token into no event.
-      when (authConfig.storeSignInReply(response, context.session.state)) {
-        SignInReplyResult.STORED -> storedKeys += authConfig.credentialKey
-        SignInReplyResult.NO_CREDENTIAL ->
+      when (authConfig.storeSignInResponse(response, context.session.state)) {
+        StoreSignInResponseOutcome.STORED -> storedKeys += authConfig.credentialKey
+        StoreSignInResponseOutcome.NO_CREDENTIAL ->
           logger.warn { "Ignoring a credential response that holds no credential." }
-        SignInReplyResult.NEEDS_CODE_EXCHANGE ->
+        StoreSignInResponseOutcome.NEEDS_CODE_EXCHANGE ->
           logger.warn {
             "Ignoring a credential response without an access token; ADK can't exchange an " +
               "authorization code yet."
@@ -116,38 +116,9 @@ internal class RequestCredentialProcessor : LlmRequestProcessor {
 }
 
 /**
- * Returns the `adk_request_credential` responses in the latest event with content, by id, or none
- * unless the user wrote that event.
- */
-private fun List<Event>.latestCredentialResponses(): Map<String, Map<String, Any?>> {
-  val event =
-    lastOrNull { it.content != null }?.takeIf { it.author == Role.USER } ?: return emptyMap()
-  return event
-    .functionResponses()
-    .filter { it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME }
-    .mapNotNull { response -> response.id?.let { id -> id to response.response } }
-    .toMap()
-}
-
-/**
- * Returns the arguments of the latest valid credential request with [id] in these events whose
- * config is one [requestedConfigs] holds for its tool call, or null if there is none. No other
- * request counts, so neither a peer nor the model can choose where or how a credential is stored.
- */
-private fun List<Event>.findCredentialRequest(
-  id: String,
-  requestedConfigs: Map<String, List<AuthConfig>>,
-): RequestCredentialArgs? =
-  asSequence()
-    .flatMap { it.functionCalls() }
-    .filter { it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME && it.id == id }
-    .mapNotNull { RequestCredentialArgs.fromMap(it.args) }
-    .lastOrNull { it.authConfig in requestedConfigs[it.functionCallId].orEmpty() }
-
-/**
  * Returns the tool calls to re-run: [requestingCallIds], and each other call in the same
  * `requestedAuthConfigs` map of these events whose credential key is in [storedKeys]. Calls that
- * share a key get one request, so one reply covers them all.
+ * share a key get one request, so one response covers them all.
  */
 private fun List<Event>.callIdsToRerun(
   requestingCallIds: Set<String>,
@@ -172,7 +143,8 @@ private suspend fun LlmAgent.toolsByName(context: InvocationContext): Map<String
  * `requestedAuthConfigs`, or null if no tool asked. It holds one `adk_request_credential` call per
  * credential key, the first tool call's config winning, so the user signs in once for tools that
  * share a credential. The calls are long-running so that a resumable app pauses, and the event
- * carries the requested configs so a reply matches its request even if the app stops reading here.
+ * carries the requested configs so a response matches its request even if the app stops reading
+ * here.
  */
 internal fun generateRequestCredentialEvent(
   invocationContext: InvocationContext,

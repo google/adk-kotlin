@@ -22,7 +22,7 @@ import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.testing.DummyArtifactService
-import com.google.adk.kt.testing.signInReplyStateKey
+import com.google.adk.kt.testing.signInResponseStateKey
 import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testToolContext
@@ -133,16 +133,19 @@ class ToolContextTest {
   }
 
   @Test
-  fun getAuthResponse_noReply_returnsNull() = runBlocking {
+  fun getAuthResponse_noResponse_returnsNull() = runBlocking {
     assertNull(testToolContext().getAuthResponse(API_KEY_CONFIG))
   }
 
   @Test
-  fun getAuthResponse_replyInPendingState_returnsIt() = runBlocking {
+  fun getAuthResponse_responseInPendingState_returnsIt() = runBlocking {
     val context = testToolContext()
-    context.updateState(API_KEY_CONFIG.signInReplyStateKey, "sk-reply")
+    context.updateState(API_KEY_CONFIG.signInResponseStateKey, "sk-response")
 
-    assertEquals(AuthCredential.ApiKey(Secret("sk-reply")), context.getAuthResponse(API_KEY_CONFIG))
+    assertEquals(
+      AuthCredential.ApiKey(Secret("sk-response")),
+      context.getAuthResponse(API_KEY_CONFIG),
+    )
   }
 
   @Test

@@ -29,9 +29,9 @@ import com.google.adk.kt.types.Role
 /**
  * A request from ADK for a credential one of the agent's tools needs, as
  * [Event.signInRequests][com.google.adk.kt.events.Event.signInRequests] finds it. Send the user to
- * [authUri] when there is one, then answer with [reply].
+ * [authUri] when there is one, then answer with [createResponse].
  *
- * @property id The id of the `adk_request_credential` call; the reply carries it.
+ * @property id The id of the `adk_request_credential` call; the response carries it.
  * @property authConfig What the tool needs: the scheme, and for OAuth2 and OpenID Connect the
  *   authorization URL.
  */
@@ -51,11 +51,11 @@ class SignInRequest internal constructor(val id: String, val authConfig: AuthCon
    * @throws IllegalArgumentException if [credential] is an OAuth2 credential without an access
    *   token for an OAuth2 or OpenID Connect scheme, since ADK can't exchange a code yet.
    */
-  fun reply(credential: AuthCredential): Content {
+  fun createResponse(credential: AuthCredential): Content {
     val answer = credential.filledInto(authConfig.exchangedAuthCredential)
     val config = authConfig.copy(exchangedAuthCredential = answer)
     require(!config.needsCodeExchange(answer)) {
-      "A sign-in reply needs an access token; ADK can't exchange an authorization code yet."
+      "A sign-in response needs an access token; ADK can't exchange an authorization code yet."
     }
     return Content(
       role = Role.USER,

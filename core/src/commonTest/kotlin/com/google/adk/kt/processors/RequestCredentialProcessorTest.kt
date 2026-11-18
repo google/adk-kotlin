@@ -33,7 +33,7 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
-import com.google.adk.kt.testing.signInReplyStateKey
+import com.google.adk.kt.testing.signInResponseStateKey
 import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.testing.testOpenIdConnectConfig
 import com.google.adk.kt.testing.testSession
@@ -394,7 +394,7 @@ class RequestCredentialProcessorTest {
 
     context.process()
 
-    assertNotNull(context.session.state[request.signInReplyStateKey])
+    assertNotNull(context.session.state[request.signInResponseStateKey])
     assertEquals(listOf(TOOL_NAME), runs)
   }
 
@@ -559,7 +559,7 @@ class RequestCredentialProcessorTest {
     context.process()
 
     assertNotNull(context.stored())
-    assertNotNull(context.session.state[apiKeyRequest.signInReplyStateKey])
+    assertNotNull(context.session.state[apiKeyRequest.signInResponseStateKey])
     assertEquals(listOf("tool_a", "tool_b"), runs.sorted())
   }
 
@@ -666,8 +666,8 @@ class RequestCredentialProcessorTest {
     val unused = RequestCredentialProcessor().process(this, LlmRequest()) { emitted.add(it) }
   }
 
-  /** Returns the credential stored as [REQUEST]'s sign-in reply, if any. */
-  private fun InvocationContext.stored(): Any? = session.state[REQUEST.signInReplyStateKey]
+  /** Returns the credential stored as [REQUEST]'s sign-in response, if any. */
+  private fun InvocationContext.stored(): Any? = session.state[REQUEST.signInResponseStateKey]
 
   private companion object {
     const val AGENT_NAME = "test"

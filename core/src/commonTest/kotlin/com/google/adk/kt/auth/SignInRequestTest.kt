@@ -21,7 +21,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.sessions.State
-import com.google.adk.kt.testing.signInReplyStateKey
+import com.google.adk.kt.testing.signInResponseStateKey
 import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -69,11 +69,12 @@ class SignInRequestTest {
   }
 
   @Test
-  fun reply_apiKeyCredential_answersTheRequestWithItsConfig() {
-    val reply = signInRequest(API_KEY_REQUEST).reply(AuthCredential.ApiKey(Secret("user-key")))
+  fun createResponse_apiKeyCredential_answersTheRequestWithItsConfig() {
+    val message =
+      signInRequest(API_KEY_REQUEST).createResponse(AuthCredential.ApiKey(Secret("user-key")))
 
-    val response = reply.functionResponse()
-    assertEquals(Role.USER, reply.role)
+    val response = message.functionResponse()
+    assertEquals(Role.USER, message.role)
     assertEquals(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, response.name)
     assertEquals("req-1", response.id)
     assertEquals(
@@ -87,20 +88,20 @@ class SignInRequestTest {
   }
 
   @Test
-  fun reply_httpCredentialToOAuth2Request_replacesTheRequestCredential() {
+  fun createResponse_httpCredentialToOAuth2Request_replacesTheRequestCredential() {
     val answer = AuthCredential.Http.bearer("t")
 
-    val reply = signInRequest(OIDC_REQUEST).reply(answer)
+    val message = signInRequest(OIDC_REQUEST).createResponse(answer)
 
     val expected = OIDC_REQUEST.copy(exchangedAuthCredential = answer)
     assertEquals(
       adkJson.encodeToJsonElement(AuthConfigSerializer, expected),
-      anyToJsonElement(reply.functionResponse().response),
+      anyToJsonElement(message.functionResponse().response),
     )
   }
 
   @Test
-  fun reply_oauth2CredentialWithAccessToken_fillsInTheRequestCredential() {
+  fun createResponse_oauth2CredentialWithAccessToken_fillsInTheRequestCredential() {
     val answer =
       AuthCredential.OAuth2(
         redirectUri = "https://app/other-cb",
@@ -113,7 +114,7 @@ class SignInRequestTest {
         expiresIn = 3600.seconds,
       )
 
-    val reply = signInRequest(OIDC_REQUEST).reply(answer)
+    val message = signInRequest(OIDC_REQUEST).createResponse(answer)
 
     val filledIn =
       OIDC_SIGN_IN.copy(
@@ -129,49 +130,51 @@ class SignInRequestTest {
     val expected = OIDC_REQUEST.copy(exchangedAuthCredential = filledIn)
     assertEquals(
       adkJson.encodeToJsonElement(AuthConfigSerializer, expected),
-      anyToJsonElement(reply.functionResponse().response),
+      anyToJsonElement(message.functionResponse().response),
     )
   }
 
   @Test
-  fun reply_oauth2CredentialWithAccessToken_isStoredAsTheCredential() {
+  fun createResponse_oauth2CredentialWithAccessToken_isStoredAsTheCredential() {
     val state = State()
 
-    val reply = signInRequest(OIDC_REQUEST).reply(AuthCredential.OAuth2(accessToken = Secret("at")))
+    val message =
+      signInRequest(OIDC_REQUEST).createResponse(AuthCredential.OAuth2(accessToken = Secret("at")))
 
     assertEquals(
-      SignInReplyResult.STORED,
-      OIDC_REQUEST.storeSignInReply(reply.functionResponse().response, state),
+      StoreSignInResponseOutcome.STORED,
+      OIDC_REQUEST.storeSignInResponse(message.functionResponse().response, state),
     )
     assertEquals(
       OIDC_SIGN_IN.copy(accessToken = Secret("at")),
-      state[OIDC_REQUEST.signInReplyStateKey],
+      state[OIDC_REQUEST.signInResponseStateKey],
     )
   }
 
   @Test
-  fun reply_oauth2CredentialWithOnlyAccessToken_keepsTheRequestCredentialsFields() {
-    val reply = signInRequest(OIDC_REQUEST).reply(AuthCredential.OAuth2(accessToken = Secret("at")))
+  fun createResponse_oauth2CredentialWithOnlyAccessToken_keepsTheRequestCredentialsFields() {
+    val message =
+      signInRequest(OIDC_REQUEST).createResponse(AuthCredential.OAuth2(accessToken = Secret("at")))
 
     val expected =
       OIDC_REQUEST.copy(exchangedAuthCredential = OIDC_SIGN_IN.copy(accessToken = Secret("at")))
     assertEquals(
       adkJson.encodeToJsonElement(AuthConfigSerializer, expected),
-      anyToJsonElement(reply.functionResponse().response),
+      anyToJsonElement(message.functionResponse().response),
     )
   }
 
   @Test
-  fun reply_oauth2CredentialWithoutAccessToken_throws() {
+  fun createResponse_oauth2CredentialWithoutAccessToken_throws() {
     val request = signInRequest(OIDC_REQUEST)
 
     val error =
       assertFailsWith<IllegalArgumentException> {
-        request.reply(AuthCredential.OAuth2(authCode = Secret("code")))
+        request.createResponse(AuthCredential.OAuth2(authCode = Secret("code")))
       }
 
     assertEquals(
-      "A sign-in reply needs an access token; ADK can't exchange an authorization code yet.",
+      "A sign-in response needs an access token; ADK can't exchange an authorization code yet.",
       error.message,
     )
   }
