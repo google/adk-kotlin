@@ -20,6 +20,7 @@ import com.google.adk.kt.types.LiveServerGoAway
 import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Transcription
 import com.google.genai.kotlin.GenAiApiException
+import kotlin.time.Duration
 
 /** The error a live connection fails with when its socket drops abnormally (close code 1006). */
 internal fun connectionDrop(): GenAiApiException =
@@ -27,9 +28,14 @@ internal fun connectionDrop(): GenAiApiException =
 
 /** A session resumption update that hands out [handle] for the next connection. */
 internal fun handleUpdate(handle: String): LlmResponse =
-  LlmResponse(liveSessionResumptionUpdate = LiveServerSessionResumptionUpdate(newHandle = handle))
+  LlmResponse(
+    liveSessionResumptionUpdate =
+      LiveServerSessionResumptionUpdate(newHandle = handle, resumable = true)
+  )
 
-internal fun goAway(): LlmResponse = LlmResponse(goAway = LiveServerGoAway())
+/** A notice that the server closes the connection after [timeLeft], or soon when it is null. */
+internal fun goAway(timeLeft: Duration? = null): LlmResponse =
+  LlmResponse(goAway = LiveServerGoAway(timeLeft = timeLeft))
 
 internal fun turnComplete(): LlmResponse = LlmResponse(turnComplete = true)
 
