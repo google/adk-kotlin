@@ -49,6 +49,7 @@ import com.google.adk.kt.workflow.NodeRunner
 import com.google.adk.kt.workflow.OutputState
 import com.google.adk.kt.workflow.ResumeScan
 import com.google.adk.kt.workflow.Route
+import com.google.adk.kt.workflow.UnsupportedPauseException
 import com.google.adk.kt.workflow.ValueCodec
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.followHandoffs
@@ -626,15 +627,16 @@ open class Context(
     get() = requireNodeState().isolationScope
 
   /**
-   * Executes [node] as a child of this node activation and returns its output. When [node] is an
-   * agent that hands off with `transfer_to_agent`, the handoffs are followed and the last agent's
-   * output is returned.
+   * Executes [node] under the caller's node path and returns its output. In a node activation, when
+   * [node] is an agent that hands off with `transfer_to_agent`, the handoffs are followed and the
+   * last agent's output is returned.
    *
-   * Child events are recorded under `<thisNodePath>/<node.name>@<runId>`. If [node] fails, this
-   * call throws [DynamicNodeFailedException], which fails this node unless the caller catches it.
-   * If [node] pauses for input, this call throws an internal [Throwable] that is not an
+   * Child events are recorded under `<callerNodePath>/<node.name>@<runId>`. If [node] fails, this
+   * call throws [DynamicNodeFailedException], which fails a calling node unless caught. If [node]
+   * pauses for input in a node activation, this call throws an internal [Throwable] that is not an
    * [Exception], so the runtime can mark this node as waiting; do not catch it with `runCatching`
-   * or `catch (t: Throwable)`.
+   * or `catch (t: Throwable)`. Outside a node activation, as from a tool, a pause throws
+   * [DynamicNodeFailedException] instead.
    *
    * @param node Child node to execute.
    * @param nodeInput Input passed to [node], or `null` if none.
@@ -642,26 +644,29 @@ open class Context(
    *   A child that already recorded an output under the same ID, in this activation, an earlier
    *   attempt, or an earlier turn, returns it without running again; one that finished without an
    *   output may run again. When `null` or empty, the child gets the next number for its name,
-   *   which follows call order, so concurrent children need explicit IDs.
+   *   which follows call order, so concurrent children need explicit IDs. Outside a node
+   *   activation, any path-safe ID is allowed, the default is `"1"`, and only finished steps inside
+   *   a [Workflow] child are replayed. When a confirmation or credential request runs the tool
+   *   again, [node] runs again.
    * @param useAsOutput When `true`, delegates this node's output to [node]. The first output this
    *   node produces afterwards (such as returning [node]'s result) is dropped, even if [node]
    *   produces none. A second output fails this node. The claim is released only if [node] fails
    *   before emitting an output, so a caller that catches the failure may fall back to its own
    *   output. Once [node] has emitted, its output is this node's output and successors receive it.
    *   A `node {}` outputs it encoded under its output type, as if it had returned it, and fails if
-   *   it does not decode.
+   *   it does not decode. Ignored outside a node activation.
    * @param useSubBranch When `true`, runs [node] on a sub-branch `<branch>.<node.name>@<runId>`.
    * @param overrideBranch Branch for [node] to run on instead of this node's branch.
    * @param overrideIsolationScope Isolation scope for [node] to run in instead of this node's
-   *   scope. When `null`, an [AgentMode.TASK] child of a node activation runs in a scope named by
-   *   its own node path.
+   *   scope. When `null`, an [AgentMode.TASK] child runs in a scope named by its own node path.
    * @param raiseOnWait When `true` and [node] is a [Workflow] or sets [Node.waitForOutput] but
    *   finishes without an output, aborts this node's run like an interrupt, without recording one:
    *   this node completes with any output it already produced, or else waits only if it sets
    *   [Node.waitForOutput].
-   * @throws IllegalStateException if called outside a node activation, if this node does not set
-   *   `rerunOnResume = true`, or if this node already produced or delegated its output and
-   *   [useAsOutput] is `true`.
+   * @throws IllegalStateException if this node does not set `rerunOnResume = true`, if this node
+   *   already produced or delegated its output and [useAsOutput] is `true`, or, outside a node
+   *   activation, if the invocation is not on the node path (`App(rootNode = agent)` or a
+   *   [Workflow]), runs live, [node] requests a handoff, or [raiseOnWait] aborts.
    * @throws IllegalArgumentException if [node]'s name or [runId] is invalid, if [nodeInput] fails
    *   [node]'s input schema, or if a handoff can't be followed: a node that is not an agent
    *   requests one, or an agent requests one to itself, to an agent its transfer flags forbid, to a
@@ -670,7 +675,8 @@ open class Context(
    *   [NodeInputValidationException][com.google.adk.kt.workflow.NodeInputValidationException]
    *   instead. A [parallelNode][com.google.adk.kt.workflow.parallelNode] checks each item instead,
    *   and a rejected item fails it.
-   * @throws DynamicNodeFailedException if [node] fails; its `error` is the child's failure.
+   * @throws DynamicNodeFailedException if [node] fails, or pauses outside a node activation; its
+   *   `error` is the child's failure.
    */
   @CanIgnoreReturnValue
   @ExperimentalWorkflowApi
@@ -684,15 +690,18 @@ open class Context(
     overrideIsolationScope: String? = null,
     raiseOnWait: Boolean = false,
   ): Any? {
-    val ns = requireNodeState()
-    check(ns.node.rerunOnResume) {
-      "Node '${ns.node.name}' must set rerunOnResume = true to call runNode: a dynamically" +
-        " dispatched child may be interrupted, and the workflow re-runs the caller on resume to" +
-        " collect the child's output."
-    }
-    require(runId.isNullOrEmpty() || runId.any { !it.isDigit() }) {
-      "runId \"$runId\" for node '${node.name}' must contain a non-digit character so it cannot" +
-        " collide with auto-generated IDs."
+    // Outside a node activation there is no node to re-run and no auto-numbered child.
+    val ns = nodeState
+    if (ns != null) {
+      check(ns.node.rerunOnResume) {
+        "Node '${ns.node.name}' must set rerunOnResume = true to call runNode: a dynamically" +
+          " dispatched child may be interrupted, and the workflow re-runs the caller on resume to" +
+          " collect the child's output."
+      }
+      require(runId.isNullOrEmpty() || runId.any { !it.isDigit() }) {
+        "runId \"$runId\" for node '${node.name}' must contain a non-digit character so it cannot" +
+          " collide with auto-generated IDs."
+      }
     }
     return runNodeUnchecked(
       node,
@@ -723,9 +732,9 @@ open class Context(
     overrideIsolationScope: String? = null,
     raiseOnWait: Boolean = false,
   ): Any? {
-    val ns = requireNodeState()
+    val ns = nodeState
     // A workflow takes its output from its terminal node, so it never claims a child's.
-    val delegatesOutput = useAsOutput && ns.node !is Workflow
+    val delegatesOutput = ns != null && useAsOutput && ns.node !is Workflow
     if (delegatesOutput) ns.claimOutputDelegation()
 
     // A child that fails before emitting releases the claim, so a caller that catches the failure
@@ -752,10 +761,11 @@ open class Context(
       if (delegatesOutput) ns.releaseOutputDelegation()
       throw DynamicNodeFailedException(it.cause, it.nodePath)
     }
-    // A paused child pauses this node; the workflow re-runs it on resume to collect the output.
-    if (childState.interruptIds.isNotEmpty()) {
-      ns.addInterruptIds(childState.interruptIds)
-      throw NodeInterruptedException()
+    if (ns == null && childContext.actions.transferToAgent != null) {
+      throw IllegalStateException(
+        "Node '${node.name}' requested a transfer_to_agent handoff, and a run outside a node" +
+          " activation cannot follow handoffs yet."
+      )
     }
     // raiseOnWait: a child left without its output, or a handoff target paused on a task, waits.
     val leftWaiting =
@@ -763,7 +773,16 @@ open class Context(
         !childState.hasProducedOutput &&
         childContext.actions.transferToAgent == null &&
         (childState.node is Workflow || childState.node.waitForOutput)
-    if (raiseOnWait && (leftWaiting || childState.isPaused)) {
+    val aborted = raiseOnWait && (leftWaiting || childState.isPaused)
+    if (childState.interruptIds.isNotEmpty() || aborted) {
+      if (ns == null) {
+        throw UnsupportedPauseException(
+          "Node '${node.name}' paused for input or ended without an output, and a run outside a" +
+            " node activation cannot pause yet."
+        )
+      }
+      // A paused child pauses this node; the workflow re-runs it on resume to collect the output.
+      ns.addInterruptIds(childState.interruptIds)
       throw NodeInterruptedException()
     }
     // A delegate's output not recorded for this attempt, such as a replay, is emitted here.
@@ -779,7 +798,7 @@ open class Context(
    * Runs [node] as a child activation and returns its [Context], replaying a completed or waiting
    * child on resume. If [node] requests a `transfer_to_agent` handoff, follows the transfer loop
    * and returns the final agent's [Context]. Calls with the same run ID share one run, handoffs
-   * included.
+   * included. Outside a node activation, a handoff is rejected and [node] is not replayed itself.
    */
   @ExperimentalWorkflowApi
   internal suspend fun runNodeForContext(
@@ -793,7 +812,16 @@ open class Context(
   ): Context {
     // A dispatched child is not in the static graph that Workflow validates, so check it here.
     validateNodeName(node.name)
-    val ns = requireNodeState()
+    val ns =
+      nodeState
+        ?: return runOutsideActivation(
+          node,
+          nodeInput,
+          runId,
+          useSubBranch,
+          overrideBranch,
+          overrideIsolationScope,
+        )
     val id =
       if (runId.isNullOrEmpty()) {
         ns.nextChildRunId(node.name)
@@ -857,9 +885,10 @@ open class Context(
   /**
    * Runs the graph node [node] for the workflow scheduler, which already checked it against history
    * and worked out its [resumeInputs], then follows any `transfer_to_agent` handoff it requests and
-   * returns the context of the agent that ends the loop. If [firstHop] is set, it is a finished run
-   * of [node] with a recorded transfer: [node] does not run again, and the loop starts from that
-   * transfer. [node] validates its own input.
+   * returns the context of the agent that ends the loop, passing that agent's `skipSummarization`
+   * on to this context. If [firstHop] is set, it is a finished run of [node] with a recorded
+   * transfer: [node] does not run again, and the loop starts from that transfer. [node] validates
+   * its own input.
    */
   @ExperimentalWorkflowApi
   internal suspend fun runGraphNode(
@@ -888,14 +917,17 @@ open class Context(
           openInterrupts = openInterrupts,
           validateInput = true,
         )
-    return followTransfers(
-      node,
-      first,
-      useAsOutput,
-      useSubBranch,
-      overrideBranch,
-      overrideIsolationScope,
-    )
+    val last =
+      followTransfers(
+        node,
+        first,
+        useAsOutput,
+        useSubBranch,
+        overrideBranch,
+        overrideIsolationScope,
+      )
+    if (last.actions.skipSummarization) actions.skipSummarization = true
+    return last
   }
 
   /**
@@ -1041,6 +1073,47 @@ open class Context(
   }
 
   private var nodeState: NodeExecutionState? = null
+
+  /**
+   * Runs [node] outside a node activation, as from a tool or a callback, under the caller's node
+   * path, on the invocation's event sink.
+   */
+  @ExperimentalWorkflowApi
+  @OptIn(FrameworkInternalApi::class)
+  private suspend fun runOutsideActivation(
+    node: Node,
+    nodeInput: Any?,
+    runId: String?,
+    useSubBranch: Boolean,
+    overrideBranch: String?,
+    overrideIsolationScope: String?,
+  ): Context {
+    // Running a node from a tool is not supported in live mode yet
+    check(invocationContext.liveRun == null) { "runNode can't run a child from a live run yet." }
+    val sink =
+      checkNotNull(invocationContext.frameworkData.eventSink) {
+        "runNode outside a node activation needs the node path: run the agent with" +
+          " App(rootNode = agent) or in a Workflow."
+      }
+    // As in ADK Python, the child defaults to run 1.
+    val id =
+      if (runId.isNullOrEmpty()) {
+        "1"
+      } else {
+        validateRunId(runId, node.name)
+        runId
+      }
+    return NodeRunner.runFromTool(
+      node,
+      invocationContext,
+      sink.sink,
+      id,
+      node.validateInput(nodeInput),
+      useSubBranch,
+      overrideBranch,
+      overrideIsolationScope,
+    )
+  }
 
   internal fun requireNodeState(): NodeExecutionState =
     checkNotNull(nodeState) { "This member is available only on a node activation context." }

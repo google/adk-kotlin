@@ -61,6 +61,13 @@ class GraphValidationException(message: String) : IllegalArgumentException(messa
 class WorkflowConfigurationException(message: String) : IllegalArgumentException(message)
 
 /**
+ * Thrown when a node pauses for input, or a `raiseOnWait` child ends without an output, outside a
+ * node activation, such as under a tool, where pausing is not supported yet. Like
+ * [WorkflowConfigurationException], it is never retried.
+ */
+internal class UnsupportedPauseException(message: String) : IllegalStateException(message)
+
+/**
  * Ends a node's run while it waits for input: thrown by [requestInput] with its [request], or when
  * a dispatched child pauses. Extends [Throwable] rather than [Exception] so `catch (Exception)` in
  * user code does not swallow it.
