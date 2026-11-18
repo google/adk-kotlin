@@ -17,6 +17,7 @@
 package com.google.adk.kt.plugins
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.MissingTool
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -49,9 +50,9 @@ import kotlinx.serialization.json.JsonPrimitive
  *   guidance; the failure after that exceeds the limit. Must not be negative; `0` disables retries.
  * @property throwExceptionIfRetryExceeded Once the limit is exceeded, whether to stop handling the
  *   error or to answer with guidance telling the model to stop using the tool. When set, a thrown
- *   error is left to the flow as if the plugin were absent, and an error found in a result is
- *   thrown. If another callback answers an error left to the flow, the plugin passes that answer on
- *   unchanged and keeps the count.
+ *   error is left to the flow and fails the run if no other callback answers it; an unregistered
+ *   tool call or an error found in a result is thrown. If another callback answers an error left to
+ *   the flow, the plugin passes that answer on unchanged and keeps the count.
  * @property trackingScope Whether a tool's failures are counted per invocation or across them.
  * @property resultErrorExtractor Finds errors that tools report in their results instead of
  *   throwing; when `null`, no result counts as a failure.
@@ -111,7 +112,10 @@ class ReflectAndRetryToolPlugin(
     handleToolError(context, tool, args, error)?.let {
       return CallbackChoice.Break(it)
     }
-    // Past the limit, leave the error to the flow: throwing here would log its message.
+    // The flow answers an unknown tool instead of rethrowing, so fail the run here as Python does;
+    // the lookup error names only registered tools, so the pipeline may log it.
+    if (tool is MissingTool) throw error
+    // Leave other errors to the flow so downstream callbacks run and errors aren't logged here.
     failureCountsLock.withLock { declinedCalls(context) += context }
     return CallbackChoice.Continue(Unit)
   }

@@ -620,8 +620,8 @@ data class InvocationContext(
   /**
    * Executes a single function call synchronously and builds a corresponding response event.
    *
-   * A name that resolves to no tool is the model's own mistake to correct, so it is answered with a
-   * function response listing the tools that do exist rather than raised out of the invocation.
+   * A name that resolves to no tool is answered with a function response listing available tools,
+   * unless an error callback handles or fails it.
    */
   internal suspend fun executeSingleFunctionCall(
     functionCall: FunctionCall,
@@ -730,8 +730,12 @@ data class InvocationContext(
     toolContext: ToolContext,
     responseEventId: String,
   ): Event {
+    val availableToolNames = tools.keys.joinToString(", ").ifEmpty { "none" }
     // Python raises a ValueError here; IllegalArgumentException is its Kotlin counterpart.
-    val error = IllegalArgumentException(TOOL_NOT_FOUND_ERROR)
+    val error =
+      IllegalArgumentException(
+        "$TOOL_NOT_FOUND_ERROR. The tools you can call are: $availableToolNames."
+      )
     val recovered = runErrorBaseToolCallbacks(llmAgent, tool, args, toolContext, error)
     // Marked only after the callbacks return, so a cancelled callback leaves the span unset.
     span[TelemetryAttributes.ERROR_TYPE] = errorType(error)
@@ -743,7 +747,7 @@ data class InvocationContext(
           logger.warn {
             "Model called a tool name that is not registered; ${tools.size} tool(s) available."
           }
-          buildToolNotFoundResponse(tool.name, tools)
+          buildToolNotFoundResponse(tool.name, availableToolNames)
         }
     span[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_RESPONSE] = capturedJson {
       toTraceJson(toFinalResponseMap(response))
@@ -959,7 +963,7 @@ data class InvocationContext(
 /** Name reported for a function call the model emitted without one. */
 private const val UNNAMED_TOOL = "<unnamed>"
 
-/** Message of the lookup failure handed to the on-tool-error callbacks; carries no model data. */
+/** Message prefix of the lookup failure handed to error callbacks; carries no model data. */
 private const val TOOL_NOT_FOUND_ERROR = "No tool with the requested name is registered"
 
 /**
@@ -967,7 +971,7 @@ private const val TOOL_NOT_FOUND_ERROR = "No tool with the requested name is reg
  * for a call that can never run (parity with Python's `BaseTool(name=…, description='Tool not
  * found')`).
  */
-private class MissingTool(name: String) : BaseTool(name = name, description = "Tool not found") {
+internal class MissingTool(name: String) : BaseTool(name = name, description = "Tool not found") {
   override fun declaration(): FunctionDeclaration? = null
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any =
@@ -975,21 +979,16 @@ private class MissingTool(name: String) : BaseTool(name = name, description = "T
 }
 
 /**
- * Returns the error payload reported back to the model for a tool name it made up, naming the tools
- * it may call instead. Mirrors Python's `build_tool_not_found_response`.
+ * Returns the error payload reported back to the model for a tool name it made up, naming
+ * [available] tools it may call instead. Mirrors Python's `build_tool_not_found_response`.
  */
-private fun buildToolNotFoundResponse(
-  toolName: String,
-  tools: Map<String, BaseTool>,
-): Map<String, Any?> {
-  val available = tools.keys.joinToString(", ").ifEmpty { "none" }
-  return mapOf(
+private fun buildToolNotFoundResponse(toolName: String, available: String): Map<String, Any?> =
+  mapOf(
     "error" to
       "Invoking `$toolName()` failed as no tool with that name is available. The tools you can " +
         "call are: $available. You could retry, but it is IMPORTANT that you only call a tool " +
         "from that list."
   )
-}
 
 /**
  * Framework-internal per-invocation data holder. Groups scratch state used by ADK's own machinery
