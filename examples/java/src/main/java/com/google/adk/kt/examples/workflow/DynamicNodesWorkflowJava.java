@@ -16,11 +16,9 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.InteropContextView;
 import com.google.adk.kt.interop.PublisherRunner;
@@ -35,9 +33,7 @@ import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.Map;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code dynamic_nodes} workflow sample: the {@code loop} sample rewritten
@@ -50,19 +46,17 @@ public final class DynamicNodesWorkflowJava {
 
   /**
    * Builds the workflow, with both agents on {@code model}. The Kotlin sample's {@code orchestrate}
-   * node emits the topic itself, but an event a Java node publishes may not be stored before the
-   * agents start, so a separate node stores it first.
+   * node emits the topic itself, but because a node started by {@code runNode} does not see state
+   * set by its caller's body, a separate node stores the topic first.
    */
   public static Workflow create(Model model) {
     return Workflow.builder()
         .name("dynamic_nodes")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(
-                        processInput(),
-                        new Orchestrator(
-                            generateHeadlineAgent(model), evaluateHeadlineAgent(model))))
+        .edges(g ->
+            g.fromStart()
+                .chain(
+                    processInput(),
+                    orchestrate(generateHeadlineAgent(model), evaluateHeadlineAgent(model))))
         .build();
   }
 
@@ -105,35 +99,24 @@ public final class DynamicNodesWorkflowJava {
    * tech-related}, and outputs that headline. As in adk-python, nothing limits the number of
    * rounds.
    */
-  private static final class Orchestrator extends BasePublisherNode {
-    private final Node generateHeadline;
-    private final Node evaluateHeadline;
-
-    Orchestrator(Node generateHeadline, Node evaluateHeadline) {
-      // Runs other nodes, so it reruns on resume to collect a paused child's output.
-      super("orchestrate", "", /* rerunOnResume= */ true);
-      this.generateHeadline = generateHeadline;
-      this.evaluateHeadline = evaluateHeadline;
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return techHeadline(InteropContextView.of(context));
-    }
-
-    /** Writes a headline and has it graded, and starts over until the grade is tech-related. */
-    private Mono<Object> techHeadline(InteropContextView view) {
-      return Mono.fromFuture(() -> view.runNode(generateHeadline))
-          .flatMap(
-              headline ->
-                  Mono.fromFuture(() -> view.runNode(evaluateHeadline, headline))
-                      .flatMap(
-                          // The grader's object output schema makes its reply arrive as a map.
-                          feedback ->
-                              "tech-related".equals(((Map<?, ?>) feedback).get("grade"))
-                                  ? Mono.just(headline)
-                                  : techHeadline(view)));
-    }
+  private static FunctionNode<Object, String> orchestrate(
+      Node generateHeadline, Node evaluateHeadline) {
+    return FunctionNodes.builder(Object.class, String.class)
+        .name("orchestrate")
+        // Runs other nodes, so it reruns on resume to collect a paused child's output.
+        .rerunOnResume(true)
+        .body((ctx, input) -> {
+          InteropContextView view = InteropContextView.of(ctx);
+          String headline;
+          Map<?, ?> feedback;
+          do {
+            headline = (String) view.runNode(generateHeadline).join();
+            // The grader's object output schema makes its reply arrive as a map.
+            feedback = (Map<?, ?>) view.runNode(evaluateHeadline, headline).join();
+          } while (!"tech-related".equals(feedback.get("grade")));
+          return headline;
+        })
+        .build();
   }
 
   private static LlmAgent generateHeadlineAgent(Model model) {
