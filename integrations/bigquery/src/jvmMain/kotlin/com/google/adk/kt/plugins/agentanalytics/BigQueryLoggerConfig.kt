@@ -47,8 +47,8 @@ import kotlin.jvm.JvmStatic
  * @property createViews Whether to create or replace one view per event type when the first event
  *   is logged.
  * @property viewPrefix Prefix of the view names, so `v` gives `v_llm_request`. Views are skipped if
- *   this prefix or the table's project, dataset or name has characters other than letters, digits,
- *   `_` and `-`.
+ *   this prefix or the table's dataset or name has characters other than letters, digits, `_` and
+ *   `-`, or if [projectId] is not a valid project identifier or `domain:project` identifier.
  * @property contentFormatter Called with each event's content and type; its result is logged in
  *   place of the content. If it throws, `[FORMATTER_FAILED]` is logged instead.
  * @property retryConfig How a batch of rows that fails to write is retried.
