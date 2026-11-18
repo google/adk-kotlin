@@ -48,6 +48,7 @@ import java.util.function.Consumer
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -1653,6 +1654,68 @@ class A2AAgentImplTest {
 
       assertThat(sentMessages(2)[1].contextId()).isEqualTo("context-1")
     }
+
+  @Test
+  fun runAsync_blockingTaskWithErrorCodeOnArtifact_emitsAndStoresIt() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val blocking = RunConfig(streamingMode = StreamingMode.NONE)
+      // ADK Python writes an event's error code on the artifact, not on the task.
+      val artifact =
+        Artifact.builder()
+          .artifactId("artifact-1")
+          .parts(listOf(TextPart("Blocked")))
+          .metadata(mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))
+          .build()
+      val task =
+        Task.builder()
+          .id("task-1")
+          .contextId("context-1")
+          .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+          .artifacts(listOf(artifact))
+          .build()
+      mockStreamResponse(this) { consumer -> consumer.accept(TaskEvent(task), agentCard) }
+
+      val events =
+        runner.runAsync("user", "s1", newMessage = userMessage("Hi"), runConfig = blocking).toList()
+
+      assertThat(events.single { it.author == "remote-agent" }.errorCode).isEqualTo("SAFETY")
+      assertThat(storedAgentEvents(runner).single().errorCode).isEqualTo("SAFETY")
+    }
+
+  @Test
+  fun runAsync_streamedStatusWithErrorCodeOnMessage_emitsAndStoresIt() =
+    runBlocking<Unit> {
+      val runner = InMemoryRunner(createTestAgent())
+      val streaming = RunConfig(streamingMode = StreamingMode.SSE)
+      // ADK Python writes an event's error code on the status message, not on the update.
+      val message =
+        Message.builder()
+          .role(Message.Role.ROLE_AGENT)
+          .parts(listOf(TextPart("Blocked")))
+          .metadata(mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))
+          .build()
+      val status = TaskStatus(TaskState.TASK_STATE_FAILED, message, null)
+      val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+      val update = TaskStatusUpdateEvent("task-1", status, "context-1", null)
+      mockStreamResponse(this) { consumer ->
+        consumer.accept(TaskUpdateEvent(task, update), agentCard)
+      }
+
+      val events =
+        runner
+          .runAsync("user", "s1", newMessage = userMessage("Hi"), runConfig = streaming)
+          .toList()
+
+      assertThat(events.single { it.author == "remote-agent" }.errorCode).isEqualTo("SAFETY")
+      assertThat(storedAgentEvents(runner).single().errorCode).isEqualTo("SAFETY")
+    }
+
+  /** Returns the events this agent stored in session s1 of [runner]. */
+  private suspend fun storedAgentEvents(runner: InMemoryRunner): List<Event> {
+    val session = runner.sessionService.getSession(SessionKey(runner.appName, "user", "s1"))
+    return assertNotNull(session).events.filter { it.author == "remote-agent" }
+  }
 
   private fun createTestAgent(
     transportSupportsStreaming: Boolean = true,

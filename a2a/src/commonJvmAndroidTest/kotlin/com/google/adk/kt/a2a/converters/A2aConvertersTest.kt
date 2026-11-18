@@ -46,6 +46,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import java.util.Base64
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 import org.a2aproject.sdk.client.MessageEvent
 import org.a2aproject.sdk.client.TaskEvent
@@ -838,6 +839,257 @@ class A2aConvertersTest {
     assertThat(result?.turnComplete).isTrue()
     assertThat(result?.partial).isFalse()
     assertThat(result?.content).isNull()
+  }
+
+  @Test
+  fun clientEventToEvent_withMetadataOnUpdateAndArtifact_prefersArtifactAndFillsInMissingKeys() {
+    val artifact = artifact("artifact-1", mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))
+    val updateEvent =
+      TaskArtifactUpdateEvent.builder()
+        .taskId("task-1")
+        .contextId("context-1")
+        .artifact(artifact)
+        .lastChunk(true)
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to "MAX_TOKENS", MetadataKeys.USAGE to USAGE_7))
+        .build()
+
+    val result =
+      TaskUpdateEvent(peerTask(TaskState.TASK_STATE_WORKING), updateEvent)
+        .toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.usageMetadata?.totalTokenCount).isEqualTo(7)
+  }
+
+  @Test
+  fun clientEventToEvent_withMetadataOnUpdateAndStatusMessage_prefersMessage() {
+    val event =
+      statusUpdateWithParts(
+        TaskState.TASK_STATE_COMPLETED,
+        TextPart("Blocked"),
+        messageMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+        updateMetadata =
+          mapOf(MetadataKeys.ERROR_CODE to "MAX_TOKENS", MetadataKeys.USAGE to USAGE_7),
+      )
+
+    val result = event.toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.usageMetadata?.totalTokenCount).isEqualTo(7)
+  }
+
+  @Test
+  fun clientEventToEvent_withNullKeyOnStatusMessage_keepsUpdatesKey() {
+    val event =
+      statusUpdateWithParts(
+        TaskState.TASK_STATE_COMPLETED,
+        TextPart("Blocked"),
+        messageMetadata = metadataWithNull(MetadataKeys.ERROR_CODE),
+        updateMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+      )
+
+    assertThat(event.toAdkEvent(invocationContext)?.errorCode).isEqualTo("SAFETY")
+  }
+
+  @Test
+  fun clientEventToEvent_withMetadataOnFailedStatusMessage_readsIt() {
+    val event =
+      statusUpdateWithParts(
+        TaskState.TASK_STATE_FAILED,
+        TextPart("Blocked"),
+        messageMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+        updateMetadata = INVOCATION_METADATA,
+      )
+
+    val result = event.toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.errorMessage).isEqualTo("Blocked")
+  }
+
+  @Test
+  fun clientEventToEvent_withMetadataOnStatusMessageOfWorkingUpdate_readsIt() {
+    val event =
+      statusUpdateWithParts(
+        TaskState.TASK_STATE_WORKING,
+        TextPart("Searching"),
+        messageMetadata = mapOf(MetadataKeys.USAGE to USAGE_7),
+        updateMetadata = INVOCATION_METADATA,
+      )
+
+    val result = event.toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.turnComplete).isFalse()
+    assertThat(result.usageMetadata?.totalTokenCount).isEqualTo(7)
+  }
+
+  @Test
+  fun taskToEvent_withMetadataOnArtifactAndStatusMessage_readsOnlyArtifact() {
+    val task =
+      Task.builder(
+          taskWithStatusParts(
+            TaskState.TASK_STATE_COMPLETED,
+            TextPart("Done"),
+            messageMetadata =
+              mapOf(MetadataKeys.ERROR_CODE to "MAX_TOKENS", MetadataKeys.USAGE to USAGE_7),
+          )
+        )
+        .artifacts(listOf(artifact("artifact-1", mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))))
+        .metadata(INVOCATION_METADATA)
+        .build()
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.usageMetadata).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withMetadataOnTwoArtifacts_takesFirstThatSetsAField() {
+    val task =
+      peerTask(
+        TaskState.TASK_STATE_COMPLETED,
+        artifacts =
+          listOf(
+            artifact("artifact-1", INVOCATION_METADATA),
+            artifact("artifact-2", mapOf(MetadataKeys.ERROR_CODE to "SAFETY")),
+            artifact(
+              "artifact-3",
+              mapOf(MetadataKeys.ERROR_CODE to "MAX_TOKENS", MetadataKeys.USAGE to USAGE_7),
+            ),
+          ),
+      )
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.usageMetadata).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withStructUsageOnFirstArtifact_skipsLaterArtifacts() {
+    // ADK Python sends usage as a protobuf Struct, whose numbers arrive as doubles.
+    val task = taskWithFirstArtifact(MetadataKeys.USAGE to mapOf("totalTokenCount" to 7.0))
+
+    assertThat(task.toAdkEvent(invocationContext).errorCode).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withGroundingOnFirstArtifact_readsIt() {
+    val grounding = mapOf("webSearchQueries" to listOf("weather"))
+    val result =
+      taskWithFirstArtifact(MetadataKeys.GROUNDING to grounding).toAdkEvent(invocationContext)
+
+    assertThat(result.groundingMetadata?.webSearchQueries).containsExactly("weather")
+    assertThat(result.errorCode).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withCustomMetadataJsonOnFirstArtifact_skipsLaterArtifacts() {
+    val task = taskWithFirstArtifact(MetadataKeys.CUSTOM to "{\"topic\":\"weather\"}")
+
+    assertThat(task.toAdkEvent(invocationContext).errorCode).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withCitationOnFirstArtifact_skipsLaterArtifacts() {
+    val task =
+      taskWithFirstArtifact(MetadataKeys.CITATION to mapOf("citations" to emptyList<Any>()))
+
+    assertThat(task.toAdkEvent(invocationContext).errorCode).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withEmptyErrorCodeOnFirstArtifact_skipsLaterArtifacts() {
+    val task = taskWithFirstArtifact(MetadataKeys.ERROR_CODE to "")
+
+    assertThat(task.toAdkEvent(invocationContext).errorCode).isNull()
+  }
+
+  @Test
+  fun taskToEvent_withUnparseableFieldOnFirstArtifact_takesNextArtifact() {
+    val task =
+      peerTask(
+        TaskState.TASK_STATE_COMPLETED,
+        artifacts =
+          listOf(
+            artifact("artifact-1", mapOf(MetadataKeys.USAGE to "not json")),
+            artifact("artifact-2", mapOf(MetadataKeys.ERROR_CODE to "SAFETY")),
+          ),
+      )
+
+    assertThat(task.toAdkEvent(invocationContext).errorCode).isEqualTo("SAFETY")
+  }
+
+  @Test
+  fun taskToEvent_withMetadataOnStatusMessageOfEmptyWorkingTask_readsIt() {
+    // A working task with nothing to show still gives an event carrying its metadata.
+    val task =
+      Task.builder(
+          taskWithStatusParts(
+            TaskState.TASK_STATE_WORKING,
+            invalidBase64Part(),
+            messageMetadata = mapOf(MetadataKeys.USAGE to USAGE_7),
+          )
+        )
+        .metadata(INVOCATION_METADATA)
+        .build()
+
+    assertThat(task.toAdkEvent(invocationContext).usageMetadata?.totalTokenCount).isEqualTo(7)
+  }
+
+  @Test
+  fun taskToEvent_withMetadataOnFailedStatusMessage_readsErrorCode() {
+    val task =
+      taskWithStatusParts(
+        TaskState.TASK_STATE_FAILED,
+        TextPart("Blocked by safety"),
+        messageMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+      )
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.errorMessage).isEqualTo("Blocked by safety")
+  }
+
+  @Test
+  fun taskToEvent_withArtifactWithoutEventFields_readsStatusMessage() {
+    val task =
+      Task.builder(
+          taskWithStatusParts(
+            TaskState.TASK_STATE_FAILED,
+            TextPart("Blocked by safety"),
+            messageMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+          )
+        )
+        .artifacts(listOf(artifact("artifact-1", INVOCATION_METADATA)))
+        .build()
+
+    assertThat(task.toAdkEvent(invocationContext).errorCode).isEqualTo("SAFETY")
+  }
+
+  @Test
+  fun taskToEvent_withMetadataOnTaskAndStatusMessage_fillsInMissingKeys() {
+    val task =
+      Task.builder(
+          taskWithStatusParts(
+            TaskState.TASK_STATE_COMPLETED,
+            TextPart("Blocked"),
+            messageMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+          )
+        )
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to "MAX_TOKENS", MetadataKeys.USAGE to USAGE_7))
+        .build()
+
+    val result = task.toAdkEvent(invocationContext)
+
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.usageMetadata?.totalTokenCount).isEqualTo(7)
   }
 
   @Test
@@ -2261,8 +2513,39 @@ class A2aConvertersTest {
       mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_CALL, MetadataKeys.IS_LONG_RUNNING to true),
     )
 
-  private fun statusWithParts(state: TaskState, parts: List<A2APart<*>>) =
-    TaskStatus(state, Message.builder().role(Message.Role.ROLE_AGENT).parts(parts).build(), null)
+  private fun statusWithParts(
+    state: TaskState,
+    parts: List<A2APart<*>>,
+    messageMetadata: Map<String, Any> = emptyMap(),
+  ) =
+    TaskStatus(
+      state,
+      Message.builder()
+        .role(Message.Role.ROLE_AGENT)
+        .parts(parts)
+        .metadata(messageMetadata)
+        .build(),
+      null,
+    )
+
+  /** Metadata mapping [key] to JSON null, which the SDK keeps although its type says otherwise. */
+  @Suppress("UNCHECKED_CAST")
+  private fun metadataWithNull(key: String) = mapOf(key to null) as Map<String, Any>
+
+  /** A completed task whose first artifact has [field] and whose second has error code SAFETY. */
+  private fun taskWithFirstArtifact(field: Pair<String, Any>): Task =
+    peerTask(
+      TaskState.TASK_STATE_COMPLETED,
+      artifacts =
+        listOf(
+          artifact("artifact-1", mapOf(field)),
+          artifact("artifact-2", mapOf(MetadataKeys.ERROR_CODE to "SAFETY")),
+        ),
+    )
+
+  /** An artifact with one text part and [metadata]. */
+  private fun artifact(id: String, metadata: Map<String, Any>) =
+    Artifact.builder().artifactId(id).parts(listOf(TextPart("Answer"))).metadata(metadata).build()
 
   /** Task-1 in context-1, in [state], with [artifacts] and no status message. */
   private fun peerTask(state: TaskState, artifacts: List<Artifact> = emptyList()): Task =
@@ -2273,16 +2556,36 @@ class A2aConvertersTest {
       .artifacts(artifacts)
       .build()
 
-  private fun taskWithStatusParts(state: TaskState, vararg parts: A2APart<*>): Task =
+  private fun taskWithStatusParts(
+    state: TaskState,
+    vararg parts: A2APart<*>,
+    messageMetadata: Map<String, Any> = emptyMap(),
+  ): Task =
     Task.builder()
       .id("task-1")
       .contextId("context-1")
-      .status(statusWithParts(state, parts.toList()))
+      .status(statusWithParts(state, parts.toList(), messageMetadata))
       .build()
 
-  private fun statusUpdateWithParts(state: TaskState, vararg parts: A2APart<*>): TaskUpdateEvent {
-    val status = statusWithParts(state, parts.toList())
+  private fun statusUpdateWithParts(
+    state: TaskState,
+    vararg parts: A2APart<*>,
+    messageMetadata: Map<String, Any> = emptyMap(),
+    updateMetadata: Map<String, Any> = emptyMap(),
+  ): TaskUpdateEvent {
+    val status = statusWithParts(state, parts.toList(), messageMetadata)
     val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
-    return TaskUpdateEvent(task, TaskStatusUpdateEvent("task-1", status, "context-1", null))
+    return TaskUpdateEvent(
+      task,
+      TaskStatusUpdateEvent("task-1", status, "context-1", updateMetadata),
+    )
+  }
+
+  companion object {
+    // Invocation metadata an ADK Python agent writes on every task and update; no event field.
+    private val INVOCATION_METADATA =
+      mapOf("adk_app_name" to "app", "adk_user_id" to "user", "adk_session_id" to "session")
+
+    private const val USAGE_7 = "{\"totalTokenCount\":7}"
   }
 }

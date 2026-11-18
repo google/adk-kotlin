@@ -253,10 +253,12 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
     errorMessage ?: DEFAULT_ERROR_MESSAGE.takeIf { status.state() == TaskState.TASK_STATE_FAILED }
   val isFinal = status.state().isFinalState() || status.state().isInterruptedState()
 
+  val mergedMetadata = mergeMetadata(inner = innerMetadata(), outer = metadata.orEmpty())
+
   if (adkParts.isEmpty() && !isFinal) {
     // Keeps the task's ids, as ADK Python does, so a turn that fails next still has its context.
     return emptyEvent(invocationContext)
-      .updateEventMetadata(metadata, id, contextId, metadataParser)
+      .updateEventMetadata(mergedMetadata, id, contextId, metadataParser)
   }
   // A task still in progress reports progress, not its answer, so ADK Python marks it as thoughts.
   if (status.state() in PENDING_STATES) adkParts.replaceAll { it.copy(thought = true) }
@@ -273,7 +275,7 @@ internal fun Task.toAdkEvent(invocationContext: InvocationContext): Event {
       )
       .withUserInputCall(status.state())
 
-  return event.updateEventMetadata(metadata, id, contextId, metadataParser)
+  return event.updateEventMetadata(mergedMetadata, id, contextId, metadataParser)
 }
 
 /** Converts an A2A Part to an ADK Part. */
@@ -357,7 +359,15 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
 
       eventPart
         .copy(partial = isAppend || !isLastChunk)
-        .updateEventMetadata(update.metadata, update.taskId, update.contextId, metadataParser)
+        .updateEventMetadata(
+          mergeMetadata(
+            inner = update.artifact.metadata.orEmpty(),
+            outer = update.metadata.orEmpty(),
+          ),
+          update.taskId,
+          update.contextId,
+          metadataParser,
+        )
     }
     is TaskStatusUpdateEvent -> {
       val status = update.status
@@ -389,7 +399,10 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
         }
 
       finalEvent?.updateEventMetadata(
-        update.metadata,
+        mergeMetadata(
+          inner = status.message()?.metadata.orEmpty(),
+          outer = update.metadata.orEmpty(),
+        ),
         update.taskId,
         update.contextId,
         metadataParser,
@@ -397,6 +410,22 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
     }
   }
 }
+
+/**
+ * Returns the whole metadata of the first of this task's artifacts, then its status message, that
+ * has an event field, or an empty map if none does.
+ */
+private fun Task.innerMetadata(): Map<String, Any?> =
+  (artifacts.orEmpty().map { it.metadata.orEmpty() } + status.message()?.metadata.orEmpty())
+    .firstOrNull(::hasEventFields)
+    .orEmpty()
+
+/**
+ * Returns [inner], the metadata of an artifact or status message, with missing or null keys taken
+ * from [outer]. [outer] is the task's or update's own metadata, a fallback for peers that write it.
+ */
+private fun mergeMetadata(inner: Map<String, Any?>, outer: Map<String, Any?>): Map<String, Any?> =
+  outer + inner.filterValues { it != null }
 
 // Converts a DataPart to an ADK Part.
 // Note: We use coerceToMap for arguments and response to handle cases where the data
