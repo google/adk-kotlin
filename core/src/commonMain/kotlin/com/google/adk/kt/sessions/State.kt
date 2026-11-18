@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.ValueCoercer
+import com.google.adk.kt.types.Schema
 import kotlin.jvm.JvmField
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 
 /**
@@ -24,10 +27,17 @@ import kotlin.jvm.JvmStatic
  *
  * This class implements [Map] to provide a read-only view of the state, while exposing specific
  * mutation methods ([set], [putAll]).
+ *
+ * @param stateSchema The schema whose properties declare the state keys, or null to check no write.
+ *   [set] and [putAll] require a key without a colon to be declared and its value to fit, and store
+ *   the value as the schema coerces it, so `"3"` under an `INTEGER` key is stored as `3`.
  */
-class State(
+class State
+@JvmOverloads
+constructor(
   initialState: Map<String, Any> = emptyMap(),
   initialDelta: Map<String, Any> = emptyMap(),
+  internal val stateSchema: Schema? = null,
 ) : Map<String, Any> {
   // Ensure we make a copy of the initial state and delta maps to avoid modifying the caller's
   // maps.
@@ -56,11 +66,14 @@ class State(
 
   override operator fun get(key: String): Any? = lock.read { state[key] }
 
-  /** Sets the value for the given key. */
-  operator fun set(key: String, value: Any): Any? = lock.write {
-    val oldValue = state.put(key, value)
-    delta[key] = value
-    oldValue
+  /**
+   * Sets the value for the given key.
+   *
+   * @throws IllegalArgumentException if the value fails the state schema; the state is unchanged.
+   */
+  operator fun set(key: String, value: Any): Any? {
+    val stored = checkedValue(key, value)
+    return lock.write { store(key, stored) }
   }
 
   /** Clears the state and delta maps. */
@@ -69,10 +82,17 @@ class State(
     delta.clear()
   }
 
-  /** Updates the state with all entries from the given map. */
-  fun putAll(from: Map<out String, Any>) = lock.write {
-    state.putAll(from)
-    delta.putAll(from)
+  /**
+   * Updates the state with all entries from the given map.
+   *
+   * @throws IllegalArgumentException if any value fails the state schema; the state is unchanged.
+   */
+  fun putAll(from: Map<out String, Any>) {
+    val stored = from.mapValues { (key, value) -> checkedValue(key, value) }
+    lock.write {
+      state.putAll(stored)
+      delta.putAll(stored)
+    }
   }
 
   fun remove(key: String): Any? = lock.write {
@@ -83,7 +103,8 @@ class State(
   }
 
   /**
-   * Applies the non-`temp:` entries of [delta] to the state, tracking them in the delta map.
+   * Applies the non-`temp:` entries of [delta] to the state, tracking them in the delta map. The
+   * state schema does not check them, since they record writes already made.
    *
    * `temp:` entries are skipped; apply those with [applyTempDelta].
    */
@@ -97,7 +118,7 @@ class State(
         if (value === REMOVED) {
           remove(key)
         } else {
-          this[key] = value
+          store(key, value)
         }
       }
     }
@@ -117,7 +138,7 @@ class State(
         if (value === REMOVED) {
           remove(key)
         } else {
-          this[key] = value
+          store(key, value)
         }
       }
     }
@@ -128,6 +149,15 @@ class State(
     get() = lock.read { delta.isNotEmpty() }
 
   override fun toString(): String = lock.read { state.toString() }
+
+  private fun checkedValue(key: String, value: Any): Any =
+    stateSchema?.let { checkStateEntry(it, key, value) } ?: value
+
+  private fun store(key: String, value: Any): Any? {
+    val oldValue = state.put(key, value)
+    delta[key] = value
+    return oldValue
+  }
 
   private object RemovedSentinel {
     override fun toString(): String = "__ADK_SENTINEL_REMOVED__"
@@ -152,6 +182,21 @@ class State(
     @Suppress("FunctionName")
     fun getREMOVED(): Any = REMOVED
   }
+}
+
+/**
+ * Checks one state write against [schema] and returns the value to store. Any key containing a
+ * colon passes unchecked, as in ADK Python, since ADK keeps its own `<owner>:<key>` state beside
+ * the `app:`, `user:` and `temp:` scopes. So does the removal sentinel, which stands for absence.
+ */
+internal fun checkStateEntry(schema: Schema, key: String, value: Any): Any {
+  if (':' in key || value === State.REMOVED) return value
+  val propertySchema =
+    requireNotNull(schema.properties?.get(key)) {
+      "validation error: state key '$key' is not declared in the state schema."
+    }
+  val checked = ValueCoercer.coerceValue(value, propertySchema, "state key '$key'").getOrThrow()
+  return requireNotNull(checked) { "validation error: state key '$key' is null." }
 }
 
 /**

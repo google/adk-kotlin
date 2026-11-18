@@ -106,7 +106,7 @@ data class Session(
 internal fun Session.detachedCopy(events: List<Event> = this.events): Session =
   Session(
     key = key,
-    state = State(initialState = state),
+    state = State(initialState = state, stateSchema = state.stateSchema),
     events = concurrentMutableListOf<Event>().apply { addAll(events) },
     lastUpdateTime = lastUpdateTime,
   )

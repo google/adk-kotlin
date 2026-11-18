@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
+import kotlin.test.assertFailsWith
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.JUnit4
@@ -113,5 +116,99 @@ class StateTest {
     assertThat(State.Companion.APP_PREFIX).isEqualTo("app:")
     assertThat(State.Companion.USER_PREFIX).isEqualTo("user:")
     assertThat(State.Companion.TEMP_PREFIX).isEqualTo("temp:")
+  }
+
+  @Test
+  fun set_underSchema_storesCheckedValue() {
+    val state = State(stateSchema = PROFILE_SCHEMA)
+
+    state["count"] = "3"
+
+    assertThat(state["count"]).isEqualTo(3L)
+    assertThat(state.hasDelta).isTrue()
+  }
+
+  @Test
+  fun set_underSchema_rejectsUndeclaredKeyAndWrongType() {
+    val state = State(initialState = mapOf("count" to 1L), stateSchema = PROFILE_SCHEMA)
+
+    val undeclared = assertFailsWith<IllegalArgumentException> { state["unknown"] = "bad" }
+    val wrongType = assertFailsWith<IllegalArgumentException> { state["count"] = "three" }
+
+    assertThat(undeclared).hasMessageThat().contains("'unknown' is not declared")
+    assertThat(wrongType).hasMessageThat().contains("state key 'count'")
+    assertThat(state).containsExactly("count", 1L)
+    assertThat(state.hasDelta).isFalse()
+  }
+
+  @Test
+  fun set_underSchema_skipsKeysWithColon() {
+    val state = State(stateSchema = PROFILE_SCHEMA)
+
+    state["user:anything"] = 1
+    state["plugin:pending"] = listOf(1)
+
+    assertThat(state).containsExactly("user:anything", 1, "plugin:pending", listOf(1))
+  }
+
+  @Test
+  fun putAll_underSchema_checksEveryEntryBeforeWritingAny() {
+    val state = State(stateSchema = PROFILE_SCHEMA)
+
+    assertFailsWith<IllegalArgumentException> {
+      state.putAll(mapOf("userId" to "u1", "count" to "three"))
+    }
+
+    assertThat(state).isEmpty()
+    assertThat(state.hasDelta).isFalse()
+  }
+
+  @Test
+  fun putAll_underSchema_storesCheckedValues() {
+    val state = State(stateSchema = PROFILE_SCHEMA)
+
+    state.putAll(mapOf("userId" to "u1", "count" to 2.0, "temp:x" to "y"))
+
+    assertThat(state).containsExactly("userId", "u1", "count", 2L, "temp:x", "y")
+  }
+
+  @Test
+  fun applyDelta_underSchema_isNotChecked() {
+    val state = State(stateSchema = PROFILE_SCHEMA)
+
+    state.applyDelta(mapOf("unknown" to "stored"))
+
+    assertThat(state["unknown"]).isEqualTo("stored")
+  }
+
+  @Test
+  fun set_underSchema_removedSentinelPassesUnchecked() {
+    val state = State(initialState = mapOf("count" to 1L), stateSchema = PROFILE_SCHEMA)
+
+    state["count"] = State.REMOVED
+
+    assertThat(state["count"]).isSameInstanceAs(State.REMOVED)
+  }
+
+  @Test
+  fun putAll_underSchema_rejectsUndeclaredKey() {
+    val state = State(stateSchema = PROFILE_SCHEMA)
+
+    val e =
+      assertFailsWith<IllegalArgumentException> {
+        state.putAll(mapOf("userId" to "u1", "unknown" to "bad"))
+      }
+
+    assertThat(e).hasMessageThat().contains("'unknown' is not declared")
+    assertThat(state).isEmpty()
+  }
+
+  private companion object {
+    val PROFILE_SCHEMA =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("userId" to Schema(type = Type.STRING), "count" to Schema(type = Type.INTEGER)),
+      )
   }
 }

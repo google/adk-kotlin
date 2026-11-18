@@ -16,7 +16,6 @@
 
 package com.google.adk.kt.agents
 
-import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -34,6 +33,7 @@ import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.sessions.checkStateEntry
 import com.google.adk.kt.tools.ReadonlyToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -287,7 +287,7 @@ open class Context(
    * [State.REMOVED]; the checked value is stored.
    */
   fun updateState(key: String, value: Any) {
-    val stored = effectiveStateSchema?.let { validateStateEntry(it, key, value) } ?: value
+    val stored = effectiveStateSchema?.let { checkStateEntry(it, key, value) } ?: value
     actions = actions.copy(stateDelta = (actions.stateDelta + (key to stored)).toMutableMap())
   }
 
@@ -299,24 +299,9 @@ open class Context(
     val schema = effectiveStateSchema ?: return delta
     val checked =
       delta.mapValuesTo(concurrentMutableMapOf()) { (key, value) ->
-        validateStateEntry(schema, key, value)
+        checkStateEntry(schema, key, value)
       }
     return if (checked == delta) delta else checked
-  }
-
-  /**
-   * Checks one state write against [schema] and returns the value to store. Any key containing a
-   * colon passes unchecked, as in ADK Python, since ADK keeps its own `<owner>:<key>` state beside
-   * the `app:`, `user:` and `temp:` scopes. So does the removal sentinel, which stands for absence.
-   */
-  private fun validateStateEntry(schema: Schema, key: String, value: Any): Any {
-    if (':' in key || value === State.REMOVED) return value
-    val propertySchema =
-      requireNotNull(schema.properties?.get(key)) {
-        "validation error: state key '$key' is not declared in the state schema."
-      }
-    val checked = ValueCoercer.coerceValue(value, propertySchema, "state key '$key'").getOrThrow()
-    return requireNotNull(checked) { "validation error: state key '$key' is null." }
   }
 
   /**
