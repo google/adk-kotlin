@@ -37,6 +37,7 @@ kotlinx-atomicfu = "0.33.0"
 # (https://github.com/Kotlin/kotlinx.coroutines/issues/4754). Upgrade once a release includes
 # the fix in https://github.com/Kotlin/kotlinx.coroutines/pull/4777.
 kotlinx-coroutines = "1.10.2"
+kotlinx-datetime = "0.8.0"
 kotlinx-serialization = "1.8.1"
 ksp = "2.3.9"
 # Held at 3.4.3: Ktor 3.5.0 and later require kotlinx-coroutines 1.11.
@@ -116,6 +117,7 @@ kotlinx-coroutines-reactive = { module = "org.jetbrains.kotlinx:kotlinx-coroutin
 kotlinx-coroutines-reactor = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-reactor", version.ref = "kotlinx-coroutines" }
 kotlinx-coroutines-slf4j = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-slf4j", version.ref = "kotlinx-coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
 kotlinx-serialization = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-java = { module = "io.ktor:ktor-client-java", version.ref = "ktor" }

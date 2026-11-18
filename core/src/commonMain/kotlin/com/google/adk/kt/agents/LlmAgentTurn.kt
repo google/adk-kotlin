@@ -2024,15 +2024,20 @@ internal class LlmAgentTurn(
     emitEvent: suspend (Event) -> Unit,
   ) {
     val callbackContext = CallbackContext(context)
+    var responseEvent = baseEvent
     val processedResponse =
       responseProcessors.fold(response) { res, processor ->
-        processor.process(callbackContext, res) { event -> emitEvent(event) }
+        processor.process(callbackContext, request, res) { event ->
+          emitEvent(event)
+          // baseEvent predates the model call; restamp past this event while keeping its id.
+          responseEvent = responseEvent.copy(timestamp = Clock.System.now().toEpochMilliseconds())
+        }
       }
 
     if (processedResponse.isEmpty()) return
 
     val toolsDict = getToolMap(request)
-    val finalizedEvent = baseEvent.finalizeModelResponseEvent(processedResponse, toolsDict)
+    val finalizedEvent = responseEvent.finalizeModelResponseEvent(processedResponse, toolsDict)
     // Last write wins, so a trace lookup by the last saved event's id finds this span.
     span[TelemetryAttributes.GCP_VERTEX_AGENT_EVENT_ID] = finalizedEvent.id
     emitEvent(finalizedEvent)
