@@ -841,6 +841,99 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun clientEventToEvent_withMetadataOnStatusMessage_readsIt() {
+    // ADK Python writes the error code on the status message and its invocation on the update.
+    val statusMessage =
+      Message.builder()
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(TextPart("Blocked")))
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))
+        .build()
+    val status = TaskStatus(TaskState.TASK_STATE_COMPLETED, statusMessage, null)
+    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent = TaskStatusUpdateEvent("task-1", status, "context-1", INVOCATION_METADATA)
+
+    val result = TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)
+
+    assertThat(result?.errorCode).isEqualTo("SAFETY")
+  }
+
+  @Test
+  fun clientEventToEvent_withMetadataOnArtifact_readsIt() {
+    val artifact =
+      Artifact.builder()
+        .artifactId("artifact-1")
+        .parts(listOf(TextPart("Answer")))
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))
+        .build()
+    val task =
+      Task.builder()
+        .id("task-1")
+        .contextId("context-1")
+        .status(TaskStatus(TaskState.TASK_STATE_WORKING))
+        .build()
+    val updateEvent =
+      TaskArtifactUpdateEvent.builder()
+        .taskId("task-1")
+        .contextId("context-1")
+        .artifact(artifact)
+        .lastChunk(true)
+        .metadata(INVOCATION_METADATA)
+        .build()
+
+    val result = TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)
+
+    assertThat(result?.errorCode).isEqualTo("SAFETY")
+  }
+
+  @Test
+  fun clientEventToEvent_withMetadataOnUpdateAndStatusMessage_prefersStatusMessage() {
+    val statusMessage =
+      Message.builder()
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(TextPart("Blocked")))
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))
+        .build()
+    val status = TaskStatus(TaskState.TASK_STATE_COMPLETED, statusMessage, null)
+    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent =
+      TaskStatusUpdateEvent(
+        "task-1",
+        status,
+        "context-1",
+        mapOf(MetadataKeys.ERROR_CODE to "MAX_TOKENS"),
+      )
+
+    val result = TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)
+
+    assertThat(result?.errorCode).isEqualTo("SAFETY")
+  }
+
+  @Test
+  fun clientEventToEvent_withMetadataOnUpdateOnly_fillsInMissingKeys() {
+    val statusMessage =
+      Message.builder()
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(TextPart("Blocked")))
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to "SAFETY"))
+        .build()
+    val status = TaskStatus(TaskState.TASK_STATE_COMPLETED, statusMessage, null)
+    val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
+    val updateEvent =
+      TaskStatusUpdateEvent(
+        "task-1",
+        status,
+        "context-1",
+        mapOf(MetadataKeys.USAGE to "{\"totalTokenCount\":7}"),
+      )
+
+    val result = TaskUpdateEvent(task, updateEvent).toAdkEvent(invocationContext)
+
+    assertThat(result?.errorCode).isEqualTo("SAFETY")
+    assertThat(result?.usageMetadata?.totalTokenCount).isEqualTo(7)
+  }
+
+  @Test
   fun taskToEvent_withUnconvertiblePartBeforeLongRunningCall_keepsLongRunningId() {
     val longRunningPart =
       DataPart(
@@ -2284,5 +2377,11 @@ class A2aConvertersTest {
     val status = statusWithParts(state, parts.toList())
     val task = Task.builder().id("task-1").contextId("context-1").status(status).build()
     return TaskUpdateEvent(task, TaskStatusUpdateEvent("task-1", status, "context-1", null))
+  }
+
+  private companion object {
+    // Invocation metadata an ADK Python agent writes on every update.
+    val INVOCATION_METADATA =
+      mapOf("adk_app_name" to "app", "adk_user_id" to "user", "adk_session_id" to "session")
   }
 }
