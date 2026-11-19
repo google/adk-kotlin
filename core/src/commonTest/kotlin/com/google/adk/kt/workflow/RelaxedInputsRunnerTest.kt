@@ -600,6 +600,50 @@ class RelaxedInputsRunnerTest {
     assertEquals("7", digit)
   }
 
+  /** An enum port reads a message naming a value as raw text or as a JSON string. */
+  @Test
+  fun message_intoEnumPort_readsTheNameWithOrWithoutJsonQuotes() {
+    // Arrange
+    val typed = node("typed") { _, p: RelaxedPriority -> p.name }
+    val nullable = node("nullable") { _, p: RelaxedPriority? -> p?.name }
+    val prioritySchema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    val checked = node<Any?, Any?>("checked", inputSchema = prioritySchema) { _, v -> v }
+    val text = node("text") { _, s: String -> s }
+    val string = Schema(type = Type.STRING)
+    val enumOrString =
+      Schema(anyOf = listOf(Schema(type = Type.STRING, enum = listOf("A")), string))
+    val stringOrInteger =
+      Schema(anyOf = listOf(string, Schema(type = Type.INTEGER, enum = listOf("1"))))
+    val enumOrText = node<Any?, Any?>("enum_or_text", inputSchema = enumOrString) { _, v -> v }
+    val textOrInteger =
+      node<Any?, Any?>("text_or_integer", inputSchema = stringOrInteger) { _, v -> v }
+
+    // Act
+    val reads =
+      listOf(
+        lastOutput(chain(typed), message = "HIGH"),
+        lastOutput(chain(typed), message = "\"HIGH\""),
+        lastOutput(chain(nullable), message = "\"HIGH\""),
+        lastOutput(chain(checked), message = "HIGH"),
+        lastOutput(chain(checked), message = "\"HIGH\""),
+      )
+    val failures =
+      listOf("\"FOO\"" to typed, " HIGH" to typed, "\"FOO\"" to checked, " HIGH" to checked).map {
+        (message, port) ->
+        assertFailsWith<NodeInputValidationException> { runApp(chain(port), message) }
+      }
+    val quotedText = lastOutput(chain(text), message = "\"hi\"")
+    val quotedEnumAlternative = lastOutput(chain(enumOrText), message = "\"A\"")
+    val quotedIntegerEnum = lastOutput(chain(textOrInteger), message = "\"1\"")
+
+    // Assert
+    assertEquals(List(5) { "HIGH" }, reads)
+    for (error in failures) assertContains(error.message.orEmpty(), "input of node '")
+    assertEquals("\"hi\"", quotedText)
+    assertEquals("A", quotedEnumAlternative)
+    assertEquals("\"1\"", quotedIntegerEnum)
+  }
+
   @Test
   fun edgeCheck_wideningEdge_buildsAndDeliversTheValue() {
     // Arrange

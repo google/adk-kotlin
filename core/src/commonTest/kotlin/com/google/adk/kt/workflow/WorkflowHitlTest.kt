@@ -3947,6 +3947,36 @@ class WorkflowHitlTest {
     )
   }
 
+  /** An enum output schema rehydrates a message naming a value, quoted or not, as the value. */
+  @Test
+  fun resume_messageOutputNodeWithEnumSchema_isRehydratedToTheEnumValue() {
+    // Arrange
+    val schema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    fun resumedJoin(text: String): Any? {
+      val chat = MessageOutput("chat", text, outputSchema = schema)
+      val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+      val join = JoinNode("j")
+      val workflow =
+        Workflow(
+          name = "wf",
+          edges = listOf(Edge(Start, chat), Edge(Start, ask), Edge(chat, join), Edge(ask, join)),
+        )
+      val session = WorkflowSession(workflow)
+      session.advance(userMessage("go"))
+      val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+      return events.single { it.nodeInfo?.path == "wf@1/j@1" }.output
+    }
+
+    // Act
+    val quoted = resumedJoin("\"HIGH\"")
+    val plain = resumedJoin("HIGH")
+
+    // Assert
+    val expected = mapOf("chat" to "HIGH", "ask" to mapOf("v" to 1L))
+    assertEquals(expected, quoted)
+    assertEquals(expected, plain)
+  }
+
   @Test
   fun resume_nodeThatFailedInAnEarlierTurn_reruns() {
     // Arrange: the sibling fails after the request was raised, which ends the first turn.
