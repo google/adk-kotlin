@@ -35,10 +35,11 @@ import kotlinx.serialization.json.JsonNames
  */
 internal object AuthCredentialSerializer :
   KSerializer<AuthCredential> by surrogateSerializer(
-    surrogate = AuthCredentialSurrogate.serializer(),
-    toSurrogate = { credential, encoder -> credential.toSurrogate(encoder.revealsSecrets()) },
-    fromSurrogate = AuthCredentialSurrogate::toAuthCredential,
-  )
+      surrogate = AuthCredentialSurrogate.serializer(),
+      toSurrogate = { credential, encoder -> credential.toSurrogate(encoder.revealsSecrets()) },
+      fromSurrogate = AuthCredentialSurrogate::toAuthCredential,
+    )
+    .withCredentialPlaceholders()
 
 private fun AuthCredential.toSurrogate(revealSecrets: Boolean): AuthCredentialSurrogate =
   when (this) {

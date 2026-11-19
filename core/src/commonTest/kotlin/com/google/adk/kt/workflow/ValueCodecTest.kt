@@ -23,6 +23,8 @@ package com.google.adk.kt.workflow
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.serialization.adkJson
@@ -412,6 +414,18 @@ class ValueCodecTest {
 
     // Assert
     assertEquals(mapOf("call-1" to config), restored.actions.requestedAuthConfigs)
+  }
+
+  @Test
+  fun encode_mapHoldingATypedCredential_leavesItTyped() {
+    // Arrange
+    val credential = AuthCredential.ApiKey(Secret(secret))
+
+    // Act
+    val encoded = codec<Map<String, Any>>().encode(mapOf("key" to credential), "output")
+
+    // Assert
+    assertEquals(mapOf("key" to credential), encoded)
   }
 
   @Test

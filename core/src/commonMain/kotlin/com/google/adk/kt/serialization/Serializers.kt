@@ -19,9 +19,8 @@ package com.google.adk.kt.serialization
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
-import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.auth.encodeCredentialOrNull
-import com.google.adk.kt.auth.revealsSecrets
+import com.google.adk.kt.auth.jsonForAny
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -86,8 +85,7 @@ internal object AnySerializer : KSerializer<Any> {
       encoder as? JsonEncoder
         ?: throw IllegalStateException("AnySerializer supports JSON formats only")
     // Nested values use adkJson's settings, so a nested Content is written as in Event.content.
-    val json = if (encoder.revealsSecrets()) adkSecretRevealingJson else adkJson
-    jsonEncoder.encodeJsonElement(anyToJsonElement(value, json))
+    jsonEncoder.encodeJsonElement(anyToJsonElement(value, encoder.jsonForAny()))
   }
 
   override fun deserialize(decoder: Decoder): Any {
@@ -154,7 +152,12 @@ internal fun anyToJsonElement(
   }
 
 @FrameworkInternalApi
-fun jsonElementToAny(element: JsonElement): Any? =
+fun jsonElementToAny(element: JsonElement): Any? = jsonElementToAny(element) { null }
+
+/**
+ * [jsonElementToAny] that reads each object as what [replaceObject] returns for it, unless null.
+ */
+internal fun jsonElementToAny(element: JsonElement, replaceObject: (JsonObject) -> Any?): Any? =
   when (element) {
     is JsonNull -> null
     is JsonPrimitive ->
@@ -166,12 +169,13 @@ fun jsonElementToAny(element: JsonElement): Any? =
         else -> element.content
       }
     is JsonObject ->
-      if (element.size == 1 && element.containsKey(REMOVED_MARKER)) {
-        State.REMOVED
-      } else {
-        element.mapValues { (_, v) -> jsonElementToAny(v) }
-      }
-    is JsonArray -> element.map { jsonElementToAny(it) }
+      replaceObject(element)
+        ?: if (element.size == 1 && element.containsKey(REMOVED_MARKER)) {
+          State.REMOVED
+        } else {
+          element.mapValues { (_, v) -> jsonElementToAny(v, replaceObject) }
+        }
+    is JsonArray -> element.map { jsonElementToAny(it, replaceObject) }
   }
 
 /**

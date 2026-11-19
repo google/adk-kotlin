@@ -17,13 +17,18 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.serialization.AnySerializer
+import com.google.adk.kt.serialization.adkJson
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Instant
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class AuthJsonTest {
 
   @Test
@@ -91,5 +96,58 @@ class AuthJsonTest {
     val credential = AuthCredential.ApiKey(Secret("k"))
 
     assertEquals(credential, decodeFromPlainOrNull(AuthCredentialSerializer, credential))
+  }
+
+  @Test
+  fun encodeToPlainWithTypedCredentials_credentialsInAFreeFormValue_leavesThemTyped() {
+    val value = valueWithEveryCredentialType()
+
+    val plain = adkSecretRevealingJson.encodeToPlainWithTypedCredentials(AnySerializer, value)
+
+    assertEquals(value, plain)
+  }
+
+  @Test
+  fun encodeToPlainWithTypedCredentials_objectShapedLikeAPlaceholder_staysAMap() {
+    val lookalike = mapOf("id" to 0L)
+    val value = mapOf("credential" to AuthCredential.ApiKey(Secret(SECRET)), "other" to lookalike)
+
+    val plain = adkSecretRevealingJson.encodeToPlainWithTypedCredentials(AnySerializer, value)
+
+    assertEquals(value, plain)
+  }
+
+  @Test
+  fun encodeToPlainWithTypedCredentials_result_outputLeavesSecretsOutAndStorageWritesThem() {
+    val plain =
+      adkSecretRevealingJson.encodeToPlainWithTypedCredentials(
+        AnySerializer,
+        valueWithEveryCredentialType(),
+      )
+
+    val output = adkJson.encodeToString(AnySerializer, checkNotNull(plain))
+    val stored = adkSecretRevealingJson.encodeToString(AnySerializer, plain)
+
+    assertFalse(SECRET in output)
+    assertTrue(SECRET in stored)
+  }
+
+  /** A free-form value with an [AuthCredential], an [AuthConfig] and a [Secret], nested. */
+  private fun valueWithEveryCredentialType(): Map<String, Any> =
+    mapOf(
+      "credential" to AuthCredential.ApiKey(Secret(SECRET)),
+      "configs" to
+        listOf(
+          AuthConfig(
+            AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER),
+            rawAuthCredential = AuthCredential.ApiKey(Secret(SECRET)),
+          )
+        ),
+      "nested" to mapOf("secret" to Secret(SECRET)),
+      "text" to "plain",
+    )
+
+  private companion object {
+    const val SECRET = "sentinel-secret-value"
   }
 }
