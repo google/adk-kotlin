@@ -127,17 +127,16 @@ class CallbackSpanConsistencyTest {
 
     runTurn(App(appName = APP, rootNode = workflow(assistant()), plugins = listOf(recorder)))
 
-    // Python's runner opens `invoke_workflow` here, so run-level callbacks see that.
     assertThat(recorder.activeSpans)
       .containsExactly(
         "onUserMessage",
-        setOf(INVOCATION_SPAN),
+        setOf(WORKFLOW_SPAN),
         "beforeRun",
-        setOf(INVOCATION_SPAN),
+        setOf(WORKFLOW_SPAN),
         "onEvent",
-        setOf(INVOCATION_SPAN),
+        setOf(WORKFLOW_SPAN),
         "afterRun",
-        setOf(INVOCATION_SPAN),
+        setOf(WORKFLOW_SPAN),
         "beforeAgent",
         setOf(AGENT_SPAN),
         "afterAgent",
@@ -192,8 +191,7 @@ class CallbackSpanConsistencyTest {
     }
 
     assertThat(recorder.activeSpans["onModelError"]).containsExactly(MODEL_SPAN)
-    // Python sees `invoke_workflow root_workflow`, for the reason the workflow-root test gives.
-    assertThat(recorder.activeSpans["onRunError"]).containsExactly(INVOCATION_SPAN)
+    assertThat(recorder.activeSpans["onRunError"]).containsExactly(WORKFLOW_SPAN)
   }
 
   @Test
@@ -411,6 +409,7 @@ class CallbackSpanConsistencyTest {
   private companion object {
     const val APP = "app"
     const val INVOCATION_SPAN = "invocation"
+    const val WORKFLOW_SPAN = "invoke_workflow root_workflow"
     const val AGENT_SPAN = "invoke_agent assistant"
     const val MODEL_SPAN = "call_llm"
     val NOT_CALLBACKS = setOf("getName", "close")

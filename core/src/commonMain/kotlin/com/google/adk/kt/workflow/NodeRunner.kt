@@ -29,7 +29,6 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
-import com.google.adk.kt.telemetry.failureDescription
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -128,14 +127,11 @@ private constructor(
       return it
     }
     if (!tracesWholeRun) return runAttempts(nodeInput, validateInput)
-    return traceNode(
-      node,
+    return traceRootWorkflow(
+      node as Workflow,
       invocationContext.session.key.id,
-      nestedInWorkflow,
       runSpanEventIds,
       failure = { it.requireNodeState().failure?.cause },
-      // Python raises the root's failure through its span rather than handing it back as data.
-      statusDescription = ::failureDescription,
     ) {
       runAttempts(nodeInput, validateInput)
     }

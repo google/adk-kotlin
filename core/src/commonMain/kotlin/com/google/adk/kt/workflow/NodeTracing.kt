@@ -23,12 +23,18 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
+import com.google.adk.kt.telemetry.failureDescription
 import com.google.adk.kt.telemetry.isFailure
 import com.google.adk.kt.telemetry.recordFailure
+import com.google.adk.kt.telemetry.tracedFlow
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 
 /**
@@ -95,6 +101,70 @@ internal suspend fun <T> traceNode(
 }
 
 /**
+ * Runs this flow, a runner's turn of its root [workflow], in the `invoke_workflow` span Python
+ * ADK's schema v1 runner opens for a workflow root, so the run-level callbacks and the work after
+ * the root run in it. The span records a failure of this flow but not of its collector.
+ */
+internal fun <T> Flow<T>.traceWorkflowEntrypoint(
+  workflow: Workflow,
+  conversationId: String,
+): Flow<T> {
+  val upstream = this
+  return flow {
+    val nested = currentCoroutineContext()[InWorkflow] != null
+    var collectorFailed = false
+    val operation = TelemetryAttributes.OPERATION_INVOKE_WORKFLOW
+    val traced =
+      tracedFlow<T>(
+        "$operation ${workflow.name}",
+        builder = {
+          this[TelemetryAttributes.GEN_AI_OPERATION_NAME] = operation
+          this[TelemetryAttributes.GEN_AI_CONVERSATION_ID] = conversationId
+          this[TelemetryAttributes.GEN_AI_WORKFLOW_NAME] = workflow.name
+          if (nested) this[TelemetryAttributes.GEN_AI_WORKFLOW_NESTED] = true
+        },
+        isOwnFailure = { !collectorFailed },
+      ) { _, spanContext ->
+        upstream.flowOn(spanContext + InWorkflow + WorkflowEntrypoint(workflow)).collect {
+          try {
+            emit(it)
+          } catch (e: Throwable) {
+            collectorFailed = true
+            throw e
+          }
+        }
+      }
+    emitAll(traced)
+  }
+}
+
+/**
+ * Runs [block], the run of the root [workflow], in the span its runner opened with
+ * [traceWorkflowEntrypoint]. Without one, runs it in a span of its own that lists [eventIds] and
+ * records [failure], as [traceNode] does.
+ */
+internal suspend fun <T> traceRootWorkflow(
+  workflow: Workflow,
+  conversationId: String?,
+  eventIds: List<String>,
+  failure: (T) -> Throwable?,
+  block: suspend () -> T,
+): T {
+  // The entrypoint span records the failure runRoot rethrows; a root workflow lists no events.
+  if (currentCoroutineContext()[WorkflowEntrypoint]?.workflow === workflow) return block()
+  // Python raises the root's failure through its span rather than handing it back as data.
+  return traceNode(
+    workflow,
+    conversationId,
+    nested = false,
+    eventIds,
+    failure,
+    statusDescription = ::failureDescription,
+    block,
+  )
+}
+
+/**
  * Lists [eventIds] on this span once its node returns or pauses, as Python ADK does; an attempt
  * that raises lists none.
  */
@@ -102,6 +172,14 @@ private fun Span.recordAssociatedEvents(eventIds: List<String>) {
   if (eventIds.isNotEmpty()) {
     this[TelemetryAttributes.GCP_VERTEX_AGENT_ASSOCIATED_EVENT_IDS] = eventIds.toList()
   }
+}
+
+/** Marks the root [workflow] whose `invoke_workflow` span its runner opened, so it runs in it. */
+private class WorkflowEntrypoint(val workflow: Workflow) : CoroutineContext.Element {
+  override val key: CoroutineContext.Key<*>
+    get() = Key
+
+  companion object Key : CoroutineContext.Key<WorkflowEntrypoint>
 }
 
 /** Marks code running in a workflow's span, so a workflow started there is flagged nested. */

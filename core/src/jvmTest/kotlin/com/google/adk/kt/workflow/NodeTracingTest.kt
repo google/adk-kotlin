@@ -31,12 +31,17 @@ import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.interop.InteropContextView
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.sessions.SessionException
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.adk.kt.testing.DummyAgent
@@ -44,14 +49,17 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.textAgent
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.tools.AgentTool
+import com.google.adk.kt.types.Content
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.errorprone.annotations.MustBeClosed
 import io.opentelemetry.api.common.AttributeKey
+import io.opentelemetry.api.trace.SpanId
 import io.opentelemetry.api.trace.StatusCode
 import io.opentelemetry.api.trace.Tracer as OpenTelemetryTracer
 import io.opentelemetry.context.Context as OpenTelemetryContext
@@ -78,6 +86,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -633,6 +642,178 @@ class NodeTracingTest {
   }
 
   @Test
+  fun run_workflowRoot_coversTheRunLevelCallbacksAndTheWorkAfterTheRoot() {
+    val spanOpener = SpanOpeningPlugin(provider.get("test"))
+    val greet = node<Any?, String>("greet") { _, _ -> "hello" }
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = APP,
+            rootNode = Workflow("wf", edges = listOf(Edge(Start, greet))),
+            plugins = listOf(spanOpener),
+          )
+      )
+
+    runner.runTurn()
+
+    val workflow = span("invoke_workflow wf")
+    assertThat(workflow.parentSpanId).isEqualTo(span("invocation").spanId)
+    // As in Python's goldens, the workflow passes its children's events on and lists none itself.
+    assertThat(workflow.attributes[ASSOCIATED_EVENT_IDS]).isNull()
+    assertThat(span("invoke_node greet").attributes[ASSOCIATED_EVENT_IDS]).isNotEmpty()
+    for (name in listOf("before_run", "after_run")) {
+      val opened = span(name)
+      assertWithMessage(name).that(opened.parentSpanId).isEqualTo(workflow.spanId)
+      assertWithMessage(name).that(opened.endEpochNanos).isAtMost(workflow.endEpochNanos)
+    }
+    assertThat(span("invoke_node greet").parentSpanId).isEqualTo(workflow.spanId)
+  }
+
+  @Test
+  fun run_workflowRootWhoseCollectorThrows_doesNotMarkItsSpan() {
+    val runner =
+      runnerFor(
+        Workflow("wf", edges = listOf(Edge(Start, node<Any?, String>("greet") { _, _ -> "hi" })))
+      )
+
+    assertFailsWith<TestNodeException> {
+      runBlocking {
+        runner
+          .runAsync(userId = "user", sessionId = SESSION_ID, newMessage = userMessage("go"))
+          .collect { throw TestNodeException("collector") }
+      }
+    }
+
+    val workflow = span("invoke_workflow wf")
+    assertThat(workflow.attributes[ERROR_TYPE]).isNull()
+    assertThat(workflow.status.statusCode).isEqualTo(StatusCode.UNSET)
+  }
+
+  @Test
+  fun run_workflowRootWhoseEndOfTurnFlushFails_marksItsSpan() {
+    var turnEnded = false
+    // Fails only the flush after the turn's events, which the runner makes outside the root's run.
+    val failingFlush =
+      object : SessionService by InMemorySessionService() {
+        override suspend fun flush(key: SessionKey?) {
+          if (turnEnded) throw SessionException("disk full")
+        }
+      }
+    val endOfTurn =
+      object : Plugin {
+        override val name = "end_of_turn"
+
+        override suspend fun afterRun(invocationContext: InvocationContext) {
+          turnEnded = true
+        }
+      }
+    val greet = node<Any?, String>("greet") { _, _ -> "hi" }
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = APP,
+            rootNode = Workflow("wf", edges = listOf(Edge(Start, greet))),
+            plugins = listOf(endOfTurn),
+          ),
+        sessionService = failingFlush,
+      )
+
+    assertFailsWith<SessionException> { runner.runTurn() }
+
+    val workflow = span("invoke_workflow wf")
+    assertThat(workflow.attributes[ERROR_TYPE]).isEqualTo("SessionException")
+    assertThat(workflow.status.statusCode).isEqualTo(StatusCode.ERROR)
+  }
+
+  @Test
+  fun run_workflowRootWhoseBeforeRunEndsTheTurn_stillOpensItsSpan() {
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = APP,
+            rootNode =
+              Workflow(
+                "wf",
+                edges = listOf(Edge(Start, node<Any?, String>("never") { _, _ -> "x" })),
+              ),
+            plugins = listOf(SpanOpeningPlugin(provider.get("test"), endTurn = true)),
+          )
+      )
+
+    runner.runTurn()
+
+    assertThat(span("invoke_workflow wf").parentSpanId).isEqualTo(span("invocation").spanId)
+    assertThat(exported.map { it.name }).doesNotContain("invoke_node never")
+  }
+
+  @Test
+  fun run_workflowNamedLikeTheRootInsideIt_isNested() {
+    val step = node<Any?, String>("step") { _, _ -> "done" }
+
+    runAsApp(
+      Workflow("wf", edges = listOf(Edge(Start, Workflow("wf", edges = listOf(Edge(Start, step))))))
+    )
+
+    val (inner, outer) = exported.filter { it.name == "invoke_workflow wf" }
+    assertThat(inner.attributes[NESTED]).isTrue()
+    assertThat(inner.parentSpanId).isEqualTo(outer.spanId)
+    assertThat(outer.attributes[NESTED]).isNull()
+  }
+
+  @Test
+  fun run_runnerStartedByAPlugin_nestsItsWorkflowRootUnderTheOuterOne() {
+    val innerRunner =
+      runnerFor(
+        Workflow(
+          "wf",
+          edges = listOf(Edge(Start, node<Any?, String>("inner_step") { _, _ -> "x" })),
+        )
+      )
+    val outer =
+      InMemoryRunner(
+        app =
+          App(
+            appName = APP,
+            rootNode =
+              Workflow(
+                "wf",
+                edges = listOf(Edge(Start, node<Any?, String>("outer_step") { _, _ -> "y" })),
+              ),
+            plugins = listOf(SpanOpeningPlugin(provider.get("test"), beforeRunTurn = innerRunner)),
+          )
+      )
+
+    outer.runTurn()
+
+    val workflows = exported.filter { it.name == "invoke_workflow wf" }
+    val inner = workflows.single { it.attributes[NESTED] == true }
+    val outerSpan = workflows.single { it.attributes[NESTED] == null }
+    val innerInvocation = exported.single { it.spanId == inner.parentSpanId }
+    assertThat(innerInvocation.name).isEqualTo("invocation")
+    assertThat(innerInvocation.parentSpanId).isEqualTo(span("before_run").spanId)
+    assertThat(span("invoke_node inner_step").parentSpanId).isEqualTo(inner.spanId)
+    assertThat(span("invoke_node outer_step").parentSpanId).isEqualTo(outerSpan.spanId)
+  }
+
+  @Test
+  fun runRoot_workflowWithoutARunner_opensItsOwnSpanAndRecordsItsFailure() = runBlocking {
+    val boom = node<Any?, String>("boom") { _, _ -> throw TestNodeException("boom") }
+
+    assertFailsWith<TestNodeException> {
+      NodeRunner.runRoot(Workflow("wf", edges = listOf(Edge(Start, boom))), testInvocationContext())
+        .collect {}
+    }
+
+    val workflow = span("invoke_workflow wf")
+    assertThat(workflow.parentSpanId).isEqualTo(SpanId.getInvalid())
+    assertThat(workflow.attributes[ERROR_TYPE]).isEqualTo("TestNodeException")
+    assertThat(workflow.status.description).isEqualTo("TestNodeException: boom")
+  }
+
+  @Test
   fun run_rootPlainNode_opensInvokeNodeUnderInvocation() {
     runAsApp(node<Any?, String>("solo") { _, _ -> "alone" })
 
@@ -720,6 +901,43 @@ class NodeTracingTest {
       AttributeKey.stringArrayKey("gcp.vertex.agent.associated_event_ids")
     private val NESTED: AttributeKey<Boolean> = AttributeKey.booleanKey("gen_ai.workflow.nested")
     private val ERROR_TYPE: AttributeKey<String> = AttributeKey.stringKey("error.type")
+  }
+}
+
+/**
+ * Opens a `before_run` and an `after_run` span in those callbacks. With [endTurn], ends the turn
+ * before the root runs; with [beforeRunTurn], runs a turn of that runner inside `before_run`.
+ */
+private class SpanOpeningPlugin(
+  private val tracer: OpenTelemetryTracer,
+  private val endTurn: Boolean = false,
+  private val beforeRunTurn: InMemoryRunner? = null,
+) : Plugin {
+  override val name = "span_opener"
+
+  override suspend fun beforeRun(
+    invocationContext: InvocationContext
+  ): CallbackChoice<Unit, Content> {
+    inSpan("before_run") {
+      beforeRunTurn
+        ?.runAsync(userId = "user", sessionId = "nested", newMessage = userMessage("go"))
+        ?.toList()
+    }
+    return if (endTurn) CallbackChoice.Break(modelMessage("stopped"))
+    else CallbackChoice.Continue(Unit)
+  }
+
+  override suspend fun afterRun(invocationContext: InvocationContext) {
+    inSpan("after_run") {}
+  }
+
+  private suspend fun inSpan(name: String, block: suspend () -> Unit) {
+    val span = tracer.spanBuilder(name).startSpan()
+    try {
+      withContext(UserContextElement(OpenTelemetryContext.current().with(span))) { block() }
+    } finally {
+      span.end()
+    }
   }
 }
 
