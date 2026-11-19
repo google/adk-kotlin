@@ -22,6 +22,8 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
@@ -57,17 +59,17 @@ object LoopWorkflow {
     }
   }
 
-  /** Stores the user's topic in state, where the headline agent's instruction reads it. */
+  /** Sends the user's topic as a state change, where the headline agent's instruction reads it. */
   private val processInput =
-    node<String, Unit>("process_input") { context, topic ->
+    node<String, Unit>("process_input") { _, topic ->
       // START hands the first node the user's message, which a String input receives as text.
-      context.updateState("topic", topic)
+      emit(Event(actions = EventActions(stateDelta = mutableMapOf("topic" to topic))))
     }
 
-  /** Routes on the grade; no edge matches `tech-related`, so that grade ends the loop. */
+  /** Sends the grade as a route; no edge matches `tech-related`, which ends the loop. */
   private val routeHeadline =
-    node<Feedback, Unit>("route_headline") { context, feedback ->
-      context.routes = listOf(Route.Tag(feedback.grade))
+    node<Feedback, Unit>("route_headline") { _, feedback ->
+      emit(Event(actions = EventActions(route = listOf(Route.Tag(feedback.grade)))))
     }
 }
 

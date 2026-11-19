@@ -20,6 +20,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
@@ -32,6 +33,7 @@ import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.ParallelWorkers;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -87,17 +89,21 @@ public final class ParallelWorkerWorkflowJava {
     }
   }
 
-  /** Stores the user's topic in state, where both agents' instructions read it. */
-  private static FunctionNode<String, Object> processInput() {
+  /** Sends the user's topic as a state change, where both agents' instructions read it. */
+  private static FunctionNode<String, Event> processInput() {
     return FunctionNodes.of(
         "process_input",
         // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        Object.class,
-        (ctx, topic) -> {
-          ctx.updateState("topic", topic);
-          return null;
-        });
+        Event.class,
+        (ctx, topic) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        // The framework adds to a state delta, so it must be mutable.
+                        .stateDelta(new HashMap<>(Map.of("topic", topic)))
+                        .build())
+                .build());
   }
 
   private static LlmAgent findRelatedTopicsAgent(Model model) {

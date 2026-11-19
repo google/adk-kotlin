@@ -58,7 +58,7 @@ object LoopSelfWorkflow {
       emit(Event(actions = EventActions(stateDelta = mutableMapOf("target_number" to number))))
     }
 
-  /** Guesses a number, and routes back to itself when the guess is wrong. */
+  /** Guesses a number, and sends a route back to itself when the guess is wrong. */
   private val guessNumber =
     node<Any?, Unit>("guess_number") { context, _ ->
       val guess = Random.nextInt(0, 11)
@@ -66,7 +66,7 @@ object LoopSelfWorkflow {
       if (guess == (context.state["target_number"] as Number).toInt()) {
         emit(Content.fromText(Role.MODEL, "Correct!"))
       } else {
-        context.routes = listOf(Route.Tag("guessed_wrong"))
+        emit(Event(actions = EventActions(route = listOf(Route.Tag("guessed_wrong")))))
       }
     }
 }

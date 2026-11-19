@@ -21,6 +21,7 @@ import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
@@ -36,6 +37,7 @@ import com.google.adk.kt.workflow.JoinNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -98,7 +100,7 @@ public final class NestedWorkflowJava {
   /** An input schema under which a node receives its input, such as a message, as text. */
   private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
 
-  /** Stores the year from the user's message in state, and fails the run if there is none. */
+  /** Sends the year from the user's message as a state change, and fails the run if none. */
   private static final class ProcessInput extends BasePublisherNode {
     ProcessInput() {
       super(
@@ -124,8 +126,14 @@ public final class NestedWorkflowJava {
         return Mono.<Object>just(reply)
             .concatWith(Mono.error(new IllegalArgumentException("Invalid year format.")));
       }
-      context.updateState("year", year.group());
-      return Mono.empty();
+      return Mono.just(
+          Event.builder()
+              .actions(
+                  EventActions.builder()
+                      // The framework adds to a state delta, so it must be mutable.
+                      .stateDelta(new HashMap<>(Map.of("year", year.group())))
+                      .build())
+              .build());
     }
   }
 

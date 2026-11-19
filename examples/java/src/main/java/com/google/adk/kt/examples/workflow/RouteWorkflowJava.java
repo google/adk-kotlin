@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.workflow;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
@@ -31,6 +32,7 @@ import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import reactor.core.publisher.Flux;
@@ -88,17 +90,21 @@ public final class RouteWorkflowJava {
     }
   }
 
-  /** Stores the user's input in state, where the agents' instructions read it. */
-  private static FunctionNode<String, Object> processInput() {
+  /** Sends the user's input as a state change, where the agents' instructions read it. */
+  private static FunctionNode<String, Event> processInput() {
     return FunctionNodes.of(
         "process_input",
         // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        Object.class,
-        (ctx, input) -> {
-          ctx.updateState("input", input);
-          return null;
-        });
+        Event.class,
+        (ctx, input) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        // The framework adds to a state delta, so it must be mutable.
+                        .stateDelta(new HashMap<>(Map.of("input", input)))
+                        .build())
+                .build());
   }
 
   private static LlmAgent classifyInputAgent(Model model) {
@@ -111,16 +117,19 @@ public final class RouteWorkflowJava {
         .build();
   }
 
-  /** Routes on the classifier's category, decoded from the node input into a record. */
-  private static FunctionNode<InputCategory, Object> routeOnCategory() {
+  /** Sends the classifier's category as a route, decoded from the node input into a record. */
+  private static FunctionNode<InputCategory, Event> routeOnCategory() {
     return FunctionNodes.of(
         "route_on_category",
         InputCategory.class,
-        Object.class,
-        (ctx, category) -> {
-          ctx.setRoutes(List.of(new Route.Tag(category.category())));
-          return null;
-        });
+        Event.class,
+        (ctx, category) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        .route(List.of(new Route.Tag(category.category())))
+                        .build())
+                .build());
   }
 
   private static LlmAgent answerQuestionAgent(Model model) {

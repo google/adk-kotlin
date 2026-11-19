@@ -24,6 +24,8 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
@@ -75,16 +77,19 @@ object AgentInWorkflow {
     @SerialName("phone_number") val phoneNumber: String,
   )
 
-  /** Mocks a records check, and routes back to the intake agent unless the patient is Jane Doe. */
+  /**
+   * Mocks a records check, and sends the patient back to the intake agent in a routed message
+   * unless they are Jane Doe.
+   */
   private val checkIdentity =
-    node<PatientIdentity, Unit>("check_identity") { context, patient ->
+    node<PatientIdentity, Unit>("check_identity") { _, patient ->
       if (patient.name.equals("Jane Doe", ignoreCase = true)) {
         // No route matches, so `otherwise` takes the patient on to their orders.
         emit(Content.fromText(Role.MODEL, "Hello ${patient.name}! Let me look up your orders."))
       } else {
         val reply = "Could not find matching records for ${patient.name}. Let's try again."
-        emit(Content.fromText(Role.MODEL, reply))
-        context.routes = listOf(Route.Tag("retry"))
+        val retry = EventActions(route = listOf(Route.Tag("retry")))
+        emit(Event(content = Content.fromText(Role.MODEL, reply), actions = retry))
       }
     }
 }

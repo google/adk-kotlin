@@ -22,6 +22,8 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
@@ -63,13 +65,18 @@ object RequestInputWorkflow {
   }
 
   /**
-   * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
+   * Sends the complaint as a state change, where the agent's instruction reads it, with no feedback
+   * yet.
    */
   private val processInput =
-    node<String, Unit>("process_input") { context, complaint ->
+    node<String, Unit>("process_input") { _, complaint ->
       // START hands the first node the user's message, which a String input receives as text.
-      context.updateState("complaint", complaint)
-      context.updateState("feedback", "")
+      emit(
+        Event(
+          actions =
+            EventActions(stateDelta = mutableMapOf("complaint" to complaint, "feedback" to ""))
+        )
+      )
     }
 
   /** Asks a human to review the draft; the answer becomes this node's output. */
@@ -82,19 +89,13 @@ object RequestInputWorkflow {
       )
     }
 
-  /** Routes on the reviewer's answer, and stores any feedback for the agent's next draft. */
+  /**
+   * Sends a route for the reviewer's answer, with any feedback for the agent's next draft as a
+   * state change.
+   */
   private val handleHumanReview =
-    node<String, Unit>("handle_human_review") { context, answer ->
-      val route =
-        when (answer) {
-          "reject" -> "rejected"
-          "approve" -> "approved"
-          else -> {
-            context.updateState("feedback", answer)
-            "revise"
-          }
-        }
-      context.routes = listOf(Route.Tag(route))
+    node<String, Unit>("handle_human_review") { _, answer ->
+      emit(Event(actions = reviewActions(answer)))
     }
 
   private val rejectEmail =
@@ -105,6 +106,18 @@ object RequestInputWorkflow {
   private val sendEmail =
     node<Any?, Unit>("send_email") { _, _ ->
       emit(Content.fromText(Role.MODEL, "Draft approved and sent successfully."))
+    }
+
+  /** The route for [answer], with any feedback for the agent's next draft as a state change. */
+  private fun reviewActions(answer: String): EventActions =
+    when (answer) {
+      "reject" -> EventActions(route = listOf(Route.Tag("rejected")))
+      "approve" -> EventActions(route = listOf(Route.Tag("approved")))
+      else ->
+        EventActions(
+          stateDelta = mutableMapOf("feedback" to answer),
+          route = listOf(Route.Tag("revise")),
+        )
     }
 }
 

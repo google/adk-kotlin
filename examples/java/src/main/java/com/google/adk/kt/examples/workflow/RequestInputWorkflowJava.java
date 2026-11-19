@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.workflow;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
@@ -34,6 +35,7 @@ import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.RequestInput;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import reactor.core.publisher.Flux;
@@ -132,19 +134,23 @@ public final class RequestInputWorkflowJava {
   }
 
   /**
-   * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
+   * Sends the complaint as a state change, where the agent's instruction reads it, with no feedback
+   * yet.
    */
-  private static FunctionNode<String, Object> processInput() {
+  private static FunctionNode<String, Event> processInput() {
     return FunctionNodes.of(
         "process_input",
         // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        Object.class,
-        (ctx, complaint) -> {
-          ctx.updateState("complaint", complaint);
-          ctx.updateState("feedback", "");
-          return null;
-        });
+        Event.class,
+        (ctx, complaint) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        // The framework adds to a state delta, so it must be mutable.
+                        .stateDelta(new HashMap<>(Map.of("complaint", complaint, "feedback", "")))
+                        .build())
+                .build());
   }
 
   private static LlmAgent draftEmailAgent(Model model) {
@@ -180,25 +186,16 @@ public final class RequestInputWorkflowJava {
                     .build()));
   }
 
-  /** Routes on the reviewer's answer, and stores any feedback for the agent's next draft. */
-  private static FunctionNode<String, Object> handleHumanReview() {
+  /**
+   * Sends a route for the reviewer's answer, with any feedback for the agent's next draft as a
+   * state change.
+   */
+  private static FunctionNode<String, Event> handleHumanReview() {
     return FunctionNodes.of(
         "handle_human_review",
         String.class,
-        Object.class,
-        (ctx, answer) -> {
-          String route =
-              switch (answer) {
-                case "reject" -> "rejected";
-                case "approve" -> "approved";
-                default -> {
-                  ctx.updateState("feedback", answer);
-                  yield "revise";
-                }
-              };
-          ctx.setRoutes(List.of(new Route.Tag(route)));
-          return null;
-        });
+        Event.class,
+        (ctx, answer) -> Event.builder().actions(reviewActions(answer)).build());
   }
 
   private static FunctionNode<Object, Event> rejectEmail() {
@@ -212,6 +209,23 @@ public final class RequestInputWorkflowJava {
         Object.class,
         Event.class,
         (ctx, input) -> message("Draft approved and sent successfully."));
+  }
+
+  /**
+   * The route for {@code answer}, with any feedback for the agent's next draft as a state change.
+   */
+  private static EventActions reviewActions(String answer) {
+    return switch (answer) {
+      case "reject" -> EventActions.builder().route(List.of(new Route.Tag("rejected"))).build();
+      case "approve" -> EventActions.builder().route(List.of(new Route.Tag("approved"))).build();
+      default -> {
+        yield EventActions.builder()
+            // The framework adds to a state delta, so it must be mutable.
+            .stateDelta(new HashMap<>(Map.of("feedback", answer)))
+            .route(List.of(new Route.Tag("revise")))
+            .build();
+      }
+    };
   }
 
   private static Event message(String text) {

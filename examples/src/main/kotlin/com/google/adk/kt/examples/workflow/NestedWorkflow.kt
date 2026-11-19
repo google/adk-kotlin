@@ -22,6 +22,8 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
@@ -59,9 +61,9 @@ object NestedWorkflow {
     }
   }
 
-  /** Stores the year from the user's message in state, and fails the run if there is none. */
+  /** Sends the year from the user's message as a state change, and fails the run without one. */
   private val processInput =
-    node<String, Unit>("process_input") { context, text ->
+    node<String, Unit>("process_input") { _, text ->
       // START hands the first node the user's message, which a String input receives as text.
       val year = Regex("""\b\d{4}\b""").find(text)?.value
       if (year == null) {
@@ -69,7 +71,7 @@ object NestedWorkflow {
         emit(Content.fromText(Role.MODEL, reply))
         throw IllegalArgumentException("Invalid year format.")
       }
-      context.updateState("year", year)
+      emit(Event(actions = EventActions(stateDelta = mutableMapOf("year" to year))))
     }
 
   /** Combines both branches' answers, which the join passes on keyed by branch name. */

@@ -109,7 +109,7 @@ public final class LoopSelfWorkflowJava {
     }
   }
 
-  /** Guesses a number, and routes back to itself when the guess is wrong. */
+  /** Guesses a number, and sends a route back to itself when the guess is wrong. */
   private static final class GuessNumber extends BasePublisherNode {
     GuessNumber() {
       super("guess_number");
@@ -126,8 +126,12 @@ public final class LoopSelfWorkflowJava {
         Event correct = Event.builder().content(Content.fromText(Role.MODEL, "Correct!")).build();
         return Flux.just(guessing, correct);
       }
-      context.setRoutes(List.of(new Route.Tag("guessed_wrong")));
-      return Mono.just(guessing);
+      Event wrong =
+          Event.builder()
+              .actions(
+                  EventActions.builder().route(List.of(new Route.Tag("guessed_wrong"))).build())
+              .build();
+      return Flux.just(guessing, wrong);
     }
   }
 

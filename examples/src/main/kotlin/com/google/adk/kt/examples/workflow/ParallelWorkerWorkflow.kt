@@ -22,6 +22,8 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
@@ -63,11 +65,11 @@ object ParallelWorkerWorkflow {
       )
     }
 
-  /** Stores the user's topic in state, where both agents' instructions read it. */
+  /** Sends the user's topic as a state change, where both agents' instructions read it. */
   private val processInput =
-    node<String, Unit>("process_input") { context, topic ->
+    node<String, Unit>("process_input") { _, topic ->
       // START hands the first node the user's message, which a String input receives as text.
-      context.updateState("topic", topic)
+      emit(Event(actions = EventActions(stateDelta = mutableMapOf("topic" to topic))))
     }
 
   /** Uppercases each topic of its list input, in one concurrent run per topic. */

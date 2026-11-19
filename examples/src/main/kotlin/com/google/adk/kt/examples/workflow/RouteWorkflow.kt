@@ -22,6 +22,8 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
@@ -58,17 +60,19 @@ object RouteWorkflow {
       }
     }
 
-  /** Stores the user's input in state, where the agents' instructions read it. */
+  /** Sends the user's input as a state change, where the agents' instructions read it. */
   private val processInput =
-    node<String, Unit>("process_input") { context, input ->
+    node<String, Unit>("process_input") { _, input ->
       // START hands the first node the user's message, which a String input receives as text.
-      context.updateState("input", input)
+      emit(Event(actions = EventActions(stateDelta = mutableMapOf("input" to input))))
     }
 
-  /** Routes on the classifier's category, decoded from the node input into [InputCategory]. */
+  /**
+   * Sends the classifier's category as a route, decoded from the node input into [InputCategory].
+   */
   private val routeOnCategory =
-    node<InputCategory, Unit>("route_on_category") { context, category ->
-      context.routes = listOf(Route.Tag(category.category))
+    node<InputCategory, Unit>("route_on_category") { _, category ->
+      emit(Event(actions = EventActions(route = listOf(Route.Tag(category.category)))))
     }
 
   private val handleOther =

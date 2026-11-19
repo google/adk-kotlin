@@ -22,6 +22,7 @@ import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.annotations.Tool;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.events.ToolConfirmation;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
@@ -171,7 +172,10 @@ public final class AgentInWorkflowJava {
         .build();
   }
 
-  /** Mocks a records check, and routes back to the intake agent unless the patient is Jane Doe. */
+  /**
+   * Mocks a records check, and sends the patient back to the intake agent in a routed message
+   * unless they are Jane Doe.
+   */
   private static FunctionNode<PatientIdentity, Event> checkIdentity() {
     return FunctionNodes.of(
         "check_identity",
@@ -182,9 +186,15 @@ public final class AgentInWorkflowJava {
             // No route matches, so `otherwise` takes the patient on to their orders.
             return message("Hello " + patient.name() + "! Let me look up your orders.");
           }
-          ctx.setRoutes(List.of(new Route.Tag("retry")));
-          return message(
-              "Could not find matching records for " + patient.name() + ". Let's try again.");
+          return Event.builder()
+              .content(
+                  Content.fromText(
+                      Role.MODEL,
+                      "Could not find matching records for "
+                          + patient.name()
+                          + ". Let's try again."))
+              .actions(EventActions.builder().route(List.of(new Route.Tag("retry"))).build())
+              .build();
         });
   }
 

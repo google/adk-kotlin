@@ -22,6 +22,8 @@ import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
@@ -63,17 +65,23 @@ object RequestInputRerunWorkflow {
   }
 
   /**
-   * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
+   * Sends the complaint as a state change, where the agent's instruction reads it, with no feedback
+   * yet.
    */
   private val processInput =
-    node<String, Unit>("process_input") { context, complaint ->
+    node<String, Unit>("process_input") { _, complaint ->
       // START hands the first node the user's message, which a String input receives as text.
-      context.updateState("complaint", complaint)
-      context.updateState("feedback", "")
+      emit(
+        Event(
+          actions =
+            EventActions(stateDelta = mutableMapOf("complaint" to complaint, "feedback" to ""))
+        )
+      )
     }
 
   /**
-   * Asks a human to review the draft on its first run, and routes on the answer when it runs again.
+   * Asks a human to review the draft on its first run, and sends a route for the answer, with any
+   * feedback as a state change, when it runs again.
    */
   private val humanReview =
     node<String, Unit>("human_review", rerunOnResume = true) { context, draft ->
@@ -88,16 +96,7 @@ object RequestInputRerunWorkflow {
               "Please review the following draft email and provide 'approve', 'reject', or" +
                 " feedback to revise.\n\n---\n$draft\n---",
           )
-      val route =
-        when (answer) {
-          "reject" -> "rejected"
-          "approve" -> "approved"
-          else -> {
-            context.updateState("feedback", answer)
-            "revise"
-          }
-        }
-      context.routes = listOf(Route.Tag(route))
+      emit(Event(actions = reviewActions(answer)))
     }
 
   private val rejectEmail =
@@ -108,6 +107,18 @@ object RequestInputRerunWorkflow {
   private val sendEmail =
     node<Any?, Unit>("send_email") { _, _ ->
       emit(Content.fromText(Role.MODEL, "Draft approved and sent successfully."))
+    }
+
+  /** The route for [answer], with any feedback for the agent's next draft as a state change. */
+  private fun reviewActions(answer: Any): EventActions =
+    when (answer) {
+      "reject" -> EventActions(route = listOf(Route.Tag("rejected")))
+      "approve" -> EventActions(route = listOf(Route.Tag("approved")))
+      else ->
+        EventActions(
+          stateDelta = mutableMapOf("feedback" to answer),
+          route = listOf(Route.Tag("revise")),
+        )
     }
 }
 

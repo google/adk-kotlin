@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.workflow;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
@@ -32,6 +33,7 @@ import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import reactor.core.publisher.Flux;
@@ -81,17 +83,21 @@ public final class LoopWorkflowJava {
     }
   }
 
-  /** Stores the user's topic in state, where the headline agent's instruction reads it. */
-  private static FunctionNode<String, Object> processInput() {
+  /** Sends the user's topic as a state change, where the headline agent's instruction reads it. */
+  private static FunctionNode<String, Event> processInput() {
     return FunctionNodes.of(
         "process_input",
         // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        Object.class,
-        (ctx, topic) -> {
-          ctx.updateState("topic", topic);
-          return null;
-        });
+        Event.class,
+        (ctx, topic) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        // The framework adds to a state delta, so it must be mutable.
+                        .stateDelta(new HashMap<>(Map.of("topic", topic)))
+                        .build())
+                .build());
   }
 
   private static LlmAgent generateHeadlineAgent(Model model) {
@@ -118,16 +124,17 @@ public final class LoopWorkflowJava {
         .build();
   }
 
-  /** Routes on the grade; no edge matches {@code tech-related}, so that grade ends the loop. */
-  private static FunctionNode<Feedback, Object> routeHeadline() {
+  /** Sends the grade as a route; no edge matches {@code tech-related}, which ends the loop. */
+  private static FunctionNode<Feedback, Event> routeHeadline() {
     return FunctionNodes.of(
         "route_headline",
         Feedback.class,
-        Object.class,
-        (ctx, feedback) -> {
-          ctx.setRoutes(List.of(new Route.Tag(feedback.grade())));
-          return null;
-        });
+        Event.class,
+        (ctx, feedback) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder().route(List.of(new Route.Tag(feedback.grade()))).build())
+                .build());
   }
 
   /** The grader's structured answer, with the fields of adk-python's {@code Feedback} model. */

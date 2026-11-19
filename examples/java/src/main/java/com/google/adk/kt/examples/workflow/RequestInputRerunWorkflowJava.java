@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.workflow;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
@@ -34,6 +35,7 @@ import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.RequestInput;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import reactor.core.publisher.Flux;
@@ -121,19 +123,23 @@ public final class RequestInputRerunWorkflowJava {
   }
 
   /**
-   * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
+   * Sends the complaint as a state change, where the agent's instruction reads it, with no feedback
+   * yet.
    */
-  private static FunctionNode<String, Object> processInput() {
+  private static FunctionNode<String, Event> processInput() {
     return FunctionNodes.of(
         "process_input",
         // START hands the first node the user's message, which a String input receives as text.
         String.class,
-        Object.class,
-        (ctx, complaint) -> {
-          ctx.updateState("complaint", complaint);
-          ctx.updateState("feedback", "");
-          return null;
-        });
+        Event.class,
+        (ctx, complaint) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        // The framework adds to a state delta, so it must be mutable.
+                        .stateDelta(new HashMap<>(Map.of("complaint", complaint, "feedback", "")))
+                        .build())
+                .build());
   }
 
   private static LlmAgent draftEmailAgent(Model model) {
@@ -153,38 +159,28 @@ public final class RequestInputRerunWorkflowJava {
   }
 
   /**
-   * Asks a human to review the draft on its first run, and routes on the answer when it runs again.
+   * Asks a human to review the draft on its first run, and sends a route for the answer, with any
+   * feedback as a state change, when it runs again.
    */
-  private static FunctionNode<String, Object> humanReview() {
-    return FunctionNodes.builder(String.class, Object.class)
+  private static FunctionNode<String, Event> humanReview() {
+    return FunctionNodes.builder(String.class, Event.class)
         .name("human_review")
         .rerunOnResume(true)
-        .body(
-            (ctx, draft) -> {
-              // The id changes per turn and loop round, and stays the same on a rerun.
-              String interruptId = "human_review_" + ctx.getInvocationId() + "_" + ctx.getRunId();
-              Object answer = ctx.getResumeInputs().get(interruptId);
-              // An empty answer asks again, as in adk-python.
-              if (answer == null || "".equals(answer)) {
-                return FunctionNodes.requestInput(
-                    interruptId,
-                    "Please review the following draft email and provide 'approve', 'reject', or"
-                        + " feedback to revise.\n\n---\n"
-                        + draft
-                        + "\n---");
-              }
-              String route =
-                  switch (answer.toString()) {
-                    case "reject" -> "rejected";
-                    case "approve" -> "approved";
-                    default -> {
-                      ctx.updateState("feedback", answer);
-                      yield "revise";
-                    }
-                  };
-              ctx.setRoutes(List.of(new Route.Tag(route)));
-              return null;
-            })
+        .body((ctx, draft) -> {
+          // The id changes per turn and loop round, and stays the same on a rerun.
+          String interruptId = "human_review_" + ctx.getInvocationId() + "_" + ctx.getRunId();
+          Object answer = ctx.getResumeInputs().get(interruptId);
+          // An empty answer asks again, as in adk-python.
+          if (answer == null || answer.equals("")) {
+            return FunctionNodes.requestInput(
+                interruptId,
+                "Please review the following draft email and provide 'approve', 'reject', or"
+                    + " feedback to revise.\n\n---\n"
+                    + draft
+                    + "\n---");
+          }
+          return Event.builder().actions(reviewActions(answer)).build();
+        })
         .build();
   }
 
@@ -199,6 +195,23 @@ public final class RequestInputRerunWorkflowJava {
         Object.class,
         Event.class,
         (ctx, input) -> message("Draft approved and sent successfully."));
+  }
+
+  /**
+   * The route for {@code answer}, with any feedback for the agent's next draft as a state change.
+   */
+  private static EventActions reviewActions(Object answer) {
+    return switch (answer instanceof String text ? text : "") {
+      case "reject" -> EventActions.builder().route(List.of(new Route.Tag("rejected"))).build();
+      case "approve" -> EventActions.builder().route(List.of(new Route.Tag("approved"))).build();
+      default -> {
+        yield EventActions.builder()
+            // The framework adds to a state delta, so it must be mutable.
+            .stateDelta(new HashMap<>(Map.of("feedback", answer)))
+            .route(List.of(new Route.Tag("revise")))
+            .build();
+      }
+    };
   }
 
   private static Event message(String text) {

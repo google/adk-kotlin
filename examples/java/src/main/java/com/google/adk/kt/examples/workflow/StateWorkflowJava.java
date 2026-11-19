@@ -88,14 +88,15 @@ public final class StateWorkflowJava {
         "update_state_via_event",
         String.class,
         Event.class,
-        (ctx, text) -> {
-          // The framework may add to an event's state delta, so the map must be mutable.
-          Map<String, Object> stateDelta = new HashMap<>();
-          stateDelta.put("uppercased_text", text.toUpperCase(Locale.ROOT));
-          return Event.builder()
-              .actions(EventActions.builder().stateDelta(stateDelta).build())
-              .build();
-        });
+        (ctx, text) ->
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        // The framework adds to a state delta, so it must be mutable.
+                        .stateDelta(
+                            new HashMap<>(Map.of("uppercased_text", text.toUpperCase(Locale.ROOT))))
+                        .build())
+                .build());
   }
 
   /** Reads both earlier values from state, then stores and outputs a sentence combining them. */

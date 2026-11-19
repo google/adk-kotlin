@@ -27,6 +27,8 @@ import com.google.adk.kt.classifiers.Binary
 import com.google.adk.kt.classifiers.Choice
 import com.google.adk.kt.classifiers.ClassifierNode
 import com.google.adk.kt.classifiers.LlmClassifier
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.VertexCredentials
@@ -94,12 +96,14 @@ object ClassifierNodeWorkflow {
     }
   }
 
-  /** Stores the ticket in state for the agents' instructions to read, and outputs it to triage. */
+  /**
+   * Sends the ticket as a state change for the agents' instructions to read, and outputs it to
+   * triage.
+   */
   private val processInput =
-    node<String, String>("process_input") { context, ticket ->
+    node<String, Event>("process_input") { _, ticket ->
       // START hands the first node the user's message, which a String input receives as text.
-      context.updateState("ticket", ticket)
-      ticket
+      Event(output = ticket, actions = EventActions(stateDelta = mutableMapOf("ticket" to ticket)))
     }
 
   /** Reports the page with the urgency that `is_urgent` stored in state. */
