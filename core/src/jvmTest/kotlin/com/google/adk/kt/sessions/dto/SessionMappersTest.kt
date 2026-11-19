@@ -482,6 +482,38 @@ class SessionMappersTest {
     assertThat(keys).containsExactly("text", "finished")
   }
 
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun eventToDto_typedCredentials_keepTheirSecretsOnlyInTheStateDelta() {
+    val credential = AuthCredential.ApiKey(Secret("sk-123"))
+    val wire = Json.parseToJsonElement("""{"authType": "apiKey", "apiKey": "sk-123"}""")
+    val event =
+      Event(
+        author = "agent",
+        content = modelMessage(Part(functionCall = FunctionCall("f", mapOf("key" to credential)))),
+        customMetadata = mapOf("key" to credential),
+        actions = EventActions().apply { stateDelta["key"] = credential },
+      )
+
+    val dto = event.toDto()
+
+    val content =
+      Json.parseToJsonElement(
+        """
+        {"role": "model", "parts": [{"functionCall": {"name": "f", "args": {"key": {"authType": "apiKey"}}}}]}
+        """
+      )
+    val raw = dto.rawEvent!!.jsonObject
+    val metadata = Json.parseToJsonElement("""{"key": {"authType": "apiKey"}}""")
+    assertThat(dto.content).isEqualTo(content)
+    assertThat(raw["content"]).isEqualTo(content)
+    assertThat(dto.eventMetadata!!.customMetadata).isEqualTo(metadata)
+    assertThat(raw["customMetadata"]).isEqualTo(metadata)
+    assertThat(raw["actions"]!!.jsonObject["stateDelta"])
+      .isEqualTo(Json.parseToJsonElement("""{"key": {"authType": "apiKey", "apiKey": "sk-123"}}"""))
+    assertThat((dto.actions!!.stateDelta as JsonObject)["key"]).isEqualTo(wire)
+  }
+
   @OptIn(FrameworkInternalApi::class)
   @Test
   fun event_roundTripThroughRawEvent_restoresWholeEvent() {

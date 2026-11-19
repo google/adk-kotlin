@@ -16,6 +16,9 @@
 
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.testing.userMessage
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -23,6 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 class GenaiConvertersTest {
@@ -54,6 +58,23 @@ class GenaiConvertersTest {
     val genaiFunctionResponse = adkFunctionResponse.toGenaiSdk()
 
     assertEquals(mapOf("result" to JsonNull), genaiFunctionResponse.response)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun functionResponse_typedCredential_reachesTheModelWithoutItsSecrets() {
+    val adkFunctionResponse =
+      FunctionResponse(
+        name = "f",
+        response = mapOf("key" to AuthCredential.ApiKey(Secret("sk-123"))),
+      )
+
+    val genaiFunctionResponse = adkFunctionResponse.toGenaiSdk()
+
+    assertEquals(
+      mapOf("key" to JsonObject(mapOf("authType" to JsonPrimitive("apiKey")))),
+      genaiFunctionResponse.response,
+    )
   }
 
   @Test

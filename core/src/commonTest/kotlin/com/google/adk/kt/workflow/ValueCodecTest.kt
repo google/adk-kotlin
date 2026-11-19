@@ -293,6 +293,23 @@ class ValueCodecTest {
   }
 
   @Test
+  fun coerce_mapHoldingATypedCredential_keepsItsSecrets() {
+    // Arrange
+    val config = testApiKeyConfig(rawKey = secret)
+    val saved =
+      mapOf(
+        "author" to "agent",
+        "actions" to mapOf("requestedAuthConfigs" to mapOf("call-1" to config)),
+      )
+
+    // Act
+    val event = codec<Event>().coerce(saved, "input")
+
+    // Assert
+    assertEquals(mapOf("call-1" to config), event.actions.requestedAuthConfigs)
+  }
+
+  @Test
   fun coerce_mapToFrameworkType_readsASavedOneBackAndRejectsUnknownKeys() {
     // Arrange
     val message = Content.fromText(Role.USER, "hi")
@@ -362,6 +379,20 @@ class ValueCodecTest {
 
     // Assert
     assertEquals(Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER)), schema)
+  }
+
+  @Test
+  fun encode_contentInAMap_keepsItsCompactWireForm() {
+    // Act
+    val encoded =
+      codec<Map<String, Any>>()
+        .encode(mapOf("reply" to Content.fromText(Role.MODEL, "hi")), "output")
+
+    // Assert
+    assertEquals(
+      mapOf("reply" to mapOf("role" to "model", "parts" to listOf(mapOf("text" to "hi")))),
+      encoded,
+    )
   }
 
   @Test

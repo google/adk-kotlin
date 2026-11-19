@@ -24,13 +24,15 @@ import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.events.parseToolConfirmation
 import com.google.adk.kt.ids.Uuid
-import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -620,9 +622,10 @@ fun interface ConfirmationPredicate<in I> {
   @Throws(Exception::class) fun test(context: Context, input: I): Boolean
 }
 
-/** The JSON form of [content], as a session saves it. */
+/** The JSON form of [content], as a session saves it, with credential secrets. */
+@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 private fun contentJson(content: Content): Any? =
-  jsonElementToAny(adkJson.encodeToJsonElement(Content.serializer(), content))
+  jsonElementToAny(adkSecretRevealingJson.encodeToJsonElement(Content.serializer(), content))
 
 /** The interrupt id prefix of a node run's confirmation request, followed by the node path. */
 private const val CONFIRMATION_INTERRUPT_PREFIX = "wf_tool_confirmation:"

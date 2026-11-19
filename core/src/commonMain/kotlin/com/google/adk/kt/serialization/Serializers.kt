@@ -16,7 +16,12 @@
 
 package com.google.adk.kt.serialization
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
+import com.google.adk.kt.auth.encodeCredentialOrNull
+import com.google.adk.kt.auth.revealsSecrets
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -67,9 +72,10 @@ private val REMOVED_JSON = lazy { JsonObject(mapOf(REMOVED_MARKER to JsonPrimiti
  * It maps Kotlin values to and from [JsonElement] and only supports JSON formats. It is
  * reflection-free and works in `commonMain` (unlike a `serializer(KClass)` lookup). Integral
  * numbers round-trip as [Long] and fractional numbers as [Double]. The [State.REMOVED] sentinel is
- * preserved via [REMOVED_MARKER].
+ * preserved via [REMOVED_MARKER]. A typed credential or secret keeps its secrets only when the
+ * encoder is the secret-revealing one.
  */
-@OptIn(FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 internal object AnySerializer : KSerializer<Any> {
   // The serialized form is an arbitrary JSON value (object, array, or primitive), so the descriptor
   // delegates to [JsonElement]'s rather than claiming a single primitive kind.
@@ -79,7 +85,9 @@ internal object AnySerializer : KSerializer<Any> {
     val jsonEncoder =
       encoder as? JsonEncoder
         ?: throw IllegalStateException("AnySerializer supports JSON formats only")
-    jsonEncoder.encodeJsonElement(anyToJsonElement(value))
+    // Nested values use adkJson's settings, so a nested Content is written as in Event.content.
+    val json = if (encoder.revealsSecrets()) adkSecretRevealingJson else adkJson
+    jsonEncoder.encodeJsonElement(anyToJsonElement(value, json))
   }
 
   override fun deserialize(decoder: Decoder): Any {
@@ -91,9 +99,17 @@ internal object AnySerializer : KSerializer<Any> {
   }
 }
 
+/**
+ * Returns the JSON form of [value], a JSON-native value, [Content], [Schema], or a typed credential
+ * or secret written without its secrets. Throws [IllegalArgumentException] for a value with no JSON
+ * form.
+ */
 @FrameworkInternalApi
-fun anyToJsonElement(value: Any?): JsonElement =
-  anyToJsonElement(value) { unsupported ->
+fun anyToJsonElement(value: Any?): JsonElement = anyToJsonElement(value, adkJson)
+
+/** [anyToJsonElement] under [json], which decides whether typed credentials keep their secrets. */
+internal fun anyToJsonElement(value: Any?, json: Json): JsonElement =
+  anyToJsonElement(value, json) { unsupported ->
     throw IllegalArgumentException(
       "AnySerializer cannot serialize value of type ${unsupported::class.simpleName}. Tool results " +
         "must be JSON-native (Map/List/String/number/Boolean/null); return a Map or use @Tool " +
@@ -101,9 +117,16 @@ fun anyToJsonElement(value: Any?): JsonElement =
     )
   }
 
-/** [anyToJsonElement], calling [onUnsupported] with the first value that has no JSON form. */
+/**
+ * [anyToJsonElement] under [json], calling [onUnsupported] with the first value that has no JSON
+ * form.
+ */
 @OptIn(FrameworkInternalApi::class)
-internal fun anyToJsonElement(value: Any?, onUnsupported: (Any) -> Nothing): JsonElement =
+internal fun anyToJsonElement(
+  value: Any?,
+  json: Json = adkJson,
+  onUnsupported: (Any) -> Nothing,
+): JsonElement =
   when (value) {
     null -> JsonNull
     State.REMOVED -> REMOVED_JSON.value
@@ -118,14 +141,16 @@ internal fun anyToJsonElement(value: Any?, onUnsupported: (Any) -> Nothing): Jso
     is Short -> JsonPrimitive(value)
     is Map<*, *> ->
       JsonObject(
-        value.entries.associate { (k, v) -> k.toString() to anyToJsonElement(v, onUnsupported) }
+        value.entries.associate { (k, v) ->
+          k.toString() to anyToJsonElement(v, json, onUnsupported)
+        }
       )
-    is List<*> -> JsonArray(value.map { anyToJsonElement(it, onUnsupported) })
+    is List<*> -> JsonArray(value.map { anyToJsonElement(it, json, onUnsupported) })
     // A framework value in workflow outputs, written in its wire form as in Event.content.
-    is Content -> adkJson.encodeToJsonElement(Content.serializer(), value)
+    is Content -> json.encodeToJsonElement(Content.serializer(), value)
     // A schema nested in an `Any` field, such as `Schema.additionalProperties`.
-    is Schema -> adkJson.encodeToJsonElement(Schema.serializer(), value)
-    else -> onUnsupported(value)
+    is Schema -> json.encodeToJsonElement(Schema.serializer(), value)
+    else -> json.encodeCredentialOrNull(value) ?: onUnsupported(value)
   }
 
 @FrameworkInternalApi

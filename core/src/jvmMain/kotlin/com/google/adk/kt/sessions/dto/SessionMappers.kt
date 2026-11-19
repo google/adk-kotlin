@@ -29,6 +29,7 @@ import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.sessions.forStorage
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Transcription
@@ -89,9 +90,9 @@ private fun Event.toRawEvent(): JsonElement? {
   val storable =
     if (output == null || convertOrNull("output") { anyToJsonElement(output) } != null) this
     else copy(output = null)
-  // Revealing, so that the stored event keeps the secrets of its typed credentials.
+  // Revealing, so that the state delta and output keep secrets; forStorage drops other typed ones.
   return convertOrNull("rawEvent") {
-    adkSecretRevealingJson.encodeToJsonElement(Event.serializer(), storable)
+    adkSecretRevealingJson.encodeToJsonElement(Event.serializer(), storable.forStorage())
   }
 }
 
@@ -175,7 +176,9 @@ private fun Transcription.toWire(): JsonElement =
 
 /**
  * Serializes [content] to the Vertex wire JSON. The wire is proto3-JSON, where a `bytes` field is a
- * base64 string, which is what the domain [Content] now serializes to directly.
+ * base64 string, which is what the domain [Content] now serializes to directly. Typed credentials
+ * leave their secrets out, as in `rawEvent`, since the model reads the content again after a
+ * reload.
  *
  * `Part.partMetadata` is stripped: it is an ADK-only field with no counterpart in the Vertex
  * `Content.Part`, so the strict proto-JSON parser rejects it (400 INVALID_ARGUMENT). It is dropped
@@ -254,19 +257,20 @@ private fun EventActionsDto.toAdk(): EventActions {
 
 /**
  * Serializes the in-memory state delta into a [JsonObject] where [State.REMOVED] is emitted as JSON
- * `null` (matches the Java ADK).
+ * `null` (matches the Java ADK). Typed credentials keep their secrets, since this is the session's
+ * store.
  */
-@OptIn(FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 private fun stateDeltaToDto(stateDelta: Map<String, Any>): JsonElement {
   val entries = stateDelta.mapValues { (_, value) ->
-    if (value === State.REMOVED) JsonNull else anyToJsonElement(value)
+    if (value === State.REMOVED) JsonNull else anyToJsonElement(value, adkSecretRevealingJson)
   }
   return JsonObject(entries)
 }
 
 /**
  * Serializes the free-form event custom metadata into the `google.protobuf.Struct` carried by
- * `EventMetadata.custom_metadata`.
+ * `EventMetadata.custom_metadata`. Typed credentials leave their secrets out, as in `rawEvent`.
  */
 @OptIn(FrameworkInternalApi::class)
 private fun customMetadataToDto(customMetadata: Map<String, Any?>): JsonElement =

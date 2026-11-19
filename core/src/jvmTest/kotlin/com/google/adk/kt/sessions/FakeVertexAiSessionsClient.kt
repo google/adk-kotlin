@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.gcp.GoogleApiClient
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.sessions.dto.ListEventsResponseDto
@@ -65,6 +68,7 @@ internal class FakeVertexAiSessionsClient :
       sessionState = JsonObject(stored.state.toMap()),
     )
 
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
   override suspend fun createSession(
     engine: ReasoningEngineRef,
     userId: String,
@@ -75,7 +79,10 @@ internal class FakeVertexAiSessionsClient :
   ): Result<SessionDto> {
     val id = sessionId ?: "s${nextId++}"
     val stored = Stored(userId = userId)
-    (state?.let { anyToJsonElement(it) } as? JsonObject)?.forEach { (k, v) -> stored.state[k] = v }
+    (state?.let { anyToJsonElement(it, adkSecretRevealingJson) } as? JsonObject)?.forEach { (k, v)
+      ->
+      stored.state[k] = v
+    }
     sessions[id] = stored
     return Result.success(dto(engine, id, stored))
   }

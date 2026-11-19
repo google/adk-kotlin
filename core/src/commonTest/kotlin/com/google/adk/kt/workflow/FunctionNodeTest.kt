@@ -23,9 +23,12 @@ package com.google.adk.kt.workflow
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.runners.InMemoryRunner
@@ -408,6 +411,26 @@ class FunctionNodeTest {
     // Assert
     assertEquals(listOf("counting", null), events.map { it.content?.text() })
     assertEquals(listOf(null, 3L), events.map { it.output })
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun node_contentReturnWithATypedCredential_keepsItsSecrets() {
+    // Arrange
+    val call = FunctionCall("f", mapOf("key" to AuthCredential.ApiKey(Secret(secret))))
+    val answer = Content(role = Role.MODEL, parts = listOf(Part(functionCall = call)))
+    val produceContent = node<Any?, Content>("produce_content") { _, _ -> answer }
+    val runner = runnerFor(Workflow(name = "wf", edges = listOf(Edge(Start, produceContent))))
+
+    // Act
+    val unused = runner.runEvents()
+    val output =
+      runner.session().events.single { it.nodeInfo?.path == "wf@1/produce_content@1" }.output
+
+    // Assert
+    val part = ((output as Map<*, *>)["parts"] as List<*>).single() as Map<*, *>
+    val args = (part["functionCall"] as Map<*, *>)["args"] as Map<*, *>
+    assertEquals(mapOf("authType" to "apiKey", "apiKey" to secret), args["key"])
   }
 
   /**

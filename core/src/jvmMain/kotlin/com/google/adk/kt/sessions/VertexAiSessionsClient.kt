@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.gcp.GoogleApiClient
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
@@ -102,7 +105,8 @@ internal open class VertexAiSessionsClient(
    *
    * @param engine The reasoning engine that owns the session.
    * @param userId The ID of the user owning the session.
-   * @param state Optional initial state map to inject into the session.
+   * @param state Optional initial state map to inject into the session. Typed credentials in it
+   *   keep their secrets.
    * @param ttl Optional lifetime of the session, measured from creation.
    * @param expireTime Optional absolute expiry of the session. The wire field is a oneof, so the
    *   caller must not set both this and [ttl].
@@ -110,6 +114,7 @@ internal open class VertexAiSessionsClient(
    *   is absent.
    * @return The created [SessionDto], or a [Result.failure] describing why creation failed.
    */
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
   open suspend fun createSession(
     engine: ReasoningEngineRef,
     userId: String,
@@ -123,7 +128,7 @@ internal open class VertexAiSessionsClient(
         CreateSessionRequestDto.serializer(),
         CreateSessionRequestDto(
           userId = userId,
-          sessionState = state?.let { anyToJsonElement(it) },
+          sessionState = state?.let { anyToJsonElement(it, adkSecretRevealingJson) },
           // proto3 JSON writes a Duration as seconds with an "s" suffix.
           ttl = ttl?.let { "${it.inWholeSeconds}s" },
           expireTime = expireTime?.toString(),

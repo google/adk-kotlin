@@ -85,4 +85,11 @@ class AuthJsonTest {
 
     for (value in values) assertNull(decodeFromPlainOrNull(AuthCredentialSerializer, value))
   }
+
+  @Test
+  fun decodeFromPlainOrNull_typedCredential_keepsItsSecrets() {
+    val credential = AuthCredential.ApiKey(Secret("k"))
+
+    assertEquals(credential, decodeFromPlainOrNull(AuthCredentialSerializer, credential))
+  }
 }

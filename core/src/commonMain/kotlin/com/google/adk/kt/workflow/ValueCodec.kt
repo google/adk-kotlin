@@ -117,9 +117,9 @@ internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
 
   /**
    * Returns the JSON form of [value] as a [T] under [kType]'s serializer: plain maps, lists, and
-   * scalars, with a `ByteArray` as base64 and an `Any` value only if it is JSON-native. Throws
-   * [IllegalArgumentException], naming [what] and not [value], when [value] is not a [T] or has no
-   * JSON form.
+   * scalars, with a `ByteArray` as base64 and an `Any` value only if it is JSON-native, a [Content]
+   * or [Schema], or a typed credential, which keeps its secrets. Throws [IllegalArgumentException],
+   * naming [what] and not [value], when [value] is not a [T] or has no JSON form.
    */
   override fun encode(value: Any?, what: String): Any? {
     if (value == null) return null
@@ -214,13 +214,16 @@ internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
   }
 }
 
-/** The JSON element of a JSON-shaped value, reading any collection as an array. */
-@OptIn(FrameworkInternalApi::class)
+/**
+ * The JSON element of a JSON-shaped value, reading any collection as an array. Typed credentials
+ * keep their secrets.
+ */
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 private fun jsonOf(value: Any?): JsonElement =
   when (value) {
     is Map<*, *> -> JsonObject(value.entries.associate { (k, v) -> k.toString() to jsonOf(v) })
     is Collection<*> -> JsonArray(value.map { jsonOf(it) })
-    else -> anyToJsonElement(value)
+    else -> anyToJsonElement(value, adkSecretRevealingJson)
   }
 
 /**

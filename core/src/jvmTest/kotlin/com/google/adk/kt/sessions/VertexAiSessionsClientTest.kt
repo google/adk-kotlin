@@ -16,6 +16,9 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.gcp.GoogleApiClient
 import com.google.adk.kt.sessions.dto.EventMetadataDto
 import com.google.adk.kt.sessions.dto.SessionEventDto
@@ -132,6 +135,19 @@ class VertexAiSessionsClientTest {
     assertThat(body).contains("\"ttl\":\"86400s\"")
     // `ttl` and `expireTime` are a wire oneof, so the unset arm must not be sent at all.
     assertThat(body).doesNotContain("expireTime")
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun createSession_typedCredentialInState_sendsItsSecrets() {
+    enqueueCreateSessionExchange()
+
+    val unused = runBlocking {
+      client.createSession(ENGINE, "user", mapOf("key" to AuthCredential.ApiKey(Secret("sk-123"))))
+    }
+
+    val body = server.takeRequest().body?.utf8()
+    assertThat(body).contains("\"key\":{\"authType\":\"apiKey\",\"apiKey\":\"sk-123\"}")
   }
 
   @Test

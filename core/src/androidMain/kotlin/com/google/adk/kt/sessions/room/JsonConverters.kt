@@ -24,6 +24,7 @@ import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.AnySerializer
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.forStorage
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.builtins.serializer
@@ -31,12 +32,12 @@ import kotlinx.serialization.builtins.serializer
 /**
  * Room `@TypeConverter`s for state and event payloads stored in TEXT columns.
  *
- * Serialization goes through `kotlinx.serialization`: the shared [adkJson] instance, except that
- * [eventToJson] writes credential secrets too. State maps use a contextual [AnySerializer] for
- * their free-form values; events use the generated [Event] serializer. State columns never persist
- * the [com.google.adk.kt.sessions.State.REMOVED] sentinel (the DAO strips removed keys before a map
- * reaches [toStateJson]); the append-only event log keeps deltas verbatim, and [AnySerializer]
- * preserves the sentinel across the event round-trip.
+ * Serialization goes through `kotlinx.serialization`: reads use the shared [adkJson] instance, and
+ * writes keep credential secrets where ADK reads them back. State maps use a contextual
+ * [AnySerializer] for their free-form values; events use the generated [Event] serializer. State
+ * columns never persist the [com.google.adk.kt.sessions.State.REMOVED] sentinel (the DAO strips
+ * removed keys before a map reaches [toStateJson]); the append-only event log keeps deltas
+ * verbatim, and [AnySerializer] preserves the sentinel across the event round-trip.
  */
 @OptIn(FrameworkInternalApi::class)
 internal object JsonConverters {
@@ -53,15 +54,17 @@ internal object JsonConverters {
       .mapValues { (_, v) -> v!! }
 
   @TypeConverter
-  fun toStateJson(state: Map<String, Any>): String = adkJson.encodeToString(stateSerializer, state)
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun toStateJson(state: Map<String, Any>): String =
+    adkSecretRevealingJson.encodeToString(stateSerializer, state)
 
   /**
-   * Serializes a full [Event] to JSON, with the secrets of its typed credentials. The caller's
-   * [event] is never mutated.
+   * Serializes a full [Event] to JSON, with the secrets of typed credentials in its state delta,
+   * output and requested auth configs only. The caller's [event] is never mutated.
    */
   @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
   fun eventToJson(event: Event): String =
-    adkSecretRevealingJson.encodeToString(Event.serializer(), event)
+    adkSecretRevealingJson.encodeToString(Event.serializer(), event.forStorage())
 
   /**
    * Deserializes an [Event] from JSON, preserving the `State.REMOVED` sentinel in

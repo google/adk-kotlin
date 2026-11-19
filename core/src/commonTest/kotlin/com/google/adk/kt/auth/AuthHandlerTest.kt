@@ -331,7 +331,7 @@ class AuthHandlerTest {
     val malformed =
       listOf(
         mapOf("authType" to "oauth2", "oauth2" to "not an object"),
-        mapOf("authType" to "apiKey", "apiKey" to Secret("not JSON")),
+        mapOf("authType" to "apiKey", "apiKey" to Any()),
       )
 
     for (stored in malformed) {

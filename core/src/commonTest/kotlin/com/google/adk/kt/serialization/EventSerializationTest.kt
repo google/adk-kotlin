@@ -17,7 +17,12 @@
 package com.google.adk.kt.serialization
 
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
@@ -55,6 +60,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 
 /** Round-trip tests for the kotlinx.serialization wiring of the [Event] graph. */
@@ -228,6 +235,42 @@ class EventSerializationTest {
 
     assertEquals("v", roundTripped.args["present"])
     assertNull(roundTripped.args["absent"])
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun freeFormValues_typedCredential_encodeWithoutItsSecrets() {
+    val credential = AuthCredential.ApiKey(Secret("sk-123"))
+    val event =
+      Event(
+        author = "agent",
+        content =
+          Content(
+            parts = listOf(Part(functionCall = FunctionCall("f", mapOf("key" to credential))))
+          ),
+        actions = EventActions().apply { stateDelta["key"] = credential },
+      )
+
+    val json = adkJson.encodeToJsonElement(Event.serializer(), event).jsonObject
+    val fromAny = anyToJsonElement(mapOf("key" to credential))
+
+    val omitted = JsonObject(mapOf("authType" to JsonPrimitive("apiKey")))
+    val call = json["content"]!!.jsonObject["parts"]!!.jsonArray.single().jsonObject["functionCall"]
+    assertEquals(omitted, call!!.jsonObject["args"]!!.jsonObject["key"])
+    assertEquals(omitted, json["actions"]!!.jsonObject["stateDelta"]!!.jsonObject["key"])
+    assertEquals(JsonObject(mapOf("key" to omitted)), fromAny)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
+  fun freeFormValues_secret_encodesAsAPlaceholderUnlessRevealing() {
+    val state = mapOf("key" to Secret("sk-123"))
+
+    assertEquals(JsonObject(mapOf("key" to JsonPrimitive("<redacted>"))), anyToJsonElement(state))
+    assertEquals(
+      JsonObject(mapOf("key" to JsonPrimitive("sk-123"))),
+      anyToJsonElement(state, adkSecretRevealingJson),
+    )
   }
 
   @Test

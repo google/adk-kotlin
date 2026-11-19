@@ -20,7 +20,10 @@
  */
 package com.google.adk.kt.types
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.encodeCredentialOrNull
 import com.google.adk.kt.serialization.Json
+import com.google.adk.kt.serialization.adkJson
 import com.google.genai.kotlin.types.Blob as GenAiBlob
 import com.google.genai.kotlin.types.Candidate as GenAiCandidate
 import com.google.genai.kotlin.types.Citation as GenAiCitation
@@ -96,6 +99,7 @@ import kotlinx.serialization.json.longOrNull
  * model as JSON `null` rather than disappearing. Only non-string keys are normalized, never
  * dropped.
  */
+@OptIn(FrameworkInternalApi::class)
 internal fun Any?.toJsonElement(): JsonElement =
   when (this) {
     null -> JsonNull
@@ -109,7 +113,8 @@ internal fun Any?.toJsonElement(): JsonElement =
     is Array<*> -> JsonArray(this.map { it.toJsonElement() })
     // Edge-case fallback for a custom object arriving as erased `Any`; KSP `@Tool`s don't reach
     // here (data-class returns are decomposed to maps). Best-effort via the platform [Json].
-    else -> KmpJson.parseToJsonElement(Json.toJsonString(this))
+    else ->
+      adkJson.encodeCredentialOrNull(this) ?: KmpJson.parseToJsonElement(Json.toJsonString(this))
   }
 
 /** Recursively converts a [JsonElement] back to plain Kotlin types. */

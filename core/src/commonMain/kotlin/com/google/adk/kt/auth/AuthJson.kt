@@ -27,6 +27,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.modules.SerializersModule
 
@@ -71,14 +72,29 @@ internal fun <T> encodeToPlainMap(
   }
 
 /**
+ * Returns the JSON form of [value] if it is an [AuthCredential], an [AuthConfig] or a [Secret], or
+ * null if it is none of them. Its secrets are written only when this is [adkSecretRevealingJson] or
+ * derived from it.
+ */
+@OptIn(ExperimentalAuthApi::class)
+internal fun Json.encodeCredentialOrNull(value: Any): JsonElement? =
+  when (value) {
+    is AuthCredential -> encodeToJsonElement(AuthCredentialSerializer, value)
+    is AuthConfig -> encodeToJsonElement(AuthConfigSerializer, value)
+    is Secret -> encodeToJsonElement(SecretSerializer, value)
+    else -> null
+  }
+
+/**
  * Returns [value], a plain value as session state or function call arguments hold it, decoded with
  * [deserializer], or null if it has no JSON form or [deserializer] rejects it with an
  * `IllegalArgumentException`, which includes `SerializationException`.
  */
-@OptIn(FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 internal fun <T> decodeFromPlainOrNull(deserializer: DeserializationStrategy<T>, value: Any?): T? =
   try {
-    adkJson.decodeFromJsonElement(deserializer, anyToJsonElement(value))
+    // Revealing, so that a typed credential inside [value] keeps its secrets.
+    adkJson.decodeFromJsonElement(deserializer, anyToJsonElement(value, adkSecretRevealingJson))
   } catch (e: IllegalArgumentException) {
     null
   }

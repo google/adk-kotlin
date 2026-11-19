@@ -26,6 +26,9 @@ import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -59,6 +62,16 @@ class JsonConvertersTest {
     assertThat((decoded["double"] as Number).toDouble()).isEqualTo(1.5)
     assertThat(decoded["boolean"]).isEqualTo(true)
     assertThat(decoded["list"]).isEqualTo(listOf("a", "b"))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun stateJson_typedCredential_keepsItsSecrets() {
+    val state = mapOf<String, Any>("key" to AuthCredential.ApiKey(Secret("sk-123")))
+
+    val restored = JsonConverters.fromStateJson(JsonConverters.toStateJson(state))
+
+    assertThat(restored).containsExactly("key", mapOf("authType" to "apiKey", "apiKey" to "sk-123"))
   }
 
   @Test
@@ -128,5 +141,26 @@ class JsonConvertersTest {
     val decoded = JsonConverters.eventFromJson(JsonConverters.eventToJson(event))
 
     assertThat(decoded.actions.requestedAuthConfigs).containsExactly("call-1", config)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun eventJson_toolResultWithATypedCredential_reloadsWithoutItsSecret() {
+    val credential = AuthCredential.ApiKey(Secret("sk-123"))
+    val result = FunctionResponse("f", mapOf("key" to credential))
+    val event =
+      Event(
+        author = "agent",
+        content = Content(parts = listOf(Part(functionResponse = result))),
+        actions = EventActions().apply { stateDelta["key"] = credential },
+        timestamp = 1L,
+      )
+
+    val decoded = JsonConverters.eventFromJson(JsonConverters.eventToJson(event))
+
+    assertThat(decoded.content!!.parts.single().functionResponse!!.response)
+      .containsExactly("key", mapOf("authType" to "apiKey"))
+    assertThat(decoded.actions.stateDelta)
+      .containsExactly("key", mapOf("authType" to "apiKey", "apiKey" to "sk-123"))
   }
 }
