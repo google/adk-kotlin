@@ -100,7 +100,7 @@ class CredentialKeyTest {
     val expected =
       mapOf(
         AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER) to
-          "adk_apiKey_39c5e4ced628d031_",
+          "adk_apiKey_9a46dad5a84303f3_",
         AuthScheme.Http.basic() to "adk_http_fc8df715f5002444_",
         AuthScheme.Http.bearer() to "adk_http_178204f758fb78d5_",
         BEARER to "adk_http_3e922d755264ee81_",
@@ -143,7 +143,7 @@ class CredentialKeyTest {
           description =
             "say \"hi\" \\ \b\u000C\n\r\t\u0001\u001F\u007F " +
               "\u00E9 \u4E2D\u6587 \uD83D\uDE00 a/b\u2028",
-        ) to "adk_apiKey_a9a139cf63bc3f1d_",
+        ) to "adk_apiKey_f5f978b85d9bd4a3_",
         // Keys where one is a prefix of another.
         AuthScheme.OpenIdConnect(
           authorizationEndpoint = "https://a/auth",

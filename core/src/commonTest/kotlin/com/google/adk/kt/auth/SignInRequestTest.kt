@@ -79,7 +79,7 @@ class SignInRequestTest {
     assertEquals("req-1", response.id)
     assertEquals(
       Json.parseToJsonElement(
-        """{"authScheme": {"type": "apiKey", "location": "header", "name": "X-Key"},
+        """{"authScheme": {"type": "apiKey", "in": "header", "name": "X-Key"},
           "exchangedAuthCredential": {"authType": "apiKey", "apiKey": "user-key"},
           "credentialKey": "key"}"""
       ),

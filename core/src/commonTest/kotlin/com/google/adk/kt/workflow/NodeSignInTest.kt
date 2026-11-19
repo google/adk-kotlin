@@ -71,7 +71,7 @@ class NodeSignInTest {
   fun signInRequestEvent_apiKey_matchesTheExpectedRequest() {
     assertEquals(
       Json.parseToJsonElement(
-        """{"args": {"authConfig": {"authScheme": {"location": "header", "name": "X-Api-Key",
+        """{"args": {"authConfig": {"authScheme": {"in": "header", "name": "X-Api-Key",
           "type": "apiKey"}, "credentialKey": "node-cred", "rawAuthCredential": {"authType":
           "apiKey"}}, "functionCallId": "$ID", "message":
           "Please provide your API key for X-Api-Key."}, "id": "$ID", "longRunning": ["$ID"],
@@ -128,7 +128,7 @@ class NodeSignInTest {
 
     assertEquals(
       Json.parseToJsonElement(
-        """{"args": {"authConfig": {"authScheme": {"location": "header", "name": "X-Api-Key",
+        """{"args": {"authConfig": {"authScheme": {"in": "header", "name": "X-Api-Key",
           "type": "apiKey"}, "credentialKey": "node-cred"}, "functionCallId": "$ID", "message":
           "Please provide your authentication credentials."}, "id": "$ID", "longRunning":
           ["$ID"], "name": "adk_request_credential", "state": {}}"""

@@ -57,7 +57,7 @@ private sealed interface AuthSchemeSurrogate {
   @Serializable
   @SerialName("apiKey")
   class ApiKey(
-    val location: AuthScheme.ApiKey.Location,
+    @SerialName("in") val location: AuthScheme.ApiKey.Location,
     val name: String,
     val description: String? = null,
   ) : AuthSchemeSurrogate {

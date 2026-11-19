@@ -36,12 +36,12 @@ class AuthSchemeSerializerTest {
 
   @Test
   fun decode_apiKeyLocationEntryName_throws() {
-    assertMalformed("""{"type": "apiKey", "location": "HEADER", "name": "key"}""")
+    assertMalformed("""{"type": "apiKey", "in": "HEADER", "name": "key"}""")
   }
 
   @Test
   fun decode_apiKeyUnknownLocation_throws() {
-    assertMalformed("""{"type": "apiKey", "location": "BODY", "name": "key"}""")
+    assertMalformed("""{"type": "apiKey", "in": "BODY", "name": "key"}""")
   }
 
   @Test
@@ -53,7 +53,7 @@ class AuthSchemeSerializerTest {
   fun decode_apiKey_readsEveryField() {
     assertEquals(
       AuthScheme.ApiKey("key", AuthScheme.ApiKey.Location.QUERY, "d"),
-      decode("""{"type": "apiKey", "location": "query", "name": "key", "description": "d"}"""),
+      decode("""{"type": "apiKey", "in": "query", "name": "key", "description": "d"}"""),
     )
   }
 
@@ -78,7 +78,7 @@ class AuthSchemeSerializerTest {
 
   @Test
   fun decode_missingType_throws() {
-    assertMalformed("""{"location": "header", "name": "key"}""")
+    assertMalformed("""{"in": "header", "name": "key"}""")
   }
 
   @Test
@@ -246,18 +246,18 @@ class AuthSchemeSerializerTest {
   fun decode_typeAfterTheFields_readsTheKind() {
     assertEquals(
       AuthScheme.ApiKey("key", AuthScheme.ApiKey.Location.HEADER),
-      decode("""{"location": "header", "name": "key", "type": "apiKey"}"""),
+      decode("""{"in": "header", "name": "key", "type": "apiKey"}"""),
     )
   }
 
   @Test
   fun decode_typeNotString_throws() {
-    assertMalformed("""{"type": 1, "location": "header", "name": "key"}""")
+    assertMalformed("""{"type": 1, "in": "header", "name": "key"}""")
   }
 
   @Test
   fun decode_typeNull_throws() {
-    assertMalformed("""{"type": null, "location": "header", "name": "key"}""")
+    assertMalformed("""{"type": null, "in": "header", "name": "key"}""")
   }
 
   @Test
@@ -277,7 +277,7 @@ class AuthSchemeSerializerTest {
   @Test
   fun encode_apiKey_writesTypeAndEveryField() {
     assertEquals(
-      json("""{"type": "apiKey", "location": "header", "name": "X-Key", "description": "d"}"""),
+      json("""{"type": "apiKey", "in": "header", "name": "X-Key", "description": "d"}"""),
       encode(AuthScheme.ApiKey("X-Key", AuthScheme.ApiKey.Location.HEADER, "d")),
     )
   }
@@ -377,7 +377,7 @@ class AuthSchemeSerializerTest {
       val scheme = AuthScheme.ApiKey("key", location)
       val written = encode(scheme)
 
-      assertEquals(json("""{"type": "apiKey", "location": "$value", "name": "key"}"""), written)
+      assertEquals(json("""{"type": "apiKey", "in": "$value", "name": "key"}"""), written)
       assertEquals(scheme, decode(written.toString()))
     }
   }
