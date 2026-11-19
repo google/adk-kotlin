@@ -20,6 +20,7 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.auth.RequestCredentialArgs
 import com.google.adk.kt.auth.SignInRequest
+import com.google.adk.kt.auth.isSignInRequest
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.models.CacheMetadata
 import com.google.adk.kt.serialization.LenientEpochMillisSerializer
@@ -79,8 +80,10 @@ import kotlinx.serialization.json.JsonNames
  *   carry cache state across turns. `null` when context caching is disabled.
  * @property output For a workflow node, the value handed to successors, distinct from [content].
  *   Holds a JSON-native value (map with string keys, list, string, number, boolean, null,
- *   `JsonElement`) or a [Content]; a node that emits any other value fails. A `FunctionNode` writes
- *   its output's JSON form here.
+ *   `JsonElement`), a [Content], or a typed credential, which output writes without its secrets; a
+ *   node that emits any other value fails. A `FunctionNode` writes its output's JSON form here.
+ *   CAUTION: a session service reads a stored credential back as plain values, which output then
+ *   writes with its secrets.
  * @property nodeInfo Identifies the workflow-node activation that emitted this event; `null`
  *   outside a workflow.
  * @property timestamp The timestamp of the event.
@@ -159,9 +162,7 @@ constructor(
   fun signInRequests(): List<SignInRequest> =
     functionCalls()
       // ADK marks its own requests long-running; a call the model wrote never is.
-      .filter {
-        it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME && it.id in longRunningToolIds
-      }
+      .filter { it.isSignInRequest && it.id in longRunningToolIds }
       .mapNotNull { call ->
         val id = call.id ?: return@mapNotNull null
         val requestArgs = RequestCredentialArgs.fromMap(call.args) ?: return@mapNotNull null

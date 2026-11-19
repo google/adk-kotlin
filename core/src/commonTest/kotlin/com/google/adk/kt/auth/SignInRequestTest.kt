@@ -33,6 +33,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import kotlinx.serialization.descriptors.elementNames
 import kotlinx.serialization.json.Json
 import org.junit.Test
 
@@ -83,7 +84,21 @@ class SignInRequestTest {
           "exchangedAuthCredential": {"authType": "apiKey", "apiKey": "user-key"},
           "credentialKey": "key"}"""
       ),
-      anyToJsonElement(response.response),
+      anyToJsonElement(response.response, adkSecretRevealingJson),
+    )
+  }
+
+  @Test
+  fun createResponse_apiKeyCredential_outputLeavesTheKeyOut() {
+    val message =
+      signInRequest(API_KEY_REQUEST).createResponse(AuthCredential.ApiKey(Secret("user-key")))
+
+    assertEquals(
+      Json.parseToJsonElement(
+        """{"authScheme": {"type": "apiKey", "in": "header", "name": "X-Key"},
+          "exchangedAuthCredential": {"authType": "apiKey"}, "credentialKey": "key"}"""
+      ),
+      anyToJsonElement(message.functionResponse().response),
     )
   }
 
@@ -96,7 +111,7 @@ class SignInRequestTest {
     val expected = OIDC_REQUEST.copy(exchangedAuthCredential = answer)
     assertEquals(
       adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, expected),
-      anyToJsonElement(message.functionResponse().response),
+      anyToJsonElement(message.functionResponse().response, adkSecretRevealingJson),
     )
   }
 
@@ -130,7 +145,7 @@ class SignInRequestTest {
     val expected = OIDC_REQUEST.copy(exchangedAuthCredential = filledIn)
     assertEquals(
       adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, expected),
-      anyToJsonElement(message.functionResponse().response),
+      anyToJsonElement(message.functionResponse().response, adkSecretRevealingJson),
     )
   }
 
@@ -160,7 +175,7 @@ class SignInRequestTest {
       OIDC_REQUEST.copy(exchangedAuthCredential = OIDC_SIGN_IN.copy(accessToken = Secret("at")))
     assertEquals(
       adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, expected),
-      anyToJsonElement(message.functionResponse().response),
+      anyToJsonElement(message.functionResponse().response, adkSecretRevealingJson),
     )
   }
 
@@ -176,6 +191,18 @@ class SignInRequestTest {
     assertEquals(
       "A sign-in response needs an access token; ADK can't exchange an authorization code yet.",
       error.message,
+    )
+  }
+
+  @Test
+  fun createResponse_requestWithEveryField_writesEveryConfigField() {
+    // Every field, so that one added later can't be left out of the response unnoticed.
+    val message =
+      signInRequest(OIDC_REQUEST).createResponse(AuthCredential.OAuth2(accessToken = Secret("at")))
+
+    assertEquals(
+      AuthConfigSerializer.descriptor.elementNames.toSet(),
+      message.functionResponse().response.keys,
     )
   }
 

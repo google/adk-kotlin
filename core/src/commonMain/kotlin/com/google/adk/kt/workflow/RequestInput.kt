@@ -46,7 +46,8 @@ import kotlinx.serialization.json.encodeToJsonElement
  *
  * @property interruptId Identifier for this request and its matching response.
  * @property message Prompt message shown to the user.
- * @property payload Additional structured data for rendering the request.
+ * @property payload Additional structured data for rendering the request. A typed credential in it
+ *   is sent and stored without its secrets, since the request goes to the user.
  * @property responseSchema Optional schema used to validate the user's response. Non-object
  *   responses are unwrapped from the `result` key and parsed from JSON unless the schema accepts a
  *   string. The answer is checked and saved with the same rules as a node input; a null answer

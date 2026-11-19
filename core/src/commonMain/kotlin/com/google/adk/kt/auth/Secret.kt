@@ -69,6 +69,7 @@ internal object SecretSerializer : KSerializer<Secret> {
     PrimitiveSerialDescriptor("com.google.adk.kt.auth.Secret", PrimitiveKind.STRING)
 
   override fun serialize(encoder: Encoder, value: Secret) {
+    if (encoder.tryEncodePlaceholder(value)) return
     // The credential serializers leave secrets out unless revealing, so this is a backstop.
     encoder.encodeString(if (encoder.revealsSecrets()) value.reveal() else REDACTED)
   }

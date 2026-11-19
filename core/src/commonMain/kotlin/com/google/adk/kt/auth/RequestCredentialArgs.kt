@@ -19,7 +19,8 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonNames
 
@@ -39,8 +40,15 @@ internal data class RequestCredentialArgs(
   val authConfig: AuthConfig,
   val message: String? = null,
 ) {
-  /** Returns these arguments as function call args. */
-  @OptIn(SecretAccess::class) fun toMap(): Map<String, Any?> = encodeToPlainMap(serializer(), this)
+  /**
+   * Returns these arguments as function call args, with [authConfig] kept typed so that serializing
+   * them leaves its secrets out.
+   */
+  fun toMap(): Map<String, Any?> = buildMap {
+    put("functionCallId", functionCallId)
+    put("authConfig", authConfig)
+    if (message != null) put("message", message)
+  }
 
   companion object {
     /** Returns [args] read as sign-in request arguments, or null if they are malformed. */
@@ -48,3 +56,25 @@ internal data class RequestCredentialArgs(
       decodeFromPlainOrNull(serializer(), args)
   }
 }
+
+/**
+ * Returns this sign-in request with its arguments decoded, so that its auth config is typed and
+ * serializing it leaves its secrets out; malformed arguments are dropped. Any other call is
+ * returned as is.
+ */
+internal fun FunctionCall.withDecodedSignInRequest(): FunctionCall {
+  if (!isSignInRequest) return this
+  return copy(args = RequestCredentialArgs.fromMap(args)?.toMap().orEmpty())
+}
+
+/**
+ * Whether this call has the sign-in request's name, `adk_request_credential`. The name doesn't show
+ * that ADK made the call, so a caller that relies on it checks more, as `Event.signInRequests`
+ * does.
+ */
+internal val FunctionCall.isSignInRequest: Boolean
+  get() = name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME
+
+/** Whether this response answers a sign-in request, by the request's name. */
+internal val FunctionResponse.isSignInResponse: Boolean
+  get() = name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME

@@ -29,11 +29,11 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.adkSecretRevealingJson
+import com.google.adk.kt.auth.encodeToPlainWithTypedCredentials
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.events.parseToolConfirmation
 import com.google.adk.kt.ids.Uuid
-import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import kotlin.jvm.JvmOverloads
@@ -572,8 +572,9 @@ private constructor(
  * and `get()` throw, fails the node with its cause, which error events and [RetryConfig] name, so a
  * child's pause from `InteropContextView.runNode` makes the node wait. `input` arrives as the
  * node's input type, in JSON form on an untyped port (a whole number as a `Long`, a fraction as a
- * `Double`, an object as a `Map`), or as a [Content] message, and may be a predecessor's own
- * collection, so the body must not mutate it.
+ * `Double`, an object as a `Map`, a typed credential as itself until a resume reads it back as a
+ * `Map`), or as a [Content] message, and may be a predecessor's own collection, so the body must
+ * not mutate it.
  *
  * Return `null` for no output, a value of the output type, or an [Event] to emit as it is (an
  * `Event` with content sends a message, and an output goes in the return value, not in the
@@ -622,10 +623,13 @@ fun interface ConfirmationPredicate<in I> {
   @Throws(Exception::class) fun test(context: Context, input: I): Boolean
 }
 
-/** The JSON form of [content], as a session saves it, with credential secrets. */
+/**
+ * The JSON form of [content], as a session saves it, with its credentials left typed as
+ * [ValueCodec.encode] leaves them.
+ */
 @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 private fun contentJson(content: Content): Any? =
-  jsonElementToAny(adkSecretRevealingJson.encodeToJsonElement(Content.serializer(), content))
+  adkSecretRevealingJson.encodeToPlainWithTypedCredentials(Content.serializer(), content)
 
 /** The interrupt id prefix of a node run's confirmation request, followed by the node path. */
 private const val CONFIRMATION_INTERRUPT_PREFIX = "wf_tool_confirmation:"
