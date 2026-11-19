@@ -296,8 +296,9 @@ object SchemaUtils {
    * Parses a model output string as JSON and validates it against a schema.
    *
    * Mirrors `SchemaUtils.validateOutputSchema` in the Java ADK and `validate_schema` in the Python
-   * ADK: the [output] is expected to be a JSON object that matches [schema]. Like the Python ADK,
-   * and unlike the Java one, it fills in the defaults of absent properties.
+   * ADK: [output] is expected to be a JSON object that matches [schema]. Like the Python ADK, and
+   * unlike the Java one, this fills in defaults for missing properties and strips a markdown code
+   * fence wrapping the entire [output].
    *
    * Only top-level object schemas are supported: [output] must parse to a JSON object (it is
    * decoded via [Json.fromJsonToMap]). Top-level array or primitive schemas are not supported and
@@ -313,7 +314,7 @@ object SchemaUtils {
    */
   fun validateOutputSchema(output: String, schema: Schema): Result<Map<String, Any?>> =
     runCatching {
-      val parsed = Json.fromJsonToMap(output)
+      val parsed = Json.fromJsonToMap(stripJsonCodeFence(output))
       validateMapOnSchema(parsed, schema, "Output").getOrThrow()
       parsed.normalizedBySchema(schema)
     }
@@ -371,14 +372,14 @@ object SchemaUtils {
     }
 
   /**
-   * Parses model text [output] against [schema] by decoding it as JSON; a JSON `null` fails unless
-   * [schema] accepts null. If that fails and [schema] accepts a string, returns the raw text. Blank
-   * text returns null.
+   * Strips any surrounding markdown code fence from model text [output] and parses it as JSON
+   * against [schema]; a JSON `null` fails unless [schema] accepts null. If that fails and [schema]
+   * accepts a string, returns the raw text. Blank text returns null.
    */
   internal fun parseModelOutput(schema: Schema, output: String): Any? {
     if (output.isBlank()) return null
     val parsed =
-      readJson(output).mapCatching {
+      readJson(stripJsonCodeFence(output)).mapCatching {
         require(it != null || matchType(null, schema, "Value", UnionBudget()).isSuccess) {
           "validation error: value does not match its schema."
         }
@@ -386,6 +387,22 @@ object SchemaUtils {
       }
     return if (parsed.isFailure && acceptsString(schema)) output else parsed.getOrThrow()
   }
+
+  /**
+   * Strips a markdown code fence (such as ` ```json ... ``` `) when it wraps the entire [text],
+   * which a model sometimes adds to structured output; otherwise returns [text] unchanged.
+   */
+  internal fun stripJsonCodeFence(text: String): String {
+    val stripped = text.trim()
+    if (stripped.length < 6 || !stripped.startsWith("```") || !stripped.endsWith("```")) return text
+    // Slicing instead of one regex over the whole text, so an unclosed fence cannot backtrack.
+    return stripped.substring(3, stripped.length - 3).replaceFirst(FENCE_LANGUAGE, "").trim()
+  }
+
+  /**
+   * An opening fence's language tag, such as `json`, with the spaces, tabs and newline after it.
+   */
+  private val FENCE_LANGUAGE = Regex("^[A-Za-z0-9_]*[ \t]*\n?")
 
   /**
    * Returns [value] as [schema] reads it, with defaults filled in; a null passes every schema, as
