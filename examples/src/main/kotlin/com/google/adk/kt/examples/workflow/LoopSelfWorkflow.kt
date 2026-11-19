@@ -20,6 +20,8 @@ package com.google.adk.kt.examples.workflow
 
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
@@ -44,16 +46,16 @@ object LoopSelfWorkflow {
       chain(Start, validateInput, guessNumber).route { on("guessed_wrong") then guessNumber }
     }
 
-  /** Stores the user's number in state, and fails the run if it is out of range. */
+  /** Sends the user's number as a state change, and fails the run if it is out of range. */
   private val validateInput =
-    node<String, Unit>("validate_input") { context, text ->
+    node<String, Unit>("validate_input") { _, text ->
       // START hands the first node the user's message, which a String input receives as text.
       val number = text.trim().toInt()
       if (number !in 0..10) {
         emit(Content.fromText(Role.MODEL, "Please provide a number between 0 and 10."))
         throw IllegalArgumentException("Invalid input.")
       }
-      context.updateState("target_number", number)
+      emit(Event(actions = EventActions(stateDelta = mutableMapOf("target_number" to number))))
     }
 
   /** Guesses a number, and routes back to itself when the guess is wrong. */

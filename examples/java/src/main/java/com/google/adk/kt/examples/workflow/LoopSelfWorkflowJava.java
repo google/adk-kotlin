@@ -19,6 +19,7 @@ package com.google.adk.kt.examples.workflow;
 import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
+import com.google.adk.kt.events.EventActions;
 import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.types.Content;
@@ -29,7 +30,9 @@ import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
@@ -71,7 +74,7 @@ public final class LoopSelfWorkflowJava {
   /** An input schema under which a node receives its input, such as a message, as text. */
   private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
 
-  /** Stores the user's number in state, and fails the run if it is out of range. */
+  /** Sends the user's number as a state change, and fails the run if it is out of range. */
   private static final class ValidateInput extends BasePublisherNode {
     ValidateInput() {
       super(
@@ -95,8 +98,14 @@ public final class LoopSelfWorkflowJava {
         return Mono.<Object>just(message)
             .concatWith(Mono.error(new IllegalArgumentException("Invalid input.")));
       }
-      context.updateState("target_number", number);
-      return Mono.empty();
+      return Mono.just(
+          Event.builder()
+              .actions(
+                  EventActions.builder()
+                      // The framework adds to a state delta, so it must be mutable.
+                      .stateDelta(new HashMap<>(Map.of("target_number", number)))
+                      .build())
+              .build());
     }
   }
 

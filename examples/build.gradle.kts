@@ -86,13 +86,14 @@ tasks.register<JavaExec>("runSpringAiToolsDemo") {
   }
 }
 
-// Convenience task to serve a sample of the example agents over HTTP, e.g.:
+// Convenience task to serve example agents and workflows over HTTP, e.g.:
 //   GOOGLE_CLOUD_PROJECT=my-project ./gradlew :google-adk-kotlin-examples:runServer --args="--dev"
 // then browse http://localhost:8080/dev-ui and pick an agent.
 tasks.register<JavaExec>("runServer") {
   group = "application"
   description =
-    "Serves five example agents over HTTP, unauthenticated, with the Development UI under --dev."
+    "Serves example agents and workflows over HTTP, unauthenticated, with the Development UI " +
+      "under --dev."
   mainClass.set("com.google.adk.kt.examples.server.ExampleServerKt")
   classpath = sourceSets["main"].runtimeClasspath
 }
