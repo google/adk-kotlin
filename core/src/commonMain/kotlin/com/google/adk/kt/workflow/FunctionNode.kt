@@ -182,12 +182,7 @@ private constructor(
     // An emitted event carries messages and actions only; the output is returned or delegated.
     val events =
       FlowCollector<Event> { event ->
-        require(event.output == null) {
-          "node '$name' emitted an Event with an output; return the value instead."
-        }
-        require(event.nodeInfo?.messageAsOutput != true) {
-          "node '$name' emitted an Event marked messageAsOutput; return the value instead."
-        }
+        requireNoOutput(name, event)
         emit(event)
       }
     val result = events.body(context, input)
@@ -557,11 +552,11 @@ private constructor(
  * The body of a [FunctionNode] set through [FunctionNode.Builder.body]. A Java body is blocking
  * code, so it does not run on the dispatcher of the coroutine that collects the run: it runs on the
  * dispatcher passed to `FunctionNodes`, by default a view of `Dispatchers.IO` without its thread
- * limit, so it may block, for example to wait for a child, without stalling the workflow. A waiting
- * body holds its thread: the default starts one thread per body that waits at the same time, and a
- * dispatcher an app passes needs a free thread for every such body, so a single-threaded or small
- * bounded one can hang the run. Bound a fan-out with the `maxParallelWorkers` of `parallelOf`, or
- * pass a bounded dispatcher when bodies wait for nothing.
+ * limit, so it may block, for example to wait for a child or for `InteropContextView.emit`, without
+ * stalling the workflow. A waiting body holds its thread: the default starts one thread per body
+ * that waits at the same time, and a dispatcher an app passes needs a free thread for every such
+ * body, so a single-threaded or small bounded one can hang the run. Bound a fan-out with the
+ * `maxParallelWorkers` of `parallelOf`, or pass a bounded dispatcher when bodies wait for nothing.
  *
  * Cancelling the node, for example on its timeout, interrupts the thread and waits for the body to
  * return. A body that ignores the interrupt, or waits in `join()`, keeps the node, its timeout and
@@ -575,8 +570,13 @@ private constructor(
  *
  * Return `null` for no output, a value of the output type, or an [Event] to emit as it is (an
  * `Event` with content sends a message, and an output goes in the return value, not in the
- * `Event`), and ask the user with [requestInput]. A body rerun after a pause runs from the top
- * again.
+ * `Event`). Send messages before the output with `InteropContextView.of(ctx).emit(e)`, which waits
+ * until each non-partial one is stored, run a child node with `runNodeBlocking` of the same view,
+ * and ask the user with [requestInput]. A body rerun after a pause runs from the top again and
+ * sends its events again, as does a retry. If an invocation is cancelled after an emitted event was
+ * stored but before the body returned, resuming that invocation does not rerun the body: the node
+ * counts as finished without an output, so its successors get `null`, and a `waitForOutput` node
+ * waits for the next user message.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi
@@ -603,11 +603,24 @@ fun interface NodeBody<I, O> {
   }
 }
 
-/** This body as a [FunctionNode] body that runs it on [dispatcher], or on the default if null. */
+/**
+ * This body as a [FunctionNode] body that runs it on [dispatcher], or on the default if null, and
+ * serves its `InteropContextView.emit` calls while it runs.
+ */
 @OptIn(AdkJavaInteropApi::class)
 internal expect fun <I, O> NodeBody<I, O>.onWorker(
   dispatcher: CoroutineDispatcher?
 ): suspend FlowCollector<Event>.(Context, I) -> O
+
+/** Throws if [event], emitted by node [nodeName], carries the output, which the body returns. */
+internal fun requireNoOutput(nodeName: String, event: Event) {
+  require(event.output == null) {
+    "node '$nodeName' emitted an Event with an output; return the value instead."
+  }
+  require(event.nodeInfo?.messageAsOutput != true) {
+    "node '$nodeName' emitted an Event marked messageAsOutput; return the value instead."
+  }
+}
 
 /**
  * Decides for each input whether a [FunctionNode] run asks the user to approve it, set through

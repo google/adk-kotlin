@@ -34,6 +34,7 @@ import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.telemetry.TelemetryContextElement
 import com.google.adk.kt.tools.ReadonlyToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -62,6 +63,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.CoroutineContext
 import kotlin.jvm.Volatile
 import kotlin.reflect.KType
 import kotlin.reflect.typeOf
@@ -1042,6 +1044,11 @@ open class Context(
 
   private var nodeState: NodeExecutionState? = null
 
+  /** The hooks of the Java body that runs with this context, or null if none runs. */
+  @OptIn(ExperimentalAtomicApi::class)
+  internal val javaBodyHooks: JavaBodyHooks?
+    get() = nodeState?.javaBodyHooks?.load()
+
   internal fun requireNodeState(): NodeExecutionState =
     checkNotNull(nodeState) { "This member is available only on a node activation context." }
 
@@ -1106,6 +1113,11 @@ internal class NodeExecutionState(
    * when the attempt ends, ensuring that work started for the attempt stops with it.
    */
   @Volatile var activationJob: Job? = null
+
+  /**
+   * Claimed while this activation's Java body runs, for its blocking `InteropContextView` calls.
+   */
+  val javaBodyHooks = AtomicReference<JavaBodyHooks?>(null)
 
   /** The node's output value, or `null` if none was produced. */
   val output: Any?
@@ -1297,6 +1309,15 @@ internal class NodeExecutionState(
   private fun secondOutputMessage() =
     "Node '${node.name}' produced a second output; a node produces at most one output."
 }
+
+/** Carries a running Java `FunctionNode` body's blocking `InteropContextView` calls to its node. */
+internal class JavaBodyHooks(
+  val emit: (Event) -> Unit,
+  /** The body's coroutine elements, such as `MDCContext()`, for the children it runs. */
+  val childContext: CoroutineContext,
+  /** The node's telemetry, so a child started on a thread without a span stays in its trace. */
+  val nodeTelemetry: TelemetryContextElement?,
+)
 
 /** Runs of a node's children keyed by `name@runId`, kept across the node's attempts. */
 // The mutex guards every access to byKey, and a run's Context is read only after it completes.

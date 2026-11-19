@@ -105,10 +105,9 @@ as an SSE event as soon as it is ready. Each message has a `type`:
     that `POST /support` returns.
 
 The service forwards every partial event as progress without knowing which node
-published it, since no model streams tokens. The Java nodes publish no progress:
-a `FunctionNodes` body returns one value, so it cannot both emit a message and
-return its output like the nodes in [`../kotlin`](../kotlin) do. The stream
-therefore carries only the reply:
+published it, since no model streams tokens. The Java nodes publish no progress,
+unlike the nodes in [`../kotlin`](../kotlin), so the stream carries only the
+reply:
 
 ```shell
 curl -N localhost:8080/support/stream -H 'Content-Type: application/json' \
