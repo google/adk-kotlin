@@ -51,6 +51,7 @@ dependencies {
   api(libs.google.cloud.bigquery)
   api(libs.google.auth.oauth2.http)
   implementation(libs.google.cloud.bigquerystorage)
+  implementation(libs.google.cloud.storage)
   implementation(libs.google.gson)
   implementation(libs.jackson.databind)
   implementation(libs.opentelemetry.api)

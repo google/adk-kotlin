@@ -35,6 +35,7 @@ import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionCall
@@ -105,6 +106,7 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.check
 import org.mockito.kotlin.clearInvocations
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.stub
@@ -1886,6 +1888,138 @@ class BigQueryAgentAnalyticsPluginTest {
     assertTrue(timestamp in before..after)
   }
 
+  @Test
+  @Suppress("CheckReturnValue")
+  fun gcsOffload_writesGcsReferenceObjectRefAndReusesOffloaderAfterClose(): Unit = runBlocking {
+    val unscopedCredentials = mock<Credentials>()
+    val bqOptions = mock<BigQueryOptions> { on { credentials } doReturn unscopedCredentials }
+    mockBigQuery.stub { on { options } doReturn bqOptions }
+    val seenCredentials = mutableListOf<Credentials?>()
+    val offloaders = mutableListOf<TestOffloader>()
+    val offloadConfig = config.copy(gcsBucketName = "my-bucket", connectionId = "us.conn")
+    val offloadPlugin =
+      newPlugin(
+        offloadConfig,
+        createOffloader = { creds ->
+          seenCredentials += creds
+          TestOffloader().also { offloaders += it }
+        },
+      )
+    val imageMessage =
+      Content(
+        role = "user",
+        parts = listOf(Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1, 2, 3)))),
+      )
+
+    offloadPlugin.onUserMessage(invocationContext, imageMessage)
+    val firstRow = capturedRows(offloadPlugin).single()
+    @Suppress("UNCHECKED_CAST")
+    val firstPart = (firstRow["content_parts"] as List<Map<String, Any?>>).single()
+    val uploadedPath = offloaders.single().paths.single()
+    assertTrue("${firstRow["trace_id"]}/${firstRow["span_id"]}_" in uploadedPath)
+    val expectedUri = "gs://my-bucket/$uploadedPath"
+    assertEquals("GCS_REFERENCE", firstPart["storage_mode"])
+    assertEquals(expectedUri, firstPart["uri"])
+    assertEquals("[MEDIA OFFLOADED]", firstPart["text"])
+    assertEquals(
+      mapOf(
+        "uri" to expectedUri,
+        "version" to null,
+        "authorizer" to "us.conn",
+        "details" to """{"gcs_metadata":{"content_type":"image/png"}}""",
+      ),
+      firstPart["object_ref"],
+    )
+    assertSame(unscopedCredentials, seenCredentials.single())
+
+    offloadPlugin.close()
+    offloadPlugin.onUserMessage(invocationContext, imageMessage)
+    val allRows = capturedRows(offloadPlugin)
+    assertEquals(1, offloaders.size)
+    @Suppress("UNCHECKED_CAST")
+    val secondPart = (allRows.last()["content_parts"] as List<Map<String, Any?>>).single()
+    assertEquals("GCS_REFERENCE", secondPart["storage_mode"])
+    assertEquals("gs://my-bucket/${offloaders.single().paths[1]}", secondPart["uri"])
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun gcsOffload_whenLogMultiModalContentIsFalse_bypassesOffloaderAndWarns(): Unit = runBlocking {
+    val quietLogs = logRecordsDuring {
+      val unusedNoBucket =
+        newPlugin(config.copy(gcsBucketName = null, logMultiModalContent = false))
+      val unusedDisabled =
+        newPlugin(
+          config.copy(enabled = false, gcsBucketName = "my-bucket", logMultiModalContent = false)
+        )
+    }
+    assertTrue(quietLogs.isEmpty())
+
+    val created = AtomicInteger()
+    val logs = logRecordsDuring {
+      val bypassedPlugin =
+        newPlugin(
+          config.copy(gcsBucketName = "my-bucket", logMultiModalContent = false),
+          createOffloader = {
+            created.incrementAndGet()
+            TestOffloader()
+          },
+        )
+      val multiModal =
+        Content(
+          role = "user",
+          parts =
+            listOf(
+              Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1))),
+              Part(text = "x".repeat(40_000)),
+            ),
+        )
+      bypassedPlugin.onUserMessage(invocationContext, multiModal)
+      val row = capturedRows(bypassedPlugin).single()
+      assertEquals(emptyList<Any>(), row["content_parts"])
+    }
+
+    assertEquals(0, created.get())
+    assertTrue(
+      logs.any {
+        "GCS offload disabled: logMultiModalContent is false" in SimpleFormatter().formatMessage(it)
+      }
+    )
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun gcsOffload_defaultOffloaderFactory_createsGcsOffloaderWithClientCredentials(): Unit =
+    runBlocking {
+      val credentials =
+        mock<Credentials> { on { universeDomain } doThrow IllegalStateException("offline") }
+      val bqOptions = mock<BigQueryOptions> { on { this.credentials } doReturn credentials }
+      mockBigQuery.stub { on { options } doReturn bqOptions }
+      // Built directly, so that it keeps the default offloader factory.
+      val defaultOffloadPlugin =
+        BigQueryAgentAnalyticsPlugin(
+            config.copy(gcsBucketName = "my-bucket"),
+            mockBigQuery,
+            Dispatchers.Unconfined,
+            TimeSource.Monotonic,
+            createRowWriter = { rowWriter },
+          )
+          .also { plugins += it }
+
+      defaultOffloadPlugin.onUserMessage(
+        invocationContext,
+        Content(
+          role = "user",
+          parts = listOf(Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1)))),
+        ),
+      )
+
+      val row = capturedRows(defaultOffloadPlugin).single()
+      val part = (row["content_parts"] as List<*>).single() as Map<*, *>
+      assertEquals("[UPLOAD FAILED]", part["text"])
+      verify(credentials).universeDomain
+    }
+
   /** Returns a plugin whose writers come from [createRowWriter], by default [writer]. */
   private fun newPlugin(
     config: BigQueryLoggerConfig = this.config,
@@ -1893,8 +2027,16 @@ class BigQueryAgentAnalyticsPluginTest {
     timeSource: TimeSource = TimeSource.Monotonic,
     ioContext: CoroutineContext = Dispatchers.Unconfined,
     createRowWriter: (Credentials?) -> RowWriter = { writer },
+    createOffloader: (Credentials?) -> ContentOffloader = { TestOffloader() },
   ) =
-    BigQueryAgentAnalyticsPlugin(config, mockBigQuery, ioContext, timeSource, createRowWriter)
+    BigQueryAgentAnalyticsPlugin(
+        config,
+        mockBigQuery,
+        ioContext,
+        timeSource,
+        createRowWriter,
+        createOffloader,
+      )
       .also { plugins += it }
 
   // Kept out of suspend bodies, since BigQuery.query declares InterruptedException (SuspendBlocks).
@@ -2019,5 +2161,14 @@ private class RecordingRowWriter(
   override fun close() {
     closeCount.incrementAndGet()
     closeBlocker?.await()
+  }
+}
+
+private class TestOffloader(private val bucket: String = "my-bucket") : ContentOffloader {
+  val paths = CopyOnWriteArrayList<String>()
+
+  override suspend fun uploadContent(data: ByteArray, contentType: String, path: String): String {
+    paths += path
+    return "gs://$bucket/$path"
   }
 }

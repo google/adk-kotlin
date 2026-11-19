@@ -81,6 +81,44 @@ class StorageWriteApiWriterTest {
   }
 
   @Test
+  fun write_gcsReferencePart_serializesObjectRefAndDropsNullVersion(): Unit = runBlocking {
+    val stream = FakeStream()
+    val writer = StorageWriteApiWriter(openStream = { stream })
+    val uri = "gs://my-bucket/2026-11-13/t/s_u_c0_p0.png"
+    val part =
+      mapOf(
+        "part_index" to 0,
+        "mime_type" to "image/png",
+        "uri" to uri,
+        "text" to "[MEDIA OFFLOADED]",
+        "storage_mode" to "GCS_REFERENCE",
+        "object_ref" to
+          mapOf(
+            "uri" to uri,
+            "version" to null,
+            "authorizer" to "us.conn",
+            "details" to """{"gcs_metadata":{"content_type":"image/png"}}""",
+          ),
+      )
+
+    val result = writer.write(listOf(mapOf("content_parts" to listOf(part))))
+
+    assertEquals(WriteResult.Written, result)
+    // `details` stays a JSON string, which the JSON column of the STRUCT expects.
+    assertEquals(
+      JsonParser.parseString(
+        """
+        [{"content_parts": [{"part_index": 0, "mime_type": "image/png", "uri": "$uri",
+          "text": "[MEDIA OFFLOADED]", "storage_mode": "GCS_REFERENCE",
+          "object_ref": {"uri": "$uri", "authorizer": "us.conn",
+            "details": "{\"gcs_metadata\":{\"content_type\":\"image/png\"}}"}}]}]
+        """
+      ),
+      stream.appended.single(),
+    )
+  }
+
+  @Test
   fun write_failedAppend_isClassifiedByItsStatusCode(): Unit = runBlocking {
     val expected =
       mapOf(

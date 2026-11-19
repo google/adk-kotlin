@@ -85,6 +85,9 @@ internal constructor(
   private val ioContext: CoroutineContext,
   private val timeSource: TimeSource,
   private val createRowWriter: (Credentials?) -> RowWriter,
+  private val createOffloader: (Credentials?) -> ContentOffloader = { credentials ->
+    GcsOffloader.create(config, credentials, ioContext)
+  },
 ) : Plugin {
 
   override val name: String = "bigquery_agent_analytics"
@@ -96,21 +99,42 @@ internal constructor(
   // -1 means unlimited.
   private val maxContentLength =
     if (config.maxContentLength == -1) Int.MAX_VALUE else config.maxContentLength
-  private val parser = Parser(maxContentLength)
+  private val parser = Parser(maxContentLength, config.connectionId)
   // Shared by every pipeline, so counts outlive a close; seeded, so its keys never change.
   private val drops = DropCounter().apply { add(SETUP_UNAVAILABLE, count = 0) }
   private val pipelineLock = Any()
   // Guarded by pipelineLock.
   private var pipeline: Pipeline? = null
+  // Null unless parts can be offloaded, since only content_parts references an upload.
+  private val offloader: ContentOffloader? by lazy {
+    if (config.gcsBucketName == null || !config.logMultiModalContent) {
+      null
+    } else {
+      // Uploads use the identity that creates the table, unscoped so that GCS adds its own scopes.
+      createOffloader(bigQuery.options?.credentials)
+    }
+  }
   // Callers of close wait for one in progress, so that the shutdown hook does not end it early.
   private val closeLock = Any()
+
+  init {
+    // An upload is referenced only from content_parts, which is not logged.
+    if (config.enabled && config.gcsBucketName != null && !config.logMultiModalContent) {
+      logger.warn {
+        "GCS offload disabled: logMultiModalContent is false, so content_parts, which would " +
+          "reference the uploads, is not logged; long text is truncated inline and binary " +
+          "parts are not stored."
+      }
+    }
+  }
 
   /**
    * Creates a plugin that logs to the table [config] names.
    *
    * @param config Where and what to log.
    * @param bigQuery Client that creates and upgrades the table and its views; the Storage Write API
-   *   writes the rows with this client's credentials.
+   *   writes the rows, and parts are uploaded to [BigQueryLoggerConfig.gcsBucketName], with this
+   *   client's credentials.
    * @param ioContext Context that blocking BigQuery calls and the background writer run in.
    * @param timeSource Clock for the interval between attempts to create the table.
    */
@@ -701,13 +725,15 @@ internal constructor(
     }
 
     val currentSpans = traceManager.getCurrentSpanAndParent(invocationContext)
+    val traceId = traceManager.getTraceId(invocationContext)
+    val spanId = eventData.spanIdOverride ?: currentSpans.spanId
     val latencyMap = extractLatency(eventData)
     val attributes = smartTruncate(getAttributes(eventData, invocationContext), maxContentLength)
     val parsed =
       if (isContentPreformatted && formattedContent === content) {
         Parser.ParsedContent(emptyList(), mapper.valueToTree(formattedContent), isTruncated = false)
       } else {
-        parser.parse(formattedContent)
+        parser.parse(formattedContent, traceId, spanId.orEmpty(), offloader)
       }
 
     val row =
@@ -719,8 +745,8 @@ internal constructor(
         "session_id" to invocationContext.session.key.id,
         "invocation_id" to invocationContext.invocationId,
         "user_id" to invocationContext.session.key.userId,
-        "trace_id" to traceManager.getTraceId(invocationContext),
-        "span_id" to (eventData.spanIdOverride ?: currentSpans.spanId),
+        "trace_id" to traceId,
+        "span_id" to spanId,
         "parent_span_id" to (eventData.parentSpanIdOverride ?: currentSpans.parentSpanId),
         "status" to (eventData.status ?: STATUS_OK),
         "error_message" to errorText,
