@@ -68,6 +68,9 @@ sealed interface AuthCredential {
     }
 
     companion object {
+      /** Returns a credential carrying [apiKey]. */
+      @JvmStatic fun of(apiKey: String): ApiKey = ApiKey(Secret(apiKey))
+
       @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
     }
   }
@@ -437,6 +440,15 @@ sealed interface AuthCredential {
     }
 
     companion object {
+      /**
+       * Returns a credential carrying the access token [token], which expires at [expiresAt] if
+       * set, as an app answers a sign-in request with once it has exchanged the code.
+       */
+      @JvmStatic
+      @JvmOverloads
+      fun accessToken(token: String, expiresAt: Instant? = null): OAuth2 =
+        OAuth2(accessToken = Secret(token), expiresAt = expiresAt)
+
       @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
     }
   }

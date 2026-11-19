@@ -62,6 +62,56 @@ class AuthConfigTest {
   }
 
   @Test
+  fun constructor_openIdConnectSchemes_giveTheClientTheOpenIdConnectVariant() {
+    val client = AuthCredential.OAuth2(clientId = "client-id")
+    val expected = client.copy(variant = AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT)
+    val discovery = AuthScheme.OpenIdConnectUrl("https://auth.example.com/.well-known/openid")
+
+    for (config in listOf(AuthConfig(SCHEME, client), AuthConfig(discovery, client))) {
+      assertEquals(expected, config.rawAuthCredential)
+      assertEquals(
+        deriveCredentialKey(config.authScheme, expected).value,
+        config.credentialKey.value,
+      )
+    }
+  }
+
+  @Test
+  fun constructor_oauth2Scheme_givesTheClientTheOAuth2Variant() {
+    val scheme = AuthScheme.OAuth2.clientCredentials("https://auth.example.com/token", emptyMap())
+    val client =
+      AuthCredential.OAuth2(
+        variant = AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT,
+        clientId = "client-id",
+      )
+
+    val expected = client.copy(variant = AuthCredential.OAuth2.Variant.OAUTH2)
+
+    val config = AuthConfig(scheme, client)
+
+    assertEquals(expected, config.rawAuthCredential)
+    assertEquals(deriveCredentialKey(scheme, expected).value, config.credentialKey.value)
+  }
+
+  @Test
+  fun constructor_serviceAccount_keepsTheCredential() {
+    val scheme = AuthScheme.OAuth2.clientCredentials("https://auth.example.com/token", emptyMap())
+    val serviceAccount = AuthCredential.ServiceAccount.applicationDefault()
+
+    assertEquals(serviceAccount, AuthConfig(scheme, serviceAccount).rawAuthCredential)
+  }
+
+  @Test
+  fun builder_openIdConnectSchemeWithOAuth2Client_keepsTheClientAsIs() {
+    // A config read from JSON may pair them; toBuilder().build() must still equal copy().
+    val client = AuthCredential.OAuth2(clientId = "client-id")
+
+    val config = AuthConfig.builder().authScheme(SCHEME).rawAuthCredential(client).build()
+
+    assertEquals(client, config.rawAuthCredential)
+  }
+
+  @Test
   fun copy_otherRawCredential_keepsKey() {
     val config = AuthConfig(authScheme = SCHEME)
 
