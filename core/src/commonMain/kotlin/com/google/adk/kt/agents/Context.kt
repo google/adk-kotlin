@@ -315,7 +315,9 @@ open class Context(
       requireNotNull(schema.properties?.get(key)) {
         "validation error: state key '$key' is not declared in the state schema."
       }
-    val checked = ValueCoercer.coerceValue(value, propertySchema, "state key '$key'").getOrThrow()
+    val checked =
+      ValueCoercer.coerceValue(value, propertySchema, "state key '$key'", fillDefaults = false)
+        .getOrThrow()
     return requireNotNull(checked) { "validation error: state key '$key' is null." }
   }
 

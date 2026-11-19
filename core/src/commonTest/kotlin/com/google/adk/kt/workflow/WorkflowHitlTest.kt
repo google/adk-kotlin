@@ -4083,6 +4083,22 @@ class WorkflowHitlTest {
   }
 
   @Test
+  fun validateAnswer_answerWithoutADefaultedProperty_staysWithoutIt() {
+    // Arrange
+    val schema =
+      COUNT_SCHEMA.copy(
+        properties =
+          COUNT_SCHEMA.properties!! + ("unit" to Schema(type = Type.STRING, default = "kg"))
+      )
+
+    // Act
+    val answer = validateAnswer(schema, mapOf("count" to 1), "ask_1")
+
+    // Assert: as in Python, a resume answer gets no defaults.
+    assertEquals(mapOf("count" to 1), answer)
+  }
+
+  @Test
   fun validateAnswer_answerTheSchemaRejects_failsNamingTheInterrupt() {
     // Arrange
     val badCount = mapOf("result" to """{"count": "one"}""")

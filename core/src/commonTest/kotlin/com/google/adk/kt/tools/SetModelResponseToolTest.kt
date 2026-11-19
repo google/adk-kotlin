@@ -63,6 +63,97 @@ class SetModelResponseToolTest {
   }
 
   @Test
+  fun run_argsWithoutADefaultedField_returnsAndRecordsTheDefault() = runBlocking {
+    val schema =
+      outputSchema.copy(
+        properties =
+          outputSchema.properties!! + ("city" to Schema(type = Type.STRING, default = "NYC"))
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result = tool.run(testToolContext(functionCallId = "call_1"), mapOf("name" to "John"))
+
+    assertEquals(mapOf("name" to "John", "city" to "NYC"), result)
+    assertEquals("""{"name":"John","city":"NYC"}""", tool.validatedResponseJson("call_1"))
+  }
+
+  @Test
+  fun run_nullForANullableDefaultedField_dropsItWithoutTheDefault() = runBlocking {
+    // As in Python, a default stands in only for a field the model leaves out, not one it sends as
+    // null when the schema accepts null; the null is then dropped like any optional null. LlmAgent
+    // still fills the default into outputKey when it re-parses the recorded answer, as Python does.
+    val city = Schema(type = Type.STRING, nullable = true, default = "NYC")
+    val state =
+      Schema(anyOf = listOf(Schema(type = Type.STRING), Schema(type = Type.NULL)), default = "NY")
+    val home = Schema(type = Type.OBJECT, properties = mapOf("city" to city))
+    val schema =
+      outputSchema.copy(
+        properties =
+          outputSchema.properties!! +
+            ("city" to city) +
+            ("state" to state) +
+            ("home" to home) +
+            ("homes" to Schema(type = Type.ARRAY, items = home))
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result =
+      tool.run(
+        testToolContext(functionCallId = "call_1"),
+        mapOf(
+          "name" to "John",
+          "city" to null,
+          "state" to null,
+          "home" to mapOf("city" to null),
+          "homes" to listOf(mapOf("city" to null)),
+        ),
+      )
+
+    val empty = emptyMap<String, Any>()
+    assertEquals(mapOf("name" to "John", "home" to empty, "homes" to listOf(empty)), result)
+    assertEquals("""{"name":"John","home":{},"homes":[{}]}""", tool.validatedResponseJson("call_1"))
+  }
+
+  @Test
+  fun run_nullForANonNullableDefaultedField_getsTheDefault() = runBlocking {
+    // When the schema rejects null for an optional field, the tool treats null as omitted and
+    // applies the default, matching what LlmAgent stores in outputKey when it parses the recorded
+    // answer.
+    val city = Schema(type = Type.STRING, default = "NYC")
+    val home = Schema(type = Type.OBJECT, properties = mapOf("city" to city))
+    val schema =
+      outputSchema.copy(
+        properties =
+          outputSchema.properties!! +
+            ("city" to city) +
+            ("home" to home) +
+            ("homes" to Schema(type = Type.ARRAY, items = home))
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val result =
+      tool.run(
+        testToolContext(functionCallId = "call_1"),
+        mapOf(
+          "name" to "John",
+          "city" to null,
+          "home" to mapOf("city" to null),
+          "homes" to listOf(mapOf("city" to null)),
+        ),
+      )
+
+    val nyc = mapOf("city" to "NYC")
+    assertEquals(
+      mapOf("name" to "John", "city" to "NYC", "home" to nyc, "homes" to listOf(nyc)),
+      result,
+    )
+    assertEquals(
+      """{"name":"John","home":{"city":"NYC"},"homes":[{"city":"NYC"}],"city":"NYC"}""",
+      tool.validatedResponseJson("call_1"),
+    )
+  }
+
+  @Test
   fun run_argsMissingRequiredField_returnsFeedbackAndRecordsNothing() = runBlocking {
     val tool = SetModelResponseTool(outputSchema)
 

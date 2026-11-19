@@ -872,6 +872,37 @@ class FunctionNodeTest {
   }
 
   @Test
+  fun node_explicitInputSchemaDefault_takesPrecedenceOverTheKotlinDefault() {
+    // Arrange: only the first schema gives `maxResults` a default; TicketQuery's own is 5.
+    val withDefault =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "project" to Schema(type = Type.STRING),
+            "maxResults" to Schema(type = Type.INTEGER, default = 20),
+          ),
+        required = listOf("project"),
+      )
+    val withoutDefault =
+      withDefault.copy(
+        properties = withDefault.properties!! + ("maxResults" to Schema(type = Type.INTEGER))
+      )
+    val schemaDefault =
+      node("schema_default", inputSchema = withDefault) { _, q: TicketQuery -> q.maxResults }
+    val kotlinDefault =
+      node("kotlin_default", inputSchema = withoutDefault) { _, q: TicketQuery -> q.maxResults }
+
+    // Act
+    val fromSchema = runOutputs(schemaDefault, mapOf("project" to "ADK"))
+    val fromKotlin = runOutputs(kotlinDefault, mapOf("project" to "ADK"))
+
+    // Assert
+    assertEquals(listOf(20L), fromSchema)
+    assertEquals(listOf(5L), fromKotlin)
+  }
+
+  @Test
   fun node_resumeShapedInputs_decodeToTypedValues() {
     // Arrange
     val describe = node("describe") { _, profile: UserProfile -> "${profile.id}:${profile.age}" }

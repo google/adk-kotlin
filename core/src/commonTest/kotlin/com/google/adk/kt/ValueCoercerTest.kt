@@ -48,10 +48,13 @@ class ValueCoercerTest {
   private val secret = "SENTINEL-4711"
 
   private fun coerce(value: Any?, schema: Schema): Any? =
-    ValueCoercer.coerceValue(value, schema).getOrThrow()
+    ValueCoercer.coerceValue(value, schema, fillDefaults = false).getOrThrow()
+
+  private fun coerceFilling(value: Any?, schema: Schema): Any? =
+    ValueCoercer.coerceValue(value, schema, fillDefaults = true).getOrThrow()
 
   private fun fails(value: Any?, schema: Schema): Boolean =
-    ValueCoercer.coerceValue(value, schema).isFailure
+    ValueCoercer.coerceValue(value, schema, fillDefaults = false).isFailure
 
   @Test
   fun coerceValue_object_isNormalizedAndKeepsUndeclaredKeysUnlessClosed() {
@@ -229,7 +232,9 @@ class ValueCoercerTest {
 
   /** Returns the failure message for [value], checking that it never quotes [secret]. */
   private fun failureMessage(value: Any?, schema: Schema): String {
-    val error = ValueCoercer.coerceValue(value, schema, "input of node 'n'").exceptionOrNull()
+    val error =
+      ValueCoercer.coerceValue(value, schema, "input of node 'n'", fillDefaults = false)
+        .exceptionOrNull()
     assertIs<IllegalArgumentException>(error)
     assertEquals(null, error.cause)
     val message = error.message.orEmpty()
@@ -308,25 +313,104 @@ class ValueCoercerTest {
         setOf(1, 2),
         Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER)),
         "ids",
+        fillDefaults = false,
       )
 
     // Assert
     assertTrue(result.isSuccess)
   }
 
-  @Test
-  fun coerceValue_missingKeyWithADefault_staysMissing() {
-    // Arrange
-    val schema =
-      Schema(
-        type = Type.OBJECT,
-        properties = mapOf("limit" to Schema(type = Type.INTEGER, default = 10)),
-      )
+  /** An object whose `limit` defaults to 10. */
+  private val page =
+    Schema(
+      type = Type.OBJECT,
+      properties = mapOf("limit" to Schema(type = Type.INTEGER, default = 10)),
+    )
 
+  @Test
+  fun coerceValue_missingKeyWithADefault_takesTheDefaultWhenFilling() {
     // Act
-    val read = coerce(emptyMap<String, Any>(), schema)
+    val read = coerceFilling(emptyMap<String, Any>(), page)
+    val items =
+      coerceFilling(listOf(emptyMap<String, Any>()), Schema(type = Type.ARRAY, items = page))
+    val extras =
+      coerceFilling(mapOf("a" to emptyMap<String, Any>()), Schema(additionalProperties = page))
+
+    // Assert
+    assertEquals(mapOf("limit" to 10), read)
+    assertEquals(listOf(mapOf("limit" to 10)), items)
+    assertEquals(mapOf("a" to mapOf("limit" to 10)), extras)
+  }
+
+  @Test
+  fun coerceValue_missingKeyWithADefault_staysMissingWithoutFilling() {
+    // Act
+    val read = coerce(emptyMap<String, Any>(), page)
 
     // Assert
     assertEquals(emptyMap<String, Any>(), read)
+  }
+
+  @Test
+  fun coerceValue_presentKeyWithADefault_keepsItsValue() {
+    // Arrange
+    val nullable =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("limit" to Schema(type = Type.INTEGER, nullable = true, default = 10)),
+      )
+
+    // Act
+    val given = coerceFilling(mapOf("limit" to 3), page)
+    val explicitNull = coerceFilling(mapOf("limit" to null), nullable)
+
+    // Assert
+    assertEquals(mapOf("limit" to 3), given)
+    assertEquals(mapOf("limit" to null), explicitNull)
+  }
+
+  @Test
+  fun coerceValue_missingRequiredKeyWithADefault_failsEvenWhenFilling() {
+    // Act
+    val result =
+      ValueCoercer.coerceValue(
+        emptyMap<String, Any>(),
+        page.copy(required = listOf("limit")),
+        fillDefaults = true,
+      )
+
+    // Assert
+    assertContains(result.exceptionOrNull()?.message.orEmpty(), "lacks required 'limit'")
+  }
+
+  @Test
+  fun coerceValue_unionWhoseFirstBranchConverts_prefersALaterBranchThatFitsAsIs() {
+    // Arrange: the first branch would turn "42" into 42 besides filling `limit`.
+    val counted = page.copy(properties = page.properties!! + ("n" to Schema(type = Type.INTEGER)))
+    val objects = Schema(anyOf = listOf(counted, Schema(type = Type.OBJECT)))
+    val lists =
+      Schema(anyOf = listOf(Schema(type = Type.ARRAY, items = counted), Schema(type = Type.ARRAY)))
+
+    // Act
+    val map = coerceFilling(mapOf("n" to "42"), objects)
+    val list = coerceFilling(listOf(mapOf("n" to "42")), lists)
+
+    // Assert
+    assertEquals(mapOf("n" to "42"), map)
+    assertEquals(listOf(mapOf("n" to "42")), list)
+  }
+
+  @Test
+  fun coerceValue_unionWithALaterOpenObject_stillFillsTheFirstBranchDefaults() {
+    // Arrange: both branches take the map, and filling a default is no conversion. Pydantic also
+    // picks the first branch here, since the value sets one of its fields.
+    val counted = page.copy(properties = page.properties!! + ("n" to Schema(type = Type.INTEGER)))
+    val union = Schema(anyOf = listOf(counted, Schema(type = Type.OBJECT)))
+
+    // Act
+    val read = coerceFilling(mapOf("n" to 1), union)
+
+    // Assert
+    assertEquals(mapOf("n" to 1, "limit" to 10), read)
   }
 }

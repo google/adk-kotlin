@@ -577,6 +577,36 @@ class LlmAgentTest {
   }
 
   @Test
+  fun runAsync_withOutputKeyAndOutputSchema_savesTheSchemaDefaults(): Unit = runBlocking {
+    val model =
+      DummyModel.createSequential(
+        "test-model",
+        listOf(LlmResponse(content = modelMessage("""{"name": "x"}"""))),
+      )
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "name" to Schema(type = Type.STRING),
+            "extra" to Schema(type = Type.STRING, default = "default"),
+          ),
+      )
+    val agent =
+      LlmAgent(name = "test-agent", model = model, outputSchema = schema, outputKey = "myOutput")
+    val sessionService = InMemorySessionService()
+    val session = sessionService.createSession(SessionKey("app", "user", "test-session"))
+    val context = InvocationContext(agent = agent, session = session, runConfig = null)
+
+    val events = agent.runAsync(context).toList()
+
+    assertEquals(
+      mapOf("name" to "x", "extra" to "default"),
+      events.single().actions.stateDelta["myOutput"],
+    )
+  }
+
+  @Test
   fun runAsync_withOutputKey_savesAFinalResponseWhateverItsRole(): Unit = runBlocking {
     // Only a live run keeps a streaming tool's user-role message out of outputKey.
     val model =

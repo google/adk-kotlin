@@ -296,7 +296,8 @@ object SchemaUtils {
    * Parses a model output string as JSON and validates it against a schema.
    *
    * Mirrors `SchemaUtils.validateOutputSchema` in the Java ADK and `validate_schema` in the Python
-   * ADK: the [output] is expected to be a JSON object that matches [schema].
+   * ADK: the [output] is expected to be a JSON object that matches [schema]. Like the Python ADK,
+   * and unlike the Java one, it fills in the defaults of absent properties.
    *
    * Only top-level object schemas are supported: [output] must parse to a JSON object (it is
    * decoded via [Json.fromJsonToMap]). Top-level array or primitive schemas are not supported and
@@ -306,19 +307,20 @@ object SchemaUtils {
    * @param output The model output string to parse and validate.
    * @param schema The schema to validate against.
    * @return [Result.success] wrapping the parsed map, with whole-number doubles in integer fields
-   *   as [Long], if it is valid JSON matching [schema]; [Result.failure] if the string is not valid
-   *   JSON object or does not match the schema.
+   *   converted to [Long] and each missing property's [Schema.default] filled in, if it is valid
+   *   JSON matching [schema]; [Result.failure] if the string is not a valid JSON object or does not
+   *   match the schema.
    */
   fun validateOutputSchema(output: String, schema: Schema): Result<Map<String, Any?>> =
     runCatching {
       val parsed = Json.fromJsonToMap(output)
       validateMapOnSchema(parsed, schema, "Output").getOrThrow()
-      parsed.withIntegersAsLongs(schema)
+      parsed.normalizedBySchema(schema)
     }
 
   /**
    * Checks any [value] against [schema] with the rules [validateMapOnSchema] applies to an
-   * argument, and returns it with whole-number doubles in integer fields as [Long]; a null [value]
+   * argument, and returns it normalized by [normalizeBySchema], defaults filled in; a null [value]
    * passes. A [Content] becomes its text, read as JSON unless [schema] takes a string or the text
    * is not JSON. A failure names [argsName] and, for a map, a reason that names only parts of the
    * schema, but never the value.
@@ -337,7 +339,7 @@ object SchemaUtils {
     if (data is Map<*, *>) {
       val args = data.entries.associate { (k, v) -> k.toString() to v }
       val failure = validateMapOnSchema(args, schema, "Value").exceptionOrNull()
-      if (failure == null) return Result.success(args.withIntegersAsLongs(schema))
+      if (failure == null) return Result.success(args.normalizedBySchema(schema))
       val properties = schema.properties
       // An undeclared key is data, so it goes unnamed; other messages name only the schema's parts.
       detail =
@@ -348,7 +350,8 @@ object SchemaUtils {
         }
     } else {
       val failure = matchType(data, schema, "Value", UnionBudget()).exceptionOrNull()
-      if (failure == null) return Result.success(integersAsLongs(data, schema))
+      if (failure == null)
+        return Result.success(normalizeBySchema(data, schema, fillDefaults = true))
       // A type mismatch message quotes the value; only running out of budget does not.
       detail = (failure as? SchemaTooComplexException)?.message
     }
@@ -357,6 +360,15 @@ object SchemaUtils {
       IllegalArgumentException("validation error: $argsName does not match its schema$suffix")
     )
   }
+
+  /** Whether a map or list [value] passes [validateValue] for [schema], without normalizing it. */
+  internal fun matches(value: Any, schema: Schema): Boolean =
+    if (value is Map<*, *>) {
+      val args = value.entries.associate { (k, v) -> k.toString() to v }
+      validateMapOnSchema(args, schema, "Value").isSuccess
+    } else {
+      matchType(value, schema, "Value", UnionBudget()).isSuccess
+    }
 
   /**
    * Parses model text [output] against [schema] by decoding it as JSON; a JSON `null` fails unless
@@ -375,9 +387,13 @@ object SchemaUtils {
     return if (parsed.isFailure && acceptsString(schema)) output else parsed.getOrThrow()
   }
 
-  /** Returns [value] as [schema] reads it; a null passes every schema, as no output upstream. */
+  /**
+   * Returns [value] as [schema] reads it, with defaults filled in; a null passes every schema, as
+   * no output upstream.
+   */
   internal fun checkedValue(value: Any?, schema: Schema, what: String): Any? =
-    if (value == null) null else ValueCoercer.coerceValue(value, schema, what).getOrThrow()
+    if (value == null) null
+    else ValueCoercer.coerceValue(value, schema, what, fillDefaults = true).getOrThrow()
 
   /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
   internal fun acceptsString(schema: Schema): Boolean =
@@ -689,51 +705,59 @@ private fun Schema.sourceAnyOfFitsInto(alternatives: List<Schema>, target: Schem
 /** Whether each value of [enum], and the literal it spells such as 1 for "1", fits [target]. */
 private fun enumFitsInto(enum: List<String>, target: Schema): Boolean = enum.all { value ->
   val literal = SchemaUtils.readJson(value).getOrNull()?.takeIf { it !is String }
-  listOfNotNull(value, literal).all { ValueCoercer.coerceValue(it, target).isSuccess }
+  listOfNotNull(value, literal).all {
+    ValueCoercer.coerceValue(it, target, fillDefaults = false).isSuccess
+  }
 }
 
 /**
  * Whether this schema accepts `null`: when `nullable = true`, `type = NULL`, or when `type` is
  * unspecified without an `enum` (and, if `anyOf` is present, at least one branch accepts `null`).
  */
-private fun Schema.acceptsNull(): Boolean =
+internal fun Schema.acceptsNull(): Boolean =
   nullable == true ||
     type == Type.NULL ||
     (declaredType == null && enum == null && (anyOf?.any { it.acceptsNull() } ?: true))
 
-/**
- * Turns each whole-number double that [schema] types as an integer into a [Long], so `1.0` prints
- * as `1`.
- */
-internal fun Map<*, *>.withIntegersAsLongs(schema: Schema): Map<String, Any?> =
-  (integersAsLongs(this, schema) as Map<*, *>).entries.associate { (key, value) ->
+/** Returns this map normalized by [normalizeBySchema] with defaults filled in, keyed by strings. */
+internal fun Map<*, *>.normalizedBySchema(schema: Schema): Map<String, Any?> =
+  (normalizeBySchema(this, schema, fillDefaults = true) as Map<*, *>).entries.associate {
+    (key, value) ->
     key.toString() to value
   }
 
 /**
- * Returns [value] with each whole-number double that [schema] types as an integer as a [Long]. The
- * schema's own `properties`, `additionalProperties` and `items` come first; `anyOf` decides only
- * where the schema declares none of them, and a map or list follows the first branch that validates
- * it.
+ * Returns [value] normalized for [schema]: each whole-number double typed as an integer becomes a
+ * [Long], and, with [fillDefaults], an object gains the [Schema.default] of each missing property.
+ * The schema's own `properties`, `additionalProperties` and `items` come first; `anyOf` decides
+ * only where the schema declares none of them, and a map or list follows the first branch that
+ * validates it.
  *
  * Not [ValueCoercer.coerceValue], which also rejects enum mismatches and undeclared keys that
  * validation accepts.
  */
-internal fun integersAsLongs(value: Any?, schema: Schema?): Any? {
+internal fun normalizeBySchema(value: Any?, schema: Schema?, fillDefaults: Boolean): Any? {
   if (schema == null) return value
   val branches = schema.anyOf?.filter { it.type != Type.NULL }.orEmpty()
   return when {
     value is Map<*, *> && (schema.properties != null || schema.extraSchema() != null) ->
-      value.entries.associate { (key, item) ->
-        val name = key.toString()
-        name to integersAsLongs(item, schema.properties?.get(name) ?: schema.extraSchema())
+      buildMap {
+        for ((key, item) in value) {
+          val name = key.toString()
+          val itemSchema = schema.properties?.get(name) ?: schema.extraSchema()
+          put(name, normalizeBySchema(item, itemSchema, fillDefaults))
+        }
+        if (fillDefaults) schema.putMissingDefaults(this)
       }
-    value is List<*> && schema.items != null -> value.map { integersAsLongs(it, schema.items) }
+    value is List<*> && schema.items != null ->
+      value.map { normalizeBySchema(it, schema.items, fillDefaults) }
     schema.type == Type.INTEGER -> exactWholeLong(value) ?: value
-    branches.size == 1 -> integersAsLongs(value, branches.single())
+    branches.size == 1 -> normalizeBySchema(value, branches.single(), fillDefaults)
     // Like pydantic's union matching, the first branch that validates a map or list types it.
     value is Map<*, *> || value is List<*> ->
-      branches.firstNotNullOfOrNull { SchemaUtils.validateValue(value, it).getOrNull() } ?: value
+      branches
+        .firstOrNull { SchemaUtils.matches(value, it) }
+        ?.let { normalizeBySchema(value, it, fillDefaults) } ?: value
     // No NUMBER branch, so a whole double can only have matched INTEGER.
     branches.any { it.type == Type.INTEGER } && branches.none { it.type == Type.NUMBER } ->
       exactWholeLong(value) ?: value
@@ -783,6 +807,16 @@ internal fun Schema.impliedType(): Type? =
 /** Whether this schema, and each of its `anyOf` members, implies an object and nothing else. */
 internal fun Schema.describesOnlyObjects(): Boolean =
   (listOf(this) + anyOf.orEmpty()).all { it.impliedType() == Type.OBJECT && it.nullable != true }
+
+/**
+ * Puts into [values] the [Schema.default] of each declared property missing from [values]. Like
+ * pydantic, it does not validate the default.
+ */
+internal fun Schema.putMissingDefaults(values: MutableMap<String, Any?>) {
+  properties?.forEach { (name, property) ->
+    if (name !in values && property.default != null) values[name] = property.default
+  }
+}
 
 /** The schema `additionalProperties` gives each undeclared key: a [Schema], or a JSON object. */
 @OptIn(FrameworkInternalApi::class)

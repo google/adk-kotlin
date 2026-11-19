@@ -486,7 +486,7 @@ private fun readSchema(value: Any?): Schema? =
 internal fun validateAnswer(schema: Schema?, response: Any?, interruptId: String): Any? {
   val answer = unwrapAnswer(schema, response)
   if (schema == null) return answer
-  return ValueCoercer.coerceValue(answer, schema, "answer").getOrElse {
+  return ValueCoercer.coerceValue(answer, schema, "answer", fillDefaults = false).getOrElse {
     throw IllegalArgumentException(
       "Validation failed for interrupt $interruptId: ${it.message}",
       it,

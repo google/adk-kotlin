@@ -24,8 +24,8 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.applyRewinds
-import com.google.adk.kt.integersAsLongs
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.normalizeBySchema
 import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -100,10 +100,15 @@ internal class FinishTaskTool(taskAgent: LlmAgent) :
   /**
    * Returns the task's output from a `finish_task` call's [args]: the result argument for a
    * non-object output schema, or all the arguments for an object one, with whole-number doubles in
-   * integer fields as [Long].
+   * integer fields as [Long]. Defaults stay unfilled, as in Python, which saves the raw arguments
+   * to `outputKey`.
    */
   fun taskOutput(args: Map<String, Any?>): Any? =
-    integersAsLongs(if (resultKey == null) args else args[resultKey], outputSchema)
+    normalizeBySchema(
+      if (resultKey == null) args else args[resultKey],
+      outputSchema,
+      fillDefaults = false,
+    )
 
   companion object {
     const val NAME = "finish_task"

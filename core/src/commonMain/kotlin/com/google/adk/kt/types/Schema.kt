@@ -40,11 +40,13 @@ import kotlinx.serialization.Serializable
  *   accepts only `int32` or `int64` for [Type.INTEGER] and [Type.NUMBER], and `enum` or `date-time`
  *   for [Type.STRING]; it rejects a declaration carrying any other value.
  * @property nullable Whether the value may be null.
- * @property default The value to assume when the property is absent; workflow checks do not fill it
- *   in, and a Kotlin class port uses its own defaults. It must be JSON-native (a `String`, number,
- *   `Boolean`, `Map` or `List`), and serializing it needs a `Json` with a contextual serializer for
- *   `Any`. A numeric default that crosses a JSON boundary may come back as another Kotlin number
- *   type.
+ * @property default The value used when the property is absent and not required. Node and workflow
+ *   checks, structured output and agent-tool input fill it in, unvalidated; as in the Python ADK,
+ *   state writes, resume answers and a task agent's `outputKey` do not. A Kotlin class port's own
+ *   default applies only where the schema gives none. It must be JSON-native (a `String`, number,
+ *   `Boolean`, `Map` or `List`), serializing it needs a `Json` with a contextual serializer for
+ *   `Any`, and a numeric default that crosses a JSON boundary may come back as another Kotlin
+ *   number type.
  * @property anyOf The value must validate against at least one of these subschemas.
  * @property title A title for the schema.
  * @property pattern A regular expression the value must match. Applicable only if `type` is

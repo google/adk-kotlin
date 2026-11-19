@@ -16,16 +16,17 @@
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.acceptsNull
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.describesOnlyObjects
 import com.google.adk.kt.extraSchema
 import com.google.adk.kt.impliedType
+import com.google.adk.kt.normalizedBySchema
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
-import com.google.adk.kt.withIntegersAsLongs
 
 /**
  * The tool a model calls with its final answer when an output schema and tools cannot share a
@@ -81,8 +82,18 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
    */
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Map<String, Any?> {
     val withoutNulls = args.withoutOptionalNulls(parameters)
-    val failure = validate(withoutNulls).exceptionOrNull() ?: return record(context, withoutNulls)
-    if (validate(args).isSuccess) return record(context, args)
+    // A null rejected by the schema is treated as omitted and receives the default; a null
+    // accepted by the schema is dropped only after normalizing, so no default is applied.
+    val failure =
+      validate(withoutNulls).exceptionOrNull()
+        ?: return record(
+          context,
+          args
+            .withoutOptionalNulls(parameters, onlyRejected = true)
+            .normalizedBySchema(parameters)
+            .withoutOptionalNulls(parameters),
+        )
+    if (validate(args).isSuccess) return record(context, args.normalizedBySchema(parameters))
     if (failure is SchemaUtils.SchemaTooComplexException) throw failure
     return mapOf(
       "error" to
@@ -93,8 +104,7 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
   }
 
   @OptIn(FrameworkInternalApi::class)
-  private fun record(context: ToolContext, args: Map<String, Any?>): Map<String, Any?> {
-    val validated = args.withIntegersAsLongs(parameters)
+  private fun record(context: ToolContext, validated: Map<String, Any?>): Map<String, Any?> {
     val answer = if (wrapsOutputSchema) validated[RESPONSE_PARAMETER] else validated
     validatedResponses[context.functionCallId.orEmpty()] = anyToJsonElement(answer).toString()
     // The model gets a wrapped answer back as it gets a function tool's non-map result.
@@ -130,27 +140,38 @@ private fun validationFeedback(failure: Throwable): String =
     .joinToString("\n")
 
 /**
- * Drops each null entry whose key [schema] declares as an optional property, in nested values too.
- * A null under a key without a property schema stays, as pydantic keeps nulls in a free-form dict.
+ * Drops each null entry whose key [schema] declares as an optional property, including in nested
+ * values; when [onlyRejected] is true, drops only entries whose property has a default but does not
+ * accept null. Null entries under keys without a property schema are kept, matching how pydantic
+ * preserves nulls in a free-form dict.
  */
-private fun Map<*, *>.withoutOptionalNulls(schema: Schema?): Map<String, Any?> {
+private fun Map<*, *>.withoutOptionalNulls(
+  schema: Schema?,
+  onlyRejected: Boolean = false,
+): Map<String, Any?> {
   val properties = schema?.properties.orEmpty()
   val required = schema?.required.orEmpty()
   // Maps decoded from JSON objects have string keys.
   return entries
-    .filter { (key, value) -> value != null || key !in properties || key in required }
+    .filter { (key, value) ->
+      val property = properties[key] ?: return@filter true
+      // Without a default, dropping the null now or later gives the same result, so skip the check.
+      value != null ||
+        key in required ||
+        (onlyRejected && (property.default == null || property.acceptsNull()))
+    }
     .associate { (key, value) ->
       val name = key as String
-      name to dropOptionalNulls(value, properties[name] ?: schema?.extraSchema())
+      name to dropOptionalNulls(value, properties[name] ?: schema?.extraSchema(), onlyRejected)
     }
 }
 
 /**
- * Returns [value] without the nulls [schema] does not require. The schema's own `properties`,
- * `additionalProperties` and `items` come first; `anyOf` decides only where it declares none of
- * them.
+ * Returns [value] with optional nulls removed as in [withoutOptionalNulls]. The schema's own
+ * `properties`, `additionalProperties` and `items` come first; `anyOf` decides only where it
+ * declares none of them.
  */
-private fun dropOptionalNulls(value: Any?, schema: Schema?): Any? {
+private fun dropOptionalNulls(value: Any?, schema: Schema?, onlyRejected: Boolean): Any? {
   val ownShape =
     schema == null ||
       schema.properties != null ||
@@ -158,11 +179,11 @@ private fun dropOptionalNulls(value: Any?, schema: Schema?): Any? {
       schema.items != null
   val branches = schema?.anyOf?.filter { it.type != Type.NULL }.orEmpty()
   return when {
-    !ownShape && branches.size == 1 -> dropOptionalNulls(value, branches.single())
+    !ownShape && branches.size == 1 -> dropOptionalNulls(value, branches.single(), onlyRejected)
     // A union with several non-NULL branches does not say which fields are required.
     !ownShape && branches.size > 1 -> value
-    value is Map<*, *> -> value.withoutOptionalNulls(schema)
-    value is List<*> -> value.map { dropOptionalNulls(it, schema?.items) }
+    value is Map<*, *> -> value.withoutOptionalNulls(schema, onlyRejected)
+    value is List<*> -> value.map { dropOptionalNulls(it, schema?.items, onlyRejected) }
     else -> value
   }
 }

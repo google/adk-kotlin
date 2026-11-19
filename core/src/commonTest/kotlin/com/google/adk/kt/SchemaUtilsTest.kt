@@ -1513,7 +1513,12 @@ class SchemaUtilsTest {
 
     // Act
     val results = samples.map { (type, value) ->
-      ValueCoercer.coerceValue(value, checkNotNull(SchemaUtils.inferSchema(type)), "value")
+      ValueCoercer.coerceValue(
+        value,
+        checkNotNull(SchemaUtils.inferSchema(type)),
+        "value",
+        fillDefaults = false,
+      )
     }
 
     // Assert
@@ -1561,6 +1566,107 @@ class SchemaUtilsTest {
       mapOf("count" to 1L),
       SchemaUtils.validateValue(mapOf("count" to 1.0), counts).getOrThrow(),
     )
+  }
+
+  /** A page whose `limit` defaults to 10. */
+  private val page =
+    Schema(
+      type = Type.OBJECT,
+      properties =
+        mapOf(
+          "offset" to Schema(type = Type.INTEGER),
+          "limit" to Schema(type = Type.INTEGER, default = 10),
+        ),
+    )
+
+  @Test
+  fun validateValue_absentPropertyWithADefault_getsTheDefault() {
+    // Arrange
+    val other = Schema(type = Type.OBJECT, properties = mapOf("s" to Schema(type = Type.STRING)))
+    val filled = mapOf<String, Any>("offset" to 2L, "limit" to 10)
+
+    // Act
+    val map = SchemaUtils.validateValue(mapOf("offset" to 2.0), page)
+    val list =
+      SchemaUtils.validateValue(
+        listOf(mapOf("offset" to 2.0)),
+        Schema(type = Type.ARRAY, items = page),
+      )
+    val union =
+      SchemaUtils.validateValue(mapOf("offset" to 2.0), Schema(anyOf = listOf(other, page)))
+
+    // Assert
+    assertEquals(filled, map.getOrThrow())
+    assertEquals(listOf(filled), list.getOrThrow())
+    assertEquals(filled, union.getOrThrow())
+  }
+
+  @Test
+  fun normalizeBySchema_withoutFillingDefaults_stillConvertsIntegersInListsAndUnions() {
+    // Arrange
+    val other = Schema(type = Type.OBJECT, properties = mapOf("s" to Schema(type = Type.STRING)))
+    val unfilled = mapOf<String, Any>("offset" to 2L)
+
+    // Act
+    val list =
+      normalizeBySchema(
+        listOf(mapOf("offset" to 2.0)),
+        Schema(type = Type.ARRAY, items = page),
+        fillDefaults = false,
+      )
+    val union =
+      normalizeBySchema(
+        mapOf("offset" to 2.0),
+        Schema(anyOf = listOf(other, page)),
+        fillDefaults = false,
+      )
+
+    // Assert
+    assertEquals(listOf(unfilled), list)
+    assertEquals(unfilled, union)
+  }
+
+  @Test
+  fun validateValue_presentPropertyWithADefault_keepsItsValue() {
+    // Arrange
+    val nullable =
+      page.copy(
+        properties =
+          page.properties!! +
+            ("limit" to Schema(type = Type.INTEGER, nullable = true, default = 10))
+      )
+
+    // Act
+    val given = SchemaUtils.validateValue(mapOf("limit" to 3L), page)
+    val explicitNull = SchemaUtils.validateValue(mapOf("limit" to null), nullable)
+
+    // Assert
+    assertEquals(mapOf("limit" to 3L), given.getOrThrow())
+    assertEquals(mapOf("limit" to null), explicitNull.getOrThrow())
+  }
+
+  @Test
+  fun validateValue_absentRequiredPropertyWithADefault_fails() {
+    val result =
+      SchemaUtils.validateValue(emptyMap<String, Any>(), page.copy(required = listOf("limit")))
+
+    assertContains(result.exceptionOrNull()?.message.orEmpty(), "does not contain required limit")
+  }
+
+  @Test
+  fun validateOutputSchema_absentPropertyWithADefault_getsTheDefault() {
+    val output = SchemaUtils.validateOutputSchema("""{"offset": 2}""", page).getOrThrow()
+
+    // Android's JSON parser reads `2` as an Int, so the parsed value's type is left unchecked.
+    assertEquals(setOf("offset", "limit"), output.keys)
+    assertEquals(10, output["limit"])
+  }
+
+  @Test
+  fun validateOutputSchema_absentRequiredPropertyWithADefault_fails() {
+    val result = SchemaUtils.validateOutputSchema("{}", page.copy(required = listOf("limit")))
+
+    assertContains(result.exceptionOrNull()?.message.orEmpty(), "does not contain required limit")
   }
 
   @Test

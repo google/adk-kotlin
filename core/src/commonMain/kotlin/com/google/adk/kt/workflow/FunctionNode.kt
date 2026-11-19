@@ -258,7 +258,7 @@ private constructor(
           }
       }
     val checked =
-      ValueCoercer.coerceValue(json, explicitInputSchema, what).getOrElse {
+      ValueCoercer.coerceValue(json, explicitInputSchema, what, fillDefaults = true).getOrElse {
         throw NodeInputValidationException(it.message.orEmpty(), it)
       }
     return if (takesContent) json else inputCodec.coerce(checked, what)

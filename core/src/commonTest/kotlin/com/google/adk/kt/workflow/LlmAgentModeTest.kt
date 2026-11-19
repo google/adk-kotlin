@@ -2218,6 +2218,34 @@ class LlmAgentModeTest {
   }
 
   @Test
+  fun taskMode_finishWithoutADefaultedField_fillsOnlyTheNodeOutput() = runBlocking {
+    // Arrange
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "title" to Schema(type = Type.STRING),
+            "tone" to Schema(type = Type.STRING, default = "neutral"),
+          ),
+      )
+    val model = ModeScriptedModel(call("finish_task", mapOf("title" to "Story")))
+    val writer = taskAgent("writer", model, outputSchema = schema, outputKey = "story")
+    val capture = ModeCaptureNode()
+
+    // Act
+    val events = runWorkflow("write", Edge(Start, writer), Edge(writer, capture))
+
+    // Assert: as in Python, the node output check fills the default, but outputKey keeps the
+    // finish_task arguments as the model sent them.
+    assertEquals(mapOf("title" to "Story", "tone" to "neutral"), capture.received)
+    assertEquals(
+      mapOf("title" to "Story"),
+      events.first { "story" in it.actions.stateDelta }.actions.stateDelta["story"],
+    )
+  }
+
+  @Test
   fun taskMode_nodeWithoutDelegatingCall_startsFromNodeInput() = runBlocking {
     // Arrange
     val model = ModeScriptedModel(call("finish_task", mapOf("result" to "ok")))

@@ -34,6 +34,7 @@ import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyAgent
@@ -61,6 +62,7 @@ import com.google.adk.kt.types.Type
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -638,6 +640,59 @@ class AgentToolTest {
 
       // Assert
       assertEquals(listOf("""{"n":1}"""), received)
+    }
+
+  @Test
+  fun run_throughInMemoryRunner_absentInputWithADefault_reachesTheAgentWithTheDefault(): Unit =
+    runBlocking {
+      // Arrange: adk-python test_input_schema_sends_defaults_and_drops_none_defaults, whose
+      // dropped-None half has no Kotlin form: a null default means no default.
+      val received = mutableListOf<String>()
+      val inner =
+        LlmAgent(
+          name = "inner-agent",
+          model =
+            DummyModel("inner-model") { request ->
+              received += request.contents.last().parts.single().text.orEmpty()
+              flowOf(LlmResponse(content = modelMessage("done")))
+            },
+          inputSchema =
+            Schema(
+              type = Type.OBJECT,
+              properties =
+                mapOf(
+                  "city" to Schema(type = Type.STRING),
+                  "num_days" to Schema(type = Type.INTEGER, default = 3),
+                ),
+              required = listOf("city"),
+            ),
+        )
+      val mainModel =
+        DummyModel(
+          name = "main-model",
+          flows =
+            listOf(
+              flowOf(
+                modelFunctionCallResponse(name = "inner-agent", args = mapOf("city" to "Paris"))
+              ),
+              flowOf(LlmResponse(content = modelMessage("Final Answer"))),
+            ),
+        )
+      val mainAgent =
+        LlmAgent(name = "main-agent", model = mainModel, tools = listOf(AgentTool(inner)))
+      val runner = InMemoryRunner(agent = mainAgent)
+
+      // Act
+      val unused =
+        runner
+          .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("hi"))
+          .toList()
+
+      // Assert: compared as parsed JSON, since key order and number types vary by platform.
+      val sent = Json.fromJsonToMap(received.single())
+      assertEquals(setOf("city", "num_days"), sent.keys)
+      assertEquals("Paris", sent["city"])
+      assertEquals(3L, assertIs<Number>(sent["num_days"]).toLong())
     }
 
   @Test

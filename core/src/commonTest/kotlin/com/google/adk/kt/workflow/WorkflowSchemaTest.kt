@@ -21,10 +21,14 @@ package com.google.adk.kt.workflow
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Schema
@@ -44,6 +48,22 @@ class WorkflowSchemaTest {
 
   private val countSchema =
     Schema(type = Type.OBJECT, properties = mapOf("count" to Schema(type = Type.INTEGER)))
+
+  /** A record whose `extra` defaults to "default", like a pydantic model with a defaulted field. */
+  private val recordSchema =
+    Schema(
+      type = Type.OBJECT,
+      properties =
+        mapOf(
+          "name" to Schema(type = Type.STRING),
+          "value" to Schema(type = Type.INTEGER),
+          "extra" to Schema(type = Type.STRING, default = "default"),
+        ),
+      required = listOf("name", "value"),
+    )
+
+  private fun List<Event>.outputsOf(node: String): List<Any?> =
+    filter { it.nodeInfo?.name == node && it.output != null }.map { it.output }
 
   /** A value no failure message may quote. */
   private val secret = "SENTINEL-4711"
@@ -127,6 +147,117 @@ class WorkflowSchemaTest {
     assertRejects("validation error: output of workflow 'wf' does not match its schema: 'count'") {
       runWorkflow(badWorkflowOutput)
     }
+  }
+
+  @Test
+  fun inputSchema_fillsAnAbsentPropertyWithItsDefault() {
+    // Arrange
+    val node = SchemaEcho("echo", inputSchema = recordSchema)
+
+    // Act
+    val filled = node.validateInput(mapOf("name" to "x", "value" to 1))
+
+    // Assert
+    assertEquals(mapOf("name" to "x", "value" to 1, "extra" to "default"), filled)
+  }
+
+  @Test
+  fun outputSchema_fillsAnAbsentPropertyWithItsDefault() {
+    // Arrange: adk-python test_output_schema_inferred_coerces_defaults.
+    val produce = SchemaEmitter("produce", mapOf("name" to "test", "value" to 5), recordSchema)
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, produce)))
+
+    // Act
+    val events = runWorkflow(workflow)
+
+    // Assert
+    assertEquals(
+      listOf(mapOf("name" to "test", "value" to 5, "extra" to "default")),
+      events.outputsOf("produce"),
+    )
+  }
+
+  @Test
+  fun workflowOutputSchema_fillsDefaultsBeforeTheNextNodeReadsTheOutput() {
+    // Arrange: adk-python test_workflow_output_schema_coerces_defaults.
+    val inner =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, SchemaEmitter("produce", mapOf("name" to "x", "value" to 1)))),
+        outputSchema = recordSchema,
+      )
+    val consume = SchemaEcho("consume")
+    val outer = Workflow(name = "outer", edges = listOf(Edge(Start, inner), Edge(inner, consume)))
+
+    // Act
+    val events = runWorkflow(outer)
+
+    // Assert
+    assertEquals(
+      listOf(mapOf("name" to "x", "value" to 1, "extra" to "default")),
+      events.outputsOf("consume"),
+    )
+  }
+
+  @Test
+  fun workflowOutputSchema_fillsTheDefaultsOfNestedRecords() {
+    // Arrange: adk-python test_workflow_output_schema_validates_multiple_terminals.
+    val branchA = SchemaEmitter("branch_a", mapOf("name" to "from_a", "value" to 1))
+    val branchB = SchemaEmitter("branch_b", mapOf("name" to "from_b", "value" to 2))
+    val join = JoinNode("join")
+    val inner =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(
+            Edge(Start, branchA),
+            Edge(Start, branchB),
+            Edge(branchA, join),
+            Edge(branchB, join),
+          ),
+        outputSchema =
+          Schema(
+            type = Type.OBJECT,
+            properties = mapOf("branch_a" to recordSchema, "branch_b" to recordSchema),
+            required = listOf("branch_a", "branch_b"),
+          ),
+      )
+    val consume = SchemaEcho("consume")
+    val outer = Workflow(name = "outer", edges = listOf(Edge(Start, inner), Edge(inner, consume)))
+
+    // Act
+    val events = runWorkflow(outer)
+
+    // Assert
+    assertEquals(
+      listOf(
+        mapOf(
+          "branch_a" to mapOf("name" to "from_a", "value" to 1, "extra" to "default"),
+          "branch_b" to mapOf("name" to "from_b", "value" to 2, "extra" to "default"),
+        )
+      ),
+      events.outputsOf("consume"),
+    )
+  }
+
+  @Test
+  fun llmAgentNode_outputAndOutputKeyBothGetTheOutputSchemaDefaults() {
+    // Arrange
+    val model =
+      DummyModel.createSequential(
+        "model",
+        listOf(LlmResponse(content = modelMessage("""{"name": "x", "value": 1}"""))),
+      )
+    val agent =
+      LlmAgent(name = "agent", model = model, outputSchema = recordSchema, outputKey = "record")
+
+    // Act
+    val events = runWorkflow(Workflow(name = "wf", edges = listOf(Edge(Start, agent))))
+
+    // Assert
+    val filled = mapOf("name" to "x", "value" to 1L, "extra" to "default")
+    assertEquals(listOf(filled), events.outputsOf("agent"))
+    assertEquals(filled, events.written("record"))
   }
 
   @Test
@@ -222,6 +353,24 @@ class WorkflowSchemaTest {
     assertRejects("validation error: state key 'box' does not match its schema: 'count' is not") {
       runWorkflow(writing("box", mapOf("count" to secret)))
     }
+  }
+
+  @Test
+  fun stateSchema_objectValue_keepsItsDefaultsAbsent() {
+    // Arrange
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges =
+          listOf(Edge(Start, SchemaStateNode("n", "record", mapOf("name" to "x", "value" to 1)))),
+        stateSchema = Schema(type = Type.OBJECT, properties = mapOf("record" to recordSchema)),
+      )
+
+    // Act
+    val events = runWorkflow(workflow)
+
+    // Assert: as in Python, a state write is checked but stored as written.
+    assertEquals(mapOf("name" to "x", "value" to 1), events.written("record"))
   }
 
   @Test

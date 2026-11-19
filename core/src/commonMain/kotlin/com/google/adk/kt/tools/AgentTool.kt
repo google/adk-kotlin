@@ -27,6 +27,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ForwardingArtifactService
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.normalizedBySchema
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.sessions.InMemorySessionService
@@ -38,7 +39,6 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
-import com.google.adk.kt.withIntegersAsLongs
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.flow.onEach
@@ -98,7 +98,7 @@ open class AgentTool(
       if (inputSchema != null) {
         val schema = inputSchema!!
         SchemaUtils.validateMapOnSchema(args, schema, argsName = "Input").getOrThrow()
-        val text = Json.toJsonString(args.withIntegersAsLongs(schema))
+        val text = Json.toJsonString(args.normalizedBySchema(schema))
         Content(role = Role.USER, parts = listOf(Part(text = text)))
       } else {
         val request =

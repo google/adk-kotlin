@@ -32,8 +32,11 @@ import com.google.adk.kt.types.Type
  *   `"true"` for `BOOLEAN`).
  * - Whole-number floating-point values for `INTEGER` schemas (e.g. `42.0` or `"1e2"` -> `42L` /
  *   `100L`).
+ *
+ * With `fillDefaults`, an object then gains the [Schema.default] of each declared property it
+ * lacks.
  */
-internal class ValueCoercer private constructor() {
+internal class ValueCoercer private constructor(private val fillDefaults: Boolean) {
   private val budget = SchemaUtils.UnionBudget()
 
   private fun coerce(value: Any?, schema: Schema, path: String = ""): Any? {
@@ -105,16 +108,28 @@ internal class ValueCoercer private constructor() {
         } catch (e: IllegalArgumentException) {
           continue
         }
-      if (coerced == value) return coerced
+      if (fitsAsIs(coerced, value)) return coerced
       if (converted == null) converted = coerced
     }
     return requireNotNull(converted) { "${at(path)}matches none of the schema's alternatives" }
   }
 
+  /** Whether [coerced] equals [value], ignoring the keys only [coerced] has: filled-in defaults. */
+  private fun fitsAsIs(coerced: Any?, value: Any?): Boolean =
+    when {
+      coerced is Map<*, *> && value is Map<*, *> ->
+        value.all { (key, item) -> coerced.containsKey(key) && fitsAsIs(coerced[key], item) }
+      coerced is List<*> && value is List<*> ->
+        coerced.size == value.size && coerced.indices.all { fitsAsIs(coerced[it], value[it]) }
+      else -> coerced == value
+    }
+
   private fun coerceArray(value: Collection<*>, items: Schema?, path: String): List<Any?> {
     if (items == null) return value.toList()
     // Each item gets its own budget: a list's length is data, not schema complexity.
-    return value.mapIndexed { i, item -> ValueCoercer().coerce(item, items, "$path[$i]") }
+    return value.mapIndexed { i, item ->
+      ValueCoercer(fillDefaults).coerce(item, items, "$path[$i]")
+    }
   }
 
   private fun coerceObject(value: Map<*, *>, schema: Schema, path: String): Map<String, Any?> {
@@ -132,13 +147,14 @@ internal class ValueCoercer private constructor() {
       result[name] =
         when {
           declared != null -> coerce(entry, declared, "$path.$name")
-          extraSchema != null -> ValueCoercer().coerce(entry, extraSchema, "$path.*")
+          extraSchema != null -> ValueCoercer(fillDefaults).coerce(entry, extraSchema, "$path.*")
           else -> entry
         }
     }
     for (name in schema.required.orEmpty()) {
       require(name in result) { "${at(path)}lacks required '$name'" }
     }
+    if (fillDefaults) schema.putMissingDefaults(result)
     return result
   }
 
@@ -158,11 +174,17 @@ internal class ValueCoercer private constructor() {
 
     /**
      * Checks [value] against [schema] and returns the coerced result, or a [Result.failure] whose
-     * message names [what] and parts of the schema, never the runtime value.
+     * message names [what] and parts of the schema, never the runtime value. With [fillDefaults],
+     * objects gain the defaults of the properties they lack.
      */
-    internal fun coerceValue(value: Any?, schema: Schema, what: String = "value"): Result<Any?> =
+    internal fun coerceValue(
+      value: Any?,
+      schema: Schema,
+      what: String = "value",
+      fillDefaults: Boolean,
+    ): Result<Any?> =
       try {
-        Result.success(ValueCoercer().coerce(value, schema))
+        Result.success(ValueCoercer(fillDefaults).coerce(value, schema))
       } catch (e: IllegalArgumentException) {
         Result.failure(
           IllegalArgumentException(
