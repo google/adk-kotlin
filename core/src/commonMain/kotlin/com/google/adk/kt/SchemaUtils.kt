@@ -323,6 +323,7 @@ object SchemaUtils {
    * is not JSON. A failure names [argsName] and, for a map, a reason that names only parts of the
    * schema, but never the value.
    */
+  @OptIn(FrameworkInternalApi::class)
   internal fun validateValue(
     value: Any?,
     schema: Schema,
@@ -331,7 +332,7 @@ object SchemaUtils {
     if (value == null) return Result.success(null)
     val data =
       if (value !is Content) value
-      else value.text().let { if (acceptsString(schema)) it else readJson(it).getOrDefault(it) }
+      else value.text().let { if (acceptsString(schema)) it else readJsonOrText(it) }
     val detail: String?
     if (data is Map<*, *>) {
       val args = data.entries.associate { (k, v) -> k.toString() to v }
@@ -383,8 +384,9 @@ object SchemaUtils {
     schema.type == Type.STRING || schema.anyOf.orEmpty().any { acceptsString(it) }
 
   /**
-   * Reads [text] as JSON into plain Kotlin values. Text that is not JSON fails, including an
-   * unquoted word, which the JSON parser alone takes as a literal, and the failure never quotes it.
+   * Reads [text] as JSON into plain Kotlin values. Fails for text that is not strict JSON, such as
+   * an unquoted word the parser alone accepts as a literal, and for text nested more than
+   * [MAX_JSON_DEPTH] levels deep. The failure message never quotes the text.
    */
   @OptIn(FrameworkInternalApi::class)
   internal fun readJson(text: String): Result<Any?> {
@@ -396,9 +398,16 @@ object SchemaUtils {
     return Result.success(jsonElementToAny(element))
   }
 
-  /** Reads [text] as strict JSON (see [readJson]) into a [JsonElement], or null when it is not. */
+  /**
+   * Returns [text] read as JSON into plain Kotlin values, or [text] itself if it is not strict JSON
+   * or is nested too deep to read.
+   */
+  @FrameworkInternalApi fun readJsonOrText(text: String): Any? = readJson(text).getOrDefault(text)
+
+  /** Reads [text] into a [JsonElement], or returns null where [readJson] would fail. */
   @OptIn(FrameworkInternalApi::class)
   internal fun readJsonElement(text: String): JsonElement? {
+    if (nestsTooDeep(text)) return null
     val element =
       try {
         adkJson.parseToJsonElement(text)
@@ -406,6 +415,32 @@ object SchemaUtils {
         null
       }
     return element?.takeIf { isStrictJson(it) }
+  }
+
+  /**
+   * The deepest nesting [readJson] reads, the cap ADK Python's BigQuery plugin uses. Parsing and
+   * converting recurse once per level, so deeper text could overflow the stack.
+   */
+  internal const val MAX_JSON_DEPTH = 1_000
+
+  /**
+   * Whether [text] opens more than [MAX_JSON_DEPTH] arrays or objects at once, ignoring strings.
+   */
+  private fun nestsTooDeep(text: String): Boolean {
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (c in text) {
+      when {
+        escaped -> escaped = false
+        inString && c == '\\' -> escaped = true
+        inString -> inString = c != '"'
+        c == '"' -> inString = true
+        c == '[' || c == '{' -> if (++depth > MAX_JSON_DEPTH) return true
+        c == ']' || c == '}' -> depth--
+      }
+    }
+    return false
   }
 
   /** A JSON integer literal without a fractional or exponent part. */

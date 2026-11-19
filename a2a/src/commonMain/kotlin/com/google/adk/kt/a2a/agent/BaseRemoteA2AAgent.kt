@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 
+@file:OptIn(FrameworkInternalApi::class)
+
 package com.google.adk.kt.a2a.agent
 
+import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.a2a.converters.contextId
 import com.google.adk.kt.a2a.converters.credentialCallIds
-import com.google.adk.kt.a2a.converters.decodeA2aJson
 import com.google.adk.kt.a2a.converters.extractPreprocessedEvents
 import com.google.adk.kt.a2a.converters.findUserFunctionCall
 import com.google.adk.kt.a2a.converters.isFailedRequest
@@ -28,6 +30,7 @@ import com.google.adk.kt.a2a.converters.withMockCallAnswersAsText
 import com.google.adk.kt.a2a.converters.withoutCredentialParts
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.BeforeAgentCallback
 import com.google.adk.kt.events.Event
@@ -155,9 +158,8 @@ abstract class BaseRemoteA2AAgent(
   /**
    * Returns a copy of [event] whose metadata records [debugRequest] (only if the event is
    * turn-complete) and [debugResponse], decoded from JSON into maps, lists and primitives as ADK
-   * Python records them; text it cannot decode, such as invalid JSON or JSON nested more than 512
-   * levels deep, is recorded as is. A failed result is recorded under the matching
-   * `*_serialization_error` key.
+   * Python records them; text it cannot decode, such as invalid JSON or JSON nested too deep, is
+   * recorded as is. A failed result is recorded under the matching `*_serialization_error` key.
    */
   protected fun addA2AMetadata(
     event: Event,
@@ -173,7 +175,7 @@ abstract class BaseRemoteA2AAgent(
             }
             if (debugResponse != null) {
               debugResponse
-                .map(::decodeA2aJson)
+                .map(SchemaUtils::readJsonOrText)
                 .onSuccess { put(A2AMetadata.RESPONSE, it) }
                 .onFailure { put(A2AMetadata.RESPONSE_ERROR, it.message ?: it.toString()) }
             }
@@ -205,7 +207,7 @@ abstract class BaseRemoteA2AAgent(
 /** Records [request] under `a2a:request`, decoded from JSON, or its serialization error. */
 internal fun MutableMap<String, Any?>.putRequest(request: Result<String>) {
   request
-    .map(::decodeA2aJson)
+    .map(SchemaUtils::readJsonOrText)
     .onSuccess { put(BaseRemoteA2AAgent.REQUEST, it) }
     .onFailure { put(BaseRemoteA2AAgent.REQUEST_ERROR, it.message ?: it.toString()) }
 }
@@ -231,7 +233,7 @@ private val PAUSED_TASK_STATES =
  * decoded object and the JSON string that earlier versions recorded.
  */
 private fun taskState(response: Any): String? {
-  val root = if (response is String) decodeA2aJson(response) else response
+  val root = if (response is String) SchemaUtils.readJsonOrText(response) else response
   val status = (root as? Map<*, *>)?.get("status") as? Map<*, *>
   return status?.get("state") as? String
 }

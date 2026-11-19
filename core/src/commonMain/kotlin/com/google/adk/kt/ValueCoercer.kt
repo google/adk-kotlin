@@ -16,6 +16,7 @@
 
 package com.google.adk.kt
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -175,14 +176,14 @@ internal class ValueCoercer private constructor() {
      * string, and otherwise parses the text as JSON (falling back to the raw text if it is not
      * valid JSON).
      */
+    @OptIn(FrameworkInternalApi::class)
     internal fun coerceContent(content: Content, schema: Schema): Any? {
       val dropped = content.parts.count { it.text == null }
       if (dropped > 0) {
         logger.warn { "Reading a message as a value dropped $dropped non-text parts." }
       }
       val text = content.text()
-      return if (SchemaUtils.acceptsString(schema)) text
-      else SchemaUtils.readJson(text).getOrDefault(text)
+      return if (SchemaUtils.acceptsString(schema)) text else SchemaUtils.readJsonOrText(text)
     }
 
     /**

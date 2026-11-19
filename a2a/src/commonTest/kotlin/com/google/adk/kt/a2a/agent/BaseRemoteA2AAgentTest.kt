@@ -32,7 +32,6 @@ import com.google.adk.kt.types.Role
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
@@ -805,33 +804,6 @@ class BaseRemoteA2AAgentTest {
   }
 
   @Test
-  fun addA2AMetadata_responseAtDepthLimit_decodes() {
-    val atLimit = "[".repeat(512) + "]".repeat(512)
-
-    assertTrue(recordedResponse(atLimit) is List<*>)
-    assertEquals("[$atLimit]", recordedResponse("[$atLimit]"))
-  }
-
-  @Test
-  fun addA2AMetadata_responseWithBracketsInStrings_countsOnlyBracketsOutsideStrings() {
-    // With the outer object or list, the deepest list sits at the limit or one past it.
-    val nested = "[".repeat(511) + "]".repeat(511)
-    // Brackets in a string, also after an escaped quote, don't count; those after it do.
-    val inString = """{"text":"\"[\"","list":$nested}"""
-    val afterString = """["text","[",[$nested]]"""
-
-    assertTrue(recordedResponse(inString) is Map<*, *>)
-    assertEquals(afterString, recordedResponse(afterString))
-  }
-
-  @Test
-  fun addA2AMetadata_responseWithLongFlatList_decodes() {
-    val response = List(600) { "0" }.joinToString(",", "[", "]")
-
-    assertEquals(List(600) { 0L }, recordedResponse(response))
-  }
-
-  @Test
   fun addA2AMetadata_responseWithNaN_recordsText() {
     val agent = TestRemoteAgent("test-agent")
     val response = """{"score":NaN}"""
@@ -873,13 +845,6 @@ class BaseRemoteA2AAgentTest {
   }
 
   /** An event where [agent] relays its remote agent's response leaving task-123 in [state]. */
-  /** Returns the `a2a:response` that [addA2AMetadata] records for [response]. */
-  private fun recordedResponse(response: String): Any? =
-    TestRemoteAgent("test-agent")
-      .testAddA2AMetadata(Event(author = "user"), debugResponse = Result.success(response))
-      .customMetadata
-      ?.get("a2a:response")
-
   private fun remoteResponse(agent: TestRemoteAgent, state: String) =
     Event(
       author = agent.name,

@@ -1199,6 +1199,53 @@ class SchemaUtilsTest {
   }
 
   @Test
+  fun readJson_textNestedPastTheDepthLimit_fails() {
+    val atLimit = "[".repeat(SchemaUtils.MAX_JSON_DEPTH) + "]".repeat(SchemaUtils.MAX_JSON_DEPTH)
+
+    assertIs<List<*>>(SchemaUtils.readJson(atLimit).getOrThrow())
+    assertTrue(SchemaUtils.readJson("[$atLimit]").isFailure)
+    assertTrue(SchemaUtils.readJson("[".repeat(100_000) + "]".repeat(100_000)).isFailure)
+  }
+
+  @Test
+  fun readJson_objectsNestedPastTheDepthLimit_fail() {
+    fun nested(depth: Int) = """{"a":""".repeat(depth) + "1" + "}".repeat(depth)
+
+    assertIs<Map<*, *>>(SchemaUtils.readJson(nested(SchemaUtils.MAX_JSON_DEPTH)).getOrThrow())
+    assertTrue(SchemaUtils.readJson(nested(SchemaUtils.MAX_JSON_DEPTH + 1)).isFailure)
+    assertTrue(SchemaUtils.readJson(nested(100_000)).isFailure)
+  }
+
+  @Test
+  fun readJson_bracketsInStrings_doNotCountTowardTheDepthLimit() {
+    // With the outer object or list, the deepest list sits at the limit or one past it.
+    val nested =
+      "[".repeat(SchemaUtils.MAX_JSON_DEPTH - 1) + "]".repeat(SchemaUtils.MAX_JSON_DEPTH - 1)
+    // Brackets inside a string don't count, even next to an escaped quote; brackets after it do.
+    val inString = """{"text":"\"[\"","list":$nested}"""
+    val afterString = """["text","[",[$nested]]"""
+
+    assertIs<Map<*, *>>(SchemaUtils.readJson(inString).getOrThrow())
+    assertTrue(SchemaUtils.readJson(afterString).isFailure)
+  }
+
+  @Test
+  fun readJson_longFlatList_reads() {
+    // More bracketed elements than the limit, which counts only brackets still open.
+    val length = SchemaUtils.MAX_JSON_DEPTH + 200
+    val list = List(length) { "[0]" }.joinToString(",", "[", "]")
+
+    assertEquals(List(length) { listOf(0L) }, SchemaUtils.readJson(list).getOrThrow())
+  }
+
+  @Test
+  fun readJsonOrText_returnsTheValueOrTheText() {
+    assertEquals(mapOf("a" to 1L), SchemaUtils.readJsonOrText("""{"a": 1}"""))
+    assertEquals("hello", SchemaUtils.readJsonOrText("hello"))
+    assertEquals(null, SchemaUtils.readJsonOrText("null"))
+  }
+
+  @Test
   fun acceptsString_seesAStringTypeDirectlyOrInAnAlternative() {
     assertTrue(SchemaUtils.acceptsString(Schema(type = Type.STRING)))
     assertTrue(SchemaUtils.acceptsString(Schema(anyOf = listOf(Schema(type = Type.STRING)))))

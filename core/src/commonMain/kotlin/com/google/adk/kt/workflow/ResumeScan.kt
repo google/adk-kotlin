@@ -498,7 +498,7 @@ private fun unwrapAnswer(schema: Schema?, response: Any?): Any? {
   if (response !is Map<*, *> || response.keys.singleOrNull() != BaseTool.RESULT_KEY) return response
   val value = response[BaseTool.RESULT_KEY]
   if (value !is String || (schema != null && SchemaUtils.acceptsString(schema))) return value
-  return SchemaUtils.readJson(value).getOrDefault(value)
+  return SchemaUtils.readJsonOrText(value)
 }
 
 /** Returns the first text message the user sent in [invocationId], or null if there is none. */
