@@ -18,6 +18,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.serialization.adkJson
 import kotlin.reflect.typeOf
 import kotlin.test.assertEquals
@@ -32,7 +33,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.serializer
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class AuthCredentialSerializerTest {
 
   @Test
@@ -212,6 +213,16 @@ class AuthCredentialSerializerTest {
   }
 
   @Test
+  fun decode_serviceAccountKeyWithoutPrivateKey_throws() {
+    // Output leaves the private key out, but a stored key still needs it.
+    val keyJson = KEY_JSON.replace(""""privateKey": "pem", """, "")
+
+    assertMalformed(
+      """{"authType": "serviceAccount", "serviceAccount": {"serviceAccountCredential": $keyJson}}"""
+    )
+  }
+
+  @Test
   fun decode_serviceAccountKeyWithoutType_readsAnEmptyType() {
     val keyJson = KEY_JSON.replace("\"type\": \"service_account\", ", "")
 
@@ -303,6 +314,61 @@ class AuthCredentialSerializerTest {
         """{"authType": "http", "apiKey": "k", "resourceRef": "r", "z": 3,
           "http": {"scheme": "bearer", "credentials": {"token": "t", "x": 1}, "y": 2}}"""
       ),
+    )
+  }
+
+  @Test
+  fun encodeForOutput_apiKey_omitsTheKey() {
+    assertEquals(
+      json("""{"authType": "apiKey"}"""),
+      encodeForOutput(AuthCredential.ApiKey(Secret("sk-123"))),
+    )
+  }
+
+  @Test
+  fun encodeForOutput_httpBasic_omitsPasswordAndHeaders() {
+    val credential =
+      AuthCredential.Http.basic("user", "pass")
+        .copy(additionalHeaders = mapOf("X-Key" to Secret("value")))
+
+    assertEquals(
+      json(
+        """{"authType": "http", "http": {"scheme": "basic", "credentials": {"username": "user"}}}"""
+      ),
+      encodeForOutput(credential),
+    )
+  }
+
+  @Test
+  fun encodeForOutput_httpBearer_omitsTheToken() {
+    assertEquals(
+      json("""{"authType": "http", "http": {"scheme": "bearer", "credentials": {}}}"""),
+      encodeForOutput(AuthCredential.Http.bearer("t")),
+    )
+  }
+
+  @Test
+  fun encodeForOutput_oauth2_omitsItsSecrets() {
+    assertEquals(
+      json(
+        """{"authType": "oauth2", "oauth2": {"clientId": "client",
+          "authUri": "https://example.com/auth", "nonce": "n", "state": "s",
+          "redirectUri": "https://example.com/cb", "expiresAt": 1700000000, "expiresIn": 3600,
+          "audience": "aud", "prompt": "consent", "codeChallengeMethod": "S256",
+          "tokenEndpointAuthMethod": "client_secret_post"}}"""
+      ),
+      encodeForOutput(OAUTH2),
+    )
+  }
+
+  @Test
+  fun encodeForOutput_serviceAccountKey_omitsOnlyThePrivateKeyAndItsId() {
+    val keyJson =
+      KEY_JSON.replace(""""privateKeyId": "kid",""", "").replace(""""privateKey": "pem", """, "")
+
+    assertEquals(
+      json(SERVICE_ACCOUNT_JSON.replace(KEY_JSON, keyJson)),
+      encodeForOutput(SERVICE_ACCOUNT),
     )
   }
 
@@ -552,7 +618,12 @@ class AuthCredentialSerializerTest {
 
     fun json(text: String): JsonElement = Json.parseToJsonElement(text)
 
+    /** Encodes [credential] in its stored form, secrets included. */
     fun encode(credential: AuthCredential): JsonElement =
+      adkSecretRevealingJson.encodeToJsonElement(AuthCredentialSerializer, credential)
+
+    /** Encodes [credential] as ADK's output does, with [adkJson]. */
+    fun encodeForOutput(credential: AuthCredential): JsonElement =
       adkJson.encodeToJsonElement(AuthCredentialSerializer, credential)
 
     fun decode(text: String): AuthCredential =

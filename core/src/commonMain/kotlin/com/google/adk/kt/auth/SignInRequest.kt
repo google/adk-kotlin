@@ -19,7 +19,7 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.serialization.encodeToPlainMap
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -51,6 +51,7 @@ class SignInRequest internal constructor(val id: String, val authConfig: AuthCon
    * @throws IllegalArgumentException if [credential] is an OAuth2 credential without an access
    *   token for an OAuth2 or OpenID Connect scheme, since ADK can't exchange a code yet.
    */
+  @OptIn(SecretAccess::class)
   fun createResponse(credential: AuthCredential): Content {
     val answer = credential.filledInto(authConfig.exchangedAuthCredential)
     val config = authConfig.copy(exchangedAuthCredential = answer)

@@ -17,7 +17,13 @@
 package com.google.adk.kt.sessions.dto
 
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.AuthConfig
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.AuthScheme
+import com.google.adk.kt.auth.CredentialKey
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
@@ -149,6 +155,37 @@ class SessionMappersTest {
     assertThat(restored.invocationId).isEqualTo("inv-rt")
     assertThat(restored.timestamp).isEqualTo(1000L)
     assertThat(restored.content?.parts?.single()?.text).isEqualTo("round-trip")
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun event_roundTrip_keepsRequestedCredentialSecrets() {
+    val config =
+      AuthConfig(
+        AuthScheme.OpenIdConnect(
+          authorizationEndpoint = "https://a/auth",
+          tokenEndpoint = "https://a/token",
+          scopes = listOf("openid"),
+        ),
+        exchangedAuthCredential =
+          AuthCredential.OAuth2(
+            clientId = "cid",
+            clientSecret = Secret("client-secret-sentinel"),
+            codeVerifier = Secret("verifier-sentinel"),
+          ),
+        credentialKey = CredentialKey("key"),
+      )
+    val original =
+      Event(
+        author = "agent",
+        invocationId = "inv-rt",
+        timestamp = 1000L,
+        actions = EventActions(requestedAuthConfigs = mutableMapOf("call-1" to config)),
+      )
+
+    val restored = original.toDto().toAdk()
+
+    assertThat(restored.actions.requestedAuthConfigs).containsExactly("call-1", config)
   }
 
   @Test

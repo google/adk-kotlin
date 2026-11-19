@@ -30,22 +30,26 @@ import kotlinx.serialization.json.JsonNames
 /**
  * Reads and writes an [AuthCredential] as a JSON object: `authType` names the kind, such as
  * `apiKey`, and the kind's field holds its payload. Input also takes each multi-word field's
- * snake_case name, as the server's request bodies do.
+ * snake_case name, as the server's request bodies do. Output leaves out every secret field unless
+ * the encoder [revealsSecrets].
  */
 internal object AuthCredentialSerializer :
   KSerializer<AuthCredential> by surrogateSerializer(
     surrogate = AuthCredentialSurrogate.serializer(),
-    toSurrogate = AuthCredential::toSurrogate,
+    toSurrogate = { credential, encoder -> credential.toSurrogate(encoder.revealsSecrets()) },
     fromSurrogate = AuthCredentialSurrogate::toAuthCredential,
   )
 
-private fun AuthCredential.toSurrogate(): AuthCredentialSurrogate =
+private fun AuthCredential.toSurrogate(revealSecrets: Boolean): AuthCredentialSurrogate =
   when (this) {
-    is AuthCredential.ApiKey -> AuthCredentialSurrogate(this)
-    is AuthCredential.Http -> AuthCredentialSurrogate(this)
-    is AuthCredential.OAuth2 -> AuthCredentialSurrogate(this)
-    is AuthCredential.ServiceAccount -> AuthCredentialSurrogate(this)
+    is AuthCredential.ApiKey -> AuthCredentialSurrogate(this, revealSecrets)
+    is AuthCredential.Http -> AuthCredentialSurrogate(this, revealSecrets)
+    is AuthCredential.OAuth2 -> AuthCredentialSurrogate(this, revealSecrets)
+    is AuthCredential.ServiceAccount -> AuthCredentialSurrogate(this, revealSecrets)
   }
+
+/** Returns this secret if [revealSecrets], or null so that the output leaves it out. */
+private fun Secret?.keptIf(revealSecrets: Boolean): Secret? = takeIf { revealSecrets }
 
 /**
  * The credential's JSON object: the kind in [authType], and the payload in that kind's field, which
@@ -59,23 +63,31 @@ private class AuthCredentialSurrogate(
   @JsonNames("service_account") val serviceAccount: ServiceAccount? = null,
   val oauth2: OAuth2? = null,
 ) {
-  constructor(apiKey: AuthCredential.ApiKey) : this(Type.API_KEY, apiKey = apiKey.apiKey)
-
-  constructor(http: AuthCredential.Http) : this(Type.HTTP, http = Http(http))
+  constructor(
+    apiKey: AuthCredential.ApiKey,
+    revealSecrets: Boolean,
+  ) : this(Type.API_KEY, apiKey = apiKey.apiKey.keptIf(revealSecrets))
 
   constructor(
-    oauth2: AuthCredential.OAuth2
+    http: AuthCredential.Http,
+    revealSecrets: Boolean,
+  ) : this(Type.HTTP, http = Http(http, revealSecrets))
+
+  constructor(
+    oauth2: AuthCredential.OAuth2,
+    revealSecrets: Boolean,
   ) : this(
     when (oauth2.variant) {
       AuthCredential.OAuth2.Variant.OAUTH2 -> Type.OAUTH2
       AuthCredential.OAuth2.Variant.OPEN_ID_CONNECT -> Type.OPEN_ID_CONNECT
     },
-    oauth2 = OAuth2(oauth2),
+    oauth2 = OAuth2(oauth2, revealSecrets),
   )
 
   constructor(
-    serviceAccount: AuthCredential.ServiceAccount
-  ) : this(Type.SERVICE_ACCOUNT, serviceAccount = ServiceAccount(serviceAccount))
+    serviceAccount: AuthCredential.ServiceAccount,
+    revealSecrets: Boolean,
+  ) : this(Type.SERVICE_ACCOUNT, serviceAccount = ServiceAccount(serviceAccount, revealSecrets))
 
   fun toAuthCredential(): AuthCredential =
     when (authType) {
@@ -107,8 +119,13 @@ private class AuthCredentialSurrogate(
     @JsonNames("additional_headers") val additionalHeaders: Map<String, JsonSecret>? = null,
   ) {
     constructor(
-      http: AuthCredential.Http
-    ) : this(http.scheme, Credentials(http.credentials), http.additionalHeaders)
+      http: AuthCredential.Http,
+      revealSecrets: Boolean,
+    ) : this(
+      http.scheme,
+      Credentials(http.credentials, revealSecrets),
+      http.additionalHeaders?.takeIf { revealSecrets },
+    )
 
     fun toHttp(): AuthCredential.Http =
       AuthCredential.Http(scheme, credentials.toCredentials(), additionalHeaders)
@@ -120,8 +137,13 @@ private class AuthCredentialSurrogate(
       val token: JsonSecret? = null,
     ) {
       constructor(
-        credentials: AuthCredential.Http.Credentials
-      ) : this(credentials.username, credentials.password, credentials.token)
+        credentials: AuthCredential.Http.Credentials,
+        revealSecrets: Boolean,
+      ) : this(
+        credentials.username,
+        credentials.password.keptIf(revealSecrets),
+        credentials.token.keptIf(revealSecrets),
+      )
 
       fun toCredentials(): AuthCredential.Http.Credentials =
         AuthCredential.Http.Credentials(username, password, token)
@@ -154,25 +176,26 @@ private class AuthCredentialSurrogate(
     val tokenEndpointAuthMethod: AuthCredential.OAuth2.TokenEndpointAuthMethod? = null,
   ) {
     constructor(
-      oauth2: AuthCredential.OAuth2
+      oauth2: AuthCredential.OAuth2,
+      revealSecrets: Boolean,
     ) : this(
       clientId = oauth2.clientId,
-      clientSecret = oauth2.clientSecret,
+      clientSecret = oauth2.clientSecret.keptIf(revealSecrets),
       authUri = oauth2.authUri,
       nonce = oauth2.nonce,
       state = oauth2.state,
       redirectUri = oauth2.redirectUri,
-      authResponseUri = oauth2.authResponseUri,
-      authCode = oauth2.authCode,
-      accessToken = oauth2.accessToken,
-      refreshToken = oauth2.refreshToken,
-      idToken = oauth2.idToken,
+      authResponseUri = oauth2.authResponseUri.keptIf(revealSecrets),
+      authCode = oauth2.authCode.keptIf(revealSecrets),
+      accessToken = oauth2.accessToken.keptIf(revealSecrets),
+      refreshToken = oauth2.refreshToken.keptIf(revealSecrets),
+      idToken = oauth2.idToken.keptIf(revealSecrets),
       // Any fraction of a second is dropped.
       expiresAt = oauth2.expiresAt?.epochSeconds,
       expiresIn = oauth2.expiresIn?.inWholeSeconds,
       audience = oauth2.audience,
       prompt = oauth2.prompt,
-      codeVerifier = oauth2.codeVerifier,
+      codeVerifier = oauth2.codeVerifier.keptIf(revealSecrets),
       codeChallengeMethod = oauth2.codeChallengeMethod,
       tokenEndpointAuthMethod = oauth2.tokenEndpointAuthMethod,
     )
@@ -210,9 +233,11 @@ private class AuthCredentialSurrogate(
     val audience: String? = null,
   ) {
     constructor(
-      serviceAccount: AuthCredential.ServiceAccount
+      serviceAccount: AuthCredential.ServiceAccount,
+      revealSecrets: Boolean,
     ) : this(
-      serviceAccountCredential = serviceAccount.serviceAccountCredential?.let(::Credential),
+      serviceAccountCredential =
+        serviceAccount.serviceAccountCredential?.let { Credential(it, revealSecrets) },
       scopes = serviceAccount.scopes,
       useDefaultCredential = serviceAccount.useDefaultCredential,
       useIdToken = serviceAccount.useIdToken,
@@ -228,12 +253,13 @@ private class AuthCredentialSurrogate(
         audience = audience,
       )
 
+    /** A service account key; its private key and its ID are left out unless revealing. */
     @Serializable
     class Credential(
       val type: String = "",
       @JsonNames("project_id") val projectId: String,
-      @JsonNames("private_key_id") val privateKeyId: JsonSecret,
-      @JsonNames("private_key") val privateKey: JsonSecret,
+      @JsonNames("private_key_id") val privateKeyId: JsonSecret? = null,
+      @JsonNames("private_key") val privateKey: JsonSecret? = null,
       @JsonNames("client_email") val clientEmail: String,
       @JsonNames("client_id") val clientId: String,
       @JsonNames("auth_uri") val authUri: String,
@@ -243,12 +269,13 @@ private class AuthCredentialSurrogate(
       @JsonNames("universe_domain") val universeDomain: String,
     ) {
       constructor(
-        key: AuthCredential.ServiceAccount.Credential
+        key: AuthCredential.ServiceAccount.Credential,
+        revealSecrets: Boolean,
       ) : this(
         type = key.type,
         projectId = key.projectId,
-        privateKeyId = key.privateKeyId,
-        privateKey = key.privateKey,
+        privateKeyId = key.privateKeyId.keptIf(revealSecrets),
+        privateKey = key.privateKey.keptIf(revealSecrets),
         clientEmail = key.clientEmail,
         clientId = key.clientId,
         authUri = key.authUri,
@@ -262,8 +289,9 @@ private class AuthCredentialSurrogate(
         AuthCredential.ServiceAccount.Credential(
           type = type,
           projectId = projectId,
-          privateKeyId = privateKeyId,
-          privateKey = privateKey,
+          // Like the other required fields, which kotlinx rejects before this runs.
+          privateKeyId = privateKeyId ?: throw SerializationException("Malformed auth data."),
+          privateKey = privateKey ?: throw SerializationException("Malformed auth data."),
           clientEmail = clientEmail,
           clientId = clientId,
           authUri = authUri,

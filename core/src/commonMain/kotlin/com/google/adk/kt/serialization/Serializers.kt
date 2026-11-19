@@ -24,10 +24,8 @@ import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import com.google.genai.kotlin.types.DurationStringSerializer
 import kotlin.math.roundToLong
 import kotlin.time.Duration
-import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
-import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -48,7 +46,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
@@ -129,32 +126,6 @@ internal fun anyToJsonElement(value: Any?, onUnsupported: (Any) -> Nothing): Jso
     // A schema nested in an `Any` field, such as `Schema.additionalProperties`.
     is Schema -> adkJson.encodeToJsonElement(Schema.serializer(), value)
     else -> onUnsupported(value)
-  }
-
-/**
- * Returns [value] as the plain map of its JSON object, the form that session state and function
- * call arguments hold.
- */
-@OptIn(FrameworkInternalApi::class)
-internal fun <T> encodeToPlainMap(
-  serializer: SerializationStrategy<T>,
-  value: T,
-): Map<String, Any?> =
-  adkJson.encodeToJsonElement(serializer, value).jsonObject.mapValues { (_, element) ->
-    jsonElementToAny(element)
-  }
-
-/**
- * Returns [value], a plain value as session state or function call arguments hold it, decoded with
- * [deserializer], or null if it has no JSON form or [deserializer] rejects it with an
- * `IllegalArgumentException`, which includes `SerializationException`.
- */
-@OptIn(FrameworkInternalApi::class)
-internal fun <T> decodeFromPlainOrNull(deserializer: DeserializationStrategy<T>, value: Any?): T? =
-  try {
-    adkJson.decodeFromJsonElement(deserializer, anyToJsonElement(value))
-  } catch (e: IllegalArgumentException) {
-    null
   }
 
 @FrameworkInternalApi
@@ -385,10 +356,11 @@ private inline fun <T> asSerializationError(message: String, parse: () -> T): T 
   }
 
 /**
- * The shared `kotlinx.serialization` [Json] instance used to (de)serialize the
- * [Event][com.google.adk.kt.events.Event] graph for persistence. Defaults are omitted to keep
- * payloads small, unknown keys are ignored for forward-compatibility, and [AnySerializer] is
- * registered contextually for free-form `Any` values.
+ * The shared `kotlinx.serialization` [Json] instance for ADK's types, such as the
+ * [Event][com.google.adk.kt.events.Event] graph. It leaves credential secrets out of what it
+ * writes; session storage writes them with ADK's internal revealing instance instead. Defaults are
+ * omitted to keep payloads small, unknown keys are ignored for forward-compatibility, and
+ * [AnySerializer] is registered contextually for free-form `Any` values.
  */
 @FrameworkInternalApi
 val adkJson: Json = Json {

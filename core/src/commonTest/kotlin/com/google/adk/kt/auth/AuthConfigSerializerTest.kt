@@ -18,6 +18,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.serialization.adkJson
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -27,7 +28,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class AuthConfigSerializerTest {
 
   @Test
@@ -155,6 +156,14 @@ class AuthConfigSerializerTest {
   }
 
   @Test
+  fun encodeForOutput_authConfig_omitsTheCredentialSecrets() {
+    val written = adkJson.encodeToJsonElement(AuthConfigSerializer, CONFIG)
+
+    val rawJson = RAW_JSON.replace(""" "clientSecret": "sec",""", "")
+    assertEquals(json(CONFIG_JSON.replace(RAW_JSON, rawJson)), written)
+  }
+
+  @Test
   fun encode_authConfig_writesEveryField() {
     assertEquals(json(CONFIG_JSON), encode(CONFIG))
   }
@@ -216,8 +225,9 @@ class AuthConfigSerializerTest {
 
     fun json(text: String): JsonElement = Json.parseToJsonElement(text)
 
+    /** Encodes [config] in its stored form, secrets included. */
     fun encode(config: AuthConfig): JsonElement =
-      adkJson.encodeToJsonElement(AuthConfigSerializer, config)
+      adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, config)
 
     fun decode(text: String): AuthConfig = adkJson.decodeFromString(AuthConfigSerializer, text)
   }

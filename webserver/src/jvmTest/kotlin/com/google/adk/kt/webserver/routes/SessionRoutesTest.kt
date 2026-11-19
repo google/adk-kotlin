@@ -16,8 +16,15 @@
 
 package com.google.adk.kt.webserver.routes
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.AuthConfig
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.AuthScheme
+import com.google.adk.kt.auth.CredentialKey
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.ListSessionsResponse
@@ -819,6 +826,49 @@ class SessionRoutesTest {
     // The rejected id is caller data, so it must not come back in the message.
     assertThat(response.bodyAsText()).doesNotContain("a/b")
     assertThat(service.createdSessions).isEmpty()
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun getSession_eventRequestingACredential_omitsItsSecrets() = testApplication {
+    val config =
+      AuthConfig(
+        AuthScheme.OpenIdConnect(
+          authorizationEndpoint = "https://a/auth",
+          tokenEndpoint = "https://a/token",
+          scopes = listOf("openid"),
+        ),
+        exchangedAuthCredential =
+          AuthCredential.OAuth2(
+            clientId = "cid",
+            clientSecret = Secret("client-secret-sentinel"),
+            codeVerifier = Secret("verifier-sentinel"),
+          ),
+        credentialKey = CredentialKey("key"),
+      )
+    val fakeService = FakeSessionService()
+    fakeService.createdSessions.add(
+      Session(
+        key = SessionKey(appName = "testApp", userId = "testUser", id = "test-session"),
+        events =
+          mutableListOf(
+            Event(
+              author = "agent",
+              actions = EventActions(requestedAuthConfigs = mutableMapOf("call-1" to config)),
+            )
+          ),
+      )
+    )
+    application {
+      install(ContentNegotiation) { json(adkJson) }
+      routing { sessionRoutes(fakeService) }
+    }
+
+    val body = client.get("/apps/testApp/users/testUser/sessions/test-session").bodyAsText()
+
+    assertThat(body).contains("\"clientId\":\"cid\"")
+    assertThat(body).doesNotContain("client-secret-sentinel")
+    assertThat(body).doesNotContain("verifier-sentinel")
   }
 
   @Test

@@ -20,7 +20,6 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.events.Event
-import com.google.adk.kt.serialization.decodeFromPlainOrNull
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Role

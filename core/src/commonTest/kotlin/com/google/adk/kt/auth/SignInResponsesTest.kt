@@ -18,7 +18,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.signInResponseStateKey
 import kotlin.test.assertEquals
@@ -29,7 +29,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class SignInResponsesTest {
 
   @Test
@@ -352,7 +352,7 @@ class SignInResponsesTest {
     /** Returns the credential stored as [config]'s sign-in response, in ADK Kotlin's JSON. */
     fun State.storedJson(config: AuthConfig): JsonElement? =
       (this[config.signInResponseStateKey] as AuthCredential?)?.let {
-        adkJson.encodeToJsonElement(AuthCredentialSerializer, it)
+        adkSecretRevealingJson.encodeToJsonElement(AuthCredentialSerializer, it)
       }
 
     fun AuthCredential?.oauth2(): AuthCredential.OAuth2 = this as AuthCredential.OAuth2

@@ -18,8 +18,11 @@ package com.google.adk.kt.workflow
 
 import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.ValueCoercer
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.LenientByteArraySerializer
 import com.google.adk.kt.serialization.LenientEpochMillisSerializer
@@ -282,11 +285,12 @@ private fun readLiterals(element: JsonElement, descriptor: SerialDescriptor): Js
 
 /**
  * [adkJson] that writes every property, `null` and default values included, so a value on either
- * port keeps its class's shape, also when an explicit schema checks it.
+ * port keeps its class's shape, also when an explicit schema checks it. It keeps credential
+ * secrets, since a node's value is ADK's own data.
  */
-@OptIn(FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 private val outputJson: Json =
-  Json(adkJson) {
+  Json(adkSecretRevealingJson) {
     explicitNulls = true
     encodeDefaults = true
   }

@@ -19,16 +19,17 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.auth.AuthCredentialSerializer
 import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.auth.RequestCredentialArgs
+import com.google.adk.kt.auth.encodeToPlainMap
 import com.google.adk.kt.auth.isNullOrEmpty
 import com.google.adk.kt.auth.signInConfig
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
-import com.google.adk.kt.serialization.encodeToPlainMap
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
@@ -43,6 +44,7 @@ import com.google.adk.kt.types.Role
  * @throws IllegalArgumentException if an OAuth2 or OpenID Connect [authConfig] can't produce an
  *   authorization URL, as [signInConfig] describes.
  */
+@OptIn(SecretAccess::class)
 internal fun signInRequestEvent(authConfig: AuthConfig, interruptId: String): Event {
   val requestConfig = authConfig.signInConfig()
   val generatedCredential = requestConfig.exchangedAuthCredential as? AuthCredential.OAuth2

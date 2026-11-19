@@ -19,8 +19,7 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.serialization.decodeFromPlainOrNull
-import com.google.adk.kt.serialization.encodeToPlainMap
+import com.google.adk.kt.annotations.SecretAccess
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonNames
 
@@ -41,7 +40,7 @@ internal data class RequestCredentialArgs(
   val message: String? = null,
 ) {
   /** Returns these arguments as function call args. */
-  fun toMap(): Map<String, Any?> = encodeToPlainMap(serializer(), this)
+  @OptIn(SecretAccess::class) fun toMap(): Map<String, Any?> = encodeToPlainMap(serializer(), this)
 
   companion object {
     /** Returns [args] read as sign-in request arguments, or null if they are malformed. */

@@ -17,6 +17,12 @@
 package com.google.adk.kt.sessions.room
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.AuthConfig
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.AuthScheme
+import com.google.adk.kt.auth.CredentialKey
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.sessions.State
@@ -92,5 +98,35 @@ class JsonConvertersTest {
 
     assertThat(decoded.actions.stateDelta["k"]).isSameInstanceAs(State.REMOVED)
     assertThat(decoded.timestamp).isEqualTo(1730874845934L)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun eventJson_requestedCredentialSecrets_roundTrip() {
+    val config =
+      AuthConfig(
+        AuthScheme.OpenIdConnect(
+          authorizationEndpoint = "https://a/auth",
+          tokenEndpoint = "https://a/token",
+          scopes = listOf("openid"),
+        ),
+        exchangedAuthCredential =
+          AuthCredential.OAuth2(
+            clientId = "cid",
+            clientSecret = Secret("client-secret-sentinel"),
+            codeVerifier = Secret("verifier-sentinel"),
+          ),
+        credentialKey = CredentialKey("key"),
+      )
+    val event =
+      Event(
+        author = "agent",
+        actions = EventActions(requestedAuthConfigs = mutableMapOf("call-1" to config)),
+        timestamp = 1L,
+      )
+
+    val decoded = JsonConverters.eventFromJson(JsonConverters.eventToJson(event))
+
+    assertThat(decoded.actions.requestedAuthConfigs).containsExactly("call-1", config)
   }
 }

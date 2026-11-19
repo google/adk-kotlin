@@ -59,8 +59,9 @@ internal const val REDACTED = "<redacted>"
 internal fun String?.redacted(): String? = if (this == null) null else REDACTED
 
 /**
- * Writes a [Secret] as its plain string value, as the credential JSON format requires. Internal so
- * that only ADK's own serializers reveal a secret without opting in to [SecretAccess].
+ * Writes a [Secret] as its plain string value when the encoder [revealsSecrets], as the credential
+ * JSON format requires, and as [REDACTED] otherwise. Internal so that only ADK's own serializers
+ * reveal a secret without opting in to [SecretAccess].
  */
 @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 internal object SecretSerializer : KSerializer<Secret> {
@@ -68,15 +69,16 @@ internal object SecretSerializer : KSerializer<Secret> {
     PrimitiveSerialDescriptor("com.google.adk.kt.auth.Secret", PrimitiveKind.STRING)
 
   override fun serialize(encoder: Encoder, value: Secret) {
-    encoder.encodeString(value.reveal())
+    // The credential serializers leave secrets out unless revealing, so this is a backstop.
+    encoder.encodeString(if (encoder.revealsSecrets()) value.reveal() else REDACTED)
   }
 
   override fun deserialize(decoder: Decoder): Secret = Secret(decoder.decodeString())
 }
 
 /**
- * A [Secret] that ADK's own serializers read and write as its plain string value, through
- * [SecretSerializer].
+ * A [Secret] that ADK's own serializers read as its plain string value, through [SecretSerializer],
+ * and write as that value only when the encoder [revealsSecrets].
  */
 @OptIn(ExperimentalAuthApi::class)
 internal typealias JsonSecret = @Serializable(with = SecretSerializer::class) Secret

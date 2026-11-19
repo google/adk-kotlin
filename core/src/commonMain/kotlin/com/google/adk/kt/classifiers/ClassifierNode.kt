@@ -30,7 +30,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.serialization.adkJson
-import com.google.adk.kt.serialization.encodeToPlainMap
+import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.workflow.BaseNode
@@ -51,6 +51,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 
 /**
  * Routes a workflow by asking a [classifier] one [question] about the node's input and emitting the
@@ -150,7 +151,8 @@ constructor(
         ?: throw NodeExecutionException("Classifier for node '$name' returned no answer.")
     val route = routeFor(answer)
     if (answerKey != null) {
-      context.updateState(answerKey, encodeToPlainMap(Answer.serializer(), answer))
+      val answerJson = adkJson.encodeToJsonElement(Answer.serializer(), answer).jsonObject
+      context.updateState(answerKey, answerJson.mapValues { (_, value) -> jsonElementToAny(value) })
     }
     emit(Event(output = outputFor(nodeInput), actions = EventActions(route = listOf(route))))
   }

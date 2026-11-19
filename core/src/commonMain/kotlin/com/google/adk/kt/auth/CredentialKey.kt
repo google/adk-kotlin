@@ -20,6 +20,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.crypto.sha256Hex
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.State
@@ -67,13 +68,17 @@ class CredentialKey(val value: String) {
  * [authScheme], then of [rawAuthCredential], without the fields ADK Python leaves out. The digests
  * are of ADK Kotlin's JSON, so the key matches ADK Python's only where both write the same JSON.
  */
+@OptIn(SecretAccess::class)
 internal fun deriveCredentialKey(
   authScheme: AuthScheme,
   rawAuthCredential: AuthCredential?,
 ): CredentialKey {
   val scheme = adkJson.encodeToJsonElement(AuthSchemeSerializer, authScheme.forDigest())
   val credential = rawAuthCredential?.let {
-    val json = adkJson.encodeToJsonElement(AuthCredentialSerializer, it.forDigest()).jsonObject
+    val json =
+      adkSecretRevealingJson
+        .encodeToJsonElement(AuthCredentialSerializer, it.forDigest())
+        .jsonObject
     "${json.getValue("authType").jsonPrimitive.content}_${stableDigest(json)}"
   }
   return CredentialKey("adk_${authScheme.type}_${stableDigest(scheme)}_${credential.orEmpty()}")

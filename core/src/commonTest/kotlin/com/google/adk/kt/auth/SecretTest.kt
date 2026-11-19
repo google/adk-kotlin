@@ -26,9 +26,12 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.plus
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class SecretTest {
 
   @Test
@@ -77,8 +80,33 @@ class SecretTest {
   }
 
   @Test
-  fun secretSerializer_encode_writesValue() {
-    assertEquals("\"$SENTINEL\"", adkJson.encodeToString(SecretSerializer, Secret(SENTINEL)))
+  fun secretSerializer_encodeWithRevealingJson_writesValue() {
+    assertEquals(
+      "\"$SENTINEL\"",
+      adkSecretRevealingJson.encodeToString(SecretSerializer, Secret(SENTINEL)),
+    )
+  }
+
+  @Test
+  fun secretSerializer_encodeWithJsonDerivedFromRevealingJson_writesValue() {
+    val derived = Json(from = adkSecretRevealingJson) { prettyPrint = true }
+
+    assertEquals("\"$SENTINEL\"", derived.encodeToString(SecretSerializer, Secret(SENTINEL)))
+  }
+
+  @Test
+  fun secretSerializer_encodeWithRevealingModuleAddedTo_writesValue() {
+    val derived =
+      Json(from = adkSecretRevealingJson) {
+        serializersModule = adkSecretRevealingJson.serializersModule + SerializersModule {}
+      }
+
+    assertEquals("\"$SENTINEL\"", derived.encodeToString(SecretSerializer, Secret(SENTINEL)))
+  }
+
+  @Test
+  fun secretSerializer_encodeWithAdkJson_writesPlaceholder() {
+    assertEquals("\"<redacted>\"", adkJson.encodeToString(SecretSerializer, Secret(SENTINEL)))
   }
 
   @Test
@@ -90,7 +118,7 @@ class SecretTest {
   fun secretSerializer_onProperty_writesValueAndRoundTrips() {
     val holder = Holder(Secret(SENTINEL))
 
-    val json = adkJson.encodeToString(Holder.serializer(), holder)
+    val json = adkSecretRevealingJson.encodeToString(Holder.serializer(), holder)
 
     assertEquals("{\"token\":\"$SENTINEL\"}", json)
     assertEquals(holder, adkJson.decodeFromString(Holder.serializer(), json))
@@ -100,7 +128,7 @@ class SecretTest {
   fun secretSerializer_onNullableProperty_roundTripsAndOmitsNull() {
     val holder = NullableHolder(Secret(SENTINEL))
 
-    val json = adkJson.encodeToString(NullableHolder.serializer(), holder)
+    val json = adkSecretRevealingJson.encodeToString(NullableHolder.serializer(), holder)
 
     assertEquals("{\"token\":\"$SENTINEL\"}", json)
     assertEquals(holder, adkJson.decodeFromString(NullableHolder.serializer(), json))

@@ -34,11 +34,22 @@ internal fun <T, S> surrogateSerializer(
   toSurrogate: (T) -> S,
   fromSurrogate: (S) -> T,
 ): KSerializer<T> =
+  surrogateSerializer(surrogate, { value, _ -> toSurrogate(value) }, fromSurrogate)
+
+/**
+ * Like the other overload, with a [toSurrogate] that also sees the encoder, for a form that depends
+ * on it.
+ */
+internal fun <T, S> surrogateSerializer(
+  surrogate: KSerializer<S>,
+  toSurrogate: (T, Encoder) -> S,
+  fromSurrogate: (S) -> T,
+): KSerializer<T> =
   object : KSerializer<T> {
     override val descriptor: SerialDescriptor = surrogate.descriptor
 
     override fun serialize(encoder: Encoder, value: T) {
-      encoder.encodeSerializableValue(surrogate, toSurrogate(value))
+      encoder.encodeSerializableValue(surrogate, toSurrogate(value, encoder))
     }
 
     override fun deserialize(decoder: Decoder): T {

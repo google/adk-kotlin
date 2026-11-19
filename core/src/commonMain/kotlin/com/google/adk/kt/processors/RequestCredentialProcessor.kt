@@ -23,10 +23,12 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.toReadonlyContext
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.AuthConfigSerializer
 import com.google.adk.kt.auth.CredentialKey
 import com.google.adk.kt.auth.RequestCredentialArgs
 import com.google.adk.kt.auth.StoreSignInResponseOutcome
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.auth.findCredentialRequest
 import com.google.adk.kt.auth.latestSignInResponses
 import com.google.adk.kt.auth.storeSignInResponse
@@ -34,7 +36,6 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
-import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -48,6 +49,7 @@ import com.google.adk.kt.types.Part
  */
 internal class RequestCredentialProcessor : LlmRequestProcessor {
 
+  @OptIn(SecretAccess::class)
   override suspend fun process(
     context: InvocationContext,
     request: LlmRequest,
@@ -69,9 +71,9 @@ internal class RequestCredentialProcessor : LlmRequestProcessor {
       agentEvents
         .flatMap { it.actions.requestedAuthConfigs.entries }
         .groupBy({ it.key }) { (_, config) ->
-          adkJson.decodeFromJsonElement(
+          adkSecretRevealingJson.decodeFromJsonElement(
             AuthConfigSerializer,
-            adkJson.encodeToJsonElement(AuthConfigSerializer, config),
+            adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, config),
           )
         }
     val requestingCallIds = mutableSetOf<String>()

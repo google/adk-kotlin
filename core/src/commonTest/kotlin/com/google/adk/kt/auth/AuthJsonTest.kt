@@ -14,19 +14,17 @@
  * limitations under the License.
  */
 
-package com.google.adk.kt.serialization
+package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.auth.AuthCredential
-import com.google.adk.kt.auth.AuthCredentialSerializer
-import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.annotations.SecretAccess
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.time.Instant
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class)
-class SerializersTest {
+@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+class AuthJsonTest {
 
   @Test
   fun encodeToPlainMap_serializableValue_returnsItsJsonObject() {

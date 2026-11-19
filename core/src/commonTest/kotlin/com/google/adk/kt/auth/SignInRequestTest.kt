@@ -18,7 +18,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.signInResponseStateKey
@@ -36,7 +36,7 @@ import kotlin.time.Instant
 import kotlinx.serialization.json.Json
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class SignInRequestTest {
 
   @Test
@@ -95,7 +95,7 @@ class SignInRequestTest {
 
     val expected = OIDC_REQUEST.copy(exchangedAuthCredential = answer)
     assertEquals(
-      adkJson.encodeToJsonElement(AuthConfigSerializer, expected),
+      adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, expected),
       anyToJsonElement(message.functionResponse().response),
     )
   }
@@ -129,7 +129,7 @@ class SignInRequestTest {
       )
     val expected = OIDC_REQUEST.copy(exchangedAuthCredential = filledIn)
     assertEquals(
-      adkJson.encodeToJsonElement(AuthConfigSerializer, expected),
+      adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, expected),
       anyToJsonElement(message.functionResponse().response),
     )
   }
@@ -159,7 +159,7 @@ class SignInRequestTest {
     val expected =
       OIDC_REQUEST.copy(exchangedAuthCredential = OIDC_SIGN_IN.copy(accessToken = Secret("at")))
     assertEquals(
-      adkJson.encodeToJsonElement(AuthConfigSerializer, expected),
+      adkSecretRevealingJson.encodeToJsonElement(AuthConfigSerializer, expected),
       anyToJsonElement(message.functionResponse().response),
     )
   }

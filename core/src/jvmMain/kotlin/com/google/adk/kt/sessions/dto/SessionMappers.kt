@@ -16,7 +16,10 @@
 
 package com.google.adk.kt.sessions.dto
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
@@ -81,12 +84,15 @@ internal fun Event.toDto(): SessionEventDto {
  * Encodes the whole event for `rawEvent`, since the API drops some typed fields, or returns null
  * when it cannot be encoded. An output that is not JSON-native is left out instead.
  */
-@OptIn(FrameworkInternalApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 private fun Event.toRawEvent(): JsonElement? {
   val storable =
     if (output == null || convertOrNull("output") { anyToJsonElement(output) } != null) this
     else copy(output = null)
-  return convertOrNull("rawEvent") { adkJson.encodeToJsonElement(Event.serializer(), storable) }
+  // Revealing, so that the stored event keeps the secrets of its typed credentials.
+  return convertOrNull("rawEvent") {
+    adkSecretRevealingJson.encodeToJsonElement(Event.serializer(), storable)
+  }
 }
 
 /**

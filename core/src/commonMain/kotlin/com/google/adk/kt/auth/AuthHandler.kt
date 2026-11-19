@@ -20,7 +20,6 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.logging.LoggerFactory
-import com.google.adk.kt.serialization.decodeFromPlainOrNull
 
 private object AuthHandler
 

@@ -14,17 +14,20 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
+@file:OptIn(ExperimentalAuthApi::class, ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
 // typeOf<T>() is a compiler intrinsic and does not require kotlin-reflect.
 @file:Suppress("KotlinReflectNeeded")
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.jsonElementToAny
+import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
@@ -359,6 +362,25 @@ class ValueCodecTest {
 
     // Assert
     assertEquals(Schema(type = Type.ARRAY, items = Schema(type = Type.INTEGER)), schema)
+  }
+
+  @Test
+  fun encode_eventRequestingACredential_keepsItsSecrets() {
+    // Arrange
+    val config = testApiKeyConfig(rawKey = secret)
+    val event =
+      Event(
+        author = "agent",
+        invocationId = "inv",
+        actions = EventActions(requestedAuthConfigs = mutableMapOf("call-1" to config)),
+      )
+
+    // Act
+    val encoded = codec<Event>().encode(event, "output")
+    val restored = codec<Event>().coerce(encoded, "input")
+
+    // Assert
+    assertEquals(mapOf("call-1" to config), restored.actions.requestedAuthConfigs)
   }
 
   @Test

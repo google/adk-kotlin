@@ -26,9 +26,9 @@ import com.google.adk.kt.auth.AuthScheme
 import com.google.adk.kt.auth.CodeChallengeMethod
 import com.google.adk.kt.auth.CredentialKey
 import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.auth.decodeFromPlainOrNull
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.anyToJsonElement
-import com.google.adk.kt.serialization.decodeFromPlainOrNull
 import com.google.adk.kt.types.Role
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
