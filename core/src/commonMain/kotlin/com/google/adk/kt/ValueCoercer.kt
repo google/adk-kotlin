@@ -26,7 +26,7 @@ import com.google.adk.kt.types.Type
  *
  * In addition to values that already match the target type, coercion accepts:
  * - [Content] messages (unwrapped to raw text when the schema accepts a string, or parsed from JSON
- *   otherwise).
+ *   otherwise; an enum value also reads from its JSON-quoted form).
  * - Stringified JSON literals for scalar types (e.g. `"42"` for `INTEGER`, `"1.5"` for `NUMBER`,
  *   `"true"` for `BOOLEAN`).
  * - Whole-number floating-point values for `INTEGER` schemas (e.g. `42.0` or `"1e2"` -> `42L` /
@@ -172,8 +172,8 @@ internal class ValueCoercer private constructor() {
 
     /**
      * Extracts a value from a [Content] message: returns its raw text when [schema] accepts a
-     * string, and otherwise parses the text as JSON (falling back to the raw text if it is not
-     * valid JSON).
+     * string, unless the text is a JSON string naming one of the schema's enum values, and
+     * otherwise parses the text as JSON (falling back to the raw text if it is not valid JSON).
      */
     internal fun coerceContent(content: Content, schema: Schema): Any? {
       val dropped = content.parts.count { it.text == null }
@@ -181,8 +181,24 @@ internal class ValueCoercer private constructor() {
         logger.warn { "Reading a message as a value dropped $dropped non-text parts." }
       }
       val text = content.text()
-      return if (SchemaUtils.acceptsString(schema)) text
+      return if (SchemaUtils.acceptsString(schema)) enumValueOrText(text, schema)
       else SchemaUtils.readJson(text).getOrDefault(text)
+    }
+
+    /**
+     * Returns the enum value of [schema] that [text] spells as a JSON string, such as `HIGH` for
+     * `"HIGH"`, when [text] itself is not one; otherwise returns [text].
+     */
+    internal fun enumValueOrText(text: String, schema: Schema): String {
+      val enum = enumValues(schema)
+      if (enum.isEmpty() || text in enum) return text
+      return (SchemaUtils.readJson(text).getOrNull() as? String)?.takeIf { it in enum } ?: text
+    }
+
+    /** The enum values of [schema] and its `anyOf` alternatives whose type is `STRING`. */
+    private fun enumValues(schema: Schema): Set<String> {
+      val own = if (schema.type == Type.STRING) schema.enum.orEmpty() else emptyList()
+      return own.toSet() + schema.anyOf.orEmpty().flatMap { enumValues(it) }
     }
 
     /**

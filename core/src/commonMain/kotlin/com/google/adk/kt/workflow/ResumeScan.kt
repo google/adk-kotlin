@@ -451,15 +451,15 @@ internal object ResumeScan {
 
   /**
    * Reconstructs a message-as-output node's value from [content], decoding it from JSON when
-   * [Node.outputSchema] is a non-string schema.
+   * [Node.outputSchema] is a non-string schema, and reading a JSON-quoted enum value as the value.
    */
   internal fun processRehydratedOutput(node: Node, content: Content): Any? {
     // A model Content with only thought parts has blank text(), which produces no output.
     val text = content.text().trim()
     if (text.isEmpty()) return null
     val schema = node.outputSchema ?: return text
-    // Model text is raw rather than JSON-quoted, so keep it as-is when the schema accepts strings.
-    if (SchemaUtils.acceptsString(schema)) return text
+    // A string schema keeps raw model text, but a JSON-quoted enum value reads as the value.
+    if (SchemaUtils.acceptsString(schema)) return ValueCoercer.enumValueOrText(text, schema)
     return SchemaUtils.readJson(text).getOrElse {
       throw IllegalArgumentException(
         "Validation failed for rehydrated output against schema: ${it.message}",
