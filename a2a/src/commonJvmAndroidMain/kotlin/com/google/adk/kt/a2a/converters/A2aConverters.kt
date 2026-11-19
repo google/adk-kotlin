@@ -188,12 +188,17 @@ internal fun Artifact.toAdkEvent(invocationContext: InvocationContext): Event {
     )
 }
 
-/** Converts an A2A message to an ADK event, or returns null if none of its parts converted. */
+/**
+ * Converts an A2A message to an ADK event, or returns null if none of its parts converted and it
+ * reports no error code.
+ */
 internal fun Message.toAdkEvent(invocationContext: InvocationContext): Event? {
   val adkParts = parts.toAdk()
-  if (adkParts.isEmpty()) return null
+  val errorCode = decodeErrorCode(metadata?.get(MetadataKeys.ERROR_CODE))
+  if (adkParts.isEmpty() && errorCode == null) return null
   val event =
-    remoteAgentEvent(invocationContext).copy(content = Content(role = Role.MODEL, parts = adkParts))
+    remoteAgentEvent(invocationContext)
+      .copy(content = adkParts.ifEmpty { null }?.let { Content(role = Role.MODEL, parts = it) })
   return event.updateEventMetadata(metadata, taskId, contextId, metadataParser)
 }
 

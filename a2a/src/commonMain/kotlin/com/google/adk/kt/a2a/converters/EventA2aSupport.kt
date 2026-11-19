@@ -219,8 +219,19 @@ internal fun Event.updateEventMetadata(
     groundingMetadata = parser.parse(metadata[MetadataKeys.GROUNDING], GroundingMetadata::class),
     usageMetadata = parser.parse(metadata[MetadataKeys.USAGE], UsageMetadata::class),
     customMetadata = customMetadataMap,
-    errorCode = metadata[MetadataKeys.ERROR_CODE] as? String,
+    errorCode = decodeErrorCode(metadata[MetadataKeys.ERROR_CODE]),
   )
+}
+
+/**
+ * Returns the error code [value] holds, or null if it holds none. A JSON string is decoded first,
+ * other text is the code itself, and an empty code, JSON null or a value that is not text is none.
+ */
+internal fun decodeErrorCode(value: Any?): String? {
+  val text = value as? String ?: return null
+  // Only JSON null decodes to null; text that is not JSON comes back as is.
+  val decoded = decodeA2aJson(text) ?: return null
+  return (decoded as? String ?: text).ifEmpty { null }
 }
 
 /** Converts an event to a user message. */

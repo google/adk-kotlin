@@ -904,6 +904,61 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun messageToEvent_withOnlyUnconvertiblePartsAndErrorCode_keepsEvent() {
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(invalidBase64Part()))
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to "\"SAFETY\""))
+        .build()
+
+    val result = a2aMessage.toAdkEvent(invocationContext)
+
+    // The quoted code is decoded on the way through updateEventMetadata.
+    assertThat(result?.errorCode).isEqualTo("SAFETY")
+    assertThat(result?.content).isNull()
+  }
+
+  @Test
+  fun messageToEvent_withOnlyUnconvertiblePartsAndEmptyErrorCode_returnsNull() {
+    val a2aMessage =
+      Message.builder()
+        .messageId("msg-1")
+        .role(Message.Role.ROLE_AGENT)
+        .parts(listOf(invalidBase64Part()))
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to ""))
+        .build()
+
+    assertThat(a2aMessage.toAdkEvent(invocationContext)).isNull()
+  }
+
+  @Test
+  fun decodeErrorCode_readsBareAndJsonStrings() {
+    assertThat(decodeErrorCode("SAFETY")).isEqualTo("SAFETY")
+    assertThat(decodeErrorCode("\"SAFETY\"")).isEqualTo("SAFETY")
+  }
+
+  @Test
+  fun decodeErrorCode_emptyOrNotAString_readsNone() {
+    for (value in listOf(null, "", "\"\"", "null", " null ", 5.0)) {
+      assertWithMessage("$value").that(decodeErrorCode(value)).isNull()
+    }
+  }
+
+  @Test
+  fun decodeErrorCode_notAJsonString_readsTextAsIs() {
+    for (text in listOf("418", "true", "{}", "  ")) {
+      assertWithMessage(text).that(decodeErrorCode(text)).isEqualTo(text)
+    }
+  }
+
+  @Test
+  fun decodeErrorCode_whitespaceJsonString_readsIt() {
+    assertThat(decodeErrorCode("\"  \"")).isEqualTo("  ")
+  }
+
+  @Test
   fun messageToEvent_convertsMessage() {
     val a2aMessage =
       Message.builder()
@@ -1459,6 +1514,19 @@ class A2aConvertersTest {
         "adk_context_id",
         "context-1",
       )
+  }
+
+  @Test
+  fun taskToEvent_withEmptyErrorCode_hasNoErrorCode() {
+    val task =
+      Task.builder()
+        .id("task-1")
+        .contextId("context-1")
+        .status(TaskStatus(TaskState.TASK_STATE_COMPLETED))
+        .metadata(mapOf(MetadataKeys.ERROR_CODE to ""))
+        .build()
+
+    assertThat(task.toAdkEvent(invocationContext).errorCode).isNull()
   }
 
   @Test
