@@ -97,6 +97,8 @@ class BigQueryUtilsTest {
     for (unsafe in
       listOf(
         config.copy(projectId = "p`; DROP TABLE x; --"),
+        config.copy(projectId = "Example.com:proj"),
+        config.copy(projectId = "bad/domain:proj"),
         config.copy(datasetId = "d.s"),
         config.copy(tableName = "t name"),
         config.copy(viewPrefix = "v`"),
@@ -301,6 +303,112 @@ class BigQueryUtilsTest {
       )) {
       assertTrue(column in queries.single { "$view`" in it }, view)
     }
+  }
+
+  @Test
+  fun createAnalyticsViews_domainScopedProjectId_createsViews() {
+    BigQueryUtils.createAnalyticsViews(
+      mockBigQuery,
+      config.copy(projectId = "example.com:my-project"),
+    )
+
+    val queries = capturedViewQueries()
+    assertTrue(queries.all { "`example.com:my-project.test_dataset.v_" in it })
+    assertTrue(queries.all { "`example.com:my-project.test_dataset.test_table`" in it })
+  }
+
+  @Test
+  fun maybeUpgradeSchema_missingRequiredAndNestedStructFields_relaxesRequiredToNullable() {
+    assertEquals(Field.Mode.REQUIRED, desiredFields().single { it.name == "timestamp" }.mode)
+    val desiredObjectRef =
+      desiredFields()
+        .single { it.name == "content_parts" }
+        .subFields
+        .single { it.name == "object_ref" }
+    val existing =
+      desiredFields()
+        .filter { it.name != "timestamp" }
+        .map { field ->
+          if (field.name != "content_parts") {
+            field
+          } else {
+            val subFields = field.subFields.filter { it.name != "object_ref" }
+            field.toBuilder().setType(StandardSQLTypeName.STRUCT, FieldList.of(subFields)).build()
+          }
+        }
+    val table = tableWith(existing)
+
+    assertTrue(BigQueryUtils.maybeUpgradeSchema(mockBigQuery, table.table))
+
+    val merged = table.capturedSchema().fields
+    assertEquals(Field.Mode.NULLABLE, merged.single { it.name == "timestamp" }.mode)
+    val objectRef =
+      merged.single { it.name == "content_parts" }.subFields.single { it.name == "object_ref" }
+    assertEquals(StandardSQLTypeName.STRUCT, objectRef.type.standardType)
+    assertEquals(Field.Mode.NULLABLE, objectRef.mode)
+    assertEquals(desiredObjectRef.subFields.map { it.name }, objectRef.subFields.map { it.name })
+  }
+
+  @Test
+  fun maybeUpgradeSchema_relaxesAddedFieldModeButKeepsSubfieldsOfNewStruct() {
+    val existing = desiredFields()
+    val requiredNote =
+      Field.newBuilder("note", StandardSQLTypeName.STRING).setMode(Field.Mode.REQUIRED).build()
+    val requiredUri =
+      Field.newBuilder("uri", StandardSQLTypeName.STRING).setMode(Field.Mode.REQUIRED).build()
+    val newStruct =
+      Field.newBuilder("new_struct", StandardSQLTypeName.STRUCT, FieldList.of(requiredUri))
+        .setMode(Field.Mode.REQUIRED)
+        .build()
+    val requiredLeaf =
+      Field.newBuilder("leaf", StandardSQLTypeName.STRING).setMode(Field.Mode.REQUIRED).build()
+    val requiredInner =
+      Field.newBuilder("inner", StandardSQLTypeName.STRUCT, FieldList.of(requiredLeaf))
+        .setMode(Field.Mode.REQUIRED)
+        .build()
+    val outer =
+      Field.newBuilder("outer", StandardSQLTypeName.STRUCT, FieldList.of(requiredInner))
+        .setMode(Field.Mode.REPEATED)
+        .build()
+    // note joins the existing content_parts STRUCT; new_struct and outer are new columns.
+    val desired =
+      FieldList.of(
+        existing.map { field ->
+          if (field.name != "content_parts") {
+            field
+          } else {
+            val subFields = FieldList.of(field.subFields + requiredNote)
+            field.toBuilder().setType(StandardSQLTypeName.STRUCT, subFields).build()
+          }
+        } + newStruct + outer
+      )
+    val table = tableWith(existing)
+
+    val warnings = warningsDuring {
+      assertTrue(BigQueryUtils.maybeUpgradeSchema(mockBigQuery, table.table, desired))
+    }
+
+    assertEquals(emptyList(), warnings)
+    val merged = table.capturedSchema().fields
+    val note = merged.single { it.name == "content_parts" }.subFields.single { it.name == "note" }
+    assertEquals(Field.Mode.NULLABLE, note.mode)
+    val addedStruct = merged.single { it.name == "new_struct" }
+    assertEquals(Field.Mode.NULLABLE, addedStruct.mode)
+    assertEquals(Field.Mode.REQUIRED, addedStruct.subFields.single().mode)
+    val addedOuter = merged.single { it.name == "outer" }
+    assertEquals(Field.Mode.REPEATED, addedOuter.mode)
+    val addedInner = addedOuter.subFields.single()
+    assertEquals(Field.Mode.REQUIRED, addedInner.mode)
+    assertEquals(Field.Mode.REQUIRED, addedInner.subFields.single().mode)
+
+    // The upgraded table has nothing left to add, and its relaxed fields are not drift.
+    val upgraded = tableWith(merged.toList())
+    val recheckWarnings = warningsDuring {
+      assertTrue(BigQueryUtils.maybeUpgradeSchema(mockBigQuery, upgraded.table, desired))
+    }
+
+    assertEquals(emptyList(), recheckWarnings)
+    verify(mockBigQuery).update(any<TableInfo>())
   }
 
   private fun desiredFields(): List<Field> = BigQuerySchema.getEventsSchema().fields.toList()

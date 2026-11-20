@@ -185,6 +185,9 @@ internal object BigQueryUtils {
 
   private val SAFE_IDENTIFIER = Regex("""[A-Za-z0-9_-]+""")
 
+  // A project id may be scoped to a domain, as in `example.com:my-project`.
+  private val SAFE_PROJECT_ID = Regex("""(?:[a-z0-9.-]+:)?[A-Za-z0-9_-]+""")
+
   private fun isSafeIdentifier(id: String): Boolean = SAFE_IDENTIFIER.matches(id)
 
   /**
@@ -198,7 +201,7 @@ internal object BigQueryUtils {
     throwIfCancelled: () -> Unit = {},
   ) {
     if (
-      !isSafeIdentifier(config.projectId) ||
+      !SAFE_PROJECT_ID.matches(config.projectId) ||
         !isSafeIdentifier(config.datasetId) ||
         !isSafeIdentifier(config.tableName) ||
         !isSafeIdentifier(config.viewPrefix)
@@ -236,10 +239,14 @@ internal object BigQueryUtils {
     }
   }
 
-  fun maybeUpgradeSchema(bigQuery: BigQuery, existingTable: Table): Boolean {
+  // The desired fields are a parameter so that a test can upgrade towards a synthetic schema.
+  fun maybeUpgradeSchema(
+    bigQuery: BigQuery,
+    existingTable: Table,
+    desiredFields: FieldList = BigQuerySchema.getEventsSchema().fields,
+  ): Boolean {
     val currentDefinition = existingTable.getDefinition<StandardTableDefinition>() ?: return true
     val existingFields = currentDefinition.schema?.fields
-    val desiredFields = BigQuerySchema.getEventsSchema().fields
     val diff = diffFields(existingFields, desiredFields)
 
     if (diff.newFields.isEmpty() && diff.updatedRecordFields.isEmpty()) {
@@ -294,7 +301,7 @@ internal object BigQueryUtils {
     for (desiredField in desired) {
       val existingField = existingByName[desiredField.columnKey()]
       if (existingField == null) {
-        added.add(desiredField)
+        added.add(desiredField.asAddedField())
         continue
       }
       warnOnIncompatibleDrift(existingField, desiredField)
@@ -315,13 +322,21 @@ internal object BigQueryUtils {
     return SchemaDiff(added, updatedRecords)
   }
 
+  // BigQuery adds a column, or a field to an existing RECORD, only if it is NULLABLE or REPEATED.
+  private fun Field.asAddedField(): Field =
+    if (mode == Field.Mode.REQUIRED) toBuilder().setMode(Field.Mode.NULLABLE).build() else this
+
   private fun warnOnIncompatibleDrift(existingField: Field, desiredField: Field) {
+    val existingMode = normalizeMode(existingField.mode)
+    val desiredMode = normalizeMode(desiredField.mode)
     val typeDrift = desiredField.type.standardType != existingField.type.standardType
-    val modeDrift = normalizeMode(existingField.mode) != normalizeMode(desiredField.mode)
+    // A NULLABLE column takes every value of a REQUIRED one, and is how a REQUIRED one gets added.
+    val relaxedMode = existingMode == Field.Mode.NULLABLE && desiredMode == Field.Mode.REQUIRED
+    val modeDrift = existingMode != desiredMode && !relaxedMode
     if (typeDrift || modeDrift) {
       logger.warn {
-        val existing = "${existingField.type.standardType}/${normalizeMode(existingField.mode)}"
-        val desired = "${desiredField.type.standardType}/${normalizeMode(desiredField.mode)}"
+        val existing = "${existingField.type.standardType}/$existingMode"
+        val desired = "${desiredField.type.standardType}/$desiredMode"
         "Incompatible schema drift on column '${desiredField.name}': table has $existing but " +
           "plugin expects $desired."
       }

@@ -187,8 +187,9 @@ internal class BatchProcessor(
   /**
    * Stops accepting rows and blocks for up to [timeout] while the queued rows are written.
    *
-   * Rows still queued or being written after [timeout] are dropped as `shutdown_timeout`, or as
-   * `shutdown_cancelled` if the wait is interrupted.
+   * Rows still queued or being written after [timeout] are dropped as `shutdown_timeout`, as
+   * `unexpected_error` if the worker has already ended, or as `shutdown_cancelled` if the wait is
+   * interrupted.
    */
   fun shutdown(timeout: Duration) {
     synchronized(lock) {
@@ -201,11 +202,11 @@ internal class BatchProcessor(
     // A lazy worker must start for invokeOnCompletion to fire; with no rows it returns at once.
     worker.start()
     signalWorker()
-    // After a drain nothing is left to count; otherwise the rows left timed out.
+    // Rows left by a worker that already ended, as on a rejected dispatch, did not time out.
     val reason =
       try {
-        done.await(timeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
-        SHUTDOWN_TIMEOUT
+        val completed = done.await(timeout.inWholeNanoseconds, TimeUnit.NANOSECONDS)
+        if (completed) UNEXPECTED_ERROR else SHUTDOWN_TIMEOUT
       } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
         SHUTDOWN_CANCELLED
