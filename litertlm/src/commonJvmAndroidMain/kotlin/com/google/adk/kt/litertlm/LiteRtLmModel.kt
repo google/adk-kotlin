@@ -304,6 +304,9 @@ private fun LiteRtLmMessage.toLlmResponse(partial: Boolean = false): LlmResponse
             AdkPart(text = "[Audio File: ${liteRtLmContent.absolutePath}]")
           is LiteRtLmContent.ToolResponse ->
             AdkPart(text = "[Tool Response: ${liteRtLmContent.name}]")
+          // Handle Content subclasses added in newer LiteRT-LM releases without referencing
+          // symbols absent from the published Maven artifact pinned in libs.versions.toml.
+          else -> AdkPart(text = "[Unsupported Content]")
         }
       }
       .toMutableList()
