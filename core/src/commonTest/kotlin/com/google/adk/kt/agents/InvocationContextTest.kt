@@ -50,6 +50,7 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
@@ -1309,46 +1310,87 @@ class InvocationContextTest {
   }
 
   @Test
-  fun executeSingleFunctionCall_unknownToolName_onToolErrorCallbackOverridesResponse() =
+  fun executeSingleFunctionCall_unknownToolName_onToolErrorCallbackOverridesResponse(): Unit =
     runBlocking {
       // The lookup failure reaches the error callbacks before the default payload is built, and
       // the placeholder tool carries the name the model used.
       var observedToolName: String? = null
       var observedErrorMessage: String? = null
-      val recover = OnToolErrorCallback { _, tool, _, error ->
-        observedToolName = tool.name
-        observedErrorMessage = error.message
-        CallbackChoice.Break(mapOf("status" to "recovered"))
-      }
-
-      val context =
-        testInvocationContext(
-          agent =
-            LlmAgent(
-              name = "test_llm_agent",
-              model = DummyModel("mock_model"),
-              onToolErrorCallbacks = listOf(recover),
-            ),
-          invocationId = "inv",
-        )
-
       val result =
-        context.executeSingleFunctionCall(
-          FunctionCall(name = "ghost", args = emptyMap(), id = "call_id"),
+        executeUnknownTool(
           emptyMap(),
+          OnToolErrorCallback { _, tool, _, error ->
+            observedToolName = tool.name
+            observedErrorMessage = error.message
+            CallbackChoice.Break(mapOf("status" to "recovered"))
+          },
         )
 
-      assertEquals("ghost", observedToolName)
-      // The exception message must stay free of the model's string, so a later edit that makes it
-      // "more diagnosable" by interpolating the name fails here.
-      assertNotNull(observedErrorMessage)
-      assertFalse(observedErrorMessage!!.contains("ghost"))
-      assertNotNull(result)
-      assertEquals(
-        mapOf("status" to "recovered"),
-        result!!.content?.parts?.get(0)?.functionResponse?.response,
-      )
+      assertThat(observedToolName).isEqualTo("ghost")
+      // Exact match ensures the exception omits the model's tool name.
+      assertThat(observedErrorMessage)
+        .isEqualTo(
+          "No tool with the requested name is registered. The tools you can call are: none."
+        )
+      assertThat(result?.functionResponses()?.single()?.response)
+        .isEqualTo(mapOf("status" to "recovered"))
     }
+
+  @Test
+  fun executeSingleFunctionCall_unknownToolName_errorListsAvailableTools(): Unit = runBlocking {
+    var observedErrorMessage: String? = null
+    val result =
+      executeUnknownTool(
+        mapOf(
+          "get_weather" to DummyTool(name = "get_weather"),
+          "get_time" to DummyTool(name = "get_time"),
+        ),
+        OnToolErrorCallback { _, _, _, error ->
+          observedErrorMessage = error.message
+          CallbackChoice.Break(mapOf("status" to "recovered"))
+        },
+      )
+
+    assertThat(observedErrorMessage)
+      .isEqualTo(
+        "No tool with the requested name is registered. " +
+          "The tools you can call are: get_weather, get_time."
+      )
+    assertThat(result?.functionResponses()?.single()?.response)
+      .isEqualTo(mapOf("status" to "recovered"))
+  }
+
+  @Test
+  fun executeSingleFunctionCall_unknownToolName_continueCallbackFallsBack(): Unit = runBlocking {
+    val result =
+      executeUnknownTool(
+        mapOf("get_weather" to DummyTool(name = "get_weather")),
+        OnToolErrorCallback { _, _, _, _ -> CallbackChoice.Continue(Unit) },
+      )
+
+    val errorText = assertIs<String>(result?.functionResponses()?.single()?.response?.get("error"))
+    assertThat(errorText).contains("The tools you can call are: get_weather.")
+  }
+
+  private suspend fun executeUnknownTool(
+    tools: Map<String, BaseTool>,
+    onToolError: OnToolErrorCallback,
+  ): Event? {
+    val context =
+      testInvocationContext(
+        agent =
+          LlmAgent(
+            name = "test_llm_agent",
+            model = DummyModel("mock_model"),
+            onToolErrorCallbacks = listOf(onToolError),
+          ),
+        invocationId = "inv",
+      )
+    return context.executeSingleFunctionCall(
+      FunctionCall(name = "ghost", args = emptyMap(), id = "call_id"),
+      tools,
+    )
+  }
 
   @Test
   fun handleFunctionCalls_mixesKnownAndUnknownToolNames_answersBoth() = runBlocking {

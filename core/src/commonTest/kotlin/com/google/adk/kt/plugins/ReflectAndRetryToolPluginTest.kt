@@ -44,6 +44,7 @@ import kotlin.test.fail
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
@@ -540,7 +541,7 @@ class ReflectAndRetryToolPluginTest {
   }
 
   @Test
-  fun runAsync_unregisteredToolNamePastTheLimit_modelGetsTheAvailableTools() = runBlocking {
+  fun runAsync_unregisteredToolName_guidanceListsRegisteredTools(): Unit = runBlocking {
     val model =
       DummyModel.createSequential(
         "mock-model",
@@ -553,12 +554,128 @@ class ReflectAndRetryToolPluginTest {
       LlmAgent(name = "root_agent", model = model, tools = listOf(DummyTool(name = "increase")))
 
     val events =
-      InMemoryRunner(agent = agent, plugins = listOf(ReflectAndRetryToolPlugin(maxRetries = 0)))
+      InMemoryRunner(agent = agent, plugins = listOf(ReflectAndRetryToolPlugin()))
         .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("test"))
         .toList()
 
     val response = events.flatMap { it.functionResponses() }.single().response
-    assertContains(response["error"] as String, "The tools you can call are: increase.")
+    assertContains(
+      response.guidance,
+      "No tool with the requested name is registered. The tools you can call are: increase.",
+    )
+    assertEquals("Done.", events.last().content?.parts?.single()?.text)
+  }
+
+  @Test
+  fun runAsync_unregisteredToolNamePastTheLimit_failsTheRun(): Unit = runBlocking {
+    assertUnregisteredToolFails(maxRetries = 1, expectedModelCalls = 2)
+  }
+
+  @Test
+  fun runAsync_unregisteredToolNameMaxRetriesZero_failsImmediately(): Unit = runBlocking {
+    assertUnregisteredToolFails(maxRetries = 0, expectedModelCalls = 1)
+  }
+
+  private suspend fun assertUnregisteredToolFails(maxRetries: Int, expectedModelCalls: Int) {
+    var modelCalls = 0
+    val model =
+      DummyModel("mock-model") { _ ->
+        modelCalls++
+        flowOf(
+          if (modelCalls <= expectedModelCalls) {
+            modelFunctionCallResponse("increase_by_one", mapOf("x" to 1), id = "call_$modelCalls")
+          } else {
+            LlmResponse(content = modelMessage("Unreachable."))
+          }
+        )
+      }
+    val agent =
+      LlmAgent(name = "root_agent", model = model, tools = listOf(DummyTool(name = "increase")))
+    val runner =
+      InMemoryRunner(agent = agent, plugins = listOf(ReflectAndRetryToolPlugin(maxRetries)))
+
+    val thrown =
+      assertFailsWith<IllegalArgumentException> {
+        runner
+          .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("test"))
+          .toList()
+      }
+
+    assertEquals(expectedModelCalls, modelCalls)
+    assertEquals(
+      "No tool with the requested name is registered. The tools you can call are: increase.",
+      thrown.message,
+    )
+  }
+
+  @Test
+  fun runAsync_unregisteredToolNamePastTheLimit_stopsBeforeAgentCallback(): Unit = runBlocking {
+    val model =
+      DummyModel.createSequential(
+        "mock-model",
+        listOf(
+          modelFunctionCallResponse("increase_by_one", mapOf("x" to 1), id = "call_1"),
+          modelFunctionCallResponse("increase_by_one", mapOf("x" to 1), id = "call_2"),
+          LlmResponse(content = modelMessage("Unreachable.")),
+        ),
+      )
+    var agentCallbackCalls = 0
+    val agent =
+      LlmAgent(
+        name = "root_agent",
+        model = model,
+        tools = listOf(DummyTool(name = "increase")),
+        onToolErrorCallbacks =
+          listOf(
+            OnToolErrorCallback { _, _, _, _ ->
+              agentCallbackCalls++
+              CallbackChoice.Break(mapOf("handled" to true))
+            }
+          ),
+      )
+
+    val thrown =
+      assertFailsWith<IllegalArgumentException> {
+        InMemoryRunner(agent = agent, plugins = listOf(ReflectAndRetryToolPlugin(maxRetries = 1)))
+          .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("test"))
+          .toList()
+      }
+
+    assertEquals(0, agentCallbackCalls)
+    assertEquals(
+      "No tool with the requested name is registered. The tools you can call are: increase.",
+      thrown.message,
+    )
+  }
+
+  @Test
+  fun runAsync_unregisteredToolNamePastTheLimitWithoutThrowing_givesUp(): Unit = runBlocking {
+    val model =
+      DummyModel.createSequential(
+        "mock-model",
+        listOf(
+          modelFunctionCallResponse("increase_by_one", mapOf("x" to 1), id = "call_1"),
+          LlmResponse(content = modelMessage("Done.")),
+        ),
+      )
+    val agent =
+      LlmAgent(name = "root_agent", model = model, tools = listOf(DummyTool(name = "increase")))
+
+    val events =
+      InMemoryRunner(
+          agent = agent,
+          plugins =
+            listOf(ReflectAndRetryToolPlugin(maxRetries = 0, throwExceptionIfRetryExceeded = false)),
+        )
+        .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("test"))
+        .toList()
+
+    val response = events.flatMap { it.functionResponses() }.single().response
+    assertContains(response.guidance, "Do not attempt to use the `increase_by_one` tool again")
+    assertContains(
+      response.guidance,
+      "No tool with the requested name is registered. The tools you can call are: increase.",
+    )
     assertEquals("Done.", events.last().content?.parts?.single()?.text)
   }
 
