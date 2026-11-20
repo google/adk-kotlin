@@ -18,6 +18,8 @@ package com.google.adk.kt.models
 import com.google.adk.kt.types.toGenaiSdk
 import com.google.genai.kotlin.Caches
 import com.google.genai.kotlin.types.CreateCachedContentConfig
+import com.google.genai.kotlin.types.DeleteCachedContentConfig
+import com.google.genai.kotlin.types.HttpOptions
 import kotlin.time.Instant
 
 /**
@@ -25,8 +27,11 @@ import kotlin.time.Instant
  *
  * This is the single place that touches the GenAI SDK cache API, translating ADK common types to
  * and from the SDK so the manager itself stays decoupled from the SDK and can be faked in tests.
+ *
+ * @param apiVersion The API version requested on each call, or `null` to keep the client's own; see
+ *   [requestApiVersionFor].
  */
-internal class GenaiCacheClient(private val caches: Caches) :
+internal class GenaiCacheClient(private val caches: Caches, private val apiVersion: String?) :
   GeminiContextCacheManager.CacheClient {
 
   override suspend fun create(
@@ -40,7 +45,7 @@ internal class GenaiCacheClient(private val caches: Caches) :
         toolConfig = request.toolConfig?.toGenaiSdk(),
         ttl = request.ttl,
         displayName = request.displayName,
-        httpOptions = request.httpOptions?.toGenaiSdk(),
+        httpOptions = request.httpOptions?.toGenaiSdk().withApiVersion(apiVersion),
       )
     val cachedContent = caches.create(request.model, config)
     val name = checkNotNull(cachedContent.name) { "Created cache has no resource name." }
@@ -50,6 +55,9 @@ internal class GenaiCacheClient(private val caches: Caches) :
   }
 
   override suspend fun delete(name: String) {
-    val unused = caches.delete(name)
+    val config = apiVersion?.let {
+      DeleteCachedContentConfig(httpOptions = HttpOptions(apiVersion = it))
+    }
+    val unused = caches.delete(name, config)
   }
 }

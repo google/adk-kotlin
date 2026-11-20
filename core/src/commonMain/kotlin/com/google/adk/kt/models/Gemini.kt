@@ -78,7 +78,14 @@ internal constructor(
    * one.
    */
   private val requestHttpOptions: HttpOptions? = null,
-  private val models: GeminiModels = RealGeminiModels(client.models, requestHttpOptions),
+  /**
+   * The API version requested on each call, or `null` to keep [client]'s; see
+   * [requestApiVersionFor]. A parameter so tests can override it before the SDK reports whether a
+   * client uses the default version.
+   */
+  private val requestApiVersion: String? = requestApiVersionFor(client),
+  private val models: GeminiModels =
+    RealGeminiModels(client.models, requestHttpOptions.withApiVersion(requestApiVersion)),
 ) : Model {
 
   /**
@@ -246,7 +253,7 @@ internal constructor(
         .let { live -> if (client.enterprise) live.resumingTransparently() else live }
         .carryingAgentConfig(request.config)
         .toGenaiSdk()
-        .copy(httpOptions = requestHttpOptions)
+        .copy(httpOptions = requestHttpOptions.withApiVersion(requestApiVersion))
     val callerContext = currentCoroutineContext().minusKey(Job)
     val handle = openHandle(modelName, config, callerContext)
     val connection =
@@ -298,7 +305,11 @@ internal constructor(
     // The manager may rewrite the request to use a cache and returns metadata for the responses.
     val cacheManager =
       preparedRequest.cacheConfig?.let {
-        GeminiContextCacheManager(name, GenaiCacheClient(client.caches), cacheScopeOf(client))
+        GeminiContextCacheManager(
+          name,
+          GenaiCacheClient(client.caches, requestApiVersion),
+          cacheScopeOf(client),
+        )
       }
     val cacheResult = cacheManager?.handleContextCaching(preparedRequest)
     val finalRequest = cacheResult?.request ?: preparedRequest
@@ -517,6 +528,33 @@ internal fun cacheScopeOf(client: Client): Map<String, String> = buildMap {
     client.location?.let { this["location"] = it }
   }
 }
+
+/**
+ * The Gemini API version ADK requests when a client has none configured. The SDK's default, `v1`,
+ * supports neither Live nor context caching.
+ */
+private const val GEMINI_API_VERSION = "v1beta"
+
+/**
+ * The API version ADK sends on each request through [client]: [GEMINI_API_VERSION] for a Gemini API
+ * client using the SDK's default version, or `null` to keep the client's own version.
+ */
+internal fun requestApiVersionFor(
+  client: Client,
+  usesDefaultApiVersion: Boolean = isDefaultApiVersion(client),
+): String? = if (!client.enterprise && usesDefaultApiVersion) GEMINI_API_VERSION else null
+
+/**
+ * Whether [client] uses the SDK's default API version (neither `HttpOptions.apiVersion` nor
+ * `GOOGLE_GENAI_API_VERSION` is set). Always returns `false` until the SDK exposes
+ * `Client.isDefaultApiVersion`, so every client keeps its own version until then.
+ */
+private fun isDefaultApiVersion(client: Client): Boolean = false
+
+/** These options with [apiVersion] set, unless [apiVersion] is `null` or they already set one. */
+internal fun HttpOptions?.withApiVersion(apiVersion: String?): HttpOptions? =
+  if (apiVersion == null || this?.apiVersion != null) this
+  else (this ?: HttpOptions()).copy(apiVersion = apiVersion)
 
 /**
  * Prepares an [LlmRequest] for the GenerateContent API.
