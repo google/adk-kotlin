@@ -43,6 +43,7 @@ import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionNotFoundException
 import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyLiveModel
@@ -344,6 +345,35 @@ class RunLiveTest {
 
     assertThat(agent.seenContext?.session).isNotNull()
     assertThat(agent.seenContext?.session?.key?.id).isEqualTo("brand-new-session")
+  }
+
+  @Test
+  fun runLive_autoCreateSessionOff_missingSession_throwsWithoutRunningOrCreatingIt(): Unit =
+    runBlocking {
+      val agent = LiveEchoAgent()
+      val runner = InMemoryRunner(agent = agent, autoCreateSession = false)
+      val queue = LiveRequestQueue()
+      queue.close()
+
+      assertFailsWith<SessionNotFoundException> { runner.runLive("u", "missing", queue).toList() }
+
+      assertThat(agent.seenContext).isNull()
+      assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "missing")))
+        .isNull()
+    }
+
+  @Test
+  fun runLive_autoCreateSessionOff_existingSession_runs(): Unit = runBlocking {
+    val agent = LiveEchoAgent()
+    val runner = InMemoryRunner(agent = agent, autoCreateSession = false)
+    val unused = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("one"))
+    queue.close()
+
+    val events = runner.runLive("u", "s", queue).toList()
+
+    assertThat(events.map { it.content?.parts?.single()?.text }).containsExactly("echo: one")
   }
 
   @Test

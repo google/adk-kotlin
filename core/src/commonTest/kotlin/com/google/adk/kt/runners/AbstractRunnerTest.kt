@@ -41,6 +41,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionNotFoundException
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -1492,17 +1493,38 @@ class AbstractRunnerTest {
   }
 
   @Test
-  fun rewindAsync_unknownSessionId_throws() = runTest {
+  fun rewindAsync_unknownSessionId_throwsWithoutCreatingIt(): Unit = runBlocking {
+    // Unlike a run, a rewind never creates a missing session, even when the runner would.
     val runner = InMemoryRunner(agent = DummyAgent())
 
-    assertFailsWith<IllegalArgumentException> {
+    assertFailsWith<SessionNotFoundException> {
         runner.rewindAsync(
           userId = "user",
           sessionId = "ghost-session",
           rewindBeforeInvocationId = "any",
         )
       }
-      .also { assertEquals("Session not found: ghost-session", it.message) }
+      .also { assertEquals("Session not found", it.message) }
+    assertNull(
+      runner.sessionService.getSession(SessionKey(runner.appName, "user", "ghost-session"))
+    )
+  }
+
+  @Test
+  fun rewindAsync_autoCreateSessionOff_unknownSessionId_throws(): Unit = runBlocking {
+    val runner = InMemoryRunner(agent = DummyAgent(), autoCreateSession = false)
+
+    assertFailsWith<SessionNotFoundException> {
+        runner.rewindAsync(
+          userId = "user",
+          sessionId = "ghost-session",
+          rewindBeforeInvocationId = "any",
+        )
+      }
+      .also { assertEquals("Session not found", it.message) }
+    assertNull(
+      runner.sessionService.getSession(SessionKey(runner.appName, "user", "ghost-session"))
+    )
   }
 
   @Test

@@ -24,6 +24,7 @@ import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
@@ -32,6 +33,7 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionNotFoundException
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.summarizer.EventSummarizer
 import com.google.adk.kt.summarizer.EventsCompactionConfig
@@ -894,6 +896,122 @@ class InMemoryRunnerTest {
     assertThat(finalEvent.partial).isFalse()
     assertThat(finalEvent.finishReason).isEqualTo(FinishReason.STOP)
     assertThat(finalEvent.content).isNull()
+  }
+
+  @Test
+  fun runAsync_autoCreateSessionOff_missingSession_throwsWithoutRunningOrCreatingIt(): Unit =
+    runBlocking {
+      val requests = mutableListOf<LlmRequest>()
+      val runner = InMemoryRunner(agent = recordingAgent(requests), autoCreateSession = false)
+
+      assertFailsWith<SessionNotFoundException> {
+        runner
+          .runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi"))
+          .toList()
+      }
+
+      assertThat(requests).isEmpty()
+      assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "missing")))
+        .isNull()
+    }
+
+  @Test
+  fun runAsync_autoCreateSessionOff_existingSession_runs(): Unit = runBlocking {
+    val requests = mutableListOf<LlmRequest>()
+    val runner = InMemoryRunner(agent = recordingAgent(requests), autoCreateSession = false)
+    val unused = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+
+    val events =
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi")).toList()
+
+    assertThat(requests).hasSize(1)
+    assertThat(events.map { it.content?.parts?.single()?.text }).containsExactly("hi")
+  }
+
+  @Test
+  fun runAsync_byDefault_createsMissingSession(): Unit = runBlocking {
+    val requests = mutableListOf<LlmRequest>()
+    val runner = InMemoryRunner(agent = recordingAgent(requests))
+
+    val unused =
+      runner.runAsync(userId = "u", sessionId = "new", newMessage = userMessage("hi")).toList()
+
+    assertThat(requests).hasSize(1)
+    assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "new"))).isNotNull()
+  }
+
+  @Test
+  fun runAsync_constructedFromAppWithAutoCreateSessionOff_missingSession_throws(): Unit =
+    runBlocking {
+      val requests = mutableListOf<LlmRequest>()
+      val app = App(appName = "app", rootAgent = recordingAgent(requests))
+      val runner = InMemoryRunner(app = app, autoCreateSession = false)
+
+      assertFailsWith<SessionNotFoundException> {
+        runner
+          .runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi"))
+          .toList()
+      }
+
+      assertThat(requests).isEmpty()
+    }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun runAsync_nodeRootedWithAutoCreateSessionOff_missingSession_throws(): Unit = runBlocking {
+    val requests = mutableListOf<LlmRequest>()
+    val app = App(appName = "app", rootNode = recordingAgent(requests))
+    val runner = InMemoryRunner(app = app, autoCreateSession = false)
+
+    assertFailsWith<SessionNotFoundException> {
+      runner.runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi")).toList()
+    }
+
+    assertThat(requests).isEmpty()
+    assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "missing")))
+      .isNull()
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_agentWithAutoCreateSessionOff_missingSession_throws(): Unit = runBlocking {
+    val requests = mutableListOf<LlmRequest>()
+    val runner =
+      InMemoryRunner.builder().agent(recordingAgent(requests)).autoCreateSession(false).build()
+
+    assertFailsWith<SessionNotFoundException> {
+      runner.runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi")).toList()
+    }
+
+    assertThat(requests).isEmpty()
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_appWithAutoCreateSessionOff_missingSession_throws(): Unit = runBlocking {
+    val requests = mutableListOf<LlmRequest>()
+    val runner =
+      InMemoryRunner.builder()
+        .app(App(appName = "app", rootAgent = recordingAgent(requests)))
+        .autoCreateSession(false)
+        .build()
+
+    assertFailsWith<SessionNotFoundException> {
+      runner.runAsync(userId = "u", sessionId = "missing", newMessage = userMessage("hi")).toList()
+    }
+
+    assertThat(requests).isEmpty()
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_byDefault_createsMissingSession(): Unit = runBlocking {
+    val runner = InMemoryRunner.builder().agent(recordingAgent(mutableListOf())).build()
+
+    val unused =
+      runner.runAsync(userId = "u", sessionId = "new", newMessage = userMessage("hi")).toList()
+
+    assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "new"))).isNotNull()
   }
 }
 
