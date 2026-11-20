@@ -161,6 +161,30 @@ class AuthSchemeTest {
   }
 
   @Test
+  fun header_name_buildsHeaderScheme() {
+    assertEquals(
+      AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER),
+      AuthScheme.ApiKey.header("X-Key"),
+    )
+  }
+
+  @Test
+  fun query_name_buildsQueryScheme() {
+    assertEquals(
+      AuthScheme.ApiKey(name = "key", location = AuthScheme.ApiKey.Location.QUERY),
+      AuthScheme.ApiKey.query("key"),
+    )
+  }
+
+  @Test
+  fun cookie_name_buildsCookieScheme() {
+    assertEquals(
+      AuthScheme.ApiKey(name = "session", location = AuthScheme.ApiKey.Location.COOKIE),
+      AuthScheme.ApiKey.cookie("session"),
+    )
+  }
+
+  @Test
   fun builder_oauth2WithoutFlows_throws() {
     assertFailsWith<IllegalStateException> { AuthScheme.OAuth2.builder().build() }
   }

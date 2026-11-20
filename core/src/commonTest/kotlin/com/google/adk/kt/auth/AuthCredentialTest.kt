@@ -278,6 +278,28 @@ class AuthCredentialTest {
   }
 
   @Test
+  fun of_apiKey_buildsApiKeyCredential() {
+    assertEquals(
+      AuthCredential.ApiKey(apiKey = Secret("sk-123")),
+      AuthCredential.ApiKey.of("sk-123"),
+    )
+  }
+
+  @Test
+  fun accessToken_tokenAndExpiry_setsOnlyThose() {
+    val expiresAt = Instant.fromEpochSeconds(1_700_000_000)
+
+    assertEquals(
+      AuthCredential.OAuth2(accessToken = Secret("at"), expiresAt = expiresAt),
+      AuthCredential.OAuth2.accessToken("at", expiresAt),
+    )
+    assertEquals(
+      AuthCredential.OAuth2(accessToken = Secret("at")),
+      AuthCredential.OAuth2.accessToken("at"),
+    )
+  }
+
+  @Test
   fun toString_serviceAccount_redactsPrivateKey() {
     assertEquals(
       "ServiceAccount(serviceAccountCredential=Credential(type=service_account, " +

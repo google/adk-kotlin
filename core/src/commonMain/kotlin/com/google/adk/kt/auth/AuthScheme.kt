@@ -90,6 +90,17 @@ sealed interface AuthScheme {
     }
 
     companion object {
+      // Factories take only a scheme's defining fields, so adding a field never changes them.
+
+      /** Returns a scheme that sends the key in the header [name]. */
+      @JvmStatic fun header(name: String): ApiKey = ApiKey(name = name, location = Location.HEADER)
+
+      /** Returns a scheme that sends the key in the query parameter [name]. */
+      @JvmStatic fun query(name: String): ApiKey = ApiKey(name = name, location = Location.QUERY)
+
+      /** Returns a scheme that sends the key in the cookie [name]. */
+      @JvmStatic fun cookie(name: String): ApiKey = ApiKey(name = name, location = Location.COOKIE)
+
       @AdkJavaInteropApi @JvmStatic fun builder(): Builder = Builder()
     }
   }
