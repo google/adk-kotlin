@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.7.0](https://github.com/google/adk-kotlin/compare/v1.6.0...v1.7.0) (2026-11-20)
+
+
+### Features
+
+* **auth:** add factories for API key schemes and credentials and OAuth2 access tokens ([f36845c](https://github.com/google/adk-kotlin/commit/f36845c86667c586a823ff8edde1113d6bcd9b06))
+* **bigquery:** offload binary and large text parts to Cloud Storage ([f1927c3](https://github.com/google/adk-kotlin/commit/f1927c30fa069532c33a9738e69a9dca9bb357ff))
+* fill in schema defaults for omitted properties ([6682a0a](https://github.com/google/adk-kotlin/commit/6682a0a682fd8a0ed691d36e9a3c0c63b046bbc9))
+* **runners:** add autoCreateSession and check sessions in the runner ([bb02e3d](https://github.com/google/adk-kotlin/commit/bb02e3d007556c8cd6af1d8811e13198dc96e445))
+* **tools:** add BuiltInCodeExecutionTool for Gemini's server-side code execution ([4d6d38a](https://github.com/google/adk-kotlin/commit/4d6d38a14fc171cd6660ec131950f5537d1fd30c))
+* **tools:** add BuiltInCodeExecutionTool for Gemini's server-side code execution ([c9959e9](https://github.com/google/adk-kotlin/commit/c9959e914a8f882d967f834c2b1594acea3f7613))
+* **workflow:** let Java pass retry exception types as Class ([5b94e6f](https://github.com/google/adk-kotlin/commit/5b94e6f478fc90d0c4308edb3d361d233c8257bc))
+* **workflow:** read numbers, booleans, chars and enums strictly in FunctionNode ports ([6f8f94b](https://github.com/google/adk-kotlin/commit/6f8f94ba43bba810184850ed96ab8e6b2b4904f4))
+
+
+### Bug Fixes
+
+* **a2a:** read a remote's error code as ADK Python does ([3a04be3](https://github.com/google/adk-kotlin/commit/3a04be31e0091206f013e985bd27717642498256))
+* **auth:** give typed credentials in free-form values a JSON form ([3d20a31](https://github.com/google/adk-kotlin/commit/3d20a31e77b8a8aa2004a6efc211d81527fe9068))
+* **auth:** leave credential secrets out of serialized output ([d6493be](https://github.com/google/adk-kotlin/commit/d6493bedbe69b1a045e901a430111eb92766e06b))
+* **auth:** write the API key scheme location as "in" ([71a4542](https://github.com/google/adk-kotlin/commit/71a4542a4efac786bee084b94a46ccecdbe60a8d))
+* **core:** cap JSON nesting at 1,000 levels ([9c960db](https://github.com/google/adk-kotlin/commit/9c960db7d7a6ed6266dbe44c1033244e78948c61))
+* **firebase:** send the response schema and penalties to Firebase ([2c7ec9d](https://github.com/google/adk-kotlin/commit/2c7ec9dcfc91e43aed933f0a4c62460cb8eced39))
+* **models:** wire a per-request v1beta into Gemini for clients on the SDK default version ([39691b9](https://github.com/google/adk-kotlin/commit/39691b9236579213e9da2b649dd5ec33703e2f50))
+* **telemetry:** open a workflow root's invoke_workflow span around the whole turn ([6aea6b2](https://github.com/google/adk-kotlin/commit/6aea6b2ab11dfbc649b29b3f288ef7837e8adfff))
+
+
+### Reverts
+
+* Revert MCP SDK version update from 2.1.0 back to 2.0.0 ([f6b9c61](https://github.com/google/adk-kotlin/commit/f6b9c61dbeea9114990e93370e83b355df7a098d))
+
+
+### Documentation
+
+* **examples:** send the workflow samples' state and routes as events ([a8bf644](https://github.com/google/adk-kotlin/commit/a8bf644b8c53f979b6e8e2b1df23f8021945b97e))
+* **examples:** serve the workflow samples from the example servers ([01e0792](https://github.com/google/adk-kotlin/commit/01e0792f8dbd635ae64b5d8830411929794dfd0b))
+* **examples:** write two Java orchestrators as FunctionNodes ([b071efc](https://github.com/google/adk-kotlin/commit/b071efcf553b7f5d2f53dd662aad1b3b7e826573))
+* **workflow:** document which schema fields workflow checks read ([1980a05](https://github.com/google/adk-kotlin/commit/1980a05a0ef0b792fae147e4b370bba7520b4498))
+
 ## [1.6.0](https://github.com/google/adk-kotlin/compare/v1.5.0...v1.6.0) (2026-11-17)
 
 
