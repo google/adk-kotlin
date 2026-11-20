@@ -28,8 +28,7 @@ import kotlin.time.Instant
  * This is the single place that touches the GenAI SDK cache API, translating ADK common types to
  * and from the SDK so the manager itself stays decoupled from the SDK and can be faked in tests.
  *
- * @param apiVersion The API version requested on each call, or `null` to keep the client's own; see
- *   [requestApiVersionFor].
+ * @param apiVersion The API version requested on each call, or `null` to keep the client's own.
  */
 internal class GenaiCacheClient(private val caches: Caches, private val apiVersion: String?) :
   GeminiContextCacheManager.CacheClient {
