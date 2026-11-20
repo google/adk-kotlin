@@ -737,7 +737,12 @@ internal fun PortCodec<*>.schemaForm(value: Any?, what: String): Any? =
  * the output always carries `qty`, which the input requires.
  *
  * Explicit schemas apply each run, except to a rejected confirmation's output and to a
- * [requestInput] answer used as the output.
+ * [requestInput] answer used as the output. The run-time and edge checks read only `type`,
+ * `nullable`, `enum`, `anyOf`, `properties`, `required`, `additionalProperties` and `items` (plus
+ * `default` on input and output schemas at run time to fill omitted properties); they ignore
+ * `minimum`, `maximum`, `pattern`, `format` and the length, item and property count limits. A minor
+ * release may infer more precise schemas, and the edge check may then reject an edge that built
+ * before.
  *
  * The block's return value, a [Content] included, is the node's output; emitting an event with an
  * output or calling `Context.setOutput` fails the node. A node that talks to an agent node sends
