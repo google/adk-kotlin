@@ -357,7 +357,12 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
 
       eventPart
         .copy(partial = isAppend || !isLastChunk)
-        .updateEventMetadata(update.metadata, update.taskId, update.contextId, metadataParser)
+        .updateEventMetadata(
+          adkMetadata(update.artifact.metadata, update.metadata),
+          update.taskId,
+          update.contextId,
+          metadataParser,
+        )
     }
     is TaskStatusUpdateEvent -> {
       val status = update.status
@@ -389,7 +394,7 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
         }
 
       finalEvent?.updateEventMetadata(
-        update.metadata,
+        adkMetadata(status.message()?.metadata, update.metadata),
         update.taskId,
         update.contextId,
         metadataParser,
@@ -397,6 +402,13 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
     }
   }
 }
+
+/**
+ * Returns the metadata of an update's artifact or status message ([inner]), with keys it lacks
+ * filled in from the update's own metadata ([outer]), the fallback for peers that write it there.
+ */
+private fun adkMetadata(inner: Map<String, Any?>?, outer: Map<String, Any?>?): Map<String, Any?> =
+  outer.orEmpty() + inner.orEmpty()
 
 // Converts a DataPart to an ADK Part.
 // Note: We use coerceToMap for arguments and response to handle cases where the data
