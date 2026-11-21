@@ -23,7 +23,6 @@ import com.google.adk.kt.agents.genAiSystemName
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalContextCachingFeature
 import com.google.adk.kt.annotations.ExperimentalLiveApi
-import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelMessage
@@ -327,12 +326,15 @@ class GeminiJvmTest {
   }
 
   @Test
-  fun generateContent_callerSuppliedClientStreaming_attachesAdkTrackingHeaders() {
+  fun generateContent_callerSuppliedClientStreaming_requestsV1betaWithAdkTrackingHeaders() {
     mockServer.enqueue(sse(GENERATE_CONTENT_RESPONSE))
 
     runBlocking { generateWithCallerClient(stream = true) }
 
-    assertTrackingHeaders(mockServer.takeRequest(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+    val request = mockServer.takeRequest(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    assertThat(request?.url?.encodedPath)
+      .isEqualTo("/v1beta/models/gemini-3.1-flash-preview:streamGenerateContent")
+    assertTrackingHeaders(request)
   }
 
   @Test
@@ -405,29 +407,54 @@ class GeminiJvmTest {
   }
 
   @Test
-  fun requestApiVersionFor_geminiApiClientOnDefaultVersion_isV1beta() {
-    Client(apiKey = "fake-key").use { client ->
-      assertThat(requestApiVersionFor(client, usesDefaultApiVersion = true)).isEqualTo("v1beta")
-    }
+  fun generateContent_adkBuiltClient_requestsV1beta() {
+    mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
+
+    runBlocking { collectGenerateContent(stream = false) }
+
+    assertThat(takeRequestPath())
+      .isEqualTo("/v1beta/models/gemini-3.1-flash-preview:generateContent")
   }
 
   @Test
-  fun requestApiVersionFor_geminiApiClientWithConfiguredVersion_keepsItsVersion() {
-    Client(apiKey = "fake-key").use { client ->
-      assertThat(requestApiVersionFor(client, usesDefaultApiVersion = false)).isNull()
+  fun generateContent_callerClientWithConfiguredVersion_keepsItsVersion() {
+    mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
+
+    runBlocking {
+      Client(
+          apiKey = "fake-key",
+          httpOptions = HttpOptions(baseUrl = mockServer.url("/").toString(), apiVersion = "v1"),
+        )
+        .use { client ->
+          val unused =
+            Gemini(client, "test-model")
+              .generateContent(LlmRequest(contents = listOf(userMessage("Hello"))), stream = false)
+              .toList()
+        }
     }
+
+    assertThat(takeRequestPath()).isEqualTo("/v1/models/test-model:generateContent")
   }
 
   @Test
-  fun requestApiVersionFor_vertexAiClient_keepsItsVersion() {
-    vertexAiClient().use { client ->
-      assertThat(requestApiVersionFor(client, usesDefaultApiVersion = true)).isNull()
+  fun generateContent_vertexAiClient_keepsSdkDefaultVersion() {
+    mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
+
+    runBlocking {
+      vertexAiClient().use { client ->
+        val unused =
+          Gemini(client, "test-model")
+            .generateContent(LlmRequest(contents = listOf(userMessage("Hello"))), stream = false)
+            .toList()
+      }
     }
+
+    assertThat(takeRequestPath()).startsWith("/v1beta1/")
   }
 
   @Test
   @OptIn(ExperimentalContextCachingFeature::class)
-  fun generateContent_contextCachingWithRequestApiVersion_sendsItOnEveryCall() {
+  fun generateContent_contextCachingOnDefaultVersion_requestsV1betaOnEveryCall() {
     mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
     mockServer.enqueue(json("""{"name":"cachedContents/abc"}"""))
     mockServer.enqueue(json(GENERATE_CONTENT_RESPONSE))
@@ -439,7 +466,7 @@ class GeminiJvmTest {
 
     runBlocking {
       mockServerClient().use { client ->
-        val model = Gemini(client, "test-model", requestApiVersion = "v1beta")
+        val model = Gemini(client, "test-model")
         // The first call only fingerprints the prefix; the second creates and uses the cache.
         val first = model.generateContent(request, stream = false).toList().single()
         val cachedRequest =
@@ -460,40 +487,13 @@ class GeminiJvmTest {
   }
 
   @Test
-  @OptIn(FrameworkInternalApi::class)
-  fun generateContent_streamingWithRequestApiVersion_keepsTrackingHeaders() {
-    mockServer.enqueue(sse(GENERATE_CONTENT_RESPONSE))
-
-    runBlocking {
-      mockServerClient().use { client ->
-        val unused =
-          Gemini(
-              client,
-              "test-model",
-              requestHttpOptions = HttpOptions(headers = TrackingHeaders.GENAI_SDK_HEADERS),
-              requestApiVersion = "v1beta",
-            )
-            .generateContent(LlmRequest(contents = listOf(userMessage("Hello"))), stream = true)
-            .toList()
-      }
-    }
-
-    val request = mockServer.takeRequest(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-    assertThat(request?.url?.encodedPath)
-      .isEqualTo("/v1beta/models/test-model:streamGenerateContent")
-    assertTrackingHeaders(request)
-  }
-
-  @Test
   @OptIn(ExperimentalLiveApi::class)
-  fun connect_withRequestApiVersion_opensSessionOnThatVersion() {
+  fun connect_callerClientOnDefaultVersion_opensSessionOnV1beta() {
     mockServer.enqueue(MockResponse.Builder().webSocketUpgrade(AnswerLiveSetup).build())
 
     runBlocking {
       mockServerClient().use { client ->
-        Gemini(client, "gemini-live-test", requestApiVersion = "v1beta")
-          .connect(LlmRequest())
-          .closeSession()
+        Gemini(client, "gemini-live-test").connect(LlmRequest()).closeSession()
       }
     }
 

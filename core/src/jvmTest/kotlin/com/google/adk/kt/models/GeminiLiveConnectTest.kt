@@ -31,6 +31,7 @@ import com.google.adk.kt.types.SpeechConfig
 import com.google.adk.kt.types.Tool
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
+import com.google.genai.kotlin.types.HttpOptions
 import com.google.genai.kotlin.types.LiveConnectConfig as GenAiLiveConnectConfig
 import com.google.genai.kotlin.types.LiveServerMessage as SdkLiveServerMessage
 import com.google.genai.kotlin.types.LiveServerSetupComplete as SdkLiveServerSetupComplete
@@ -406,13 +407,16 @@ class GeminiLiveConnectTest {
   }
 
   @Test
-  fun connect_apiKeyConstructor_sendsNoRequestHttpOptions() = runBlocking {
-    // The client this constructor builds already sends ADK's tag; request options would repeat it.
+  fun connect_apiKeyConstructor_sendsOnlyV1betaInRequestHttpOptions() = runBlocking {
+    // The client from this constructor already sends ADK's tag; request headers would duplicate it.
     val recorder = RecordingLive()
 
     gemini().apply { live = recorder }.connect(LlmRequest()).closeSession()
 
-    assertNull(assertNotNull(recorder.connectedWith).httpOptions)
+    assertEquals(
+      HttpOptions(apiVersion = "v1beta"),
+      assertNotNull(recorder.connectedWith).httpOptions,
+    )
   }
 
   @Test
