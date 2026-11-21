@@ -53,6 +53,7 @@ import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.TelemetryContextElement
 import com.google.adk.kt.telemetry.capturedJson
 import com.google.adk.kt.telemetry.noop.NoOpSpan
+import com.google.adk.kt.telemetry.toDecimal
 import com.google.adk.kt.telemetry.tracedFlow
 import com.google.adk.kt.telemetry.withCoroutineSpanCurrent
 import com.google.adk.kt.telemetry.withSpan
@@ -1954,7 +1955,7 @@ internal class LlmAgentTurn(
 
   /** Records request-derived `call_llm` span attributes (parity with Python `trace_call_llm`). */
   private fun Span.recordCallLlmRequest(request: LlmRequest) {
-    request.config.topP?.let { this[TelemetryAttributes.GEN_AI_REQUEST_TOP_P] = it.toDouble() }
+    request.config.topP?.let { this[TelemetryAttributes.GEN_AI_REQUEST_TOP_P] = it.toDecimal() }
     request.config.maxOutputTokens?.let {
       this[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS] = it.toLong()
     }

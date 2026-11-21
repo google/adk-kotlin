@@ -26,6 +26,7 @@ import com.google.adk.kt.telemetry.Telemetry
 import com.google.adk.kt.telemetry.TelemetryAttributes
 import com.google.adk.kt.telemetry.isFailure
 import com.google.adk.kt.telemetry.recordFailure
+import com.google.adk.kt.telemetry.toDecimal
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.UsageMetadata
 import kotlinx.coroutines.flow.Flow
@@ -59,7 +60,7 @@ internal fun Flow<LlmResponse>.traceGenerateContent(
   builder[TelemetryAttributes.GEN_AI_OPERATION_NAME] =
     TelemetryAttributes.OPERATION_GENERATE_CONTENT
   builder[TelemetryAttributes.GEN_AI_REQUEST_MODEL] = model.name
-  request.config.topP?.let { builder[TelemetryAttributes.GEN_AI_REQUEST_TOP_P] = it.toDouble() }
+  request.config.topP?.let { builder[TelemetryAttributes.GEN_AI_REQUEST_TOP_P] = it.toDecimal() }
   request.config.maxOutputTokens?.let {
     builder[TelemetryAttributes.GEN_AI_REQUEST_MAX_TOKENS] = it.toLong()
   }

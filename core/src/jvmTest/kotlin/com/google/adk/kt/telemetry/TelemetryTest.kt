@@ -48,12 +48,10 @@ import com.google.genai.kotlin.GenAiApiException
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
 import io.opentelemetry.context.Context as OpenTelemetryContext
-import io.opentelemetry.sdk.common.CompletableResultCode
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter
 import io.opentelemetry.sdk.trace.ReadableSpan
 import io.opentelemetry.sdk.trace.SdkTracerProvider
-import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
-import io.opentelemetry.sdk.trace.export.SpanExporter
 import java.util.Collections
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
@@ -145,8 +143,8 @@ class TelemetryTest {
 
   @Test
   fun trace_withCapturedParent_joinsCallersTrace() = runBlocking {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
+    val exporter = InMemorySpanExporter.create()
+    val provider = tracerProvider(exporter)
     try {
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       val hostSpan = provider.get("host").spanBuilder("host").startSpan()
@@ -154,7 +152,7 @@ class TelemetryTest {
       flowOf(1).trace("invocation", parent = parent).collect {}
       hostSpan.end()
 
-      val invocation = exported.single { it.name == "invocation" }
+      val invocation = exporter.finishedSpanItems.single { it.name == "invocation" }
       assertThat(invocation.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
       assertThat(invocation.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
     } finally {
@@ -164,8 +162,8 @@ class TelemetryTest {
 
   @Test
   fun trace_elementWithoutAdkSpanAndASpanMadeCurrentOnTop_parentsToThatSpan() {
-    val exported = mutableListOf<SpanData>()
-    withOtelTracer(exported) { provider ->
+    val exporter = InMemorySpanExporter.create()
+    withOtelTracer(exporter) { provider ->
       val elementSpan = provider.get("host").spanBuilder("element").startSpan()
       val ownSpan = provider.get("host").spanBuilder("own").startSpan()
       val element = OtelTelemetryContext(OpenTelemetryContext.root().with(elementSpan))
@@ -177,15 +175,15 @@ class TelemetryTest {
       ownSpan.end()
       elementSpan.end()
 
-      val traced = exported.single { it.name == "traced" }
+      val traced = exporter.finishedSpanItems.single { it.name == "traced" }
       assertThat(traced.parentSpanContext.spanId).isEqualTo(ownSpan.spanContext.spanId)
     }
   }
 
   @Test
   fun trace_withEmptyCapturedParent_startsNewRootTrace() = runBlocking {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
+    val exporter = InMemorySpanExporter.create()
+    val provider = tracerProvider(exporter)
     try {
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       // No caller span is active, so the captured context is empty and the span must be a valid
@@ -193,7 +191,7 @@ class TelemetryTest {
       val parent = currentTelemetryContext()
       flowOf(1).trace("invocation", parent = parent).collect {}
 
-      val invocation = exported.single { it.name == "invocation" }
+      val invocation = exporter.finishedSpanItems.single { it.name == "invocation" }
       assertThat(invocation.parentSpanContext.isValid).isFalse()
     } finally {
       provider.close()
@@ -202,8 +200,8 @@ class TelemetryTest {
 
   @Test
   fun runAsync_capturesCallerSpanEagerly_soInvocationNestsAfterSpanDeactivated() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
+    val exporter = InMemorySpanExporter.create()
+    val provider = tracerProvider(exporter)
     try {
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       val runner = InMemoryRunner(NoopAgent(), appName = "telemetryapp")
@@ -219,7 +217,7 @@ class TelemetryTest {
       runBlocking { flow.collect {} }
       hostSpan.end()
 
-      val invocation = exported.single { it.name == "invocation" }
+      val invocation = exporter.finishedSpanItems.single { it.name == "invocation" }
       assertThat(invocation.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
       assertThat(invocation.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
     } finally {
@@ -230,8 +228,8 @@ class TelemetryTest {
   @OptIn(ExperimentalLiveApi::class)
   @Test
   fun runLive_capturesCallerSpanEagerly_soAgentSpanNestsUnderIt() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
+    val exporter = InMemorySpanExporter.create()
+    val provider = tracerProvider(exporter)
     try {
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       val runner = InMemoryRunner(LiveNoopAgent(), appName = "telemetryapp")
@@ -244,7 +242,7 @@ class TelemetryTest {
       runBlocking { flow.collect {} }
       hostSpan.end()
 
-      val agent = exported.single { it.name == "invoke_agent liveNoopAgent" }
+      val agent = exporter.finishedSpanItems.single { it.name == "invoke_agent liveNoopAgent" }
       assertThat(agent.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
       assertThat(agent.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
     } finally {
@@ -254,8 +252,8 @@ class TelemetryTest {
 
   @Test
   fun runAsync_modelOpensASpan_nestsUnderGenerateContentAndDoesNotParentTheTool() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
+    val exporter = InMemorySpanExporter.create()
+    val provider = tracerProvider(exporter)
     try {
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       val inner =
@@ -292,11 +290,17 @@ class TelemetryTest {
       }
 
       val generateContentIds =
-        exported.filter { it.name == "generate_content test-model" }.map { it.spanId }
-      assertThat(exported.filter { it.name == "model_wrapper" }.map { it.parentSpanId })
+        exporter.finishedSpanItems
+          .filter { it.name == "generate_content test-model" }
+          .map { it.spanId }
+      assertThat(
+          exporter.finishedSpanItems.filter { it.name == "model_wrapper" }.map { it.parentSpanId }
+        )
         .containsExactlyElementsIn(generateContentIds)
-      assertThat(exported.single { it.name == "execute_tool dummy_tool" }.parentSpanId)
-        .isEqualTo(exported.single { it.name == "invoke_agent helper" }.spanId)
+      assertThat(
+          exporter.finishedSpanItems.single { it.name == "execute_tool dummy_tool" }.parentSpanId
+        )
+        .isEqualTo(exporter.finishedSpanItems.single { it.name == "invoke_agent helper" }.spanId)
     } finally {
       provider.close()
     }
@@ -305,8 +309,8 @@ class TelemetryTest {
   /** A GenAI error from a tool passes back through `Gemini`, which rewraps a 429 on the way. */
   @Test
   fun runAsync_toolThrowsQuotaErrorThroughGemini_setsNoErrorTypeOnCallLlm() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
+    val exporter = InMemorySpanExporter.create()
+    val provider = tracerProvider(exporter)
     try {
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       val models =
@@ -351,10 +355,10 @@ class TelemetryTest {
       assertThat(thrown).isNotInstanceOf(ClientException::class.java)
       assertThat(thrown.cause).isInstanceOf(ClientException::class.java)
 
-      val callLlm = exported.single { it.name == "call_llm" }
+      val callLlm = exporter.finishedSpanItems.single { it.name == "call_llm" }
       assertThat(callLlm.attributes.get(ERROR_TYPE_KEY)).isNull()
       assertThat(callLlm.events.map { it.name }).doesNotContain("exception")
-      val tool = exported.single { it.name == "execute_tool quota_tool" }
+      val tool = exporter.finishedSpanItems.single { it.name == "execute_tool quota_tool" }
       assertThat(tool.attributes.get(ERROR_TYPE_KEY)).isEqualTo("429")
     } finally {
       provider.close()
@@ -363,8 +367,8 @@ class TelemetryTest {
 
   @Test
   fun runAsync_rootSequentialAgentWithASuspendingCollector_keepsSubAgentsUnderIt() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
+    val exporter = InMemorySpanExporter.create()
+    val provider = tracerProvider(exporter)
     try {
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       val agent =
@@ -377,10 +381,12 @@ class TelemetryTest {
           .collect { delay(1) }
       }
 
-      val seq = exported.single { it.name == "invoke_agent seq" }
-      assertThat(exported.map { it.traceId }.toSet()).containsExactly(seq.traceId)
-      assertThat(exported.single { it.name == "invoke_agent a" }.parentSpanId).isEqualTo(seq.spanId)
-      assertThat(exported.single { it.name == "invoke_agent b" }.parentSpanId).isEqualTo(seq.spanId)
+      val seq = exporter.finishedSpanItems.single { it.name == "invoke_agent seq" }
+      assertThat(exporter.finishedSpanItems.map { it.traceId }.toSet()).containsExactly(seq.traceId)
+      assertThat(exporter.finishedSpanItems.single { it.name == "invoke_agent a" }.parentSpanId)
+        .isEqualTo(seq.spanId)
+      assertThat(exporter.finishedSpanItems.single { it.name == "invoke_agent b" }.parentSpanId)
+        .isEqualTo(seq.spanId)
     } finally {
       provider.close()
     }
@@ -518,10 +524,10 @@ class TelemetryTest {
 
   @Test
   fun runAsync_nestedInATool_leavesTheToolsSpanCurrentAfterCollect() {
-    val exported = mutableListOf<SpanData>()
+    val exporter = InMemorySpanExporter.create()
     var afterNested: String? = null
 
-    withOtelTracer(exported) { provider ->
+    withOtelTracer(exporter) { provider ->
       val nestingTool =
         DummyTool(name = "nesting_tool", declares = true) { _, _ ->
           toolCallingRunner().runTurn().collect {}
@@ -548,9 +554,9 @@ class TelemetryTest {
       runBlocking { outer.runTurn().collect {} }
     }
 
-    val toolSpan = exported.single { it.name == "execute_tool nesting_tool" }
+    val toolSpan = exporter.finishedSpanItems.single { it.name == "execute_tool nesting_tool" }
     assertThat(afterNested).isEqualTo("execute_tool nesting_tool")
-    assertThat(exported.single { it.name == "after_nested" }.parentSpanId)
+    assertThat(exporter.finishedSpanItems.single { it.name == "after_nested" }.parentSpanId)
       .isEqualTo(toolSpan.spanId)
   }
 
@@ -630,9 +636,9 @@ class TelemetryTest {
 
   @Test
   fun trace_spansOpenedInTheBody_areChildrenOfTheTracedSpan() {
-    val exported = mutableListOf<SpanData>()
+    val exporter = InMemorySpanExporter.create()
 
-    withOtelTracer(exported) { provider ->
+    withOtelTracer(exporter) { provider ->
       val host = provider.get("host")
       runBlocking {
         flow {
@@ -650,7 +656,7 @@ class TelemetryTest {
       }
     }
 
-    val byName = exported.associateBy { it.name }
+    val byName = exporter.finishedSpanItems.associateBy { it.name }
     assertThat(byName.keys).containsExactly("scope", "body", "teardown")
     for (name in listOf("body", "teardown")) {
       assertThat(byName.getValue(name).parentSpanId).isEqualTo(byName.getValue("scope").spanId)
@@ -736,18 +742,17 @@ class TelemetryTest {
     assertThat(inBody).containsExactly("generate_content", "generate_content")
   }
 
-  /** Runs [block] with an OpenTelemetry SDK tracer that exports its spans to [sink]. */
+  /**
+   * Runs [block] with an OpenTelemetry SDK tracer that exports its spans to [exporter]. The
+   * provider stays open, since closing it clears [exporter]; its processor exports synchronously.
+   */
   private fun withOtelTracer(
-    sink: MutableList<SpanData> = mutableListOf(),
+    exporter: InMemorySpanExporter = InMemorySpanExporter.create(),
     block: (SdkTracerProvider) -> Unit,
   ) {
-    val provider = tracerProvider(sink)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
-      block(provider)
-    } finally {
-      provider.close()
-    }
+    val provider = tracerProvider(exporter)
+    Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+    block(provider)
   }
 
   /**
@@ -783,14 +788,14 @@ class TelemetryTest {
    * thread.
    */
   private fun assertNoAdkSpanOutlivesHoppingRun(extraYields: Int): Boolean {
-    val exported = Collections.synchronizedList(mutableListOf<SpanData>())
+    val exporter = InMemorySpanExporter.create()
     val inCollect = Collections.synchronizedList(mutableListOf<Boolean>())
     val leftOnThreads = Collections.synchronizedList(mutableListOf<Boolean>())
     var afterCollect: Boolean? = null
     var collectedOn: Thread? = null
     var answeredOn: Thread? = null
 
-    withOtelTracer(exported) { provider ->
+    withOtelTracer(exporter) { provider ->
       PingPongDispatcher().use { dispatcher ->
         val tracer = OtelTracer(provider.get("test"))
         dispatcher.onEachThread { Telemetry.setTracerForTest(tracer) }
@@ -812,13 +817,13 @@ class TelemetryTest {
     }
 
     val run = "with $extraYields extra yields"
-    assertWithMessage(run).that(exported.map { it.name }).contains("invocation")
+    assertWithMessage(run).that(exporter.finishedSpanItems.map { it.name }).contains("invocation")
     assertWithMessage(run).that(answeredOn).isNotNull()
     assertWithMessage(run).that(inCollect).isNotEmpty()
     assertWithMessage(run).that(inCollect.toSet()).containsExactly(false)
     assertWithMessage(run).that(afterCollect).isFalse()
     assertWithMessage(run)
-      .that(exported.single { it.name == "after" }.parentSpanContext.isValid)
+      .that(exporter.finishedSpanItems.single { it.name == "after" }.parentSpanContext.isValid)
       .isFalse()
     assertWithMessage(run).that(leftOnThreads).containsExactly(false, false)
     return answeredOn !== collectedOn
@@ -849,22 +854,8 @@ class TelemetryTest {
 
   private fun Event.isAnswer() = content?.parts?.any { it.text == "done" } == true
 
-  private fun tracerProvider(sink: MutableList<SpanData>): SdkTracerProvider =
-    SdkTracerProvider.builder()
-      .addSpanProcessor(SimpleSpanProcessor.create(recordingExporter(sink)))
-      .build()
-
-  private fun recordingExporter(sink: MutableList<SpanData>): SpanExporter =
-    object : SpanExporter {
-      override fun export(spans: Collection<SpanData>): CompletableResultCode {
-        sink.addAll(spans)
-        return CompletableResultCode.ofSuccess()
-      }
-
-      override fun flush(): CompletableResultCode = CompletableResultCode.ofSuccess()
-
-      override fun shutdown(): CompletableResultCode = CompletableResultCode.ofSuccess()
-    }
+  private fun tracerProvider(exporter: InMemorySpanExporter): SdkTracerProvider =
+    SdkTracerProvider.builder().addSpanProcessor(SimpleSpanProcessor.create(exporter)).build()
 
   /** Minimal agent that emits no events; used to exercise the runner's span wiring. */
   private class NoopAgent : BaseAgent(name = "noopAgent") {
