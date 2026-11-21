@@ -25,6 +25,7 @@ import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.types.Content
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -283,7 +284,11 @@ internal class Scheduler(
     )
   }
 
-  /** Re-emits a replayed node's output on resumable runs without setting `outputFor`. */
+  /**
+   * Re-emits a replayed node's output on resumable runs without setting `outputFor`. A replayed
+   * message is marked as one, so a later resume reads it back as a message; sent as content, it
+   * would appear twice in a later agent's history.
+   */
   private suspend fun reemitReplayedOutput(childContext: Context) {
     if (!isResumable || !childContext.hasProducedOutput) return
     context
@@ -295,7 +300,8 @@ internal class Scheduler(
           invocationId = context.invocationContext.invocationId,
           branch = childContext.invocationContext.branch,
           output = childContext.output,
-          nodeInfo = NodeInfo(path = childContext.nodePath),
+          nodeInfo =
+            NodeInfo(path = childContext.nodePath, messageAsOutput = childContext.output is Content),
         )
       )
   }

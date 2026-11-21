@@ -29,6 +29,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.types.Content
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -465,6 +466,10 @@ private constructor(
               } else {
                 event.nodeInfo?.outputFor
               },
+            // Marked, so that a stored session reads the output back as a message, not as a map.
+            messageAsOutput =
+              event.nodeInfo?.messageAsOutput == true ||
+                (event.content == null && event.output is Content),
           ),
       )
   }
