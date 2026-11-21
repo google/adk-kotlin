@@ -118,9 +118,19 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
       if (param !in args && param in state) args[param] = state[param]
     }
     val functionCallId = Uuid.random()
+    val ic = context.invocationContext
+    // A node the tool runs takes this node's path and scope, as under an agent node.
+    val toolInvocation =
+      ic.copy(
+        frameworkData =
+          ic.frameworkData.copy(
+            nodePath = context.nodePath,
+            isolationScope = context.isolationScope,
+          )
+      )
     val toolContext =
       ToolContext(
-        context.invocationContext,
+        toolInvocation,
         functionCallId = functionCallId,
         toolConfirmation = context.confirmationAnswer(name),
       )

@@ -19,6 +19,7 @@
 package com.google.adk.kt.interop
 
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
@@ -32,15 +33,21 @@ import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.memory.MemoryService
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.testing.DummyMemoryService
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.signInResponseStateKey
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.CaptureInput
@@ -56,6 +63,7 @@ import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.StubNode
 import com.google.adk.kt.workflow.ThrowingNode
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.runNodeAsApp
 import com.google.adk.kt.workflow.runWorkflow
 import java.io.IOException
 import java.util.concurrent.CancellationException
@@ -145,6 +153,17 @@ private class JavaDispatcher(
     publish(dispatch(InteropContextView.of(context, coroutineContext)))
 }
 
+/**
+ * A Java-style tool that runs [child] through a view of its context and answers with its output.
+ */
+private class JavaChildRunningTool(private val child: Node) :
+  BaseFutureTool(name = "run_child", description = "Runs a child node.") {
+  override fun declaration(): FunctionDeclaration? = null
+
+  override fun runAsync(context: ToolContext, args: Map<String, Any?>): CompletableFuture<Any> =
+    InteropContextView.of(context).runNode(child).thenApply { mapOf("result" to it) }
+}
+
 /** Counts its runs and produces no output. */
 private class SilentNode(override val name: String) : Node {
   var runs = 0
@@ -200,6 +219,43 @@ private class HangingMemoryService : MemoryService by DummyMemoryService() {
 }
 
 class InteropContextViewTest {
+
+  @Test
+  fun runNode_fromJavaToolOfNodeRootAgent_storesChildEventsBeforeTheResponse() {
+    // Arrange
+    val step1 = Emitter("step_1", "C")
+    val inner =
+      Workflow(
+        name = "inner_wf",
+        edges = listOf(Edge(Start, step1), Edge(step1, CaptureInput("step_2"))),
+      )
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              modelFunctionCallResponse("run_child", id = "fc_1"),
+              LlmResponse(content = modelMessage("Done.")),
+            ),
+          ),
+        tools = listOf(JavaChildRunningTool(inner)),
+      )
+
+    // Act
+    val session = runNodeAsApp(agent)
+
+    // Assert
+    val paths = session.events.map { it.nodeInfo?.path }
+    val step2Index = paths.indexOf("agent@1/inner_wf@1/step_2@1")
+    val responseIndex = session.events.indexOfFirst { it.functionResponses().isNotEmpty() }
+    assertTrue(step2Index in 0..<responseIndex)
+    assertEquals(
+      mapOf("result" to mapOf("received" to "C")),
+      session.events[responseIndex].functionResponses().single().response,
+    )
+  }
 
   @Test
   fun runNode_childOutputIsPublishedAsTheCallersOutput() {

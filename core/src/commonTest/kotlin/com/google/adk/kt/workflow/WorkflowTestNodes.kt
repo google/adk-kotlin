@@ -18,13 +18,20 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.userMessage
 import kotlinx.coroutines.flow.Flow
@@ -36,6 +43,29 @@ import kotlinx.coroutines.runBlocking
  * Test node helpers shared across the workflow test suites. Kept in one file so the open-source
  * build - which compiles the whole test source set together - sees a single definition of each.
  */
+
+/** A tool named `run_child` that answers with `{"result": <what [runChild] returns>}`. */
+internal fun childRunningTool(runChild: suspend (Context) -> Any?) =
+  DummyTool(name = "run_child") { context, _ -> mapOf("result" to runChild(context)) }
+
+/** An agent whose model calls [tool] once per id in [callIds], then says done. */
+internal fun toolCallingAgent(
+  tool: DummyTool,
+  vararg callIds: String,
+  name: String = "agent",
+  mode: AgentMode? = null,
+) =
+  LlmAgent(
+    name = name,
+    model =
+      DummyModel.createSequential(
+        "model",
+        callIds.map { modelFunctionCallResponse(tool.name, id = it) } +
+          LlmResponse(content = modelMessage("Done.")),
+      ),
+    tools = listOf(tool),
+    mode = mode,
+  )
 
 /** A failure thrown only by test nodes, so tests never mistake it for one raised by the runtime. */
 internal class TestNodeException(message: String) : RuntimeException(message)
@@ -117,8 +147,11 @@ internal val Throwable.allSuppressed: List<Throwable>
 /**
  * Runs [workflow] as an app's root node through [InMemoryRunner] and returns the stored session.
  */
-internal fun runWorkflowAsApp(workflow: Workflow): Session = runBlocking {
-  val runner = InMemoryRunner(app = App(appName = "workflow_app", rootNode = workflow))
+internal fun runWorkflowAsApp(workflow: Workflow): Session = runNodeAsApp(workflow)
+
+/** Runs [root], such as an LlmAgent, as an app's root node and returns the stored session. */
+internal fun runNodeAsApp(root: Node): Session = runBlocking {
+  val runner = InMemoryRunner(app = App(appName = "workflow_app", rootNode = root))
   runner.runAsync(userId = "user", sessionId = "session", newMessage = userMessage("go")).toList()
   checkNotNull(runner.sessionService.getSession(SessionKey("workflow_app", "user", "session")))
 }
