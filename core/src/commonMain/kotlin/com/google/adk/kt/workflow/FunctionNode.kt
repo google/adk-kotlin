@@ -147,6 +147,10 @@ private constructor(
   internal val inputType: KType?
     get() = (inputCodec as? ValueCodec<*>)?.kType
 
+  /** Whether this node's input type is Content or Event. */
+  internal val takesFrameworkInput: Boolean
+    get() = inputCodec.classifier in FRAMEWORK_TYPES
+
   /** Whether runs may ask the user to approve them, always or per [confirmationPredicate]. */
   private val asksForConfirmation: Boolean
     get() = requireConfirmation || confirmationPredicate != null

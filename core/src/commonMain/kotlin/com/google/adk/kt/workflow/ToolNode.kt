@@ -120,7 +120,7 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
     val functionCallId = Uuid.random()
     val toolContext =
       ToolContext(
-        context.invocationContext,
+        context.invocationContextForNode(),
         functionCallId = functionCallId,
         toolConfirmation = context.confirmationAnswer(name),
       )
