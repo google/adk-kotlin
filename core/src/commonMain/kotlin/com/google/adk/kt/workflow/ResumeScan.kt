@@ -460,7 +460,7 @@ internal object ResumeScan {
     val schema = node.outputSchema ?: return text
     // Model text is raw rather than JSON-quoted, so keep it as-is when the schema accepts strings.
     if (SchemaUtils.acceptsString(schema)) return text
-    return SchemaUtils.readJson(text).getOrElse {
+    return SchemaUtils.readJson(SchemaUtils.stripJsonCodeFence(text)).getOrElse {
       throw IllegalArgumentException(
         "Validation failed for rehydrated output against schema: ${it.message}",
         it,

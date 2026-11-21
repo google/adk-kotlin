@@ -4055,6 +4055,20 @@ class WorkflowHitlTest {
   }
 
   @Test
+  fun processRehydratedOutput_fencedJson_isParsedLikeTheLivePath() {
+    // adk-python test_strips_markdown_fence_like_the_live_path.
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("city" to Schema(type = Type.STRING)))
+    val node = MessageOutput("chat", "", outputSchema = schema)
+    val fenced = "```json\n{\"city\": \"Paris\"}\n```"
+    val stored = Content(role = Role.MODEL, parts = listOf(Part(text = fenced)))
+
+    val output = ResumeScan.processRehydratedOutput(node, stored)
+
+    assertEquals(mapOf("city" to "Paris"), output)
+  }
+
+  @Test
   fun processRehydratedOutput_nonJsonOutputForObjectSchema_fails() {
     // Arrange
     val schema =

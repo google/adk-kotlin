@@ -1568,6 +1568,100 @@ class SchemaUtilsTest {
     )
   }
 
+  @Test
+  fun stripJsonCodeFence_variations() {
+    // adk-python test_strip_json_code_fence_variations.
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("```json\n{\"a\": 1}\n```"))
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("```\n{\"a\": 1}\n```"))
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("```   \n{\"a\": 1}\n```"))
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("```json  {\"a\": 1}```"))
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("""{"a": 1}"""))
+    assertEquals("```", SchemaUtils.stripJsonCodeFence("```"))
+    assertEquals("", SchemaUtils.stripJsonCodeFence(""))
+    // test_uppercase_json_code_fence_is_stripped, test_other_language_tag_code_fence_is_stripped,
+    // test_code_fence_with_surrounding_whitespace_is_stripped, and a CRLF fence.
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("```JSON\n{\"a\": 1}\n```"))
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("```python\n{\"a\": 1}\n```"))
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("  \n```json\n{\"a\": 1}\n```  \n"))
+    assertEquals("""{"a": 1}""", SchemaUtils.stripJsonCodeFence("```json\r\n{\"a\": 1}\r\n```"))
+  }
+
+  @Test
+  fun stripJsonCodeFence_unclosedFence_returnsTheTextUnchanged() {
+    // adk-python test_unclosed_code_fence_with_whitespace_does_not_hang.
+    val payload = "```json\n" + " ".repeat(5000) + "x"
+
+    assertEquals(payload, SchemaUtils.stripJsonCodeFence(payload))
+  }
+
+  @Test
+  fun stripJsonCodeFence_fenceInsideOtherText_returnsTheTextUnchanged() {
+    val text = "Here it is:\n```json\n{\"a\": 1}\n```"
+
+    assertEquals(text, SchemaUtils.stripJsonCodeFence(text))
+  }
+
+  @Test
+  fun validateOutputSchema_fencedJson_parsesTheObject() {
+    // adk-python test_json_code_fence_is_stripped.
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("name" to Schema(type = Type.STRING)))
+
+    val result = SchemaUtils.validateOutputSchema("```json\n{\"name\": \"x\"}\n```", schema)
+
+    assertEquals(mapOf("name" to "x"), result.getOrThrow())
+  }
+
+  @Test
+  fun parseModelOutput_fencedJson_parsesTheObject() {
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("name" to Schema(type = Type.STRING)))
+
+    val output = SchemaUtils.parseModelOutput(schema, "```json\n{\"name\": \"x\"}\n```")
+
+    assertEquals(mapOf("name" to "x"), output)
+  }
+
+  @Test
+  fun parseModelOutput_fencedJsonArray_parsesTheList() {
+    // adk-python test_list_schema_code_fence_is_stripped.
+    val item = Schema(type = Type.OBJECT, properties = mapOf("name" to Schema(type = Type.STRING)))
+
+    val output =
+      SchemaUtils.parseModelOutput(
+        Schema(type = Type.ARRAY, items = item),
+        "```json\n[{\"name\": \"item1\"}]\n```",
+      )
+
+    assertEquals(listOf(mapOf("name" to "item1")), output)
+  }
+
+  @Test
+  fun parseModelOutput_stringSchemaAndFencedText_keepsTheText() {
+    val output = SchemaUtils.parseModelOutput(Schema(type = Type.STRING), "```\nhello\n```")
+
+    assertEquals("```\nhello\n```", output)
+  }
+
+  @Test
+  fun parseModelOutput_stringSchemaAndFencedJsonString_decodesTheString() {
+    // Like adk-python's validate_schema, which strips the fence for every schema.
+    val output = SchemaUtils.parseModelOutput(Schema(type = Type.STRING), "```json\n\"hi\"\n```")
+
+    assertEquals("hi", output)
+  }
+
+  @Test
+  fun validateOutputSchema_backticksInsideValue_areKept() {
+    // adk-python test_backticks_inside_value_are_preserved.
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("name" to Schema(type = Type.STRING)))
+
+    val result = SchemaUtils.validateOutputSchema("""{"name": "```"}""", schema)
+
+    assertEquals(mapOf("name" to "```"), result.getOrThrow())
+  }
+
   /** A page whose `limit` defaults to 10. */
   private val page =
     Schema(
