@@ -838,6 +838,7 @@ class SessionRoutesTest {
           tokenEndpoint = "https://a/token",
           scopes = listOf("openid"),
         ),
+        rawAuthCredential = AuthCredential.OAuth2(clientId = "raw-cid"),
         exchangedAuthCredential =
           AuthCredential.OAuth2(
             clientId = "cid",
