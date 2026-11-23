@@ -47,6 +47,7 @@ import com.google.adk.kt.workflow.CaptureInput
 import com.google.adk.kt.workflow.Edge
 import com.google.adk.kt.workflow.Emitter
 import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.NodeBody
 import com.google.adk.kt.workflow.NodeConfig
 import com.google.adk.kt.workflow.NodeExecutionException
 import com.google.adk.kt.workflow.NodeTimeoutException
@@ -63,10 +64,13 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
@@ -77,6 +81,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -840,6 +845,105 @@ class InteropContextViewTest {
     // Assert
     assertNull(beforeResponse)
     assertEquals(AuthCredential.ApiKey(Secret("sk-response")), afterResponse)
+  }
+
+  @Test
+  fun emit_hooksCapturedBeforeBodyReturned_rejectsCallsOnceBodyEnds() {
+    // Arrange: a helper reads javaInteropHooks before the body returns, then calls emit after the
+    // body's worker task finishes while the run's single thread stays blocked ahead of
+    // invokeOnCompletion.
+    val bodyFinished = CountDownLatch(1)
+    val helperCalled = CountDownLatch(1)
+    val runThreadUnblocked = AtomicBoolean(false)
+    val helperFuture = AtomicReference<CompletableFuture<Void?>?>()
+    val partialError = AtomicReference<Throwable?>()
+    val storedError = AtomicReference<Throwable?>()
+    val runThread = Executors.newSingleThreadExecutor()
+    try {
+      val bodyPool = Executors.newSingleThreadExecutor()
+      try {
+        val bodyExecutor = Executor { task ->
+          bodyPool.execute {
+            try {
+              task.run()
+            } finally {
+              bodyFinished.countDown()
+            }
+          }
+        }
+        val late =
+          node<Any?, String>("late") { _, _ -> "" }
+            .toBuilder()
+            .bodyDispatcher(bodyExecutor.asCoroutineDispatcher())
+            .body(
+              NodeBody { context, _ ->
+                val hooks = checkNotNull(context.javaInteropHooks)
+                runThread.execute {
+                  try {
+                    runThreadUnblocked.set(helperCalled.await(5, TimeUnit.SECONDS))
+                  } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                  }
+                }
+                helperFuture.set(
+                  CompletableFuture.runAsync {
+                    try {
+                      assertTrue(bodyFinished.await(5, TimeUnit.SECONDS))
+                      partialError.set(
+                        runCatching {
+                            hooks.emit(
+                              Event(partial = true, content = Content.fromText(Role.MODEL, "part"))
+                            )
+                          }
+                          .exceptionOrNull()
+                      )
+                      storedError.set(
+                        runCatching {
+                            hooks.emit(Event(content = Content.fromText(Role.MODEL, "stored")))
+                          }
+                          .exceptionOrNull()
+                      )
+                    } finally {
+                      helperCalled.countDown()
+                    }
+                  }
+                )
+                "out"
+              }
+            )
+            .build()
+
+        // Act
+        val events = runBlocking {
+          withTimeout(30.seconds) {
+            withContext(runThread.asCoroutineDispatcher()) {
+              val runner =
+                InMemoryRunner(app = App(appName = "late_hooks_wf", rootNode = workflowOf(late)))
+              runner
+                .runAsync(userId = "user", sessionId = "session", newMessage = userMessage("go"))
+                .toList()
+            }
+          }
+        }
+        checkNotNull(helperFuture.get()).get(5, TimeUnit.SECONDS)
+
+        // Assert: both partial and non-partial calls fail immediately from the closed emitter.
+        assertTrue(runThreadUnblocked.get())
+        assertContains(
+          assertIs<IllegalStateException>(partialError.get()).message.orEmpty(),
+          "after its Java FunctionNode body ended",
+        )
+        assertContains(
+          assertIs<IllegalStateException>(storedError.get()).message.orEmpty(),
+          "after its Java FunctionNode body ended",
+        )
+        assertTrue(events.none { it.content?.text() in setOf("part", "stored") })
+      } finally {
+        bodyPool.shutdownNow()
+      }
+    } finally {
+      runThread.shutdownNow()
+    }
   }
 
   @Test

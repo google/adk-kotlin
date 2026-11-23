@@ -87,6 +87,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -1948,6 +1949,27 @@ public final class FunctionNodeJavaInteropTest {
   }
 
   @Test
+  public void emit_fromAHelperAfterTheBodyReturned_throwsIllegalState() {
+    // Arrange
+    AtomicReference<Throwable> helperError = new AtomicReference<>();
+
+    // Act
+    List<Event> events =
+        runWithALateHelperCall(
+            "late_emit",
+            ctx -> InteropContextView.of(ctx).emit(Content.fromText("model", "late")),
+            helperError);
+
+    // Assert
+    assertTrue(
+        String.valueOf(helperError.get()), helperError.get() instanceof IllegalStateException);
+    assertTrue(
+        helperError.get().getMessage(),
+        helperError.get().getMessage().contains("not after it ended"));
+    assertTrue(events.stream().noneMatch(e -> hasText(e, "late")));
+  }
+
+  @Test
   public void emit_parallelBodiesEmittingOverASlowStore_eachKeepsItsOrder() {
     // Arrange: two sibling bodies each emit three messages, and a barrier makes them run at once.
     CyclicBarrier bothRunning = new CyclicBarrier(2);
@@ -3127,6 +3149,95 @@ public final class FunctionNodeJavaInteropTest {
         .filter(i -> test.test(events.get(i)))
         .findFirst()
         .orElse(-1);
+  }
+
+  /** A call a helper thread makes on the body's context. */
+  private interface LateCall {
+    void call(Context ctx) throws Exception;
+  }
+
+  /**
+   * Runs a body named {@code name} that returns while its helper waits for the body's worker task
+   * to finish, then makes {@code lateCall} and puts what it threw in {@code helperError}. The run's
+   * only thread stays busy until that call, so the node cannot finish its step and only the end of
+   * the body can stop the call.
+   */
+  private List<Event> runWithALateHelperCall(
+      String name, LateCall lateCall, AtomicReference<Throwable> helperError) {
+    CountDownLatch bodyFinished = new CountDownLatch(1);
+    CountDownLatch helperCalled = new CountDownLatch(1);
+    AtomicBoolean runThreadUnblocked = new AtomicBoolean();
+    AtomicReference<CompletableFuture<Void>> helperFuture = new AtomicReference<>();
+    ExecutorService runThread = Executors.newSingleThreadExecutor();
+    try {
+      ExecutorService bodyPool = Executors.newSingleThreadExecutor();
+      try {
+        Executor bodyExecutor =
+            task ->
+                bodyPool.execute(() -> {
+                  try {
+                    task.run();
+                  } finally {
+                    bodyFinished.countDown();
+                  }
+                });
+        FunctionNode<Content, String> early =
+            FunctionNodes.builder(Content.class, String.class, ExecutorsKt.from(bodyExecutor))
+                .name(name)
+                .body((ctx, content) -> {
+                  runThread.execute(() -> {
+                    try {
+                      runThreadUnblocked.set(helperCalled.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException e) {
+                      Thread.currentThread().interrupt();
+                    }
+                  });
+                  helperFuture.set(
+                      CompletableFuture.runAsync(() -> {
+                        try {
+                          assertTrue(bodyFinished.await(5, TimeUnit.SECONDS));
+                          try {
+                            lateCall.call(ctx);
+                          } catch (Throwable t) {
+                            helperError.set(t);
+                          }
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new AssertionError(e);
+                        } finally {
+                          helperCalled.countDown();
+                        }
+                      }));
+                  return "out";
+                })
+                .build();
+        String appName = name + "_wf";
+        InMemoryRunner runner =
+            InMemoryRunner.builder()
+                .app(App.builder().appName(appName).rootNode(workflowOf(appName, early)).build())
+                .build();
+        SessionKey key = new SessionKey(appName, "user", "session");
+        var unusedSession =
+            AsyncJavaHelpers.await(
+                c -> runner.getSessionService().createSession(key, ImmutableMap.of(), c));
+        List<Event> events =
+            assertTimeoutPreemptively(() ->
+                AsyncJavaHelpers.collect(
+                    runner.runAsync(
+                        "user", "session", null, Content.fromText("user", "go"), null, null),
+                    ExecutorsKt.from(runThread)));
+        assertNotNull(helperFuture.get());
+        helperFuture.get().get(5, TimeUnit.SECONDS);
+        assertTrue(runThreadUnblocked.get());
+        return events;
+      } finally {
+        bodyPool.shutdownNow();
+      }
+    } catch (Exception e) {
+      throw new AssertionError(e);
+    } finally {
+      runThread.shutdownNow();
+    }
   }
 
   /** Returns whether {@code event} carries the message {@code text}. */

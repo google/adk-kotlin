@@ -66,7 +66,18 @@ internal actual fun <I, O> NodeBody<I, O>.onWorker(
     }
     val result = async {
       // A failure or pause, caught here, lets the accepted emit calls go out first.
-      outcomeOf { runOnWorker(dispatcher ?: defaultBodyDispatcher) { body.apply(context, input) } }
+      outcomeOf {
+        runOnWorker(dispatcher ?: defaultBodyDispatcher) {
+          try {
+            body.apply(context, input)
+          } finally {
+            // Also here, so a helper's call after the body ends fails at once, even one that read
+            // the hooks before.
+            state.javaInteropHooks.compareAndSet(hooks, null)
+            emitter.close()
+          }
+        }
+      }
     }
     // Runs even if the run's dispatcher rejects the task, so that serving always ends.
     result.invokeOnCompletion {
