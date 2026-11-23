@@ -56,6 +56,7 @@ import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.StubNode
 import com.google.adk.kt.workflow.ThrowingNode
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.adk.kt.workflow.runWorkflow
 import java.io.IOException
 import java.util.concurrent.CancellationException
@@ -371,6 +372,22 @@ class InteropContextViewTest {
         .filter { it.output != null && it.nodeInfo?.path != "wf@1/caller@1" }
         .associate { it.nodeInfo?.path to it.output },
     )
+  }
+
+  @Test
+  fun emit_fromAKotlinNodeBody_failsAndNamesTheSuspendingEmit() {
+    // Arrange
+    val count =
+      node<Any?, Int>("count") { context, _ ->
+        InteropContextView.of(context).emit(Content.fromText(Role.MODEL, "counting"))
+        3
+      }
+
+    // Act
+    val error = assertFailsWith<IllegalStateException> { runWorkflow(workflowOf(count)) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "A Kotlin node body calls its suspending emit")
   }
 
   @Test

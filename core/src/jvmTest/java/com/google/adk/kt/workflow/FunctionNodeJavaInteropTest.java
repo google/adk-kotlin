@@ -21,6 +21,7 @@ import static com.google.common.collect.MoreCollectors.onlyElement;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -39,16 +40,24 @@ import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
+import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.ResumabilityConfig;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.interop.AsyncJavaHelpers;
+import com.google.adk.kt.interop.BaseFutureSessionService;
+import com.google.adk.kt.interop.CompletableFutureSessionService;
 import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.InteropContextView;
 import com.google.adk.kt.interop.RunNodeConfig;
 import com.google.adk.kt.runners.InMemoryRunner;
+import com.google.adk.kt.sessions.GetSessionConfig;
+import com.google.adk.kt.sessions.InMemorySessionService;
+import com.google.adk.kt.sessions.ListEventsResponse;
+import com.google.adk.kt.sessions.ListSessionsResponse;
 import com.google.adk.kt.sessions.Session;
 import com.google.adk.kt.sessions.SessionKey;
+import com.google.adk.kt.sessions.SessionService;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.FunctionResponse;
 import com.google.adk.kt.types.Part;
@@ -73,6 +82,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -1863,6 +1873,255 @@ public final class FunctionNodeJavaInteropTest {
   }
 
   @Test
+  public void emit_twoMessagesThenOutput_goOutInOrderWithTheirStateAndIds() {
+    // Arrange
+    FunctionNode<Content, String> stepper =
+        FunctionNodes.of(
+            "stepper",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              ctx.updateState("before_first", 1);
+              InteropContextView.of(ctx).emit(Content.fromText("model", "first"));
+              ctx.updateState("before_second", 2);
+              // An empty id stays empty, as in a Kotlin body.
+              InteropContextView.of(ctx)
+                  .emit(
+                      Event.builder().id("").content(Content.fromText("model", "second")).build());
+              ctx.updateState("after_second", 3);
+              return "out";
+            });
+    SlowAppendSessionService sessions = new SlowAppendSessionService(Duration.ofMillis(30));
+
+    // Act
+    List<Event> events = eventsOf(run(workflowOf("steps_wf", stepper), "go", sessions), "stepper");
+
+    // Assert
+    assertEquals(3, events.size());
+    assertEquals("first", events.get(0).getContent().text());
+    assertEquals(ImmutableMap.of("before_first", 1), events.get(0).getActions().getStateDelta());
+    assertEquals("second", events.get(1).getContent().text());
+    assertEquals("", events.get(1).getId());
+    assertEquals(ImmutableMap.of("before_second", 2), events.get(1).getActions().getStateDelta());
+    assertEquals("out", events.get(2).getOutput());
+    assertEquals(ImmutableMap.of("after_second", 3), events.get(2).getActions().getStateDelta());
+  }
+
+  @Test
+  public void emit_readAfterEmit_seesTheBodysOwnWrite() {
+    // Arrange: the store of "one" holds until the body has read, or for 50 ms, so a read made
+    // before the store would miss the write.
+    CountDownLatch appendStarted = new CountDownLatch(1);
+    AtomicBoolean sawAppendStart = new AtomicBoolean();
+    CompletableFuture<Void> bodyRead = new CompletableFuture<>();
+    FunctionNode<Content, String> reader =
+        FunctionNodes.of(
+            "reader",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              ctx.updateState("n", 1);
+              InteropContextView.of(ctx).emit(Content.fromText("model", "one"));
+              sawAppendStart.set(appendStarted.await(5, TimeUnit.SECONDS));
+              String n = String.valueOf(ctx.getState().get("n"));
+              bodyRead.complete(null);
+              return n;
+            });
+    SlowAppendSessionService sessions =
+        new SlowAppendSessionService(event -> {
+          if (!hasText(event, "one")) {
+            return CompletableFuture.completedFuture(null);
+          }
+          appendStarted.countDown();
+          return bodyRead.completeOnTimeout(null, 50, TimeUnit.MILLISECONDS);
+        });
+
+    // Act
+    List<Event> events = run(workflowOf("reader_wf", reader), "go", sessions);
+
+    // Assert
+    assertTrue(sawAppendStart.get());
+    assertEquals("1", outputOf(events, "reader"));
+  }
+
+  @Test
+  public void emit_eventWithAnOutput_throwsAndTheBodyMayCatchIt() {
+    // Arrange: as in a Kotlin node {} body, the rejection reaches only the call.
+    AtomicReference<IllegalArgumentException> seen = new AtomicReference<>();
+    FunctionNode<Content, String> careful =
+        FunctionNodes.of(
+            "careful",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              try {
+                InteropContextView.of(ctx).emit(Event.builder().output("x").build());
+              } catch (IllegalArgumentException e) {
+                seen.set(e);
+              }
+              return "out";
+            });
+
+    // Act
+    List<Event> events = run("careful_wf", "go", careful);
+
+    // Assert
+    assertTrue(seen.get().getMessage(), seen.get().getMessage().contains("return the value"));
+    assertEquals("out", outputOf(events, "careful"));
+  }
+
+  @Test
+  public void emit_afterTheBodyReturned_throws() {
+    // Arrange
+    AtomicReference<Context> kept = new AtomicReference<>();
+    FunctionNode<Content, String> keep =
+        FunctionNodes.of(
+            "keep",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              kept.set(ctx);
+              return "out";
+            });
+    var unused = run("keep_wf", "go", keep);
+
+    Context context = kept.get();
+    Content tooLate = Content.fromText("model", "too late");
+
+    // Act
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class, () -> InteropContextView.of(context).emit(tooLate));
+
+    // Assert
+    assertTrue(error.getMessage(), error.getMessage().contains("only while a Java FunctionNode"));
+  }
+
+  @Test
+  public void emit_childBodyRunOnTheCallersContext_failsTheChildAndKeepsTheCallersEmit() {
+    // Arrange: the caller collects the child's Node.runNode flow on its own Context, so both bodies
+    // would share one node state.
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, input) -> "child out");
+    AtomicReference<IllegalStateException> childError = new AtomicReference<>();
+    FunctionNode<Content, String> caller =
+        FunctionNodes.of(
+            "caller",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              try {
+                AsyncJavaHelpers.forEach(child.runNode(ctx, "x"), item -> {});
+              } catch (IllegalStateException e) {
+                childError.set(e);
+              }
+              InteropContextView.of(ctx).emit(Content.fromText("model", "from the caller"));
+              return "out";
+            });
+
+    // Act
+    List<Event> events = eventsOf(run("shared_wf", "go", caller), "caller");
+
+    // Assert
+    assertNotNull(childError.get());
+    assertTrue(
+        childError.get().getMessage(),
+        childError.get().getMessage().contains("already runs with the Context of node 'caller'"));
+    assertEquals("from the caller", events.get(0).getContent().text());
+    assertEquals("out", events.get(1).getOutput());
+  }
+
+  @Test
+  public void emit_nodeCancelledWhileItWaits_throwsCancellationAndSoDoesALaterCall() {
+    // Arrange: the store of "wait" holds until the body has returned, past the node's timeout.
+    CompletableFuture<Void> bodyReturned = new CompletableFuture<>();
+    AtomicReference<CancellationException> cancelled = new AtomicReference<>();
+    AtomicReference<CancellationException> laterCancelled = new AtomicReference<>();
+    FunctionNode<Content, String> stuck =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("stuck")
+            .config(NodeConfig.builder().timeoutMillis(500).build())
+            .body((ctx, content) -> {
+              try {
+                InteropContextView.of(ctx).emit(Content.fromText("model", "wait"));
+              } catch (CancellationException e) {
+                cancelled.set(e);
+              }
+              try {
+                InteropContextView.of(ctx).emit(Content.fromText("model", "after"));
+              } catch (CancellationException e) {
+                laterCancelled.set(e);
+              }
+              bodyReturned.complete(null);
+              return "late";
+            })
+            .build();
+    SlowAppendSessionService sessions =
+        new SlowAppendSessionService(event ->
+            hasText(event, "wait")
+                ? bodyReturned.orTimeout(10, TimeUnit.SECONDS)
+                : CompletableFuture.completedFuture(null));
+
+    Workflow workflow = workflowOf("stuck_wf", stuck);
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run(workflow, "go", sessions));
+
+    // Assert
+    assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+    assertNotNull(cancelled.get());
+    assertNotNull(laterCancelled.get());
+    List<Event> stored = sessionEvents("stuck_wf");
+    assertFalse(stored.stream().anyMatch(e -> hasText(e, "after")));
+    assertFalse(stored.stream().anyMatch(e -> Objects.equals(e.getOutput(), "late")));
+  }
+
+  @Test
+  public void emit_everyCallAfterACancel_throws() {
+    // Arrange: the body sleeps until the timeout interrupts it, swallows the interrupt and emits.
+    AtomicInteger cancels = new AtomicInteger();
+    FunctionNode<Content, String> looper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("looper")
+            .config(NodeConfig.builder().timeoutMillis(300).build())
+            .body((ctx, content) -> {
+              try {
+                Thread.sleep(10_000);
+              } catch (InterruptedException e) {
+                // Swallows the timeout's interrupt, as some I/O does, and keeps going.
+              }
+              try {
+                // Only the cancel check stops a partial event right after the cancel.
+                InteropContextView.of(ctx)
+                    .emit(
+                        Event.builder()
+                            .partial(true)
+                            .content(Content.fromText("model", "part"))
+                            .build());
+              } catch (CancellationException e) {
+                cancels.incrementAndGet();
+              }
+              for (int i = 0; i < 3; i++) {
+                try {
+                  InteropContextView.of(ctx).emit(Content.fromText("model", "batch"));
+                } catch (CancellationException e) {
+                  cancels.incrementAndGet();
+                }
+              }
+              return "late";
+            })
+            .build();
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("looper_wf", "go", looper));
+
+    // Assert: every emit after the cancel throws, and no batch is stored.
+    assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+    assertEquals(4, cancels.get());
+    assertFalse(sessionEvents("looper_wf").stream().anyMatch(e -> hasText(e, "batch")));
+  }
+
+  @Test
   public void body_interruptedWithoutACancel_failsTheNodeWithTheInterrupt() {
     // Arrange: the body interrupts itself, as a helper thread would.
     FunctionNode<Content, String> sleeper =
@@ -2370,10 +2629,16 @@ public final class FunctionNodeJavaInteropTest {
 
   /** Runs {@code workflow} as an app on a user {@code message} and returns every event. */
   private List<Event> run(Workflow workflow, String message) {
+    return run(workflow, message, new InMemorySessionService());
+  }
+
+  /** Like {@link #run(Workflow, String)}, storing events in {@code sessions}. */
+  private List<Event> run(Workflow workflow, String message, SessionService sessions) {
     String appName = workflow.getName();
     InMemoryRunner runner =
         InMemoryRunner.builder()
             .app(App.builder().appName(appName).rootNode(workflow).build())
+            .sessionService(sessions)
             .build();
     runners.put(appName, runner);
     SessionKey key = new SessionKey(appName, "user", "session");
@@ -2382,6 +2647,77 @@ public final class FunctionNodeJavaInteropTest {
             c -> runner.getSessionService().createSession(key, ImmutableMap.of(), c));
     return AsyncJavaHelpers.collect(
         runner.runAsync("user", "session", null, Content.fromText("user", message), null, null));
+  }
+
+  /** A workflow that runs {@code node} from START. */
+  private static Workflow workflowOf(String name, Node node) {
+    return Workflow.builder().name(name).edges(g -> g.fromStart().then(node)).build();
+  }
+
+  /** Returns the events of the first run of the node named {@code name}, in order. */
+  private static List<Event> eventsOf(List<Event> events, String name) {
+    return events.stream()
+        .filter(e -> e.getNodeInfo() != null)
+        .filter(e -> e.getNodeInfo().getPath().endsWith("/" + name + "@1"))
+        .collect(toImmutableList());
+  }
+
+  /** Returns whether {@code event} carries the message {@code text}. */
+  private static boolean hasText(Event event, String text) {
+    return event.getContent() != null && text.equals(event.getContent().text());
+  }
+
+  /**
+   * An in-memory session service whose appends wait for {@code beforeStore}, as a remote one does.
+   */
+  private static final class SlowAppendSessionService extends BaseFutureSessionService {
+    private final CompletableFutureSessionService delegate =
+        CompletableFutureSessionService.of(new InMemorySessionService());
+    private final Function<Event, CompletableFuture<?>> beforeStore;
+
+    SlowAppendSessionService(Function<Event, CompletableFuture<?>> beforeStore) {
+      this.beforeStore = beforeStore;
+    }
+
+    /** Delays every append by {@code delay}. */
+    SlowAppendSessionService(Duration delay) {
+      this(event ->
+          CompletableFuture.runAsync(
+              () -> {},
+              CompletableFuture.delayedExecutor(delay.toMillis(), TimeUnit.MILLISECONDS)));
+    }
+
+    @Override
+    protected CompletableFuture<Event> appendEventAsync(Session session, Event event) {
+      return beforeStore.apply(event).thenCompose(unused -> delegate.appendEvent(session, event));
+    }
+
+    @Override
+    protected CompletableFuture<Session> createSessionAsync(
+        SessionKey key, Map<String, Object> state) {
+      return delegate.createSession(key, state);
+    }
+
+    @Override
+    protected CompletableFuture<Session> getSessionAsync(SessionKey key, GetSessionConfig config) {
+      return delegate.getSession(key, config);
+    }
+
+    @Override
+    protected CompletableFuture<ListSessionsResponse> listSessionsAsync(
+        String appName, String userId) {
+      return delegate.listSessions(appName, userId);
+    }
+
+    @Override
+    protected CompletableFuture<Void> deleteSessionAsync(SessionKey key) {
+      return delegate.deleteSession(key);
+    }
+
+    @Override
+    protected CompletableFuture<ListEventsResponse> listEventsAsync(SessionKey key) {
+      return delegate.listEvents(key);
+    }
   }
 
   /** The runners {@link #run} created, by app name, so a test can read the session back. */

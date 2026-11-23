@@ -24,6 +24,7 @@ import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryEntry
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.workflow.Node
 import java.util.concurrent.CompletableFuture
@@ -38,13 +39,15 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.future
 
 /**
- * Java-friendly view of a [Context]: each method calls the `suspend` method of the same name and
- * returns a [CompletableFuture] of its result, so Java callers never pass a `Continuation`. Each
- * call runs in the caller's OpenTelemetry context, on the calling thread until it first suspends
- * (so [runNode] children get their run IDs in call order) and then on [Dispatchers.IO], as
- * [PublisherRunner] runs agents. Each call is canceled with its future and with the `Job` given to
- * [of], if any, or otherwise when the node run that owns the context, if any, ends, so await each
- * call before the node finishes.
+ * Java-friendly view of a [Context]: each method except [emit] calls the `suspend` method of the
+ * same name and returns a [CompletableFuture] of its result, so Java callers never pass a
+ * `Continuation`; [emit] instead blocks, works only in a Java `FunctionNode` body, and ignores the
+ * coroutine context given to [of]. Each future-returning call runs in the caller's OpenTelemetry
+ * context, on the calling thread until it first suspends (so [runNode] children get their run IDs
+ * in call order) and then on [Dispatchers.IO], as [PublisherRunner] runs agents. Each
+ * future-returning call is canceled with its future and with the `Job` given to [of], if any, or
+ * otherwise when the node run that owns the context, if any, ends, so await each call before the
+ * node finishes.
  */
 @AdkJavaInteropApi
 class InteropContextView
@@ -139,6 +142,38 @@ private constructor(private val context: Context, private val coroutineContext: 
       overrideIsolationScope = config.overrideIsolationScope,
       raiseOnWait = config.raiseOnWait,
     )
+  }
+
+  /**
+   * Sends [event] from this node's running Java `FunctionNode` body or a thread it uses, after
+   * earlier calls' events and before the output, or after it if a `useAsOutput` child already sent
+   * the output. A non-partial call returns once the run has stored the event and passed it on; a
+   * partial one returns at once, and its event is neither stored nor given state. The event carries
+   * the state written before the call, or with an event another thread sent just before it, so use
+   * state only on the thread that calls `emit`.
+   *
+   * @throws IllegalStateException outside a running Java body or after it ended
+   * @throws IllegalArgumentException if [event] carries an output, or if the state schema rejects
+   *   the state delta of a non-partial [event], which also fails the node
+   * @throws kotlin.coroutines.cancellation.CancellationException once the node is cancelled, or if
+   *   the waiting thread is interrupted; that thread stays interrupted, and the event may still be
+   *   stored
+   */
+  @ExperimentalWorkflowApi
+  fun emit(event: Event) {
+    val hooks =
+      checkNotNull(context.javaInteropHooks) {
+        "InteropContextView.emit works only while a Java FunctionNode body of this node runs, not" +
+          " after it ended. A Kotlin node body calls its suspending emit, and a custom node emits" +
+          " from its flow."
+      }
+    hooks.emit(event)
+  }
+
+  /** Sends [content] as a message from this node's Java body, as [emit] with an [Event] does. */
+  @ExperimentalWorkflowApi
+  fun emit(content: Content) {
+    emit(Event(content = content))
   }
 
   private fun <T> call(block: suspend () -> T): CompletableFuture<T> {

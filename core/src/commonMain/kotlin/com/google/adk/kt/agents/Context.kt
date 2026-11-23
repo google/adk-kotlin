@@ -1044,6 +1044,11 @@ open class Context(
 
   private var nodeState: NodeExecutionState? = null
 
+  /** The hooks of the Java body that runs with this context, or null if none runs. */
+  @OptIn(ExperimentalAtomicApi::class)
+  internal val javaInteropHooks: JavaInteropHooks?
+    get() = nodeState?.javaInteropHooks?.load()
+
   internal fun requireNodeState(): NodeExecutionState =
     checkNotNull(nodeState) { "This member is available only on a node activation context." }
 
@@ -1108,6 +1113,11 @@ internal class NodeExecutionState(
    * when the attempt ends, ensuring that work started for the attempt stops with it.
    */
   @Volatile var activationJob: Job? = null
+
+  /**
+   * Claimed while this activation's Java body runs, for its blocking `InteropContextView` calls.
+   */
+  val javaInteropHooks = AtomicReference<JavaInteropHooks?>(null)
 
   /** The node's output value, or `null` if none was produced. */
   val output: Any?
@@ -1299,6 +1309,9 @@ internal class NodeExecutionState(
   private fun secondOutputMessage() =
     "Node '${node.name}' produced a second output; a node produces at most one output."
 }
+
+/** Carries a running Java `FunctionNode` body's blocking `InteropContextView` calls to its node. */
+internal class JavaInteropHooks(val emit: (Event) -> Unit)
 
 /** Runs of a node's children keyed by `name@runId`, kept across the node's attempts. */
 // The mutex guards every access to byKey, and a run's Context is read only after it completes.
