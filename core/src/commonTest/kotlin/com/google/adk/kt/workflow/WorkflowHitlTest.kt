@@ -18,6 +18,7 @@
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
@@ -35,6 +36,7 @@ import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.plugins.Plugin
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.sessions.SessionKey
@@ -58,11 +60,14 @@ import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -81,6 +86,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlinx.serialization.SerialName
@@ -905,13 +911,172 @@ private class EmitThenFailOnceThenWriteState(override val name: String, private 
   }
 }
 
-/** A runner over an app rooted on [root], driven a turn at a time; the app is [resumable]. */
-private class WorkflowSession(root: Node, resumable: Boolean = true) {
+/**
+ * On its first run, outputs, signals [outputSent], and fails once [failWhen] completes; on later
+ * runs, outputs after a short delay.
+ */
+private class OutputsThenFailsOnce(
+  override val name: String,
+  private val outputSent: CompletableDeferred<Unit>,
+  private val failWhen: CompletableDeferred<Unit>,
+) : Node {
+  private var runs = 0
+
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    runs += 1
+    if (runs == 1) {
+      emit("first")
+      outputSent.complete(Unit)
+      failWhen.await()
+      throw TestNodeException("fails after its output")
+    }
+    delay(100.milliseconds)
+    emit("second")
+  }
+}
+
+/**
+ * An agent node that asks for input under `ask_<name>` on its first run, and once answered runs
+ * [onAnswer] and outputs [value].
+ */
+private class AskingAgentNode(
+  name: String,
+  private val value: String,
+  private val onAnswer: suspend () -> Unit = {},
+) : BaseAgent(name = name) {
+  override val rerunOnResume: Boolean = true
+
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
+
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    if (context.resumeInputs.isEmpty()) {
+      emit(RequestInput(interruptId = "ask_$name"))
+    } else {
+      onAnswer()
+      emit(value)
+    }
+  }
+}
+
+/** Completes [asked] and asks for input under its own name; its answer becomes its output. */
+private class AsksAndSignals(
+  override val name: String,
+  private val asked: CompletableDeferred<Unit>,
+) : Node {
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    asked.complete(Unit)
+    emit(RequestInput(interruptId = name, message = "?"))
+  }
+}
+
+/** A chat agent that hands off to [target] on its first turn. */
+private fun handsOff(
+  name: String,
+  target: String,
+  subAgents: List<BaseAgent> = emptyList(),
+): LlmAgent =
+  LlmAgent(
+    name = name,
+    model =
+      DummyModel.createSequential(
+        "m",
+        listOf(modelFunctionCallResponse("transfer_to_agent", mapOf("agent_name" to target))),
+      ),
+    subAgents = subAgents,
+    mode = AgentMode.CHAT,
+  )
+
+/** A chat agent that waits on a long-running `approve` call, then hands off to [target]. */
+private fun approveThenTransfer(name: String, target: BaseAgent): LlmAgent =
+  LlmAgent(
+    name = name,
+    model =
+      DummyModel.createSequential(
+        "m",
+        listOf(
+          modelFunctionCallResponse("approve"),
+          modelFunctionCallResponse("transfer_to_agent", mapOf("agent_name" to target.name)),
+        ),
+      ),
+    subAgents = listOf(target),
+    tools = listOf(DummyTool("approve", isLongRunning = true, onRun = { _, _ -> Unit })),
+    mode = AgentMode.CHAT,
+  )
+
+/** Counts concurrent callers inside [occupy] and holds them until [waitFor] overlap. */
+private class ConcurrencyGauge(private val waitFor: Int = 2) {
+  private var running = 0
+  private val reached = CompletableDeferred<Unit>()
+
+  var peak = 0
+    private set
+
+  suspend fun occupy() {
+    running += 1
+    peak = maxOf(peak, running)
+    if (running >= waitFor) reached.complete(Unit)
+    try {
+      reached.await()
+    } finally {
+      running -= 1
+    }
+  }
+}
+
+/** An agent node that runs [onRun] and outputs [value]. */
+private class OutputAgentNode(
+  name: String,
+  private val value: String,
+  private val onRun: () -> Unit = {},
+) : BaseAgent(name = name) {
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
+
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    onRun()
+    emit(value)
+  }
+}
+
+/** An agent node that runs [child] through [Context.runNode] and outputs what it returns. */
+private class DispatchingAgentNode(name: String, private val child: Node) : BaseAgent(name = name) {
+  override val rerunOnResume: Boolean = true
+
+  override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
+
+  override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    emit(context.runNode(child, runId = "c"))
+  }
+}
+
+/** Calls [onOutput] with the node path of each event that carries an output. */
+private class OutputListener(private val onOutput: (String) -> Unit) : Plugin {
+  override val name = "output_listener"
+
+  override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event {
+    if (event.output != null) event.nodeInfo?.path?.let(onOutput)
+    return event
+  }
+}
+
+/** One user message carrying all of [answers]. */
+private fun answers(vararg answers: Content): Content =
+  Content(role = Role.USER, parts = answers.flatMap { it.parts })
+
+/**
+ * A runner over an app rooted on [root] with [plugins], driven a turn at a time; the app is
+ * [resumable].
+ */
+private class WorkflowSession(
+  root: Node,
+  resumable: Boolean = true,
+  plugins: List<Plugin> = emptyList(),
+) {
   private val runner =
     InMemoryRunner(
       App(
         appName = "wf_test",
         rootNode = root,
+        plugins = plugins,
         resumabilityConfig = ResumabilityConfig(isResumable = resumable),
       )
     )
@@ -926,9 +1091,17 @@ private class WorkflowSession(root: Node, resumable: Boolean = true) {
     }
   }
 
-  fun turn(message: Content): List<Event> = runBlocking {
-    runner.runAsync(userId = userId, sessionId = sessionId, newMessage = message).toList()
-  }
+  /** Drives a turn and returns its events, failing if it takes longer than [timeout]. */
+  fun turn(
+    message: Content,
+    timeout: Duration = Duration.INFINITE,
+    context: CoroutineContext = EmptyCoroutineContext,
+  ): List<Event> =
+    runBlocking(context) {
+      withTimeout(timeout) {
+        runner.runAsync(userId = userId, sessionId = sessionId, newMessage = message).toList()
+      }
+    }
 
   /** Drives a turn expected to fail, returning the events sent before the failure and the error. */
   fun failingTurn(message: Content): Pair<List<Event>, Throwable> = runBlocking {
@@ -965,6 +1138,15 @@ private fun parentContext() =
     node = StubNode("root"),
     eventSink = { _, _ -> },
     nodePath = "",
+  )
+
+/** A node's output event as it sits in the session, recorded under [path]. */
+private fun outputEvent(path: String, output: Any?, invocationId: String = "inv") =
+  Event(
+    author = "wf",
+    invocationId = invocationId,
+    output = output,
+    nodeInfo = NodeInfo(path = path),
   )
 
 /** The user's function-response event as it sits in the session. */
@@ -2638,6 +2820,1517 @@ class WorkflowHitlTest {
   }
 
   @Test
+  fun resume_predecessorsOfANonJoinNode_replayInTheOrderTheyFirstFinished() {
+    // Arrange: `pay_bob` finishes first, so approve@1 asks about Bob and approve@2 about Alice.
+    val bobAsked = CompletableDeferred<Unit>()
+    val paid = mutableListOf<String>()
+    val payAlice =
+      node<Any?, String>("pay_alice") { _, _ ->
+        bobAsked.await()
+        "alice"
+      }
+    val payBob = node<Any?, String>("pay_bob") { _, _ -> "bob" }
+    val approve =
+      node<String, String>(
+        "approve",
+        requireConfirmation = { _, _ ->
+          bobAsked.complete(Unit)
+          true
+        },
+      ) { _, payee ->
+        paid += payee
+        "paid $payee"
+      }
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, payAlice),
+              Edge(Start, payBob),
+              Edge(payAlice, approve),
+              Edge(payBob, approve),
+            ),
+        )
+      )
+    fun payee(events: List<Event>): Any? =
+      (events.flatMap { it.functionCalls() }.single().args[RequestInput.PAYLOAD_KEY] as Map<*, *>)[
+        "args"]
+    val firstAsk = session.turn(userMessage("go"))
+
+    // Act: reject Bob's payment, then approve the next request.
+    val secondAsk =
+      session.turn(answer("wf_tool_confirmation:wf@1/approve@1", mapOf("confirmed" to false)))
+    session.advance(answer("wf_tool_confirmation:wf@1/approve@2", mapOf("confirmed" to true)))
+
+    // Assert: the replay keeps approve@1 on Bob, so only Alice is paid.
+    assertEquals("bob", payee(firstAsk))
+    assertEquals("alice", payee(secondAsk))
+    assertEquals(listOf("alice"), paid)
+  }
+
+  @Test
+  fun resume_replayedPathsOfDifferentLengths_reachANonJoinNodeInTheRecordedOrder() {
+    // Arrange: Bob's path has an extra step, which a replay must also wait for.
+    val bobAsked = CompletableDeferred<Unit>()
+    val paid = mutableListOf<String>()
+    val payAlice =
+      node<Any?, String>("pay_alice") { _, _ ->
+        bobAsked.await()
+        "alice"
+      }
+    val payBob = node<Any?, String>("pay_bob") { _, _ -> "bob" }
+    val checkBob = node<String, String>("check_bob") { _, payee -> payee }
+    val approve =
+      node<String, String>(
+        "approve",
+        requireConfirmation = { _, _ ->
+          bobAsked.complete(Unit)
+          true
+        },
+      ) { _, payee ->
+        paid += payee
+        "paid $payee"
+      }
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, payAlice),
+              Edge(Start, payBob),
+              Edge(payBob, checkBob),
+              Edge(payAlice, approve),
+              Edge(checkBob, approve),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act: reject Bob's payment, then approve the next request.
+    session.advance(answer("wf_tool_confirmation:wf@1/approve@1", mapOf("confirmed" to false)))
+    session.advance(answer("wf_tool_confirmation:wf@1/approve@2", mapOf("confirmed" to true)))
+
+    // Assert
+    assertEquals(listOf("alice"), paid)
+  }
+
+  @Test
+  fun resume_nodeRerunAfterItsAnswer_reachesANonJoinSuccessorOnItsOwnRun() {
+    // Arrange: `asker` asks before `other` finishes, so summarize@1 runs on `other`.
+    val asked = CompletableDeferred<Unit>()
+    val received = mutableListOf<Any?>()
+    val asker =
+      node<Any?, String>("asker", rerunOnResume = true) { ctx, _ ->
+        if ("ask" !in ctx.resumeInputs) {
+          asked.complete(Unit)
+          requestInput(interruptId = "ask", message = "?")
+        }
+        "answered"
+      }
+    val other =
+      node<Any?, String>("other") { _, _ ->
+        asked.await()
+        delay(50.milliseconds)
+        "other_out"
+      }
+    val summarize =
+      node<Any?, String>("summarize") { _, input ->
+        received += input
+        "sum $input"
+      }
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, asker),
+              Edge(Start, other),
+              Edge(asker, summarize),
+              Edge(other, summarize),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+    check(received == listOf<Any?>("other_out")) { "summarize@1 got $received" }
+    received.clear()
+
+    // Act
+    session.advance(answer("ask", mapOf("result" to "yes")))
+
+    // Assert: `other` replays at once and keeps summarize@1, and summarize@2 runs on the answer.
+    assertEquals(listOf<Any?>("answered"), received)
+  }
+
+  @Test
+  fun resume_replayWaitingForItsTurn_leavesTheConcurrencySlotToTheNodeAheadOfIt() {
+    // Arrange: one node at a time; `a` and `b` ask, and one message answers `b` ahead of `a`.
+    val aReplayed = CompletableDeferred<Unit>()
+    var resumed = false
+    val a = Ask("a", RequestInput(interruptId = "ask_a", message = "?"))
+    val b =
+      node<Any?, String>("b", rerunOnResume = true) { ctx, _ ->
+        if ("ask_b" !in ctx.resumeInputs) requestInput(interruptId = "ask_b", message = "?")
+        // The rerun holds the only slot until `a` replays without taking a slot.
+        aReplayed.await()
+        "B"
+      }
+    val join = JoinNode("j")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges = listOf(Edge(Start, a), Edge(Start, b), Edge(a, join), Edge(b, join)),
+          maxConcurrency = 1,
+        ),
+        plugins =
+          listOf(OutputListener { if (resumed && it == "wf@1/a@1") aReplayed.complete(Unit) }),
+      )
+    session.advance(userMessage("go"))
+    resumed = true
+
+    // Act: `a` is queued first behind `b`, so `b` takes the slot and `a` replays beside it.
+    val events =
+      session.turn(
+        answers(answer("ask_b", mapOf("ok" to true)), answer("ask_a", mapOf("result" to "A"))),
+        timeout = 5.seconds,
+      )
+
+    // Assert
+    assertEquals(
+      mapOf("a" to "A", "b" to "B"),
+      events.single { it.nodeInfo?.path == "wf@1/j@1" }.output,
+    )
+  }
+
+  @Test
+  fun retry_nodeThatFailedAfterItsOutput_holdsBackReplaysThatFinishedAfterIt() {
+    // Arrange: on the first attempt `x` outputs, `y` finishes, and `x` fails once `z` starts.
+    val xOutputSent = CompletableDeferred<Unit>()
+    val zStarted = CompletableDeferred<Unit>()
+    val x = OutputsThenFailsOnce("x", xOutputSent, failWhen = zStarted)
+    val y =
+      node<Any?, String>("y") { _, _ ->
+        xOutputSent.await()
+        "y"
+      }
+    val z =
+      node<Any?, String>("z") { _, _ ->
+        zStarted.complete(Unit)
+        "z"
+      }
+    val join = JoinNode("j")
+    val sub =
+      Workflow(
+        name = "sub",
+        edges = listOf(Edge(Start, x), Edge(Start, y), Edge(y, z), Edge(x, join), Edge(z, join)),
+        config =
+          NodeConfig(
+            retryConfig = RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO, jitter = 0.0)
+          ),
+      )
+    val session = WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, sub))))
+
+    // Act
+    val events = session.turn(userMessage("go"))
+
+    // Assert: on the retry, `y` replays only after `x`'s rerun completes.
+    val xRerun = events.indexOfFirst {
+      it.nodeInfo?.path == "wf@1/sub@1/x@1" && it.output == "second"
+    }
+    assertTrue(
+      xRerun in
+        0 until events.indexOfLast { it.nodeInfo?.path == "wf@1/sub@1/y@1" && it.output == "y" }
+    )
+    assertEquals(
+      mapOf("x" to "second", "z" to "z"),
+      events.single { it.nodeInfo?.path == "wf@1/sub@1/j@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_resolvedTransfersUnderAConcurrencyLimit_doNotWaitForASlot() {
+    // Arrange: one node at a time; `a1` and `a2` hand off to sub-agents that ask; `b` feeds `c`.
+    val a1 = approveThenTransfer("a1", AskingAgentNode("sub1", "sub1_done"))
+    val a2 = approveThenTransfer("a2", AskingAgentNode("sub2", "sub2_done"))
+    val b =
+      node<Any?, String>("b", rerunOnResume = true) { ctx, _ ->
+        if ("ask_b" !in ctx.resumeInputs) requestInput(interruptId = "ask_b", message = "?")
+        "b_done"
+      }
+    val c = node<Any?, String>("c") { _, _ -> "c_done" }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, a1),
+              Edge(Start, a2),
+              Edge(Start, b),
+              Edge(b, c),
+              Edge(a1, join),
+              Edge(a2, join),
+              Edge(c, join),
+            ),
+          maxConcurrency = 1,
+        )
+      )
+    val first = session.turn(userMessage("go"))
+    fun approval(author: String) =
+      answer(
+        checkNotNull(
+          first.filter { it.author == author }.flatMap { it.functionCalls() }.single().id
+        ),
+        mapOf("ok" to true),
+        name = "approve",
+      )
+    session.advance(approval("a1"))
+    session.advance(approval("a2"))
+
+    // Act: answer `b` and both sub-agents in one message.
+    val events =
+      session.turn(
+        answers(
+          answer("ask_b", mapOf("ok" to true)),
+          answer("ask_sub1", mapOf("ok" to true)),
+          answer("ask_sub2", mapOf("ok" to true)),
+        ),
+        timeout = 5.seconds,
+      )
+
+    // Assert: the run finishes, since the sub-agents run again under replays that take no slot.
+    assertEquals(
+      mapOf("a1" to "sub1_done", "a2" to "sub2_done", "c" to "c_done"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_slowRerunAfterItsAnswer_doesNotHoldBackTheReplayOfALaterSibling() {
+    inBothResumabilityModes { resumable ->
+      // Arrange: `job` and `r` ask; one message answers `job` first, placing it ahead of `r`.
+      val calls = mutableListOf<String>()
+      val rReplayed = CompletableDeferred<Unit>()
+      val job =
+        node<Any?, String>("job", rerunOnResume = true) { ctx, _ ->
+          if ("approve" !in ctx.resumeInputs) {
+            requestInput(interruptId = "approve", message = "approve?")
+          }
+          // The rerun waits for `after_r`, which starts only after `r` replays.
+          rReplayed.await()
+          calls += "job"
+          "job_done"
+        }
+      val r = Ask("r", RequestInput(interruptId = "ask_r", message = "?"))
+      val afterR =
+        node<Any?, String>("after_r") { _, input ->
+          calls += "after_r"
+          rReplayed.complete(Unit)
+          "after $input"
+        }
+      val join = JoinNode("join")
+      val session =
+        WorkflowSession(
+          Workflow(
+            name = "wf",
+            edges =
+              listOf(
+                Edge(Start, job),
+                Edge(Start, r),
+                Edge(r, afterR),
+                Edge(job, join),
+                Edge(afterR, join),
+              ),
+          ),
+          resumable = resumable,
+        )
+      session.advance(userMessage("go"))
+
+      // Act
+      val events =
+        session.turn(
+          answers(
+            answer("approve", mapOf("ok" to true)),
+            answer("ask_r", mapOf("result" to "r_out")),
+          ),
+          timeout = 5.seconds,
+        )
+
+      // Assert: `job` gives up its pause place on start, so `r` replays and `after_r` unblocks it.
+      assertEquals(listOf("after_r", "job"), calls)
+      assertEquals(
+        mapOf("job" to "job_done", "after_r" to "after r_out"),
+        events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+      )
+    }
+  }
+
+  @Test
+  fun resume_parallelRequestsAnsweredInOneMessage_doNotDeadlock() {
+    inBothResumabilityModes { resumable ->
+      // Arrange: `confirm` and `approve` ask on parallel branches beside a three-step chain.
+      fun passthrough(name: String) = node<Any?, Any?>(name) { _, input -> input }
+      fun pause(name: String) =
+        node<Any?, Any?>(name, rerunOnResume = true) { ctx, input ->
+          if (name !in ctx.resumeInputs) requestInput(interruptId = name, message = "$name?")
+          input
+        }
+      val fork = passthrough("fork")
+      val prepare = passthrough("prepare")
+      val approve = pause("approve")
+      val confirm = pause("confirm")
+      val step0 = passthrough("step0")
+      val step1 = passthrough("step1")
+      val step2 = passthrough("step2")
+      val join = JoinNode("join")
+      val session =
+        WorkflowSession(
+          Workflow(
+            name = "wf",
+            edges =
+              listOf(
+                Edge(Start, fork),
+                Edge(fork, step0),
+                Edge(fork, prepare),
+                Edge(fork, confirm),
+                Edge(step0, step1),
+                Edge(step1, step2),
+                Edge(step2, join),
+                Edge(prepare, approve),
+                Edge(approve, join),
+                Edge(confirm, join),
+              ),
+          ),
+          resumable = resumable,
+        )
+      val first = session.turn(userMessage("go"))
+      val asked = first.flatMap { it.functionCalls() }.mapNotNull { it.id }.toSet()
+      check(asked == setOf("approve", "confirm")) { "expected approve and confirm, got $asked" }
+
+      // Act
+      val events =
+        session.turn(
+          answers(answer("confirm", mapOf("ok" to true)), answer("approve", mapOf("ok" to true))),
+          timeout = 5.seconds,
+        )
+
+      // Assert: nothing asks again, and the join gets all three branches.
+      assertEquals(emptyList<FunctionCall>(), events.flatMap { it.functionCalls() })
+      val joined = events.single { it.nodeInfo?.path == "wf@1/join@1" }.output as Map<*, *>
+      assertEquals(setOf("step2", "approve", "confirm"), joined.keys)
+    }
+  }
+
+  @Test
+  fun resume_parallelNestedWorkflowsOneOfThemAnswered_doNotDeadlock() {
+    inBothResumabilityModes { resumable ->
+      // Arrange: `checks` finishes and feeds `report`, while `review` pauses on `gate`.
+      fun passthrough(name: String) = node<Any?, Any?>(name) { _, input -> input }
+      val gate =
+        node<Any?, Any?>("gate", rerunOnResume = true) { ctx, input ->
+          if ("gate" !in ctx.resumeInputs) requestInput(interruptId = "gate", message = "gate?")
+          input
+        }
+      val lint = passthrough("lint")
+      val test = passthrough("test")
+      val checks = Workflow(name = "checks", edges = listOf(Edge(Start, lint), Edge(lint, test)))
+      val record = passthrough("record")
+      val review = Workflow(name = "review", edges = listOf(Edge(Start, gate), Edge(gate, record)))
+      val fork = passthrough("fork")
+      val report = passthrough("report")
+      val join = JoinNode("join")
+      val session =
+        WorkflowSession(
+          Workflow(
+            name = "wf",
+            edges =
+              listOf(
+                Edge(Start, fork),
+                Edge(fork, checks),
+                Edge(fork, review),
+                Edge(checks, report),
+                Edge(report, join),
+                Edge(review, join),
+              ),
+          ),
+          resumable = resumable,
+        )
+      val first = session.turn(userMessage("go"))
+      val asked = first.flatMap { it.functionCalls() }.mapNotNull { it.id }
+      check(asked == listOf("gate")) { "expected gate, got $asked" }
+
+      // Act
+      val events = session.turn(answer("gate", mapOf("ok" to true)), timeout = 5.seconds)
+
+      // Assert: nothing asks again, and the join gets both branches.
+      assertEquals(emptyList<FunctionCall>(), events.flatMap { it.functionCalls() })
+      val joined = events.single { it.nodeInfo?.path == "wf@1/join@1" }.output as Map<*, *>
+      assertEquals(setOf("report", "review"), joined.keys)
+    }
+  }
+
+  @Test
+  fun resume_taskNodeStillWaiting_doesNotHoldAReplayBehindANodeThatCannotStart() {
+    // Arrange: `p` asks, `x` then `y` finish, `z` finishes after `y`, then task `worker` asks.
+    val pAsked = CompletableDeferred<Unit>()
+    val yDone = CompletableDeferred<Unit>()
+    val zDone = CompletableDeferred<Unit>()
+    val worker =
+      LlmAgent(
+        name = "worker",
+        description = "Asks the user.",
+        model =
+          DummyModel("m") { _ ->
+            flow {
+              zDone.await()
+              emit(LlmResponse(content = modelMessage("which one?")))
+            }
+          },
+        mode = AgentMode.TASK,
+      )
+    val p = AsksAndSignals("p", pAsked)
+    val x =
+      node<Any?, String>("x") { _, _ ->
+        pAsked.await()
+        delay(50.milliseconds)
+        "x"
+      }
+    val y =
+      node<String, String>("y") { _, input ->
+        yDone.complete(Unit)
+        input
+      }
+    val z =
+      node<Any?, String>("z") { _, _ ->
+        yDone.await()
+        delay(50.milliseconds)
+        zDone.complete(Unit)
+        "z"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, worker),
+              Edge(Start, p),
+              Edge(Start, x),
+              Edge(Start, z),
+              Edge(x, y),
+              Edge(worker, join),
+              Edge(p, join),
+              Edge(y, join),
+              Edge(z, join),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act: `worker` still waits, so `y` cannot start this turn although `z` replays after it.
+    val events = session.turn(answer("p", mapOf("result" to "P")), timeout = 5.seconds)
+
+    // Assert
+    assertTrue(events.none { it.errorCode != null })
+  }
+
+  @Test
+  fun resume_transferTargetRunningAgainAfterItsAnswer_doesNotHoldBackALaterReplay() {
+    // Arrange: `a` hands off to `sub`, which asks; `r` asks too; one message answers `sub` first.
+    val rReplayed = CompletableDeferred<Unit>()
+    val sub = AskingAgentNode("sub", "sub_done", onAnswer = { rReplayed.await() })
+    val a = handsOff("a", "sub", subAgents = listOf(sub))
+    val r = Ask("r", RequestInput(interruptId = "ask_r", message = "?"))
+    val afterR =
+      node<Any?, String>("after_r") { _, input ->
+        rReplayed.complete(Unit)
+        "after $input"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, a),
+              Edge(Start, r),
+              Edge(r, afterR),
+              Edge(a, join),
+              Edge(afterR, join),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act
+    val events =
+      session.turn(
+        answers(
+          answer("ask_sub", mapOf("ok" to true)),
+          answer("ask_r", mapOf("result" to "r_out")),
+        ),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `a`'s transfer replay releases its place before running `sub`, so `r` replays first.
+    assertEquals(
+      mapOf("a" to "sub_done", "after_r" to "after r_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_nestedWorkflowThatOutputThenPaused_doesNotHoldBackALaterReplayForItsRerun() {
+    // Arrange: in `sub`, terminal `draft` outputs, then `approve` asks; `other` finishes after.
+    val drafted = CompletableDeferred<Unit>()
+    val approveAsked = CompletableDeferred<Unit>()
+    val reviewed = CompletableDeferred<Unit>()
+    val draft =
+      node<Any?, String>("draft") { _, _ ->
+        drafted.complete(Unit)
+        "draft_out"
+      }
+    val approve =
+      node<Any?, Unit>("approve", rerunOnResume = true) { ctx, _ ->
+        if ("approve" !in ctx.resumeInputs) {
+          drafted.await()
+          delay(50.milliseconds)
+          approveAsked.complete(Unit)
+          requestInput(interruptId = "approve", message = "ok?")
+        }
+        // The rerun waits for `review`, which starts only after `other` replays.
+        reviewed.await()
+      }
+    val sub = Workflow(name = "sub", edges = listOf(Edge(Start, draft), Edge(Start, approve)))
+    val other =
+      node<Any?, String>("other") { _, _ ->
+        approveAsked.await()
+        delay(50.milliseconds)
+        "other_out"
+      }
+    val review =
+      node<Any?, String>("review", rerunOnResume = true) { ctx, input ->
+        if ("review" !in ctx.resumeInputs) requestInput(interruptId = "review", message = "ok?")
+        reviewed.complete(Unit)
+        "reviewed $input"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, sub),
+              Edge(Start, other),
+              Edge(other, review),
+              Edge(sub, join),
+              Edge(review, join),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act
+    val events =
+      session.turn(
+        answers(answer("approve", mapOf("ok" to true)), answer("review", mapOf("ok" to true))),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `sub` gave up the place where it output, so `other` replays during its rerun.
+    assertEquals(
+      mapOf("sub" to "draft_out", "review" to "reviewed other_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_nestedWorkflowThatPausedThenOutput_doesNotHoldBackALaterReplayForItsRerun() {
+    // Arrange: in `sub`, `approve` asks, then terminal `draft` outputs; `other` finishes after.
+    val approveAsked = CompletableDeferred<Unit>()
+    val drafted = CompletableDeferred<Unit>()
+    val reviewed = CompletableDeferred<Unit>()
+    val draft =
+      node<Any?, String>("draft") { _, _ ->
+        approveAsked.await()
+        delay(50.milliseconds)
+        drafted.complete(Unit)
+        "draft_out"
+      }
+    val approve =
+      node<Any?, Unit>("approve", rerunOnResume = true) { ctx, _ ->
+        if ("approve" !in ctx.resumeInputs) {
+          approveAsked.complete(Unit)
+          requestInput(interruptId = "approve", message = "ok?")
+        }
+        reviewed.await()
+      }
+    val sub = Workflow(name = "sub", edges = listOf(Edge(Start, draft), Edge(Start, approve)))
+    val other =
+      node<Any?, String>("other") { _, _ ->
+        drafted.await()
+        delay(50.milliseconds)
+        "other_out"
+      }
+    val review =
+      node<Any?, String>("review", rerunOnResume = true) { ctx, input ->
+        if ("review" !in ctx.resumeInputs) requestInput(interruptId = "review", message = "ok?")
+        reviewed.complete(Unit)
+        "reviewed $input"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, sub),
+              Edge(Start, other),
+              Edge(other, review),
+              Edge(sub, join),
+              Edge(review, join),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act
+    val events =
+      session.turn(
+        answers(answer("approve", mapOf("ok" to true)), answer("review", mapOf("ok" to true))),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `sub` output while it still waited on `approve`, so its rerun holds no place.
+    assertEquals(
+      mapOf("sub" to "draft_out", "review" to "reviewed other_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_replayQueuedAtTheConcurrencyLimit_doesNotHoldBackAStartedReplay() {
+    // Arrange: two nodes at a time; `x`, `slow1`, `slow2` and `y` finish or ask before `z`.
+    val yDone = CompletableDeferred<Unit>()
+    val zReplayed = CompletableDeferred<Unit>()
+    var resumed = false
+    fun slow(name: String) =
+      node<Any?, String>(name, rerunOnResume = true) { ctx, _ ->
+        if (name !in ctx.resumeInputs) requestInput(interruptId = name, message = "?")
+        // Both reruns hold their slots until `z` replays, which needs `y` to replay first.
+        zReplayed.await()
+        "${name}_done"
+      }
+    val x = node<Any?, String>("x") { _, _ -> "x_out" }
+    val y =
+      node<String, String>("y") { _, input ->
+        yDone.complete(Unit)
+        input
+      }
+    val z =
+      node<Any?, String>("z") { _, _ ->
+        yDone.await()
+        "z_out"
+      }
+    val slow1 = slow("slow1")
+    val slow2 = slow("slow2")
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, x),
+              Edge(Start, z),
+              Edge(Start, slow1),
+              Edge(Start, slow2),
+              Edge(x, y),
+              Edge(y, join),
+              Edge(z, join),
+              Edge(slow1, join),
+              Edge(slow2, join),
+            ),
+          maxConcurrency = 2,
+        ),
+        plugins =
+          listOf(OutputListener { if (resumed && it == "wf@1/z@1") zReplayed.complete(Unit) }),
+      )
+    session.advance(userMessage("go"))
+    resumed = true
+
+    // Act
+    val events =
+      session.turn(
+        answers(answer("slow1", mapOf("ok" to true)), answer("slow2", mapOf("ok" to true))),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `y` replays although the reruns hold every slot.
+    assertEquals(
+      mapOf("y" to "x_out", "z" to "z_out", "slow1" to "slow1_done", "slow2" to "slow2_done"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_transferReplayUnderAConcurrencyLimit_runsItsTargetWithoutASlot() {
+    // Arrange: one node at a time; `billing`, the sibling `triage` hands off to, asks; `b` asks.
+    val gauge = ConcurrencyGauge()
+    val triage = handsOff("triage", "billing")
+    val billing = AskingAgentNode("billing", "billing_done", onAnswer = gauge::occupy)
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+    val b =
+      node<Any?, String>("b", rerunOnResume = true) { ctx, _ ->
+        if ("ask_b" !in ctx.resumeInputs) requestInput(interruptId = "ask_b", message = "?")
+        gauge.occupy()
+        "b_done"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges = listOf(Edge(Start, triage), Edge(Start, b), Edge(triage, join), Edge(b, join)),
+          maxConcurrency = 1,
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act
+    val events =
+      session.turn(
+        answers(answer("ask_billing", mapOf("ok" to true)), answer("ask_b", mapOf("ok" to true))),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `billing` runs again under `triage`'s replay beside `b`, which holds the only slot.
+    assertEquals(
+      mapOf("triage" to "billing_done", "b" to "b_done"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+    assertEquals(2, gauge.peak)
+  }
+
+  @Test
+  fun resume_finishedTransferAndPlainReplay_startWhileARerunHoldsTheOnlySlot() {
+    // Arrange: one node at a time; `slow` asks, `triage` hands off to `billing`, `x` finishes.
+    val gate = CompletableDeferred<Unit>()
+    val replayed = mutableSetOf<String>()
+    var resumed = false
+    val slow =
+      node<Any?, String>("slow", rerunOnResume = true) { ctx, _ ->
+        if ("ask_slow" !in ctx.resumeInputs) requestInput(interruptId = "ask_slow", message = "?")
+        // The rerun holds the only slot until both replays output.
+        gate.await()
+        "slow_done"
+      }
+    val triage = handsOff("triage", "billing")
+    val billing = OutputAgentNode("billing", "billing_out")
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+    val x = node<Any?, String>("x") { _, _ -> "x_out" }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, slow),
+              Edge(Start, triage),
+              Edge(Start, x),
+              Edge(slow, join),
+              Edge(triage, join),
+              Edge(x, join),
+            ),
+          maxConcurrency = 1,
+        ),
+        plugins =
+          listOf(
+            OutputListener { path ->
+              if (resumed && path in setOf("wf@1/billing@1", "wf@1/x@1")) replayed += path
+              if (replayed.size == 2) gate.complete(Unit)
+            }
+          ),
+      )
+    session.advance(userMessage("go"))
+    resumed = true
+
+    // Act
+    val events = session.turn(answer("ask_slow", mapOf("ok" to true)), timeout = 5.seconds)
+
+    // Assert: both replays start and output while `slow` runs again in the only slot.
+    assertEquals(
+      mapOf("slow" to "slow_done", "triage" to "billing_out", "x" to "x_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_transferTargetRunningAgainBesideAReplay_reachesANonJoinSuccessorAfterIt() {
+    // Arrange: `a` hands off to `sub`, which asks, and `r` asks; one message answers `sub` first.
+    val received = mutableListOf<Any?>()
+    val sub = AskingAgentNode("sub", "sub_done")
+    val a = handsOff("a", "sub", subAgents = listOf(sub))
+    val r = Ask("r", RequestInput(interruptId = "ask_r", message = "?"))
+    val s =
+      node<Any?, String>("s") { _, input ->
+        received += input
+        "s $input"
+      }
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges = listOf(Edge(Start, a), Edge(Start, r), Edge(a, s), Edge(r, s)),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act
+    session.advance(
+      answers(answer("ask_sub", mapOf("ok" to true)), answer("ask_r", mapOf("result" to "r_out")))
+    )
+
+    // Assert: `sub`'s new output reaches `s` after `r`'s replayed answer.
+    assertEquals(listOf<Any?>("r_out", "sub_done"), received)
+  }
+
+  @Test
+  fun resume_handoffToASiblingThatIsAlsoAGraphNode_doesNotHoldBackLaterReplays() {
+    // Arrange: `triage` hands off to `billing`, a later graph node, before `report` finishes.
+    val billingDone = CompletableDeferred<Unit>()
+    val triage = handsOff("triage", "billing")
+    val billing = OutputAgentNode("billing", "billing_out", onRun = { billingDone.complete(Unit) })
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+    val report =
+      node<Any?, String>("report") { _, _ ->
+        billingDone.await()
+        delay(50.milliseconds)
+        "report_out"
+      }
+    val hitl =
+      node<Any?, String>("hitl", rerunOnResume = true) { ctx, input ->
+        if ("ask_h" !in ctx.resumeInputs) requestInput(interruptId = "ask_h", message = "?")
+        "hitl $input"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, triage),
+              Edge(Start, report),
+              Edge(report, hitl),
+              Edge(triage, join),
+              Edge(hitl, join),
+              Edge(join, billing),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_h", mapOf("ok" to true)), timeout = 5.seconds)
+
+    // Assert: the handoff's replay releases `billing@1`, so `report` replays without waiting.
+    assertEquals(
+      mapOf("triage" to "billing_out", "hitl" to "hitl report_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_twoHopHandoffThroughASiblingThatIsAlsoAGraphNode_doesNotHoldBackLaterReplays() {
+    // Arrange: `triage` hands off to `mid`, which hands off to `end`; a later graph node is `mid`.
+    val endDone = CompletableDeferred<Unit>()
+    val triage = handsOff("triage", "mid")
+    val end = OutputAgentNode("end", "end_out", onRun = { endDone.complete(Unit) })
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, handsOff("mid", "end"), end))
+    val mid = node<Any?, String>("mid") { _, _ -> "mid_out" }
+    val report =
+      node<Any?, String>("report") { _, _ ->
+        endDone.await()
+        delay(50.milliseconds)
+        "report_out"
+      }
+    val hitl =
+      node<Any?, String>("hitl", rerunOnResume = true) { ctx, input ->
+        if ("ask_h" !in ctx.resumeInputs) requestInput(interruptId = "ask_h", message = "?")
+        "hitl $input"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, triage),
+              Edge(Start, report),
+              Edge(report, hitl),
+              Edge(triage, join),
+              Edge(hitl, join),
+              Edge(join, mid),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_h", mapOf("ok" to true)), timeout = 5.seconds)
+
+    // Assert: each hop of the handoff replays in turn, so `report` replays without waiting.
+    assertEquals(
+      mapOf("triage" to "end_out", "hitl" to "hitl report_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun retry_childDispatchedFromTheWorkflowContext_waitsForAGraphNodeRecordedAheadOfIt() {
+    // Arrange: `x` outputs, `helper` runs `child` on the workflow's context, then `x` fails once.
+    val xOutputSent = CompletableDeferred<Unit>()
+    val childDone = CompletableDeferred<Unit>()
+    val x = OutputsThenFailsOnce("x", xOutputSent, failWhen = childDone)
+    val child = node<Any?, String>("child") { _, _ -> "child_done" }
+    var helperRuns = 0
+    val helper =
+      node<Any?, Any?>("helper") { ctx, _ ->
+        helperRuns += 1
+        xOutputSent.await()
+        val result = checkNotNull(ctx.parent).runNode(child, runId = "c")
+        if (helperRuns == 1) {
+          childDone.complete(Unit)
+          awaitCancellation()
+        }
+        result
+      }
+    val join = JoinNode("j")
+    val sub =
+      Workflow(
+        name = "sub",
+        edges = listOf(Edge(Start, x), Edge(Start, helper), Edge(x, join), Edge(helper, join)),
+        config =
+          NodeConfig(
+            retryConfig = RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO, jitter = 0.0)
+          ),
+      )
+    val session = WorkflowSession(Workflow(name = "wf", edges = listOf(Edge(Start, sub))))
+
+    // Act
+    val events = session.turn(userMessage("go"))
+
+    // Assert: `child` replays only after `x`'s rerun, which finished ahead of it on the first try.
+    val xRerun = events.indexOfFirst {
+      it.nodeInfo?.path == "wf@1/sub@1/x@1" && it.output == "second"
+    }
+    val helperOutput = events.indexOfFirst {
+      it.nodeInfo?.path == "wf@1/sub@1/helper@1" && it.output == "child_done"
+    }
+    assertTrue(xRerun in 0 until helperOutput, "x rerun at $xRerun, helper output at $helperOutput")
+    assertEquals(
+      mapOf("x" to "second", "helper" to "child_done"),
+      events.single { it.nodeInfo?.path == "wf@1/sub@1/j@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_workflowContextChildThatPausedThroughItsChild_givesUpItsPlaceWhenItRunsAgain() {
+    // Arrange: `triage` hands off to its sibling `desk`, whose child `clerk` asks; `r` asks too.
+    val rReplayed = CompletableDeferred<Unit>()
+    val clerk =
+      node<Any?, String>("clerk", rerunOnResume = true) { ctx, _ ->
+        if ("ask_clerk" !in ctx.resumeInputs) requestInput(interruptId = "ask_clerk", message = "?")
+        // The rerun waits for `after_r`, which starts only after `r` replays.
+        rReplayed.await()
+        "clerk_done"
+      }
+    val triage = handsOff("triage", "desk")
+    val desk = DispatchingAgentNode("desk", clerk)
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, desk))
+    val r = Ask("r", RequestInput(interruptId = "ask_r", message = "?"))
+    val afterR =
+      node<Any?, String>("after_r") { _, input ->
+        rReplayed.complete(Unit)
+        "after $input"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, triage),
+              Edge(Start, r),
+              Edge(r, afterR),
+              Edge(triage, join),
+              Edge(afterR, join),
+            ),
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act: answer `clerk` first, so `desk` is placed ahead of `r`.
+    val events =
+      session.turn(
+        answers(
+          answer("ask_clerk", mapOf("ok" to true)),
+          answer("ask_r", mapOf("result" to "r_out")),
+        ),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `desk` runs again without holding back `r`'s replay.
+    assertEquals(
+      mapOf("triage" to "clerk_done", "after_r" to "after r_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_askNodesAnsweredInDifferentTurns_reachANonJoinSuccessorInTheOrderOfTheirAnswers() {
+    inBothResumabilityModes { resumable ->
+      for (firstAnswered in listOf("ask_a", "ask_b")) {
+        // Arrange: A asks before B; whichever is answered first takes summarize@1.
+        val lastAnswered = if (firstAnswered == "ask_a") "ask_b" else "ask_a"
+        val received = mutableListOf<Any?>()
+        val aAsked = CompletableDeferred<Unit>()
+        val askA = AsksAndSignals("ask_a", aAsked)
+        val askB =
+          object : Node {
+            override val name = "ask_b"
+
+            override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+              aAsked.await()
+              delay(50.milliseconds)
+              emit(RequestInput(interruptId = "ask_b", message = "?"))
+            }
+          }
+        val summarize =
+          node<Any?, String>("summarize") { _, input ->
+            received += input
+            "sum $input"
+          }
+        val session =
+          WorkflowSession(
+            Workflow(
+              name = "wf",
+              edges =
+                listOf(
+                  Edge(Start, askB),
+                  Edge(Start, askA),
+                  Edge(askA, summarize),
+                  Edge(askB, summarize),
+                ),
+            ),
+            resumable = resumable,
+          )
+        session.advance(userMessage("go"))
+        session.advance(answer(firstAnswered, mapOf("result" to firstAnswered)))
+        check(received == listOf<Any?>(firstAnswered)) { "summarize@1 got $received" }
+        received.clear()
+
+        // Act
+        val events = session.turn(answer(lastAnswered, mapOf("result" to lastAnswered)))
+
+        // Assert: summarize@1 replays, and summarize@2 runs on the last answer.
+        assertEquals(listOf<Any?>(lastAnswered), received, "answered $firstAnswered first")
+        assertEquals(
+          listOf<Any?>("sum $lastAnswered"),
+          events.filter { it.nodeInfo?.path == "wf@1/summarize@2" }.mapNotNull { it.output },
+        )
+      }
+    }
+  }
+
+  @Test
+  fun resume_answeredAskBesideASiblingThatFinishedLater_reachesANonJoinSuccessorOnItsOwnRun() {
+    inBothResumabilityModes { resumable ->
+      // Arrange: `ask` asks before `work` finishes, so s@1 runs on `work`.
+      val asked = CompletableDeferred<Unit>()
+      val received = mutableListOf<Any?>()
+      val ask = AsksAndSignals("ask", asked)
+      val work =
+        node<Any?, String>("work") { _, _ ->
+          asked.await()
+          delay(50.milliseconds)
+          "work_out"
+        }
+      val s =
+        node<Any?, String>("s") { _, input ->
+          received += input
+          "s $input"
+        }
+      val session =
+        WorkflowSession(
+          Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, work), Edge(Start, ask), Edge(ask, s), Edge(work, s)),
+          ),
+          resumable = resumable,
+        )
+      session.advance(userMessage("go"))
+      check(received == listOf<Any?>("work_out")) { "s@1 got $received" }
+      received.clear()
+
+      // Act
+      session.advance(answer("ask", mapOf("result" to "yes")))
+
+      // Assert: s@1 replays on `work`, and s@2 runs on the answer.
+      assertEquals(listOf<Any?>("yes"), received)
+    }
+  }
+
+  @Test
+  fun resume_heldReplayUnderAConcurrencyLimit_wakesWhenABlockingSiblingRerunReleasesItsPlace() {
+    // Arrange: one node at a time; sibling `billing` (behind `triage`) and `r` both ask.
+    val rReplayed = CompletableDeferred<Unit>()
+    val triage = handsOff("triage", "billing")
+    val billing = AskingAgentNode("billing", "billing_done", onAnswer = { rReplayed.await() })
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+    val r = Ask("r", RequestInput(interruptId = "ask_r", message = "?"))
+    val afterR =
+      node<Any?, String>("after_r") { _, input ->
+        rReplayed.complete(Unit)
+        "after $input"
+      }
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, triage),
+              Edge(Start, r),
+              Edge(r, afterR),
+              Edge(triage, join),
+              Edge(afterR, join),
+            ),
+          maxConcurrency = 1,
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act: answer `billing` first, so `r` waits until `billing`'s rerun releases its place.
+    val events =
+      session.turn(
+        answers(
+          answer("ask_billing", mapOf("ok" to true)),
+          answer("ask_r", mapOf("result" to "r_out")),
+        ),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `select` wakes when `billing@1` advances, `r` replays, and `after_r` unblocks it.
+    assertEquals(
+      mapOf("triage" to "billing_done", "after_r" to "after r_out"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_replayBehindAQueuedNodeUnderAConcurrencyLimit_staysQueuedUntilUnblocked() {
+    // Arrange: one node at a time; `later` and `slow` ask, then nested `blocker` finishes.
+    val later = Ask("later", RequestInput(interruptId = "ask_later", message = "?"))
+    val slow =
+      node<Any?, String>("slow", rerunOnResume = true) { ctx, _ ->
+        if ("ask_slow" !in ctx.resumeInputs) requestInput(interruptId = "ask_slow", message = "?")
+        "slow_done"
+      }
+    val blocker =
+      Workflow(
+        name = "blocker",
+        edges = listOf(Edge(Start, node<Any?, String>("leaf") { _, _ -> "blocker_done" })),
+      )
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, later),
+              Edge(Start, slow),
+              Edge(Start, blocker),
+              Edge(later, join),
+              Edge(slow, join),
+              Edge(blocker, join),
+            ),
+          maxConcurrency = 1,
+        )
+      )
+    session.advance(userMessage("go"))
+
+    // Act: `later` is answered after `blocker` finished, while `slow` takes the single slot first.
+    val events =
+      session.turn(
+        answers(
+          answer("ask_later", mapOf("result" to "later_done")),
+          answer("ask_slow", mapOf("ok" to true)),
+        ),
+        timeout = 5.seconds,
+      )
+
+    // Assert: `later` stays queued while `slow` starts, then replays after `blocker` completes.
+    val firstCheckpoint = events.first { it.author == "wf" && it.actions.agentState != null }
+    val agentState = assertIs<TypedData.MapValue>(firstCheckpoint.actions.agentState)
+    val nodes = assertIs<TypedData.MapValue>(agentState.fields[NodeState.NODES_KEY])
+    assertEquals(setOf("slow"), nodes.fields.keys)
+    assertEquals(
+      mapOf("later" to "later_done", "slow" to "slow_done", "blocker" to "blocker_done"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_siblingHandoffReplayBehindAQueuedNodeUnderAConcurrencyLimit_staysQueuedUntilUnblocked() {
+    // Arrange: one slot; `blocker` finishes before `triage -> billing`, while `slow` waits.
+    val triage = handsOff("triage", "billing")
+    val billing = AskingAgentNode("billing", "billing_done")
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+    val slow =
+      node<Any?, String>("slow", rerunOnResume = true) { ctx, _ ->
+        if ("ask_slow" !in ctx.resumeInputs) requestInput(interruptId = "ask_slow", message = "?")
+        "slow_done"
+      }
+    val blocker =
+      Workflow(
+        name = "blocker",
+        edges = listOf(Edge(Start, node<Any?, String>("leaf") { _, _ -> "blocker_done" })),
+      )
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, triage),
+              Edge(Start, slow),
+              Edge(Start, blocker),
+              Edge(triage, join),
+              Edge(slow, join),
+              Edge(blocker, join),
+            ),
+          maxConcurrency = 1,
+        )
+      )
+    session.advance(userMessage("go"))
+    session.advance(answer("ask_billing", mapOf("ok" to true)))
+
+    // Act: `triage` is queued first, while `slow` takes the single slot ahead of `blocker`.
+    val events = session.turn(answer("ask_slow", mapOf("ok" to true)), timeout = 5.seconds)
+
+    // Assert: `triage` stays queued until `blocker` completes, then replays `billing`.
+    val firstCheckpoint = events.first { it.author == "wf" && it.actions.agentState != null }
+    val agentState = assertIs<TypedData.MapValue>(firstCheckpoint.actions.agentState)
+    val nodes = assertIs<TypedData.MapValue>(agentState.fields[NodeState.NODES_KEY])
+    assertEquals(setOf("slow"), nodes.fields.keys)
+    assertEquals(
+      mapOf("triage" to "billing_done", "slow" to "slow_done", "blocker" to "blocker_done"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_answeredAgentThatTransferredToSiblingAfterAnotherNode_doesNotDeadlockUnderMaxConcurrency() {
+    // Arrange: `triage` asks, transfers to sibling `billing` after `other` finishes; `other` first.
+    val triage =
+      object : BaseAgent(name = "triage") {
+        override val rerunOnResume: Boolean = true
+
+        override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          if (context.resumeInputs.isEmpty()) {
+            emit(RequestInput(interruptId = "ask_triage"))
+          } else {
+            emit(Event(author = name, actions = EventActions(transferToAgent = "billing")))
+          }
+        }
+      }
+    val billing = AskingAgentNode("billing", "billing_done")
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+    val other = Ask("other", RequestInput(interruptId = "ask_other"))
+    val gate = Ask("gate", RequestInput(interruptId = "ask_gate"))
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, other),
+              Edge(Start, triage),
+              Edge(Start, gate),
+              Edge(other, join),
+              Edge(triage, join),
+              Edge(gate, join),
+            ),
+          maxConcurrency = 1,
+        )
+      )
+    session.advance(userMessage("go"))
+    session.advance(
+      answers(
+        answer("ask_triage", mapOf("ok" to true)),
+        answer("ask_other", mapOf("result" to "other_done")),
+      )
+    )
+    session.advance(answer("ask_billing", mapOf("ok" to true)))
+
+    // Act: Turn 3 replays `other` and `triage -> billing` without a hold cycle.
+    val events =
+      session.turn(answer("ask_gate", mapOf("result" to "gate_done")), timeout = 5.seconds)
+
+    // Assert
+    assertEquals(
+      mapOf("other" to "other_done", "triage" to "billing_done", "gate" to "gate_done"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_bounceBackSiblingHandoffBehindAQueuedNodeUnderAConcurrencyLimit_staysQueuedUntilUnblocked() {
+    // Arrange: `triage@1 -> billing@1 -> triage@2` finishes after `blocker`, while `slow` waits.
+    val triage =
+      object : BaseAgent(name = "triage") {
+        override val rerunOnResume: Boolean = true
+
+        override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {}
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          when {
+            context.nodePath.endsWith("/triage@1") ->
+              emit(Event(author = name, actions = EventActions(transferToAgent = "billing")))
+            context.resumeInputs.isEmpty() -> emit(RequestInput(interruptId = "ask_triage2"))
+            else -> emit("triage2_done")
+          }
+        }
+      }
+    val billing = handsOff("billing", "triage")
+    val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+    val slow =
+      node<Any?, String>("slow", rerunOnResume = true) { ctx, _ ->
+        if ("ask_slow" !in ctx.resumeInputs) requestInput(interruptId = "ask_slow", message = "?")
+        "slow_done"
+      }
+    val blocker =
+      Workflow(
+        name = "blocker",
+        edges = listOf(Edge(Start, node<Any?, String>("leaf") { _, _ -> "blocker_done" })),
+      )
+    val join = JoinNode("join")
+    val session =
+      WorkflowSession(
+        Workflow(
+          name = "wf",
+          edges =
+            listOf(
+              Edge(Start, triage),
+              Edge(Start, slow),
+              Edge(Start, blocker),
+              Edge(triage, join),
+              Edge(slow, join),
+              Edge(blocker, join),
+            ),
+          maxConcurrency = 1,
+        )
+      )
+    session.advance(userMessage("go"))
+    session.advance(answer("ask_triage2", mapOf("ok" to true)))
+
+    // Act: `triage` is queued first, while `slow` takes the single slot ahead of `blocker`.
+    val events = session.turn(answer("ask_slow", mapOf("ok" to true)), timeout = 5.seconds)
+
+    // Assert: `triage` stays held on `triage@2`'s blocker until `blocker` completes.
+    val firstCheckpoint = events.first { it.author == "wf" && it.actions.agentState != null }
+    val agentState = assertIs<TypedData.MapValue>(firstCheckpoint.actions.agentState)
+    val nodes = assertIs<TypedData.MapValue>(agentState.fields[NodeState.NODES_KEY])
+    assertEquals(setOf("slow"), nodes.fields.keys)
+    assertEquals(
+      mapOf("triage" to "triage2_done", "slow" to "slow_done", "blocker" to "blocker_done"),
+      events.single { it.nodeInfo?.path == "wf@1/join@1" }.output,
+    )
+  }
+
+  @Test
+  fun resume_handoffToASiblingOnTheWorkflowContext_reachesANonJoinSuccessorInOrder() {
+    val runs = listOf(EmptyCoroutineContext) + List(30) { Dispatchers.Default }
+    for ((attempt, resumeContext) in runs.withIndex()) {
+      // Arrange: sibling `billing` finishes before `report`; `s@1` asks about `billing` first.
+      val billingRecorded = CompletableDeferred<Unit>()
+      val reportRecorded = CompletableDeferred<Unit>()
+      val received = mutableListOf<Any?>()
+      val triage = handsOff("triage", "billing")
+      val billing = OutputAgentNode("billing", "billing_out")
+      val unusedRoot = DummyAgent(subAgents = listOf(triage, billing))
+      val report =
+        node<Any?, String>("report") { _, _ ->
+          billingRecorded.await()
+          "report_out"
+        }
+      val s =
+        node<Any?, String>("s", rerunOnResume = true) { ctx, input ->
+          if (ctx.resumeInputs.isEmpty()) {
+            reportRecorded.await()
+            requestInput(interruptId = "ask_$input", message = "?")
+          }
+          received += input
+          "s $input"
+        }
+      val session =
+        WorkflowSession(
+          Workflow(
+            name = "wf",
+            edges =
+              listOf(Edge(Start, triage), Edge(Start, report), Edge(triage, s), Edge(report, s)),
+          ),
+          plugins =
+            listOf(
+              OutputListener { path ->
+                if (path == "wf@1/billing@1") billingRecorded.complete(Unit)
+                if (path == "wf@1/report@1") reportRecorded.complete(Unit)
+              }
+            ),
+        )
+      val first = session.turn(userMessage("go"), timeout = 5.seconds)
+      val asked = first.flatMap { it.functionCalls() }.mapNotNull { it.id }.filter { "ask_" in it }
+      check(asked == listOf("ask_billing_out")) { "attempt $attempt asked $asked" }
+
+      // Act: resume on both single-threaded and parallel dispatchers.
+      val events =
+        session.turn(
+          answer("ask_billing_out", mapOf("ok" to true)),
+          timeout = 5.seconds,
+          context = resumeContext,
+        )
+
+      // Assert: `s@1` keeps `billing_out`, and `s@2` asks about `report_out`.
+      assertEquals(listOf<Any?>("billing_out"), received, "attempt $attempt")
+      assertEquals(
+        listOf("ask_report_out"),
+        events.flatMap { it.functionCalls() }.mapNotNull { it.id },
+        "attempt $attempt",
+      )
+    }
+  }
+
+  @Test
   fun retry_retriedNode_replaysItsNamedChildAndRerunsAnAnonymousOne() {
     // Arrange: the dispatcher's first attempt runs both children, then fails.
     val named = RunCountingEmitter("named", "named_out")
@@ -3508,6 +5201,286 @@ class WorkflowHitlTest {
     assertNull(recovered.output)
     assertEquals("RuntimeError", recovered.errorCode)
     assertFalse(recovered.finishedAfterResume)
+  }
+
+  @Test
+  fun replayOrder_childrenThatFinished_followTheOrderOfTheirEvents() {
+    // Arrange
+    val events = listOf(outputEvent("wf@1/child1@1", "out1"), outputEvent("wf@1/child2@1", "out2"))
+
+    // Act
+    val order = replayOrder(ResumeScan.scan(events, "wf@1", "inv"))
+
+    // Assert
+    assertEquals(listOf("child1@1", "child2@1"), order)
+  }
+
+  @Test
+  fun replayOrder_eventsOfAnEarlierInvocation_takeNoPlace() {
+    // Arrange: an earlier invocation finished; the current one paused on `beta`.
+    val events =
+      listOf(
+        outputEvent("wf@1/finish@1", "prior_out", invocationId = "inv-1"),
+        outputEvent("wf@1/alpha@1", "alpha_out", invocationId = "inv-2"),
+        requestEvent("wf@1/beta@1", "clarify", invocationId = "inv-2"),
+      )
+
+    // Act
+    val order = replayOrder(ResumeScan.scan(events, "wf@1", "inv-2"))
+
+    // Assert
+    assertEquals(listOf("alpha@1", "beta@1"), order)
+  }
+
+  @Test
+  fun replayOrder_reemittedOutputOfAFinishedNode_keepsItsFirstPlace() {
+    // Arrange: `hitl` finished, then `revise`, then a replay re-emitted `hitl`'s output.
+    val events =
+      listOf(
+        outputEvent("wf@1/hitl@1", "rejected_1").copy(actions = EventActions(route = listOf(no()))),
+        Event(
+          author = "wf",
+          invocationId = "inv",
+          nodeInfo = NodeInfo(path = "wf@1/revise@1"),
+          actions = EventActions(route = listOf(no())),
+        ),
+        outputEvent("wf@1/hitl@1", "rejected_1"),
+      )
+
+    // Act
+    val order = replayOrder(ResumeScan.scan(events, "wf@1", "inv"))
+
+    // Assert
+    assertEquals(listOf("hitl@1", "revise@1"), order)
+  }
+
+  @Test
+  fun replayOrder_answeredNode_movesToWhereItsAnswerArrived() {
+    // Arrange: `asker` paused, `other` finished, then the user answered `asker`.
+    val events =
+      listOf(
+        requestEvent("wf@1/asker@1", "ask"),
+        outputEvent("wf@1/other@1", "other_out"),
+        answerEvent("ask", mapOf("result" to "yes")),
+      )
+    val recovered = ResumeScan.scan(events, "wf@1", "inv")
+
+    // Act + Assert
+    assertEquals(listOf("other@1", "asker@1"), replayOrder(recovered))
+  }
+
+  @Test
+  fun placeIsPause_holdsOnlyForANodePlacedByItsInterrupt() {
+    // Arrange: `ask` paused, then `done` and `after` finished.
+    val events =
+      listOf(
+        requestEvent("wf@1/ask@1", "fc-1"),
+        outputEvent("wf@1/done@1", "done"),
+        outputEvent("wf@1/after@1", "after"),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(events, "wf@1", "inv")
+
+    // Assert
+    assertEquals(listOf("ask@1", "done@1", "after@1"), replayOrder(recovered))
+    assertTrue(recovered.getValue("ask@1").placeIsPause)
+    assertFalse(recovered.getValue("done@1").placeIsPause)
+  }
+
+  @Test
+  fun placeIsPause_isClearedByAFinishAndRestoredByALaterPause() {
+    // Arrange: `a` and `b` paused and were answered, then `b` finished; `c` output, then paused.
+    val events =
+      listOf(
+        requestEvent("wf@1/a@1", "ask_a"),
+        requestEvent("wf@1/b@1", "ask_b"),
+        outputEvent("wf@1/c@1", "early"),
+        requestEvent("wf@1/c@1", "ask_c"),
+        answerEvent("ask_a", mapOf("result" to "A")),
+        answerEvent("ask_b", mapOf("result" to "B")),
+        outputEvent("wf@1/b@1", "b_out"),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(events, "wf@1", "inv")
+
+    // Assert: an answer keeps `a` at a pause, and `c` gives up the place where it output.
+    assertTrue(recovered.getValue("a@1").placeIsPause)
+    assertFalse(recovered.getValue("b@1").placeIsPause)
+    assertTrue(recovered.getValue("c@1").placeIsPause)
+    assertEquals(listOf("c@1", "a@1", "b@1"), replayOrder(recovered))
+  }
+
+  @Test
+  fun replayOrder_failure_dropsOnlyAnUnfinishedNode() {
+    // Arrange: `x` finished and then failed; `z` paused, then failed without finishing.
+    val events =
+      listOf(
+        requestEvent("wf@1/z@1", "ask_z"),
+        outputEvent("wf@1/x@1", "x_out"),
+        outputEvent("wf@1/y@1", "y_out"),
+        Event(
+          author = "wf",
+          invocationId = "inv",
+          errorCode = "E",
+          nodeInfo = NodeInfo("wf@1/x@1"),
+        ),
+        Event(author = "wf", invocationId = "inv", errorCode = "E", nodeInfo = NodeInfo("wf@1/z@1")),
+      )
+
+    // Act
+    val order = replayOrder(ResumeScan.scan(events, "wf@1", "inv"))
+
+    // Assert
+    assertEquals(listOf("x@1", "y@1"), order)
+  }
+
+  @Test
+  fun replayOrder_bareTransferAfterAnsweredPause_dropsThePausePlace() {
+    // Arrange: `triage` paused, was answered, then handed off to `billing` after `other` finished.
+    val events =
+      listOf(
+        requestEvent("wf@1/triage@1", "ask_t"),
+        answerEvent("ask_t", mapOf("ok" to true)),
+        outputEvent("wf@1/other@1", "other_out"),
+        Event(
+          author = "triage",
+          invocationId = "inv",
+          actions = EventActions(transferToAgent = "billing"),
+          nodeInfo = NodeInfo("wf@1/triage@1"),
+        ),
+        outputEvent("wf@1/billing@1", "billing_out"),
+      )
+
+    // Act
+    val order = replayOrder(ResumeScan.scan(events, "wf@1", "inv"))
+
+    // Assert
+    assertEquals(listOf("other@1", "billing@1"), order)
+  }
+
+  @Test
+  fun replayOrder_outputDelegatedByADescendant_placesTheChildItIsDelegatedTo() {
+    // Arrange: `sub`'s child delegates its output to `sub`, after `other` finished.
+    val events =
+      listOf(
+        outputEvent("wf@1/other@1", "other_out"),
+        outputEvent("wf@1/sub@1/leaf@1", "leaf_out")
+          .copy(nodeInfo = NodeInfo(path = "wf@1/sub@1/leaf@1", outputFor = listOf("wf@1/sub@1"))),
+      )
+    val recovered = ResumeScan.scan(events, "wf@1", "inv")
+
+    // Act + Assert
+    assertEquals(listOf("other@1", "sub@1"), replayOrder(recovered))
+  }
+
+  @Test
+  fun replayOrder_reemittedOutputOfAMessageOutputNode_keepsItsFirstPlace() {
+    // Arrange: `agent` answered with a message, `step` finished, then a replay re-emitted it.
+    val events =
+      listOf(
+        Event(
+          author = "agent",
+          invocationId = "inv",
+          content = Content(role = Role.MODEL, parts = listOf(Part(text = "done_a"))),
+          nodeInfo = NodeInfo(path = "wf@1/agent@1", messageAsOutput = true),
+        ),
+        outputEvent("wf@1/step@1", "done_step"),
+        outputEvent("wf@1/agent@1", "done_a"),
+      )
+
+    // Act
+    val order = replayOrder(ResumeScan.scan(events, "wf@1", "inv"))
+
+    // Assert
+    assertEquals(listOf("agent@1", "step@1"), order)
+  }
+
+  @Test
+  fun replayOrder_outputKeptInsideAChild_doesNotPlaceIt() {
+    // Arrange: a node in `composite` finished without delegating its output, then `sibling`.
+    val events =
+      listOf(
+        outputEvent("wf@1/composite@1/inner@1", "inner_out")
+          .copy(
+            nodeInfo =
+              NodeInfo(
+                path = "wf@1/composite@1/inner@1",
+                outputFor = listOf("wf@1/composite@1/inner@1"),
+              )
+          ),
+        outputEvent("wf@1/sibling@1", "sibling_out"),
+      )
+
+    // Act
+    val order = replayOrder(ResumeScan.scan(events, "wf@1", "inv"))
+
+    // Assert
+    assertEquals(listOf("sibling@1"), order)
+  }
+
+  @Test
+  fun replayOrder_longRunningCallOfADescendant_placesTheChildWhereItPaused() {
+    // Arrange: a node inside `composite` paused on a long-running call, then `sibling` finished.
+    val events =
+      listOf(
+        Event(
+          author = "wf",
+          invocationId = "inv",
+          longRunningToolIds = setOf("int-1"),
+          nodeInfo = NodeInfo(path = "wf@1/composite@1/inner_hitl@1"),
+        ),
+        outputEvent("wf@1/sibling@1", "sibling_out"),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(events, "wf@1", "inv")
+
+    // Assert
+    assertEquals(setOf("int-1"), recovered.getValue("composite@1").interruptIds)
+    assertEquals(listOf("composite@1", "sibling@1"), replayOrder(recovered))
+  }
+
+  @Test
+  fun replayOrder_inputRequestOfADescendant_placesTheChildWhereItPaused() {
+    // Arrange: a node inside `composite` asked for input, then `sibling` finished.
+    val events =
+      listOf(
+        requestEvent("wf@1/composite@1/inner_hitl@1", "req-1"),
+        outputEvent("wf@1/sibling@1", "sibling_out"),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(events, "wf@1", "inv")
+
+    // Assert
+    assertEquals(setOf("req-1"), recovered.getValue("composite@1").interruptIds)
+    assertEquals(listOf("composite@1", "sibling@1"), replayOrder(recovered))
+  }
+
+  @Test
+  fun replayOrder_errorEventThatHandsOff_keepsItsPlace() {
+    // Arrange: `router` hands off on an event with an error code, then `steady` finished.
+    val events =
+      listOf(
+        Event(
+          author = "wf",
+          invocationId = "inv",
+          errorCode = "MAX_TOKENS",
+          actions = EventActions(transferToAgent = "agent_b"),
+          nodeInfo = NodeInfo(path = "wf@1/router@1"),
+        ),
+        outputEvent("wf@1/steady@1", "steady_out"),
+      )
+
+    // Act
+    val recovered = ResumeScan.scan(events, "wf@1", "inv")
+
+    // Assert
+    assertNull(recovered.getValue("router@1").errorCode)
+    assertEquals("agent_b", recovered.getValue("router@1").transferToAgent)
+    assertEquals(listOf("router@1", "steady@1"), replayOrder(recovered))
   }
 
   @Test

@@ -35,10 +35,13 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /** A fan-in node that waits for every predecessor and emits their aggregated input. */
 private class JoinAll(override val name: String) : Node {
@@ -630,4 +633,43 @@ class SchedulerTest {
       join.seen,
     )
   }
+
+  @Test
+  fun run_heldReplayWithNoRunningNodesUnderMaxConcurrency_surfacesReplayDivergence(): Unit =
+    runBlocking {
+      // Arrange: history records `a@1` ahead of `b@1`, while the graph only schedules `b`.
+      val workflow =
+        Workflow(name = "wf", edges = listOf(Edge(Start, Emitter("b", "B"))), maxConcurrency = 1)
+      val invocationContext = testInvocationContext(branch = "root")
+      invocationContext.session.events +=
+        listOf(
+          Event(
+            author = "wf",
+            invocationId = invocationContext.invocationId,
+            output = "A",
+            nodeInfo = NodeInfo(path = "wf@1/a@1"),
+          ),
+          Event(
+            author = "wf",
+            invocationId = invocationContext.invocationId,
+            output = "B",
+            nodeInfo = NodeInfo(path = "wf@1/b@1"),
+          ),
+        )
+      val root =
+        Context(invocationContext = invocationContext, node = workflow, eventSink = { _, _ -> })
+      root.eventAuthor = workflow.name
+
+      // Act
+      val error =
+        withTimeout(1.seconds) {
+          assertFailsWith<WorkflowInvariantException> {
+            Scheduler(workflow, workflow.graph!!, root, replayTimeout = 50.milliseconds)
+              .run(nodeInput = null)
+          }
+        }
+
+      // Assert: the scheduler starts the held replay instead of dropping it, surfacing divergence.
+      assertContains(error.message!!, "b@1")
+    }
 }
