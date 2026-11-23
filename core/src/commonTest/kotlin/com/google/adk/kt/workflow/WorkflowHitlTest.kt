@@ -4399,6 +4399,36 @@ class WorkflowHitlTest {
     )
   }
 
+  /** An enum output schema rehydrates a message naming a value, quoted or not, as the value. */
+  @Test
+  fun resume_messageOutputNodeWithEnumSchema_isRehydratedToTheEnumValue() {
+    // Arrange
+    val schema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    fun resumedJoin(text: String): Any? {
+      val chat = MessageOutput("chat", text, outputSchema = schema)
+      val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+      val join = JoinNode("j")
+      val workflow =
+        Workflow(
+          name = "wf",
+          edges = listOf(Edge(Start, chat), Edge(Start, ask), Edge(chat, join), Edge(ask, join)),
+        )
+      val session = WorkflowSession(workflow)
+      session.advance(userMessage("go"))
+      val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+      return events.single { it.nodeInfo?.path == "wf@1/j@1" }.output
+    }
+
+    // Act
+    val quoted = resumedJoin("\"HIGH\"")
+    val plain = resumedJoin("HIGH")
+
+    // Assert
+    val expected = mapOf("chat" to "HIGH", "ask" to mapOf("v" to 1L))
+    assertEquals(expected, quoted)
+    assertEquals(expected, plain)
+  }
+
   @Test
   fun resume_messageOutputNodeWithAFencedReply_isRehydratedToTheParsedValue() {
     // Arrange: adk-python test_resume_replays_schema_agent_output_as_parsed_live (fenced case).
@@ -4635,6 +4665,26 @@ class WorkflowHitlTest {
   }
 
   @Test
+  fun validateAnswer_enumSchemaInResultEnvelope_readsNameWithOrWithoutJsonQuotes() {
+    // Arrange
+    val enumSchema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+
+    // Act
+    val plain = validateAnswer(enumSchema, mapOf("result" to "HIGH"), "ask_1")
+    val quoted = validateAnswer(enumSchema, mapOf("result" to "\"HIGH\""), "ask_1")
+    val unknown =
+      assertFailsWith<IllegalArgumentException> {
+        validateAnswer(enumSchema, mapOf("result" to "\"FOO\""), "ask_1")
+      }
+
+    // Assert
+    assertEquals("HIGH", plain)
+    assertEquals("HIGH", quoted)
+    assertContains(unknown.message.orEmpty(), "Validation failed for interrupt ask_1")
+    assertContains(unknown.message.orEmpty(), "is not one of the schema's enum values")
+  }
+
+  @Test
   fun processRehydratedOutput_blankText_isNull() {
     // Arrange
     val node = MessageOutput("chat", "", outputSchema = COUNT_SCHEMA)
@@ -4671,6 +4721,23 @@ class WorkflowHitlTest {
 
     // Assert
     assertEquals("42", output)
+  }
+
+  @Test
+  fun processRehydratedOutput_enumSchemaWithQuotedNonMember_keepsRawText() {
+    // Arrange
+    val enumSchema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    val node = MessageOutput("chat", "", outputSchema = enumSchema)
+    val unknown = Content(role = Role.MODEL, parts = listOf(Part(text = "\"FOO\"")))
+    val padded = Content(role = Role.MODEL, parts = listOf(Part(text = "\" HIGH\"")))
+
+    // Act
+    val unknownOutput = ResumeScan.processRehydratedOutput(node, unknown, delegated = false)
+    val paddedOutput = ResumeScan.processRehydratedOutput(node, padded, delegated = false)
+
+    // Assert
+    assertEquals("\"FOO\"", unknownOutput)
+    assertEquals("\" HIGH\"", paddedOutput)
   }
 
   @Test

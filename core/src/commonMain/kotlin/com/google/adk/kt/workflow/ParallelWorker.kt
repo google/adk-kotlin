@@ -105,8 +105,8 @@ internal class ParallelWorker(private val worker: Node, private val maxParallelW
 
   /**
    * Reads a text-only [content], such as a user message, as JSON so a JSON list fans out, unless
-   * [worker] takes [Content]. Text that is not JSON, or a non-list value for a `String` worker,
-   * stays raw text.
+   * [worker] takes [Content]. Text that is not JSON, or a non-list value for a string worker, stays
+   * raw text unless it quotes an enum value of [worker]'s input schema.
    */
   private fun unwrapContent(content: Content): Any? {
     if (content.parts.isEmpty() || content.parts.any { it.text == null }) return content
@@ -115,7 +115,11 @@ internal class ParallelWorker(private val worker: Node, private val maxParallelW
     val read = ValueCoercer.coerceContent(content, Schema())
     val takesString =
       itemType == String::class || worker.inputSchema?.let(SchemaUtils::acceptsString) == true
-    return if (read !is List<*> && takesString) content.text() else read
+    return if (read !is List<*> && takesString) {
+      worker.inputSchema?.let { ValueCoercer.enumValueOrText(content.text(), it) } ?: content.text()
+    } else {
+      read
+    }
   }
 
   /**

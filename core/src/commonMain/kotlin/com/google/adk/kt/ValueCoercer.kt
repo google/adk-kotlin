@@ -27,7 +27,7 @@ import com.google.adk.kt.types.Type
  *
  * In addition to values that already match the target type, coercion accepts:
  * - [Content] messages (unwrapped to raw text when the schema accepts a string, or parsed from JSON
- *   otherwise).
+ *   otherwise; an enum value also reads from its JSON-quoted form).
  * - Stringified JSON literals for scalar types (e.g. `"42"` for `INTEGER`, `"1.5"` for `NUMBER`,
  *   `"true"` for `BOOLEAN`).
  * - Whole-number floating-point values for `INTEGER` schemas (e.g. `42.0` or `"1e2"` -> `42L` /
@@ -195,8 +195,9 @@ internal class ValueCoercer private constructor(private val fillDefaults: Boolea
 
     /**
      * Extracts a value from a [Content] message: returns its raw text when [schema] accepts a
-     * string, and otherwise parses the text as JSON (falling back to the raw text if it is not
-     * valid JSON).
+     * string, unless [schema] restricts strings to enum values and the text is a JSON string naming
+     * one, and otherwise parses the text as JSON (falling back to the raw text if it is not valid
+     * JSON).
      */
     @OptIn(FrameworkInternalApi::class)
     internal fun coerceContent(content: Content, schema: Schema): Any? {
@@ -205,7 +206,69 @@ internal class ValueCoercer private constructor(private val fillDefaults: Boolea
         logger.warn { "Reading a message as a value dropped $dropped non-text parts." }
       }
       val text = content.text()
-      return if (SchemaUtils.acceptsString(schema)) text else SchemaUtils.readJsonOrText(text)
+      return if (SchemaUtils.acceptsString(schema)) enumValueOrText(text, schema)
+      else SchemaUtils.readJsonOrText(text)
+    }
+
+    /**
+     * Returns the enum value of [schema] that [text] spells as a JSON string, such as `HIGH` for
+     * `"HIGH"`, when [schema] does not allow arbitrary strings and [text] itself is not already an
+     * enum value; otherwise returns [text].
+     */
+    internal fun enumValueOrText(text: String, schema: Schema): String {
+      if (allowsAnyString(schema)) return text
+      val enum = enumValues(schema)
+      if (enum.isEmpty() || text in enum) return text
+      return (SchemaUtils.readJson(text).getOrNull() as? String)?.takeIf { it in enum } ?: text
+    }
+
+    /** Whether [schema] accepts an unconstrained string, directly or through an `anyOf` branch. */
+    private fun allowsAnyString(
+      schema: Schema,
+      inheritedType: Type? = null,
+      visited: MutableSet<SeenSchema> = mutableSetOf(),
+    ): Boolean {
+      val effectiveType = schema.declaredType ?: inheritedType
+      if (!visited.add(SeenSchema(schema, effectiveType))) return false
+      if (schema.enum != null) return false
+      if (effectiveType != null && effectiveType != Type.STRING) return false
+      val anyOf = schema.anyOf
+      if (anyOf != null) return anyOf.any { allowsAnyString(it, effectiveType, visited) }
+      return effectiveType == Type.STRING || schema.impliedType() == null
+    }
+
+    /**
+     * The enum values of [schema] and its `anyOf` branches whose effective type is `STRING` or
+     * unset.
+     */
+    private fun enumValues(schema: Schema): Set<String> = buildSet {
+      collectEnumValues(schema, inheritedType = null, visited = mutableSetOf())
+    }
+
+    private fun MutableSet<String>.collectEnumValues(
+      schema: Schema,
+      inheritedType: Type?,
+      visited: MutableSet<SeenSchema>,
+    ) {
+      val effectiveType = schema.declaredType ?: inheritedType
+      if (!visited.add(SeenSchema(schema, effectiveType))) return
+      if (schema.enum != null) {
+        if (effectiveType == Type.STRING || effectiveType == null) {
+          addAll(schema.enum)
+        }
+        return
+      }
+      schema.anyOf?.forEach { collectEnumValues(it, effectiveType, visited) }
+    }
+
+    /** Keys a visited [Schema] by reference identity so deep shared `anyOf` DAGs hash in O(1). */
+    private class SeenSchema(val schema: Schema, val effectiveType: Type?) {
+      override fun equals(other: Any?): Boolean =
+        other is SeenSchema && schema === other.schema && effectiveType == other.effectiveType
+
+      override fun hashCode(): Int =
+        31 * ((schema.type?.ordinal ?: -1) * 31 + (schema.enum?.size ?: 0)) +
+          (effectiveType?.ordinal ?: -1)
     }
 
     /**

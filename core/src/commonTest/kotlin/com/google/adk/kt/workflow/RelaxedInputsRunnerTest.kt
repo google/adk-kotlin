@@ -600,6 +600,107 @@ class RelaxedInputsRunnerTest {
     assertEquals("7", digit)
   }
 
+  /** An enum port reads a message naming a value as raw text or as a JSON string. */
+  @Test
+  fun message_intoEnumPort_readsTheNameWithOrWithoutJsonQuotes() {
+    // Arrange
+    val typed = node("typed") { _, p: RelaxedPriority -> p.name }
+    val nullable = node("nullable") { _, p: RelaxedPriority? -> p?.name }
+    val prioritySchema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    val checked = node<Any?, Any?>("checked", inputSchema = prioritySchema) { _, v -> v }
+
+    // Act
+    val typedPlain = lastOutput(chain(typed), message = "HIGH")
+    val typedQuoted = lastOutput(chain(typed), message = "\"HIGH\"")
+    val nullableQuoted = lastOutput(chain(nullable), message = "\"HIGH\"")
+    val checkedPlain = lastOutput(chain(checked), message = "HIGH")
+    val checkedQuoted = lastOutput(chain(checked), message = "\"HIGH\"")
+
+    // Assert
+    assertEquals("HIGH", typedPlain)
+    assertEquals("HIGH", typedQuoted)
+    assertEquals("HIGH", nullableQuoted)
+    assertEquals("HIGH", checkedPlain)
+    assertEquals("HIGH", checkedQuoted)
+  }
+
+  @Test
+  fun message_intoEnumPortWithUnknownOrPaddedName_failsValidation() {
+    // Arrange
+    val typed = node("typed") { _, p: RelaxedPriority -> p.name }
+    val prioritySchema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    val checked = node<Any?, Any?>("checked", inputSchema = prioritySchema) { _, v -> v }
+
+    // Act
+    val typedUnknown =
+      assertFailsWith<NodeInputValidationException> { runApp(chain(typed), "\"FOO\"") }
+    val typedPadded =
+      assertFailsWith<NodeInputValidationException> { runApp(chain(typed), " HIGH") }
+    val typedQuotedPadded =
+      assertFailsWith<NodeInputValidationException> { runApp(chain(typed), "\" HIGH\"") }
+    val checkedUnknown =
+      assertFailsWith<NodeInputValidationException> { runApp(chain(checked), "\"FOO\"") }
+    val checkedPadded =
+      assertFailsWith<NodeInputValidationException> { runApp(chain(checked), " HIGH") }
+    val checkedQuotedPadded =
+      assertFailsWith<NodeInputValidationException> { runApp(chain(checked), "\" HIGH\"") }
+
+    // Assert
+    assertContains(typedUnknown.message.orEmpty(), "input of node 'typed' does not match")
+    assertContains(typedUnknown.message.orEmpty(), "RelaxedPriority")
+    assertContains(typedPadded.message.orEmpty(), "input of node 'typed' does not match")
+    assertContains(typedPadded.message.orEmpty(), "RelaxedPriority")
+    assertContains(typedQuotedPadded.message.orEmpty(), "input of node 'typed' does not match")
+    assertContains(typedQuotedPadded.message.orEmpty(), "RelaxedPriority")
+    val expectedSchemaError =
+      "validation error: input of node 'checked' does not match its schema: the value is not one of the schema's enum values"
+    assertEquals(expectedSchemaError, checkedUnknown.message)
+    assertEquals(expectedSchemaError, checkedPadded.message)
+    assertEquals(expectedSchemaError, checkedQuotedPadded.message)
+  }
+
+  @Test
+  fun message_intoStringPort_keepsJsonQuotes() {
+    // Arrange
+    val text = node("text") { _, s: String -> s }
+
+    // Act
+    val quotedText = lastOutput(chain(text), message = "\"hi\"")
+
+    // Assert
+    assertEquals("\"hi\"", quotedText)
+  }
+
+  @Test
+  fun message_intoAnyOfEnumUnion_unquotesOnlyWhenStringsAreEnumConstrained() {
+    // Arrange
+    val string = Schema(type = Type.STRING)
+    val enumOrInt =
+      Schema(
+        anyOf = listOf(Schema(type = Type.STRING, enum = listOf("A")), Schema(type = Type.INTEGER))
+      )
+    val enumOrString =
+      Schema(anyOf = listOf(Schema(type = Type.STRING, enum = listOf("A")), string))
+    val stringOrInteger =
+      Schema(anyOf = listOf(string, Schema(type = Type.INTEGER, enum = listOf("1"))))
+    val enumOrIntPort = node<Any?, Any?>("enum_or_int", inputSchema = enumOrInt) { _, v -> v }
+    val enumOrTextPort = node<Any?, Any?>("enum_or_text", inputSchema = enumOrString) { _, v -> v }
+    val textOrIntPort =
+      node<Any?, Any?>("text_or_integer", inputSchema = stringOrInteger) { _, v -> v }
+
+    // Act
+    val quotedConstrainedEnum = lastOutput(chain(enumOrIntPort), message = "\"A\"")
+    val quotedOpenEnumMember = lastOutput(chain(enumOrTextPort), message = "\"A\"")
+    val quotedOpenEnumOther = lastOutput(chain(enumOrTextPort), message = "\"B\"")
+    val quotedIntegerEnum = lastOutput(chain(textOrIntPort), message = "\"1\"")
+
+    // Assert
+    assertEquals("A", quotedConstrainedEnum)
+    assertEquals("\"A\"", quotedOpenEnumMember)
+    assertEquals("\"B\"", quotedOpenEnumOther)
+    assertEquals("\"1\"", quotedIntegerEnum)
+  }
+
   @Test
   fun edgeCheck_wideningEdge_buildsAndDeliversTheValue() {
     // Arrange

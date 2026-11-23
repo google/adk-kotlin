@@ -472,7 +472,8 @@ internal object ResumeScan {
    * Reconstructs a message-as-output node's value from [content]: the content itself when the node
    * has no [Node.outputSchema], is not an [LlmAgent] and gave the message itself rather than
    * through a [delegated] child. Otherwise it is the text, decoded from JSON for a non-string
-   * schema; blank text is no output, and text that is not JSON throws [IllegalArgumentException].
+   * schema or read as the enum value it quotes; blank text is no output, and text that is not JSON
+   * throws [IllegalArgumentException].
    */
   internal fun processRehydratedOutput(node: Node, content: Content, delegated: Boolean): Any? {
     val schema = node.outputSchema
@@ -481,8 +482,9 @@ internal object ResumeScan {
     // A model Content with only thought parts has blank text(), which produces no output.
     val text = content.text().trim()
     if (text.isEmpty()) return null
-    // Model text is raw rather than JSON-quoted, so keep it as-is when the schema accepts strings.
-    if (schema == null || SchemaUtils.acceptsString(schema)) return text
+    if (schema == null) return text
+    // A string schema keeps raw model text, but a JSON-quoted enum value reads as the value.
+    if (SchemaUtils.acceptsString(schema)) return ValueCoercer.enumValueOrText(text, schema)
     return SchemaUtils.readJson(SchemaUtils.stripJsonCodeFence(text)).getOrElse {
       throw IllegalArgumentException(
         "Validation failed for rehydrated output against schema: ${it.message}",
@@ -519,7 +521,8 @@ private fun readSchema(value: Any?): Schema? =
 /**
  * Unwraps an interrupt [response] and returns it as [schema] reads it. A `{"result": value}`
  * envelope is unwrapped, and string values inside it are parsed as JSON unless [schema] accepts a
- * string; a null answer fails a schema that does not admit null.
+ * string (where a JSON-quoted enum value still reads as the value); a null answer fails a schema
+ * that does not admit null.
  */
 internal fun validateAnswer(schema: Schema?, response: Any?, interruptId: String): Any? {
   val answer = unwrapAnswer(schema, response)
@@ -535,7 +538,10 @@ internal fun validateAnswer(schema: Schema?, response: Any?, interruptId: String
 private fun unwrapAnswer(schema: Schema?, response: Any?): Any? {
   if (response !is Map<*, *> || response.keys.singleOrNull() != BaseTool.RESULT_KEY) return response
   val value = response[BaseTool.RESULT_KEY]
-  if (value !is String || (schema != null && SchemaUtils.acceptsString(schema))) return value
+  if (value !is String) return value
+  if (schema != null && SchemaUtils.acceptsString(schema)) {
+    return ValueCoercer.enumValueOrText(value, schema)
+  }
   return SchemaUtils.readJsonOrText(value)
 }
 

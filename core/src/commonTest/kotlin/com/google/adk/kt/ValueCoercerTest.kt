@@ -413,4 +413,63 @@ class ValueCoercerTest {
     // Assert
     assertEquals(mapOf("n" to 1, "limit" to 10), read)
   }
+
+  @Test
+  fun coerceValue_enumContent_readsInheritedAndUntypedEnumsAndDeduplicatesSharedBranches() {
+    // Arrange
+    val inheritedStringEnum =
+      Schema(type = Type.STRING, anyOf = listOf(Schema(enum = listOf("LOW", "HIGH"))))
+    val untypedParentEnum =
+      Schema(enum = listOf("HIGH"), anyOf = listOf(Schema(type = Type.STRING)))
+    val intersectedEnum =
+      Schema(
+        enum = listOf("HIGH"),
+        anyOf = listOf(Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))),
+      )
+    var sharedDag = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    repeat(40) { sharedDag = Schema(anyOf = listOf(sharedDag, sharedDag)) }
+
+    // Act
+    val fromInherited = coerce(text("\"HIGH\""), inheritedStringEnum)
+    val fromUntypedParent = coerce(text("\"HIGH\""), untypedParentEnum)
+    val fromIntersected = ValueCoercer.enumValueOrText("\"HIGH\"", intersectedEnum)
+    val excludedByParent = ValueCoercer.enumValueOrText("\"LOW\"", intersectedEnum)
+    val fromSharedDag = coerce(text("\"HIGH\""), sharedDag)
+
+    // Assert
+    assertEquals("HIGH", fromInherited)
+    assertEquals("HIGH", fromUntypedParent)
+    assertEquals("HIGH", fromIntersected)
+    assertEquals("\"LOW\"", excludedByParent)
+    assertEquals("HIGH", fromSharedDag)
+    assertTrue(fails(text("\"FOO\""), inheritedStringEnum))
+    assertTrue(fails(text("\"LOW\""), untypedParentEnum))
+  }
+
+  @Test
+  fun coerceValue_anyOfEnumWithUnconstrainedString_keepsRawText() {
+    // Arrange
+    val enumOrString =
+      Schema(
+        anyOf = listOf(Schema(type = Type.STRING, enum = listOf("A")), Schema(type = Type.STRING))
+      )
+    val enumOrInt =
+      Schema(
+        anyOf = listOf(Schema(type = Type.STRING, enum = listOf("A")), Schema(type = Type.INTEGER))
+      )
+
+    // Act
+    val openQuotedMember = coerce(text("\"A\""), enumOrString)
+    val openQuotedOther = coerce(text("\"B\""), enumOrString)
+    val openNumberText = coerce(text("42"), enumOrString)
+    val closedQuotedMember = coerce(text("\"A\""), enumOrInt)
+    val closedNumberText = coerce(text("42"), enumOrInt)
+
+    // Assert
+    assertEquals("\"A\"", openQuotedMember)
+    assertEquals("\"B\"", openQuotedOther)
+    assertEquals("42", openNumberText)
+    assertEquals("A", closedQuotedMember)
+    assertEquals(42L, closedNumberText)
+  }
 }

@@ -49,6 +49,13 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.Serializable
+
+@Serializable
+private enum class WorkerPriority {
+  LOW,
+  HIGH,
+}
 
 /** A plain node, not a BaseNode, that doubles the item it is given. */
 private class PlainItemDoubler(
@@ -1176,6 +1183,61 @@ class ParallelWorkerTest {
 
     // Assert
     assertEquals(listOf("{\"a\":1}"), events.last().output)
+  }
+
+  @Test
+  fun parallelNode_singleJsonQuotedEnumContent_readsTheEnumValue() {
+    // Arrange
+    val enumSchema = Schema(type = Type.STRING, enum = listOf("LOW", "HIGH"))
+    val typedWorker = parallelNode(node<WorkerPriority, String>("worker") { _, p -> p.name })
+    val checkedWorker = parallelNode(SchemaCheckedEcho("worker", inputSchema = enumSchema))
+    val quotedHigh = Emitter("source", Content(parts = listOf(Part(text = "\"HIGH\""))))
+    val quotedUnknown = Emitter("source", Content(parts = listOf(Part(text = "\"FOO\""))))
+
+    // Act
+    val typedOutput =
+      runWorkflow(
+          Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, quotedHigh), Edge(quotedHigh, typedWorker)),
+          )
+        )
+        .last()
+        .output
+    val checkedOutput =
+      runWorkflow(
+          Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, quotedHigh), Edge(quotedHigh, checkedWorker)),
+          )
+        )
+        .last()
+        .output
+    val typedUnknownError =
+      assertFailsWith<NodeInputValidationException> {
+        runWorkflow(
+          Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, quotedUnknown), Edge(quotedUnknown, typedWorker)),
+          )
+        )
+      }
+    val checkedUnknownError =
+      assertFailsWith<IllegalArgumentException> {
+        runWorkflow(
+          Workflow(
+            name = "wf",
+            edges = listOf(Edge(Start, quotedUnknown), Edge(quotedUnknown, checkedWorker)),
+          )
+        )
+      }
+
+    // Assert
+    assertEquals(listOf("HIGH"), typedOutput)
+    assertEquals(listOf("HIGH"), checkedOutput)
+    assertContains(typedUnknownError.message.orEmpty(), "input of node 'worker' does not match")
+    assertContains(typedUnknownError.message.orEmpty(), "WorkerPriority")
+    assertContains(checkedUnknownError.message.orEmpty(), "is not one of the schema's enum values")
   }
 
   @Test
