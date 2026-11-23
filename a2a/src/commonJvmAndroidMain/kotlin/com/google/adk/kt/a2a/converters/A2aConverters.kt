@@ -178,12 +178,12 @@ internal fun ClientEvent.isCompleted(): Boolean {
   return state.isFinalState() || state.isInterruptedState()
 }
 
-/** Converts an artifact to an ADK event. */
+/** Converts an artifact to an ADK event, with null content if none of its parts converted. */
 internal fun Artifact.toAdkEvent(invocationContext: InvocationContext): Event {
   val converted = parts().convertParts()
   return remoteAgentEvent(invocationContext)
     .copy(
-      content = Content(role = Role.MODEL, parts = converted.parts),
+      content = converted.parts.ifEmpty { null }?.let { Content(role = Role.MODEL, parts = it) },
       longRunningToolIds = converted.longRunningToolIds,
     )
 }
@@ -352,26 +352,26 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
         return null
       }
 
+      val metadata =
+        mergeMetadata(inner = update.artifact.metadata.orEmpty(), outer = update.metadata.orEmpty())
       val eventPart = update.artifact.toAdkEvent(context)
-      if (eventPart.content?.parts.isNullOrEmpty()) {
-        return null
-      }
+      val hasContent = eventPart.content != null
+      // With no convertible part, still emit the artifact's error code, as ADK Python does.
+      if (!hasContent && !update.artifact.metadata.hasErrorCode()) return null
 
+      // An appended chunk stays partial unless it is the last one and has no content.
       eventPart
-        .copy(partial = isAppend || !isLastChunk)
-        .updateEventMetadata(
-          mergeMetadata(
-            inner = update.artifact.metadata.orEmpty(),
-            outer = update.metadata.orEmpty(),
-          ),
-          update.taskId,
-          update.contextId,
-          metadataParser,
-        )
+        .copy(partial = (hasContent && isAppend) || !isLastChunk)
+        .updateEventMetadata(metadata, update.taskId, update.contextId, metadataParser)
     }
     is TaskStatusUpdateEvent -> {
       val status = update.status
       val taskState = task.status.state()
+      val metadata =
+        mergeMetadata(
+          inner = status.message()?.metadata.orEmpty(),
+          outer = update.metadata.orEmpty(),
+        )
 
       val messageEvent =
         status.message()?.let { msg ->
@@ -379,7 +379,9 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
             remoteAgentEvent(context)
               .copy(errorMessage = msg.parts.filterIsInstance<TextPart>().firstOrNull()?.text)
           } else {
+            // With no convertible part, still emit the message's error code, as ADK Python does.
             msg.toAdkEvent(context, taskState)
+              ?: remoteAgentEvent(context).takeIf { msg.metadata.hasErrorCode() }
           }
         }
 
@@ -398,18 +400,14 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
           messageEvent
         }
 
-      finalEvent?.updateEventMetadata(
-        mergeMetadata(
-          inner = status.message()?.metadata.orEmpty(),
-          outer = update.metadata.orEmpty(),
-        ),
-        update.taskId,
-        update.contextId,
-        metadataParser,
-      )
+      finalEvent?.updateEventMetadata(metadata, update.taskId, update.contextId, metadataParser)
     }
   }
 }
+
+/** Returns whether this metadata holds an error code. */
+private fun Map<String, Any?>?.hasErrorCode(): Boolean =
+  decodeErrorCode(this?.get(MetadataKeys.ERROR_CODE)) != null
 
 /**
  * Returns the whole metadata of the first of this task's artifacts, then its status message, that
