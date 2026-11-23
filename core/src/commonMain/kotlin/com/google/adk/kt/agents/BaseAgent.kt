@@ -309,6 +309,7 @@ abstract class BaseAgent(
           ic.frameworkData.copy(
             nodePath = context.nodePath,
             isolationScope = context.isolationScope,
+            inWorkflow = context.inWorkflow,
           )
       )
     runAsync(agentContext).collect { event ->

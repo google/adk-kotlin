@@ -674,6 +674,103 @@ class ToolNodeTest {
   }
 
   @Test
+  fun run_toolRunsWorkflow_childEventsAreSentBeforeTheToolOutput() {
+    // Arrange: the tool runs a two-step workflow.
+    val step1 = Emitter("step_1", "C")
+    val inner =
+      Workflow(
+        name = "inner_wf",
+        edges = listOf(Edge(Start, step1), Edge(step1, CaptureInput("step_2"))),
+      )
+    val tool =
+      DummyTool(name = "run_child") { context, _ -> mapOf("child" to context.runNode(inner)) }
+
+    // Act
+    val events = runToolAfter(null, tool.asNode())
+
+    // Assert: the child runs under the tool node, and its output stays its own.
+    val paths = events.map { it.nodeInfo?.path }
+    val step1Index = paths.indexOf("wf@1/run_child@1/inner_wf@1/step_1@1")
+    val step2Index = paths.indexOf("wf@1/run_child@1/inner_wf@1/step_2@1")
+    val toolIndex = paths.indexOf("wf@1/run_child@1")
+    assertTrue(step1Index in 0..<step2Index)
+    assertTrue(step2Index < toolIndex)
+    assertEquals(mapOf("received" to "C"), events[step2Index].output)
+    assertEquals(mapOf("child" to mapOf("received" to "C")), events[toolIndex].output)
+  }
+
+  @Test
+  fun run_scopedToolRunsNode_childKeepsTheToolNodesScope() {
+    // Arrange: the tool node runs in a scope its caller picked.
+    val tool =
+      DummyTool(name = "run_child") { context, _ ->
+        mapOf("r" to context.runNode(Emitter("leaf", "L")))
+      }
+    val inner = Workflow(name = "inner", edges = listOf(Edge(Start, tool.asNode())))
+    val caller =
+      node<Any?, Any?>("caller", rerunOnResume = true) { context, _ ->
+        context.runNode(inner, overrideIsolationScope = "scope_a")
+      }
+
+    // Act
+    val events = runWorkflow(Workflow(name = "outer", edges = listOf(Edge(Start, caller))))
+
+    // Assert
+    val leaf = events.single { it.nodeInfo?.path == "outer@1/caller@1/inner@1/run_child@1/leaf@1" }
+    assertEquals("scope_a", leaf.isolationScope)
+  }
+
+  @Test
+  fun run_toolNodeRunWithRunId_toolSeesTheNodesRunId() {
+    // Arrange: the tool shares the node's activation, so it sees the run ID its caller picked.
+    var seenRunId: String? = null
+    val tool =
+      DummyTool(name = "t") { context, _ ->
+        seenRunId = context.runId
+        "ok"
+      }
+    val caller =
+      node<Any?, Any?>("caller", rerunOnResume = true) { context, _ ->
+        context.runNode(tool.asNode(), runId = "custom")
+      }
+
+    // Act
+    val unused = runWorkflow(Workflow(name = "wf", edges = listOf(Edge(Start, caller))))
+
+    // Assert
+    assertEquals("custom", seenRunId)
+  }
+
+  @Test
+  fun run_toolEndsInvocation_laterAgentStepDoesNotCallItsModel() {
+    // Arrange: the tool shares the node's invocation context, so its end flag reaches the agent.
+    var modelCalls = 0
+    val agent =
+      LlmAgent(
+        name = "after",
+        model =
+          DummyModel("model") {
+            modelCalls++
+            flowOf(LlmResponse(content = Content.fromText(Role.MODEL, "Hi.")))
+          },
+      )
+    val tool =
+      DummyTool(name = "ender") { context, _ ->
+        context.endInvocation()
+        "ended"
+      }
+    val toolNode = tool.asNode()
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, toolNode), Edge(toolNode, agent)))
+
+    // Act
+    val unused = runWorkflow(workflow)
+
+    // Assert
+    assertEquals(0, modelCalls)
+  }
+
+  @Test
   fun run_agentTool_runsTheAgentOnTheRequestAndOutputsItsReply() {
     // Arrange
     var modelInput: String? = null

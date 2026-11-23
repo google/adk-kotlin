@@ -186,6 +186,56 @@ class NodeTracingTest {
   }
 
   @Test
+  fun run_workflowStartedByAJavaToolOfAWorkflowStep_isNested() {
+    val leaf = node<Any?, String>("leaf") { _, _ -> "done" }
+    val inner = Workflow("inner", edges = listOf(Edge(Start, leaf)))
+    val tool = childRunningTool { context -> InteropContextView.of(context).runNode(inner).await() }
+
+    runAsApp(Workflow("outer", edges = listOf(Edge(Start, toolCallingAgent(tool, "fc_1")))))
+
+    assertThat(span("invoke_workflow inner").attributes[NESTED]).isTrue()
+  }
+
+  @Test
+  fun run_workflowStartedByAJavaToolOfASubAgentInAWorkflowStep_isNested() {
+    val leaf = node<Any?, String>("leaf") { _, _ -> "done" }
+    val inner = Workflow("inner", edges = listOf(Edge(Start, leaf)))
+    val tool = childRunningTool { context -> InteropContextView.of(context).runNode(inner).await() }
+    val seq = SequentialAgent(name = "seq", subAgents = listOf(toolCallingAgent(tool, "fc_1")))
+
+    runAsApp(Workflow("outer", edges = listOf(Edge(Start, seq))))
+
+    assertThat(span("invoke_workflow inner").attributes[NESTED]).isTrue()
+  }
+
+  @Test
+  fun run_workflowStartedByAJavaToolOfAnAgentThatAToolRuns_isNested() {
+    val leaf = node<Any?, String>("leaf") { _, _ -> "done" }
+    val inner = Workflow("inner", edges = listOf(Edge(Start, leaf)))
+    val innerTool = childRunningTool { context ->
+      InteropContextView.of(context).runNode(inner).await()
+    }
+    val innerAgent = toolCallingAgent(innerTool, "fc_inner", name = "inner_agent")
+    val outerTool = childRunningTool { context -> context.runNode(innerAgent) }
+
+    runAsApp(
+      Workflow("outer", edges = listOf(Edge(Start, toolCallingAgent(outerTool, "fc_outer"))))
+    )
+
+    assertThat(span("invoke_workflow inner").attributes[NESTED]).isTrue()
+  }
+
+  @Test
+  fun run_workflowStartedByAToolOfARootAgent_isNotNested() {
+    val leaf = node<Any?, String>("leaf") { _, _ -> "done" }
+    val inner = Workflow("inner", edges = listOf(Edge(Start, leaf)))
+
+    runAsApp(toolCallingAgent(childRunningTool { context -> context.runNode(inner) }, "fc_1"))
+
+    assertThat(span("invoke_workflow inner").attributes[NESTED]).isNull()
+  }
+
+  @Test
   fun run_workflowRootOfARunnerStartedByANode_isNested() {
     val leaf = node<Any?, String>("leaf") { _, _ -> "done" }
     val innerRunner = runnerFor(Workflow("inner", edges = listOf(Edge(Start, leaf))))
@@ -546,6 +596,36 @@ class NodeTracingTest {
     // Python raises the root's failure through its span.
     assertThat(span("invoke_workflow outer").status.description)
       .isEqualTo("TestNodeException: boom")
+  }
+
+  @Test
+  fun run_retriedWorkflowRunByATool_getsASpanPerAttempt() {
+    var calls = 0
+    val flaky =
+      node<Any?, String>("flaky") { _, _ ->
+        calls += 1
+        if (calls == 1) throw TestNodeException("first try")
+        "ok"
+      }
+    val retry = NodeConfig(RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO))
+    val inner = Workflow("inner", edges = listOf(Edge(Start, flaky)), config = retry)
+
+    runAsApp(toolCallingAgent(childRunningTool { context -> context.runNode(inner) }, "fc_1"))
+
+    // Unlike an invocation's root workflow, a tool's workflow is traced once per attempt.
+    assertThat(exported.count { it.name == "invoke_workflow inner" }).isEqualTo(2)
+  }
+
+  @Test
+  fun run_failedWorkflowRunByATool_describesItsSpanByTheChildsMessage() {
+    val boom = node<Any?, String>("boom") { _, _ -> throw TestNodeException("boom") }
+    val inner = Workflow("inner", edges = listOf(Edge(Start, boom)))
+
+    assertFailsWith<TestNodeException> {
+      runAsApp(toolCallingAgent(childRunningTool { context -> context.runNode(inner) }, "fc_1"))
+    }
+
+    assertThat(span("invoke_workflow inner").status.description).isEqualTo("boom")
   }
 
   @Test

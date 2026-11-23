@@ -52,6 +52,7 @@ import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.EventSink
 import com.google.adk.kt.workflow.Node
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -1094,6 +1095,16 @@ data class ContextFrameworkData(
    * child node there; `null` outside a node run.
    */
   @FrameworkInternalApi val nodeContext: Context? = null,
+  /**
+   * The invocation's event sink, which [Context.runNode] uses outside a node activation, as from a
+   * tool; set by the node runner, or `null` when the invocation does not run on the node path.
+   */
+  @FrameworkInternalApi val eventSink: InvocationEventSink? = null,
+  /**
+   * Whether a workflow encloses the agent node this context was made for, so a workflow that one of
+   * its tools runs is traced as nested even from a Java tool, whose coroutine lacks that mark.
+   */
+  @FrameworkInternalApi val inWorkflow: Boolean = false,
 ) {
   /**
    * The live run this invocation belongs to, set by [openLiveRun], or `null` on a turn-based
@@ -1108,10 +1119,14 @@ data class ContextFrameworkData(
 
   /**
    * Paths of workflow nodes cancelled mid-run in this turn. Their events show progress rather than
-   * a result, so a retry runs them again. A [copy] of the holder starts with none.
+   * a result, so a retry runs them again. Copies of the holder share them through [eventSink], so a
+   * node a tool runs sees them too; a [copy] without one starts with none.
    */
-  internal var cancelledNodePaths: MutableMap<String, Unit> = concurrentMutableMapOf()
-    private set
+  @OptIn(FrameworkInternalApi::class)
+  internal val cancelledNodePaths: MutableMap<String, Unit>
+    get() = eventSink?.cancelledNodePaths ?: ownCancelledNodePaths
+
+  private var ownCancelledNodePaths: MutableMap<String, Unit> = concurrentMutableMapOf()
 
   /**
    * Run IDs of the nodes that run without a parent activation, by the path of their ancestor agents
@@ -1129,7 +1144,7 @@ data class ContextFrameworkData(
    */
   internal fun withoutLiveRun(): ContextFrameworkData =
     copy().also {
-      it.cancelledNodePaths = cancelledNodePaths
+      it.ownCancelledNodePaths = ownCancelledNodePaths
       it.topLevelRunIds = topLevelRunIds
     }
 }
@@ -1188,6 +1203,16 @@ class AgentModeOverride
 internal constructor(internal val agent: BaseAgent, internal val mode: AgentMode) {
   /** The steps [agent] has taken in this run, so `maxSteps` holds across its delegation rounds. */
   internal var stepsTaken: Int = 0
+}
+
+/**
+ * The event sink of an invocation that runs on the node path, so a tool can run a node and store
+ * its events. The type is public only because it is a [ContextFrameworkData] property type; its
+ * constructor and members are non-public.
+ */
+class InvocationEventSink internal constructor(internal val sink: EventSink) {
+  /** The invocation's [ContextFrameworkData.cancelledNodePaths], shared by every holder copy. */
+  internal val cancelledNodePaths: MutableMap<String, Unit> = concurrentMutableMapOf()
 }
 
 /** The mode override set for [agent], or null when none is. */

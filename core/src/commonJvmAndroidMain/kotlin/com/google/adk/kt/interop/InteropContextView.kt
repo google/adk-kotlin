@@ -124,10 +124,13 @@ private constructor(private val context: Context, private val coroutineContext: 
    * Calls [Context.runNode] with the options in [config]; the future completes with the child's
    * output, or `null` when it has none. Catch only failures you handle, such as
    * [DynamicNodeFailedException][com.google.adk.kt.workflow.DynamicNodeFailedException]: when
-   * [node] pauses for input, the future fails with an internal [Throwable] that must end the
-   * calling node's run, so that the calling node waits too. [node] starts when this is called,
-   * before the calling node's published events are stored, so pass any data [node] needs as
-   * [nodeInput] or write that data to state in an earlier node.
+   * [node] pauses for input in a node activation, the future fails with an internal [Throwable]
+   * that must end the calling node's run, so that the calling node waits too. Outside a node
+   * activation, it fails instead: with
+   * [DynamicNodeFailedException][com.google.adk.kt.workflow.DynamicNodeFailedException] for a
+   * long-running tool call, and with [IllegalStateException] for any other pause. [node] starts
+   * when this is called, before the calling node's published events are stored, so pass any data
+   * [node] needs as [nodeInput] or write that data to state in an earlier node.
    */
   @ExperimentalWorkflowApi
   @JvmOverloads

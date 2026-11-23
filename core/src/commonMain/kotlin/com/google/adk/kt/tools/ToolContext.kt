@@ -27,7 +27,9 @@ import com.google.adk.kt.events.ToolConfirmation
  * This subclass is kept for backward compatibility. Prefer [Context] in new code.
  *
  * A tool context is not a node activation, so the node-only members inherited from [Context] (such
- * as [Context.output] and [Context.routes]) throw [IllegalStateException] here.
+ * as [Context.output] and [Context.routes]) throw [IllegalStateException] here. The exception is
+ * the context of the tool a tool node runs (see [asNode][com.google.adk.kt.workflow.asNode]), which
+ * shares the node's activation.
  */
 class ToolContext(
   invocationContext: InvocationContext,
