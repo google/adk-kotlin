@@ -29,6 +29,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.types.Content
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -465,6 +466,8 @@ private constructor(
               } else {
                 event.nodeInfo?.outputFor
               },
+            // Marked, so that a stored session reads the output back as a message, not as a map.
+            messageAsOutput = event.nodeInfo?.messageAsOutput == true || event.output is Content,
           ),
       )
   }
@@ -616,9 +619,11 @@ private data class QueuedEvent(
 
 /**
  * A final content event whose content *is* the node's output, so no separate output event follows.
+ * An event whose output field already holds a [Content] carries its message in `output`, not in
+ * `content`.
  */
 private val Event.isMessageAsOutput: Boolean
-  get() = !partial && nodeInfo?.messageAsOutput == true && content != null
+  get() = !partial && nodeInfo?.messageAsOutput == true && content != null && output !is Content
 
 /**
  * Adapts any [Node] to a [BaseNode] so the engine's execution and normalization loop can run it.

@@ -40,6 +40,12 @@ import kotlinx.serialization.json.decodeFromJsonElement
  */
 internal class RecoveredNode {
   var output: Any? = null
+
+  /** Whether [output] is a message read from an event's content, not its output field. */
+  var outputFromContent: Boolean = false
+
+  /** Whether [output] came from a descendant that delegated it to this node. */
+  var outputDelegated: Boolean = false
   var errorCode: String? = null
   var route: List<Route>? = null
   var branch: String? = null
@@ -269,14 +275,22 @@ internal object ResumeScan {
       ownerPath: String,
       node: RecoveredNode,
     ) {
+      val fromContent =
+        event.nodeInfo?.messageAsOutput == true && event.output == null && event.content != null
       val eventOutput =
-        event.output ?: event.content?.takeIf { event.nodeInfo?.messageAsOutput == true }
+        when {
+          fromContent -> event.content
+          event.nodeInfo?.messageAsOutput == true -> event.output?.let(::asMessage)
+          else -> event.output
+        }
       val isDelegated =
         eventOutput != null && event.nodeInfo?.outputFor?.contains(ownerPath) == true
       if (!isDirect && !isDelegated) return
 
       if (eventOutput != null) {
         node.output = eventOutput
+        node.outputFromContent = fromContent
+        node.outputDelegated = !isDirect
         // A delegate's output event carries the delegate's branch, not this node's.
         if (isDirect && event.output != null) node.branch = event.branch
       }
@@ -377,7 +391,12 @@ internal object ResumeScan {
     if (output != null || recovered.route != null || transfer != null) {
       return Interception(
         shouldRun = false,
-        output = if (output is Content) processRehydratedOutput(node, output) else output,
+        output =
+          if (recovered.outputFromContent && output is Content) {
+            processRehydratedOutput(node, output, recovered.outputDelegated)
+          } else {
+            output
+          },
         route = recovered.route,
         branch = branch,
         transferToAgent = transfer,
@@ -450,16 +469,20 @@ internal object ResumeScan {
   }
 
   /**
-   * Reconstructs a message-as-output node's value from [content], decoding it from JSON when
-   * [Node.outputSchema] is a non-string schema.
+   * Reconstructs a message-as-output node's value from [content]: the content itself when the node
+   * has no [Node.outputSchema], is not an [LlmAgent] and gave the message itself rather than
+   * through a [delegated] child. Otherwise it is the text, decoded from JSON for a non-string
+   * schema; blank text is no output, and text that is not JSON throws [IllegalArgumentException].
    */
-  internal fun processRehydratedOutput(node: Node, content: Content): Any? {
+  internal fun processRehydratedOutput(node: Node, content: Content, delegated: Boolean): Any? {
+    val schema = node.outputSchema
+    // An LlmAgent's output is its text, not the message, and a delegate may be an LlmAgent.
+    if (schema == null && !delegated && node !is LlmAgent) return content
     // A model Content with only thought parts has blank text(), which produces no output.
     val text = content.text().trim()
     if (text.isEmpty()) return null
-    val schema = node.outputSchema ?: return text
     // Model text is raw rather than JSON-quoted, so keep it as-is when the schema accepts strings.
-    if (SchemaUtils.acceptsString(schema)) return text
+    if (schema == null || SchemaUtils.acceptsString(schema)) return text
     return SchemaUtils.readJson(SchemaUtils.stripJsonCodeFence(text)).getOrElse {
       throw IllegalArgumentException(
         "Validation failed for rehydrated output against schema: ${it.message}",
@@ -468,6 +491,21 @@ internal object ResumeScan {
     }
   }
 }
+
+/**
+ * Returns [value] converted to a message if it is a message's JSON form, which is how a stored
+ * session gives back a message output; returns any other value unchanged.
+ */
+private fun asMessage(value: Any): Any {
+  if (value !is Map<*, *> || !MESSAGE_KEYS.containsAll(value.keys)) return value
+  return try {
+    adkJson.decodeFromJsonElement<Content>(anyToJsonElement(value))
+  } catch (_: IllegalArgumentException) {
+    value
+  }
+}
+
+private val MESSAGE_KEYS = setOf("role", "parts")
 
 /** Decodes a response [Schema] from an interrupt event's `response_schema` argument. */
 private fun readSchema(value: Any?): Schema? =

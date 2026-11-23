@@ -36,8 +36,11 @@ import kotlinx.serialization.json.JsonNames
  *   emitter's own path, then each ancestor linked to it by `useAsOutput` (a `runNode` caller, or
  *   the workflow of a terminal node). Set on an event carrying the node's output, in `output` or as
  *   message-as-output content.
- * @property messageAsOutput When true this event's content *is* the node's output, so no separate
- *   output event follows.
+ * @property messageAsOutput When true, this event's output is a message: its `content` when
+ *   `output` is null, or its `output` when that holds a [com.google.adk.kt.types.Content], which a
+ *   stored session holds as its JSON form. On a final event with `content` and a non-message
+ *   `output`, the live run uses `output` while the emitted event drops `output`, so resume reads
+ *   `content`.
  */
 @Serializable
 data class NodeInfo(
