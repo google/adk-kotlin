@@ -47,7 +47,9 @@ class Part(
   /** Data from a file. */
   @JsonNames("file_data") val fileData: FileData? = null,
   /** A call to a function. */
-  @JsonNames("function_call") val functionCall: FunctionCall? = null,
+  @JsonNames("function_call")
+  @Serializable(with = FunctionCallSerializer::class)
+  val functionCall: FunctionCall? = null,
   /** The response from a function call. */
   @JsonNames("function_response") val functionResponse: FunctionResponse? = null,
   /** Indicates whether the part represents the model's thought process. */

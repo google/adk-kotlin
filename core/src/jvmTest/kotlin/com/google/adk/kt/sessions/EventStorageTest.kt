@@ -19,12 +19,22 @@
 package com.google.adk.kt.sessions
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.AuthScheme
+import com.google.adk.kt.auth.CredentialKey
+import com.google.adk.kt.auth.RequestCredentialArgs
 import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.auth.SignInRequest
+import com.google.adk.kt.auth.adkSecretRevealingJson
+import com.google.adk.kt.auth.findCredentialRequest
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.EventCompaction
 import com.google.adk.kt.events.ToolConfirmation
+import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.testing.userMessage
@@ -147,6 +157,47 @@ class EventStorageTest {
       Event(
         author = "agent",
         content = modelMessage(Part(text = "Looking"), Part(functionCall = call)),
+      )
+
+    val stored = event.forStorage()
+
+    assertEquals(event, stored)
+  }
+
+  @Test
+  @OptIn(FrameworkInternalApi::class, SecretAccess::class)
+  fun forStorage_signInRequest_stillMatchesItsConfigAfterAReload() {
+    val config =
+      AuthConfig(
+        AuthScheme.OpenIdConnect(
+          authorizationEndpoint = "https://a/auth",
+          tokenEndpoint = "https://a/token",
+          scopes = listOf("openid"),
+        ),
+        exchangedAuthCredential =
+          AuthCredential.OAuth2(clientId = "cid", codeVerifier = Secret("verifier-sentinel")),
+        credentialKey = CredentialKey("key"),
+      )
+    val args = RequestCredentialArgs("call-1", config).toMap()
+    val call = FunctionCall(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, args, id = "req-1")
+    val event = Event(author = "agent", content = modelMessage(Part(functionCall = call)))
+
+    val json = adkSecretRevealingJson.encodeToString(Event.serializer(), event.forStorage())
+    val reloaded = adkJson.decodeFromString(Event.serializer(), json)
+
+    assertEquals(
+      RequestCredentialArgs("call-1", config),
+      listOf(reloaded).findCredentialRequest("req-1", mapOf("call-1" to listOf(config))),
+    )
+  }
+
+  @Test
+  fun forStorage_signInResponse_keepsItsToken() {
+    val request = SignInRequest("req-1", testApiKeyConfig(credentialKey = "key"))
+    val event =
+      Event(
+        author = "user",
+        content = request.createResponse(AuthCredential.ApiKey(Secret("sk-123"))),
       )
 
     val stored = event.forStorage()

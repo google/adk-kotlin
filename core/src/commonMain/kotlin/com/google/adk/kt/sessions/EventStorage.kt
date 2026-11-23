@@ -17,6 +17,8 @@
 package com.google.adk.kt.sessions
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.isSignInRequest
+import com.google.adk.kt.auth.isSignInResponse
 import com.google.adk.kt.collections.concurrentMutableMapOf
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -28,8 +30,8 @@ import com.google.adk.kt.types.Part
 
 /**
  * Returns this event as a session store writes it, with typed credentials keeping their secrets
- * only in its state delta, output and requested auth configs, which ADK reads back. Elsewhere they
- * lose them, since a reloaded value is plain and would show them to the model or in output.
+ * only in its sign-in parts, state delta, output and requested auth configs, which ADK reads back.
+ * Elsewhere they lose them, since a reloaded value is plain and would show them to the model.
  */
 internal fun Event.forStorage(): Event =
   copy(
@@ -48,7 +50,16 @@ private fun EventActions.forStorage(): EventActions =
   )
 
 private fun Content.forStorage(): Content =
-  copy(parts = parts.map { it.withoutCredentialSecrets() })
+  copy(
+    parts =
+      parts.map { part ->
+        // A reloaded sign-in request must still equal its requested config, and a reply its token.
+        val isSignIn =
+          part.functionCall?.isSignInRequest == true ||
+            part.functionResponse?.isSignInResponse == true
+        if (isSignIn) part else part.withoutCredentialSecrets()
+      }
+  )
 
 /**
  * Returns this part as [adkJson] writes it, its typed credentials as plain JSON without secrets.

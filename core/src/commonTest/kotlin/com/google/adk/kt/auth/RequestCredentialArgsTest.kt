@@ -17,11 +17,19 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
+import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.Part
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlinx.serialization.descriptors.elementNames
 import org.junit.Test
 
-@OptIn(ExperimentalAuthApi::class)
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
 class RequestCredentialArgsTest {
 
   @Test
@@ -61,8 +69,66 @@ class RequestCredentialArgsTest {
   }
 
   @Test
-  fun toMap_writesCallArgs() {
-    assertEquals(CALL_ARGS, ARGS.toMap())
+  fun toMap_keepsTheConfigTyped() {
+    assertEquals(mapOf("functionCallId" to "call-1", "authConfig" to ARGS.authConfig), ARGS.toMap())
+  }
+
+  @Test
+  fun toMap_writesTheSerializersJson() {
+    val args = ARGS.copy(message = "Sign in.")
+
+    assertEquals(
+      adkSecretRevealingJson.encodeToJsonElement(RequestCredentialArgs.serializer(), args),
+      anyToJsonElement(args.toMap(), adkSecretRevealingJson),
+    )
+    // Every field, so that one added later can't be left out of the map unnoticed.
+    assertEquals(
+      RequestCredentialArgs.serializer().descriptor.elementNames.toSet(),
+      args.toMap().keys,
+    )
+  }
+
+  @Test
+  fun withDecodedSignInRequest_plainArgs_typesTheConfig() {
+    val call = FunctionCall(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, CALL_ARGS, "call-1")
+
+    assertEquals(ARGS.toMap(), call.withDecodedSignInRequest().args)
+  }
+
+  @Test
+  fun withDecodedSignInRequest_malformedArgs_dropsThem() {
+    val call =
+      FunctionCall(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("apiKey" to "k"), "call-1")
+
+    assertEquals(emptyMap(), call.withDecodedSignInRequest().args)
+  }
+
+  @Test
+  fun withDecodedSignInRequest_otherCall_isUnchanged() {
+    val call = FunctionCall("lookup", CALL_ARGS, "call-1")
+
+    assertEquals(call, call.withDecodedSignInRequest())
+  }
+
+  @Test
+  fun part_signInRequestReadFromJson_outputLeavesItsSecretsOut() {
+    val config =
+      AuthConfig(
+        AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER),
+        AuthCredential.ApiKey(Secret("k")),
+        credentialKey = CredentialKey("key"),
+      )
+    val args = RequestCredentialArgs("call-1", config).toMap()
+    val stored =
+      adkSecretRevealingJson.encodeToString(
+        Part.serializer(),
+        Part(functionCall = FunctionCall(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, args, "c")),
+      )
+
+    val part = adkJson.decodeFromString(Part.serializer(), stored)
+
+    assertEquals(args, part.functionCall?.args)
+    assertFalse(adkJson.encodeToString(Part.serializer(), part).contains("\"k\""))
   }
 
   private companion object {

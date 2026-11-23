@@ -21,14 +21,11 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
-import com.google.adk.kt.serialization.jsonElementToAny
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.modules.SerializersModule
 
 /**
@@ -54,21 +51,6 @@ internal val adkSecretRevealingJson: Json =
       include(adkJson.serializersModule)
       contextual(RevealsSecrets::class, RevealsSecrets.serializer())
     }
-  }
-
-/**
- * Returns [value] as the plain map of its JSON object, the form that session state and function
- * call arguments hold. Credential secrets stay in, since the map is ADK's own data.
- */
-@SecretAccess
-@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
-internal fun <T> encodeToPlainMap(
-  serializer: SerializationStrategy<T>,
-  value: T,
-): Map<String, Any?> =
-  adkSecretRevealingJson.encodeToJsonElement(serializer, value).jsonObject.mapValues { (_, element)
-    ->
-    jsonElementToAny(element)
   }
 
 /**

@@ -20,46 +20,10 @@ import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.SecretAccess
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
-import kotlin.time.Instant
 import org.junit.Test
 
 @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 class AuthJsonTest {
-
-  @Test
-  fun encodeToPlainMap_serializableValue_returnsItsJsonObject() {
-    assertEquals(
-      mapOf("authType" to "apiKey", "apiKey" to "k"),
-      encodeToPlainMap(AuthCredentialSerializer, AuthCredential.ApiKey(Secret("k"))),
-    )
-  }
-
-  @Test
-  fun encodeToPlainMap_nestedObject_convertsItToPlainValuesThatDecodeBack() {
-    val credential =
-      AuthCredential.OAuth2(
-        clientId = "cid",
-        accessToken = Secret("at"),
-        expiresAt = Instant.fromEpochSeconds(1_700_000_000),
-      )
-
-    val plain = encodeToPlainMap(AuthCredentialSerializer, credential)
-
-    assertEquals(
-      mapOf(
-        "authType" to "oauth2",
-        "oauth2" to
-          mapOf(
-            "clientId" to "cid",
-            "accessToken" to "at",
-            "expiresAt" to 1_700_000_000L,
-            "tokenEndpointAuthMethod" to "client_secret_basic",
-          ),
-      ),
-      plain,
-    )
-    assertEquals(credential, decodeFromPlainOrNull(AuthCredentialSerializer, plain))
-  }
 
   @Test
   fun decodeFromPlainOrNull_plainMap_decodesIt() {
