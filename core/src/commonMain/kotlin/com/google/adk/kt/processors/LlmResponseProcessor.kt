@@ -18,6 +18,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 
 /**
@@ -32,11 +33,13 @@ internal interface LlmResponseProcessor {
    * Executes the processor logic.
    *
    * @param context The [CallbackContext] providing current execution state.
+   * @param request The [LlmRequest] the model answered.
    * @param response The [LlmResponse] returned by the model.
    * @param emitEvent A callback to emit [Event]s to the caller during this processing step.
    */
   suspend fun process(
     context: CallbackContext,
+    request: LlmRequest,
     response: LlmResponse,
     emitEvent: suspend (Event) -> Unit = {},
   ): LlmResponse = response
