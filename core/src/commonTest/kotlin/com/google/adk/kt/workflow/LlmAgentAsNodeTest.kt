@@ -855,6 +855,40 @@ class LlmAgentAsNodeTest {
   }
 
   @Test
+  fun runNode_fencedAnswerWithOutputSchema_writesParsedValueToBoth() = runBlocking {
+    // Arrange
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("title" to Schema(type = Type.STRING)),
+        required = listOf("title"),
+      )
+    val agent =
+      LlmAgent(
+        name = "writer",
+        model =
+          RecordingModel(mutableListOf(), responseText = "```json\n{\"title\": \"Story\"}\n```"),
+        outputSchema = schema,
+        outputKey = "story_meta",
+      )
+    val events = mutableListOf<Event>()
+
+    // Act
+    val result =
+      runNodeAsRoot(
+        agent,
+        testInvocationContext(),
+        { event, _ -> events.add(event) },
+        nodeInput = "write",
+      )
+
+    // Assert
+    val expected = mapOf("title" to "Story")
+    assertEquals(expected, result.output)
+    assertEquals(expected, events.single { it.content != null }.actions.stateDelta["story_meta"])
+  }
+
+  @Test
   fun runNode_undeclaredKeyInAnswer_failsNode() = runBlocking {
     // Arrange: an object answer may only carry the keys its schema declares.
     val schema =

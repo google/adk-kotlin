@@ -3948,6 +3948,33 @@ class WorkflowHitlTest {
   }
 
   @Test
+  fun resume_messageOutputNodeWithAFencedReply_isRehydratedToTheParsedValue() {
+    // Arrange: adk-python test_resume_replays_schema_agent_output_as_parsed_live (fenced case).
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("city" to Schema(type = Type.STRING)))
+    val chat = MessageOutput("chat", "```json\n{\"city\": \"Paris\"}\n```", outputSchema = schema)
+    val ask = Ask("ask", RequestInput(interruptId = "ask_1", message = "need input"))
+    val join = JoinNode("j")
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, chat), Edge(Start, ask), Edge(chat, join), Edge(ask, join)),
+      )
+    val session = WorkflowSession(workflow)
+    session.advance(userMessage("go"))
+
+    // Act
+    val events = session.turn(answer("ask_1", mapOf("v" to 1L)))
+
+    // Assert
+    val joinEvent = events.single { it.nodeInfo?.path == "wf@1/j@1" }
+    assertEquals(
+      mapOf("chat" to mapOf("city" to "Paris"), "ask" to mapOf("v" to 1L)),
+      joinEvent.output,
+    )
+  }
+
+  @Test
   fun resume_nodeThatFailedInAnEarlierTurn_reruns() {
     // Arrange: the sibling fails after the request was raised, which ends the first turn.
     val flaky = FailsFirstRun("flaky")
@@ -4052,6 +4079,20 @@ class WorkflowHitlTest {
 
     // Assert
     assertEquals(mapOf("town" to "Paris"), output)
+  }
+
+  @Test
+  fun processRehydratedOutput_fencedJson_isParsedLikeTheLivePath() {
+    // adk-python test_strips_markdown_fence_like_the_live_path.
+    val schema =
+      Schema(type = Type.OBJECT, properties = mapOf("city" to Schema(type = Type.STRING)))
+    val node = MessageOutput("chat", "", outputSchema = schema)
+    val fenced = "```json\n{\"city\": \"Paris\"}\n```"
+    val stored = Content(role = Role.MODEL, parts = listOf(Part(text = fenced)))
+
+    val output = ResumeScan.processRehydratedOutput(node, stored)
+
+    assertEquals(mapOf("city" to "Paris"), output)
   }
 
   @Test
