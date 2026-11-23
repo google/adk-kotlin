@@ -24,6 +24,7 @@ import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryEntry
+import com.google.adk.kt.telemetry.childTelemetryOrNull
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.workflow.Node
@@ -224,10 +225,14 @@ private constructor(private val context: Context, private val coroutineContext: 
           " Kotlin node body calls the suspending runNode, and a BasePublisherNode uses" +
           " InteropContextView.runNode."
       }
+    // A child started on a thread without a span, such as a helper thread, stays in the node's
+    // trace, as a Kotlin child does.
+    val telemetry = childTelemetryOrNull(hooks.nodeTelemetry) ?: EmptyCoroutineContext
     // A job of its own, under the call's usual parent, lets an interrupt cancel this child alone.
     val call = Job(coroutineContext[Job] ?: context.activationJob)
     val output =
-      of(context, hooks.childContext + coroutineContext + call).runNode(node, nodeInput, config)
+      of(context, hooks.childContext + telemetry + coroutineContext + call)
+        .runNode(node, nodeInput, config)
     call.complete()
     return try {
       output.get()

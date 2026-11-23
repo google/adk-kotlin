@@ -34,6 +34,7 @@ import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.memory.MemoryService
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.State
+import com.google.adk.kt.telemetry.TelemetryContextElement
 import com.google.adk.kt.tools.ReadonlyToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -1316,6 +1317,8 @@ internal class JavaInteropHooks(
   val emit: (Event) -> Unit,
   /** The body's coroutine elements, such as `MDCContext()`, for the children it runs. */
   val childContext: CoroutineContext,
+  /** The node's telemetry, so a child started on a thread without a span stays in its trace. */
+  val nodeTelemetry: TelemetryContextElement?,
 )
 
 /** Runs of a node's children keyed by `name@runId`, kept across the node's attempts. */

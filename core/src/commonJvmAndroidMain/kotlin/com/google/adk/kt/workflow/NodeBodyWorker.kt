@@ -59,13 +59,18 @@ internal actual fun <I, O> NodeBody<I, O>.onWorker(
   val state = context.requireNodeState()
   coroutineScope {
     val emitter = JavaBodyEmitter(state.node.name, coroutineContext.job)
-    // Children keep elements such as MDCContext(); the view supplies the job, IO and body's span.
+    // Children keep elements such as MDCContext(); each call supplies the job and IO.
     val childContext =
       coroutineContext
         .minusKey(Job)
         .minusKey(ContinuationInterceptor)
         .minusKey(TelemetryContextElement)
-    val hooks = JavaInteropHooks(emit = emitter::emit, childContext = childContext)
+    val hooks =
+      JavaInteropHooks(
+        emit = emitter::emit,
+        childContext = childContext,
+        nodeTelemetry = coroutineContext[TelemetryContextElement],
+      )
     // A second body on this state would take over the first one's calls.
     check(state.javaInteropHooks.compareAndSet(null, hooks)) {
       "Another Java FunctionNode body already runs with the Context of node" +
