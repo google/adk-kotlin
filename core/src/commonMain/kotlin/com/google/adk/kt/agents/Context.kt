@@ -62,6 +62,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.CoroutineContext
 import kotlin.jvm.Volatile
 import kotlin.reflect.KType
 import kotlin.reflect.typeOf
@@ -1311,7 +1312,11 @@ internal class NodeExecutionState(
 }
 
 /** Carries a running Java `FunctionNode` body's blocking `InteropContextView` calls to its node. */
-internal class JavaInteropHooks(val emit: (Event) -> Unit)
+internal class JavaInteropHooks(
+  val emit: (Event) -> Unit,
+  /** The body's coroutine elements, such as `MDCContext()`, for the children it runs. */
+  val childContext: CoroutineContext,
+)
 
 /** Runs of a node's children keyed by `name@runId`, kept across the node's attempts. */
 // The mutex guards every access to byKey, and a run's Context is read only after it completes.

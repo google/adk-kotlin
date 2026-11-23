@@ -396,6 +396,21 @@ class InteropContextViewTest {
   }
 
   @Test
+  fun runNodeBlocking_fromAKotlinNodeBody_failsAndNamesTheSuspendingRunNode() {
+    // Arrange
+    val caller =
+      node<Any?, Any?>("caller", rerunOnResume = true) { context, _ ->
+        InteropContextView.of(context).runNodeBlocking(StubNode("child", "C"), null)
+      }
+
+    // Act
+    val error = assertFailsWith<IllegalStateException> { runWorkflow(workflowOf(caller)) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "A Kotlin node body calls the suspending runNode")
+  }
+
+  @Test
   fun runNode_callerWithoutRerunOnResume_failsTheRun() {
     // Arrange
     val caller =

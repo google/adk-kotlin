@@ -104,6 +104,9 @@ object FunctionNodes {
    * FunctionNodes.of("report", String.class, String.class, myDispatcher, (ctx, city) -> ...);
    * ```
    *
+   * A body that runs child nodes with [InteropContextView.runNodeBlocking] needs a node built with
+   * [builder] and `rerunOnResume(true)`.
+   *
    * @throws WorkflowConfigurationException if Jackson cannot read and write [inputType] or write
    *   [outputType], or if a port type has no single concrete JSON shape; a field type Jackson
    *   cannot handle fails on the first value instead.

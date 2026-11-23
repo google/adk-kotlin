@@ -21,8 +21,8 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 
 /**
- * Options for [InteropContextView.runNode]. Each property has the default and meaning of the
- * [Context.runNode] argument with the same name.
+ * Options for [InteropContextView.runNode] and [InteropContextView.runNodeBlocking]. Each property
+ * has the default and meaning of the [Context.runNode] argument with the same name.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi

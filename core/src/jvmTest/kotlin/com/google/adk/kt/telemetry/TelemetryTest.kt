@@ -22,11 +22,16 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.interop.FunctionNodes
+import com.google.adk.kt.interop.InteropContextView
 import com.google.adk.kt.interop.PublisherRunner
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.telemetry.otel.OtelTelemetryContext
 import com.google.adk.kt.telemetry.otel.OtelTracer
 import com.google.adk.kt.testing.DummyModel
@@ -40,6 +45,9 @@ import com.google.adk.kt.types.Candidate
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.GenerateContentResponse
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.genai.kotlin.Client
@@ -78,6 +86,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
@@ -247,6 +256,53 @@ class TelemetryTest {
       val agent = exported.single { it.name == "invoke_agent liveNoopAgent" }
       assertThat(agent.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
       assertThat(agent.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
+    } finally {
+      provider.close()
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class, ExperimentalWorkflowApi::class)
+  @Test
+  fun runNodeBlocking_spanTheBodyMadeCurrent_parentsASpanTheChildStarts() {
+    val exported = mutableListOf<SpanData>()
+    val provider = tracerProvider(exported)
+    try {
+      // Arrange: the caller's Java body makes its own span current around the call.
+      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+      val child =
+        FunctionNodes.of("child", Any::class.java, Any::class.java) { _, _ ->
+          provider.get("test").spanBuilder("child work").startSpan().end()
+          "done"
+        }
+      val caller =
+        FunctionNodes.builder(Any::class.java, Any::class.java)
+          .name("caller")
+          .rerunOnResume(true)
+          .body { ctx, _ ->
+            val span = provider.get("test").spanBuilder("caller work").startSpan()
+            try {
+              span.makeCurrent().use {
+                InteropContextView.of(ctx).runNodeBlocking(child, "x") ?: "none"
+              }
+            } finally {
+              span.end()
+            }
+          }
+          .build()
+      val workflow = Workflow("span_wf", listOf(Edge(Start, caller)))
+      val runner = InMemoryRunner(App(appName = "span_wf", rootNode = workflow))
+
+      // Act
+      runBlocking {
+        val unused = runner.sessionService.createSession(SessionKey("span_wf", "u", "s"))
+        runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
+      }
+
+      // Assert: the child's span nests under the body's span. In production the child node's own
+      // span sits between them; here the test tracer covers only the test thread.
+      val callerWork = exported.single { it.name == "caller work" }
+      val childWork = exported.single { it.name == "child work" }
+      assertThat(childWork.parentSpanContext.spanId).isEqualTo(callerWork.spanContext.spanId)
     } finally {
       provider.close()
     }

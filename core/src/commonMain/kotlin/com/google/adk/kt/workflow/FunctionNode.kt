@@ -573,15 +573,16 @@ private constructor(
  * Return `null` for no output, a value of the output type, or an [Event] to emit as it is (an
  * `Event` with content sends a message, and an output goes in the return value, not in the
  * `Event`). Send messages before the output with `InteropContextView.of(ctx).emit(e)`, which waits
- * until each non-partial one is stored, and ask the user with [requestInput]. A body rerun after a
- * pause runs from the top again and sends its events again, as does a retry. If an invocation is
- * cancelled after an emitted event was stored but before the body returned, resuming that
- * invocation without a new user message reruns the body only if the node is the app's root node, a
- * `parallelOf` or `parallelNode` item, or a child run through `runNode`, and sets neither
- * `rerunOnResume` nor `waitForOutput`. Otherwise the body does not run on that resume: a
- * `waitForOutput` node waits for a new user message as a workflow or root node (or as a `runNode`
- * child with `raiseOnWait`), and any other node counts as finished without an output, so its
- * successors, its `runNode` caller, or its parallel output slot get `null`.
+ * until each non-partial one is stored, run a child node with `runNodeBlocking` of the same view,
+ * and ask the user with [requestInput]. A body rerun after a pause runs from the top again and
+ * sends its events again, as does a retry. If an invocation is cancelled after an emitted event was
+ * stored but before the body returned, resuming that invocation without a new user message reruns
+ * the body only if the node is the app's root node, a `parallelOf` or `parallelNode` item, or a
+ * child run through `runNode`, and sets neither `rerunOnResume` nor `waitForOutput`. Otherwise the
+ * body does not run on that resume: a `waitForOutput` node waits for a new user message as a
+ * workflow or root node (or as a `runNode` child with `raiseOnWait`), and any other node counts as
+ * finished without an output, so its successors, its `runNode` caller, or its parallel output slot
+ * get `null`.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi

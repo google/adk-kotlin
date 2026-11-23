@@ -27,9 +27,12 @@ import com.google.adk.kt.memory.MemoryEntry
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.workflow.Node
+import com.google.errorprone.annotations.CanIgnoreReturnValue
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -39,15 +42,15 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.future
 
 /**
- * Java-friendly view of a [Context]: each method except [emit] calls the `suspend` method of the
- * same name and returns a [CompletableFuture] of its result, so Java callers never pass a
- * `Continuation`; [emit] instead blocks, works only in a Java `FunctionNode` body, and ignores the
- * coroutine context given to [of]. Each future-returning call runs in the caller's OpenTelemetry
- * context, on the calling thread until it first suspends (so [runNode] children get their run IDs
- * in call order) and then on [Dispatchers.IO], as [PublisherRunner] runs agents. Each
- * future-returning call is canceled with its future and with the `Job` given to [of], if any, or
- * otherwise when the node run that owns the context, if any, ends, so await each call before the
- * node finishes.
+ * Java-friendly view of a [Context]: each method except [emit] and [runNodeBlocking] calls the
+ * `suspend` method of the same name and returns a [CompletableFuture] of its result, so Java
+ * callers never pass a `Continuation`; those two instead block and work only in a Java
+ * `FunctionNode` body, and [emit] ignores the coroutine context given to [of]. Each
+ * future-returning call runs in the caller's OpenTelemetry context, on the calling thread until it
+ * first suspends (so [runNode] children get their run IDs in call order) and then on
+ * [Dispatchers.IO], as [PublisherRunner] runs agents. Each future-returning call is canceled with
+ * its future and with the `Job` given to [of], if any, or otherwise when the node run that owns the
+ * context, if any, ends, so await each call before the node finishes.
  */
 @AdkJavaInteropApi
 class InteropContextView
@@ -174,6 +177,69 @@ private constructor(private val context: Context, private val coroutineContext: 
   @ExperimentalWorkflowApi
   fun emit(content: Content) {
     emit(Event(content = content))
+  }
+
+  /**
+   * Runs [node] as [runNodeBlocking] with a [RunNodeConfig] does, with the default options. A child
+   * that takes no input runs with `runNodeBlocking(node, null)`.
+   *
+   * @throws IllegalArgumentException if [nodeInput] is a [RunNodeConfig], which belongs in the
+   *   three-argument overload
+   */
+  @CanIgnoreReturnValue
+  @ExperimentalWorkflowApi
+  fun runNodeBlocking(node: Node, nodeInput: Any?): Any? {
+    require(nodeInput !is RunNodeConfig) {
+      "Pass the RunNodeConfig as the third argument of runNodeBlocking, not as the node input."
+    }
+    return runNodeBlocking(node, nodeInput, RunNodeConfig())
+  }
+
+  /**
+   * Runs [node] as a child of this node's Java `FunctionNode` body, as [runNode] does, and returns
+   * its output or `null`, blocking the calling thread but not the workflow, so a dispatcher passed
+   * to `FunctionNodes` needs a free thread for the child's own body. The calling node must set
+   * `rerunOnResume(true)`, and to run several children at once, call this from helper threads with
+   * a run ID each and wait for them before the body returns. When [node] asks for input, the call
+   * throws an internal [Throwable] that `catch (Exception e)` lets through so that this node waits
+   * too, while `catch (Throwable t)` or a future's `ExecutionException` would swallow it.
+   *
+   * @param config the options of [runNode], such as the run ID
+   * @throws com.google.adk.kt.workflow.DynamicNodeFailedException if [node] fails; its `error` is
+   *   the child's failure
+   * @throws IllegalStateException outside a running Java body, or for a reason [Context.runNode]
+   *   lists
+   * @throws IllegalArgumentException for a reason [Context.runNode] lists
+   * @throws CancellationException if the node was cancelled, or if the waiting thread is
+   *   interrupted, which cancels this call's run of [node] and waits for it to stop; the thread
+   *   stays interrupted, and one interrupted before the call still gets the result of a [node] that
+   *   has ended by the time the call waits
+   */
+  @CanIgnoreReturnValue
+  @ExperimentalWorkflowApi
+  fun runNodeBlocking(node: Node, nodeInput: Any?, config: RunNodeConfig): Any? {
+    val hooks =
+      checkNotNull(context.javaInteropHooks) {
+        "InteropContextView.runNodeBlocking works only while a Java FunctionNode body runs. A" +
+          " Kotlin node body calls the suspending runNode, and a BasePublisherNode uses" +
+          " InteropContextView.runNode."
+      }
+    // A job of its own, under the call's usual parent, lets an interrupt cancel this child alone.
+    val call = Job(coroutineContext[Job] ?: context.activationJob)
+    val output =
+      of(context, hooks.childContext + coroutineContext + call).runNode(node, nodeInput, config)
+    call.complete()
+    return try {
+      output.get()
+    } catch (e: ExecutionException) {
+      throw e.unwrapFutureFailure()
+    } catch (e: InterruptedException) {
+      call.cancel()
+      // join() ignores further interrupts, so the child's run ends before this call does.
+      output.handle { _, _ -> }.join()
+      Thread.currentThread().interrupt()
+      throw CancellationException("Interrupted while waiting for the child node.", e)
+    }
   }
 
   private fun <T> call(block: suspend () -> T): CompletableFuture<T> {

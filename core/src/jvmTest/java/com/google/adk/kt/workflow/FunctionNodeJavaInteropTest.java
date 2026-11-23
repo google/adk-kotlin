@@ -100,6 +100,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import kotlinx.coroutines.CoroutineDispatcher;
+import kotlinx.coroutines.Dispatchers;
 import kotlinx.coroutines.ExecutorsKt;
 import kotlinx.coroutines.ThreadContextElementKt;
 import org.junit.Test;
@@ -1798,6 +1799,8 @@ public final class FunctionNodeJavaInteropTest {
   /** Stands in for MDC: thread-local state a caller carries into a run through its context. */
   private static final ThreadLocal<String> requestId = new ThreadLocal<>();
 
+  private static final ThreadLocal<String> traceTag = new ThreadLocal<>();
+
   @Test
   public void body_runWithACallersThreadContext_seesItOnItsWorkerThread() {
     // Arrange: the caller passes a thread-local context element, as MDCContext() is, and has an
@@ -2732,6 +2735,558 @@ public final class FunctionNodeJavaInteropTest {
     assertTrue(answered.stream().map(Event::getOutput).anyMatch("Hello, Ada"::equals));
   }
 
+  @Test
+  public void runNodeBlocking_twoChildrenAndAnEmitAcrossAResume_replaysTheFirstAndAsksOnce() {
+    // Arrange: the first child finishes and the second asks; after the answer the body runs from
+    // the top again, and the first child returns its recorded output without running.
+    AtomicInteger firstRuns = new AtomicInteger();
+    FunctionNode<Object, String> first =
+        FunctionNodes.of(
+            "first",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              firstRuns.incrementAndGet();
+              return "first done";
+            });
+    FunctionNode<Object, String> asker =
+        FunctionNodes.of(
+            "asker", Object.class, String.class, (ctx, in) -> NodeBody.requestInput("ask", "Ok?"));
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              Object done = InteropContextView.of(ctx).runNodeBlocking(first, null);
+              InteropContextView.of(ctx).emit(Content.fromText("model", "progress: " + done));
+              return done + " / " + InteropContextView.of(ctx).runNodeBlocking(asker, null);
+            })
+            .build();
+    FunctionNode<String, String> echo =
+        FunctionNodes.of("echo", String.class, String.class, (ctx, s) -> s);
+    JavaAskSession session = new JavaAskSession(parent, echo, "two_children_emit_wf");
+
+    // Act
+    List<Event> asked = session.run(Content.fromText("user", "hi"));
+    List<Event> answered = session.run(answer("ask", "yes"));
+
+    // Assert
+    assertTrue(asked.stream().anyMatch(e -> hasText(e, "progress: first done")));
+    assertTrue(
+        asked.stream()
+            .flatMap(e -> e.functionCalls().stream())
+            .anyMatch(c -> Objects.equals(c.getId(), "ask")));
+    assertTrue(answered.stream().map(Event::getOutput).anyMatch("first done / yes"::equals));
+    assertTrue(
+        answered.stream()
+            .flatMap(e -> e.functionCalls().stream())
+            .noneMatch(c -> Objects.equals(c.getId(), "ask")));
+    // The body reruns from the top, so the resumed turn sends its progress message once more.
+    assertEquals(1, answered.stream().filter(e -> hasText(e, "progress: first done")).count());
+    assertEquals(1, firstRuns.get());
+  }
+
+  @Test
+  public void runNodeBlocking_twoChildren_returnTheirOutputsWithIdsInCallOrder() {
+    // Arrange
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "got " + in);
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) ->
+                InteropContextView.of(ctx).runNodeBlocking(child, "a")
+                    + ","
+                    + InteropContextView.of(ctx).runNodeBlocking(child, "b"))
+            .build();
+
+    // Act
+    List<Event> events = run("two_children_wf", "go", parent);
+
+    // Assert
+    assertEquals("got a,got b", outputOf(events, "parent"));
+    assertEquals(
+        ImmutableList.of("child@1=got a", "child@2=got b"),
+        events.stream()
+            .filter(e -> e.getOutput() != null && e.getNodeInfo().getPath().contains("/child@"))
+            .map(e -> e.getNodeInfo().getPath().replaceAll(".*/", "") + "=" + e.getOutput())
+            .collect(toImmutableList()));
+  }
+
+  @Test
+  public void runNodeBlocking_fromAHelperThreadWithARunId_returnsTheChildsOutput() {
+    // Arrange: a helper thread of the body runs the child under an explicit run ID.
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "got " + in);
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              AtomicReference<Object> out = new AtomicReference<>();
+              Thread helper =
+                  new Thread(() ->
+                      out.set(
+                          InteropContextView.of(ctx)
+                              .runNodeBlocking(
+                                  child, "a", RunNodeConfig.builder().runId("a").build())));
+              helper.start();
+              helper.join();
+              return String.valueOf(out.get());
+            })
+            .build();
+
+    // Act
+    List<Event> events = run("helper_thread_wf", "go", parent);
+
+    // Assert
+    assertEquals("got a", outputOf(events, "parent"));
+  }
+
+  @Test
+  public void runNodeBlocking_childFails_throwsDynamicNodeFailedExceptionTheBodyCanCatch() {
+    // Arrange
+    FunctionNode<Object, String> failing = failingChild();
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              try {
+                return String.valueOf(InteropContextView.of(ctx).runNodeBlocking(failing, null));
+              } catch (DynamicNodeFailedException e) {
+                return "fallback: " + e.getError().getMessage();
+              }
+            })
+            .build();
+
+    // Act
+    List<Event> events = run("child_fails_wf", "go", parent);
+
+    // Assert: the failure arrives unwrapped, not inside a CompletionException.
+    assertEquals("fallback: bad city", outputOf(events, "parent"));
+  }
+
+  @Test
+  public void runNodeBlocking_childFailsUncaught_failsTheCallerWithTheChildsError() {
+    // Arrange
+    FunctionNode<Object, String> failing = failingChild();
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> InteropContextView.of(ctx).runNodeBlocking(failing, null))
+            .build();
+
+    // Act
+    Throwable error =
+        assertThrows(Throwable.class, () -> run("child_fails_uncaught_wf", "go", parent));
+
+    // Assert: the run fails with the child's own error, which only the child reports.
+    assertEquals("bad city", causeOf(error, IllegalArgumentException.class).getMessage());
+    assertEquals(
+        ImmutableList.of("parent@1/failing@1"),
+        sessionEvents("child_fails_uncaught_wf").stream()
+            .filter(e -> e.getErrorCode() != null)
+            .map(e -> e.getNodeInfo().getPath().replaceAll("^[^/]*/", ""))
+            .collect(toImmutableList()));
+  }
+
+  @Test
+  @SuppressWarnings("CatchingUnchecked") // The test shows what `catch (Exception e)` misses.
+  public void runNodeBlocking_childAsksInsideCatchException_callerStillWaitsThenGetsTheAnswer() {
+    // Arrange: the pause must pass `catch (Exception e)`, or the node would output the fallback
+    // now and the answer next turn.
+    FunctionNode<Object, String> asker =
+        FunctionNodes.of(
+            "asker", Object.class, String.class, (ctx, in) -> NodeBody.requestInput("ask", "Ok?"));
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              try {
+                return "got " + InteropContextView.of(ctx).runNodeBlocking(asker, null);
+              } catch (Exception e) {
+                return "fallback";
+              }
+            })
+            .build();
+    FunctionNode<String, String> echo =
+        FunctionNodes.of("echo", String.class, String.class, (ctx, s) -> s);
+    JavaAskSession session = new JavaAskSession(parent, echo, "ask_in_catch_wf");
+
+    // Act
+    List<Event> asked = session.run(Content.fromText("user", "hi"));
+    List<Event> answered = session.run(answer("ask", "yes"));
+
+    // Assert
+    assertTrue(asked.stream().allMatch(e -> e.getOutput() == null));
+    assertTrue(answered.stream().map(Event::getOutput).anyMatch("got yes"::equals));
+    assertTrue(answered.stream().map(Event::getOutput).noneMatch("fallback"::equals));
+  }
+
+  @Test
+  public void runNodeBlocking_withConfig_passesTheRunIdAndUseAsOutput() {
+    // Arrange
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "got " + in);
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              InteropContextView.of(ctx)
+                  .runNodeBlocking(
+                      child,
+                      "a",
+                      RunNodeConfig.builder().runId("city_a").useAsOutput(true).build());
+              return null;
+            })
+            .build();
+
+    FunctionNode<String, String> echo =
+        FunctionNodes.of("echo", String.class, String.class, (ctx, s) -> "echo " + s);
+
+    // Act
+    List<Event> events = run("config_wf", "go", parent, echo);
+
+    // Assert: the child ran under the given run ID, and its output became the caller's.
+    assertTrue(
+        events.stream()
+            .anyMatch(e ->
+                e.getNodeInfo() != null
+                    && e.getNodeInfo().getPath().endsWith("/child@city_a")
+                    && Objects.equals(e.getOutput(), "got a")));
+    assertEquals("echo got a", outputOf(events, "echo"));
+  }
+
+  @Test
+  public void runNodeBlocking_raiseOnWaitAndAChildLeftWithoutOutput_endsTheCallerWithoutOutput() {
+    // Arrange: without raiseOnWait, the caller would turn the child's missing output into a
+    // fallback.
+    FunctionNode<Object, String> silent =
+        FunctionNodes.builder(Object.class, String.class)
+            .name("silent")
+            .waitForOutput(true)
+            .body((ctx, in) -> null)
+            .build();
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              Object out =
+                  InteropContextView.of(ctx)
+                      .runNodeBlocking(
+                          silent, null, RunNodeConfig.builder().raiseOnWait(true).build());
+              return out == null ? "fallback" : String.valueOf(out);
+            })
+            .build();
+
+    // Act
+    List<Event> events = run("raise_on_wait_wf", "go", parent);
+
+    // Assert
+    assertTrue(events.stream().noneMatch(e -> e.getOutput() != null));
+  }
+
+  @Test
+  public void runNodeBlocking_callerTimesOutWhileBlocked_interruptsTheChildAndTimesOut()
+      throws InterruptedException {
+    // Arrange: the child sleeps past the caller's timeout.
+    CountDownLatch childInterrupted = new CountDownLatch(1);
+    FunctionNode<Object, String> sleeper =
+        FunctionNodes.of(
+            "sleeper",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                childInterrupted.countDown();
+                throw e;
+              }
+              return "slept";
+            });
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .config(NodeConfig.builder().timeoutMillis(2000).build())
+            .body((ctx, content) -> InteropContextView.of(ctx).runNodeBlocking(sleeper, null))
+            .build();
+
+    // Act
+    Throwable error = assertThrows(Throwable.class, () -> run("blocked_timeout_wf", "go", parent));
+
+    // Assert
+    assertTrue(String.valueOf(error), causedBy(error, NodeTimeoutException.class));
+    assertTrue(childInterrupted.await(5, TimeUnit.SECONDS));
+  }
+
+  @Test
+  public void runNodeBlocking_fromAHelperAfterTheBodyReturned_throwsIllegalStateAndRunsNoChild() {
+    // Arrange
+    AtomicBoolean childRan = new AtomicBoolean();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              childRan.set(true);
+              return "late";
+            });
+    AtomicReference<Throwable> helperError = new AtomicReference<>();
+
+    // Act
+    List<Event> events =
+        runWithALateHelperCall(
+            "late_child",
+            ctx -> InteropContextView.of(ctx).runNodeBlocking(child, null),
+            helperError);
+
+    // Assert
+    assertTrue(
+        String.valueOf(helperError.get()), helperError.get() instanceof IllegalStateException);
+    assertFalse(childRan.get());
+    assertEquals("out", outputOf(events, "late_child"));
+  }
+
+  @Test
+  public void runNodeBlocking_configPassedAsInput_throwsIllegalArgumentException() {
+    // Arrange: the body passes a RunNodeConfig where the node input goes.
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "done");
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              try {
+                return String.valueOf(
+                    InteropContextView.of(ctx)
+                        .runNodeBlocking(child, RunNodeConfig.builder().runId("a").build()));
+              } catch (IllegalArgumentException e) {
+                return e.getMessage();
+              }
+            })
+            .build();
+
+    // Act
+    List<Event> events = run("config_as_input_wf", "go", parent);
+
+    // Assert
+    assertEquals(
+        "Pass the RunNodeConfig as the third argument of runNodeBlocking, not as the node input.",
+        outputOf(events, "parent"));
+  }
+
+  @Test
+  public void runNodeBlocking_runWithACallersThreadContext_childSeesItAndTheViewsElementsOnIo() {
+    // Arrange: the run carries two thread-local elements, as MDCContext() is, and the view replaces
+    // one. The body's one thread stays busy while it waits, and the child's body runs on its
+    // caller's thread.
+    AtomicReference<String> seenRequestId = new AtomicReference<>();
+    AtomicReference<String> seenTraceTag = new AtomicReference<>();
+    AtomicReference<String> childThread = new AtomicReference<>();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            Dispatchers.getUnconfined(),
+            (ctx, in) -> {
+              seenRequestId.set(requestId.get());
+              seenTraceTag.set(traceTag.get());
+              childThread.set(Thread.currentThread().getName());
+              return "done";
+            });
+    ExecutorService bodyThread = Executors.newSingleThreadExecutor();
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class, ExecutorsKt.from(bodyThread))
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) ->
+                String.valueOf(
+                    InteropContextView.of(
+                            ctx, ThreadContextElementKt.asContextElement(traceTag, "from of"))
+                        .runNodeBlocking(child, null)))
+            .build();
+    InMemoryRunner runner =
+        InMemoryRunner.builder()
+            .app(
+                App.builder()
+                    .appName("child_context_wf")
+                    .rootNode(workflowOf("child_context_wf", parent))
+                    .build())
+            .build();
+    SessionKey key = new SessionKey("child_context_wf", "user", "session");
+    var unusedSession =
+        AsyncJavaHelpers.await(
+            c -> runner.getSessionService().createSession(key, ImmutableMap.of(), c));
+
+    // Act: a child on the body's dispatcher would wait for its one thread forever.
+    try {
+      var unusedEvents =
+          assertTimeoutPreemptively(() ->
+              AsyncJavaHelpers.collect(
+                  runner.runAsync(
+                      "user", "session", null, Content.fromText("user", "go"), null, null),
+                  ThreadContextElementKt.asContextElement(requestId, "request-1")
+                      .plus(ThreadContextElementKt.asContextElement(traceTag, "from the run"))));
+    } finally {
+      bodyThread.shutdown();
+    }
+
+    // Assert: the child sees the run's element, as a child of the suspending runNode does, the
+    // view's element over the run's, and runs on IO, as every InteropContextView call does.
+    assertEquals("request-1", seenRequestId.get());
+    assertEquals("from of", seenTraceTag.get());
+    assertTrue(childThread.get(), childThread.get().startsWith("DefaultDispatcher-worker"));
+  }
+
+  @Test
+  public void runNodeBlocking_threadInterruptedBeforeTheCall_getsAnEndedChildsResultButNotAWait() {
+    // Arrange: on its rerun after the answer, the body interrupts itself, then runs two children
+    // the first run already ended, and then one that still has to run.
+    AtomicInteger runs = new AtomicInteger();
+    AtomicReference<CancellationException> slowError = new AtomicReference<>();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of("child", Object.class, String.class, (ctx, in) -> "child out");
+    FunctionNode<Object, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Object.class,
+            String.class,
+            (ctx, in) -> NodeBody.requestInput("ask_more", "More?"));
+    FunctionNode<Object, String> slow =
+        FunctionNodes.of(
+            "slow",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              Thread.sleep(10_000);
+              return "slow out";
+            });
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              if (runs.incrementAndGet() == 2) {
+                Thread.currentThread().interrupt();
+              }
+              Object first = InteropContextView.of(ctx).runNodeBlocking(child, null);
+              Object answer = InteropContextView.of(ctx).runNodeBlocking(asker, null);
+              try {
+                InteropContextView.of(ctx).runNodeBlocking(slow, null);
+              } catch (CancellationException e) {
+                slowError.set(e);
+              }
+              boolean stillInterrupted = Thread.interrupted();
+              return first + "|" + answer + "|" + stillInterrupted;
+            })
+            .build();
+    FunctionNode<String, String> echo =
+        FunctionNodes.of("echo", String.class, String.class, (ctx, s) -> s);
+    JavaAskSession session = new JavaAskSession(parent, echo, "interrupted_before_wf");
+
+    // Act
+    List<Event> unusedAsked = session.run(Content.fromText("user", "hi"));
+    List<Event> answered = assertTimeoutPreemptively(() -> session.run(answer("ask_more", "Ada")));
+
+    // Assert: the ended children give their results, and the one still to run ends the wait.
+    assertTrue(answered.stream().map(Event::getOutput).anyMatch("child out|Ada|true"::equals));
+    assertNotNull(slowError.get());
+    assertTrue(slowError.get().getCause() instanceof InterruptedException);
+  }
+
+  @Test
+  public void runNodeBlocking_waiterInterrupted_cancelsTheChildAndKeepsTheCallersOutput() {
+    // Arrange: a helper thread waits on a child that would become the caller's output. When the
+    // cancel interrupts the child, it sleeps 300 ms, then tries to send a message and an output.
+    CountDownLatch childStarted = new CountDownLatch(1);
+    CountDownLatch childEnded = new CountDownLatch(1);
+    AtomicBoolean childInterrupted = new AtomicBoolean();
+    FunctionNode<Object, String> child =
+        FunctionNodes.of(
+            "child",
+            Object.class,
+            String.class,
+            (ctx, in) -> {
+              try {
+                childStarted.countDown();
+                new CountDownLatch(1).await();
+                return "never";
+              } catch (InterruptedException e) {
+                childInterrupted.set(true);
+                Thread.sleep(300);
+                try {
+                  InteropContextView.of(ctx).emit(Content.fromText("model", "late message"));
+                } catch (CancellationException ignored) {
+                  // The cancelled child sends no more messages.
+                }
+                return "late output";
+              } finally {
+                childEnded.countDown();
+              }
+            });
+    FunctionNode<Object, String> fallback =
+        FunctionNodes.of("fallback", Object.class, String.class, (ctx, in) -> "fallback");
+    AtomicReference<CancellationException> waitError = new AtomicReference<>();
+    AtomicBoolean interruptKept = new AtomicBoolean();
+    AtomicBoolean childStoppedFirst = new AtomicBoolean();
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, content) -> {
+              Thread waiter =
+                  new Thread(() -> {
+                    try {
+                      InteropContextView.of(ctx)
+                          .runNodeBlocking(
+                              child,
+                              null,
+                              RunNodeConfig.builder().runId("c").useAsOutput(true).build());
+                    } catch (CancellationException e) {
+                      childStoppedFirst.set(childEnded.getCount() == 0);
+                      waitError.set(e);
+                      interruptKept.set(Thread.currentThread().isInterrupted());
+                    }
+                  });
+              waiter.start();
+              assertTrue(childStarted.await(5, TimeUnit.SECONDS));
+              waiter.interrupt();
+              waiter.join(5_000);
+              // A sibling call still runs: the interrupt cancelled only the waiter's child.
+              return waiter.isAlive()
+                  ? "still waiting"
+                  : String.valueOf(InteropContextView.of(ctx).runNodeBlocking(fallback, null));
+            })
+            .build();
+
+    // Act
+    List<Event> events = run("interrupted_wait_wf", "go", parent);
+
+    // Assert: the call ended once the child stopped, so the caller's output stands.
+    assertEquals("fallback", outputOf(events, "parent"));
+    assertNotNull(waitError.get());
+    assertEquals("Interrupted while waiting for the child node.", waitError.get().getMessage());
+    assertTrue(waitError.get().getCause() instanceof InterruptedException);
+    assertTrue(interruptKept.get());
+    assertTrue(childInterrupted.get());
+    assertTrue(childStoppedFirst.get());
+    assertTrue(
+        sessionEvents("interrupted_wait_wf").stream()
+            .noneMatch(
+                e -> hasText(e, "late message") || Objects.equals(e.getOutput(), "late output")));
+  }
+
   /** A resumable app running {@code first} then {@code second}, driven a turn at a time. */
   private static final class JavaAskSession {
     private final InMemoryRunner runner;
@@ -3151,6 +3706,17 @@ public final class FunctionNodeJavaInteropTest {
         .orElse(-1);
   }
 
+  /** A child node that fails with "bad city". */
+  private static FunctionNode<Object, String> failingChild() {
+    return FunctionNodes.of(
+        "failing",
+        Object.class,
+        String.class,
+        (ctx, in) -> {
+          throw new IllegalArgumentException("bad city");
+        });
+  }
+
   /** A call a helper thread makes on the body's context. */
   private interface LateCall {
     void call(Context ctx) throws Exception;
@@ -3184,6 +3750,7 @@ public final class FunctionNodeJavaInteropTest {
         FunctionNode<Content, String> early =
             FunctionNodes.builder(Content.class, String.class, ExecutorsKt.from(bodyExecutor))
                 .name(name)
+                .rerunOnResume(true)
                 .body((ctx, content) -> {
                   runThread.execute(() -> {
                     try {

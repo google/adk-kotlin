@@ -23,9 +23,11 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.interop.unwrapFutureFailure
+import com.google.adk.kt.telemetry.TelemetryContextElement
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -57,12 +59,18 @@ internal actual fun <I, O> NodeBody<I, O>.onWorker(
   val state = context.requireNodeState()
   coroutineScope {
     val emitter = JavaBodyEmitter(state.node.name, coroutineContext.job)
-    val hooks = JavaInteropHooks(emit = emitter::emit)
+    // Children keep elements such as MDCContext(); the view supplies the job, IO and body's span.
+    val childContext =
+      coroutineContext
+        .minusKey(Job)
+        .minusKey(ContinuationInterceptor)
+        .minusKey(TelemetryContextElement)
+    val hooks = JavaInteropHooks(emit = emitter::emit, childContext = childContext)
     // A second body on this state would take over the first one's calls.
     check(state.javaInteropHooks.compareAndSet(null, hooks)) {
       "Another Java FunctionNode body already runs with the Context of node" +
-        " '${state.node.name}'; run each node through the workflow or InteropContextView.runNode," +
-        " not by collecting its Node.runNode flow."
+        " '${state.node.name}'; run each node through the workflow, or with runNode or" +
+        " runNodeBlocking of InteropContextView, not by collecting its Node.runNode flow."
     }
     val result = async {
       // A failure or pause, caught here, lets the accepted emit calls go out first.
