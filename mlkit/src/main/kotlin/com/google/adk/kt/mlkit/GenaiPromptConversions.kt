@@ -263,10 +263,10 @@ internal object GenaiPromptConversions {
   /**
    * Drops the `thought` line AI Core leaves at the top of its reasoning.
    *
-   * Its control tokens wrap a channel as `<start>name\ncontent<end>` and the legacy extraction
-   * keeps the whole span, header included. Streaming delivers the thought in arbitrary pieces, so
-   * this only removes an exact prefix and never trims: a piece that splits the header is left alone
-   * rather than mangled, and no space the aggregator needs is eaten.
+   * Its control tokens wrap a channel as `<start>name\ncontent<end>`, and AI Core removes only the
+   * tokens from streamed thoughts, leaving the `name` line in place. Streaming delivers the thought
+   * in arbitrary pieces, so this only removes an exact prefix and never trims: a piece that splits
+   * the header is left alone rather than mangled, and no space the aggregator needs is eaten.
    */
   private fun withoutChannelHeader(thought: String): String = thought.removePrefix("thought\n")
 
