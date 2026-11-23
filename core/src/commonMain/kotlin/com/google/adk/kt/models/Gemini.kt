@@ -78,15 +78,12 @@ internal constructor(
    * one.
    */
   private val requestHttpOptions: HttpOptions? = null,
-  /**
-   * The API version requested on each call, or `null` to keep [client]'s; see
-   * [requestApiVersionFor]. A parameter so tests can override it before the SDK reports whether a
-   * client uses the default version.
-   */
-  private val requestApiVersion: String? = requestApiVersionFor(client),
   private val models: GeminiModels =
-    RealGeminiModels(client.models, requestHttpOptions.withApiVersion(requestApiVersion)),
+    RealGeminiModels(client.models, requestHttpOptions.withApiVersion(requestApiVersionFor(client))),
 ) : Model {
+
+  /** API version requested on each call, or `null` to leave [client]'s version unchanged. */
+  private val requestApiVersion: String? = requestApiVersionFor(client)
 
   /**
    * Reports [LlmCapabilities.outputSchemaAndTools] on Vertex AI for every model except `gemini-2.*`
@@ -121,10 +118,11 @@ internal constructor(
   }
 
   /**
-   * Creates a [Gemini] from a preconfigured GenAI SDK [Client], for callers that need a custom
-   * transport or auth. Each generate request and live connection appends ADK's tracking tag to the
-   * client's `user-agent` and `x-goog-api-client` headers. The SDK matches these names exactly, so
-   * a client header spelled `User-Agent` replaces the merged value.
+   * Creates a [Gemini] instance from a preconfigured GenAI SDK [Client] for callers that need a
+   * custom transport or auth. Each generate request and live connection appends ADK's tracking tag
+   * to the client's `user-agent` and `x-goog-api-client` headers; a client header spelled
+   * `User-Agent` replaces the merged value. On the Gemini API, requests also specify `v1beta`
+   * unless the client sets an API version.
    *
    * @param client The [Client] instance from the GenAI SDK used for making API calls.
    * @param name The name of the specific Gemini model to use (e.g.,
@@ -188,7 +186,8 @@ internal constructor(
   /**
    * Creates a [Gemini] instance using a Google AI API key for authentication. Its client retries
    * transient failures with the GenAI SDK's default retry options; pass your own [Client] for other
-   * retry settings.
+   * retry settings. Gemini API requests from this instance use `v1beta` unless
+   * `GOOGLE_GENAI_API_VERSION` sets a version.
    *
    * @param name The name of the specific Gemini model to use (e.g.,
    *   "gemini-3.1-flash-lite-preview").
@@ -536,20 +535,12 @@ internal fun cacheScopeOf(client: Client): Map<String, String> = buildMap {
 private const val GEMINI_API_VERSION = "v1beta"
 
 /**
- * The API version ADK sends on each request through [client]: [GEMINI_API_VERSION] for a Gemini API
- * client using the SDK's default version, or `null` to keep the client's own version.
+ * Returns the API version ADK sends on each request through [client]. This is [GEMINI_API_VERSION]
+ * for a Gemini API client when neither `HttpOptions.apiVersion` nor `GOOGLE_GENAI_API_VERSION` sets
+ * a version, or `null` to keep the client's own version.
  */
-internal fun requestApiVersionFor(
-  client: Client,
-  usesDefaultApiVersion: Boolean = isDefaultApiVersion(client),
-): String? = if (!client.enterprise && usesDefaultApiVersion) GEMINI_API_VERSION else null
-
-/**
- * Whether [client] uses the SDK's default API version (neither `HttpOptions.apiVersion` nor
- * `GOOGLE_GENAI_API_VERSION` is set). Always returns `false` until the SDK exposes
- * `Client.isDefaultApiVersion`, so every client keeps its own version until then.
- */
-private fun isDefaultApiVersion(client: Client): Boolean = false
+private fun requestApiVersionFor(client: Client): String? =
+  if (!client.enterprise && client.isDefaultApiVersion) GEMINI_API_VERSION else null
 
 /** These options with [apiVersion] set, unless [apiVersion] is `null` or they already set one. */
 internal fun HttpOptions?.withApiVersion(apiVersion: String?): HttpOptions? =
