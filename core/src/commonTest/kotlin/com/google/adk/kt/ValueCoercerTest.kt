@@ -18,7 +18,9 @@
 
 package com.google.adk.kt
 
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
@@ -29,6 +31,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ValueCoercerTest {
@@ -471,5 +474,71 @@ class ValueCoercerTest {
     assertEquals("42", openNumberText)
     assertEquals("A", closedQuotedMember)
     assertEquals(42L, closedNumberText)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun coerceValue_typedCredential_checksItsJsonFormAndStaysTyped() {
+    // Arrange
+    val credential = AuthCredential.ApiKey.of("key")
+    val credentialSchema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("authType" to Schema(type = Type.STRING)),
+        required = listOf("authType"),
+      )
+
+    // Act
+    val read = coerce(credential, credentialSchema)
+
+    // Assert
+    assertSame(credential, read)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun coerceValue_typedCredentialNotMatchingItsFields_fails() {
+    // Arrange
+    val credential = AuthCredential.ApiKey.of("key")
+    val schemas =
+      listOf(
+        Schema(type = Type.OBJECT, required = listOf("oauth2")),
+        Schema(type = Type.OBJECT, properties = mapOf("authType" to Schema(type = Type.INTEGER))),
+      )
+
+    // Act
+    val results = schemas.map { fails(credential, it) }
+
+    // Assert
+    assertTrue(results.all { it })
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun coerceValue_typedCredentialsUnderObjectAndArraySchemas_stayTyped() {
+    // Arrange
+    val credential = AuthCredential.ApiKey.of("key")
+    val credentialSchema =
+      Schema(type = Type.OBJECT, properties = mapOf("authType" to Schema(type = Type.STRING)))
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "declared" to credentialSchema,
+            "listed" to Schema(type = Type.ARRAY, items = credentialSchema),
+          ),
+        additionalProperties = credentialSchema,
+      )
+    val value =
+      mapOf("declared" to credential, "listed" to listOf(credential), "extra" to credential)
+
+    // Act
+    val read = coerce(value, schema) as Map<*, *>
+
+    // Assert
+    assertSame(credential, read["declared"])
+    assertSame(credential, (read["listed"] as List<*>).single())
+    assertSame(credential, read["extra"])
   }
 }

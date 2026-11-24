@@ -61,6 +61,29 @@ class CredentialKey(val value: String) {
   override fun hashCode(): Int = value.hashCode()
 
   override fun toString(): String = REDACTED
+
+  internal companion object {
+    /** The prefix of every key [deriveCredentialKey] writes, the same in every ADK language. */
+    const val DERIVED_KEY_PREFIX = "adk_"
+
+    /**
+     * The number of hex characters in each digest of a derived key, the same in every ADK language.
+     */
+    const val DERIVED_KEY_DIGEST_LENGTH = 16
+
+    // Built from the parts deriveCredentialKey writes, so the two can't drift apart.
+    private val DERIVED_KEY_REGEX = run {
+      val typeAndDigest = "[A-Za-z0-9]+_[0-9a-f]{$DERIVED_KEY_DIGEST_LENGTH}"
+      Regex("$DERIVED_KEY_PREFIX${typeAndDigest}_(?:$typeAndDigest)?")
+    }
+
+    /**
+     * Returns whether [key] is a credential key as [deriveCredentialKey] writes it: the prefix, a
+     * scheme's type and digest, then a raw credential's type and digest if it has one, such as
+     * `adk_apiKey_39c5e4ced628d031_`.
+     */
+    fun isDerived(key: String): Boolean = DERIVED_KEY_REGEX.matches(key)
+  }
 }
 
 /**
@@ -81,7 +104,8 @@ internal fun deriveCredentialKey(
         .jsonObject
     "${json.getValue("authType").jsonPrimitive.content}_${stableDigest(json)}"
   }
-  return CredentialKey("adk_${authScheme.type}_${stableDigest(scheme)}_${credential.orEmpty()}")
+  val prefix = CredentialKey.DERIVED_KEY_PREFIX
+  return CredentialKey("$prefix${authScheme.type}_${stableDigest(scheme)}_${credential.orEmpty()}")
 }
 
 /** ADK Python reads `bearerFormat` only for the `bearer` scheme, and leaves it out otherwise. */
@@ -117,7 +141,7 @@ private fun AuthCredential.forDigest(): AuthCredential =
  * the JSON with sorted keys, which kotlinx writes with the same escapes as Python's `json.dumps`.
  */
 private fun stableDigest(json: JsonElement): String =
-  sha256Hex(json.sortedKeys().toString()).take(16)
+  sha256Hex(json.sortedKeys().toString()).take(CredentialKey.DERIVED_KEY_DIGEST_LENGTH)
 
 // UTF-16 order, which differs from Python's code-point order only for characters above U+FFFF.
 private fun JsonElement.sortedKeys(): JsonElement =

@@ -20,12 +20,15 @@
 package com.google.adk.kt.a2a.converters
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.serialization.decodeFromPlainValues
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.CodeExecutionResult
@@ -401,6 +404,8 @@ private fun TaskUpdateEvent.toAdkEvent(context: InvocationContext): Event? {
 // Converts a DataPart to an ADK Part.
 // Note: We use coerceToMap for arguments and response to handle cases where the data
 // is received as a string or non-map type, matching Java behavior.
+// A peer's call or answer can hold a credential the agent reads, so its secrets are kept.
+@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 private fun DataPart.toAdk(): Part {
   val type = metadata?.get(MetadataKeys.TYPE) as? String
   val part =
@@ -409,20 +414,13 @@ private fun DataPart.toAdk(): Part {
         val dataMap = dataAsMap()
         val coercedData = dataMap.toMutableMap()
         coercedData["args"] = coerceToMap(dataMap["args"])
-        val fc =
-          adkJson.decodeFromJsonElement(FunctionCall.serializer(), anyToJsonElement(coercedData))
-        Part(functionCall = fc)
+        Part(functionCall = decodeFromPlainValues(FunctionCall.serializer(), coercedData))
       }
       TYPE_FUNCTION_RESPONSE -> {
         val dataMap = dataAsMap()
         val coercedData = dataMap.toMutableMap()
         coercedData["response"] = coerceToMap(dataMap["response"])
-        val fr =
-          adkJson.decodeFromJsonElement(
-            FunctionResponse.serializer(),
-            anyToJsonElement(coercedData),
-          )
-        Part(functionResponse = fr)
+        Part(functionResponse = decodeFromPlainValues(FunctionResponse.serializer(), coercedData))
       }
       TYPE_EXECUTABLE_CODE ->
         Part(

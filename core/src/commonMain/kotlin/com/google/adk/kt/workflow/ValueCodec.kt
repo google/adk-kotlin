@@ -27,6 +27,7 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.LenientByteArraySerializer
 import com.google.adk.kt.serialization.LenientEpochMillisSerializer
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.adkStrictJson
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
@@ -105,7 +106,7 @@ internal class ValueCodec<T>(val kType: KType) : PortCodec<T> {
    */
   private val decodeJson: Json =
     if (classifier == Event::class || serializer?.descriptor?.serialName?.isAdkTypeName() == true) {
-      strictJson
+      adkStrictJson
     } else {
       adkJson
     }
@@ -303,10 +304,6 @@ private val ADK_TYPES_PREFIX =
   Content.serializer().descriptor.serialName.substringBeforeLast('.') + "."
 
 private fun String.isAdkTypeName(): Boolean = startsWith(ADK_TYPES_PREFIX)
-
-/** [adkJson] that fails on a key the decoded class does not declare. */
-@OptIn(FrameworkInternalApi::class)
-private val strictJson: Json = Json(adkJson) { ignoreUnknownKeys = false }
 
 /** The codecs of a map type's key and value, or null when [kType] has no such argument. */
 @OptIn(ExperimentalWorkflowApi::class)

@@ -249,7 +249,7 @@ class EventA2aSupportTest {
     val fc = FunctionCall(name = "my-func", args = mapOf("arg1" to "val1"))
     val part = Part(functionCall = fc)
     val result = remoteCallAsUserPart("agent1", part)
-    assertEquals("[agent1] called tool my-func with parameters: {arg1=val1}", result?.text)
+    assertEquals("""[agent1] called tool my-func with parameters: {"arg1":"val1"}""", result?.text)
   }
 
   @Test
@@ -257,7 +257,58 @@ class EventA2aSupportTest {
     val fr = FunctionResponse(name = "my-func", response = mapOf("res1" to "val2"))
     val part = Part(functionResponse = fr)
     val result = remoteCallAsUserPart("agent1", part)
-    assertEquals("[agent1] my-func tool returned result: {res1=val2}", result?.text)
+    assertEquals("""[agent1] my-func tool returned result: {"res1":"val2"}""", result?.text)
+  }
+
+  @Test
+  fun remoteCallAsUserPart_functionCallWithACredentialMap_leavesItsSecretOut() {
+    val args = mapOf("key" to mapOf("authType" to "apiKey", "apiKey" to "sk-1"))
+    val part = Part(functionCall = FunctionCall(name = "login", args = args))
+
+    val result = remoteCallAsUserPart("agent1", part)
+
+    assertEquals(
+      """[agent1] called tool login with parameters: {"key":{"authType":"apiKey"}}""",
+      result?.text,
+    )
+  }
+
+  @Test
+  fun remoteCallAsUserPart_functionResponseWithACredentialMap_leavesItsSecretOut() {
+    val response = mapOf("key" to mapOf("authType" to "apiKey", "apiKey" to "sk-1"))
+    val part = Part(functionResponse = FunctionResponse(name = "lookup", response = response))
+
+    val result = remoteCallAsUserPart("agent1", part)
+
+    assertEquals(
+      """[agent1] lookup tool returned result: {"key":{"authType":"apiKey"}}""",
+      result?.text,
+    )
+  }
+
+  @Test
+  fun remoteCallAsUserPart_argsThatAreACredentialMap_leaveItsSecretOut() {
+    val args = mapOf("authType" to "apiKey", "apiKey" to "sk-1")
+    val part = Part(functionCall = FunctionCall(name = "login", args = args))
+
+    val result = remoteCallAsUserPart("agent1", part)
+
+    assertEquals(
+      """[agent1] called tool login with parameters: {"authType":"apiKey"}""",
+      result?.text,
+    )
+  }
+
+  @Test
+  fun remoteCallAsUserPart_argsWithNoJsonForm_areNamedByTypeWithoutTheirText() {
+    // A set has no JSON form here; its map's text would show the credential's secret.
+    val args =
+      mapOf("key" to mapOf("authType" to "apiKey", "apiKey" to "sk-1"), "tags" to setOf("a"))
+    val part = Part(functionCall = FunctionCall(name = "login", args = args))
+
+    val result = remoteCallAsUserPart("agent1", part)
+
+    assertEquals("[agent1] called tool login with parameters: <LinkedHashMap>", result?.text)
   }
 
   @Test

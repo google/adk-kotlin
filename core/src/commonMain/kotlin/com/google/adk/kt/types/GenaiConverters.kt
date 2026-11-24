@@ -22,6 +22,8 @@ package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.auth.encodeCredentialOrNull
+import com.google.adk.kt.auth.withoutCredentialSecrets
+import com.google.adk.kt.auth.withoutCredentialSecretsOrNull
 import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.serialization.adkJson
 import com.google.genai.kotlin.types.Blob as GenAiBlob
@@ -90,6 +92,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 
 // --- JsonElement <-> Any? helpers ---
@@ -98,18 +101,22 @@ import kotlinx.serialization.json.longOrNull
  *
  * A `null` becomes [JsonNull] at any depth, so a map entry explicitly set to `null` reaches the
  * model as JSON `null` rather than disappearing. Only non-string keys are normalized, never
- * dropped.
+ * dropped. A credential, typed, as a plain map or as a JSON object, reaches the model without its
+ * secrets.
  */
 @OptIn(FrameworkInternalApi::class)
 internal fun Any?.toJsonElement(): JsonElement =
   when (this) {
     null -> JsonNull
-    is JsonElement -> this
+    is JsonElement -> withoutCredentialSecrets()
     is Boolean -> JsonPrimitive(this)
     is Number -> JsonPrimitive(this)
     is String -> JsonPrimitive(this)
-    is Map<*, *> ->
-      JsonObject(this.entries.associate { (k, v) -> k.toString() to v.toJsonElement() })
+    is Map<*, *> -> {
+      // A session reloads a credential as a plain map; leave out its secrets.
+      val map = withoutCredentialSecretsOrNull() ?: this
+      JsonObject(map.entries.associate { (k, v) -> k.toString() to v.toJsonElement() })
+    }
     is Iterable<*> -> JsonArray(this.map { it.toJsonElement() })
     is Array<*> -> JsonArray(this.map { it.toJsonElement() })
     // Edge-case fallback for a custom object arriving as erased `Any`; KSP `@Tool`s don't reach
@@ -274,7 +281,8 @@ internal fun GenAiFunctionCall.fromGenaiSdk(): FunctionCall =
 internal fun FunctionCall.toGenaiSdk(): GenAiFunctionCall =
   GenAiFunctionCall(
     name = name,
-    args = args.mapValues { it.value.toJsonElement() },
+    // Converted whole, so that args that are themselves a credential lose its secrets.
+    args = args.toJsonElement().jsonObject,
     id = id,
     partialArgs = partialArgs?.takeIf { it.isNotEmpty() }?.map { it.toGenaiSdk() },
     willContinue = willContinue?.takeIf { it },
@@ -314,7 +322,8 @@ internal fun GenAiFunctionResponse.fromGenaiSdk(): FunctionResponse =
 internal fun FunctionResponse.toGenaiSdk(): GenAiFunctionResponse =
   GenAiFunctionResponse(
     name = name,
-    response = response.mapValues { it.value.toJsonElement() },
+    // Converted whole, so that a response that is itself a credential loses its secrets.
+    response = response.toJsonElement().jsonObject,
     id = id,
   )
 

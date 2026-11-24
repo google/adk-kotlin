@@ -27,9 +27,13 @@ import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalClassifierApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.auth.encodeCredentialOrNull
+import com.google.adk.kt.auth.withoutCredentialSecrets
+import com.google.adk.kt.auth.withoutCredentialSecretsOrNull
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.serialization.adkStrictJson
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -45,12 +49,12 @@ import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 
 /**
@@ -171,8 +175,9 @@ constructor(
           } else {
             throw unsupportedInput(nodeInput)
           }
-        is JsonObject -> ClassifierContent.JsonObject(nodeInput)
-        is JsonArray -> ClassifierContent.JsonArray(nodeInput)
+        is JsonObject ->
+          ClassifierContent.JsonObject(nodeInput.withoutCredentialSecrets().jsonObject)
+        is JsonArray -> ClassifierContent.JsonArray(nodeInput.withoutCredentialSecrets().jsonArray)
         is Map<*, *> -> {
           val content = ClassifierContent.JsonObject(toJsonObject(nodeInput, depth = 0))
           content.json.toContentOrNull()?.let(ClassifierInput::Content) ?: content
@@ -333,8 +338,6 @@ constructor(
 private fun Set<Route>.labels(): List<String> =
   map { adkJson.encodeToString(Route.serializer(), it) }.sorted()
 
-private val strictContentJson: Json = Json(adkJson) { ignoreUnknownKeys = false }
-
 /**
  * Decodes a [Content] written as JSON by `FunctionNode` if it has at least one populated part.
  * Returns `null` for any other JSON object so maps such as `{}` or `{"role": "admin"}` remain JSON
@@ -344,7 +347,7 @@ private fun JsonObject.toContentOrNull(): Content? {
   val parts = this["parts"] as? JsonArray ?: return null
   if (parts.isEmpty() || parts.any { it !is JsonObject || it.isEmpty() }) return null
   return try {
-    strictContentJson.decodeFromJsonElement(Content.serializer(), this)
+    adkStrictJson.decodeFromJsonElement(Content.serializer(), this)
   } catch (_: IllegalArgumentException) {
     null
   }
@@ -353,9 +356,11 @@ private fun JsonObject.toContentOrNull(): Content? {
 private fun toJsonObject(map: Map<*, *>, depth: Int): JsonObject {
   // Cap recursion before building the tree so deep or cyclic inputs cannot overflow the stack.
   checkContainerDepth(depth)
+  // A session reloads a credential as a plain map; leave out its secrets.
+  val entries = (map.withoutCredentialSecretsOrNull() ?: map).entries
   return JsonObject(
-    buildMap(map.size) {
-      for ((key, value) in map.entries) {
+    buildMap(entries.size) {
+      for ((key, value) in entries) {
         require(key is String) { "JSON content map keys must be strings, got ${typeName(key)}." }
         put(key, toJsonValue(value, depth + 1))
       }
@@ -371,7 +376,7 @@ private fun toJsonArray(list: List<*>, depth: Int): JsonArray {
 private fun toJsonValue(value: Any?, depth: Int): JsonElement =
   when (value) {
     null -> JsonNull
-    is JsonElement -> value
+    is JsonElement -> value.withoutCredentialSecrets()
     is String -> JsonPrimitive(value)
     is Boolean -> JsonPrimitive(value)
     is Long,
@@ -382,5 +387,7 @@ private fun toJsonValue(value: Any?, depth: Int): JsonElement =
     is Float -> JsonPrimitive(value)
     is Map<*, *> -> toJsonObject(value, depth)
     is List<*> -> toJsonArray(value, depth)
-    else -> throw IllegalArgumentException("Unsupported value in JSON content: ${typeName(value)}.")
+    else ->
+      adkJson.encodeCredentialOrNull(value)
+        ?: throw IllegalArgumentException("Unsupported value in JSON content: ${typeName(value)}.")
   }

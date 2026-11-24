@@ -19,9 +19,6 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
-import com.google.adk.kt.annotations.FrameworkInternalApi
-import com.google.adk.kt.serialization.adkJson
-import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -54,22 +51,11 @@ class SignInRequest internal constructor(val id: String, val authConfig: AuthCon
    * @throws IllegalArgumentException if [credential] is an OAuth2 credential without an access
    *   token for an OAuth2 or OpenID Connect scheme, since ADK can't exchange a code yet.
    */
-  @OptIn(FrameworkInternalApi::class)
   fun createResponse(credential: AuthCredential): Content {
     val answer = credential.filledInto(authConfig.exchangedAuthCredential)
     val config = authConfig.copy(exchangedAuthCredential = answer)
     require(!config.needsCodeExchange(answer)) {
       "A sign-in response needs an access token; ADK can't exchange an authorization code yet."
-    }
-    // The config's JSON object, with its credentials kept typed so that output leaves out secrets.
-    val response = buildMap {
-      put(
-        "authScheme",
-        jsonElementToAny(adkJson.encodeToJsonElement(AuthSchemeSerializer, config.authScheme)),
-      )
-      config.rawAuthCredential?.let { put("rawAuthCredential", it) }
-      config.exchangedAuthCredential?.let { put("exchangedAuthCredential", it) }
-      put("credentialKey", config.credentialKey.value)
     }
     return Content(
       role = Role.USER,
@@ -80,7 +66,7 @@ class SignInRequest internal constructor(val id: String, val authConfig: AuthCon
               FunctionResponse(
                 name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
                 id = id,
-                response = response,
+                response = config.toSignInResponse(),
               )
           )
         ),

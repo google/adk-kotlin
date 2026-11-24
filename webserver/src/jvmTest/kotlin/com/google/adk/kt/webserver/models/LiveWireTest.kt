@@ -14,13 +14,17 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalLiveApi::class)
+@file:OptIn(ExperimentalAuthApi::class, ExperimentalLiveApi::class)
 
 package com.google.adk.kt.webserver.models
 
 import com.google.adk.kt.agents.LiveRequest
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.sessions.State
@@ -223,6 +227,17 @@ class LiveWireTest {
   }
 
   @Test
+  fun decodeLiveRequests_credentialUnderACredentialKey_readsItTyped() {
+    val request =
+      decodeLiveRequest(
+        """{"close":true,"state_delta":{"adk_http_0123456789abcdef_":{"authType":"apiKey","apiKey":"k"}}}"""
+      )
+
+    assertThat(request.stateDelta)
+      .containsExactly("adk_http_0123456789abcdef_", AuthCredential.ApiKey(Secret("k")))
+  }
+
+  @Test
   fun decodeLiveRequests_closeFrameWithStateDelta_keepsTheStateDelta() {
     val request = decodeLiveRequest("""{"close":true,"state_delta":{"k":"v"}}""")
 
@@ -337,6 +352,14 @@ class LiveWireTest {
     val request = decodeLiveRequest("""{"state_delta":{"k":{"n":null}}}""")
 
     assertThat(request.stateDelta["k"]).isEqualTo(mapOf("n" to null))
+  }
+
+  @Test
+  fun decodeLiveRequests_stateDeltaThatIsNotAnObject_throws() {
+    // A SerializationException, so the live route closes the socket as an invalid request.
+    assertThrows(SerializationException::class.java) {
+      decodeLiveRequests("""{"state_delta":[],"audio_stream_end":true}""")
+    }
   }
 
   @Test
@@ -506,6 +529,21 @@ class LiveWireTest {
       )
 
     assertThat(encoded).contains("\"data\":\"AQID\"")
+  }
+
+  @Test
+  fun encodeLiveEvent_credentialInStateDelta_leavesOutItsSecret() {
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "secret-sentinel")
+    val event =
+      Event(
+        author = "agent",
+        actions = EventActions(stateDelta = mutableMapOf("user:credential" to credential)),
+      )
+
+    val encoded = encodeLiveEvent(event)
+
+    assertThat(encoded).contains("\"authType\":\"apiKey\"")
+    assertThat(encoded).doesNotContain("secret-sentinel")
   }
 
   @Test

@@ -33,6 +33,12 @@ import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 
 /**
+ * The state key prefix, followed by the interrupt ID, under which a workflow node keeps its PKCE
+ * credential across the pause. Session stores decode values under it as credentials.
+ */
+internal const val OAUTH_CREDENTIAL_KEY_PREFIX = "adk_oauth_credential:"
+
+/**
  * Returns the long-running `adk_request_credential` event asking the app for [authConfig]'s
  * credential, with [interruptId] as its call id. Its state delta keeps the OAuth2 `state` and PKCE
  * code verifier for the response, under keys that outlast the pause, and its request leaves out the
@@ -50,7 +56,7 @@ internal fun signInRequestEvent(authConfig: AuthConfig, interruptId: String): Ev
       stateDelta["adk_oauth_state:$interruptId"] = generatedCredential.state
     }
     if (!generatedCredential.codeVerifier.isNullOrEmpty()) {
-      stateDelta["adk_oauth_credential:$interruptId"] =
+      stateDelta["$OAUTH_CREDENTIAL_KEY_PREFIX$interruptId"] =
         AuthCredential.OAuth2(
           variant = generatedCredential.variant,
           codeVerifier = generatedCredential.codeVerifier,

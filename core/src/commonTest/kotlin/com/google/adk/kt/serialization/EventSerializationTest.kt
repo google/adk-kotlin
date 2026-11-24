@@ -49,13 +49,16 @@ import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceActivityType
 import com.google.adk.kt.workflow.NodeInfo
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -205,6 +208,21 @@ class EventSerializationTest {
   }
 
   @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun stateDelta_credentialUnderACredentialKey_readsBackTypedAndOutputLeavesItsSecretOut() {
+    val key = "adk_oauth_credential:wf_auth:wf@1/node@1"
+    val credential = AuthCredential.OAuth2(codeVerifier = Secret("v".repeat(43)))
+    val event =
+      Event(author = "agent", actions = EventActions(stateDelta = mutableMapOf(key to credential)))
+    val stored = adkSecretRevealingJson.encodeToString(Event.serializer(), event)
+
+    val read = adkJson.decodeFromString(Event.serializer(), stored)
+
+    assertEquals(credential, read.actions.stateDelta[key])
+    assertFalse(adkJson.encodeToString(Event.serializer(), read).contains("v".repeat(43)))
+  }
+
+  @Test
   fun freeFormValues_integers_decodeAsLong() {
     val serializer = MapSerializer(String.serializer(), AnySerializer)
 
@@ -238,6 +256,75 @@ class EventSerializationTest {
   }
 
   @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_malformedSignInResponse_isStoredAsBuiltAndEmptiedInOutput() {
+    val event =
+      responseEvent(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("token" to "sk-raw"))
+
+    assertEquals(
+      """{"name":"adk_request_credential","response":{"token":"sk-raw"}}""",
+      partJson(event, "functionResponse", adkSecretRevealingJson),
+    )
+    assertEquals(
+      """{"name":"adk_request_credential","response":{}}""",
+      partJson(event, "functionResponse"),
+    )
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_plainCredentialsForStorage_keepTheirSecrets() {
+    // Sessions are stored with the revealing instance, so a plain sign-in response keeps its key.
+    val credential = responseEvent("read_key", mapOf("authType" to "apiKey", "apiKey" to "sk-123"))
+    val signIn =
+      responseEvent(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("result" to "sk-1"))
+
+    assertEquals(
+      """{"name":"read_key","response":{"authType":"apiKey","apiKey":"sk-123"}}""",
+      partJson(credential, "functionResponse", adkSecretRevealingJson),
+    )
+    assertEquals(
+      """{"name":"adk_request_credential","response":{"result":"sk-1"}}""",
+      partJson(signIn, "functionResponse", adkSecretRevealingJson),
+    )
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_plainSignInRequest_encodesWithoutItsSecretAndIsStoredWithIt() {
+    val authConfig =
+      mapOf(
+        "authScheme" to mapOf("type" to "apiKey", "name" to "X-Key", "in" to "header"),
+        "exchangedAuthCredential" to mapOf("authType" to "apiKey", "apiKey" to "sk-req"),
+      )
+    val call =
+      FunctionCall(
+        name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+        args = mapOf("functionCallId" to "call-1", "authConfig" to authConfig),
+        id = "req-1",
+      )
+    val event =
+      Event(author = "agent", content = Content(parts = listOf(Part(functionCall = call))))
+
+    val output = partJson(event, "functionCall")
+    assertFalse("sk-req" in output)
+    assertContains(output, "\"authType\":\"apiKey\"")
+    assertContains(partJson(event, "functionCall", adkSecretRevealingJson), "\"apiKey\":\"sk-req\"")
+  }
+
+  @Test
+  fun freeFormValues_plainSignInResponse_encodeWithoutItsSecret() {
+    // A bare key under no credential field, typed as a secret by the sign-in call's name.
+    val event =
+      responseEvent(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("result" to "sk-1"))
+
+    assertEquals(
+      """{"name":"adk_request_credential","response":{"result":"<redacted>"}}""",
+      partJson(event, "functionResponse"),
+    )
+  }
+
+  @Test
   @OptIn(ExperimentalAuthApi::class)
   fun freeFormValues_typedCredential_encodeWithoutItsSecrets() {
     val credential = AuthCredential.ApiKey(Secret("sk-123"))
@@ -259,6 +346,112 @@ class EventSerializationTest {
     assertEquals(omitted, call!!.jsonObject["args"]!!.jsonObject["key"])
     assertEquals(omitted, json["actions"]!!.jsonObject["stateDelta"]!!.jsonObject["key"])
     assertEquals(JsonObject(mapOf("key" to omitted)), fromAny)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_credentialAsAReloadedMap_encodesWithoutItsSecretsUnlessRevealing() {
+    // A session reloads a stored credential in an output as a plain map.
+    val stored =
+      Event(
+        author = "node",
+        output = mapOf("key" to AuthCredential.ApiKey.of("sk-123"), "note" to "kept"),
+      )
+    val reloaded =
+      adkJson.decodeFromString(
+        Event.serializer(),
+        adkSecretRevealingJson.encodeToString(Event.serializer(), stored),
+      )
+
+    val written = adkJson.encodeToString(Event.serializer(), reloaded)
+    val rewritten = adkSecretRevealingJson.encodeToString(Event.serializer(), reloaded)
+
+    assertTrue(reloaded.output is Map<*, *>)
+    assertFalse("sk-123" in written)
+    assertTrue("\"note\":\"kept\"" in written)
+    assertTrue("sk-123" in rewritten)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_argsAndResponseThatAreACredentialMap_encodeWithoutTheSecretUnlessRevealing() {
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-123")
+    val event =
+      Event(
+        author = "user",
+        content =
+          Content(
+            parts =
+              listOf(
+                Part(functionCall = FunctionCall("f", credential)),
+                Part(functionResponse = FunctionResponse("f", credential)),
+              )
+          ),
+      )
+
+    val written = adkJson.encodeToJsonElement(Event.serializer(), event).jsonObject
+    val stored = adkSecretRevealingJson.encodeToString(Event.serializer(), event)
+
+    val omitted = JsonObject(mapOf("authType" to JsonPrimitive("apiKey")))
+    val parts = written["content"]!!.jsonObject["parts"]!!.jsonArray
+    assertEquals(omitted, parts[0].jsonObject["functionCall"]!!.jsonObject["args"])
+    assertEquals(omitted, parts[1].jsonObject["functionResponse"]!!.jsonObject["response"])
+    assertTrue("sk-123" in stored)
+  }
+
+  @Test
+  fun freeFormValues_oauth2MapWithExpiresInAsAWholeDouble_encodesWithoutItsToken() {
+    val credential =
+      mapOf(
+        "authType" to "oauth2",
+        "oauth2" to mapOf("accessToken" to "tok-1", "expiresIn" to 3600.0),
+      )
+
+    val written = anyToJsonElement(mapOf("c" to credential)).toString()
+
+    assertFalse("tok-1" in written)
+  }
+
+  @Test
+  fun freeFormValues_oauth2MapWithExpiresInAsAFraction_encodesWithoutItsToken() {
+    val credential =
+      mapOf(
+        "authType" to "oauth2",
+        "oauth2" to mapOf("accessToken" to "tok-1", "expiresIn" to 3600.5),
+      )
+
+    val written = anyToJsonElement(mapOf("c" to credential)).toString()
+
+    assertFalse("tok-1" in written)
+  }
+
+  @Test
+  fun freeFormValues_oauth2MapWithANumberForClientId_encodesWithoutItsToken() {
+    val credential =
+      mapOf("authType" to "oauth2", "oauth2" to mapOf("accessToken" to "tok-1", "clientId" to 123))
+
+    val written = anyToJsonElement(mapOf("c" to credential)).toString()
+
+    assertFalse("tok-1" in written)
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
+  fun freeFormValues_credentialAsAJsonObject_encodesWithoutItsSecretUnlessRevealing() {
+    val credential =
+      JsonObject(
+        mapOf(
+          "authType" to JsonPrimitive("oauth2"),
+          "oauth2" to JsonObject(mapOf("accessToken" to JsonPrimitive("tok-1"))),
+        )
+      )
+    val value = mapOf("list" to JsonArray(listOf(credential)))
+
+    val written = anyToJsonElement(value)
+    val stored = anyToJsonElement(value, adkSecretRevealingJson)
+
+    assertEquals("""{"list":[{"authType":"oauth2","oauth2":{}}]}""", written.toString())
+    assertEquals(JsonObject(mapOf("list" to JsonArray(listOf(credential)))), stored)
   }
 
   @Test
@@ -691,4 +884,21 @@ class EventSerializationTest {
       }
     }
   }
+
+  private fun responseEvent(name: String, response: Map<String, Any?>): Event =
+    Event(
+      author = "user",
+      content = Content(parts = listOf(Part(functionResponse = FunctionResponse(name, response)))),
+    )
+
+  /** Returns the JSON text of [field] in [event]'s one part, as [json] writes it. */
+  private fun partJson(event: Event, field: String, json: Json = adkJson): String =
+    json
+      .encodeToJsonElement(Event.serializer(), event)
+      .jsonObject["content"]!!
+      .jsonObject["parts"]!!
+      .jsonArray
+      .single()
+      .jsonObject[field]
+      .toString()
 }

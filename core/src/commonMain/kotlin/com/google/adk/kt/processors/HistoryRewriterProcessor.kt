@@ -22,13 +22,13 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
 import com.google.adk.kt.events.functionCallIds
 import com.google.adk.kt.events.isToolBranch
-import com.google.adk.kt.serialization.Json
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.tools.TransferToAgentTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.toJsonElement
 import com.google.adk.kt.workflow.BranchPath
 
 /**
@@ -654,7 +654,7 @@ internal class HistoryRewriterProcessor {
           Part(
             text =
               "[${event.author}] called tool `${functionCall.name}`" +
-                " with parameters: ${Json.toJsonString(functionCall.args)}"
+                " with parameters: ${functionCall.args.toJsonElement()}"
           )
         )
       }
@@ -663,7 +663,7 @@ internal class HistoryRewriterProcessor {
           Part(
             text =
               "[${event.author}] `${functionResponse.name}` tool" +
-                " returned result: ${Json.toJsonString(functionResponse.response)}"
+                " returned result: ${functionResponse.response.toJsonElement()}"
           )
         )
       }

@@ -672,6 +672,29 @@ class HistoryRewriterProcessorTest {
   }
 
   @Test
+  fun rewrite_userAnswerWithACredentialMapToAnotherAgentsCall_isNarratedWithoutTheSecret() {
+    // A session reloads the user's answer, stored with its secret, as a plain map.
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-123")
+    val call =
+      Event(author = "settings_agent", content = modelFunctionCall("adk_request_input", id = "c1"))
+    val answer =
+      Event(
+        author = "user",
+        content = userFunctionResponse("adk_request_input", "c1", mapOf("key" to credential)),
+      )
+
+    val contents = rewrite(listOf(call, answer), agentName = "router")
+
+    assertEquals(
+      listOf(
+        "For context:",
+        "[user] `adk_request_input` tool returned result: {\"key\":{\"authType\":\"apiKey\"}}",
+      ),
+      texts(contents).last(),
+    )
+  }
+
+  @Test
   fun rewrite_includeContentsNone_consecutiveUserTurns_keepsOnlyTheLast() {
     val events = listOf(userEvent("Turn 1"), userEvent("Turn 2"))
 

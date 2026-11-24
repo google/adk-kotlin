@@ -20,7 +20,9 @@ import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.auth.AuthCredential.OAuth2.TokenEndpointAuthMethod
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import org.junit.Test
@@ -87,11 +89,9 @@ class CredentialKeyTest {
       )
 
     for ((credential, suffix) in expected) {
-      assertEquals(
-        "adk_http_3e922d755264ee81_$suffix",
-        deriveCredentialKey(BEARER, credential).value,
-        credential.toString(),
-      )
+      val key = deriveCredentialKey(BEARER, credential).value
+      assertEquals("adk_http_3e922d755264ee81_$suffix", key, credential.toString())
+      assertTrue(CredentialKey.isDerived(key), key)
     }
   }
 
@@ -129,6 +129,7 @@ class CredentialKeyTest {
         deriveCredentialKey(scheme, rawAuthCredential = null).value,
         scheme.toString(),
       )
+      assertTrue(CredentialKey.isDerived(key), key)
     }
   }
 
@@ -205,6 +206,15 @@ class CredentialKeyTest {
   fun equals_sameValue_isEqual() {
     assertEquals(CredentialKey("k"), CredentialKey("k"))
     assertEquals(CredentialKey("k").hashCode(), CredentialKey("k").hashCode())
+  }
+
+  @Test
+  fun isDerived_otherKeys_doNotMatch() {
+    // An OAuth2 state, a custom credential key, and keys that only look like derived ones.
+    val keys =
+      listOf("adk_oauth_state:x", "my_key", "adk_apiKey_123_", "user:adk_http_0123456789abcdef_")
+
+    keys.forEach { assertFalse(CredentialKey.isDerived(it), it) }
   }
 
   @Test

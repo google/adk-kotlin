@@ -424,6 +424,42 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun toAdk_withDataPartFunctionResponseHoldingACredential_keepsItsSecret() {
+    // A user's answer to a sign-in or input request, which ADK reads on resume.
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-1")
+    val data = mapOf("name" to "func", "id" to "1", "response" to mapOf("key" to credential))
+    val dataPart = DataPart(data, mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_RESPONSE))
+
+    val result = dataPart.toAdk()
+
+    assertThat(result.functionResponse!!.response).isEqualTo(mapOf("key" to credential))
+  }
+
+  @Test
+  fun toAdk_withDataPartFunctionCallHoldingACredential_keepsItsSecret() {
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-1")
+    val data = mapOf("name" to "func", "id" to "1", "args" to mapOf("key" to credential))
+    val dataPart = DataPart(data, mapOf(MetadataKeys.TYPE to TYPE_FUNCTION_CALL))
+
+    val result = dataPart.toAdk()
+
+    assertThat(result.functionCall!!.args).isEqualTo(mapOf("key" to credential))
+  }
+
+  @Test
+  fun toA2A_withFunctionResponseHoldingACredential_sendsItWithoutItsSecret() {
+    // Sent to a remote agent, which never gets a credential's secrets in a message.
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-1", "label" to "W")
+    val part =
+      Part(functionResponse = FunctionResponse(name = "f", response = mapOf("key" to credential)))
+
+    val data = (part.toA2A() as DataPart).data as Map<*, *>
+
+    assertThat(data["response"])
+      .isEqualTo(mapOf("key" to mapOf("authType" to "apiKey", "label" to "W")))
+  }
+
+  @Test
   fun toA2A_withFunctionResponsePart_returnsDataPart() {
     val part =
       Part(functionResponse = FunctionResponse(name = "func", id = "1", response = mapOf()))

@@ -19,6 +19,7 @@ package com.google.adk.kt.types
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.ids.Uuid
+import com.google.adk.kt.serialization.AnyMapSerializer
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.EncodeDefault
@@ -38,7 +39,9 @@ import kotlinx.serialization.json.JsonNames
 data class FunctionCall(
   val name: String = "",
   // Always emit args (even empty {}) to match the genai/Python golden shape.
-  @EncodeDefault(EncodeDefault.Mode.ALWAYS) val args: Map<String, @Contextual Any?> = emptyMap(),
+  @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+  @Serializable(with = AnyMapSerializer::class)
+  val args: Map<String, @Contextual Any?> = emptyMap(),
   val id: String? = null,
   @JsonNames("partial_args") val partialArgs: List<PartialArg>? = null,
   @JsonNames("will_continue") val willContinue: Boolean? = null,
