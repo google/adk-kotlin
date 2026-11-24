@@ -207,6 +207,26 @@ class SessionMappersTest {
       .isEqualTo(java.time.Instant.parse("2024-12-12T12:12:12Z").toEpochMilli())
   }
 
+  @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
+  @Test
+  fun sessionDtoToAdk_credentialKeys_typesTheCredentialAndLeavesAMalformedOneOut() {
+    val dto =
+      SessionDto(
+        name = "reasoningEngines/123/sessions/sX",
+        updateTime = null,
+        sessionState =
+          adkJson.parseToJsonElement(
+            """{"adk_http_0123456789abcdef_": {"authType": "apiKey", "apiKey": "k"},
+              "adk_apiKey_0123456789abcdef_": {"authType": "unknown"}}"""
+          ) as JsonObject,
+      )
+
+    val session = dto.toAdk(appName = "123", userId = "user", fallbackId = null)
+
+    assertThat(session.state.toMap())
+      .containsExactly("adk_http_0123456789abcdef_", AuthCredential.ApiKey(Secret("k")))
+  }
+
   @Test
   fun sessionDtoToAdk_missingName_usesFallbackIdAndEpochTime() {
     val dto = SessionDto(name = null, updateTime = null, sessionState = null)

@@ -27,15 +27,17 @@ import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 
 /**
- * Returns this event as a session store writes it, with typed credentials keeping their secrets
- * only in its sign-in parts, state delta, output and requested auth configs, which ADK reads back.
- * Elsewhere they lose them, since a reloaded value is plain and would show them to the model.
+ * Returns this event as a session store writes it. Credentials keep their secrets only where ADK
+ * reads them back: sign-in parts, the user's function responses, state delta, output and requested
+ * auth configs. Elsewhere they lose them, so a reloaded event can't show them to the model.
  */
 internal fun Event.forStorage(): Event =
   copy(
-    content = content?.forStorage(),
+    // The user's function responses answer interrupts, which a resume after a reload reads again.
+    content = content?.forStorage(keepFunctionResponses = author == Role.USER),
     customMetadata = customMetadata?.mapValues { (_, value) -> value?.withoutCredentialSecrets() },
     actions = actions.forStorage(),
   )
@@ -49,7 +51,7 @@ private fun EventActions.forStorage(): EventActions =
     compaction = compaction?.let { it.copy(compactedContent = it.compactedContent.forStorage()) },
   )
 
-private fun Content.forStorage(): Content =
+private fun Content.forStorage(keepFunctionResponses: Boolean = false): Content =
   copy(
     parts =
       parts.map { part ->
@@ -57,7 +59,8 @@ private fun Content.forStorage(): Content =
         val isSignIn =
           part.functionCall?.isSignInRequest == true ||
             part.functionResponse?.isSignInResponse == true
-        if (isSignIn) part else part.withoutCredentialSecrets()
+        val isKept = keepFunctionResponses && part.functionResponse != null
+        if (isSignIn || isKept) part else part.withoutCredentialSecrets()
       }
   )
 

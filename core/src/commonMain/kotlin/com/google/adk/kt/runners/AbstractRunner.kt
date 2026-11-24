@@ -37,6 +37,7 @@ import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.auth.withCompletedSignInResponses
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterRunCallbacksPipeline
 import com.google.adk.kt.callbacks.runBeforeRunCallbacksPipeline
@@ -631,12 +632,14 @@ abstract class AbstractRunner : Runner {
     // A node-path root resolves function responses even when not resumable; other roots need it.
     val isNodeRoot = runsOnNodePath
     // As in ADK Python, an inbound message is always a user turn, whatever role the caller set.
-    val message =
+    val userMessage =
       if (newMessage != null && newMessage.role != Role.USER) {
         newMessage.copy(role = Role.USER)
       } else {
         newMessage
       }
+    // Typed before plugins or the session see it, so their output leaves its secrets out.
+    val message = userMessage?.withCompletedSignInResponses(applyRewinds(session.events))
     if (isNodeRoot) requireNoTextWithFunctionResponses(message)
     val resolvedInvocationId =
       if (isResumable || isNodeRoot) {

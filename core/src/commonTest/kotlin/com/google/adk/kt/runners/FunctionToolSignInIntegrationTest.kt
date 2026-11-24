@@ -17,19 +17,27 @@
 package com.google.adk.kt.runners
 
 import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.auth.RequestCredentialArgs
 import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.auth.SignInRequest
+import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.auth.signInConfig
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.plugins.Plugin
+import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.serialization.jsonElementToAny
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.ResumableEvents.END_OF_AGENT
 import com.google.adk.kt.testing.modelMessage
@@ -66,6 +74,37 @@ class FunctionToolSignInIntegrationTest {
 
   /** The credential each tool run saw, by tool name, in order. */
   private val seen = mutableListOf<Pair<String, AuthCredential?>>()
+
+  @Test
+  fun runAsync_bareCredentialAsPlainValues_reachesPluginsAndTheToolTyped() = runBlocking {
+    val pluginMessages = mutableListOf<Content>()
+    val recorder =
+      object : Plugin {
+        override val name = "recorder"
+
+        override suspend fun onUserMessage(
+          invocationContext: InvocationContext,
+          userMessage: Content,
+        ): Content = userMessage.also { pluginMessages += it }
+      }
+    val runner =
+      InMemoryRunner(agent = agent(SignInTool(TOOL_NAME, CONFIG)), plugins = listOf(recorder))
+    val request = runner.send(userMessage("hi")).signInRequests().single()
+    // A bare credential as plain values, as an HTTP client may send it.
+    val response =
+      FunctionResponse(
+        name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+        id = request.id,
+        response = mapOf("authType" to "apiKey", "apiKey" to "user-key"),
+      )
+
+    val unused =
+      runner.send(Content(role = Role.USER, parts = listOf(Part(functionResponse = response))))
+
+    assertEquals(TOOL_NAME to API_KEY, seen.last())
+    val seenByPlugin = pluginMessages.last().parts.single().functionResponse?.response
+    assertEquals(API_KEY, seenByPlugin?.get("exchangedAuthCredential"))
+  }
 
   @Test
   fun runAsync_nodePath_twoRequestsAnsweredOneAtATime_rerunsEachTool() = runBlocking {
@@ -110,6 +149,29 @@ class FunctionToolSignInIntegrationTest {
 
     assertEquals(emptyList(), events.flatMap { it.credentialCallIds() })
     assertEquals(2, seen.size)
+  }
+
+  @OptIn(FrameworkInternalApi::class, SecretAccess::class)
+  @Test
+  fun runAsync_responseAsPlainValues_rerunsTheToolAndStoresTheResponseTyped() = runBlocking {
+    val runner = InMemoryRunner(agent = agent(SignInTool(TOOL_NAME, CONFIG)))
+    val request = runner.send(userMessage("hi")).signInRequests().single()
+    // The response's JSON as plain values, as an HTTP client's request body holds it.
+    val typed = request.createResponse(API_KEY).parts.single().functionResponse!!
+    val plain = jsonElementToAny(anyToJsonElement(typed.response, adkSecretRevealingJson))
+    @Suppress("UNCHECKED_CAST") val response = typed.copy(response = plain as Map<String, Any?>)
+
+    val unused =
+      runner.send(Content(role = Role.USER, parts = listOf(Part(functionResponse = response))))
+
+    assertEquals(TOOL_NAME to API_KEY, seen.last())
+    val session =
+      runner.sessionService.getSession(SessionKey(runner.appName, USER_ID, SESSION_ID))!!
+    val stored =
+      session.events
+        .flatMap { it.functionResponses() }
+        .single { it.name == FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME }
+    assertEquals(API_KEY, stored.response["exchangedAuthCredential"])
   }
 
   @Test

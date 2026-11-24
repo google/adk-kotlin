@@ -81,7 +81,7 @@ import kotlinx.serialization.json.JsonNames
  * @property output For a workflow node, the value handed to successors, distinct from [content].
  *   Holds a JSON-native value (map with string keys, list, string, number, boolean, null,
  *   `JsonElement`) or a [Content]; a node that emits any other value fails. A `FunctionNode` writes
- *   its output's JSON form here.
+ *   its output's JSON form here, which keeps a credential's secrets for successors and storage.
  * @property nodeInfo Identifies the workflow-node activation that emitted this event; `null`
  *   outside a workflow.
  * @property timestamp The timestamp of the event.

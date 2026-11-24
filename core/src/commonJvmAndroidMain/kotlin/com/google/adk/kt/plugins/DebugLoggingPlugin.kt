@@ -21,12 +21,17 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.auth.REDACTED
+import com.google.adk.kt.auth.withDecodedSignInRequest
+import com.google.adk.kt.auth.withDecodedSignInResponse
+import com.google.adk.kt.auth.withoutCredentialSecretsForText
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.sessions.State
+import com.google.adk.kt.sessions.decodeStateCredential
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -57,9 +62,11 @@ import org.yaml.snakeyaml.representer.Representer
  * summaries to the console, this plugin captures the data in full.
  *
  * **CAUTION**: The plugin writes raw requests / responses, including user prompts, tool arguments,
- * and session state, to disk. Be mindful of sensitive data disclosure and protect the output file
- * accordingly. An armored private key block (`-----BEGIN … PRIVATE KEY-----`) inside any string is
- * replaced with `<redacted>`.
+ * and session state, to disk; protect the output file accordingly. A credential, typed or as plain
+ * values in a credential's JSON form in maps, collections and arrays at any depth, is written
+ * without its secrets or sign-in data. Other plain values, such as a token string in tool
+ * arguments, are written as given, apart from an armored private key block (`-----BEGIN … PRIVATE
+ * KEY-----`) in any string, which is replaced with `<redacted>`.
  *
  * @property outputPath Path to the output file. Defaults to `adk_debug.yaml`.
  * @property includeSessionState Whether to include a session-state snapshot for each invocation.
@@ -158,7 +165,7 @@ class DebugLoggingPlugin(
         "session_state_snapshot",
         data =
           dataOf(
-            "state" to safeSerialize(session.state.toMap()),
+            "state" to serializeStateForLog(session.state.toMap()),
             "event_count" to session.events.size,
           ),
       )
@@ -303,7 +310,7 @@ class DebugLoggingPlugin(
         dataOf(
           "tool_name" to tool.name,
           "function_call_id" to context.functionCallId,
-          "args" to safeSerialize(args),
+          "args" to serializeForLog(args),
         ),
     )
     return CallbackChoice.Continue(args)
@@ -323,7 +330,7 @@ class DebugLoggingPlugin(
         dataOf(
           "tool_name" to tool.name,
           "function_call_id" to context.functionCallId,
-          "result" to safeSerialize(result),
+          "result" to serializeForLog(result),
         ),
     )
     return result
@@ -343,7 +350,7 @@ class DebugLoggingPlugin(
         dataOf(
           "tool_name" to tool.name,
           "function_call_id" to context.functionCallId,
-          "args" to safeSerialize(args),
+          "args" to serializeForLog(args),
           "error_type" to (error::class.simpleName ?: "Unknown"),
           "error_message" to error.message,
         ),
@@ -427,7 +434,7 @@ class DebugLoggingPlugin(
   private fun serializeActions(actions: EventActions): Map<String, Any?>? {
     val actionsData =
       dataOf(
-        "state_delta" to actions.stateDelta.ifEmpty { null }?.let { safeSerialize(it) },
+        "state_delta" to actions.stateDelta.ifEmpty { null }?.let { serializeStateForLog(it) },
         "artifact_delta" to actions.artifactDelta.ifEmpty { null }?.let { it.toMap() },
         "transfer_to_agent" to actions.transferToAgent,
         "escalate" to (if (actions.escalate) true else null),
@@ -446,11 +453,21 @@ class DebugLoggingPlugin(
         part.text?.let { partData["text"] = it }
         part.functionCall?.let { fc ->
           partData["function_call"] =
-            dataOf("id" to fc.id, "name" to fc.name, "args" to safeSerialize(fc.args))
+            dataOf(
+              "id" to fc.id,
+              "name" to fc.name,
+              // Typed, so that a sign-in request's config is written without its secrets.
+              "args" to serializeForLog(fc.withDecodedSignInRequest().args),
+            )
         }
         part.functionResponse?.let { fr ->
           partData["function_response"] =
-            dataOf("id" to fr.id, "name" to fr.name, "response" to safeSerialize(fr.response))
+            dataOf(
+              "id" to fr.id,
+              "name" to fr.name,
+              // Typed, so that a sign-in response's bare key is written redacted.
+              "response" to serializeForLog(fr.withDecodedSignInResponse().response),
+            )
         }
         part.inlineData?.let { blob ->
           partData["inline_data"] =
@@ -500,6 +517,22 @@ class DebugLoggingPlugin(
       is Map<*, *> -> value.mapValues { withoutPrivateKeys(it.value) }
       is List<*> -> value.map { withoutPrivateKeys(it) }
       else -> value
+    }
+
+  /**
+   * Returns [obj] as [safeSerialize] writes it, with each credential in it held as plain values
+   * written without its secrets too.
+   */
+  private fun serializeForLog(obj: Any?): Any? = safeSerialize(withoutCredentialSecretsForText(obj))
+
+  /**
+   * Returns [state] as [serializeForLog] writes it, after also decoding a bare token under an ADK
+   * credential key. A `temp:` key is matched without its prefix, since ADK keeps a sign-in response
+   * under its credential key with that prefix.
+   */
+  private fun serializeStateForLog(state: Map<String, Any>): Map<String, Any?> =
+    state.mapValues { (key, value) ->
+      serializeForLog(decodeStateCredential(key.removePrefix(State.TEMP_PREFIX), value))
     }
 
   private data class DebugEntry(

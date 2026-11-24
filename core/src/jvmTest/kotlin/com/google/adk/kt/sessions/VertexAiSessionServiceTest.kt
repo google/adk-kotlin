@@ -16,18 +16,29 @@
 
 package com.google.adk.kt.sessions
 
+import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
+import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.dto.ListEventsResponseDto
 import com.google.adk.kt.sessions.dto.ListSessionsResponseDto
 import com.google.adk.kt.sessions.dto.SessionDto
 import com.google.adk.kt.sessions.dto.SessionEventDto
 import com.google.adk.kt.sessions.dto.TimestampDto
 import com.google.adk.kt.testing.SessionServiceAssertions
+import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.RequestInput
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
+import com.google.adk.kt.workflow.requestInput
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
 import kotlin.test.assertFailsWith
@@ -36,6 +47,7 @@ import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -947,6 +959,41 @@ class VertexAiSessionServiceTest {
     // the event itself is still not appended, since super never runs.
     assertThat(session.state["temp:k"]).isEqualTo("v")
     assertThat(session.events).isEmpty()
+  }
+
+  @Test
+  @OptIn(ExperimentalWorkflowApi::class)
+  fun runAsync_answerWithACredentialReadAgainAfterAReload_keepsItsSecret(): Unit = runBlocking {
+    // Arrange: the node reruns on each answer and reads the first answer again on the second turn.
+    val received = mutableListOf<Any?>()
+    val ask =
+      node<Any?, Unit>("ask", rerunOnResume = true) { ctx, _ ->
+        val settings = ctx.resumeInputs["settings"] ?: requestInput(interruptId = "settings")
+        if (ctx.resumeInputs["name"] == null) requestInput(interruptId = "name")
+        received += settings
+      }
+    val app =
+      App(
+        appName = "wf",
+        rootNode = Workflow(name = "wf", edges = listOf(Edge(Start, ask))),
+        resumabilityConfig = ResumabilityConfig(isResumable = true),
+      )
+    val runner = InMemoryRunner(app, sessionService = service(FakeVertexAiSessionsClient()))
+    val id = checkNotNull(runner.sessionService.createSession(SessionKey("wf", "u", null)).key.id)
+    val credential = mapOf("authType" to "apiKey", "apiKey" to "sk-answer")
+    val name = RequestInput.FUNCTION_CALL_NAME
+
+    // Act
+    val turns =
+      listOf(
+        userMessage("go"),
+        userFunctionResponse(name, "settings", mapOf("credential" to credential)),
+        userFunctionResponse(name, "name", mapOf("result" to "Ada")),
+      )
+    for (turn in turns) runner.runAsync(userId = "u", sessionId = id, newMessage = turn).toList()
+
+    // Assert
+    assertThat(received).containsExactly(mapOf("credential" to credential))
   }
 
   private companion object {

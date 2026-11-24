@@ -78,6 +78,26 @@ class SetModelResponseToolTest {
   }
 
   @Test
+  fun run_answerShapedLikeACredential_recordsItWhole() = runBlocking {
+    // The agent's own answer, saved as its final response, not output to leave secrets out of.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf("authType" to Schema(type = Type.STRING), "apiKey" to Schema(type = Type.STRING)),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    val unused =
+      tool.run(
+        testToolContext(functionCallId = "call_1"),
+        mapOf("authType" to "apiKey", "apiKey" to "k"),
+      )
+
+    assertEquals("""{"authType":"apiKey","apiKey":"k"}""", tool.validatedResponseJson("call_1"))
+  }
+
+  @Test
   fun run_nullForANullableDefaultedField_dropsItWithoutTheDefault() = runBlocking {
     // As in Python, a default stands in only for a field the model leaves out, not one it sends as
     // null when the schema accepts null; the null is then dropped like any optional null. LlmAgent

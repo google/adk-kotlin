@@ -36,7 +36,8 @@ import com.google.adk.kt.types.Content
  * all critical events in the console.
  *
  * **CAUTION**: The plugin logs raw requests / responses, including user prompts. Be mindful of
- * sensitive data disclosure.
+ * sensitive data disclosure. A typed credential is logged without its secrets, but one passed as
+ * plain values, such as a map in tool arguments, is logged as given.
  */
 class LoggingPlugin(override val name: String = "logging_plugin") : Plugin {
 

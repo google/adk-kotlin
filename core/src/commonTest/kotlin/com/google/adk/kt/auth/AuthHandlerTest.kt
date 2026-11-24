@@ -433,6 +433,17 @@ class AuthHandlerTest {
     }
   }
 
+  @Test
+  fun storedCredential_secret_buildsTheSchemesCredential() {
+    // A bare token as session state reads one back under a credential key.
+    val config = AuthConfig(API_KEY)
+
+    assertEquals(
+      AuthCredential.ApiKey(Secret("v")),
+      config.storedCredential(mapOf(config.credentialKey.value to Secret("v"))),
+    )
+  }
+
   private companion object {
     val API_KEY = AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER)
 

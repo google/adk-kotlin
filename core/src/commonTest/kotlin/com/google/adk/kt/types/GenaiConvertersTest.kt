@@ -78,6 +78,56 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun functionResponse_credentialAsAPlainMap_reachesTheModelWithoutItsSecrets() {
+    val adkFunctionResponse =
+      FunctionResponse(
+        name = "f",
+        response = mapOf("key" to mapOf("authType" to "apiKey", "apiKey" to "sk-123")),
+      )
+
+    val genaiFunctionResponse = adkFunctionResponse.toGenaiSdk()
+
+    assertEquals(
+      mapOf("key" to JsonObject(mapOf("authType" to JsonPrimitive("apiKey")))),
+      genaiFunctionResponse.response,
+    )
+  }
+
+  @Test
+  fun functionResponse_responseThatIsACredentialMap_reachesTheModelWithoutItsSecret() {
+    val adkFunctionResponse =
+      FunctionResponse(name = "f", response = mapOf("authType" to "apiKey", "apiKey" to "sk-123"))
+
+    val genaiFunctionResponse = adkFunctionResponse.toGenaiSdk()
+
+    assertEquals(mapOf("authType" to JsonPrimitive("apiKey")), genaiFunctionResponse.response)
+  }
+
+  @Test
+  fun functionCall_argsThatAreACredentialMap_reachTheModelWithoutTheSecret() {
+    val adkFunctionCall =
+      FunctionCall(name = "f", args = mapOf("authType" to "apiKey", "apiKey" to "sk-123"))
+
+    val genaiFunctionCall = adkFunctionCall.toGenaiSdk()
+
+    assertEquals(mapOf("authType" to JsonPrimitive("apiKey")), genaiFunctionCall.args)
+  }
+
+  @Test
+  fun functionCall_argsHoldingACredentialAsAJsonObject_reachTheModelWithoutTheSecret() {
+    val credential =
+      JsonObject(mapOf("authType" to JsonPrimitive("apiKey"), "apiKey" to JsonPrimitive("sk-123")))
+    val adkFunctionCall = FunctionCall(name = "f", args = mapOf("key" to credential))
+
+    val genaiFunctionCall = adkFunctionCall.toGenaiSdk()
+
+    assertEquals(
+      mapOf("key" to JsonObject(mapOf("authType" to JsonPrimitive("apiKey")))),
+      genaiFunctionCall.args,
+    )
+  }
+
+  @Test
   fun functionCall_convertsCorrectly() {
     val adkFunctionCall =
       FunctionCall(name = "myFunction", args = mapOf("arg1" to "value1"), id = "call-123")

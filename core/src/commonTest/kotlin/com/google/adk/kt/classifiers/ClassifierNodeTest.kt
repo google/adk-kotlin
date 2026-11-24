@@ -24,9 +24,11 @@ package com.google.adk.kt.classifiers
 
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalClassifierApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.Session
@@ -341,6 +343,45 @@ class ClassifierNodeTest {
       listOf("first", mapOf("k" to 1)),
       ClassifierContent.parse("""["first", {"k": 1}]"""),
     )
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun credentialInAJsonMapInput_isClassifiedWithoutItsSecrets() {
+    val typed = mapOf("key" to AuthCredential.ApiKey.of("sk-typed"), "subject" to "x")
+    val plain = mapOf("key" to mapOf("authType" to "apiKey", "apiKey" to "sk-plain"))
+
+    assertClassifiedAndForwarded(
+      typed,
+      ClassifierContent.parse("""{"key": {"authType": "apiKey"}, "subject": "x"}"""),
+    )
+    assertClassifiedAndForwarded(
+      plain,
+      ClassifierContent.parse("""{"key": {"authType": "apiKey"}}"""),
+    )
+  }
+
+  @Test
+  fun credentialAsAJsonObjectInAMapInput_isClassifiedWithoutItsSecrets() {
+    val credential = buildJsonObject {
+      put("authType", "apiKey")
+      put("apiKey", "sk-json")
+    }
+
+    assertClassifiedAndForwarded(
+      mapOf("key" to credential),
+      ClassifierContent.parse("""{"key": {"authType": "apiKey"}}"""),
+    )
+  }
+
+  @Test
+  fun credentialAsATopLevelJsonObjectInput_isClassifiedWithoutItsSecrets() {
+    val credential = buildJsonObject {
+      put("authType", "apiKey")
+      put("apiKey", "sk-json")
+    }
+
+    assertClassifiedAndForwarded(credential, ClassifierContent.parse("""{"authType": "apiKey"}"""))
   }
 
   @Test

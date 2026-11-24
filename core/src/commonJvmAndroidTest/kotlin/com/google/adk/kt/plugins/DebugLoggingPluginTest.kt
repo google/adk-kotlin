@@ -17,11 +17,15 @@
 package com.google.adk.kt.plugins
 
 import com.google.adk.kt.agents.toCallbackContext
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.sessions.State
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
@@ -29,6 +33,8 @@ import com.google.adk.kt.testing.testApiKeyConfig
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GenerateContentConfig
 import com.google.adk.kt.types.Part
 import java.io.File
@@ -74,6 +80,32 @@ class DebugLoggingPluginTest {
 
     plugin.startInvocation()
     assertEquals(message, plugin.onUserMessage(invocationContext, message))
+    plugin.afterRun(invocationContext)
+    return file.readText()
+  }
+
+  /**
+   * Returns the text of the debug file written for an invocation whose session ends with [state].
+   */
+  private suspend fun writtenStateSnapshot(vararg state: Pair<String, Any>): String {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    state.forEach { (key, value) -> invocationContext.session.state[key] = value }
+
+    plugin.startInvocation()
+    plugin.afterRun(invocationContext)
+    return file.readText()
+  }
+
+  /** Returns the text of the debug file written for one event carrying [stateDelta]. */
+  private suspend fun writtenStateDelta(vararg stateDelta: Pair<String, Any>): String {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val event =
+      Event(author = "test_agent", actions = EventActions(stateDelta = mutableMapOf(*stateDelta)))
+
+    plugin.startInvocation()
+    assertEquals(event, plugin.onEvent(invocationContext, event))
     plugin.afterRun(invocationContext)
     return file.readText()
   }
@@ -259,6 +291,306 @@ class DebugLoggingPluginTest {
   }
 
   @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun afterTool_typedOAuth2Credential_writesItsRedactedToString() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val result = mapOf<String, Any>("credential" to oauth2Credential())
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "credential: OAuth2(variant=OAUTH2, clientId=sentinel-client,")
+    assertContains(text, "authUri=<redacted>,")
+    assertContains(text, "nonce=<redacted>,")
+    assertContains(text, "state=<redacted>,")
+    assertFalse(text.contains(SENTINEL))
+    assertFalse(text.contains(SIGN_IN_STATE))
+    assertFalse(text.contains(SIGN_IN_NONCE))
+    assertFalse(text.contains("auth.example"))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun afterRun_typedApiKeyInState_writesItsToString() = runBlocking {
+    val text = writtenStateSnapshot("my_key" to AuthCredential.ApiKey(Secret(SENTINEL)))
+
+    assertContains(text, "my_key: ApiKey(apiKey=<redacted>)")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun afterRun_typedOAuth2InState_writesItsRedactedToString() = runBlocking {
+    val text = writtenStateSnapshot("my_key" to oauth2Credential())
+
+    assertContains(text, "my_key: OAuth2(variant=OAUTH2, clientId=sentinel-client,")
+    assertContains(text, "authUri=<redacted>,")
+    assertContains(text, "nonce=<redacted>,")
+    assertContains(text, "state=<redacted>,")
+    assertFalse(text.contains(SENTINEL))
+    assertFalse(text.contains(SIGN_IN_STATE))
+    assertFalse(text.contains(SIGN_IN_NONCE))
+    assertFalse(text.contains("auth.example"))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun afterRun_typedCredentialUnderACredentialKey_writesItsToString() = runBlocking {
+    val text = writtenStateSnapshot(CREDENTIAL_KEY to AuthCredential.ApiKey(Secret(SENTINEL)))
+
+    assertContains(text, "$CREDENTIAL_KEY: ApiKey(apiKey=<redacted>)")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterRun_bareTokenUnderACredentialKey_writesItRedacted() = runBlocking {
+    val text = writtenStateSnapshot(CREDENTIAL_KEY to SENTINEL)
+
+    assertContains(text, "$CREDENTIAL_KEY: <redacted>")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterRun_bareTokenUnderATempCredentialKey_writesItRedacted() = runBlocking {
+    val text = writtenStateSnapshot("temp:$CREDENTIAL_KEY" to SENTINEL)
+
+    assertContains(text, "temp:$CREDENTIAL_KEY: <redacted>")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onEvent_bareTokenUnderACredentialKeyInStateDelta_writesItRedacted() = runBlocking {
+    val text = writtenStateDelta(CREDENTIAL_KEY to SENTINEL)
+
+    assertContains(text, "$CREDENTIAL_KEY: <redacted>")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterRun_credentialInASetInState_writesItWithoutItsKey() = runBlocking {
+    val text =
+      writtenStateSnapshot("keys" to setOf(mapOf("authType" to "apiKey", "apiKey" to SENTINEL)))
+
+    assertContains(text, "authType: apiKey\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onUserMessage_signInRequestWithAPlainConfig_writesItWithoutItsSecret() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val config =
+      mapOf(
+        "authScheme" to mapOf("type" to "apiKey", "name" to "X-Key", "in" to "header"),
+        "rawAuthCredential" to mapOf("authType" to "apiKey", "apiKey" to SENTINEL),
+      )
+    val request =
+      FunctionCall(
+        name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+        id = "req-1",
+        args = mapOf("functionCallId" to "c1", "authConfig" to config),
+      )
+    val message = Content(parts = listOf(Part(functionCall = request)))
+
+    plugin.startInvocation()
+    assertEquals(message, plugin.onUserMessage(invocationContext, message))
+    plugin.afterRun(invocationContext)
+
+    // Typed before it is written, so it prints as a typed credential without its key.
+    val text = file.readText()
+    assertContains(text, "ApiKey(apiKey=<redacted>)")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterRun_plainApiKeyInState_writesItWithoutItsKey() = runBlocking {
+    // As a reload hands back a credential saved under the app's own key: plain values.
+    val text = writtenStateSnapshot("my_key" to mapOf("authType" to "apiKey", "apiKey" to SENTINEL))
+
+    assertContains(text, "authType: apiKey\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun afterRun_plainOAuth2InState_writesItWithoutItsSecretsOrSignInData() = runBlocking {
+    val plain =
+      mapOf(
+        "authType" to "oauth2",
+        "oauth2" to
+          mapOf(
+            "clientId" to "sentinel-client",
+            "clientSecret" to SENTINEL,
+            "authUri" to "https://auth.example/authorize?state=$SIGN_IN_STATE",
+            "state" to SIGN_IN_STATE,
+            "nonce" to SIGN_IN_NONCE,
+          ),
+      )
+    val text = writtenStateSnapshot("my_key" to plain)
+
+    assertContains(text, "clientId: sentinel-client\n")
+    assertFalse(text.contains(SENTINEL))
+    assertFalse(text.contains(SIGN_IN_STATE))
+    assertFalse(text.contains(SIGN_IN_NONCE))
+    assertFalse(text.contains("auth.example"))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun afterRun_nestedTypedOAuth2InState_writesItsRedactedToString() = runBlocking {
+    val text = writtenStateSnapshot("my_key" to mapOf("nested" to oauth2Credential()))
+
+    assertContains(text, "nested: OAuth2(variant=OAUTH2, clientId=sentinel-client,")
+    assertContains(text, "authUri=<redacted>,")
+    assertContains(text, "nonce=<redacted>,")
+    assertContains(text, "state=<redacted>,")
+    assertFalse(text.contains(SENTINEL))
+    assertFalse(text.contains(SIGN_IN_STATE))
+    assertFalse(text.contains(SIGN_IN_NONCE))
+    assertFalse(text.contains("auth.example"))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun afterRun_typedAuthConfigInState_redactsItsCredentialKey() = runBlocking {
+    val text = writtenStateSnapshot("my_key" to testApiKeyConfig(rawKey = SENTINEL))
+
+    assertContains(text, "credentialKey=<redacted>)")
+    assertFalse(text.contains("adk_apiKey_"))
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onEvent_plainCredentialInStateDelta_writesItWithoutItsKey() = runBlocking {
+    val text = writtenStateDelta("plain" to mapOf("authType" to "apiKey", "apiKey" to SENTINEL))
+
+    assertContains(text, "authType: apiKey\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterRun_plainCredentialNestedInState_writesItWithoutItsKey() = runBlocking {
+    val nested = mapOf("tool" to "x", "cred" to mapOf("authType" to "apiKey", "apiKey" to SENTINEL))
+
+    val text = writtenStateSnapshot("cfg" to nested)
+
+    assertContains(text, "tool: x")
+    assertContains(text, "authType: apiKey\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterTool_plainCredentialNestedInResult_writesItWithoutItsKey() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val result = mapOf("auth" to listOf(mapOf("authType" to "apiKey", "apiKey" to SENTINEL)))
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "authType: apiKey\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun onUserMessage_plainCredentialInFunctionResponse_writesItWithoutItsKey() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    // In the snake_case form a request body can carry.
+    val response = mapOf("cred" to mapOf("auth_type" to "apiKey", "api_key" to SENTINEL))
+    val call = FunctionResponse(name = "f", response = response, id = "c1")
+    val message = Content(parts = listOf(Part(functionResponse = call)))
+
+    plugin.startInvocation()
+    assertEquals(message, plugin.onUserMessage(invocationContext, message))
+    plugin.afterRun(invocationContext)
+
+    val text = file.readText()
+    assertContains(text, "auth_type: apiKey\n")
+    assertFalse(text.contains(SENTINEL))
+  }
+
+  @Test
+  fun afterTool_pageTokenInResult_writesItAsGiven() = runBlocking {
+    // Credentials are recognized by their JSON form, not by key name, so a page token stays.
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val result = mapOf("nextPageToken" to "page-2")
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    assertContains(file.readText(), "nextPageToken: page-2")
+  }
+
+  @Test
+  fun afterTool_sortedMapWithNonStringKeysInResult_writesItAsGiven() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val result = mapOf("byYear" to sortedMapOf(2024 to 3))
+
+    plugin.startInvocation()
+    assertEquals(result, plugin.afterTool(toolContext, tool, emptyMap(), result))
+    plugin.afterRun(invocationContext)
+
+    assertContains(file.readText(), "'2024': 3")
+  }
+
+  @Test
+  fun onUserMessage_bareKeyInSignInResponse_writesItRedacted() = runBlocking {
+    val file = tempFile()
+    val plugin = newPlugin(file)
+    val response =
+      FunctionResponse(
+        name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+        response = mapOf("result" to SENTINEL),
+        id = "req-1",
+      )
+    val message = Content(parts = listOf(Part(functionResponse = response)))
+
+    plugin.startInvocation()
+    assertEquals(message, plugin.onUserMessage(invocationContext, message))
+    plugin.afterRun(invocationContext)
+
+    assertFalse(file.readText().contains(SENTINEL))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun onEvent_typedCredentialInStateDelta_writesItsRedactedToString() = runBlocking {
+    val text = writtenStateDelta("typed" to oauth2Credential())
+
+    assertContains(text, "typed: OAuth2(variant=OAUTH2, clientId=sentinel-client,")
+    assertContains(text, "authUri=<redacted>,")
+    assertContains(text, "nonce=<redacted>,")
+    assertContains(text, "state=<redacted>,")
+    assertFalse(text.contains(SENTINEL))
+    assertFalse(text.contains(SIGN_IN_STATE))
+    assertFalse(text.contains(SIGN_IN_NONCE))
+    assertFalse(text.contains("auth.example"))
+  }
+
+  @Test
+  fun onEvent_removedStateInStateDelta_writesTheRemovedMarker() = runBlocking {
+    val text = writtenStateDelta("gone" to State.REMOVED)
+
+    assertContains(text, "gone: __ADK_SENTINEL_REMOVED__")
+  }
+
+  @Test
+  fun afterRun_contentInState_writesItsToString() = runBlocking {
+    val text = writtenStateSnapshot("content" to Content(parts = listOf(Part(text = "hi"))))
+
+    assertContains(text, "content: Content(role=null, parts=[Part(text=hi,")
+  }
+
+  @Test
   fun includeSessionStateFalse_omitsSnapshot() = runBlocking {
     val file = tempFile()
     val plugin = newPlugin(file, includeSessionState = false)
@@ -324,10 +656,25 @@ class DebugLoggingPluginTest {
 
   private companion object {
     const val SENTINEL = "secret-sentinel"
+    const val SIGN_IN_STATE = "state-sentinel"
+    const val SIGN_IN_NONCE = "nonce-sentinel"
+    const val CREDENTIAL_KEY = "adk_apiKey_0123456789abcdef_"
     const val PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\n$SENTINEL\n-----END PRIVATE KEY-----"
     const val RSA_PRIVATE_KEY =
       "-----BEGIN RSA PRIVATE KEY-----\n$SENTINEL\n-----END RSA PRIVATE KEY-----"
     const val PGP_PRIVATE_KEY =
       "-----BEGIN PGP PRIVATE KEY BLOCK-----\n$SENTINEL\n-----END PGP PRIVATE KEY BLOCK-----"
+
+    /** An OAuth2 credential mid sign-in, whose secret and sign-in fields must stay out of logs. */
+    @OptIn(ExperimentalAuthApi::class)
+    fun oauth2Credential() =
+      AuthCredential.OAuth2(
+        clientId = "sentinel-client",
+        clientSecret = Secret(SENTINEL),
+        authUri = "https://auth.example/authorize?state=$SIGN_IN_STATE",
+        nonce = SIGN_IN_NONCE,
+        state = SIGN_IN_STATE,
+        redirectUri = "https://auth.example/callback",
+      )
   }
 }

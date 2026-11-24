@@ -26,6 +26,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.toJsonElement
 import kotlinx.coroutines.flow.firstOrNull
 
 /**
@@ -143,13 +144,13 @@ class LlmEventSummarizer(val model: Model, val promptTemplate: String = DEFAULT_
         if (part.functionCall != null) {
           formattedHistory.add(
             "${event.author} called tool: " +
-              "${part.functionCall.name}(${truncate(part.functionCall.args.toString())})"
+              "${part.functionCall.name}(${truncate(part.functionCall.args.toJsonElement().toString())})"
           )
         }
         if (part.functionResponse != null) {
           formattedHistory.add(
             "Tool response from ${part.functionResponse.name}: " +
-              truncate(part.functionResponse.response.toString())
+              truncate(part.functionResponse.response.toJsonElement().toString())
           )
         }
       }

@@ -17,6 +17,9 @@
 package com.google.adk.kt.plugins
 
 import com.google.adk.kt.agents.toCallbackContext
+import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -139,6 +142,14 @@ class LoggingPluginTest {
     val aboveLimit = mapOf("a" to "0".repeat(MAX_ARGS_LENGTH - mapFormatOverhead + 1))
     val expected = aboveLimit.toString().substring(0, MAX_ARGS_LENGTH) + "...}"
     assertEquals(expected, loggingPlugin.formatArgs(aboveLimit))
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun formatArgs_typedCredential_leavesItsSecretOut() = runBlocking {
+    val args = mapOf("credential" to AuthCredential.ApiKey(Secret("sk-123")))
+
+    assertEquals("{credential=ApiKey(apiKey=<redacted>)}", loggingPlugin.formatArgs(args))
   }
 
   @Test

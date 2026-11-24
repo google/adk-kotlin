@@ -25,7 +25,10 @@ import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.modules.SerializersModule
 
 /**
@@ -35,13 +38,18 @@ import kotlinx.serialization.modules.SerializersModule
 @Serializable private object RevealsSecrets
 
 /** Whether this encoder writes credential secrets in clear, as [adkSecretRevealingJson] does. */
-internal fun Encoder.revealsSecrets(): Boolean =
-  serializersModule.getContextual(RevealsSecrets::class) != null
+internal fun Encoder.revealsSecrets(): Boolean = serializersModule.revealsSecrets()
+
+/** Whether this instance writes credential secrets in clear, as [adkSecretRevealingJson] does. */
+internal fun Json.revealsSecrets(): Boolean = serializersModule.revealsSecrets()
+
+private fun SerializersModule.revealsSecrets(): Boolean =
+  getContextual(RevealsSecrets::class) != null
 
 /**
  * [adkJson] that writes credential secrets in clear, for session storage, credential keys and
  * internal round trips. [adkJson] leaves them out, so ADK writes one only through this instance or
- * a `Json` built from it.
+ * a `Json` built from it. It writes plain maps as they are, so a stored value reads back unchanged.
  */
 @SecretAccess
 @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
@@ -80,3 +88,118 @@ internal fun <T> decodeFromPlainOrNull(deserializer: DeserializationStrategy<T>,
   } catch (e: IllegalArgumentException) {
     null
   }
+
+/**
+ * Returns this map without its secret keys if it is a credential's JSON form, as a session reloads
+ * one, or null if it is not one. Like ADK Python, it goes by key names rather than a decode, so a
+ * credential that fails to decode still loses its secrets.
+ */
+internal fun Map<*, *>.withoutCredentialSecretsOrNull(): Map<*, *>? =
+  if (isCredentialJson()) withoutKeys(CREDENTIAL_SECRET_KEYS) else null
+
+/** Returns this JSON with each credential's JSON form in it, at any depth, without its secrets. */
+internal fun JsonElement.withoutCredentialSecrets(): JsonElement =
+  withoutCredentialKeys(CREDENTIAL_SECRET_KEYS)
+
+/** Returns this JSON with [keys] dropped from each credential's JSON form in it, at any depth. */
+private fun JsonElement.withoutCredentialKeys(keys: Set<String>): JsonElement =
+  when (this) {
+    is JsonObject ->
+      if (isCredentialJson()) withoutJsonKeys(keys)
+      else JsonObject(mapValues { (_, value) -> value.withoutCredentialKeys(keys) })
+    is JsonArray -> JsonArray(map { it.withoutCredentialKeys(keys) })
+    else -> this
+  }
+
+// Scans the entries, since a sorted map with non-string keys throws when looked up by a string.
+private fun Map<*, *>.isCredentialJson(): Boolean = entries.any { (key, value) ->
+  val kind = if (value is JsonPrimitive && value.isString) value.content else value
+  (key == "authType" || key == "auth_type") && kind in AUTH_TYPE_VALUES
+}
+
+/**
+ * Returns this JSON without [keys], at any depth; named apart from the `Map` one, which a
+ * `JsonObject` also is.
+ */
+private fun JsonElement.withoutJsonKeys(keys: Set<String>): JsonElement =
+  when (this) {
+    is JsonObject ->
+      JsonObject(filterKeys { it !in keys }.mapValues { (_, value) -> value.withoutJsonKeys(keys) })
+    is JsonArray -> JsonArray(map { it.withoutJsonKeys(keys) })
+    else -> this
+  }
+
+/** Returns this map without [keys], at any depth. */
+private fun Map<*, *>.withoutKeys(keys: Set<String>): Map<*, *> {
+  fun withoutNestedKeys(value: Any?): Any? =
+    when (value) {
+      is Map<*, *> -> value.withoutKeys(keys)
+      // Any collection, since a model converter writes a set or an array as a JSON array.
+      is Iterable<*> -> value.map { withoutNestedKeys(it) }
+      is Array<*> -> value.map { withoutNestedKeys(it) }
+      else -> value
+    }
+  return filterKeys { it !in keys }.mapValues { (_, value) -> withoutNestedKeys(value) }
+}
+
+/**
+ * Secret fields of a credential's JSON form, camelCase and snake_case, as ADK Python lists them.
+ */
+private val CREDENTIAL_SECRET_KEYS: Set<String> =
+  listOf(
+      "apiKey",
+      "password",
+      "token",
+      "additionalHeaders",
+      "clientSecret",
+      "authResponseUri",
+      "authCode",
+      "accessToken",
+      "refreshToken",
+      "idToken",
+      "codeVerifier",
+      "privateKeyId",
+      "privateKey",
+    )
+    .flatMap { listOf(it, it.toSnakeCase()) }
+    .toSet()
+
+/** Credential kinds, also as ADK Python's enum names. */
+private val AUTH_TYPE_VALUES: Set<String> =
+  listOf("apiKey", "http", "oauth2", "openIdConnect", "serviceAccount")
+    .flatMap { listOf(it, it.toSnakeCase(), it.toSnakeCase().uppercase()) }
+    .toSet()
+
+/** `privateKeyId` to `private_key_id`; enough for these names, which have no acronyms. */
+private fun String.toSnakeCase(): String =
+  asIterable().joinToString("") { if (it.isUpperCase()) "_${it.lowercaseChar()}" else "$it" }
+
+/**
+ * Returns [value] with each credential's JSON form in it, in maps, collections and arrays at any
+ * depth, without its secrets or sign-in data, as a typed credential's `toString` leaves them out. A
+ * map, list or JSON value with nothing to hide is returned as it is, so that it keeps its own
+ * `toString`.
+ */
+internal fun withoutCredentialSecretsForText(value: Any?): Any? {
+  val result =
+    when (value) {
+      // Before Map, so that a JSON object stays JSON.
+      is JsonElement -> value.withoutCredentialKeys(CREDENTIAL_SECRET_KEYS + SIGN_IN_KEYS)
+      is Map<*, *> ->
+        if (value.isCredentialJson()) value.withoutKeys(CREDENTIAL_SECRET_KEYS + SIGN_IN_KEYS)
+        else value.mapValues { (_, nested) -> withoutCredentialSecretsForText(nested) }
+      // Collections only: other iterables, such as a Path, can iterate to themselves.
+      is Collection<*> -> value.map { withoutCredentialSecretsForText(it) }
+      is Array<*> -> value.map { withoutCredentialSecretsForText(it) }
+      else -> value
+    }
+  return if (result == value) value else result
+}
+
+/**
+ * Sign-in data in an OAuth2 credential's JSON form, which its `toString` hides though not secret.
+ */
+private val SIGN_IN_KEYS: Set<String> =
+  listOf("authUri", "redirectUri", "state", "nonce")
+    .flatMap { listOf(it, it.toSnakeCase()) }
+    .toSet()

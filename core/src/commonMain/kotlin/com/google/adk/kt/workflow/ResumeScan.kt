@@ -23,11 +23,14 @@ import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
+import com.google.adk.kt.serialization.decodeFromPlainValues
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
@@ -498,10 +501,12 @@ internal object ResumeScan {
  * Returns [value] converted to a message if it is a message's JSON form, which is how a stored
  * session gives back a message output; returns any other value unchanged.
  */
+@OptIn(ExperimentalAuthApi::class, SecretAccess::class)
 private fun asMessage(value: Any): Any {
   if (value !is Map<*, *> || !MESSAGE_KEYS.containsAll(value.keys)) return value
   return try {
-    adkJson.decodeFromJsonElement<Content>(anyToJsonElement(value))
+    // Plain values from storage, so a credential in the message keeps its secret for the next node.
+    decodeFromPlainValues(Content.serializer(), value)
   } catch (_: IllegalArgumentException) {
     value
   }

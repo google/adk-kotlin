@@ -22,6 +22,8 @@ import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.auth.encodeCredentialOrNull
 import com.google.adk.kt.auth.revealsSecrets
+import com.google.adk.kt.auth.withoutCredentialSecrets
+import com.google.adk.kt.auth.withoutCredentialSecretsOrNull
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -29,6 +31,7 @@ import com.google.genai.kotlin.types.ByteArrayAsBase64Serializer
 import com.google.genai.kotlin.types.DurationStringSerializer
 import kotlin.math.roundToLong
 import kotlin.time.Duration
+import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
@@ -51,6 +54,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
@@ -100,12 +104,47 @@ internal object AnySerializer : KSerializer<Any> {
 }
 
 /**
+ * [AnySerializer] for a whole map of free-form values, such as `FunctionCall.args`, so that a map
+ * that is itself a credential is written without its secrets too.
+ */
+@OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class, SecretAccess::class)
+internal object AnyMapSerializer : KSerializer<Map<String, Any?>> {
+  override val descriptor: SerialDescriptor = JsonObject.serializer().descriptor
+
+  override fun serialize(encoder: Encoder, value: Map<String, Any?>) {
+    val jsonEncoder =
+      encoder as? JsonEncoder
+        ?: throw IllegalStateException("AnyMapSerializer supports JSON formats only")
+    val json = if (encoder.revealsSecrets()) adkSecretRevealingJson else adkJson
+    jsonEncoder.encodeJsonElement(anyToJsonElement(value, json))
+  }
+
+  override fun deserialize(decoder: Decoder): Map<String, Any?> {
+    val jsonDecoder =
+      decoder as? JsonDecoder
+        ?: throw IllegalStateException("AnyMapSerializer supports JSON formats only")
+    return jsonDecoder.decodeJsonElement().jsonObject.mapValues { (_, v) -> jsonElementToAny(v) }
+  }
+}
+
+/**
  * Returns the JSON form of [value], a JSON-native value, [Content], [Schema], or a typed credential
- * or secret written without its secrets. Throws [IllegalArgumentException] for a value with no JSON
- * form.
+ * or secret, or a map or JSON object in a credential's JSON form, written without its secrets.
+ * Throws [IllegalArgumentException] for a value with no JSON form.
  */
 @FrameworkInternalApi
 fun anyToJsonElement(value: Any?): JsonElement = anyToJsonElement(value, adkJson)
+
+/**
+ * Returns [value], plain values as storage or a peer gives them, decoded with [deserializer] with
+ * any credential in it keeping its secrets, unlike a decode of [anyToJsonElement]'s output. Throws
+ * `IllegalArgumentException`, which includes `SerializationException`, if [value] isn't that shape.
+ */
+@FrameworkInternalApi
+@SecretAccess
+@OptIn(ExperimentalAuthApi::class)
+fun <T> decodeFromPlainValues(deserializer: DeserializationStrategy<T>, value: Any?): T =
+  adkJson.decodeFromJsonElement(deserializer, anyToJsonElement(value, adkSecretRevealingJson))
 
 /** [anyToJsonElement] under [json], which decides whether typed credentials keep their secrets. */
 internal fun anyToJsonElement(value: Any?, json: Json): JsonElement =
@@ -130,7 +169,7 @@ internal fun anyToJsonElement(
   when (value) {
     null -> JsonNull
     State.REMOVED -> REMOVED_JSON.value
-    is JsonElement -> value
+    is JsonElement -> if (json.revealsSecrets()) value else value.withoutCredentialSecrets()
     is String -> JsonPrimitive(value)
     is Boolean -> JsonPrimitive(value)
     is Int -> JsonPrimitive(value)
@@ -139,12 +178,14 @@ internal fun anyToJsonElement(
     is Double -> JsonPrimitive(value)
     is Byte -> JsonPrimitive(value)
     is Short -> JsonPrimitive(value)
-    is Map<*, *> ->
+    is Map<*, *> -> {
+      // A session reloads a credential as a plain map; leave out its secrets unless revealing.
+      val map =
+        if (json.revealsSecrets()) value else value.withoutCredentialSecretsOrNull() ?: value
       JsonObject(
-        value.entries.associate { (k, v) ->
-          k.toString() to anyToJsonElement(v, json, onUnsupported)
-        }
+        map.entries.associate { (k, v) -> k.toString() to anyToJsonElement(v, json, onUnsupported) }
       )
+    }
     is List<*> -> JsonArray(value.map { anyToJsonElement(it, json, onUnsupported) })
     // A framework value in workflow outputs, written in its wire form as in Event.content.
     is Content -> json.encodeToJsonElement(Content.serializer(), value)
@@ -382,10 +423,10 @@ private inline fun <T> asSerializationError(message: String, parse: () -> T): T 
 
 /**
  * The shared `kotlinx.serialization` [Json] instance for ADK's types, such as the
- * [Event][com.google.adk.kt.events.Event] graph. It leaves credential secrets out of what it
- * writes; session storage writes them with ADK's internal revealing instance instead. Defaults are
- * omitted to keep payloads small, unknown keys are ignored for forward-compatibility, and
- * [AnySerializer] is registered contextually for free-form `Any` values.
+ * [Event][com.google.adk.kt.events.Event] graph. It writes credentials without their secrets, also
+ * one held as a plain map, as a session reloads it; storage uses ADK's internal revealing instance.
+ * Defaults are omitted to keep payloads small, unknown keys are ignored for forward-compatibility,
+ * and [AnySerializer] is registered contextually for free-form `Any` values.
  */
 @FrameworkInternalApi
 val adkJson: Json = Json {
@@ -394,3 +435,10 @@ val adkJson: Json = Json {
   ignoreUnknownKeys = true
   serializersModule = SerializersModule { contextual(Any::class, AnySerializer) }
 }
+
+/**
+ * [adkJson] that rejects keys the decoded class doesn't declare. Use it where decoding decides what
+ * a JSON object is, so an object of another shape fails instead of silently losing its extra keys.
+ */
+@OptIn(FrameworkInternalApi::class)
+internal val adkStrictJson: Json = Json(adkJson) { ignoreUnknownKeys = false }

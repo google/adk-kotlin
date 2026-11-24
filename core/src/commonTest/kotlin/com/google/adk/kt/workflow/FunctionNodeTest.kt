@@ -415,7 +415,7 @@ class FunctionNodeTest {
 
   @Test
   @OptIn(ExperimentalAuthApi::class)
-  fun node_contentReturnWithATypedCredential_keepsItsSecrets() {
+  fun node_contentReturnWithATypedCredential_keepsItsSecretButWritesItWithout() {
     // Arrange
     val call = FunctionCall("f", mapOf("key" to AuthCredential.ApiKey(Secret(secret))))
     val answer = Content(role = Role.MODEL, parts = listOf(Part(functionCall = call)))
@@ -424,13 +424,55 @@ class FunctionNodeTest {
 
     // Act
     val unused = runner.runEvents()
-    val output =
-      runner.session().events.single { it.nodeInfo?.path == "wf@1/produce_content@1" }.output
+    val event = runner.session().events.single { it.nodeInfo?.path == "wf@1/produce_content@1" }
 
     // Assert
-    val part = ((output as Map<*, *>)["parts"] as List<*>).single() as Map<*, *>
+    val part = ((event.output as Map<*, *>)["parts"] as List<*>).single() as Map<*, *>
     val args = (part["functionCall"] as Map<*, *>)["args"] as Map<*, *>
     assertEquals(mapOf("authType" to "apiKey", "apiKey" to secret), args["key"])
+    assertFalse(secret in adkJson.encodeToString(Event.serializer(), event))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun node_inputWithACredentialAndAnExplicitSchema_checksTheInputBeforeDefaults() {
+    // Arrange: maxResults has a default, so only the explicit schema can require it.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("maxResults" to Schema(type = Type.INTEGER)),
+        required = listOf("maxResults"),
+      )
+    val query = node("query", inputSchema = schema) { _, query: TicketQuery -> query.maxResults }
+    val credential = AuthCredential.ApiKey.of(secret)
+
+    // Act
+    val error =
+      assertFailsWith<NodeInputValidationException> {
+        runOutputs(query, mapOf("project" to "ADK", "key" to credential))
+      }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "maxResults")
+    assertFalse(secret in error.message.orEmpty())
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun node_mapReturnWithATypedCredential_givesTheNextNodeItsSecret() {
+    // Arrange
+    val credential = AuthCredential.ApiKey.of(secret)
+    val produce = node<Any?, Map<String, Any?>>("produce") { _, _ -> mapOf("key" to credential) }
+    var received: Any? = null
+    val consume = node<Map<String, Any?>, Unit>("consume") { _, input -> received = input["key"] }
+    val runner =
+      runnerFor(Workflow(name = "wf", edges = listOf(Edge(Start, produce), Edge(produce, consume))))
+
+    // Act
+    val unused = runner.runEvents()
+
+    // Assert
+    assertEquals(mapOf("authType" to "apiKey", "apiKey" to secret), received)
   }
 
   /**

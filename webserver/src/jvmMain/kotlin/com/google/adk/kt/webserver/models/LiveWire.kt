@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalLiveApi::class)
+@file:OptIn(ExperimentalLiveApi::class, FrameworkInternalApi::class)
 
 package com.google.adk.kt.webserver.models
 
@@ -25,11 +25,11 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.NullableStateMapSerializer
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import java.lang.invoke.MethodHandles
-import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonArray
@@ -56,7 +56,10 @@ private data class LiveRequestFrame(
   @JsonNames("audio_stream_end") val audioStreamEnd: Boolean = false,
   val close: Boolean = false,
   val partial: Boolean = false,
-  @JsonNames("state_delta") val stateDelta: Map<String, @Contextual Any?> = emptyMap(),
+  // A credential under an ADK credential key is read typed; a malformed one is dropped.
+  @JsonNames("state_delta")
+  @Serializable(with = NullableStateMapSerializer::class)
+  val stateDelta: Map<String, Any?> = emptyMap(),
 )
 
 /** The empty object a client sends to mark an activity boundary; its presence is the signal. */
