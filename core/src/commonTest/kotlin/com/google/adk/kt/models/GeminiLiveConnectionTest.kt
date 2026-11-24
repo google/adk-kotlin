@@ -26,6 +26,7 @@ import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
+import com.google.genai.kotlin.GenAiApiException
 import com.google.genai.kotlin.types.ActivityEnd as SdkActivityEnd
 import com.google.genai.kotlin.types.ActivityStart as SdkActivityStart
 import com.google.genai.kotlin.types.Blob as SdkBlob
@@ -36,6 +37,7 @@ import com.google.genai.kotlin.types.GroundingChunkWeb as SdkGroundingChunkWeb
 import com.google.genai.kotlin.types.GroundingMetadata as SdkGroundingMetadata
 import com.google.genai.kotlin.types.GroundingSupport as SdkGroundingSupport
 import com.google.genai.kotlin.types.LiveServerContent as SdkLiveServerContent
+import com.google.genai.kotlin.types.LiveServerGoAway as SdkLiveServerGoAway
 import com.google.genai.kotlin.types.LiveServerMessage as SdkLiveServerMessage
 import com.google.genai.kotlin.types.LiveServerSessionResumptionUpdate as SdkSessionResumptionUpdate
 import com.google.genai.kotlin.types.LiveServerSetupComplete as SdkLiveServerSetupComplete
@@ -46,6 +48,7 @@ import kotlin.concurrent.Volatile
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -139,6 +142,17 @@ class GeminiLiveConnectionTest {
     override fun receive(): Flow<SdkLiveServerMessage> = flow {
       emit(frame)
       throw IllegalStateException("socket dropped")
+    }
+  }
+
+  /** Delivers [frame], then fails the way the SDK reports a close with [code]. */
+  private class ClosingWithCodeHandle(
+    private val frame: SdkLiveServerMessage,
+    private val code: Int,
+  ) : LiveSessionHandle by RecordingSessionHandle() {
+    override fun receive(): Flow<SdkLiveServerMessage> = flow {
+      emit(frame)
+      throw GenAiApiException(code, "ConnectionClosed", "closed")
     }
   }
 
@@ -1220,6 +1234,62 @@ class GeminiLiveConnectionTest {
     assertTrue(ended, "the collection never ended; ${seen.size} responses arrived first")
   }
 
+  @Test
+  fun serverEnding_openSession_completesOnAGoAwayOnly() = runBlocking {
+    val handle =
+      ChannelSessionHandle(
+        listOf(SdkLiveServerMessage(setupComplete = SdkLiveServerSetupComplete()))
+      )
+    val connection = connection(handle)
+    connection.awaitSetup()
+    val endedBeforeGoAway = connection.serverEnding.isCompleted
+
+    handle.send(SdkLiveServerMessage(goAway = SdkLiveServerGoAway()))
+
+    withTimeout(10.seconds) { connection.serverEnding.join() }
+    assertFalse(endedBeforeGoAway)
+    connection.closeSession()
+  }
+
+  @Test
+  fun refusedContextUpdate_sessionClosedWith1007_isTrue() = runBlocking {
+    val connection =
+      connection(
+        ClosingWithCodeHandle(
+          SdkLiveServerMessage(setupComplete = SdkLiveServerSetupComplete()),
+          1007,
+        )
+      )
+
+    withTimeout(10.seconds) { connection.serverEnding.join() }
+
+    assertTrue(connection.refusedContextUpdate)
+    connection.closeSession()
+  }
+
+  @Test
+  fun refusedContextUpdate_sessionClosedWithAnotherCode_isFalse() = runBlocking {
+    val connection =
+      connection(
+        ClosingWithCodeHandle(
+          SdkLiveServerMessage(setupComplete = SdkLiveServerSetupComplete()),
+          1011,
+        )
+      )
+
+    withTimeout(10.seconds) { connection.serverEnding.join() }
+
+    assertFalse(connection.refusedContextUpdate)
+    connection.closeSession()
+  }
+
+  @Test
+  fun serverEnding_streamEnds_completes() = runBlocking {
+    val connection = connection(RecordingSessionHandle())
+
+    withTimeout(10.seconds) { connection.serverEnding.join() }
+  }
+
   /** The same, but channel-backed, which is the shape the SDK's session actually exposes. */
   private class ChannelSessionHandle(frames: List<SdkLiveServerMessage>) : LiveSessionHandle {
     private val incoming = Channel<SdkLiveServerMessage>(Channel.UNLIMITED)
@@ -1227,6 +1297,9 @@ class GeminiLiveConnectionTest {
     init {
       for (frame in frames) check(incoming.trySend(frame).isSuccess)
     }
+
+    /** Delivers [frame] after the frames given at construction, leaving the session open. */
+    fun send(frame: SdkLiveServerMessage) = check(incoming.trySend(frame).isSuccess)
 
     override fun receive(): Flow<SdkLiveServerMessage> = incoming.receiveAsFlow()
 

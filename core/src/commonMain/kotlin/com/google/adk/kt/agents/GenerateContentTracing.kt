@@ -16,10 +16,13 @@
 
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalPrewarmingApi
 import com.google.adk.kt.models.Gemini
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
+import com.google.adk.kt.models.PrewarmingLiveModel
 import com.google.adk.kt.models.shortName
 import com.google.adk.kt.telemetry.Span
 import com.google.adk.kt.telemetry.Telemetry
@@ -140,7 +143,11 @@ private fun aggregateTokens(first: Int?, second: Int?): Int? =
  * `gemini`. Python instead reads the backend from the environment (`vertex_ai` in enterprise mode)
  * for every Gemini id and for that last case.
  */
+// Only reads which model a pool wraps, which is not experimental behavior.
+@OptIn(ExperimentalLiveApi::class, ExperimentalPrewarmingApi::class)
 internal fun genAiSystemName(model: Model): String {
+  // A pool reports the system of the model whose connections it keeps.
+  if (model is PrewarmingLiveModel) return genAiSystemName(model.model)
   val name = model.shortName
   val provider = name.substringBefore('/', missingDelimiterValue = "").lowercase()
   return when {

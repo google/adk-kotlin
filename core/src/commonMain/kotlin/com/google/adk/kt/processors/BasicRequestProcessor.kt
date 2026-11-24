@@ -52,13 +52,16 @@ internal class BasicRequestProcessor : LlmRequestProcessor {
         ?.let { outputSchema ->
           baseConfig.copy(responseSchema = outputSchema, responseMimeType = "application/json")
         } ?: baseConfig
-    val liveConnectConfig =
-      (context.runConfig?.let { request.liveConnectConfig.applyRunConfig(it) }
-          ?: request.liveConnectConfig)
-        .foldSamplingFrom(config)
+    val liveConnectConfig = request.liveConnectConfig.forAgent(context.runConfig, config)
     return request.copy(model = agent.model, config = config, liveConnectConfig = liveConnectConfig)
   }
 }
+
+/** Returns the live config an agent whose generation config is [config] connects with. */
+internal fun LiveConnectConfig.forAgent(
+  runConfig: RunConfig?,
+  config: GenerateContentConfig,
+): LiveConnectConfig = (runConfig?.let { applyRunConfig(it) } ?: this).foldSamplingFrom(config)
 
 /**
  * Folds the agent's sampling settings into this live config, as ADK Python's `basic.py` does.

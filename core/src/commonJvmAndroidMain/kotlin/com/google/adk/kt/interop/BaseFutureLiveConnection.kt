@@ -18,6 +18,7 @@ package com.google.adk.kt.interop
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.CONCURRENT_COLLECTION_MESSAGE
 import com.google.adk.kt.models.CONTEXT_UPDATES_UNSUPPORTED_MESSAGE
 import com.google.adk.kt.models.LiveConnection
@@ -30,6 +31,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
@@ -72,6 +74,16 @@ abstract class BaseFutureLiveConnection : LiveConnection {
 
   final override suspend fun sendContextUpdate(systemInstruction: Content?, tools: List<Tool>?) {
     sendContextUpdateAsync(systemInstruction, tools).await()
+  }
+
+  // Read once, so every caller waits on the same future; a hook that throws reports no end.
+  final override val serverEnding: Job? by lazy {
+    try {
+      serverEndingAsync()?.asDeferred()
+    } catch (e: Exception) {
+      logger.warn(e) { "serverEndingAsync() failed; the connection reports no server end." }
+      null
+    }
   }
 
   // Requests one response at a time, so a collection that stops early loses at most one.
@@ -141,6 +153,14 @@ abstract class BaseFutureLiveConnection : LiveConnection {
     }
 
   /**
+   * Returns a future that completes when the session ends or the server announces that it will end
+   * the session, as described by [LiveConnection.serverEnding], or null (the default) if the
+   * connection cannot tell; called at most once. A failed or canceled future also counts as an end,
+   * and throwing an exception is treated as returning null.
+   */
+  protected open fun serverEndingAsync(): CompletableFuture<Void?>? = null
+
+  /**
    * Returns a publisher of the current model turn's remaining responses that completes at the end
    * of the turn; called once per collection of [receive], never concurrently. Honor `request(n)`,
    * continue after the last response delivered rather than replaying, and hold responses that
@@ -157,4 +177,8 @@ abstract class BaseFutureLiveConnection : LiveConnection {
    * time even if the peer never answers.
    */
   protected abstract fun closeSessionAsync(): CompletableFuture<Void?>
+
+  private companion object {
+    private val logger = LoggerFactory.getLogger(BaseFutureLiveConnection::class)
+  }
 }
