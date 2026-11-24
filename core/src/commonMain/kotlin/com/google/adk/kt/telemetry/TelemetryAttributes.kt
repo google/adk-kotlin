@@ -73,3 +73,8 @@ internal object TelemetryAttributes {
   // the destination id, mirroring Python ADK (single source of truth for both).
   const val GCP_MCP_SERVER_DESTINATION_ID = "gcp.mcp.server.destination.id"
 }
+
+/**
+ * Returns this float as the decimal it prints as, so 0.95f is recorded as 0.95, not 0.949999988.
+ */
+internal fun Float.toDecimal(): Double = toString().toDouble()

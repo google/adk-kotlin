@@ -128,6 +128,8 @@ kotlin {
         implementation(libs.okhttp.mockwebserver)
         // OtelTracerTest exercises a real span-export round-trip through the OpenTelemetry SDK.
         implementation(libs.opentelemetry.sdk)
+        // The telemetry tests record spans with InMemorySpanExporter.
+        implementation(libs.opentelemetry.sdk.testing)
         // McpToolsetIntegrationTest uses org.junit.Assume to gate on ADK_MCP_DISABLE_IT.
         implementation(libs.junit)
       }

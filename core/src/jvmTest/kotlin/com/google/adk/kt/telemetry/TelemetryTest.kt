@@ -52,6 +52,7 @@ import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.Workflow
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.genai.kotlin.Client
 import com.google.genai.kotlin.ClientException
 import com.google.genai.kotlin.GenAiApiException
@@ -60,12 +61,11 @@ import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.trace.Span as OpenTelemetrySpan
 import io.opentelemetry.api.trace.SpanContext
 import io.opentelemetry.context.Context as OpenTelemetryContext
-import io.opentelemetry.sdk.common.CompletableResultCode
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter
 import io.opentelemetry.sdk.trace.ReadableSpan
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
-import io.opentelemetry.sdk.trace.export.SpanExporter
 import java.util.Collections
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -159,28 +159,27 @@ class TelemetryTest {
   // --- parent-span capture: nesting ADK spans under the caller's active span ---
 
   @Test
-  fun trace_withCapturedParent_joinsCallersTrace() = runBlocking {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
-      val hostSpan = provider.get("host").spanBuilder("host").startSpan()
-      val parent = hostSpan.makeCurrent().use { currentTelemetryContext() }
-      flowOf(1).trace("invocation", parent = parent).collect {}
-      hostSpan.end()
-
-      val invocation = exported.single { it.name == "invocation" }
-      assertThat(invocation.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
-      assertThat(invocation.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
-    } finally {
-      provider.close()
+  fun trace_withCapturedParent_joinsCallersTrace() {
+    lateinit var host: SpanContext
+    val exported = withOtelTracer { provider ->
+      runBlocking {
+        val hostSpan = provider.get("host").spanBuilder("host").startSpan()
+        val parent = hostSpan.makeCurrent().use { currentTelemetryContext() }
+        flowOf(1).trace("invocation", parent = parent).collect {}
+        hostSpan.end()
+        host = hostSpan.spanContext
+      }
     }
+
+    val invocation = exported.single { it.name == "invocation" }
+    assertThat(invocation.spanContext.traceId).isEqualTo(host.traceId)
+    assertThat(invocation.parentSpanContext.spanId).isEqualTo(host.spanId)
   }
 
   @Test
   fun trace_elementWithoutAdkSpanAndASpanMadeCurrentOnTop_parentsToThatSpan() {
-    val exported = mutableListOf<SpanData>()
-    withOtelTracer(exported) { provider ->
+    lateinit var ownSpanId: String
+    val exported = withOtelTracer { provider ->
       val elementSpan = provider.get("host").spanBuilder("element").startSpan()
       val ownSpan = provider.get("host").spanBuilder("own").startSpan()
       val element = OtelTelemetryContext(OpenTelemetryContext.root().with(elementSpan))
@@ -191,36 +190,32 @@ class TelemetryTest {
       }
       ownSpan.end()
       elementSpan.end()
-
-      val traced = exported.single { it.name == "traced" }
-      assertThat(traced.parentSpanContext.spanId).isEqualTo(ownSpan.spanContext.spanId)
+      ownSpanId = ownSpan.spanContext.spanId
     }
+
+    val traced = exported.single { it.name == "traced" }
+    assertThat(traced.parentSpanContext.spanId).isEqualTo(ownSpanId)
   }
 
   @Test
-  fun trace_withEmptyCapturedParent_startsNewRootTrace() = runBlocking {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
-      // No caller span is active, so the captured context is empty and the span must be a valid
-      // standalone root rather than an error.
-      val parent = currentTelemetryContext()
-      flowOf(1).trace("invocation", parent = parent).collect {}
-
-      val invocation = exported.single { it.name == "invocation" }
-      assertThat(invocation.parentSpanContext.isValid).isFalse()
-    } finally {
-      provider.close()
+  fun trace_withEmptyCapturedParent_startsNewRootTrace() {
+    val exported = withOtelTracer {
+      runBlocking {
+        // No caller span is active, so the captured context is empty and the span must be a valid
+        // standalone root rather than an error.
+        val parent = currentTelemetryContext()
+        flowOf(1).trace("invocation", parent = parent).collect {}
+      }
     }
+
+    val invocation = exported.single { it.name == "invocation" }
+    assertThat(invocation.parentSpanContext.isValid).isFalse()
   }
 
   @Test
   fun runAsync_capturesCallerSpanEagerly_soInvocationNestsAfterSpanDeactivated() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+    lateinit var host: SpanContext
+    val exported = withOtelTracer { provider ->
       val runner = InMemoryRunner(NoopAgent(), appName = "telemetryapp")
       val hostSpan = provider.get("host").spanBuilder("host").startSpan()
 
@@ -233,22 +228,19 @@ class TelemetryTest {
         }
       runBlocking { flow.collect {} }
       hostSpan.end()
-
-      val invocation = exported.single { it.name == "invocation" }
-      assertThat(invocation.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
-      assertThat(invocation.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
-    } finally {
-      provider.close()
+      host = hostSpan.spanContext
     }
+
+    val invocation = exported.single { it.name == "invocation" }
+    assertThat(invocation.spanContext.traceId).isEqualTo(host.traceId)
+    assertThat(invocation.parentSpanContext.spanId).isEqualTo(host.spanId)
   }
 
   @OptIn(ExperimentalLiveApi::class)
   @Test
   fun runLive_capturesCallerSpanEagerly_soAgentSpanNestsUnderIt() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+    lateinit var host: SpanContext
+    val exported = withOtelTracer { provider ->
       val runner = InMemoryRunner(LiveNoopAgent(), appName = "telemetryapp")
       val hostSpan = provider.get("host").spanBuilder("host").startSpan()
       val queue = LiveRequestQueue()
@@ -258,23 +250,19 @@ class TelemetryTest {
       val flow = hostSpan.makeCurrent().use { runner.runLive(userId = "u", sessionId = "s", queue) }
       runBlocking { flow.collect {} }
       hostSpan.end()
-
-      val agent = exported.single { it.name == "invoke_agent liveNoopAgent" }
-      assertThat(agent.spanContext.traceId).isEqualTo(hostSpan.spanContext.traceId)
-      assertThat(agent.parentSpanContext.spanId).isEqualTo(hostSpan.spanContext.spanId)
-    } finally {
-      provider.close()
+      host = hostSpan.spanContext
     }
+
+    val agent = exported.single { it.name == "invoke_agent liveNoopAgent" }
+    assertThat(agent.spanContext.traceId).isEqualTo(host.traceId)
+    assertThat(agent.parentSpanContext.spanId).isEqualTo(host.spanId)
   }
 
   @OptIn(AdkJavaInteropApi::class, ExperimentalWorkflowApi::class)
   @Test
   fun runNodeBlocking_spanTheBodyMadeCurrent_parentsASpanTheChildStarts() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
+    val exported = withOtelTracer { provider ->
       // Arrange: the caller's Java body makes its own span current around the call.
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       val child =
         FunctionNodes.of("child", Any::class.java, Any::class.java) { _, _ ->
           provider.get("test").spanBuilder("child work").startSpan().end()
@@ -303,35 +291,30 @@ class TelemetryTest {
         val unused = runner.sessionService.createSession(SessionKey("span_wf", "u", "s"))
         runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
       }
-
-      // Assert: the child's span nests under the body's span. In production the child node's own
-      // span sits between them; here the test tracer covers only the test thread.
-      val callerWork = exported.single { it.name == "caller work" }
-      val childWork = exported.single { it.name == "child work" }
-      assertThat(childWork.parentSpanContext.spanId).isEqualTo(callerWork.spanContext.spanId)
-    } finally {
-      provider.close()
     }
+
+    // Assert: the child's span nests under the body's span. In production the child node's own
+    // span sits between them; here the test tracer covers only the test thread.
+    val callerWork = exported.single { it.name == "caller work" }
+    val childWork = exported.single { it.name == "child work" }
+    assertThat(childWork.parentSpanContext.spanId).isEqualTo(callerWork.spanContext.spanId)
   }
 
   @OptIn(AdkJavaInteropApi::class, ExperimentalWorkflowApi::class)
   @Test
   fun runNodeBlocking_calledFromHelperThreads_childrenStayUnderTheNodesSpan() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
+    val childBaggage = ConcurrentHashMap<Any, String>()
+    val nodeSpan = AtomicReference<SpanContext>()
+    val nodeBaggage = AtomicReference<String>()
+    val exported = withOtelTracer { provider ->
       // Arrange: the run carries baggage. The caller's Java body runs one child from a helper
       // thread with baggage of its own and one from a helper thread with an empty context.
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
-      val childBaggage = ConcurrentHashMap<Any, String>()
       val child =
         FunctionNodes.of("child", Any::class.java, Any::class.java) { _, helper ->
           childBaggage[helper] = Baggage.current().asMap().keys.sorted().joinToString()
           provider.get("test").spanBuilder("child work $helper").startSpan().end()
           "done"
         }
-      val nodeSpan = AtomicReference<SpanContext>()
-      val nodeBaggage = AtomicReference<String>()
       val caller =
         FunctionNodes.builder(Any::class.java, Any::class.java)
           .name("caller")
@@ -365,29 +348,25 @@ class TelemetryTest {
           runner.runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go")).toList()
         }
       }
-
-      // Assert: both children nest under the node's span, which the body's thread holds. The
-      // child of the thread with baggage sees that baggage; the other sees the node's.
-      assertThat(nodeSpan.get().isValid).isTrue()
-      // In production the child node's own span sits between them; here the test tracer covers only
-      // the test thread.
-      for (helper in listOf("with baggage", "empty")) {
-        val childWork = exported.single { it.name == "child work $helper" }
-        assertThat(childWork.traceId).isEqualTo(nodeSpan.get().traceId)
-        assertThat(childWork.parentSpanContext.spanId).isEqualTo(nodeSpan.get().spanId)
-      }
-      assertThat(nodeBaggage.get()).isEqualTo("run")
-      assertThat(childBaggage).containsExactly("with baggage", "helper", "empty", "run")
-    } finally {
-      provider.close()
     }
+
+    // Assert: both children nest under the node's span, which the body's thread holds. The
+    // child of the thread with baggage sees that baggage; the other sees the node's.
+    assertThat(nodeSpan.get().isValid).isTrue()
+    // In production the child node's own span sits between them; here the test tracer covers only
+    // the test thread.
+    for (helper in listOf("with baggage", "empty")) {
+      val childWork = exported.single { it.name == "child work $helper" }
+      assertThat(childWork.traceId).isEqualTo(nodeSpan.get().traceId)
+      assertThat(childWork.parentSpanContext.spanId).isEqualTo(nodeSpan.get().spanId)
+    }
+    assertThat(nodeBaggage.get()).isEqualTo("run")
+    assertThat(childBaggage).containsExactly("with baggage", "helper", "empty", "run")
   }
 
   @Test
   fun childTelemetryOrNull_threadContexts_keepTheThreadsSpanOrAddTheNodes() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
+    tracerProvider(InMemorySpanExporter.create()).use { provider ->
       // Arrange: a node context that holds an ADK span from an SDK tracer.
       val tracer = OtelTracer(provider.get("test"))
       val nodeSpan = tracer.spanBuilder("node").startSpan()
@@ -413,17 +392,12 @@ class TelemetryTest {
       assertThat(Baggage.fromContext(merged).getEntryValue("tenant")).isEqualTo("t1")
       ownSpan.end()
       nodeSpan.end()
-    } finally {
-      provider.close()
     }
   }
 
   @Test
   fun runAsync_modelOpensASpan_nestsUnderGenerateContentAndDoesNotParentTheTool() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+    val exported = withOtelTracer {
       val inner =
         DummyModel.createSequential(
           "test-model",
@@ -456,25 +430,20 @@ class TelemetryTest {
           .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("hi"))
           .collect {}
       }
-
-      val generateContentIds =
-        exported.filter { it.name == "generate_content test-model" }.map { it.spanId }
-      assertThat(exported.filter { it.name == "model_wrapper" }.map { it.parentSpanId })
-        .containsExactlyElementsIn(generateContentIds)
-      assertThat(exported.single { it.name == "execute_tool dummy_tool" }.parentSpanId)
-        .isEqualTo(exported.single { it.name == "invoke_agent helper" }.spanId)
-    } finally {
-      provider.close()
     }
+
+    val generateContentIds =
+      exported.filter { it.name == "generate_content test-model" }.map { it.spanId }
+    assertThat(exported.filter { it.name == "model_wrapper" }.map { it.parentSpanId })
+      .containsExactlyElementsIn(generateContentIds)
+    assertThat(exported.single { it.name == "execute_tool dummy_tool" }.parentSpanId)
+      .isEqualTo(exported.single { it.name == "invoke_agent helper" }.spanId)
   }
 
   /** A GenAI error from a tool passes back through `Gemini`, which rewraps a 429 on the way. */
   @Test
   fun runAsync_toolThrowsQuotaErrorThroughGemini_setsNoErrorTypeOnCallLlm() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+    val exported = withOtelTracer {
       val models =
         object : Gemini.GeminiModels {
           override fun generateContentStream(
@@ -516,23 +485,18 @@ class TelemetryTest {
       // Gemini rewraps the 429 on its way out, so the failure leaving call_llm is a new instance.
       assertThat(thrown).isNotInstanceOf(ClientException::class.java)
       assertThat(thrown.cause).isInstanceOf(ClientException::class.java)
-
-      val callLlm = exported.single { it.name == "call_llm" }
-      assertThat(callLlm.attributes.get(ERROR_TYPE_KEY)).isNull()
-      assertThat(callLlm.events.map { it.name }).doesNotContain("exception")
-      val tool = exported.single { it.name == "execute_tool quota_tool" }
-      assertThat(tool.attributes.get(ERROR_TYPE_KEY)).isEqualTo("429")
-    } finally {
-      provider.close()
     }
+
+    val callLlm = exported.single { it.name == "call_llm" }
+    assertThat(callLlm.attributes.get(ERROR_TYPE_KEY)).isNull()
+    assertThat(callLlm.events.map { it.name }).doesNotContain("exception")
+    val tool = exported.single { it.name == "execute_tool quota_tool" }
+    assertThat(tool.attributes.get(ERROR_TYPE_KEY)).isEqualTo("429")
   }
 
   @Test
   fun runAsync_rootSequentialAgentWithASuspendingCollector_keepsSubAgentsUnderIt() {
-    val exported = mutableListOf<SpanData>()
-    val provider = tracerProvider(exported)
-    try {
-      Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
+    val exported = withOtelTracer {
       val agent =
         SequentialAgent("seq", subAgents = listOf(textAgent("a", "ok"), textAgent("b", "ok")))
 
@@ -542,108 +506,114 @@ class TelemetryTest {
           // A caller that suspends on each event leaves its context on the resumed thread.
           .collect { delay(1) }
       }
-
-      val seq = exported.single { it.name == "invoke_agent seq" }
-      assertThat(exported.map { it.traceId }.toSet()).containsExactly(seq.traceId)
-      assertThat(exported.single { it.name == "invoke_agent a" }.parentSpanId).isEqualTo(seq.spanId)
-      assertThat(exported.single { it.name == "invoke_agent b" }.parentSpanId).isEqualTo(seq.spanId)
-    } finally {
-      provider.close()
     }
+
+    val seq = exported.single { it.name == "invoke_agent seq" }
+    assertThat(exported.map { it.traceId }.toSet()).containsExactly(seq.traceId)
+    assertThat(exported.single { it.name == "invoke_agent a" }.parentSpanId).isEqualTo(seq.spanId)
+    assertThat(exported.single { it.name == "invoke_agent b" }.parentSpanId).isEqualTo(seq.spanId)
   }
 
   // Ports of Python's stream_in_scope tests, except the asyncio-only close and finalizer cases.
 
   @Test
-  fun runAsync_callerCollecting_keepsItsOwnSpanCurrent() = withOtelTracer { provider ->
-    val hostSpan = provider.get("host").spanBuilder("host").startSpan()
-    val seen = mutableListOf<OpenTelemetrySpan>()
+  fun runAsync_callerCollecting_keepsItsOwnSpanCurrent() {
+    withOtelTracer { provider ->
+      val hostSpan = provider.get("host").spanBuilder("host").startSpan()
+      val seen = mutableListOf<OpenTelemetrySpan>()
 
-    hostSpan.makeCurrent().use {
-      runBlocking {
-        val before = OpenTelemetryContext.current()
-        toolCallingRunner().runTurn().collect { seen += OpenTelemetrySpan.current() }
-        // Python's test_record_invocation_does_not_attach_its_context and its agent twin.
-        assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
-      }
-    }
-    hostSpan.end()
-
-    assertThat(seen).isNotEmpty()
-    assertThat(seen.map { it.spanContext }.toSet()).containsExactly(hostSpan.spanContext)
-  }
-
-  @Test
-  fun runAsync_callerSuspendingInCollect_keepsItsOwnSpanCurrent() = withOtelTracer { provider ->
-    val hostSpan = provider.get("host").spanBuilder("host").startSpan()
-    val seen = mutableListOf<OpenTelemetrySpan>()
-
-    hostSpan.makeCurrent().use {
-      runBlocking {
-        toolCallingRunner().runTurn().collect {
-          seen += OpenTelemetrySpan.current()
-          delay(1)
-          seen += OpenTelemetrySpan.current()
+      hostSpan.makeCurrent().use {
+        runBlocking {
+          val before = OpenTelemetryContext.current()
+          toolCallingRunner().runTurn().collect { seen += OpenTelemetrySpan.current() }
+          // Python's test_record_invocation_does_not_attach_its_context and its agent twin.
+          assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
         }
       }
-    }
-    hostSpan.end()
+      hostSpan.end()
 
-    assertThat(seen).isNotEmpty()
-    assertThat(seen.map { it.spanContext }.toSet()).containsExactly(hostSpan.spanContext)
+      assertThat(seen).isNotEmpty()
+      assertThat(seen.map { it.spanContext }.toSet()).containsExactly(hostSpan.spanContext)
+    }
   }
 
   @Test
-  fun runAsync_callerThrowingInCollect_keepsItsOwnContext() = withOtelTracer { provider ->
-    val hostSpan = provider.get("host").spanBuilder("host").startSpan()
+  fun runAsync_callerSuspendingInCollect_keepsItsOwnSpanCurrent() {
+    withOtelTracer { provider ->
+      val hostSpan = provider.get("host").spanBuilder("host").startSpan()
+      val seen = mutableListOf<OpenTelemetrySpan>()
 
-    hostSpan.makeCurrent().use {
-      runBlocking {
-        val before = OpenTelemetryContext.current()
-        val failure =
-          assertFailsWith<IllegalStateException> {
-            toolCallingRunner().runTurn().collect {
-              if (it.isAnswer()) throw IllegalStateException("caller failed")
-            }
+      hostSpan.makeCurrent().use {
+        runBlocking {
+          toolCallingRunner().runTurn().collect {
+            seen += OpenTelemetrySpan.current()
+            delay(1)
+            seen += OpenTelemetrySpan.current()
           }
-        assertThat(failure).hasMessageThat().isEqualTo("caller failed")
-        assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
+        }
       }
+      hostSpan.end()
+
+      assertThat(seen).isNotEmpty()
+      assertThat(seen.map { it.spanContext }.toSet()).containsExactly(hostSpan.spanContext)
     }
-    hostSpan.end()
   }
 
   @Test
-  fun runAsync_callerCancelledInCollect_keepsItsOwnContext() = withOtelTracer { provider ->
-    val hostSpan = provider.get("host").spanBuilder("host").startSpan()
+  fun runAsync_callerThrowingInCollect_keepsItsOwnContext() {
+    withOtelTracer { provider ->
+      val hostSpan = provider.get("host").spanBuilder("host").startSpan()
 
-    hostSpan.makeCurrent().use {
-      runBlocking {
-        var before: OpenTelemetryContext? = null
-        var afterCancel: OpenTelemetryContext? = null
-        val job = launch {
-          before = OpenTelemetryContext.current()
-          try {
-            toolCallingRunner().runTurn().collect {
-              if (it.isAnswer()) {
-                this@launch.cancel()
-                currentCoroutineContext().ensureActive()
+      hostSpan.makeCurrent().use {
+        runBlocking {
+          val before = OpenTelemetryContext.current()
+          val failure =
+            assertFailsWith<IllegalStateException> {
+              toolCallingRunner().runTurn().collect {
+                if (it.isAnswer()) throw IllegalStateException("caller failed")
               }
             }
-          } catch (e: CancellationException) {
-            afterCancel = OpenTelemetryContext.current()
-            throw e
-          }
+          assertThat(failure).hasMessageThat().isEqualTo("caller failed")
+          assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
         }
-        job.join()
-
-        assertThat(job.isCancelled).isTrue()
-        assertThat(afterCancel).isNotNull()
-        assertThat(afterCancel).isSameInstanceAs(before)
-        assertThat(OpenTelemetrySpan.current().spanContext).isEqualTo(hostSpan.spanContext)
       }
+      hostSpan.end()
     }
-    hostSpan.end()
+  }
+
+  @Test
+  fun runAsync_callerCancelledInCollect_keepsItsOwnContext() {
+    withOtelTracer { provider ->
+      val hostSpan = provider.get("host").spanBuilder("host").startSpan()
+
+      hostSpan.makeCurrent().use {
+        runBlocking {
+          var before: OpenTelemetryContext? = null
+          var afterCancel: OpenTelemetryContext? = null
+          val job = launch {
+            before = OpenTelemetryContext.current()
+            try {
+              toolCallingRunner().runTurn().collect {
+                if (it.isAnswer()) {
+                  this@launch.cancel()
+                  currentCoroutineContext().ensureActive()
+                }
+              }
+            } catch (e: CancellationException) {
+              afterCancel = OpenTelemetryContext.current()
+              throw e
+            }
+          }
+          job.join()
+
+          assertThat(job.isCancelled).isTrue()
+          assertThat(afterCancel).isNotNull()
+          assertThat(afterCancel).isSameInstanceAs(before)
+          assertThat(OpenTelemetrySpan.current().spanContext).isEqualTo(hostSpan.spanContext)
+        }
+      }
+      hostSpan.end()
+    }
   }
 
   @Test
@@ -656,7 +626,7 @@ class TelemetryTest {
   }
 
   @Test
-  fun threadAdkSpanDiffersFrom_comparesTheThreadsAdkSpanOnlyForOpenTelemetryContexts() =
+  fun threadAdkSpanDiffersFrom_comparesTheThreadsAdkSpanOnlyForOpenTelemetryContexts() {
     withOtelTracer {
       val adkSpan = Telemetry.tracer.spanBuilder("adk").startSpan()
       val nonOtel =
@@ -681,13 +651,13 @@ class TelemetryTest {
         adkSpan.end()
       }
     }
+  }
 
   @Test
   fun runAsync_nestedInATool_leavesTheToolsSpanCurrentAfterCollect() {
-    val exported = mutableListOf<SpanData>()
     var afterNested: String? = null
 
-    withOtelTracer(exported) { provider ->
+    val exported = withOtelTracer { provider ->
       val nestingTool =
         DummyTool(name = "nesting_tool", declares = true) { _, _ ->
           toolCallingRunner().runTurn().collect {}
@@ -722,7 +692,7 @@ class TelemetryTest {
 
   @OptIn(AdkJavaInteropApi::class)
   @Test
-  fun publisherRunner_subscriber_keepsTheCallersSpanThroughCompletion() =
+  fun publisherRunner_subscriber_keepsTheCallersSpanThroughCompletion() {
     withOtelTracer { provider ->
       val executor = Executors.newSingleThreadExecutor()
       try {
@@ -770,35 +740,36 @@ class TelemetryTest {
         executor.shutdownNow()
       }
     }
+  }
 
   @Test
-  fun trace_collector_keepsItsOwnContextWhileTheBodyRunsInTheSpan() = withOtelTracer {
-    val inBody = mutableListOf<String?>()
-    val inCollector = mutableListOf<OpenTelemetrySpan>()
+  fun trace_collector_keepsItsOwnContextWhileTheBodyRunsInTheSpan() {
+    withOtelTracer {
+      val inBody = mutableListOf<String?>()
+      val inCollector = mutableListOf<OpenTelemetrySpan>()
 
-    runBlocking {
-      val before = OpenTelemetryContext.current()
-      flow {
-          repeat(5) {
-            inBody += currentSpanName()
-            emit(it)
+      runBlocking {
+        val before = OpenTelemetryContext.current()
+        flow {
+            repeat(5) {
+              inBody += currentSpanName()
+              emit(it)
+            }
           }
-        }
-        .trace("scope")
-        .take(3)
-        .collect { inCollector += OpenTelemetrySpan.current() }
-      assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
-    }
+          .trace("scope")
+          .take(3)
+          .collect { inCollector += OpenTelemetrySpan.current() }
+        assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
+      }
 
-    assertThat(inCollector.map { it.spanContext.isValid }).containsExactly(false, false, false)
-    assertThat(inBody).containsExactly("scope", "scope", "scope")
+      assertThat(inCollector.map { it.spanContext.isValid }).containsExactly(false, false, false)
+      assertThat(inBody).containsExactly("scope", "scope", "scope")
+    }
   }
 
   @Test
   fun trace_spansOpenedInTheBody_areChildrenOfTheTracedSpan() {
-    val exported = mutableListOf<SpanData>()
-
-    withOtelTracer(exported) { provider ->
+    val exported = withOtelTracer { provider ->
       val host = provider.get("host")
       runBlocking {
         flow {
@@ -824,95 +795,98 @@ class TelemetryTest {
   }
 
   @Test
-  fun trace_failingBody_propagatesItsErrorToTheCollector() = withOtelTracer {
-    runBlocking {
-      val before = OpenTelemetryContext.current()
-      val failure =
-        assertFailsWith<IllegalStateException> {
+  fun trace_failingBody_propagatesItsErrorToTheCollector() {
+    withOtelTracer {
+      runBlocking {
+        val before = OpenTelemetryContext.current()
+        val failure =
+          assertFailsWith<IllegalStateException> {
+            flow {
+                emit(1)
+                throw IllegalStateException("boom")
+              }
+              .trace("scope")
+              .collect {}
+          }
+
+        assertThat(failure).hasMessageThat().isEqualTo("boom")
+        assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
+      }
+    }
+  }
+
+  @Test
+  fun trace_cancelledCollector_cancelsTheBody() {
+    withOtelTracer {
+      var cancelledInBody = false
+
+      runBlocking {
+        val received = CompletableDeferred<Unit>()
+        val job = launch {
           flow {
-              emit(1)
-              throw IllegalStateException("boom")
+              try {
+                emit(1)
+                delay(10.seconds)
+              } catch (e: CancellationException) {
+                cancelledInBody = true
+                throw e
+              }
             }
             .trace("scope")
-            .collect {}
+            .collect { received.complete(Unit) }
         }
+        received.await()
+        job.cancelAndJoin()
+      }
 
-      assertThat(failure).hasMessageThat().isEqualTo("boom")
-      assertThat(OpenTelemetryContext.current()).isSameInstanceAs(before)
+      assertThat(cancelledInBody).isTrue()
     }
   }
 
   @Test
-  fun trace_cancelledCollector_cancelsTheBody() = withOtelTracer {
-    var cancelledInBody = false
-
-    runBlocking {
-      val received = CompletableDeferred<Unit>()
-      val job = launch {
-        flow {
-            try {
-              emit(1)
-              delay(10.seconds)
-            } catch (e: CancellationException) {
-              cancelledInBody = true
-              throw e
-            }
-          }
-          .trace("scope")
-          .collect { received.complete(Unit) }
+  fun trace_innerSpanOpenedInTheBody_staysCurrentAcrossEmissions() {
+    withOtelTracer { provider ->
+      val callerSpan = provider.get("host").spanBuilder("caller_root").startSpan()
+      val inBody = mutableListOf<String?>()
+      val inCollector = mutableListOf<OpenTelemetrySpan>()
+      val stream = flow {
+        val inner = Telemetry.tracer.spanBuilder("generate_content").startSpan()
+        try {
+          emitAll(
+            flow {
+                emit(1)
+                inBody += currentSpanName()
+                emit(2)
+                inBody += currentSpanName()
+              }
+              .flowOn(Telemetry.tracer.contextWithSpan(inner).asContextElement())
+          )
+        } finally {
+          inner.end()
+        }
       }
-      received.await()
-      job.cancelAndJoin()
-    }
 
-    assertThat(cancelledInBody).isTrue()
+      callerSpan.makeCurrent().use {
+        runBlocking {
+          stream.trace("call_llm").collect { inCollector += OpenTelemetrySpan.current() }
+        }
+      }
+      callerSpan.end()
+
+      assertThat(inCollector.map { it.spanContext })
+        .containsExactly(callerSpan.spanContext, callerSpan.spanContext)
+      assertThat(inBody).containsExactly("generate_content", "generate_content")
+    }
   }
 
-  @Test
-  fun trace_innerSpanOpenedInTheBody_staysCurrentAcrossEmissions() = withOtelTracer { provider ->
-    val callerSpan = provider.get("host").spanBuilder("caller_root").startSpan()
-    val inBody = mutableListOf<String?>()
-    val inCollector = mutableListOf<OpenTelemetrySpan>()
-    val stream = flow {
-      val inner = Telemetry.tracer.spanBuilder("generate_content").startSpan()
-      try {
-        emitAll(
-          flow {
-              emit(1)
-              inBody += currentSpanName()
-              emit(2)
-              inBody += currentSpanName()
-            }
-            .flowOn(Telemetry.tracer.contextWithSpan(inner).asContextElement())
-        )
-      } finally {
-        inner.end()
-      }
-    }
-
-    callerSpan.makeCurrent().use {
-      runBlocking {
-        stream.trace("call_llm").collect { inCollector += OpenTelemetrySpan.current() }
-      }
-    }
-    callerSpan.end()
-
-    assertThat(inCollector.map { it.spanContext })
-      .containsExactly(callerSpan.spanContext, callerSpan.spanContext)
-    assertThat(inBody).containsExactly("generate_content", "generate_content")
-  }
-
-  /** Runs [block] with an OpenTelemetry SDK tracer that exports its spans to [sink]. */
-  private fun withOtelTracer(
-    sink: MutableList<SpanData> = mutableListOf(),
-    block: (SdkTracerProvider) -> Unit,
-  ) {
-    val provider = tracerProvider(sink)
-    try {
+  /** Runs [block] with an OpenTelemetry SDK tracer and returns the spans it exported. */
+  @CanIgnoreReturnValue
+  private fun withOtelTracer(block: (SdkTracerProvider) -> Unit): List<SpanData> {
+    val exporter = InMemorySpanExporter.create()
+    return tracerProvider(exporter).use { provider ->
       Telemetry.setTracerForTest(OtelTracer(provider.get("test")))
       block(provider)
-    } finally {
-      provider.close()
+      exporter.finishedSpanItems
     }
   }
 
@@ -949,14 +923,13 @@ class TelemetryTest {
    * thread.
    */
   private fun assertNoAdkSpanOutlivesHoppingRun(extraYields: Int): Boolean {
-    val exported = Collections.synchronizedList(mutableListOf<SpanData>())
     val inCollect = Collections.synchronizedList(mutableListOf<Boolean>())
     val leftOnThreads = Collections.synchronizedList(mutableListOf<Boolean>())
     var afterCollect: Boolean? = null
     var collectedOn: Thread? = null
     var answeredOn: Thread? = null
 
-    withOtelTracer(exported) { provider ->
+    val exported = withOtelTracer { provider ->
       PingPongDispatcher().use { dispatcher ->
         val tracer = OtelTracer(provider.get("test"))
         dispatcher.onEachThread { Telemetry.setTracerForTest(tracer) }
@@ -1015,22 +988,8 @@ class TelemetryTest {
 
   private fun Event.isAnswer() = content?.parts?.any { it.text == "done" } == true
 
-  private fun tracerProvider(sink: MutableList<SpanData>): SdkTracerProvider =
-    SdkTracerProvider.builder()
-      .addSpanProcessor(SimpleSpanProcessor.create(recordingExporter(sink)))
-      .build()
-
-  private fun recordingExporter(sink: MutableList<SpanData>): SpanExporter =
-    object : SpanExporter {
-      override fun export(spans: Collection<SpanData>): CompletableResultCode {
-        sink.addAll(spans)
-        return CompletableResultCode.ofSuccess()
-      }
-
-      override fun flush(): CompletableResultCode = CompletableResultCode.ofSuccess()
-
-      override fun shutdown(): CompletableResultCode = CompletableResultCode.ofSuccess()
-    }
+  private fun tracerProvider(exporter: InMemorySpanExporter): SdkTracerProvider =
+    SdkTracerProvider.builder().addSpanProcessor(SimpleSpanProcessor.create(exporter)).build()
 
   /** Minimal agent that emits no events; used to exercise the runner's span wiring. */
   private class NoopAgent : BaseAgent(name = "noopAgent") {
