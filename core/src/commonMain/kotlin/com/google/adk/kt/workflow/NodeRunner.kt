@@ -44,6 +44,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -66,6 +67,7 @@ private constructor(
   private val overrideBranch: String? = null,
   private val overrideIsolationScope: String? = null,
   private val openInterrupts: Set<String> = emptySet(),
+  private val handoffOutputOf: LlmAgent? = null,
 ) {
 
   constructor(
@@ -78,6 +80,7 @@ private constructor(
     overrideBranch: String? = null,
     overrideIsolationScope: String? = null,
     openInterrupts: Set<String> = emptySet(),
+    handoffOutputOf: LlmAgent? = null,
   ) : this(
     node = node,
     invocationContext = parent.invocationContext,
@@ -90,6 +93,7 @@ private constructor(
     overrideBranch = overrideBranch,
     overrideIsolationScope = overrideIsolationScope,
     openInterrupts = openInterrupts,
+    handoffOutputOf = handoffOutputOf,
   )
 
   private val childRunIds = ChildRunIds()
@@ -143,7 +147,10 @@ private constructor(
     var attempt = 1
     while (true) {
       val activation = Activation(newContext(attempt))
-      val context = activation.run(nodeInput, validateInput)
+      // Only the targets of a single-turn node's handoff read its input, not the nodes they start.
+      val context =
+        if (handoffOutputOf != null) activation.run(nodeInput, validateInput)
+        else withContext(HandoffInput.NONE) { activation.run(nodeInput, validateInput) }
       // A workflow reports a child's failure by setting it on the context and returning, not by
       // raising, so both thrown exceptions and child failures run through the retry policy here.
       val failure = context.requireNodeState().failure
@@ -182,8 +189,10 @@ private constructor(
     val segment = BranchPath.segment(node.name, runId)
     val recovered =
       ResumeScan.scan(rootHistory, basePath = "", invocationContext.invocationId)[segment]
-    // A root runs like a dynamic child: one that left events but no outcome runs again.
-    val interception = ResumeScan.intercept(node, recovered, dynamic = true)
+    // A root runs like a dynamic child: one that left events but no outcome runs again. A
+    // single-turn node's top-level target replied for that node, so its reply reads as that node's.
+    val interception =
+      ResumeScan.intercept(node, recovered, dynamic = true, outputOf = handoffOutputOf ?: node)
     if (interception.shouldRun) return null
     val context = newContext(attempt = 1)
     interception.output?.let { context.output = it }
@@ -330,10 +339,18 @@ private constructor(
      */
     private suspend fun dispatch(event: Event) {
       spanEventIds += event.id
-      val checked = withCheckedStateDelta(event)
+      val checked = withCheckedStateDelta(withHandoffOutput(event))
       val outputKept = track(checked)
       val outgoing = if (outputKept) checked else withoutDroppedOutput(checked)
       if (outgoing != null) send(outgoing)
+    }
+
+    /** Marks this hop's final reply as the output of the single-turn node that handed off. */
+    private fun withHandoffOutput(event: Event): Event {
+      val owner = handoffOutputOf ?: return event
+      // Any reply of this hop's run, an inner agent's too, so a second fails as a second output; a
+      // delegated task is a node of its own.
+      return owner.markHandoffOutput(event)
     }
 
     /** Returns [event] with its state delta as the state schema reads it. */
@@ -477,8 +494,18 @@ private constructor(
      * Runs [node] at the top of the invocation, beside the root node that [root] ran, and returns
      * its context.
      */
-    suspend fun runAtTopLevel(node: Node, root: Context): Context =
-      runTopLevelHop(node, root.invocationContext, root.requireNodeState().eventSink, input = null)
+    suspend fun runAtTopLevel(
+      node: Node,
+      root: Context,
+      handoffOutputOf: LlmAgent? = null,
+    ): Context =
+      runTopLevelHop(
+        node,
+        root.invocationContext,
+        root.requireNodeState().eventSink,
+        input = null,
+        handoffOutputOf = handoffOutputOf,
+      )
 
     /**
      * Runs [node] without a parent activation, under its ancestor agents' path, with a run ID from
@@ -489,6 +516,7 @@ private constructor(
       invocationContext: InvocationContext,
       sink: EventSink,
       input: Any?,
+      handoffOutputOf: LlmAgent? = null,
     ): Context {
       validateRootNodeName(node)
       val parentPath = ancestorAgentPath(node)
@@ -499,6 +527,7 @@ private constructor(
           eventSink = sink,
           runId = id,
           overrideIsolationScope = taskScope(node, parentPath, id),
+          handoffOutputOf = handoffOutputOf,
         )
         .run(nodeInput = input)
     }

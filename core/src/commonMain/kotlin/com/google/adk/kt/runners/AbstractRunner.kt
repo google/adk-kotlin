@@ -74,6 +74,7 @@ import com.google.adk.kt.workflow.ToolNode
 import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.findUserMessageForInvocation
 import com.google.adk.kt.workflow.isValidNodeName
+import com.google.adk.kt.workflow.requireRunnableLive
 import com.google.adk.kt.workflow.traceWorkflowEntrypoint
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.jvm.JvmOverloads
@@ -113,6 +114,11 @@ abstract class AbstractRunner : Runner {
    */
   private val root: Node
     get() = node ?: agent
+
+  /**
+   * Whether [runLive] may run a node root, which it can't do for callers yet; only tests set it.
+   */
+  internal var allowsLiveNodeRoot: Boolean = false
 
   /**
    * Creates a runner from explicit fields, not using an [App].
@@ -327,7 +333,11 @@ abstract class AbstractRunner : Runner {
     return flow {
         // A node-rooted runner has no live path yet, where ADK Python runs `_run_node_live`.
         if (root !is BaseAgent) {
-          throw UnsupportedOperationException("A node-rooted runner cannot run live yet")
+          if (!allowsLiveNodeRoot) {
+            throw UnsupportedOperationException("A node-rooted runner cannot run live yet")
+          }
+          // Fails, before anything connects, a graph with an agent node that can't run live yet.
+          requireRunnableLive(root)
         }
         // No up-front live check: `Model.connect` or the agent's runLive refuses, as in Python.
         val session = getOrCreateSession(userId, sessionId)
@@ -833,7 +843,8 @@ abstract class AbstractRunner : Runner {
                 content = beforeResult.value,
               ),
             )
-          store(context, earlyExitEvent, liveRun)
+          // An early answer is the runner's own, never a node's.
+          store(context, earlyExitEvent, liveRun, fromNodeRoot = false)
           emit(earlyExitEvent)
         }
         is CallbackChoice.Continue -> {
@@ -843,7 +854,7 @@ abstract class AbstractRunner : Runner {
           runRoot(context, isLiveCall = liveRun != null).collect { event ->
             // Persist the post-callback event so the session matches what the caller received.
             val finalEvent = processEventWithPluginCallbacks(context, event)
-            store(context, finalEvent, liveRun)
+            store(context, finalEvent, liveRun, fromNodeRoot = context.node != null)
             emit(finalEvent)
           }
         }
@@ -864,18 +875,23 @@ abstract class AbstractRunner : Runner {
     }
 
   /**
-   * Appends [event] to the session unless it is partial or a live run's event carries inline audio,
-   * video, or image (other inline data and `fileData` references from
-   * [com.google.adk.kt.agents.LiveRunConfig.saveLiveBlob] are still stored). [runAsync] flushes a
-   * final response; [runLive] flushes only an event that ends a turn ([endsLiveTurn]). A live run
-   * goes through [LiveRun.append] and [LiveRun.flush], which time out if the session service hangs.
+   * Appends a non-partial [event] to the session: [runAsync] flushes after each final response, and
+   * [runLive] only after an event that ends a turn ([endsLiveTurn]). A live run on an agent root
+   * drops an event that carries inline audio, video or image, while a node-rooted run
+   * ([fromNodeRoot]) stores it whole, as [runAsync] does; its append and flush time out if the
+   * session service hangs.
    */
-  private suspend fun store(context: InvocationContext, event: Event, liveRun: LiveRun?) {
+  private suspend fun store(
+    context: InvocationContext,
+    event: Event,
+    liveRun: LiveRun?,
+    fromNodeRoot: Boolean,
+  ) {
     // A partial event is superseded by its whole, so it is never stored, as in ADK Python.
     if (event.partial) return
     if (liveRun != null) {
-      // Inline media stays out of the session, but a turn it ends is still flushed.
-      if (!event.hasInlineMedia()) liveRun.append(event)
+      // An agent's inline media stays out of the session, but a turn it ends is still flushed.
+      if (fromNodeRoot || !event.hasInlineMedia()) liveRun.append(event)
       if (event.endsLiveTurn()) liveRun.flush()
     } else {
       appendAndFlushIfFinal(context, event)

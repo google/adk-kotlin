@@ -24,7 +24,9 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.HandoffInput
 import com.google.adk.kt.workflow.findUserMessageForInvocation
+import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * A processor that populates the LLM request with the conversation history.
@@ -82,6 +84,7 @@ internal class ContentsProcessor : LlmRequestProcessor {
           singleTurnNode = singleTurnNode,
           isolationScope = frameworkData.isolationScope,
           userContent = frameworkData.isolationScope?.let { taskOpeningMessage(context) },
+          handoffInputId = currentCoroutineContext()[HandoffInput]?.eventId,
         )
 
     val newContents =

@@ -94,6 +94,8 @@ class Workflow(
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     val graph = graph ?: return@flow
     validateChatAgentWiring(graph.edges)
+    // A workflow that runNode starts escapes the check runLive makes before anything connects.
+    if (context.invocationContext.liveRun != null) requireRunnableLive(this@Workflow)
     // Child events are attributed to the workflow, not to the node inside it.
     context.eventAuthor = name
     Scheduler(this@Workflow, graph, context).run(nodeInput)

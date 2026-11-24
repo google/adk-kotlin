@@ -23,6 +23,9 @@ import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.findAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.processors.isTransferTarget
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.withContext
 
 /**
  * Where a `transfer_to_agent` hands off to: the [agent] to run next and the [parent] it runs under,
@@ -43,18 +46,49 @@ internal suspend fun followHandoffs(
   parent: Context?,
   runHop: suspend (agent: BaseAgent, parent: Context?) -> Context,
 ): Context {
-  var parentContext = parent
-  var current = node
-  var hop = first
-  while (true) {
-    val state = hop.requireNodeState()
-    if (state.failure != null || state.isPaused) return hop
-    val targetName = hop.actions.transferToAgent ?: return hop
-    require(current is BaseAgent) { "Only agents can request an agent transfer." }
-    val target = resolveTransferTarget(targetName, current, hop, parentContext)
-    parentContext = target.parent
-    current = target.agent
-    hop = runHop(target.agent, target.parent)
+  val input = first.handoffInput
+  val events = first.invocationContext.session.events
+  try {
+    if (input != null) {
+      // Before the node's own events, where its turn read it.
+      val at = events.indexOfFirst {
+        it.invocationId == input.invocationId && it.nodeInfo?.path == first.nodePath
+      }
+      events.add(if (at < 0) events.size else at, input)
+    }
+    return withContext(input?.let { HandoffInput(it.id) } ?: HandoffInput.NONE) {
+      var parentContext = parent
+      var current = node
+      var hop = first
+      while (true) {
+        val state = hop.requireNodeState()
+        if (state.failure != null || state.isPaused) break
+        val targetName = hop.actions.transferToAgent ?: break
+        require(current is BaseAgent) { "Only agents can request an agent transfer." }
+        val target = resolveTransferTarget(targetName, current, hop, parentContext)
+        parentContext = target.parent
+        current = target.agent
+        hop = runHop(target.agent, target.parent)
+      }
+      hop
+    }
+  } finally {
+    // The input is for this handoff only, so later nodes do not see it.
+    if (input != null) {
+      events.remove(input)
+      first.handoffInput = null
+    }
+  }
+}
+
+/**
+ * Marks a handoff that a single-turn node requested, so the agents it reaches read that node's
+ * input, the session event [eventId], as ADK Python runs them inline in the node's turn. [NONE]
+ * hides it from the nodes they start, as Python shows a node only its own input.
+ */
+internal class HandoffInput(val eventId: String?) : AbstractCoroutineContextElement(Key) {
+  companion object Key : CoroutineContext.Key<HandoffInput> {
+    val NONE = HandoffInput(null)
   }
 }
 

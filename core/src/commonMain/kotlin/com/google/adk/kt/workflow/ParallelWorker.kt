@@ -88,6 +88,8 @@ internal class ParallelWorkerNode(internal val node: Node, maxParallelWorkers: I
     get() = node.requiresAllPredecessors
 
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+    // A parallel node that runNode starts escapes the check runLive makes before anything connects.
+    if (context.invocationContext.liveRun != null) requireRunnableLive(this@ParallelWorkerNode)
     emit(fanOut.mapOverItems(context, nodeInput))
   }
 }
@@ -151,7 +153,14 @@ internal class ParallelWorker(private val worker: Node, private val maxParallelW
     private suspend fun runItem(index: Int, item: Any?, runId: String): Context {
       val ctx =
         try {
-          context.runNodeForContext(worker, item, runId, useSubBranch = true)
+          context.runNodeForContext(
+            worker,
+            item,
+            runId,
+            useSubBranch = true,
+            // A graph node's transfer can't run live yet, and that covers an agent fanned out here.
+            rejectsLiveTransfer = true,
+          )
         } catch (e: CancellationException) {
           currentCoroutineContext().ensureActive()
           stopOthers(index)

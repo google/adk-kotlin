@@ -19,6 +19,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
@@ -205,6 +206,43 @@ internal fun validateChatAgentWiring(edges: List<Edge>) {
     )
   }
 }
+
+/**
+ * Rejects, before a live run of [root] connects, an agent in its graph that can't run live yet: a
+ * task node, or a task agent that delegates to task sub-agents. It walks nested workflows and
+ * parallel nodes too.
+ */
+internal fun requireRunnableLive(root: Node) {
+  for (agent in graphAgents(root)) {
+    val delegating =
+      agentTree(agent).firstOrNull {
+        it is LlmAgent && it.defaultMode() == AgentMode.TASK && it.delegatesToTasks
+      }
+    if (delegating != null) throw unsupportedLiveTaskDelegation(delegating.name)
+    if (agent.defaultMode() == AgentMode.TASK) {
+      throw UnsupportedOperationException("Task agent node '${agent.name}' cannot run live yet.")
+    }
+  }
+}
+
+/** The failure for the task agent [name], which delegates to task sub-agents, in a live run. */
+internal fun unsupportedLiveTaskDelegation(name: String) =
+  UnsupportedOperationException(
+    "Task agent '$name' cannot run live yet: it delegates to task sub-agents."
+  )
+
+/** [agent] and every agent below it. */
+private fun agentTree(agent: BaseAgent): Sequence<BaseAgent> =
+  sequenceOf(agent) + agent.subAgents.asSequence().flatMap(::agentTree)
+
+/** The agent nodes of [node]'s graph, including those in nested workflows and parallel nodes. */
+private fun graphAgents(node: Node): Sequence<LlmAgent> =
+  when (node) {
+    is LlmAgent -> sequenceOf(node)
+    is ParallelWorkerNode -> graphAgents(node.node)
+    is Workflow -> node.graph?.nodes.orEmpty().asSequence().flatMap(::graphAgents)
+    else -> emptySequence()
+  }
 
 /**
  * Rejects an edge whose source output schema and target input schema are both set and some value

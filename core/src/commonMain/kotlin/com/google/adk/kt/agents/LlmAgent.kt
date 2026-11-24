@@ -63,6 +63,7 @@ import com.google.adk.kt.workflow.NodeInfo
 import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.adk.kt.workflow.WorkflowConfigurationException
 import com.google.adk.kt.workflow.isValidNodeName
+import com.google.adk.kt.workflow.unsupportedLiveTaskDelegation
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -218,6 +219,9 @@ class LlmAgent(
       }
     }
   }
+
+  /** Whether this agent delegates to task sub-agents, which a live task cannot do yet. */
+  internal val delegatesToTasks: Boolean = this.tools.any { it is TaskAgentTool }
 
   /** Always true, so a resumed agent node shows its model the answers to its long-running calls. */
   @ExperimentalWorkflowApi
@@ -388,6 +392,7 @@ class LlmAgent(
     val injected = injectNodeInput(context, nodeInput)
     val agentContext = agentContext(context, AgentMode.SINGLE_TURN)
     var outputMarked = false
+    var handedOff = false
     try {
       emitAll(
         runAsync(agentContext).transformWhile { event ->
@@ -399,12 +404,16 @@ class LlmAgent(
           // Leave the handoff to the dispatch loop, so the target runs once, as a node.
           if (event.actions.transferToAgent == null) return@transformWhile true
           endRunAtHandoff(agentContext)
+          handedOff = true
           false
         }
       )
     } finally {
-      // The input is for this run only, so later nodes on the branch do not see it.
-      if (injected != null) context.invocationContext.session.events.remove(injected)
+      // Later nodes do not see the input; the handoff puts it back for the transfer targets.
+      if (injected != null) {
+        if (handedOff) context.handoffInput = injected
+        context.invocationContext.session.events.remove(injected)
+      }
     }
   }
 
@@ -415,6 +424,10 @@ class LlmAgent(
    * carries it.
    */
   private fun runInTaskMode(context: Context, nodeInput: Any?): Flow<Any?> {
+    // A task started by runNode escapes the check a live run makes of its graph before connecting.
+    if (delegatesToTasks && context.invocationContext.liveRun != null) {
+      return flow { throw unsupportedLiveTaskDelegation(name) }
+    }
     val agentContext = agentContext(context, AgentMode.TASK)
     val taskContext =
       agentContext.copy(
@@ -709,17 +722,33 @@ class LlmAgent(
   }
 
   /**
-   * Attaches the node output to [event] when it is this agent's final model turn and has an output,
-   * and sets [NodeInfo.messageAsOutput] when no [outputSchema] is configured. Otherwise returns
-   * [event] itself.
+   * Returns [event], a final reply of an agent this single-turn node handed off to, marked as this
+   * node's output and written to [outputKey], as ADK Python does when it runs the target inline.
+   * The output is checked against [outputSchema] as this node's own reply is.
    */
-  private fun markOutputIfFinalTurn(event: Event): Event {
+  internal fun markHandoffOutput(event: Event): Event {
+    val marked = markOutputIfFinalTurn(event, event.author)
+    val output = validateOutput(marked.output ?: return marked) ?: return marked
+    val checked = if (output == marked.output) marked else marked.copy(output = output)
+    val key = outputKey?.takeIf { it.isNotEmpty() } ?: return checked
+    val delta = (checked.actions.stateDelta + (key to output)).toMutableMap()
+    return checked.copy(actions = checked.actions.copy(stateDelta = delta))
+  }
+
+  /**
+   * Attaches the node output to [event] when it is [author]'s final model turn and has an output,
+   * and sets [NodeInfo.messageAsOutput] when no [outputSchema] is configured, clearing it
+   * otherwise, as a single-turn target may have set it. Otherwise returns [event] itself.
+   */
+  private fun markOutputIfFinalTurn(event: Event, author: String = name): Event {
     val content = event.content
-    if (event.author != name || !event.isFinalResponse) return event
+    if (event.author != author || !event.isFinalResponse) return event
     if (event.functionCalls().isNotEmpty() || content == null) return event
     if (content.role != Role.MODEL) return event
     val output = outputValueOf(content) ?: return event
-    if (outputSchema != null) return event.copy(output = output)
+    if (outputSchema != null) {
+      return event.copy(output = output, nodeInfo = event.nodeInfo?.copy(messageAsOutput = false))
+    }
     return event.copy(
       output = output,
       nodeInfo = (event.nodeInfo ?: NodeInfo()).copy(messageAsOutput = true),

@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalLiveApi::class)
+@file:OptIn(ExperimentalLiveApi::class, ExperimentalWorkflowApi::class)
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
@@ -54,6 +55,7 @@ import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.audioFrame
 import com.google.adk.kt.testing.inputTranscription
+import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
@@ -63,6 +65,8 @@ import com.google.adk.kt.testing.storedEvents
 import com.google.adk.kt.testing.turnCompleteStep
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.testing.wholeText
+import com.google.adk.kt.tools.FunctionTool
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.AudioTranscriptionConfig
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -73,9 +77,17 @@ import com.google.adk.kt.types.LiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.Modality
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.UsageMetadata
+import com.google.adk.kt.workflow.Edge
 import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.NodeConfig
+import com.google.adk.kt.workflow.RetryConfig
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
+import com.google.adk.kt.workflow.parallelNode
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.genai.kotlin.GenAiApiException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
@@ -1350,7 +1362,6 @@ class RunLiveTest {
     assertWithMessage("the agent should have run live").that(agent.seenContext).isNotNull()
   }
 
-  @OptIn(ExperimentalWorkflowApi::class)
   @Test
   fun runLive_nodeRootedRunner_isRefused(): Unit = runBlocking {
     var ran = false
@@ -1374,6 +1385,673 @@ class RunLiveTest {
       .that(runner.sessionService.getSession(SessionKey(runner.appName, "u", "s")))
       .isNull()
   }
+
+  /** Records its input and the context it ran on, writes a state key, and emits [output]. */
+  private class RecordingNode(override val name: String, private val output: Any?) : Node {
+    var seenInput: Any? = null
+      private set
+
+    var seenContext: Context? = null
+      private set
+
+    override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+      seenInput = nodeInput
+      seenContext = context
+      context.updateState(name, "ran")
+      emit(output)
+    }
+  }
+
+  /** A runner whose app is rooted on a workflow that runs [nodes] one after another. */
+  private fun workflowRunner(
+    vararg nodes: Node,
+    plugins: List<Plugin> = emptyList(),
+    sessionService: SessionService = InMemorySessionService(),
+    config: NodeConfig = NodeConfig(),
+  ) =
+    InMemoryRunner(
+        app =
+          App(
+            appName = "workflow_app",
+            rootNode =
+              Workflow(
+                name = "wf",
+                edges = (listOf<Node>(Start) + nodes).zipWithNext { from, to -> Edge(from, to) },
+                config = config,
+              ),
+            plugins = plugins,
+          ),
+        sessionService = sessionService,
+      )
+      .apply { allowsLiveNodeRoot = true }
+
+  /** Runs [runner] live on a [queue] the caller never closes, so only the root's end stops it. */
+  private suspend fun runLiveUntilTheRootEnds(
+    runner: InMemoryRunner,
+    queue: LiveRequestQueue = LiveRequestQueue(),
+  ): List<Event> = withTimeout(5.seconds) { runner.runLive("u", "s", queue).toList() }
+
+  @Test
+  fun runLive_workflowRoot_runsToItsEndWithoutTheQueueClosing(): Unit = runBlocking {
+    var afterRuns = 0
+    val first = RecordingNode("first", "A")
+    val second = RecordingNode("second", "B")
+    val runner =
+      workflowRunner(first, second, plugins = listOf(plugin(recordAfterRun = { afterRuns++ })))
+    val queue = LiveRequestQueue()
+
+    val events = runLiveUntilTheRootEnds(runner, queue)
+
+    assertThat(queue.isClosed).isFalse()
+    assertWithMessage("a live run has no message to give the first node")
+      .that(first.seenInput)
+      .isNull()
+    assertThat(second.seenInput).isEqualTo("A")
+    assertThat(events.mapNotNull { it.output }).containsExactly("A", "B").inOrder()
+    val stored = runner.storedEvents()
+    assertThat(stored.mapNotNull { it.nodeInfo?.path })
+      .containsExactly("wf@1/first@1", "wf@1/second@1")
+      .inOrder()
+    assertThat(stored.mapNotNull { it.actions.stateDelta["second"] }).containsExactly("ran")
+    assertThat(afterRuns).isEqualTo(1)
+  }
+
+  @Test
+  fun runLive_workflowRoot_nestedAndDispatchedNodesShareTheCallersQueue(): Unit = runBlocking {
+    val nested = RecordingNode("nested", "N")
+    val dispatched = RecordingNode("dispatched", "D")
+    val dispatcher =
+      node<Any?, Any?>("dispatcher", rerunOnResume = true) { context, _ ->
+        context.runNode(dispatched)
+      }
+    val inner = Workflow(name = "inner", edges = listOf(Edge(Start, nested)))
+    val queue = LiveRequestQueue()
+
+    val unused = runLiveUntilTheRootEnds(workflowRunner(inner, dispatcher), queue)
+
+    assertThat(nested.seenContext?.invocationContext?.liveRequestQueue).isSameInstanceAs(queue)
+    assertThat(dispatched.seenContext?.invocationContext?.liveRequestQueue).isSameInstanceAs(queue)
+  }
+
+  @Test
+  fun runLive_workflowRootWhoseBeforeRunAnswers_skipsTheWorkflowAndRunsAfterRun(): Unit =
+    runBlocking {
+      var afterRuns = 0
+      val node = RecordingNode("node", "never")
+      val answer = plugin(breakWith = modelMessage("early"), recordAfterRun = { afterRuns++ })
+      val runner = workflowRunner(node, plugins = listOf(answer))
+
+      val events = runLiveUntilTheRootEnds(runner)
+
+      assertWithMessage("the workflow must not run").that(node.seenContext).isNull()
+      assertThat(events.map { it.contentText() }).containsExactly("early")
+      assertThat(runner.storedEvents().map { it.contentText() }).containsExactly("early")
+      assertThat(afterRuns).isEqualTo(1)
+    }
+
+  @Test
+  fun runLive_workflowRootsEarlyAnswerWithAnImage_isNotStoredAsANodeEvent(): Unit = runBlocking {
+    val image = Part(inlineData = Blob(mimeType = "image/png", data = ByteArray(4)))
+    val early = Content(role = "model", parts = listOf(Part(text = "early"), image))
+    val runner =
+      workflowRunner(RecordingNode("node", "never"), plugins = listOf(plugin(breakWith = early)))
+
+    val events = runLiveUntilTheRootEnds(runner)
+
+    assertThat(events.map { it.contentText() }).containsExactly("early")
+    // A plugin's early answer is not a node's event, so the agent rule drops it whole.
+    assertThat(runner.storedEvents()).isEmpty()
+  }
+
+  @Test
+  fun runLive_nodeRootFails_notifiesOnRunErrorAndFlushesTheSession(): Unit = runBlocking {
+    val errors = mutableListOf<Throwable>()
+    val sessionService = AppendRecordingSessionService()
+    val failing = node<Any?, Unit>("failing") { _, _ -> throw IllegalStateException("node failed") }
+    val runner =
+      InMemoryRunner(
+          app =
+            App(
+              appName = "node_app",
+              rootNode = failing,
+              plugins = listOf(plugin(recordRunError = { errors += it })),
+            ),
+          sessionService = sessionService,
+        )
+        .apply { allowsLiveNodeRoot = true }
+
+    val error = assertFailsWith<IllegalStateException> { runLiveUntilTheRootEnds(runner) }
+
+    assertThat(error).hasMessageThat().isEqualTo("node failed")
+    assertThat(errors.map { it.message }).containsExactly("node failed")
+    assertThat(sessionService.appended.single().errorCode).isEqualTo("IllegalStateException")
+    assertThat(sessionService.calls).containsExactly("append", "flush").inOrder()
+  }
+
+  /** A node that emits [events] and nothing else. */
+  private fun emitting(vararg events: Event): Node =
+    object : Node {
+      override val name = "speaker"
+
+      override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flowOf(*events)
+    }
+
+  @Test
+  fun runLive_workflowNodes_storeTheSameEventsAsRunAsync(): Unit = runBlocking {
+    val image = Part(inlineData = Blob(mimeType = "image/png", data = ByteArray(4)))
+    val state = EventActions(stateDelta = mutableMapOf<String, Any>("spoken" to "yes"))
+    val speaker =
+      emitting(
+        Event(author = "", content = audioContent()),
+        Event(author = "", content = audioContent(), actions = state),
+        Event(author = "", content = modelMessage("Spoken.")),
+        Event(
+          author = "",
+          content = Content(role = "model", parts = listOf(image)),
+          turnComplete = true,
+        ),
+      )
+    val live = workflowRunner(speaker)
+    val turnBased = workflowRunner(speaker)
+
+    val unused = runLiveUntilTheRootEnds(live)
+    runTurnBased(turnBased)
+
+    val expected = turnBased.storedEvents().filter { it.author != "user" }.map { it.shared() }
+    assertThat(live.storedEvents().map { it.shared() })
+      .containsExactlyElementsIn(expected)
+      .inOrder()
+    val lastBlob = live.storedEvents().last().content?.parts?.single()?.inlineData
+    assertThat(lastBlob?.mimeType).isEqualTo("image/png")
+  }
+
+  /** What a stored node event holds, apart from the ids and times of the run that stored it. */
+  private fun Event.shared() =
+    listOf(author, content, actions.stateDelta, turnComplete, nodeInfo?.path)
+
+  @Test
+  fun runLive_workflowNodeAudioEndingATurn_storesItAndFlushesTheTurn(): Unit = runBlocking {
+    val sessionService = AppendRecordingSessionService()
+
+    val audio = Event(author = "", content = audioContent(), turnComplete = true)
+
+    val events =
+      withTimeout(5.seconds) {
+        workflowRunner(emitting(audio), sessionService = sessionService)
+          .runLive("u", "s", LiveRequestQueue())
+          .onEach { sessionService.calls += "emit" }
+          .toList()
+      }
+
+    assertThat(sessionService.appended).containsExactly(events.single())
+    // The turn is flushed before its event reaches the caller; the last flush ends the run.
+    assertThat(sessionService.calls).containsExactly("append", "flush", "emit", "flush").inOrder()
+  }
+
+  @Test
+  fun runLive_agentMediaEventCarryingAStateChange_isNotStored(): Unit = runBlocking {
+    // An agent's media event is dropped whole, even when the App's root node is the agent.
+    val state = EventActions(stateDelta = mutableMapOf<String, Any>("spoken" to "yes"))
+    fun agent() = ScriptedAgent(listOf(modelEvent(audioContent()).copy(actions = state)))
+    val asAgent = InMemoryRunner(agent = agent())
+    val asNode = InMemoryRunner(app = App(appName = "agent_node_app", rootNode = agent()))
+
+    val unusedAgent = runLiveWith(asAgent)
+    val unusedNode = runLiveWith(asNode)
+
+    assertThat(asAgent.storedEvents()).isEmpty()
+    assertThat(asNode.storedEvents()).isEmpty()
+  }
+
+  @Test
+  fun runLive_workflowSingleTurnAgentNode_runsTurnBasedOnItsInput(): Unit = runBlocking {
+    val requests = mutableListOf<LlmRequest>()
+    val summarizer =
+      LlmAgent(
+        name = "summarizer",
+        model =
+          DummyModel("summarizer") { request ->
+            requests += request
+            flowOf(LlmResponse(content = modelMessage("summary")))
+          },
+      )
+    val capture = RecordingNode("capture", "done")
+    val runner = workflowRunner(RecordingNode("prep", "initial text"), summarizer, capture)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("unread"))
+
+    val unused = runLiveUntilTheRootEnds(runner, queue)
+    queue.close()
+
+    // The model has no live connection, so a live attempt would have failed the run.
+    assertThat(requests.single().contents.last().text()).isEqualTo("initial text")
+    assertThat(capture.seenInput).isEqualTo("summary")
+    val unread = queue.receiveRequest()?.input as? ContentInput
+    assertThat(unread?.content?.text()).isEqualTo("unread")
+  }
+
+  @Test
+  fun runLive_workflowSingleTurnAgentNode_asksForToolConfirmationAsItDoesTurnBased(): Unit =
+    runBlocking {
+      var executions = 0
+      val secureTool =
+        object : FunctionTool("secure", "Needs the user's approval.", requiresConfirmation = true) {
+          override fun declaration() = null
+
+          override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any {
+            executions++
+            return "ok"
+          }
+        }
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model =
+            DummyModel("model") { flowOf(modelFunctionCallResponse("secure", id = "call_1")) },
+          tools = listOf(secureTool),
+        )
+      val runner = workflowRunner(agent)
+
+      val events = runLiveUntilTheRootEnds(runner)
+
+      assertThat(executions).isEqualTo(0)
+      val request =
+        events
+          .flatMap { it.functionCalls() }
+          .single { it.name == FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME }
+      assertWithMessage("the confirmation request was not stored")
+        .that(
+          runner.storedEvents().any { event -> event.functionCalls().any { it.id == request.id } }
+        )
+        .isTrue()
+    }
+
+  /**
+   * A model that answers both turn-based calls and live connections with [response], counting them.
+   */
+  private class EitherWayModel(override val name: String, private val response: LlmResponse) :
+    Model {
+    private val live = DummyLiveModel.perConnection(List(4) { listOf(Respond(response)) }, name)
+    var calls = 0
+      private set
+
+    override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> {
+      calls++
+      return flowOf(response)
+    }
+
+    override suspend fun connect(request: LlmRequest): LiveConnection {
+      calls++
+      return live.connect(request)
+    }
+  }
+
+  private val finished = modelFunctionCallResponse("finish_task", mapOf("result" to "done"))
+
+  /** A task agent over [taskSubAgents] on [model], which finishes at once with "done". */
+  private fun taskAgent(
+    name: String,
+    vararg taskSubAgents: LlmAgent,
+    model: Model = EitherWayModel(name, finished),
+  ) =
+    LlmAgent(name = name, model = model, subAgents = taskSubAgents.toList(), mode = AgentMode.TASK)
+
+  /** Asserts that running [runner] live fails, before the session exists, naming [agentName]. */
+  private suspend fun assertFailsBeforeRunningLive(runner: InMemoryRunner, agentName: String) {
+    val failure = assertFailsWith<UnsupportedOperationException> { runLiveUntilTheRootEnds(runner) }
+
+    assertThat(failure).hasMessageThat().contains("'$agentName' cannot run live yet")
+    assertThat(runner.sessionService.getSession(SessionKey(runner.appName, "u", "s"))).isNull()
+  }
+
+  /** Runs [runner] turn-based on one message and returns its events. */
+  @CanIgnoreReturnValue
+  private suspend fun runTurnBased(runner: InMemoryRunner): List<Event> =
+    runner.runAsync("u", "s", newMessage = userMessage("go")).toList()
+
+  @Test
+  fun runLive_workflowTaskAgentNode_failsBeforeRunning(): Unit = runBlocking {
+    assertFailsBeforeRunningLive(workflowRunner(taskAgent("writer")), "writer")
+  }
+
+  @Test
+  fun runLive_workflowTaskAgentNodeThatDelegatesToTasks_failsGivingTheDelegationReason(): Unit =
+    runBlocking {
+      val failure =
+        assertFailsWith<UnsupportedOperationException> {
+          runLiveUntilTheRootEnds(workflowRunner(booker()))
+        }
+
+      assertThat(failure)
+        .hasMessageThat()
+        .isEqualTo("Task agent 'booker' cannot run live yet: it delegates to task sub-agents.")
+    }
+
+  @Test
+  fun runAsync_workflowTaskAgentNode_runsTurnBased(): Unit = runBlocking {
+    val events = runTurnBased(workflowRunner(taskAgent("writer")))
+
+    assertThat(events.mapNotNull { it.output }).containsExactly(mapOf("result" to "done"))
+  }
+
+  @Test
+  fun runLive_taskAgentNodeInANestedWorkflowsParallelNode_failsBeforeRunning(): Unit = runBlocking {
+    val inner = Workflow("inner", listOf(Edge(Start, parallelNode(taskAgent("writer")))))
+
+    assertFailsBeforeRunningLive(workflowRunner(inner), "writer")
+  }
+
+  @Test
+  fun runLive_runNodeStartsAWorkflowWithATaskAgentNode_failsBeforeTheTaskRuns(): Unit =
+    runBlocking {
+      var modelCalls = 0
+      val model =
+        DummyModel("writer") {
+          modelCalls++
+          flowOf(finished)
+        }
+      val inner = Workflow("inner", listOf(Edge(Start, taskAgent("writer", model = model))))
+
+      val failure =
+        assertFailsWith<UnsupportedOperationException> {
+          runLiveUntilTheRootEnds(starterRunner(inner))
+        }
+
+      assertThat(failure).hasMessageThat().contains("'writer' cannot run live yet")
+      assertThat(modelCalls).isEqualTo(0)
+    }
+
+  @Test
+  fun runLive_chatNodeWhoseTaskDelegatesToTasks_failsBeforeRunning(): Unit = runBlocking {
+    val planner = LlmAgent(name = "planner", model = turnOnlyModel(), subAgents = listOf(booker()))
+
+    assertFailsBeforeRunningLive(workflowRunner(planner), "booker")
+  }
+
+  @Test
+  fun runAsync_chatNodeWhoseTaskDelegatesToTasks_runsTurnBased(): Unit = runBlocking {
+    val model = DummyModel("planner") { flowOf(LlmResponse(content = modelMessage("hi"))) }
+    val planner = LlmAgent(name = "planner", model = model, subAgents = listOf(booker()))
+
+    val events = runTurnBased(workflowRunner(planner))
+
+    assertThat(events.map { it.contentText() }).contains("hi")
+  }
+
+  @Test
+  fun runLive_chatNodeWithATaskSubAgent_runs(): Unit = runBlocking {
+    val reply = LlmResponse(content = modelMessage("hi"), turnComplete = true)
+    val planner =
+      LlmAgent(
+        name = "planner",
+        model = EitherWayModel("planner", reply),
+        subAgents = listOf(taskAgent("writer")),
+      )
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hello"))
+
+    val events =
+      withTimeout(5.seconds) {
+        workflowRunner(planner)
+          .runLive("u", "s", queue)
+          .onEach { if (it.contentText() == "hi") queue.close() }
+          .toList()
+      }
+
+    assertThat(events.map { it.contentText() }).contains("hi")
+  }
+
+  @Test
+  fun runLive_runNodeStartsATaskThatDelegatesToTasks_failsBeforeTheTaskRuns(): Unit = runBlocking {
+    var modelCalls = 0
+    val model =
+      DummyModel("booker") {
+        modelCalls++
+        flowOf(finished)
+      }
+    val booker = taskAgent("booker", taskAgent("payer"), model = model)
+
+    val failure =
+      assertFailsWith<UnsupportedOperationException> {
+        runLiveUntilTheRootEnds(starterRunner(booker))
+      }
+
+    assertThat(failure)
+      .hasMessageThat()
+      .isEqualTo("Task agent 'booker' cannot run live yet: it delegates to task sub-agents.")
+    assertThat(modelCalls).isEqualTo(0)
+  }
+
+  @Test
+  fun runAsync_runNodeStartsATaskThatDelegatesToTasks_runsTurnBased(): Unit = runBlocking {
+    val events = runTurnBased(starterRunner(booker()))
+
+    assertThat(events.mapNotNull { it.output }).contains(mapOf("result" to "done"))
+  }
+
+  @Test
+  fun runLive_runNodeStartsATask_runsIt(): Unit = runBlocking {
+    val events = runLiveUntilTheRootEnds(starterRunner(taskAgent("writer")))
+
+    assertThat(events.mapNotNull { it.output }).contains(mapOf("result" to "done"))
+  }
+
+  @Test
+  fun runLive_workflowChatNodeTransfers_failsBeforeTheTargetRuns(): Unit = runBlocking {
+    var billingCalls = 0
+    val billing =
+      DummyModel("billing") {
+        billingCalls++
+        flowOf(paid)
+      }
+
+    assertTransferFailsLive(workflowRunner(coordinator(billing)))
+    assertThat(billingCalls).isEqualTo(0)
+  }
+
+  @Test
+  fun runLive_workflowChatNodeTransfersUnderARetryConfig_stillFailsBeforeTheTargetRuns(): Unit =
+    runBlocking {
+      var billingCalls = 0
+      val billing =
+        DummyModel("billing") {
+          billingCalls++
+          flowOf(paid)
+        }
+      val coordinatorModel = transferringModel()
+      val retrying = NodeConfig(retryConfig = RetryConfig(maxAttempts = 2))
+
+      assertTransferFailsLive(
+        workflowRunner(coordinator(billing, coordinatorModel), config = retrying)
+      )
+      assertThat(coordinatorModel.calls).isEqualTo(1)
+      assertThat(billingCalls).isEqualTo(0)
+    }
+
+  @Test
+  fun runAsync_workflowChatNodeTransfers_runsTheTargetTurnBased(): Unit = runBlocking {
+    val events = runTurnBased(workflowRunner(coordinator(DummyModel("billing") { flowOf(paid) })))
+
+    assertThat(events.map { it.contentText() }).contains("paid")
+  }
+
+  @Test
+  fun runLive_workflowSingleTurnNodeTransfers_passesTheTargetsReplyToTheNextNode(): Unit =
+    runBlocking {
+      val coordinator =
+        LlmAgent(
+          name = "coordinator",
+          model = DummyModel("coordinator") { flowOf(modelTransferToAgentResponse("billing")) },
+          mode = AgentMode.SINGLE_TURN,
+          subAgents =
+            listOf(LlmAgent(name = "billing", model = DummyModel("billing") { flowOf(paid) })),
+        )
+      val prep = node<Any?, String>("prep") { _, _ -> "question" }
+      var captured: Any? = null
+      val capture = node<Any?, String>("capture") { _, input -> "done".also { captured = input } }
+
+      val unused = runLiveUntilTheRootEnds(workflowRunner(prep, coordinator, capture))
+
+      // Neither model has a live connection, so the target ran turn-based to reply.
+      assertThat(captured).isEqualTo("paid")
+    }
+
+  @Test
+  fun runLive_workflowParallelNodesAgentTransfers_failsBeforeTheTargetRuns(): Unit = runBlocking {
+    var billingCalls = 0
+    val billing =
+      DummyModel("billing") {
+        billingCalls++
+        flowOf(paid)
+      }
+
+    assertTransferFailsLive(workflowRunner(parallelNode(coordinator(billing))))
+    assertThat(billingCalls).isEqualTo(0)
+  }
+
+  @Test
+  fun runAsync_workflowParallelNodesAgentTransfers_runsTheTargetTurnBased(): Unit = runBlocking {
+    var billingCalls = 0
+    val billing =
+      DummyModel("billing") {
+        billingCalls++
+        flowOf(paid)
+      }
+
+    val unused = runTurnBased(workflowRunner(parallelNode(coordinator(billing))))
+
+    assertThat(billingCalls).isEqualTo(1)
+  }
+
+  @Test
+  fun runLive_runNodeStartsAChatThatTransfers_followsTheTransfer(): Unit = runBlocking {
+    val billing =
+      EitherWayModel("billing", LlmResponse(content = modelMessage("paid"), turnComplete = true))
+    val queue = LiveRequestQueue()
+
+    val events =
+      withTimeout(5.seconds) {
+        starterRunner(coordinator(billing))
+          .runLive("u", "s", queue)
+          .onEach { if (it.contentText() == "paid") queue.close() }
+          .toList()
+      }
+
+    assertThat(events.map { it.contentText() }).contains("paid")
+    assertThat(billing.calls).isEqualTo(1)
+  }
+
+  @Test
+  fun runLive_runNodeStartsAParallelNodeOfATask_failsBeforeTheTaskRuns(): Unit = runBlocking {
+    var modelCalls = 0
+    val model =
+      DummyModel("writer") {
+        modelCalls++
+        flowOf(finished)
+      }
+
+    val failure =
+      assertFailsWith<UnsupportedOperationException> {
+        runLiveUntilTheRootEnds(starterRunner(parallelNode(taskAgent("writer", model = model))))
+      }
+
+    assertThat(failure).hasMessageThat().contains("'writer' cannot run live yet")
+    assertThat(modelCalls).isEqualTo(0)
+  }
+
+  @Test
+  fun runAsync_runNodeStartsAParallelNodeOfATask_runsTurnBased(): Unit = runBlocking {
+    val events = runTurnBased(starterRunner(parallelNode(taskAgent("writer"))))
+
+    assertThat(events.mapNotNull { it.output }).contains(listOf(mapOf("result" to "done")))
+  }
+
+  @Test
+  fun runLive_workflowAgentNodeFailsAfterAskingToTransfer_failsWithItsOwnError(): Unit =
+    runBlocking {
+      val failing =
+        object : BaseAgent("failing", "fails") {
+          override fun runAsyncImpl(context: InvocationContext): Flow<Event> = flow {
+            emit(Event(author = name, actions = EventActions(transferToAgent = "billing")))
+            throw IllegalStateException("node failed")
+          }
+
+          override fun runLiveImpl(context: InvocationContext): Flow<Event> = runAsyncImpl(context)
+        }
+
+      val failure =
+        assertFailsWith<IllegalStateException> { runLiveUntilTheRootEnds(workflowRunner(failing)) }
+
+      assertThat(failure).hasMessageThat().isEqualTo("node failed")
+    }
+
+  @Test
+  fun runLive_workflowAgentNodePausesAfterAskingToTransfer_pausesInsteadOfFailing(): Unit =
+    runBlocking {
+      val asking =
+        ScriptedAgent(
+          listOf(
+            Event(
+              author = "scripted",
+              content = modelFunctionCall("approve", id = "c1"),
+              longRunningToolIds = setOf("c1"),
+              actions = EventActions(transferToAgent = "billing"),
+            )
+          )
+        )
+
+      val events = runLiveUntilTheRootEnds(workflowRunner(asking))
+
+      assertThat(events.flatMap { it.longRunningToolIds }).containsExactly("c1")
+    }
+
+  @Test
+  fun runLive_workflowFunctionNodeAsksToTransfer_failsAsATurnBasedRunDoes(): Unit = runBlocking {
+    val transferring =
+      node<Any?, Any?>("transferring") { context, _ ->
+        context.actions.transferToAgent = "billing"
+        null
+      }
+
+    val failure =
+      assertFailsWith<IllegalArgumentException> {
+        runLiveUntilTheRootEnds(workflowRunner(transferring))
+      }
+
+    assertThat(failure).hasMessageThat().isEqualTo("Only agents can request an agent transfer.")
+  }
+
+  private val paid = LlmResponse(content = modelMessage("paid"))
+
+  /** Asserts that running [runner] live fails at the coordinator's transfer. */
+  private suspend fun assertTransferFailsLive(runner: InMemoryRunner) {
+    val failure = assertFailsWith<UnsupportedOperationException> { runLiveUntilTheRootEnds(runner) }
+
+    assertThat(failure)
+      .hasMessageThat()
+      .isEqualTo("Agent node 'coordinator' cannot transfer in a live run yet.")
+  }
+
+  /** A task agent that delegates to the task agent `payer`. */
+  private fun booker() = taskAgent("booker", taskAgent("payer"))
+
+  /** A runner whose workflow's function node starts [node] with runNode and returns its output. */
+  private fun starterRunner(node: Node) =
+    workflowRunner(
+      node<Any?, Any?>("starter", rerunOnResume = true) { context, _ -> context.runNode(node) }
+    )
+
+  /** A model that answers with a transfer to `billing`. */
+  private fun transferringModel() =
+    EitherWayModel("coordinator", modelTransferToAgentResponse("billing"))
+
+  /** A chat agent on [model] that transfers to its sub-agent `billing`, on [billingModel]. */
+  private fun coordinator(billingModel: Model, model: Model = transferringModel()) =
+    LlmAgent(
+      name = "coordinator",
+      model = model,
+      subAgents = listOf(LlmAgent(name = "billing", model = billingModel)),
+    )
 
   @Test
   fun runLive_modelWithoutLiveSupport_hasAlreadyCreatedTheSession(): Unit = runBlocking {

@@ -30,6 +30,7 @@ import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.BranchPath
+import com.google.adk.kt.workflow.NodeInfo
 
 /**
  * Rewrites history events to be suitable for LLM context.
@@ -51,7 +52,15 @@ internal class HistoryRewriterProcessor {
     singleTurnNode: Boolean = false,
     isolationScope: String? = null,
     userContent: Content? = null,
+    handoffInputId: String? = null,
   ): List<Content> {
+    // A handoff target reads its router's input as its own, as ADK Python runs it inline.
+    val events =
+      if (handoffInputId == null) events
+      else
+        events.map {
+          if (it.id == handoffInputId) it.copy(nodeInfo = NodeInfo(nodePath.orEmpty())) else it
+        }
     val workingEvents =
       when (includeContents) {
         IncludeContents.DEFAULT -> events

@@ -562,6 +562,12 @@ open class Context(
   @Volatile internal var liveInputSource: LiveStreamingTools? = null
 
   /**
+   * The user turn carrying this single-turn node's input when its turn ended in a handoff, which
+   * the handoff puts back in the session while its targets run. A resumed turn injects none.
+   */
+  internal var handoffInput: Event? = null
+
+  /**
    * Every [LiveRequest] the live run takes off its queue, caller input and tool answers alike,
    * including this tool's own, from when this flow is collected. Each collection gets its own
    * buffered copy, which ends when the queue closes, the run ends, or this call's stream ends or is
@@ -770,10 +776,9 @@ open class Context(
     if (raiseOnWait && (leftWaiting || childState.isPaused)) {
       throw NodeInterruptedException()
     }
-    // A delegate's output not recorded for this attempt, such as a replay, is emitted here.
+    // A delegate's output not yet emitted for this activation, such as a replay, is emitted here.
     val output = childState.output
-    val recordedForThisAttempt = childState.hasEmittedOutput && childState.outputParent === ns
-    if (delegatesOutput && output != null && !recordedForThisAttempt) {
+    if (delegatesOutput && output != null && !ns.hasEmittedOutput) {
       ns.adoptReplayedOutput(output)
     }
     return childState.output
@@ -782,8 +787,9 @@ open class Context(
   /**
    * Runs [node] as a child activation and returns its [Context], replaying a completed or waiting
    * child on resume. If [node] requests a `transfer_to_agent` handoff, follows the transfer loop
-   * and returns the final agent's [Context]. Calls with the same run ID share one run, handoffs
-   * included.
+   * and returns the final agent's [Context], or, with [rejectsLiveTransfer], fails a live run's
+   * handoff, other than a single-turn agent's, instead. Calls with the same run ID share one run,
+   * handoffs included.
    */
   @ExperimentalWorkflowApi
   internal suspend fun runNodeForContext(
@@ -794,6 +800,7 @@ open class Context(
     useSubBranch: Boolean = false,
     overrideBranch: String? = null,
     overrideIsolationScope: String? = null,
+    rejectsLiveTransfer: Boolean = false,
   ): Context {
     // A dispatched child is not in the static graph that Workflow validates, so check it here.
     validateNodeName(node.name)
@@ -830,6 +837,7 @@ open class Context(
           overrideBranch,
           overrideIsolationScope,
         )
+      if (rejectsLiveTransfer) rejectLiveTransfer(node, first)
       val childContext =
         followTransfers(
           node,
@@ -892,6 +900,7 @@ open class Context(
           openInterrupts = openInterrupts,
           validateInput = true,
         )
+    rejectLiveTransfer(node, first)
     return followTransfers(
       node,
       first,
@@ -899,6 +908,25 @@ open class Context(
       useSubBranch,
       overrideBranch,
       overrideIsolationScope,
+    )
+  }
+
+  /**
+   * Fails a live run when the graph node [node], other than a single-turn agent, hands off in
+   * [hop], since a graph node's transfer target can't run live yet.
+   */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private fun rejectLiveTransfer(node: Node, hop: Context) {
+    if (invocationContext.liveRun == null || hop.actions.transferToAgent == null) return
+    // A non-agent's transfer fails in the transfer loop instead.
+    if (node !is BaseAgent) return
+    // A single-turn node's target is followed, as ADK Python runs it inline.
+    if ((node as? LlmAgent)?.nodeMode(invocationContext) == AgentMode.SINGLE_TURN) return
+    val state = hop.requireNodeState()
+    if (state.failure != null || state.isPaused) return
+    // The target stays out of the message: the model chose it.
+    throw UnsupportedOperationException(
+      "Agent node '${node.name}' cannot transfer in a live run yet."
     )
   }
 
@@ -914,25 +942,33 @@ open class Context(
     useSubBranch: Boolean,
     overrideBranch: String?,
     overrideIsolationScope: String?,
-  ): Context =
-    followHandoffs(node, first, parent = this) { agent, parent ->
+  ): Context {
+    // A single-turn node's targets reply for it, as ADK Python runs them inline in its turn.
+    val singleTurn =
+      (node as? LlmAgent)?.takeIf { it.nodeMode(invocationContext) == AgentMode.SINGLE_TURN }
+    return followHandoffs(node, first, parent = this) { agent, parent ->
       if (parent == null) {
         // The top-level run checks the name as the root loop does, so a dotted root may run.
-        NodeRunner.runAtTopLevel(agent, generateSequence(this) { it.parent }.last())
+        NodeRunner.runAtTopLevel(agent, generateSequence(this) { it.parent }.last(), singleTurn)
       } else {
         validateNodeName(agent.name)
         parent.runDispatchedChild(
           node = agent,
           input = null,
           id = parent.requireNodeState().nextChildRunId(agent.name),
-          // Only a run under this node can stand in for this node's output.
-          useAsOutput = useAsOutput && parent === this,
+          // Only a run under this node can stand in for this node's output, and a single-turn
+          // node's targets, however many hops on, stand in for that node's.
+          useAsOutput =
+            (useAsOutput && parent === this) ||
+              (singleTurn != null && generateSequence(parent) { it.parent }.any { it === first }),
           useSubBranch = useSubBranch,
           overrideBranch = overrideBranch,
           overrideIsolationScope = overrideIsolationScope,
+          handoffOutputOf = singleTurn,
         )
       }
     }
+  }
 
   /**
    * Runs the dispatched child [node] under this activation, or replays it when history shows it
@@ -947,6 +983,7 @@ open class Context(
     useSubBranch: Boolean,
     overrideBranch: String?,
     overrideIsolationScope: String?,
+    handoffOutputOf: LlmAgent? = null,
   ): Context {
     val childKey = BranchPath.segment(node.name, id)
     val interception =
@@ -955,6 +992,7 @@ open class Context(
         recoveredChildren[childKey],
         dynamic = true,
         cancelledMidRun = isCancelledMidRun(childKey),
+        outputOf = handoffOutputOf ?: node,
       )
     if (!interception.shouldRun) {
       val scheduled =
@@ -972,6 +1010,7 @@ open class Context(
       resumeInputs = interception.resumeInputs,
       openInterrupts = interception.interrupts,
       validateInput = false,
+      handoffOutputOf = handoffOutputOf,
     )
   }
 
@@ -991,6 +1030,7 @@ open class Context(
     resumeInputs: Map<String, Any?>,
     openInterrupts: Set<String> = emptySet(),
     validateInput: Boolean,
+    handoffOutputOf: LlmAgent? = null,
   ): Context =
     NodeRunner(
         node = node,
@@ -1001,6 +1041,7 @@ open class Context(
         useSubBranch = useSubBranch,
         overrideBranch = overrideBranch,
         openInterrupts = openInterrupts,
+        handoffOutputOf = handoffOutputOf,
         // A task agent works in a scope of its own unless the caller picks one.
         overrideIsolationScope =
           overrideIsolationScope

@@ -344,13 +344,15 @@ internal object ResumeScan {
    * route, a node [cancelledMidRun] in this turn reruns, and a [Node.rerunOnResume] or
    * [Node.waitForOutput] node reruns until it finishes its turn, the latter again after a new user
    * message or a reply to a task it delegated. Otherwise a [dynamic] node reruns while a static one
-   * does not.
+   * does not. A recorded message is read as the output of [outputOf]: [node] itself, or the
+   * single-turn node a transfer target replies for.
    */
   fun intercept(
     node: Node,
     recovered: RecoveredNode?,
     dynamic: Boolean = false,
     cancelledMidRun: Boolean = false,
+    outputOf: Node = node,
   ): Interception {
     if (recovered == null) return Interception(shouldRun = true)
     if (node is Workflow) {
@@ -393,7 +395,7 @@ internal object ResumeScan {
         shouldRun = false,
         output =
           if (recovered.outputFromContent && output is Content) {
-            processRehydratedOutput(node, output, recovered.outputDelegated)
+            processRehydratedOutput(outputOf, output, recovered.outputDelegated)
           } else {
             output
           },

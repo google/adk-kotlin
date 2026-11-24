@@ -23,8 +23,11 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.LlmAgent.IncludeContents
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.callbacks.AfterAgentCallback
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -43,6 +46,8 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -1113,6 +1118,164 @@ class AgentTransferLoopTest {
   }
 
   @Test
+  fun runAsync_singleTurnNodeTransfer_passesTheTargetsReplyToTheNextNode() = runBlocking {
+    // Arrange: Prep -> a single-turn router that hands off to its chat helper -> Capture.
+    val helper = chatAgent("helper", CountingReplyModel("from helper"))
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("helper"),
+        subAgents = listOf(helper),
+        mode = AgentMode.SINGLE_TURN,
+        outputKey = "routed",
+      )
+    val prep = node<Any?, String>("prep") { _, _ -> "question" }
+    var captured: Any? = null
+    val capture = node<Any?, String>("capture") { _, input -> "done".also { captured = input } }
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, prep), Edge(prep, router), Edge(router, capture)),
+      )
+
+    // Act
+    val events = workflow.runAsync(testInvocationContext()).toList()
+
+    // Assert: as in ADK Python, the helper's reply is the router's output and fills its output key.
+    assertEquals("from helper", captured)
+    assertEquals(listOf("from helper"), events.mapNotNull { it.actions.stateDelta["routed"] })
+  }
+
+  @Test
+  fun runAsync_singleTurnNodeTransferToASequentialAgent_passesItsStepsReply() = runBlocking {
+    // Arrange: a single-turn router hands off to a sequential agent whose inner agent replies.
+    val team =
+      SequentialAgent("team", subAgents = listOf(LlmAgent("writer", replyModel("written"))))
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("team"),
+        subAgents = listOf(team),
+        mode = AgentMode.SINGLE_TURN,
+        outputKey = "routed",
+      )
+    val capture = TransferCaptureNode()
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, router), Edge(router, capture)))
+
+    // Act
+    val events = workflow.runAsync(testInvocationContext()).toList()
+
+    // Assert: as in ADK Python, the inner agent's reply is the router's output.
+    assertEquals("written", capture.received)
+    assertEquals(listOf("written"), events.mapNotNull { it.actions.stateDelta["routed"] })
+  }
+
+  @Test
+  fun runAsync_singleTurnNodeTransferToASequentialAgentThatRepliesTwice_failsTheNode() =
+    runBlocking {
+      // Arrange: a single-turn router hands off to a sequential agent with two replying steps.
+      val steps = listOf(LlmAgent("writer", replyModel("written")), LlmAgent("b", replyModel("b")))
+      val team = SequentialAgent("team", subAgents = steps)
+      val router =
+        LlmAgent(
+          "router",
+          transferModel("team"),
+          subAgents = listOf(team),
+          mode = AgentMode.SINGLE_TURN,
+        )
+      val capture = TransferCaptureNode()
+      val workflow =
+        Workflow(name = "wf", edges = listOf(Edge(Start, router), Edge(router, capture)))
+
+      // Act
+      val failure =
+        assertFailsWith<IllegalStateException> {
+          workflow.runAsync(testInvocationContext()).toList()
+        }
+
+      // Assert: as in ADK Python, the second reply fails as a second output of the node.
+      assertContains(failure.message.orEmpty(), "produced a second output")
+      assertEquals(null, capture.received)
+    }
+
+  @Test
+  fun runAsync_resumedSingleTurnNodeTransfer_readsTheReplyWithTheRoutersSchema() = runBlocking {
+    // Arrange: a router without a schema hands off to a helper with one; a later node pauses.
+    val helper =
+      LlmAgent(
+        "helper",
+        replyModel("from helper"),
+        mode = AgentMode.CHAT,
+        outputSchema = Schema(type = Type.OBJECT, properties = mapOf("a" to Schema(Type.STRING))),
+      )
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("helper"),
+        subAgents = listOf(helper),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val asker = AskingAgent("asker", "answered")
+    val runner =
+      InMemoryRunner(
+        app =
+          App(
+            appName = "app",
+            rootNode = Workflow("wf", listOf(Edge(Start, router), Edge(router, asker))),
+            resumabilityConfig = ResumabilityConfig(isResumable = true),
+          )
+      )
+    val unused = runner.runAsync("u", "s", newMessage = Content.fromText(Role.USER, "go")).toList()
+    val answer =
+      userFunctionResponse(RequestInput.FUNCTION_CALL_NAME, "ask_asker", mapOf("ok" to true))
+
+    // Act
+    val events = runner.runAsync("u", "s", newMessage = answer).toList()
+
+    // Assert: the replayed reply is plain text, as the router read it on the first run.
+    assertEquals(emptyList(), events.mapNotNull { it.errorMessage })
+    assertTrue(events.any { it.output == "answered" })
+  }
+
+  @Test
+  fun runNode_singleTurnNodeTransferAsTheCallersOutput_emitsTheOutputOnce() = runBlocking {
+    // Arrange: a function node hands its output to a single-turn router whose helper hands off.
+    val helper2 = chatAgent("helper2", CountingReplyModel("from helper"))
+    val helper = chatAgent("helper", transferModel("helper2"), subAgents = listOf(helper2))
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("helper"),
+        subAgents = listOf(helper),
+        mode = AgentMode.SINGLE_TURN,
+        outputKey = "",
+      )
+    val caller =
+      node<Any?, Any?>("caller", rerunOnResume = true) { context, _ ->
+        context.runNode(router, useAsOutput = true)
+      }
+    var captured: Any? = null
+    val capture = node<Any?, String>("capture") { _, input -> "done".also { captured = input } }
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, caller), Edge(caller, capture)))
+
+    // Act
+    val events = workflow.runAsync(testInvocationContext()).toList()
+
+    // Assert: one output event, the last hop's reply, for every level; no state written.
+    assertEquals("from helper", captured)
+    val r = "wf@1/caller@1/router@1"
+    val outputs = events.filter {
+      it.nodeInfo?.path?.startsWith("wf@1/caller@1") == true &&
+        (it.output != null || it.nodeInfo.messageAsOutput == true)
+    }
+    assertEquals(
+      listOf("$r/helper@1/helper2@1", "$r/helper@1", r, "wf@1/caller@1"),
+      outputs.single().nodeInfo?.outputFor,
+    )
+    assertEquals(emptyList(), events.mapNotNull { it.actions.stateDelta[""] })
+  }
+
+  @Test
   fun runAsync_resumedPlainNodeTransfer_failsAsOnAFreshRun() = runBlocking {
     // Arrange: a node that is not an agent pauses on a call whose event also asks for a transfer.
     val runner =
@@ -1157,5 +1320,375 @@ class AgentTransferLoopTest {
     // Assert
     assertContains(error.message.orEmpty(), "'billing.desk'")
     assertTrue(events.none { it.author == "billing.desk" })
+  }
+
+  @Test
+  fun runAsync_singleTurnNodeTransferWithAnEnumSchema_failsOnAReplyOutsideTheEnum() = runBlocking {
+    // Arrange: a single-turn router whose output must be YES or NO hands off to its helper.
+    val helper = chatAgent("helper", replyModel("MAYBE"))
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("helper"),
+        subAgents = listOf(helper),
+        mode = AgentMode.SINGLE_TURN,
+        outputSchema = Schema(type = Type.STRING, enum = listOf("YES", "NO")),
+        outputKey = "answer",
+      )
+    val capture = TransferCaptureNode()
+    val context = testInvocationContext()
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, router), Edge(router, capture)))
+
+    // Act
+    val failure = assertFailsWith<IllegalArgumentException> { workflow.runAsync(context).toList() }
+
+    // Assert: the helper's reply is checked as the router's own reply would be.
+    assertContains(failure.message.orEmpty(), "output of node 'router'")
+    assertEquals(null, capture.received)
+    assertEquals(null, context.session.state["answer"])
+  }
+
+  @Test
+  fun runAsync_singleTurnNodeTransferToATopLevelParent_passesItsReplyToTheNextNode() = runBlocking {
+    // Arrange: a single-turn router hands off to its parent, which is not part of the workflow.
+    val router = LlmAgent("router", transferModel("coordinator"), mode = AgentMode.SINGLE_TURN)
+    val unusedCoordinator =
+      chatAgent("coordinator", replyModel("coordinator here"), subAgents = listOf(router))
+    val capture = TransferCaptureNode()
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, router), Edge(router, capture)))
+
+    // Act
+    val events = workflow.runAsync(testInvocationContext()).toList()
+
+    // Assert: the parent runs at the top level, and its reply is the router's output.
+    val reply = events.single { it.author == "coordinator" }
+    assertEquals("coordinator@1", reply.nodeInfo?.path)
+    assertEquals("coordinator here", capture.received)
+  }
+
+  @Test
+  fun runAsync_resumedSingleTurnNodeTransferToATopLevelParent_readsTheReplyWithTheRoutersSchema() =
+    runBlocking {
+      // Arrange: a router with a schema hands off to a schemaless single-turn parent; asker pauses.
+      val parentModel = CountingReplyModel("""{"a": "x"}""")
+      val router =
+        LlmAgent(
+          "router",
+          transferModel("coordinator"),
+          mode = AgentMode.SINGLE_TURN,
+          outputSchema = Schema(type = Type.OBJECT, properties = mapOf("a" to Schema(Type.STRING))),
+        )
+      val unusedCoordinator =
+        LlmAgent(
+          "coordinator",
+          parentModel,
+          subAgents = listOf(router),
+          mode = AgentMode.SINGLE_TURN,
+        )
+      val asker = AskingAgent("asker", "answered")
+      val runner =
+        InMemoryRunner(
+          app =
+            App(
+              appName = "app",
+              rootNode = Workflow("wf", listOf(Edge(Start, router), Edge(router, asker))),
+              resumabilityConfig = ResumabilityConfig(isResumable = true),
+            )
+        )
+      val unused =
+        runner.runAsync("u", "s", newMessage = Content.fromText(Role.USER, "go")).toList()
+      val answer =
+        userFunctionResponse(RequestInput.FUNCTION_CALL_NAME, "ask_asker", mapOf("ok" to true))
+
+      // Act
+      val events = runner.runAsync("u", "s", newMessage = answer).toList()
+
+      // Assert: the replayed reply reads with the router's schema; the parent does not rerun.
+      val replayed = events.single { it.author == "coordinator" && it.output != null }
+      assertEquals(mapOf("a" to "x"), replayed.output)
+      assertEquals(1, parentModel.calls)
+      assertTrue(events.any { it.output == "answered" })
+    }
+
+  @Test
+  fun runAsync_singleTurnNodeTransferToASingleTurnParentWithTheRoutersSchema_passesTheParsedReply() =
+    runBlocking {
+      // Arrange: a router with a schema hands off to a single-turn parent without one.
+      val router =
+        LlmAgent(
+          "router",
+          transferModel("coordinator"),
+          mode = AgentMode.SINGLE_TURN,
+          outputSchema = Schema(type = Type.OBJECT, properties = mapOf("a" to Schema(Type.STRING))),
+        )
+      val unusedCoordinator =
+        LlmAgent(
+          "coordinator",
+          replyModel("""{"a": "x"}"""),
+          subAgents = listOf(router),
+          mode = AgentMode.SINGLE_TURN,
+        )
+      val capture = TransferCaptureNode()
+      val workflow =
+        Workflow(name = "wf", edges = listOf(Edge(Start, router), Edge(router, capture)))
+
+      // Act
+      val events = workflow.runAsync(testInvocationContext()).toList()
+
+      // Assert: the reply reads with the router's schema, not as the parent's message.
+      assertEquals(mapOf("a" to "x"), capture.received)
+      assertEquals(mapOf("a" to "x"), events.single { it.author == "coordinator" }.output)
+    }
+
+  @Test
+  fun runAsync_singleTurnNodeTransfer_showsTheNodeInputToTheTarget() = runBlocking {
+    // Arrange: Prep -> a single-turn router that hands off to its helper -> Capture.
+    val requests = mutableListOf<LlmRequest>()
+    val helper = chatAgent("helper", recordingModel(requests, "from helper"))
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("helper"),
+        subAgents = listOf(helper),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val capture = TransferCaptureNode()
+    val context = testInvocationContext()
+
+    // Act
+    val unused = prepWorkflow(router, capture).runAsync(context).toList()
+
+    // Assert: the helper sees the router's input, which leaves the session after the handoff.
+    assertContains(requestTexts(requests.single()), "prep out")
+    assertEquals("from helper", capture.received)
+    assertTrue(
+      context.session.events.none { it.author == Role.USER && it.contentText() == "prep out" }
+    )
+  }
+
+  @Test
+  fun runAsync_singleTurnNodeTransferToAPeer_showsTheNodeInputToThePeer() = runBlocking {
+    // Arrange: a router hands off to a history-free peer, which runs beside it, not below it.
+    val requests = mutableListOf<LlmRequest>()
+    val router = LlmAgent("router", transferModel("peer"), mode = AgentMode.SINGLE_TURN)
+    val peer =
+      LlmAgent(
+        "peer",
+        recordingModel(requests, "from peer"),
+        mode = AgentMode.CHAT,
+        includeContents = IncludeContents.NONE,
+      )
+    val unusedParent =
+      chatAgent("coordinator", replyModel("unused"), subAgents = listOf(router, peer))
+    val capture = TransferCaptureNode()
+
+    // Act
+    val unused = prepWorkflow(router, capture).runAsync(testInvocationContext()).toList()
+
+    // Assert
+    assertContains(requestTexts(requests.single()), "prep out")
+    assertEquals("from peer", capture.received)
+  }
+
+  @Test
+  fun runAsync_singleTurnNodeTransferToATopLevelParent_showsTheNodeInputToTheParent() =
+    runBlocking {
+      // Arrange: a router hands off to its single-turn parent, outside the workflow.
+      val requests = mutableListOf<LlmRequest>()
+      val router = LlmAgent("router", transferModel("coordinator"), mode = AgentMode.SINGLE_TURN)
+      val unusedCoordinator =
+        LlmAgent(
+          "coordinator",
+          recordingModel(requests, "coordinator here"),
+          subAgents = listOf(router),
+          mode = AgentMode.SINGLE_TURN,
+        )
+      val capture = TransferCaptureNode()
+
+      // Act
+      val unused = prepWorkflow(router, capture).runAsync(testInvocationContext()).toList()
+
+      // Assert
+      assertContains(requestTexts(requests.single()), "prep out")
+      assertEquals("coordinator here", capture.received)
+    }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun runAsync_nodeThatASingleTurnNodesToolStarts_doesNotSeeTheNodeInput() = runBlocking {
+    // Arrange: a single-turn router whose tool runs another agent as a node during its turn.
+    val requests = mutableListOf<LlmRequest>()
+    val inner = chatAgent("inner", recordingModel(requests, "from inner"))
+    val startInner =
+      DummyTool(
+        "start_inner",
+        onRun = { context, _ ->
+          context.invocationContext.frameworkData.nodeContext!!.runNode(inner)
+          mapOf("ok" to true)
+        },
+      )
+    val router =
+      LlmAgent(
+        "router",
+        DummyModel.createSequential(
+          "m",
+          listOf(
+            modelFunctionCallResponse("start_inner"),
+            LlmResponse(content = Content.fromText(Role.MODEL, "done")),
+          ),
+        ),
+        tools = listOf(startInner),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val capture = TransferCaptureNode()
+
+    // Act
+    val unused = prepWorkflow(router, capture).runAsync(testInvocationContext()).toList()
+
+    // Assert: as in ADK Python, only the node the input was for reads it.
+    assertTrue("prep out" !in requestTexts(requests.single()))
+    assertEquals("done", capture.received)
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun runAsync_nodeThatASingleTurnNodesTargetStarts_doesNotSeeTheNodeInput() = runBlocking {
+    // Arrange: the helper's tool runs an agent, and a single-turn node that hands off, as nodes.
+    val innerRequests = mutableListOf<LlmRequest>()
+    val inner = chatAgent("inner", recordingModel(innerRequests, "from inner"))
+    val nestedRequests = mutableListOf<LlmRequest>()
+    val nested = chatAgent("nested", recordingModel(nestedRequests, "from nested"))
+    val nestedRouter =
+      LlmAgent(
+        "nested_router",
+        transferModel("nested"),
+        subAgents = listOf(nested),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val startInner =
+      DummyTool(
+        "start_inner",
+        onRun = { context, _ ->
+          val nodeContext = context.invocationContext.frameworkData.nodeContext!!
+          nodeContext.runNode(inner)
+          nodeContext.runNode(nestedRouter)
+          mapOf("ok" to true)
+        },
+      )
+    val helperRequests = mutableListOf<LlmRequest>()
+    val helperModel =
+      DummyModel("m") { request ->
+        helperRequests += request
+        if (helperRequests.size == 1) flowOf(modelFunctionCallResponse("start_inner"))
+        else flowOf(LlmResponse(content = Content.fromText(Role.MODEL, "from helper")))
+      }
+    val helper = LlmAgent("helper", helperModel, tools = listOf(startInner), mode = AgentMode.CHAT)
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("helper"),
+        subAgents = listOf(helper),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val capture = TransferCaptureNode()
+
+    // Act
+    val unused = prepWorkflow(router, capture).runAsync(testInvocationContext()).toList()
+
+    // Assert: the helper reads the router's input; the nodes its tool starts do not.
+    assertContains(requestTexts(helperRequests.first()), "prep out")
+    assertTrue("prep out" !in requestTexts(innerRequests.single()))
+    assertTrue("prep out" !in requestTexts(nestedRequests.single()))
+    assertEquals("from helper", capture.received)
+  }
+
+  @Test
+  fun runAsync_resumedSingleTurnNodeTransfer_doesNotShowTheNodeInputToTheResumedTarget() =
+    runBlocking {
+      // Arrange: Prep -> router -> helper waiting on a long-running call; then a single-turn node.
+      val helperRequests = mutableListOf<LlmRequest>()
+      val helperModel =
+        DummyModel("m") { request ->
+          helperRequests += request
+          if (helperRequests.size == 1) flowOf(modelFunctionCallResponse("approve"))
+          else flowOf(LlmResponse(content = Content.fromText(Role.MODEL, "approved")))
+        }
+      val approve = DummyTool("approve", isLongRunning = true, onRun = { _, _ -> Unit })
+      val helper = LlmAgent("helper", helperModel, tools = listOf(approve), mode = AgentMode.CHAT)
+      val router =
+        LlmAgent(
+          "router",
+          transferModel("helper"),
+          subAgents = listOf(helper),
+          mode = AgentMode.SINGLE_TURN,
+        )
+      val laterRequests = mutableListOf<LlmRequest>()
+      val later =
+        LlmAgent("later", recordingModel(laterRequests, "later"), mode = AgentMode.SINGLE_TURN)
+      val runner =
+        InMemoryRunner(
+          app =
+            App(
+              appName = "app",
+              rootNode = prepWorkflow(router, later),
+              resumabilityConfig = ResumabilityConfig(isResumable = true),
+            )
+        )
+      val first = runner.runAsync("u", "s", newMessage = Content.fromText(Role.USER, "go")).toList()
+      val callId = first.flatMap { it.functionCalls() }.single { it.name == "approve" }.id
+      val answer = userFunctionResponse("approve", id = callId, response = mapOf("ok" to true))
+
+      // Act
+      val unused = runner.runAsync("u", "s", newMessage = answer).toList()
+
+      // Assert: as in ADK Python, a resumed turn injects no input, so only the first turn sees it.
+      assertEquals(2, helperRequests.size)
+      assertContains(requestTexts(helperRequests.first()), "prep out")
+      assertTrue("prep out" !in requestTexts(helperRequests.last()))
+      val laterTexts = requestTexts(laterRequests.single())
+      assertContains(laterTexts, "approved")
+      assertTrue("prep out" !in laterTexts)
+    }
+
+  @Test
+  fun runAsync_singleTurnNodeTransfer_keepsTheNodeInputFromLaterNodes() = runBlocking {
+    // Arrange: Prep -> a single-turn router that hands off to its helper -> a single-turn node.
+    val requests = mutableListOf<LlmRequest>()
+    val helper = chatAgent("helper", replyModel("from helper"))
+    val router =
+      LlmAgent(
+        "router",
+        transferModel("helper"),
+        subAgents = listOf(helper),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val later = LlmAgent("later", recordingModel(requests, "later"), mode = AgentMode.SINGLE_TURN)
+
+    // Act
+    val unused = prepWorkflow(router, later).runAsync(testInvocationContext()).toList()
+
+    // Assert: the next node sees the router's output, not the router's own input.
+    val texts = requestTexts(requests.single())
+    assertContains(texts, "from helper")
+    assertTrue("prep out" !in texts)
+  }
+
+  /** A model that records each request in [requests] and answers [reply]. */
+  private fun recordingModel(requests: MutableList<LlmRequest>, reply: String) =
+    DummyModel("m") { request ->
+      requests += request
+      flowOf(LlmResponse(content = Content.fromText(Role.MODEL, reply)))
+    }
+
+  private fun requestTexts(request: LlmRequest): List<String> =
+    request.contents.flatMap { it.parts }.mapNotNull { it.text }
+
+  /** Prep, which outputs `prep out` -> [router] -> [next]. */
+  private fun prepWorkflow(router: Node, next: Node): Workflow {
+    val prep = node<Any?, String>("prep") { _, _ -> "prep out" }
+    return Workflow(
+      name = "wf",
+      edges = listOf(Edge(Start, prep), Edge(prep, router), Edge(router, next)),
+    )
   }
 }
