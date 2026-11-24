@@ -242,7 +242,13 @@ internal fun Route.liveRoutes(
 
       val runner =
         try {
-          servedApps.runnerOrNull(params.appName, sessionService, artifactService, plugins)
+          servedApps.runnerOrNull(
+            params.appName,
+            sessionService,
+            artifactService,
+            plugins,
+            autoCreateSession = true,
+          )
         } catch (e: Exception) {
           return@webSocket closeUnloadedAgent(e)
         } catch (e: LinkageError) {
