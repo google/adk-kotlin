@@ -19,6 +19,7 @@ package com.google.adk.kt.runners
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ParallelAgent
+import com.google.adk.kt.agents.ReadonlyContext
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.agents.SequentialAgentState
@@ -38,8 +39,10 @@ import com.google.adk.kt.testing.simplifyEvents
 import com.google.adk.kt.testing.simplifyResumableEvents
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
+import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
@@ -161,6 +164,39 @@ class FunctionToolHitlIntegrationTest {
         ?.singleOrNull()
         ?.text
     assertEquals("done", finalText)
+  }
+
+  @Test
+  fun runAsync_toolsetToolRequiresConfirmation_resumeOnApproval_runsToolOnce() = runBlocking {
+    var executions = 0
+    val toolset =
+      object : Toolset {
+        override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
+          listOf(countingSecureTool { executions++ })
+      }
+    val agent =
+      LlmAgent(
+        name = AGENT_NAME,
+        model = secureCallThenFinalModel(callId = "secure_call_1", finalText = "done"),
+        toolsets = listOf(toolset),
+      )
+    val runner = InMemoryRunner(agent = agent)
+    val firstTurnEvents =
+      runner
+        .runAsync(
+          userId = USER_ID,
+          sessionId = SESSION_ID,
+          newMessage = userMessage("transfer 100 dollars"),
+        )
+        .toList()
+
+    val resumeEvents = approve(runner, synthCallId(firstTurnEvents))
+
+    assertEquals(1, executions)
+    assertEquals(
+      listOf(AGENT_NAME to secureToolResponsePart(), AGENT_NAME to "done"),
+      simplifyEvents(resumeEvents),
+    )
   }
 
   /**

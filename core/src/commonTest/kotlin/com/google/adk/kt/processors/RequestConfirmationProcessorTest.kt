@@ -17,6 +17,7 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.ReadonlyContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
@@ -29,6 +30,8 @@ import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
+import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
@@ -1105,6 +1108,70 @@ class RequestConfirmationProcessorTest {
     assertEquals(emptyList(), toolRuns)
   }
 
+  @Test
+  fun process_toolsetTool_executesIt() = runBlocking {
+    val toolName = "risky_tool"
+    val toolRuns = mutableListOf<String>()
+    // Offers the tool only to this agent's context, so resolving without one finds nothing.
+    val toolset =
+      object : Toolset {
+        override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> =
+          if (readonlyContext?.agentName == AGENT_NAME) listOf(recordingTool(toolName, toolRuns))
+          else emptyList()
+      }
+    val context = contextWithToolset(toolset)
+    context.session.events.addAll(pendingApprovalEvents(context.invocationId, toolName))
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(listOf(toolName), toolRuns)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
+  @Test
+  fun process_confirmationAlreadyExecuted_doesNotResolveToolsets() = runBlocking {
+    // Resolving a toolset can be a remote call, so a settled confirmation must not trigger one.
+    val toolName = "risky_tool"
+    var resolutions = 0
+    val toolset =
+      object : Toolset {
+        override suspend fun getTools(readonlyContext: ReadonlyContext?): List<BaseTool> {
+          resolutions++
+          return listOf(recordingTool(toolName, mutableListOf()))
+        }
+      }
+    val context = contextWithToolset(toolset)
+    context.session.events.addAll(pendingApprovalEvents(context.invocationId, toolName))
+    context.session.events.add(
+      agentEvent(
+        context.invocationId,
+        Part(
+          functionResponse =
+            FunctionResponse(name = toolName, id = "orig_1", response = mapOf("status" to "ok"))
+        ),
+      )
+    )
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(emptyList(), emittedEvents)
+    assertEquals(0, resolutions)
+  }
+
+  @Test
+  fun process_extraTool_executesIt() = runBlocking {
+    val toolName = "risky_tool"
+    val toolRuns = mutableListOf<String>()
+    val (session, context) = newConfirmationContext()
+    context.extraTools[toolName] = recordingTool(toolName, toolRuns)
+    session.events.addAll(pendingApprovalEvents(context.invocationId, toolName))
+
+    val emittedEvents = collectEmittedEvents(context)
+
+    assertEquals(listOf(toolName), toolRuns)
+    assertEquals("orig_1", singleEmittedFunctionResponse(emittedEvents).id)
+  }
+
   // -- Helpers -----------------------------------------------------------------------------------
 
   /**
@@ -1133,16 +1200,31 @@ class RequestConfirmationProcessorTest {
     toolRuns: MutableList<String>,
     branch: String? = null,
   ): Pair<Session, InvocationContext> =
-    newConfirmationContext(
-      tools =
-        listOf(
-          DummyTool(toolName) { _, _ ->
-            toolRuns.add(toolName)
-            mapOf("status" to "executed")
-          }
-        ),
-      branch = branch,
+    newConfirmationContext(tools = listOf(recordingTool(toolName, toolRuns)), branch = branch)
+
+  /** A context for an `LlmAgent` named [AGENT_NAME] whose only tools come from [toolset]. */
+  private fun contextWithToolset(toolset: Toolset): InvocationContext =
+    InvocationContext(
+      session = testSession(),
+      runConfig = null,
+      agent = LlmAgent(name = AGENT_NAME, model = DummyModel("gemini"), toolsets = listOf(toolset)),
     )
+
+  /** A tool named [toolName] that records each invocation into [toolRuns]. */
+  private fun recordingTool(toolName: String, toolRuns: MutableList<String>): DummyTool =
+    DummyTool(toolName) { _, _ ->
+      toolRuns.add(toolName)
+      mapOf("status" to "executed")
+    }
+
+  /**
+   * The original call `orig_1` to [toolName], its confirmation request, and the user's approval of
+   * it - everything a legitimate resume needs.
+   */
+  private fun pendingApprovalEvents(invocationId: String, toolName: String): List<Event> =
+    originalCallEvents(invocationId, toolName, "orig_1") +
+      agentEvent(invocationId, synthConfirmationCallPart("synth_1", toolName, "orig_1")) +
+      approvalEvent(invocationId, synthId = "synth_1")
 
   /** An agent-authored [Event] with the given [parts] in a `model`-role [Content]. */
   private fun agentEvent(invocationId: String, vararg parts: Part): Event =

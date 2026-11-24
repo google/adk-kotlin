@@ -178,7 +178,7 @@ internal class RequestConfirmationProcessor : LlmRequestProcessor {
     context
       .handleFunctionCalls(
         functionCalls = pending.values.map { it.originalCall },
-        tools = agent.tools.associateBy { it.name },
+        tools = agent.toolsByName(context),
         filters = pending.keys,
         toolConfirmations = pending.mapValues { it.value.confirmation },
       )

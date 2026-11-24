@@ -20,7 +20,6 @@ package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
-import com.google.adk.kt.agents.toReadonlyContext
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.SecretAccess
@@ -36,7 +35,6 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.LlmRequest
-import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
@@ -132,12 +130,6 @@ private fun List<Event>.callIdsToRerun(
       .filter { configs -> requestingCallIds.any(configs::containsKey) }
       .flatMap { configs -> configs.filterValues { it.credentialKey in storedKeys }.keys }
   return requestingCallIds + sameMapCallIds
-}
-
-/** Returns the tools this agent can call, by name: its own, the runtime's and its toolsets'. */
-private suspend fun LlmAgent.toolsByName(context: InvocationContext): Map<String, BaseTool> {
-  val toolsetTools = toolsets.flatMap { it.getTools(context.toReadonlyContext()) }
-  return (tools + context.extraTools.values + toolsetTools).associateBy { it.name }
 }
 
 /**

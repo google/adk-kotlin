@@ -16,9 +16,12 @@
 package com.google.adk.kt.processors
 
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.requireLlmAgent
+import com.google.adk.kt.agents.toReadonlyContext
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.tools.BaseTool
 
 /** A processor that appends the agent's tools to the LLM request. */
 internal class ToolProcessor : LlmRequestProcessor {
@@ -27,4 +30,12 @@ internal class ToolProcessor : LlmRequestProcessor {
     request: LlmRequest,
     emitEvent: suspend (Event) -> Unit,
   ): LlmRequest = request.appendTools(context.requireLlmAgent().tools)
+}
+
+/**
+ * Returns this agent's own, runtime and toolset tools by name, for re-running a paused tool call.
+ */
+internal suspend fun LlmAgent.toolsByName(context: InvocationContext): Map<String, BaseTool> {
+  val toolsetTools = toolsets.flatMap { it.getTools(context.toReadonlyContext()) }
+  return (tools + context.extraTools.values + toolsetTools).associateBy { it.name }
 }
