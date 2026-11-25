@@ -18,24 +18,44 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.artifacts.InMemoryArtifactService
+import com.google.adk.kt.logging.Level
+import com.google.adk.kt.logging.SafeLogger
 import com.google.adk.kt.testing.DummyAgent
 import com.google.adk.kt.testing.SaveHookArtifactService
 import com.google.adk.kt.testing.storedBytes
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Role
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 /** Covers the recording that `LiveRunConfig.saveLiveBlob` turns on. */
-@OptIn(ExperimentalLiveApi::class)
+@OptIn(ExperimentalLiveApi::class, ExperimentalAtomicApi::class)
 class AudioCacheManagerTest {
 
   private val artifacts = InMemoryArtifactService()
@@ -308,6 +328,29 @@ class AudioCacheManagerTest {
   }
 
   @Test
+  fun writeWithin_storeIgnoringCancellation_returnsWhatSavedByTheBound() = runBlocking {
+    // The user's recording saves first; the model's ignores cancellation and outlasts the bound.
+    val stuck =
+      SaveHookArtifactService(artifacts) {
+        if (it == 1) withContext(NonCancellable) { delay(5.seconds) }
+      }
+    val context =
+      testInvocationContext(agent = DummyAgent(name = "a"), artifactService = stuck).apply {
+        openLiveRun(LiveRequestQueue())
+      }
+    val manager = AudioCacheManager(context)
+    manager.cacheInput(pcm(1))
+    manager.cacheOutput(pcm(2))
+    val taken = manager.take(flushUserAudio = true, flushModelAudio = true)
+    val started = TimeSource.Monotonic.markNow()
+
+    val saved = manager.writeWithin(taken, "test", timeout = 200.milliseconds)
+
+    assertEquals(listOf(Role.USER), saved.map { it.author })
+    assertTrue(started.elapsedNow() < 2.seconds, "the stuck save must not hold the caller")
+  }
+
+  @Test
   fun flush_contextMadeForAChild_sharesTheCache() = runBlocking {
     // A context made for a child shares the cache, so one side keeps a single recording.
     val parent = context()
@@ -358,5 +401,172 @@ class AudioCacheManagerTest {
       event.content?.parts?.single()?.fileData?.fileUri?.contains("_${event.timestamp}.") == true,
       "the filename and the event disagree on when the recording began",
     )
+  }
+
+  @Test
+  fun writeWithin_storePastTheBound_cancelsTheSaveAndReturnsWhatSaved() = runBlocking {
+    // The user's recording saves; the model's waits until cancelled, so only the bound ends it.
+    val cancelled = CompletableDeferred<Unit>()
+    val hung =
+      SaveHookArtifactService(artifacts) {
+        if (it == 1) {
+          try {
+            awaitCancellation()
+          } finally {
+            cancelled.complete(Unit)
+          }
+        }
+      }
+    val context =
+      testInvocationContext(agent = DummyAgent(name = "a"), artifactService = hung).apply {
+        openLiveRun(LiveRequestQueue())
+      }
+    val manager = AudioCacheManager(context)
+    manager.cacheInput(pcm(1))
+    manager.cacheOutput(pcm(2))
+    val taken = manager.take(flushUserAudio = true, flushModelAudio = true)
+    val started = TimeSource.Monotonic.markNow()
+
+    val saved = manager.writeWithin(taken, "test", timeout = 200.milliseconds)
+
+    assertTrue(started.elapsedNow() < 2.seconds, "the hung save must not hold the caller")
+    assertEquals(listOf(Role.USER), saved.map { it.author })
+    // Fails if the save is left running past the bound.
+    withTimeout(2.seconds) { cancelled.await() }
+  }
+
+  @Test
+  fun writeWithin_callerCancelled_cancelsTheSave(): Unit = runBlocking {
+    // A cancel during the wait must reach the detached save too, or it keeps running.
+    val saving = CompletableDeferred<Unit>()
+    val cancelled = CompletableDeferred<Unit>()
+    val hung =
+      SaveHookArtifactService(artifacts) {
+        saving.complete(Unit)
+        try {
+          awaitCancellation()
+        } finally {
+          cancelled.complete(Unit)
+        }
+      }
+    val context =
+      testInvocationContext(agent = DummyAgent(name = "a"), artifactService = hung).apply {
+        openLiveRun(LiveRequestQueue())
+      }
+    val manager = AudioCacheManager(context)
+    manager.cacheOutput(pcm(1))
+    val taken = manager.take(flushUserAudio = false, flushModelAudio = true)
+    var returned = false
+
+    val caller = launch {
+      val unused = manager.writeWithin(taken, "test", timeout = 10.seconds)
+      returned = true
+    }
+    saving.await()
+    caller.cancel()
+    caller.join()
+
+    assertTrue(caller.isCancelled)
+    assertFalse(returned, "writeWithin must rethrow the cancellation, not return")
+    // Fails if the save is left running after the caller stops.
+    withTimeout(2.seconds) { cancelled.await() }
+  }
+
+  @Test
+  fun launchSave_storeThrowsAnError_logsItAndLeavesTheScopeRunning(): Unit = runBlocking {
+    // An Error passes the per-recording catch, which takes only Exception, and reaches this one.
+    val broken = SaveHookArtifactService(artifacts) { throw NotImplementedError("store broke") }
+    val context =
+      testInvocationContext(agent = DummyAgent(name = "a"), artifactService = broken).apply {
+        openLiveRun(LiveRequestQueue())
+      }
+    val manager = AudioCacheManager(context)
+    manager.cacheOutput(pcm(1))
+    val taken = manager.take(flushUserAudio = false, flushModelAudio = true)
+    val scope = CoroutineScope(coroutineContext + Job())
+
+    val save = manager.launchSave(scope, taken, AtomicReference(emptyList()))
+    save.join()
+
+    // Thrown, it would fail the save and cancel the scope with it.
+    assertFalse(save.isCancelled)
+    assertTrue(scope.isActive)
+    scope.cancel()
+  }
+
+  @Test
+  fun launchSave_storeCancels_endsTheSaveCancelled(): Unit = runBlocking {
+    val cancelling = SaveHookArtifactService(artifacts) { throw CancellationException("cancelled") }
+    val context =
+      testInvocationContext(agent = DummyAgent(name = "a"), artifactService = cancelling).apply {
+        openLiveRun(LiveRequestQueue())
+      }
+    val manager = AudioCacheManager(context)
+    manager.cacheOutput(pcm(1))
+    val taken = manager.take(flushUserAudio = false, flushModelAudio = true)
+    val scope = CoroutineScope(coroutineContext + SupervisorJob())
+
+    val save = manager.launchSave(scope, taken, AtomicReference(emptyList()))
+    save.join()
+
+    // Swallowed, the cancellation would let the save finish as if it had succeeded.
+    assertTrue(save.isCancelled)
+    scope.cancel()
+  }
+
+  @Test
+  fun writeWithin_logsADroppedSaveOnlyWhenItRunsPastTheBound() = runBlocking {
+    // The model's save hangs past the bound; a second, instant save finishes in time.
+    val hung = SaveHookArtifactService(artifacts) { if (it == 1) awaitCancellation() }
+    val context =
+      testInvocationContext(agent = DummyAgent(name = "a"), artifactService = hung).apply {
+        openLiveRun(LiveRequestQueue())
+      }
+    val logged = RecordingLogger()
+    val manager = AudioCacheManager(context, logged)
+    manager.cacheInput(pcm(1))
+    manager.cacheOutput(pcm(2))
+    val unused =
+      manager.writeWithin(
+        manager.take(flushUserAudio = true, flushModelAudio = true),
+        "test",
+        timeout = 200.milliseconds,
+      )
+    manager.cacheInput(pcm(3))
+    val inTime =
+      manager.writeWithin(
+        manager.take(flushUserAudio = true, flushModelAudio = false),
+        "test",
+        timeout = 2.seconds,
+      )
+
+    // Only the save that ran past the bound is reported as dropped; the second one saved.
+    assertEquals(listOf("Dropped live audio still saving at test after 200ms."), logged.errors)
+    assertEquals(1, inTime.size)
+  }
+
+  @Test
+  fun writeWithin_nothingTaken_returnsAtOnceWithoutReportingADrop() = runBlocking {
+    // Arrange: nothing is cached, and a zero bound would end any save that started.
+    val logged = RecordingLogger()
+    val manager = AudioCacheManager(context(), logged)
+    val nothing = manager.take(flushUserAudio = true, flushModelAudio = true)
+
+    // Act:
+    val saved = manager.writeWithin(nothing, "test", timeout = Duration.ZERO)
+
+    // Assert: no save started, so none is reported as dropped.
+    assertEquals(emptyList(), saved)
+    assertEquals(emptyList(), logged.errors)
+  }
+}
+
+/** Keeps the error messages logged, so a test can check what a class reports. */
+private class RecordingLogger : SafeLogger() {
+  override val name = "RecordingLogger"
+  val errors = mutableListOf<String>()
+
+  override fun doLog(level: Level, cause: Throwable?, msg: () -> String) {
+    if (level == Level.ERROR) errors += msg()
   }
 }

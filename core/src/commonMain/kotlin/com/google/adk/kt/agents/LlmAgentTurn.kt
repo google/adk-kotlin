@@ -1631,13 +1631,10 @@ internal class LlmAgentTurn(
   /**
    * Saves the requested caches now, outside any connection, for a blocked turn, a close by either
    * side, a transfer, a completed step, a drop with no handle or an exhausted reconnect. It waits
-   * at most [RecordingSaves.SAVE_TIMEOUT], and skips the save when the store already timed out at
-   * this connection's end, so a stuck store holds the run for one timeout, not two, and costs the
-   * recording rather than the run; [where] names the moment in the log.
+   * at most [AudioCacheManager.SAVE_TIMEOUT], and skips the save when the store already timed out
+   * at this connection's end, so a stuck store holds the run for one timeout, not two, and costs
+   * the recording rather than the run; [where] names the moment in the log.
    */
-  // cache is shared with later connections but its caches are lock-guarded; taken is this save's
-  // own; saved is read while the job may still run and is safe because it is atomic.
-  @Suppress("UnsafeCoroutineCrossing")
   private suspend fun saveRecordingsNow(
     flushUserAudio: Boolean,
     flushModelAudio: Boolean,
@@ -1651,40 +1648,7 @@ internal class LlmAgentTurn(
       logger.error { "Dropped live audio at $where: the artifact store already timed out." }
       return emptyList()
     }
-    // The save runs detached, so a store that ignores cancellation cannot hold the run past the
-    // bound; each recording is published as it saves and read back after a bounded wait. A save
-    // past
-    // the bound still finishes detached -- its artifact lands in the store -- but its event is
-    // never
-    // read, so none is delivered after the run moved on. The scope is cancelled in the finally so a
-    // cancel during the wait does not leave the save running.
-    val saved = AtomicReference(emptyList<Event>())
-    val saveScope = CoroutineScope(currentCoroutineContext() + SupervisorJob())
-    try {
-      val job = saveScope.launch {
-        try {
-          val acc = mutableListOf<Event>()
-          cache.write(taken) { event ->
-            acc += event
-            saved.store(acc.toList())
-          }
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Throwable) {
-          // Logged, not rethrown: an uncaught throw here would crash the process on Android.
-          logger.error { "Failed to save live audio at $where (${e::class.simpleName})." }
-        }
-      }
-      if (withTimeoutOrNull(RecordingSaves.SAVE_TIMEOUT) { job.join() } == null) {
-        storeTimedOut = true
-        logger.error {
-          "Dropped live audio still saving at $where after ${RecordingSaves.SAVE_TIMEOUT}."
-        }
-      }
-    } finally {
-      saveScope.cancel()
-    }
-    return saved.load()
+    return cache.writeWithin(taken, where)
   }
 
   /**
@@ -1715,11 +1679,11 @@ internal class LlmAgentTurn(
 
   /**
    * Saves recordings off the receive loop, so a slow artifact store delays no other event; each is
-   * delivered once saved, in turn order. [finish] waits up to [SAVE_TIMEOUT], then leaves a
-   * still-running save to finish detached: its artifact still lands in the store, but its event is
-   * dropped, so nothing is delivered after the run moved on. A store that ignores cancellation can
-   * leave such detached saves running across reconnects until it returns; a cancellable one is
-   * cancelled when this connection's scope ends.
+   * delivered once saved, in turn order. [finish] waits up to [AudioCacheManager.SAVE_TIMEOUT],
+   * then leaves a still-running save to finish detached: its artifact still lands in the store, but
+   * its event is dropped, so nothing is delivered after the run moved on. A store that ignores
+   * cancellation can leave such detached saves running across reconnects until it returns; a
+   * cancellable one is cancelled when this connection's scope ends.
    */
   private class RecordingSaves(
     private val scope: CoroutineScope,
@@ -1750,20 +1714,7 @@ internal class LlmAgentTurn(
       val previous = jobs.lastOrNull()
       val saved = AtomicReference(emptyList<Event>())
       // Detached, so a stuck save never blocks the run.
-      val write = saveScope.launch {
-        try {
-          val acc = mutableListOf<Event>()
-          cache.write(taken) { event ->
-            acc += event
-            saved.store(acc.toList())
-          }
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Throwable) {
-          // Logged, not rethrown: an uncaught throw here would crash the process on Android.
-          logger.error { "Failed to save live audio (${e::class.simpleName})." }
-        }
-      }
+      val write = cache.launchSave(saveScope, taken, saved)
       jobs += scope.launch {
         // Wait for the save, unless [finish] cuts the wait short first.
         select {
@@ -1782,10 +1733,10 @@ internal class LlmAgentTurn(
       get() = scope.isActive
 
     /**
-     * Waits up to [SAVE_TIMEOUT] for the saves to finish and deliver in turn order. On timeout it
-     * stops waiting and returns false: each delivery then emits only what its save had already
-     * stored, and a save that ignores cancellation is left to finish detached, its later recordings
-     * dropped, so it cannot hold the run open.
+     * Waits up to [AudioCacheManager.SAVE_TIMEOUT] for the saves to finish and deliver in turn
+     * order. On timeout it stops waiting and returns false: each delivery then emits only what its
+     * save had already stored, and a save that ignores cancellation is left to finish detached, its
+     * later recordings dropped, so it cannot hold the run open.
      */
     suspend fun finish(): Boolean {
       val running = jobs.filter { it.isActive }
@@ -1793,22 +1744,19 @@ internal class LlmAgentTurn(
         saveScope.cancel()
         return true
       }
-      if (withTimeoutOrNull(SAVE_TIMEOUT) { running.joinAll() } != null) {
+      if (withTimeoutOrNull(AudioCacheManager.SAVE_TIMEOUT) { running.joinAll() } != null) {
         saveScope.cancel()
         return true
       }
-      logger.error { "Cut off live audio save(s) still running after $SAVE_TIMEOUT." }
+      logger.error {
+        "Cut off live audio save(s) still running after ${AudioCacheManager.SAVE_TIMEOUT}."
+      }
       // Release the delivery jobs to emit what was stored so far; they are bounded now, so join
       // them, then stop any lingering save (best effort; a non-cancellable one finishes detached).
       cutOff.complete(Unit)
       running.joinAll()
       saveScope.cancel()
       return false
-    }
-
-    companion object {
-      /** How long to wait for recordings still saving before moving on without them. */
-      val SAVE_TIMEOUT = 10.seconds
     }
   }
 

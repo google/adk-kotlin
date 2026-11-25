@@ -18,6 +18,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.artifacts.adkLiveArtifactReference
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.logging.Logger
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.DEFAULT_AUDIO_INPUT_MIME_TYPE
 import com.google.adk.kt.types.Blob
@@ -25,10 +26,21 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** One chunk of realtime audio, kept until the turn that produced it ends. */
 internal class RealtimeCacheEntry(
@@ -77,7 +89,10 @@ internal class RealtimeCache {
  * Chunks accumulate on the live run's [RealtimeCache]s. When a turn ends, [flush] joins each side's
  * chunks into one artifact and returns an event that references it.
  */
-internal class AudioCacheManager(private val context: InvocationContext) {
+internal class AudioCacheManager(
+  private val context: InvocationContext,
+  private val logger: Logger = defaultLogger,
+) {
 
   private val liveRun: LiveRun = checkNotNull(context.liveRun) { "only a live run records audio" }
 
@@ -129,6 +144,61 @@ internal class AudioCacheManager(private val context: InvocationContext) {
   suspend fun write(taken: TakenAudio, onSaved: suspend (Event) -> Unit) {
     writeArtifact(taken.input, INPUT_AUDIO)?.let { onSaved(it) }
     writeArtifact(taken.output, OUTPUT_AUDIO)?.let { onSaved(it) }
+  }
+
+  /**
+   * Writes [taken] out detached and waits at most [timeout], returning what was saved by then. A
+   * store that ignores cancellation thus cannot hold the caller past the bound; such a save still
+   * lands in the store, but its event is dropped. [where] names the moment in the log.
+   */
+  @OptIn(ExperimentalAtomicApi::class)
+  suspend fun writeWithin(
+    taken: TakenAudio,
+    where: String,
+    timeout: Duration = SAVE_TIMEOUT,
+  ): List<Event> {
+    if (taken.input.isEmpty() && taken.output.isEmpty()) return emptyList()
+    val saved = AtomicReference(emptyList<Event>())
+    // Cancelled in the finally, so a cancel during the wait does not leave the save running.
+    val saveScope = CoroutineScope(currentCoroutineContext() + SupervisorJob())
+    val timedOut =
+      try {
+        val job = launchSave(saveScope, taken, saved, where)
+        withTimeoutOrNull(timeout) { job.join() } == null
+      } finally {
+        saveScope.cancel()
+      }
+    if (timedOut) logger.error { "Dropped live audio still saving at $where after $timeout." }
+    return saved.load()
+  }
+
+  /**
+   * Starts writing [taken] out detached in [scope], publishing what it has saved to [saved] after
+   * each recording, so a reader cut short still sees those. A failed save is logged, naming the
+   * moment [where] when given, rather than thrown.
+   */
+  // write reads only taken and the context; saved is atomic.
+  @OptIn(ExperimentalAtomicApi::class)
+  @Suppress("UnsafeCoroutineCrossing")
+  fun launchSave(
+    scope: CoroutineScope,
+    taken: TakenAudio,
+    saved: AtomicReference<List<Event>>,
+    where: String? = null,
+  ): Job = scope.launch {
+    try {
+      val acc = mutableListOf<Event>()
+      write(taken) { event ->
+        acc += event
+        saved.store(acc.toList())
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Throwable) {
+      // Logged, not rethrown: an uncaught throw here would crash the process on Android.
+      val at = where?.let { " at $it" }.orEmpty()
+      logger.error { "Failed to save live audio$at (${e::class.simpleName})." }
+    }
   }
 
   /** Audio taken from the caches at one turn boundary. */
@@ -187,9 +257,12 @@ internal class AudioCacheManager(private val context: InvocationContext) {
     )
   }
 
-  private companion object {
+  companion object {
+    /** How long to wait for live recordings still saving before moving on without them. */
+    val SAVE_TIMEOUT = 10.seconds
+
     private const val INPUT_AUDIO = "input_audio"
     private const val OUTPUT_AUDIO = "output_audio"
-    private val logger = LoggerFactory.getLogger(AudioCacheManager::class)
+    private val defaultLogger = LoggerFactory.getLogger(AudioCacheManager::class)
   }
 }
