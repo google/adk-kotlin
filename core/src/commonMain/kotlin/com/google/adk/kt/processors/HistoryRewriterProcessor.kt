@@ -53,6 +53,8 @@ internal class HistoryRewriterProcessor {
     isolationScope: String? = null,
     userContent: Content? = null,
     handoffInputId: String? = null,
+    // Collects the ids of the events whose function responses are kept, narrated or not.
+    answerIds: MutableSet<String>? = null,
   ): List<Content> {
     // A handoff target reads its router's input as its own, as ADK Python runs it inline.
     val events =
@@ -111,6 +113,10 @@ internal class HistoryRewriterProcessor {
 
     // A result goes with its call when the call is presented as context, or it pairs with nothing.
     val narratedCallIds = mutableSetOf<String>()
+    // Rearranging can merge answers into one event but reuses their parts, mapped to their events.
+    val answerEvents = mutableMapOf<PartRef, String>()
+    // A narrated answer counts as kept only if its narration survives the rearranging below.
+    val narratedAnswers = mutableMapOf<EventRef, String>()
     val filteredEvents = buildList {
       for (event in mergeTranscriptions(recoveredEvents)) {
         if (event.content == null) continue
@@ -119,10 +125,19 @@ internal class HistoryRewriterProcessor {
             event.functionResponses().any { it.id in narratedCallIds }
         if (!narrate) {
           add(event)
+          if (answerIds != null) {
+            event.content.parts
+              .filter { it.functionResponse != null }
+              .associateTo(answerEvents) { PartRef(it) to event.id }
+          }
           continue
         }
         event.functionCalls().mapNotNullTo(narratedCallIds) { it.id }
-        presentOtherAgentMessage(event)?.let { add(it) }
+        val narrated = presentOtherAgentMessage(event) ?: continue
+        add(narrated)
+        if (answerIds != null && event.functionResponses().isNotEmpty()) {
+          narratedAnswers[EventRef(narrated)] = event.id
+        }
       }
     }
 
@@ -135,6 +150,10 @@ internal class HistoryRewriterProcessor {
         .let { rearrangeEventsForAsyncFunctionResponsesInHistory(it) }
         .mapNotNull { event ->
           val content = event.content ?: return@mapNotNull null
+          if (answerIds != null) {
+            content.parts.mapNotNullTo(answerIds) { answerEvents[PartRef(it)] }
+            narratedAnswers[EventRef(event)]?.let(answerIds::add)
+          }
           stripClientFunctionCallIds(content)
         }
     // The unscoped delegating call was filtered out, so restate the task as the opening turn.
@@ -426,6 +445,13 @@ internal class HistoryRewriterProcessor {
     override fun hashCode(): Int = event.id.hashCode()
   }
 
+  /** Wraps a function-response [Part] so map keys compare by reference identity (`===`). */
+  private class PartRef(val part: Part) {
+    override fun equals(other: Any?): Boolean = other is PartRef && part === other.part
+
+    override fun hashCode(): Int = part.functionResponse?.id.hashCode()
+  }
+
   /**
    * Returns the suffix of [events] that belongs to the current turn under [IncludeContents.NONE],
    * as ADK Python's `_get_current_turn_contents` does. The turn starts at the latest user input or
@@ -455,7 +481,7 @@ internal class HistoryRewriterProcessor {
         unmatchedResultIds.isNotEmpty() ||
           isSubmittedResult ||
           isDirectTransfer(events[i]) ||
-          isStreamFinalAnswer(events[i]) ||
+          isOutOfTurnAnswer(events[i]) ||
           isSpeechBeforeOwnTransfer(events, i)
       ) {
         continue
@@ -493,10 +519,10 @@ internal class HistoryRewriterProcessor {
         continue
       }
       val turn = events.subList(start, events.size)
-      // A stream's final answer to a call made before the turn has nothing in it to answer.
+      // An out-of-turn answer to a call made before the turn has nothing in it to answer.
       val turnCallIds = turn.functionCallIds()
       return turn.filter { event ->
-        !isStreamFinalAnswer(event) || event.functionResponses().any { it.id in turnCallIds }
+        !isOutOfTurnAnswer(event) || event.functionResponses().any { it.id in turnCallIds }
       }
     }
     return emptyList()
@@ -510,11 +536,11 @@ internal class HistoryRewriterProcessor {
     event.author == Role.USER && event.functionResponses().isNotEmpty()
 
   /**
-   * Whether [event] is a live stream's final answer, recorded after the call's first answer. It
-   * replaces that answer where it stands rather than continuing a turn.
+   * Whether [event] is an answer marked with [OUT_OF_TURN_ANSWER_KEY]. It answers the call where
+   * the call stands rather than continuing a turn.
    */
-  private fun isStreamFinalAnswer(event: Event): Boolean =
-    event.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true &&
+  private fun isOutOfTurnAnswer(event: Event): Boolean =
+    event.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true &&
       event.functionResponses().isNotEmpty()
 
   /**
@@ -978,8 +1004,8 @@ internal class HistoryRewriterProcessor {
 
     val currentFunctionResponseIds = functionResponses.mapNotNull { it.id }.toSet()
 
-    // A live stream's final answer replaces the call's first answer where it stands.
-    if (isStreamFinalAnswer(lastEvent)) return events
+    // An out-of-turn answer goes where its call stands.
+    if (isOutOfTurnAnswer(lastEvent)) return events
 
     // Fast-path (parity with Java/Python): if the immediately-preceding event already contains a
     // matching function_call for the latest function_response, the history is already in the
@@ -1199,7 +1225,8 @@ internal class HistoryRewriterProcessor {
 }
 
 /**
- * The [Event.customMetadata] key that marks a live stream's final answer, which a live run records
- * once it stops the stream or the stream ends on its own.
+ * The [Event.customMetadata] key that marks an answer a live run records out of its call's turn: a
+ * stream's final answer, once the stream stops or ends, or a background call's answer. Its value
+ * predates background calls and is kept because stored sessions carry it.
  */
-internal const val STREAM_FINAL_ANSWER_KEY = "adk_stream_final_answer"
+internal const val OUT_OF_TURN_ANSWER_KEY = "adk_stream_final_answer"
