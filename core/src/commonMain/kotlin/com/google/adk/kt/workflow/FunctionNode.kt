@@ -765,6 +765,8 @@ internal fun PortCodec<*>.schemaForm(value: Any?, what: String): Any? =
  * output or calling `Context.setOutput` fails the node. A node that talks to an agent node sends
  * the message with `emit(content)`. A node has no auth configuration.
  *
+ * On the JVM, Java callers use `FunctionNodes.of` or `FunctionNodes.builder`.
+ *
  * @param name The node's name, required: non-empty and without '/', '@' or '.'.
  * @param inputSchema Checks the input as it arrives, before [I]'s defaults apply; an `Any?` port
  *   then gets the checked value.
@@ -882,7 +884,8 @@ internal inline fun <reified I, reified O> buildFunctionNode(
 
 /**
  * Emits [content] from a [node] body as a message, which is not the node's output. In a custom
- * [Node]'s `flow {}`, `emit(content)` emits a raw value instead, which becomes the output.
+ * [Node]'s `flow {}`, `emit(content)` emits a raw value instead, which becomes the output. A Java
+ * body uses `InteropContextView.of(context).emit(content)`.
  */
 @ExperimentalWorkflowApi
 suspend fun FlowCollector<Event>.emit(content: Content) {
@@ -948,6 +951,8 @@ private fun isOpenPolymorphic(serializer: KSerializer<*>, classifier: KClassifie
  * [config], the schemas, [rerunOnResume] and [requireConfirmation] apply to each item's run, so
  * each item asks for its own approval; the fan-out node shares [waitForOutput] and [stateSchema],
  * declares no input or output schema, has no retry or timeout, and always reruns on resume.
+ *
+ * Java callers use [FunctionNode.parallelOf].
  *
  * @param maxParallelWorkers Maximum number of items run at a time, or `null` for no limit.
  * @param requireConfirmation Whether each item's run first asks the user to approve it: pass
@@ -1031,7 +1036,7 @@ inline fun <reified I, reified O> parallelNode(
 /**
  * Wraps [node] so it runs concurrently on each item of a list input and returns the results in
  * input order. [node]'s configuration and schemas apply to each item's run; the fan-out node
- * declares no input or output schema.
+ * declares no input or output schema. Java callers use [FunctionNode.parallelOf].
  *
  * @param maxParallelWorkers Maximum number of items run at a time, or `null` for no limit.
  * @throws WorkflowConfigurationException if [maxParallelWorkers] is less than 1.

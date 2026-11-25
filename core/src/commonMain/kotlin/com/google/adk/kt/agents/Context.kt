@@ -646,6 +646,9 @@ open class Context(
    * [Exception], so the runtime can mark this node as waiting; do not catch it with `runCatching`
    * or `catch (t: Throwable)`.
    *
+   * Java callers use `InteropContextView.of(context).runNode`, which returns a `CompletableFuture`,
+   * or `runNodeBlocking` in a Java `FunctionNode` body.
+   *
    * @param node Child node to execute.
    * @param nodeInput Input passed to [node], or `null` if none.
    * @param runId Explicit run ID for [node]: at least one non-digit, and no `'/'`, `'@'`, or `'.'`.

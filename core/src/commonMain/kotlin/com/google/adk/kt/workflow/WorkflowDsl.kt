@@ -32,7 +32,8 @@ import com.google.adk.kt.types.Schema
  * }
  * ```
  *
- * The other parameters are passed to the [Workflow] constructor unchanged.
+ * The other parameters are passed to the [Workflow] constructor unchanged. Java callers use
+ * `Workflow.builder()` with `edges(g -> ...)`.
  *
  * @throws IllegalArgumentException if the declared graph is invalid, such as a routing map with no
  *   entry; most graph errors throw its subtype [GraphValidationException].

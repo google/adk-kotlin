@@ -125,6 +125,8 @@ data class RequestInput(
  * Catching the throw (`runCatching`, `catch (t: Throwable)`) cancels the request, and the rest of
  * the body runs; `catch (e: Exception)` misses it. The receiver keeps it out of code that has no
  * node flow, such as a tool.
+ *
+ * A Java body uses [NodeBody.requestInput].
  */
 @ExperimentalWorkflowApi
 @JvmSynthetic

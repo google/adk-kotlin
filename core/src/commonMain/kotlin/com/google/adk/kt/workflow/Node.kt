@@ -104,6 +104,9 @@ interface Node {
    * - `null` or [Unit], both of which signify that no output was produced. [Unit] represents
    *   side-effecting Kotlin lambdas/functions that return no value, while `null` represents the
    *   explicit absence of an output.
+   *
+   * Java callers extend `BasePublisherNode`, which implements this from a Reactive Streams
+   * `Publisher`.
    */
   @ExperimentalWorkflowApi fun runNode(context: Context, nodeInput: Any?): Flow<Any?>
 }
