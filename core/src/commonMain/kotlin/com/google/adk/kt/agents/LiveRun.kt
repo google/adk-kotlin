@@ -33,6 +33,9 @@ import kotlin.jvm.JvmSynthetic
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -196,6 +199,39 @@ internal class LiveRun(
 
   /** Fails, naming [agent], if another reader of [requestQueue] is already reading. */
   suspend fun checkNoOtherReader(agent: String) = requestQueue.checkNoOtherReader(agent)
+
+  /** The live agent node running a live round now, if any; see [claimLiveNode]. */
+  private val activeLiveNode = AtomicReference<LiveNodeClaim?>(null)
+
+  /**
+   * Claims the run for the calling live node at [node] before it connects, so a second live node
+   * fails at once instead of after opening its own connection. A holder that was cancelled no
+   * longer blocks the next node while it unwinds.
+   *
+   * @throws IllegalStateException if another live node holds the run.
+   */
+  suspend fun claimLiveNode(node: String): LiveNodeClaim {
+    val job = currentCoroutineContext().job
+    // A cancelled caller stops, rather than failing as a second node would.
+    job.ensureActive()
+    val claim = LiveNodeClaim(node, job)
+    activeLiveNode.mutate { holder ->
+      check(holder == null || !holder.job.isActive) {
+        "Live node '$node' cannot start while live node '${holder?.node}' runs: a live run runs" +
+          " one live node at a time."
+      }
+      claim
+    }
+    return claim
+  }
+
+  /** A live node's hold on the run, from [claimLiveNode], made by [job]. */
+  inner class LiveNodeClaim(val node: String, val job: Job) {
+    /** Releases this claim, so the next live node can claim the run. */
+    fun release() {
+      val unused = activeLiveNode.compareAndSet(this, null)
+    }
+  }
 
   /**
    * Appends [event] to the session, bounded by [LIVE_SESSION_TIMEOUT] so a hung session service

@@ -75,6 +75,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -82,6 +83,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -100,12 +102,17 @@ private class LiveNodeModel(
 ) : Model {
   val connections = mutableListOf<LiveNodeConnection>()
   val requests = mutableListOf<LlmRequest>()
+  /** Completes once this model first connects. */
+  val connected = CompletableDeferred<Unit>()
 
   override suspend fun connect(request: LlmRequest): LiveConnection {
     log += "$name connect"
     requests += request
     val turns = checkNotNull(scripts.getOrNull(connections.size)) { "$name connected unscripted" }
-    return LiveNodeConnection(name, turns, log, stallOn, completesTurns).also { connections += it }
+    return LiveNodeConnection(name, turns, log, stallOn, completesTurns).also {
+      connections += it
+      connected.complete(Unit)
+    }
   }
 
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {
@@ -730,6 +737,32 @@ class WorkflowLiveTest {
     val answer = chatRequests[1].contents.flatMap { it.parts }.mapNotNull { it.functionResponse }
     assertEquals(mapOf("result" to "booked"), answer.single { it.name == "booker" }.response)
     assertEquals(listOf("Booked."), events.filter { it.author == "planner" }.replies())
+  }
+
+  @Test
+  fun taskNodes_startedByRunNode_afterACaughtFailure_theNextOneStillConnects() = runBlocking {
+    // Arrange: the first task cannot connect, and its caller goes on to a second task.
+    val failing =
+      LlmAgent(
+        name = "failing",
+        model = LiveNodeModel("failing", emptyList()),
+        mode = AgentMode.TASK,
+      )
+    val writerModel = LiveNodeModel("writer", listOf(listOf(finishTask("result" to "memo"))))
+    val writer = LlmAgent(name = "writer", model = writerModel, mode = AgentMode.TASK)
+    var failure: Throwable? = null
+    val starter =
+      node<Any?, Any?>("starter", rerunOnResume = true) { context, _ ->
+        failure = runCatching { context.runNode(failing) }.exceptionOrNull()
+        context.runNode(writer, nodeInput = "write")
+      }
+
+    val events = runLiveWorkflow(Workflow("wf", listOf(Edge(Start, starter))), LiveRequestQueue())
+
+    // Assert: the failed task gave up the run, so the second one, on the same caller, connected.
+    assertNotNull(failure)
+    assertEquals(1, writerModel.connections.size)
+    assertEquals(mapOf("result" to "memo"), events.mapNotNull { it.output }.first())
   }
 
   @Test
@@ -1435,8 +1468,38 @@ class WorkflowLiveTest {
   }
 
   @Test
-  fun taskNodes_startedByRunNodeAtOnce_failTheRunInsteadOfSplittingTheInput() = runBlocking {
-    // Arrange: neither task can finish without input, so both read at once.
+  fun taskNodes_startedByRunNode_laterTaskStartsAfterAnEarlierOneIsCancelled() = runBlocking {
+    // Arrange: the first task never finishes; the second finishes on its opening turn.
+    val log = mutableListOf<String>()
+    val waiterModel = LiveNodeModel("waiter", listOf(emptyList()), log = log)
+    val writerModel =
+      LiveNodeModel("writer", listOf(listOf(finishTask("result" to "memo"))), log = log)
+    val waiter = LlmAgent(name = "waiter", model = waiterModel, mode = AgentMode.TASK)
+    val writer = LlmAgent(name = "writer", model = writerModel, mode = AgentMode.TASK)
+    val starter =
+      node<Any?, Any?>("starter", rerunOnResume = true) { context, _ ->
+        coroutineScope {
+          val waiting = launch { context.runNode(waiter) }
+          waiterModel.connected.await()
+          // The writer starts while the cancelled waiter may still be unwinding.
+          waiting.cancel()
+          context.runNode(writer, nodeInput = "write")
+        }
+      }
+
+    val events = runLiveWorkflow(Workflow("wf", listOf(Edge(Start, starter))), LiveRequestQueue())
+
+    // Assert: the cancelled task gave up the run, so the next one connected and finished.
+    assertEquals(
+      setOf("waiter connect", "waiter close", "writer connect", "writer close"),
+      log.toSet(),
+    )
+    assertContains(events.mapNotNull { it.output }, mapOf("result" to "memo"))
+  }
+
+  @Test
+  fun taskNodes_startedByRunNodeAtOnce_secondFailsBeforeItConnects() = runBlocking {
+    // Arrange: neither task can finish without input, so the first keeps the run.
     val leftModel = LiveNodeModel("left", listOf(emptyList()))
     val rightModel = LiveNodeModel("right", listOf(emptyList()))
     val left = LlmAgent(name = "left", model = leftModel, mode = AgentMode.TASK)
@@ -1453,12 +1516,13 @@ class WorkflowLiveTest {
         }
       }
 
-    // Assert: the caller sees the failure as an error event too, and both connections are closed.
-    assertContains(failure.message.orEmpty(), "already reading its LiveRequestQueue")
+    // Assert: both tasks are named, the caller gets an error event, and only one task connected.
+    val message = failure.message.orEmpty()
+    assertContains(message, "left")
+    assertContains(message, "right")
     assertEquals(listOf(failure.message), errors.map { it.errorMessage })
-    assertEquals(
-      listOf(true, true),
-      listOf(leftModel, rightModel).map { it.connections.single().closed },
-    )
+    val connections = leftModel.connections + rightModel.connections
+    assertEquals(1, connections.size)
+    assertTrue(connections.single().closed)
   }
 }

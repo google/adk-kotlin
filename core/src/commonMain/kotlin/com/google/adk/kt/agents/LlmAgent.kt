@@ -482,23 +482,29 @@ class LlmAgent(
     val liveRun = agentContext.liveRun
     while (true) {
       val round = DelegationRound(liveRun != null)
-      // Only the run's first live session may resume the caller's; a later one starts a new one.
-      val roundContext =
-        if (liveRun == null || liveRun.claimCallersSession()) {
-          agentContext
-        } else {
-          agentContext.copy(runConfig = agentContext.runConfig?.forNewLiveSession())
-        }
       try {
-        val events = if (liveRun != null) runLive(roundContext) else runAsync(agentContext)
-        emitAll(
-          events.transformWhile { event ->
-            if (round.live && event.content?.parts?.any { it.fileData != null } == true) {
-              round.recordingIds += event.id
+        // Claimed before connecting, and held only while the round's connection is open.
+        val claim = liveRun?.claimLiveNode(context.nodePath)
+        try {
+          // Only the run's first live session may resume the caller's; a later one starts anew.
+          val roundContext =
+            if (liveRun == null || liveRun.claimCallersSession()) {
+              agentContext
+            } else {
+              agentContext.copy(runConfig = agentContext.runConfig?.forNewLiveSession())
             }
-            emitRoundEvent(context, event, round, finish, toolsByName)
-          }
-        )
+          val events = if (liveRun != null) runLive(roundContext) else runAsync(agentContext)
+          emitAll(
+            events.transformWhile { event ->
+              if (round.live && event.content?.parts?.any { it.fileData != null } == true) {
+                round.recordingIds += event.id
+              }
+              emitRoundEvent(context, event, round, finish, toolsByName)
+            }
+          )
+        } finally {
+          claim?.release()
+        }
         // Only now has a live round's connection closed; see DelegationRound.heldEvents.
         // Recordings first, so the finishing response stays last and carries the output write.
         if (liveRun != null) emitRecordings(context, agentContext, liveRun, round)

@@ -37,17 +37,85 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
-/** Covers the one-reader rule on a live run's [LiveRequestQueue]. */
+/** Covers a live run's one reader of its [LiveRequestQueue] and its one live node at a time. */
 class LiveRunTest {
 
   private fun LiveRequest?.text(): String? =
     assertIs<ContentInput>(assertNotNull(this).input).content.text()
+
+  @Test
+  fun claimLiveNode_whileAnotherNodeHoldsIt_failsNamingBoth() = runBlocking {
+    val liveRun = testInvocationContext().openLiveRun(LiveRequestQueue())
+    val unused = liveRun.claimLiveNode("wf/planner")
+
+    val failure = assertFailsWith<IllegalStateException> { liveRun.claimLiveNode("wf/booker") }
+
+    assertThat(failure)
+      .hasMessageThat()
+      .startsWith("Live node 'wf/booker' cannot start while live node 'wf/planner' runs")
+  }
+
+  @Test
+  fun claimLiveNode_afterTheHolderReleased_succeedsAndAStaleReleaseKeepsIt() =
+    runBlocking<Unit> {
+      val liveRun = testInvocationContext().openLiveRun(LiveRequestQueue())
+      val first = liveRun.claimLiveNode("planner")
+      first.release()
+      val unused = liveRun.claimLiveNode("booker")
+
+      // Releasing the earlier claim again must not free the current holder's turn.
+      first.release()
+
+      assertFailsWith<IllegalStateException> { liveRun.claimLiveNode("planner") }
+    }
+
+  @Test
+  fun claimLiveNode_holderCancelledButNotYetFinished_letsTheNextNodeClaim() = runBlocking {
+    val liveRun = testInvocationContext().openLiveRun(LiveRequestQueue())
+    val claimed = CompletableDeferred<Unit>()
+    val release = CompletableDeferred<Unit>()
+    // Claims, then is cancelled while its cleanup is still running.
+    val holder = launch {
+      try {
+        val unused = liveRun.claimLiveNode("planner")
+        claimed.complete(Unit)
+        awaitCancellation()
+      } finally {
+        withContext(NonCancellable) { release.await() }
+      }
+    }
+    claimed.await()
+    holder.cancel()
+
+    val next =
+      try {
+        liveRun.claimLiveNode("booker")
+      } finally {
+        release.complete(Unit)
+      }
+    holder.join()
+
+    assertThat(next.node).isEqualTo("booker")
+  }
+
+  @Test
+  fun claimLiveNode_cancelledCaller_isCancelledRatherThanRejected() = runBlocking {
+    val liveRun = testInvocationContext().openLiveRun(LiveRequestQueue())
+    val unused = liveRun.claimLiveNode("planner")
+
+    val second = launch {
+      cancel()
+      assertFailsWith<CancellationException> { liveRun.claimLiveNode("booker") }
+    }
+    second.join()
+  }
 
   @Test
   fun receiveRequest_whileAnotherReaderIsActive_failsWithoutTakingARequest() = runBlocking {
