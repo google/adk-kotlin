@@ -79,6 +79,9 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
 
   private val discards = AtomicReference<List<Discard>>(emptyList())
 
+  /** Tool answers the agent queued itself, told apart from the caller's by identity. */
+  private val ownAnswers = AtomicReference<List<LiveRequest>>(emptyList())
+
   /** Whether the caller has closed the queue. */
   internal val isClosed: Boolean
     get() = _closed.isCompleted
@@ -147,6 +150,10 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
       when {
         passed != null -> discards.mutate { it - passed }
         request == null || !isDiscarded(request) -> return request
+        // A dropped answer of the agent's own leaves no mark behind.
+        else -> {
+          val unused = takeOwnAnswer(request)
+        }
       }
     }
   }
@@ -167,6 +174,28 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
     discards.mutate { it + discard }
     // Fails only once closed, when nothing new is queued, so the discard can stay.
     val unused = channel.trySend(discard.mark)
+  }
+
+  /**
+   * Sends [content], tool answers the agent made itself, marked so the live flow can tell them from
+   * the caller's: only a caller's answer stops a workflow node waiting on a long-running call.
+   */
+  internal fun sendOwnAnswer(content: Content) {
+    val request = LiveRequest(ContentInput(content, partial = false))
+    ownAnswers.mutate { it + request }
+    // trySend only fails after close, where dropping is the documented behaviour.
+    val unused = channel.trySend(request)
+  }
+
+  /** Whether [request] came from [sendOwnAnswer]; true at most once per request. */
+  internal fun takeOwnAnswer(request: LiveRequest): Boolean {
+    var taken = false
+    ownAnswers.mutate { own ->
+      val kept = own.filterNot { it === request }
+      taken = kept.size < own.size
+      kept
+    }
+    return taken
   }
 
   /**

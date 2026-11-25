@@ -393,6 +393,31 @@ class LiveRequestQueueTest {
     val received = queue.receiveAll().map { assertIs<ContentInput>(it.input).content }
     assertEquals(listOf(userFunctionResponse("monitor", "c1", mapOf("n" to 2))), received)
   }
+
+  @Test
+  fun takeOwnAnswer_ownAnswer_isTakenOnce() = runBlocking {
+    val queue = LiveRequestQueue()
+
+    queue.sendOwnAnswer(userFunctionResponse("approve", "c1", mapOf("status" to "pending")))
+    val request = checkNotNull(queue.receiveRequest())
+
+    assertTrue(queue.takeOwnAnswer(request))
+    assertFalse(queue.takeOwnAnswer(request), "a request counts as the agent's own only once")
+  }
+
+  @Test
+  fun takeOwnAnswer_callersEqualAnswer_isNotTheAgentsOwn() = runBlocking {
+    val queue = LiveRequestQueue()
+    val answer = userFunctionResponse("approve", "c1", mapOf("ok" to true))
+
+    queue.sendContent(answer)
+    queue.sendOwnAnswer(answer)
+    queue.close()
+    val (callers, own) = queue.receiveAll()
+
+    assertFalse(queue.takeOwnAnswer(callers))
+    assertTrue(queue.takeOwnAnswer(own))
+  }
 }
 
 private fun LiveRequest.text(): String? = (input as? ContentInput)?.content?.parts?.single()?.text

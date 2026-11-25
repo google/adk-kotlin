@@ -1604,7 +1604,9 @@ internal class LlmAgentTurn(
         sendingToConnection { connection.sendContent(toSend, input.partial) }
         // Only once written, so a write replayed after a drop does not count as answered early. A
         // reply that overtakes this record can still reach the round first, as speech before it.
-        if (input.answersTools) recordSentAnswers(sent)
+        if (input.answersTools) {
+          recordSentAnswers(sent, byCaller = !liveRun().requestQueue.takeOwnAnswer(pending.request))
+        }
         val handover = pendingHandover.load()
         if (handover?.answer == sent) {
           val unused = handover.written.complete(Unit)
@@ -1615,13 +1617,17 @@ internal class LlmAgentTurn(
   }
 
   /**
-   * Records the calls [answers] answered for this turn's workflow node, whose round reads it to
-   * know the caller answered, since those answers reach no event it sees.
+   * Records the calls [answers] answered for this turn's workflow node, which its round reads since
+   * these answers reach no event it sees. Answers [byCaller] also stop the node waiting on the
+   * calls; the agent's own, such as a long-running tool's first result, leave it waiting.
    */
-  private fun recordSentAnswers(answers: Content) {
-    val nodePath = nodePath() ?: return
+  @OptIn(FrameworkInternalApi::class, ExperimentalWorkflowApi::class)
+  private fun recordSentAnswers(answers: Content, byCaller: Boolean) {
+    val node = context.frameworkData.nodeContext ?: return
     val ids = answers.parts.mapNotNullTo(mutableSetOf()) { it.functionResponse?.id }
-    if (ids.isNotEmpty()) liveRun().recordSentAnswers(nodePath, ids)
+    if (ids.isEmpty()) return
+    liveRun().recordSentAnswers(node.nodePath, ids)
+    if (byCaller) node.requireNodeState().removeInterruptIds(ids)
   }
 
   /**
@@ -1661,7 +1667,7 @@ internal class LlmAgentTurn(
   private suspend fun sendToolResponse(queue: LiveRequestQueue, event: Event) {
     val content = event.content ?: return
     if (content.parts.none { it.functionResponse != null }) return
-    queue.sendContent(content)
+    queue.sendOwnAnswer(content)
     // A stream answered alongside a handover would only reach the next agent.
     liveTools?.onAnswersQueued(content, mayStart = pendingHandover.load() == null)
   }
@@ -2296,7 +2302,13 @@ internal class LlmAgentTurn(
         ?.let { calls ->
           // A live run runs tools through its streaming tools, so a returned Flow streams.
           val runner: ToolRunner = if (liveTools == null) DEFAULT_TOOL_RUNNER else liveTools::run
-          context.handleFunctionCallsWith(calls, tools, toolRunner = runner)
+          // A failed live call gets an error answer, so it cannot end the conversation.
+          context.handleFunctionCallsWith(
+            calls,
+            tools,
+            toolRunner = runner,
+            onCallFailed = if (liveTools == null) null else liveTools::onCallFailed,
+          )
         }
         // A live answer names the session its call came from, as in ADK Python.
         ?.copy(liveSessionId = actionEvent.liveSessionId)

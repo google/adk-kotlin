@@ -1190,23 +1190,23 @@ class LiveRunIntegrationTest {
   }
 
   @Test
-  fun runLive_stopStreamingWithANonStringName_failsTheRun() {
+  fun runLive_stopStreamingWithANonStringName_answersTheModelWithAnError() {
     runBlocking {
+      val error = mapOf("error" to "Invoking `stop_streaming()` failed with an internal error.")
       val script =
         listOf(
           Respond(
             modelFunctionCallResponse("stop_streaming", mapOf("function_name" to 7), id = "s1")
           ),
+          AwaitSent("the error answer", answers("s1", error)),
           Respond(LlmResponse(turnComplete = true)),
         )
       val stopStreaming = stopStreamingTool()
-      val (runner, _) = runnerFor(script, tools = listOf(stopStreaming))
+      val (runner, model) = runnerFor(script, tools = listOf(stopStreaming))
 
-      val failure = assertFailsWith<IllegalArgumentException> { runner.runUntilTurnComplete() }
+      val unused = runner.runUntilTurnComplete()
 
-      assertThat(failure)
-        .hasMessageThat()
-        .isEqualTo("stop_streaming requires a string function_name.")
+      model.connections.single().assertAllWaitsMet()
     }
   }
 
