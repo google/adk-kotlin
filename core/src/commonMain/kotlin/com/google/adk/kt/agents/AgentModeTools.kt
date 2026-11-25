@@ -26,6 +26,7 @@ import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.applyRewinds
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.normalizeBySchema
+import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
 import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -369,7 +370,11 @@ internal fun taskWaitsInAnotherInvocation(
   invocationId: String,
 ): Boolean {
   val callId = call.id ?: return false
-  val latest = liveEvents.lastOrNull { it.isolationScope == callId } ?: return false
+  // A stopped stream's final answer can follow the task's finish_task answer, so it is skipped.
+  val latest =
+    liveEvents.lastOrNull {
+      it.isolationScope == callId && it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) != true
+    } ?: return false
   // A finished task replays its output even if its answer was never recorded.
   return latest.invocationId != invocationId && !FinishTaskTool.isTerminalResponse(latest)
 }

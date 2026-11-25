@@ -65,12 +65,15 @@ import com.google.adk.kt.workflow.WorkflowConfigurationException
 import com.google.adk.kt.workflow.isValidNodeName
 import com.google.adk.kt.workflow.unsupportedLiveTaskDelegation
 import kotlin.jvm.JvmStatic
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.transformWhile
+import kotlinx.coroutines.withContext
 
 /**
  * LLM-based Agent.
@@ -367,19 +370,20 @@ class LlmAgent(
   /**
    * Returns [context]'s invocation context for this agent's run in [mode]. The mode is keyed to
    * this agent, the node's isolation scope also reaches its sub-agents, and the node context lets
-   * this agent's tools run sub-agents as child nodes.
+   * this agent's tools run sub-agents as child nodes. In a live run, a task node also takes over
+   * the run's live input, so it runs live.
    */
   private fun agentContext(context: Context, mode: AgentMode): InvocationContext {
     val ic = context.invocationContext
-    return ic.copy(
-      frameworkData =
-        ic.frameworkData.copy(
-          agentModeOverride = AgentModeOverride(agent = this, mode = mode),
-          nodeContext = context,
-          nodePath = context.nodePath,
-          isolationScope = context.isolationScope,
-        )
-    )
+    val frameworkData =
+      ic.frameworkData.copy(
+        agentModeOverride = AgentModeOverride(agent = this, mode = mode),
+        nodeContext = context,
+        nodePath = context.nodePath,
+        isolationScope = context.isolationScope,
+      )
+    if (mode == AgentMode.TASK) frameworkData.liveRun = ic.liveRun
+    return ic.copy(frameworkData = frameworkData)
   }
 
   /**
@@ -418,10 +422,10 @@ class LlmAgent(
   }
 
   /**
-   * Works on a delegated task until `finish_task` succeeds. A failed call's error reaches the
-   * model, which retries; the succeeding call's arguments become the node's output and [outputKey]
-   * value. The node input, when given, is the task's opening user turn if no delegating call
-   * carries it.
+   * Works on a delegated task until `finish_task` succeeds, live on its own connection in a live
+   * run. A failed call's error reaches the model, which retries; the succeeding call's arguments
+   * become the node's output and [outputKey] value. The node input, when given, is the task's
+   * opening user turn if no delegating call carries it.
    */
   private fun runInTaskMode(context: Context, nodeInput: Any?): Flow<Any?> {
     // A task started by runNode escapes the check a live run makes of its graph before connecting.
@@ -445,18 +449,21 @@ class LlmAgent(
     runWithDelegations(context, agentContext(context, AgentMode.CHAT), finishTool = null)
 
   /**
-   * Runs this agent on [agentContext], running its task sub-agents along the way. Each round runs
-   * the agent until the model delegates tasks or ends. The delegated tasks then run as child nodes,
-   * in each call's own isolation scope, and their answers start the next round. With a
-   * [finishTool], the run ends once a `finish_task` call succeeds. A `transfer_to_agent` beside
-   * delegations waits for their answers, then ends the run without another model call, and the
-   * dispatch loop runs its target as a node.
+   * Runs this agent on [agentContext] in rounds, live when it carries a live run, until the model
+   * ends without delegating or, with a [finishTool], a `finish_task` call succeeds. Each round's
+   * delegated tasks run as child nodes in their calls' own isolation scopes, and their answers
+   * start the next round. A `transfer_to_agent` beside delegations waits for their answers, then
+   * ends the run, and the dispatch loop runs its target as a node.
    */
+  @OptIn(ExperimentalLiveApi::class)
+  @Suppress("SuspendInFinally") // The record runs under NonCancellable.
   private fun runWithDelegations(
     context: Context,
     agentContext: InvocationContext,
     finishTool: FinishTaskTool?,
   ): Flow<Any?> = flow {
+    // A child node's context starts with its parent's author.
+    context.eventAuthor = name
     val toolsByName = tools.associateBy { it.name }
     answerPendingDelegations(context, toolsByName, ownScopeOnly = finishTool != null)
     val scope = context.isolationScope.takeIf { finishTool != null }
@@ -465,13 +472,31 @@ class LlmAgent(
       return@flow
     }
     val finish = finishTool?.let(::FinishState)
+    val liveRun = agentContext.liveRun
     while (true) {
-      val round = DelegationRound()
-      emitAll(
-        runAsync(agentContext).transformWhile { event ->
-          emitRoundEvent(context, event, round, finish, toolsByName)
+      val round = DelegationRound(liveRun != null)
+      // Only the run's first live session may resume the caller's; a later one starts a new one.
+      val roundContext =
+        if (liveRun == null || liveRun.claimCallersSession()) {
+          agentContext
+        } else {
+          agentContext.copy(runConfig = agentContext.runConfig?.forNewLiveSession())
         }
-      )
+      try {
+        val events = if (liveRun != null) runLive(roundContext) else runAsync(agentContext)
+        emitAll(
+          events.transformWhile { event ->
+            emitRoundEvent(context, event, round, finish, toolsByName)
+          }
+        )
+        // Only now has a live round's connection closed; see DelegationRound.heldEvents.
+        for (event in round.heldEvents) emitAuthored(context, event)
+        if (liveRun != null) emitFinalAnswers(context, liveRun)
+      } finally {
+        // A round that failed, or whose caller stopped collecting, emits nothing more.
+        if (liveRun != null) recordDeferredFinalAnswers(context, liveRun)
+      }
+      if (round.handedOff) endRunAtHandoff(agentContext)
       if (round.delegations.isEmpty()) return@flow
       for (call in round.delegations) emitTaskResponse(context, call)
       round.deferredTransfer?.let {
@@ -482,8 +507,8 @@ class LlmAgent(
     }
   }
 
-  /** What one round of [runWithDelegations] has seen so far. */
-  private class DelegationRound {
+  /** What one round of [runWithDelegations], [live] or turn-based, has seen so far. */
+  private class DelegationRound(val live: Boolean) {
     /** The task delegations the model made this round; empty until it makes some. */
     var delegations = emptyList<FunctionCall>()
 
@@ -492,6 +517,79 @@ class LlmAgent(
 
     /** The `transfer_to_agent` call beside this round's delegations, run once they answer. */
     var deferredTransfer: FunctionCall? = null
+
+    /**
+     * Whether a live round ended at a `transfer_to_agent` handoff, which the dispatch loop runs.
+     */
+    var handedOff = false
+
+    /**
+     * A live round's events that end it, emitted once its connection has closed, so input the
+     * caller sends on seeing them reaches the next live reader.
+     */
+    val heldEvents = mutableListOf<Event>()
+  }
+
+  /** Emits [event], which ends [round], or holds it until a live round's connection closes. */
+  private suspend fun FlowCollector<Any?>.emitEnding(
+    context: Context,
+    round: DelegationRound,
+    event: Event,
+  ) {
+    if (round.live) round.heldEvents += event else emitAuthored(context, event)
+  }
+
+  /**
+   * Emits the stopped streams' final answers the live round's turn left on [liveRun], once their
+   * first answers are out, so history shows each stream stopped.
+   */
+  private suspend fun FlowCollector<Any?>.emitFinalAnswers(context: Context, liveRun: LiveRun) {
+    // One at a time, so the records a caller that stops never took stay for the finally to store.
+    while (true) {
+      val record = liveRun.takeDeferredFinalAnswer(context.nodePath) ?: break
+      emitAuthored(context, record)
+    }
+  }
+
+  /**
+   * Records the stopped streams' final answers still left on [liveRun] for this node, straight to
+   * the session and despite cancellation, when its round failed or its caller stopped collecting. A
+   * failed append is logged rather than thrown, so it does not replace the round's exception.
+   */
+  private suspend fun recordDeferredFinalAnswers(context: Context, liveRun: LiveRun) {
+    val answered = answeredCallIds(context.session.events)
+    val owed =
+      liveRun.takeDeferredFinalAnswers(context.nodePath).filter { record ->
+        record.functionResponses().any { it.id in answered }
+      }
+    if (owed.isEmpty()) return
+    withContext(NonCancellable) {
+      try {
+        for (record in owed) {
+          // Scoped as the node runner would emit it, since it skips the runner.
+          liveRun.append(
+            record.copy(
+              isolationScope = record.isolationScope ?: context.isolationScope,
+              nodeInfo = (record.nodeInfo ?: NodeInfo()).copy(path = context.nodePath),
+            )
+          )
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.warn { "Recording ${owed.size} stopped streams failed (${e::class.simpleName})." }
+      }
+    }
+  }
+
+  /**
+   * Emits [event] under its own author, which the node runner stamps from [context], then makes
+   * this agent the author again, so an event the user authored does not author what follows.
+   */
+  private suspend fun FlowCollector<Any?>.emitAuthored(context: Context, event: Event) {
+    if (event.author.isNotEmpty()) context.eventAuthor = event.author
+    emit(event)
+    context.eventAuthor = name
   }
 
   /** The `finish_task` tool of a task run and the arguments of its latest call. */
@@ -502,7 +600,7 @@ class LlmAgent(
   /**
    * Emits [event] from a round and returns whether the round goes on. Once the model delegates
    * tasks, the round only keeps that step's tool responses; a task run ends with its successful
-   * `finish_task` response.
+   * `finish_task` response, and a live round also ends at a `transfer_to_agent` handoff.
    */
   private suspend fun FlowCollector<Any?>.emitRoundEvent(
     context: Context,
@@ -511,33 +609,39 @@ class LlmAgent(
     finish: FinishState?,
     toolsByName: Map<String, BaseTool>,
   ): Boolean {
-    if (event.author.isNotEmpty()) context.eventAuthor = event.author
     round.pendingLongRunningCalls += event.longRunningToolIds
     for (response in event.functionResponses()) {
       response.id?.let(round.pendingLongRunningCalls::remove)
     }
     if (round.delegations.isNotEmpty()) {
-      return emitDelegatingStepResponse(event, context.invocationContext.branch)
+      return emitDelegatingStepResponse(context, event)
     }
     if (finish != null) {
       when (val step = finishStepOf(event, finish, toolsByName)) {
         is FinishStep.Call -> {
           finish.args = step.args
-          emit(event)
+          emitAuthored(context, event)
           return true
         }
         is FinishStep.Done -> {
           val key = outputKey?.takeIf { it.isNotEmpty() }
           if (key != null && step.output != null) context.updateState(key, step.output)
-          emit(event.copy(output = step.output))
+          emitEnding(context, round, event.copy(output = step.output))
           return false
         }
         null -> {}
       }
     }
-    emit(event)
     round.delegations = taskDelegationsIn(event, toolsByName)
     round.deferredTransfer = deferredTransferIn(event, toolsByName)
+    // A turn-based run already stops at a handoff; a live one must stop here or it runs the target.
+    round.handedOff = round.live && event.actions.transferToAgent != null
+    if (round.handedOff) {
+      // The round ends here, so the handoff is stored even when a callback set it on a partial.
+      emitEnding(context, round, event.copy(partial = false))
+      return false
+    }
+    emitAuthored(context, event)
     return round.delegations.isEmpty() || hasEagerToolCalls(event, toolsByName)
   }
 
@@ -546,14 +650,15 @@ class LlmAgent(
    * the tool responses of the step that delegated, and stops before the model starts another round.
    */
   private suspend fun FlowCollector<Any?>.emitDelegatingStepResponse(
+    context: Context,
     event: Event,
-    branch: String?,
   ): Boolean {
+    val branch = context.invocationContext.branch
     if (startsModelRound(event, branch)) return false
     // The handoff waits for the delegated tasks, as in Python, so its response comes later.
     val withoutTransfer = withoutTransferResponses(event)
     if (withoutTransfer.content == null || withoutTransfer.content.parts.isNotEmpty()) {
-      emit(withFinishTaskRejected(withoutTransfer))
+      emitAuthored(context, withFinishTaskRejected(withoutTransfer))
     }
     return !isOwnStep(event, branch) || event.functionResponses().isEmpty()
   }
@@ -673,9 +778,7 @@ class LlmAgent(
         overrideIsolationScope = callId,
         raiseOnWait = true,
       )
-    context.eventAuthor = Role.USER
-    emit(taskResponseEvent(call, output))
-    context.eventAuthor = name
+    emitAuthored(context, taskResponseEvent(call, output))
   }
 
   /**

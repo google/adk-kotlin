@@ -220,7 +220,10 @@ internal fun requireRunnableLive(root: Node) {
       }
     if (delegating != null) throw unsupportedLiveTaskDelegation(delegating.name)
     if (agent.defaultMode() == AgentMode.TASK) {
-      throw UnsupportedOperationException("Task agent node '${agent.name}' cannot run live yet.")
+      throw UnsupportedOperationException(
+        "Task agent node '${agent.name}' cannot run live yet; start it with runNode or from a" +
+          " chat node instead."
+      )
     }
   }
 }

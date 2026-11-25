@@ -20,6 +20,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.artifacts.InMemoryArtifactService
@@ -9120,6 +9121,32 @@ class LlmAgentTurnTest {
     agent.runLive(liveContextFor(agent, queue)).toList()
 
     assertEquals(1, model.connectCalls)
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun runLive_scopedContextOutsideANode_storesUserEventsWithoutAScope() = runBlocking {
+    // Only a workflow node scopes the user's turns, as only its node runner scopes the model's.
+    val sessionService = InMemorySessionService()
+    val key = SessionKey("app", "user", "scope")
+    val agent = liveAgent(RecordingLiveConnection(listOf(turnComplete())))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hi"))
+    queue.close()
+    val context =
+      InvocationContext(
+          agent = agent,
+          session = sessionService.createSession(key),
+          sessionService = sessionService,
+          frameworkData = ContextFrameworkData(isolationScope = "paused-task"),
+        )
+        .apply { openLiveRun(queue) }
+
+    agent.runLive(context).toList()
+
+    val userEvents =
+      checkNotNull(sessionService.getSession(key)).events.filter { it.author == Role.USER }
+    assertEquals(listOf<String?>(null), userEvents.map { it.isolationScope })
   }
 
   @Test

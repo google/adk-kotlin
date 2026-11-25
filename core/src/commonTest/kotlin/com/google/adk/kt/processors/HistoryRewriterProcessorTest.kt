@@ -38,6 +38,7 @@ import com.google.adk.kt.types.ToolCall
 import com.google.adk.kt.types.ToolResponse
 import com.google.adk.kt.types.ToolType
 import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.workflow.NodeInfo
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -1060,6 +1061,24 @@ class HistoryRewriterProcessorTest {
   private fun summaries(contents: List<Content>): List<Any?> = contents.map { content ->
     val part = content.parts.single()
     part.text ?: part.functionCall?.name ?: part.functionResponse?.response?.get("status")
+  }
+
+  @Test
+  fun rewrite_nodeRun_keepsWhatAnotherLiveNodeHeardButNotTheInputItWasGiven() {
+    val otherNode = NodeInfo(path = "wf@1/task@1")
+    val heard = Transcription("Heard.")
+    val events =
+      listOf(
+        Event(author = "user", content = userMessage("Given."), nodeInfo = otherNode),
+        Event(
+          author = "user",
+          content = userMessage("Heard."),
+          inputTranscription = heard,
+          nodeInfo = otherNode,
+        ),
+      )
+
+    assertEquals(listOf("Heard."), partNames(rewriteAtNode(events)))
   }
 
   @Test

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalLiveApi::class)
+@file:OptIn(ExperimentalLiveApi::class, ExperimentalAtomicApi::class)
 
 package com.google.adk.kt.agents
 
@@ -25,6 +25,9 @@ import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmSynthetic
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.NonCancellable
@@ -50,6 +53,47 @@ internal class LiveRun(
 
   /** The audio the model has spoken since the last flush. See [inputRealtimeCache]. */
   val outputRealtimeCache = RealtimeCache()
+
+  /** Whether a live session of this run has claimed the caller's; see [claimCallersSession]. */
+  private val callersSessionClaimed = AtomicBoolean(false)
+
+  /**
+   * Claims the caller's session for the live session about to open: true for the run's first, which
+   * may resume it with the caller's resumption handle, and false for any later one, which starts a
+   * new session.
+   */
+  fun claimCallersSession(): Boolean = callersSessionClaimed.compareAndSet(false, true)
+
+  /** The final answers of stopped streams, by the path of the live node that is to emit them. */
+  private val deferredFinalAnswers = AtomicReference(emptyMap<String, List<Event>>())
+
+  /**
+   * Leaves [records], a live node turn's stopped streams' final answers, for the node at [nodePath]
+   * to emit after its round's held events, so each is stored after its first answer.
+   */
+  fun deferFinalAnswers(nodePath: String, records: List<Event>) {
+    deferredFinalAnswers.mutate { it + (nodePath to it[nodePath].orEmpty() + records) }
+  }
+
+  /** Takes the first final answer [deferFinalAnswers] left for the node at [nodePath], if any. */
+  fun takeDeferredFinalAnswer(nodePath: String): Event? {
+    while (true) {
+      val deferred = deferredFinalAnswers.load()
+      val records = deferred[nodePath] ?: return null
+      val rest = records.drop(1)
+      val next = if (rest.isEmpty()) deferred - nodePath else deferred + (nodePath to rest)
+      if (deferredFinalAnswers.compareAndSet(deferred, next)) return records.first()
+    }
+  }
+
+  /** Takes the final answers [deferFinalAnswers] left for the node at [nodePath]. */
+  fun takeDeferredFinalAnswers(nodePath: String): List<Event> {
+    while (true) {
+      val deferred = deferredFinalAnswers.load()
+      val taken = deferred[nodePath] ?: return emptyList()
+      if (deferredFinalAnswers.compareAndSet(deferred, deferred - nodePath)) return taken
+    }
+  }
 
   /** Whether [append] stores events; a run without a session service drops them. */
   val storesEvents: Boolean

@@ -719,10 +719,14 @@ internal class HistoryRewriterProcessor {
       isRequestConfirmationEvent(event))
   }
 
-  /** Whether [event] is a user turn that a workflow node other than [nodePath] injected. */
+  /**
+   * Whether [event] is a user turn that a workflow node other than [nodePath] injected. What a live
+   * node heard the user say is the user's own turn, so an agent the node transfers to keeps it.
+   */
   private fun isOtherNodeInput(event: Event, nodePath: String?): Boolean {
     val path = event.nodeInfo?.path
     return event.author == Role.USER &&
+      event.inputTranscription == null &&
       event.functionResponses().isEmpty() &&
       !path.isNullOrEmpty() &&
       path != nodePath

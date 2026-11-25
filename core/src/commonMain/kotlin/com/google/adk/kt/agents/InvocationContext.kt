@@ -1028,7 +1028,8 @@ data class ContextFrameworkData(
    *
    * Declared as a body property so it stays off every public signature; contexts derived with
    * [InvocationContext.copy] share this holder and therefore the same run. A [copy] of the holder
-   * starts without one, so copy it only for a context that never runs live.
+   * starts without one, so an agent node's copy runs turn-based unless [LlmAgent] passes the run
+   * on.
    */
   @Volatile internal var liveRun: LiveRun? = null
 

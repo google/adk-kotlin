@@ -19,6 +19,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterModelCallbacksPipeline
@@ -1419,45 +1420,57 @@ internal class LlmAgentTurn(
     if (!input.storesTurn) return false
     val liveRun = liveRun()
     if (!liveRun.storesEvents) return false
-    liveRun.append(
-      Event(
-        invocationId = context.invocationId,
-        author = Role.USER,
-        content = input.contentWithRole(),
-        actions = EventActions(stateDelta = liveRequest.stateDelta.toMutableMap()),
-      )
-    )
+    liveRun.append(userEvent(liveRequest.stateDelta, input.contentWithRole()))
     return true
+  }
+
+  /**
+   * A user event in the [nodeIsolationScope], so a live task node keeps the user's turns to itself.
+   */
+  private fun userEvent(stateDelta: Map<String, Any>, content: Content? = null): Event =
+    Event(
+      invocationId = context.invocationId,
+      author = Role.USER,
+      content = content,
+      actions = EventActions(stateDelta = stateDelta.toMutableMap()),
+      isolationScope = nodeIsolationScope(),
+    )
+
+  /** The path of the workflow node this turn runs in, whose node runner stores what it emits. */
+  @OptIn(FrameworkInternalApi::class, ExperimentalWorkflowApi::class)
+  private fun nodePath(): String? = context.frameworkData.nodeContext?.nodePath
+
+  /**
+   * The isolation scope of the workflow node this turn runs in, for the events it writes straight
+   * to the session, as the node runner scopes its other events; null outside a node.
+   */
+  @OptIn(FrameworkInternalApi::class)
+  private fun nodeIsolationScope(): String? {
+    val frameworkData = context.frameworkData
+    return frameworkData.isolationScope.takeIf { frameworkData.nodeContext != null }
   }
 
   /**
    * Records each streaming call's final [answers] once the run ended or handed over, for calls
    * whose pending or repeat answer reached the session, so a later run's history shows the stream
-   * ended. It writes straight to the session because the connection is closing and a failed or
-   * abandoned run has no collector. A failed append is logged rather than thrown, so it does not
-   * replace an exception unwinding the run.
+   * ended. Outside a workflow node it writes straight to the session because the connection is
+   * closing and a failed or abandoned run has no collector; a node, which may still hold the first
+   * answers, records them after those, or straight to the session if its round fails. A failed
+   * append is logged rather than thrown, so it does not replace an exception unwinding the run.
    */
   private suspend fun recordFinalAnswers(answers: List<Content>) {
     if (answers.isEmpty()) return
-    val answered =
-      context.session.events.flatMapTo(mutableSetOf()) { event ->
-        event.functionResponses().mapNotNull { it.id }
-      }
+    val nodePath = nodePath()
+    if (nodePath != null) {
+      liveRun().deferFinalAnswers(nodePath, answers.map(::finalAnswerRecord))
+      return
+    }
+    val answered = answeredCallIds(context.session.events)
     val owed = answers.filter { answer -> answer.parts.any { it.functionResponse?.id in answered } }
     if (owed.isEmpty()) return
     withContext(NonCancellable) {
       try {
-        for (answer in owed) {
-          val record =
-            createModelResponseEvent()
-              .copy(
-                content = answer,
-                // As the runner adds the run's metadata to each event it stores.
-                customMetadata =
-                  context.runConfig?.customMetadata.orEmpty() + (STREAM_FINAL_ANSWER_KEY to true),
-              )
-          liveRun().append(record)
-        }
+        for (answer in owed) liveRun().append(finalAnswerRecord(answer))
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -1466,17 +1479,21 @@ internal class LlmAgentTurn(
     }
   }
 
+  /** The event that records a stopped stream's final [answer]. */
+  private fun finalAnswerRecord(answer: Content): Event =
+    createModelResponseEvent()
+      .copy(
+        content = answer,
+        // As the runner adds the run's metadata to each event it stores.
+        customMetadata =
+          context.runConfig?.customMetadata.orEmpty() + (STREAM_FINAL_ANSWER_KEY to true),
+      )
+
   /** Records the request's state change on an event of its own. */
   private suspend fun persistStateDeltaOnly(liveRequest: LiveRequest) {
     val delta = liveRequest.stateDelta
     if (delta.isEmpty()) return
-    val event =
-      Event(
-        invocationId = context.invocationId,
-        author = Role.USER,
-        actions = EventActions(stateDelta = delta.toMutableMap()),
-      )
-    liveRun().append(event)
+    liveRun().append(userEvent(delta))
   }
 
   /** Saves a continuing callback's state and artifact writes on an event of their own. */
@@ -2055,6 +2072,7 @@ internal class LlmAgentTurn(
       invocationId = context.invocationId,
       author = agent.name,
       branch = context.branch,
+      isolationScope = nodeIsolationScope(),
     )
 
   /**
@@ -2578,6 +2596,11 @@ internal fun liveReconnectDelay(attempt: Int, random: Random = Random.Default): 
   val ceiling = BASE_RECONNECT_DELAY * (1 shl (attempt - 1))
   return random.nextLong(0, ceiling.inWholeMilliseconds + 1).milliseconds
 }
+
+/** The ids of the calls that [events] answer. */
+@JvmSynthetic
+internal fun answeredCallIds(events: List<Event>): Set<String> =
+  events.flatMapTo(mutableSetOf()) { event -> event.functionResponses().mapNotNull { it.id } }
 
 /**
  * Returns a copy of this request configured to resume [handle].
