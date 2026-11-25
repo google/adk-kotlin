@@ -130,6 +130,23 @@ internal class LiveRun(
   /** The recording saves live node turns left running when cut off, by the node's path. */
   private val strandedSaves = AtomicReference(emptyMap<String, List<StrandedSave>>())
 
+  /** The call ids a live node's connection was sent answers for, which no round event records. */
+  private val sentAnswers = AtomicReference(emptyMap<String, Set<String>>())
+
+  /** Records that the connection of the live node at [nodePath] was sent answers to [callIds]. */
+  fun recordSentAnswers(nodePath: String, callIds: Set<String>) {
+    sentAnswers.mutate { it + (nodePath to it[nodePath].orEmpty() + callIds) }
+  }
+
+  /** Takes the call ids [recordSentAnswers] recorded for the node at [nodePath]. */
+  fun takeSentAnswers(nodePath: String): Set<String> {
+    while (true) {
+      val sent = sentAnswers.load()
+      val taken = sent[nodePath] ?: return emptySet()
+      if (sentAnswers.compareAndSet(sent, sent - nodePath)) return taken
+    }
+  }
+
   /**
    * Leaves [saves], which a turn of the live node at [nodePath] left running when its round ended
    * it, for that round to wait for, emit and cancel.

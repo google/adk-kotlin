@@ -1037,18 +1037,36 @@ data class ContextFrameworkData(
    * Paths of workflow nodes cancelled mid-run in this turn. Their events show progress rather than
    * a result, so a retry runs them again. A [copy] of the holder starts with none.
    */
-  internal val cancelledNodePaths: MutableMap<String, Unit> = concurrentMutableMapOf()
+  internal var cancelledNodePaths: MutableMap<String, Unit> = concurrentMutableMapOf()
+    private set
 
   /**
    * Run IDs of the nodes that run without a parent activation, by the path of their ancestor agents
    * (empty for the root), so every top-level handoff of the invocation draws from one counter.
    */
-  private val topLevelRunIds: MutableMap<String, ChildRunIds> = concurrentMutableMapOf()
+  private var topLevelRunIds: MutableMap<String, ChildRunIds> = concurrentMutableMapOf()
 
   /** The next run ID for a top-level run of [name] under its ancestor agents' [parentPath]. */
   internal fun nextTopLevelRunId(parentPath: String, name: String): String =
     topLevelRunIds.getOrPut(parentPath) { ChildRunIds() }.next(name)
+
+  /**
+   * A copy without [liveRun] that shares the rest of this run's state, for a turn-based part. A
+   * body property added later must be shared here too, or this copy resets it.
+   */
+  internal fun withoutLiveRun(): ContextFrameworkData =
+    copy().also {
+      it.cancelledNodePaths = cancelledNodePaths
+      it.topLevelRunIds = topLevelRunIds
+    }
 }
+
+/**
+ * A copy of this context that runs turn-based inside a live run; see
+ * [ContextFrameworkData.withoutLiveRun].
+ */
+internal fun InvocationContext.withoutLiveRun(): InvocationContext =
+  copy(frameworkData = frameworkData.withoutLiveRun())
 
 /**
  * Returns a copy of this config for a fresh live session, with the resumption handle cleared and

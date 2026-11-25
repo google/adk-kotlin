@@ -946,10 +946,16 @@ open class Context(
     // A single-turn node's targets reply for it, as ADK Python runs them inline in its turn.
     val singleTurn =
       (node as? LlmAgent)?.takeIf { it.nodeMode(invocationContext) == AgentMode.SINGLE_TURN }
+    val root = generateSequence(this) { it.parent }.last()
+    // In a live run they also run turn-based, and so does any hop from inside such a target, though
+    // the run above it is live.
+    val turnBased =
+      root.invocationContext.liveRun != null &&
+        (singleTurn != null || invocationContext.liveRun == null)
     return followHandoffs(node, first, parent = this) { agent, parent ->
       if (parent == null) {
         // The top-level run checks the name as the root loop does, so a dotted root may run.
-        NodeRunner.runAtTopLevel(agent, generateSequence(this) { it.parent }.last(), singleTurn)
+        NodeRunner.runAtTopLevel(agent, root, handoffOutputOf = singleTurn, turnBased = turnBased)
       } else {
         validateNodeName(agent.name)
         parent.runDispatchedChild(
@@ -965,6 +971,7 @@ open class Context(
           overrideBranch = overrideBranch,
           overrideIsolationScope = overrideIsolationScope,
           handoffOutputOf = singleTurn,
+          turnBased = turnBased,
         )
       }
     }
@@ -984,6 +991,7 @@ open class Context(
     overrideBranch: String?,
     overrideIsolationScope: String?,
     handoffOutputOf: LlmAgent? = null,
+    turnBased: Boolean = false,
   ): Context {
     val childKey = BranchPath.segment(node.name, id)
     val interception =
@@ -1011,6 +1019,7 @@ open class Context(
       openInterrupts = interception.interrupts,
       validateInput = false,
       handoffOutputOf = handoffOutputOf,
+      turnBased = turnBased,
     )
   }
 
@@ -1031,6 +1040,7 @@ open class Context(
     openInterrupts: Set<String> = emptySet(),
     validateInput: Boolean,
     handoffOutputOf: LlmAgent? = null,
+    turnBased: Boolean = false,
   ): Context =
     NodeRunner(
         node = node,
@@ -1042,6 +1052,7 @@ open class Context(
         overrideBranch = overrideBranch,
         openInterrupts = openInterrupts,
         handoffOutputOf = handoffOutputOf,
+        turnBased = turnBased,
         // A task agent works in a scope of its own unless the caller picks one.
         overrideIsolationScope =
           overrideIsolationScope

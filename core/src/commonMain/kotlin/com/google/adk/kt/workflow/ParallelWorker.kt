@@ -77,7 +77,9 @@ internal fun checkMaxParallelWorkers(maxParallelWorkers: Int?) {
 
 /** Node that fans [node] out over a list input. */
 internal class ParallelWorkerNode(internal val node: Node, maxParallelWorkers: Int?) : Node {
-  private val fanOut = ParallelWorker(node, maxParallelWorkers)
+  // A graph node's transfer can't run live yet, and that covers the agent this node fans out.
+  private val graphFanOut = ParallelWorker(node, maxParallelWorkers)
+  private val fanOut = ParallelWorker(node, maxParallelWorkers, rejectsLiveTransfer = false)
 
   override val name: String = node.name
   override val description: String = node.description
@@ -90,12 +92,21 @@ internal class ParallelWorkerNode(internal val node: Node, maxParallelWorkers: I
   override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
     // A parallel node that runNode starts escapes the check runLive makes before anything connects.
     if (context.invocationContext.liveRun != null) requireRunnableLive(this@ParallelWorkerNode)
-    emit(fanOut.mapOverItems(context, nodeInput))
+    // Only a graph node rejects the transfer, nested parallel nodes included; a root or a
+    // runNode-started parallel node follows it, as in ADK Python.
+    val scheduler =
+      generateSequence(context.parent) { it.parent }.firstOrNull { it.node !is ParallelWorkerNode }
+    val worker = if (scheduler?.node is Workflow) graphFanOut else fanOut
+    emit(worker.mapOverItems(context, nodeInput))
   }
 }
 
 /** Executes [worker] concurrently for each item in a list input and collects outputs in order. */
-internal class ParallelWorker(private val worker: Node, private val maxParallelWorkers: Int?) {
+internal class ParallelWorker(
+  private val worker: Node,
+  private val maxParallelWorkers: Int?,
+  private val rejectsLiveTransfer: Boolean = true,
+) {
 
   /** Maps [worker] over [nodeInput]: a list, a text-only [Content] read as JSON, or one item. */
   suspend fun mapOverItems(context: Context, nodeInput: Any?): List<Any?> {
@@ -158,8 +169,8 @@ internal class ParallelWorker(private val worker: Node, private val maxParallelW
             item,
             runId,
             useSubBranch = true,
-            // A graph node's transfer can't run live yet, and that covers an agent fanned out here.
-            rejectsLiveTransfer = true,
+            // A graph node's transfer can't run live yet; see ParallelWorkerNode.
+            rejectsLiveTransfer = rejectsLiveTransfer,
           )
         } catch (e: CancellationException) {
           currentCoroutineContext().ensureActive()

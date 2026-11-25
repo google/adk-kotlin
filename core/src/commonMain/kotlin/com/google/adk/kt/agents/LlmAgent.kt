@@ -34,6 +34,7 @@ import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.callbacks.runOnEventCallbacksPipeline
 import com.google.adk.kt.describesOnlyObjects
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.applyRewinds
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.models.Model
@@ -377,8 +378,8 @@ class LlmAgent(
   /**
    * Returns [context]'s invocation context for this agent's run in [mode]. The mode is keyed to
    * this agent, the node's isolation scope also reaches its sub-agents, and the node context lets
-   * this agent's tools run sub-agents as child nodes. In a live run, a task node also takes over
-   * the run's live input, so it runs live.
+   * this agent's tools run sub-agents as child nodes. In a live run, a chat or task node also takes
+   * over the run's live input, so it runs live.
    */
   private fun agentContext(context: Context, mode: AgentMode): InvocationContext {
     val ic = context.invocationContext
@@ -389,7 +390,7 @@ class LlmAgent(
         nodePath = context.nodePath,
         isolationScope = context.isolationScope,
       )
-    if (mode == AgentMode.TASK) frameworkData.liveRun = ic.liveRun
+    if (mode != AgentMode.SINGLE_TURN) frameworkData.liveRun = ic.liveRun
     return ic.copy(frameworkData = frameworkData)
   }
 
@@ -451,7 +452,10 @@ class LlmAgent(
     )
   }
 
-  /** Holds a conversation that runs its task sub-agents. */
+  /**
+   * Holds a conversation that runs its task sub-agents. In a live run it talks live until the
+   * caller closes the queue, and its connection stays closed while a delegated task runs.
+   */
   private fun runInChatMode(context: Context): Flow<Any?> =
     runWithDelegations(context, agentContext(context, AgentMode.CHAT), finishTool = null)
 
@@ -472,12 +476,20 @@ class LlmAgent(
     // A child node's context starts with its parent's author.
     context.eventAuthor = name
     val toolsByName = tools.associateBy { it.name }
-    answerPendingDelegations(context, toolsByName, ownScopeOnly = finishTool != null)
+    val resumedTasks =
+      answerPendingDelegations(context, toolsByName, ownScopeOnly = finishTool != null)
     val scope = context.isolationScope.takeIf { finishTool != null }
     unansweredDeferredTransfer(context.session.events, name, toolsByName, scope)?.let {
       emitDeferredTransfer(context, it)
       return@flow
     }
+    // A run stopped after the tasks answered but before a callback's handoff hands off now.
+    pendingDeferredHandoff(context.session.events, name, scope)?.let {
+      emitDeferredHandoff(context, it)
+      return@flow
+    }
+    // As after a round's tasks, a caller that hung up gets no new round.
+    if (resumedTasks && agentContext.liveRequestQueue?.isClosed == true) return@flow
     val finish = finishTool?.let(::FinishState)
     val liveRun = agentContext.liveRun
     while (true) {
@@ -511,11 +523,18 @@ class LlmAgent(
         round.finishOutput?.let { context.updateState(checkNotNull(outputKey), it) }
         for (event in round.heldEvents) emitAuthored(context, event)
         if (liveRun != null) emitFinalAnswers(context, liveRun)
+      } catch (e: NodeInterruptedException) {
+        // A paused tool ends the round with its connection closed; the round's recordings and held
+        // events go out first, so the caller gets them and the pause keeps the call that opened it.
+        if (liveRun != null) emitRecordings(context, agentContext, liveRun, round)
+        for (event in round.heldEvents) emitAuthored(context, event)
+        throw e
       } finally {
         // A round that failed, or whose caller stopped collecting, emits nothing more.
         if (liveRun != null) {
           val appendsBefore = liveRun.appendCount
           if (!round.recordingsOut) storeAbandonedRecordings(context, agentContext, liveRun, round)
+          val unused = liveRun.takeSentAnswers(context.nodePath)
           recordDeferredFinalAnswers(context, liveRun)
           liveRun.forgetLiveModelMediaMarks(context.nodePath)
           // One flush for what was stored above, since the runner skips its own on a cancel.
@@ -527,6 +546,10 @@ class LlmAgent(
       for (call in round.delegations) emitTaskResponse(context, call)
       round.deferredTransfer?.let {
         emitDeferredTransfer(context, it)
+        return@flow
+      }
+      round.deferredHandoff?.let {
+        emitDeferredHandoff(context, it)
         return@flow
       }
       if (!canStartNextRound(round, agentContext)) return@flow
@@ -541,8 +564,20 @@ class LlmAgent(
     /** Long-running calls of this round that no response has answered yet. */
     val pendingLongRunningCalls = mutableSetOf<String>()
 
+    /** The delegating step's long-running calls, until the caller or a response answers them. */
+    val deferredCallsDue = mutableSetOf<String>()
+
+    /** The delegating step's other calls that answer in that step, whose responses are due. */
+    val eagerResponsesDue = mutableSetOf<String>()
+
+    /** Whether the live delegating step waits on the caller's answers to its deferred calls. */
+    var waitsOnTheCaller = false
+
     /** The `transfer_to_agent` call beside this round's delegations, run once they answer. */
     var deferredTransfer: FunctionCall? = null
+
+    /** The target of a live handoff a callback set beside this round's delegations. */
+    var deferredHandoff: String? = null
 
     /**
      * Whether a live round ended at a `transfer_to_agent` handoff, which the dispatch loop runs.
@@ -550,8 +585,8 @@ class LlmAgent(
     var handedOff = false
 
     /**
-     * A live round's events that end it, emitted once its connection has closed, so input the
-     * caller sends on seeing them reaches the next live reader.
+     * A live round's events held until its connection closes, so input the caller sends on seeing
+     * them reaches the next live reader.
      */
     val heldEvents = mutableListOf<Event>()
 
@@ -571,7 +606,7 @@ class LlmAgent(
     val recordingsHandedOn = mutableSetOf<String>()
   }
 
-  /** Emits [event], which ends [round], or holds it until a live round's connection closes. */
+  /** Emits [event], or holds it while [round] is live, until the round's connection closes. */
   private suspend fun FlowCollector<Any?>.emitEnding(
     context: Context,
     round: DelegationRound,
@@ -790,9 +825,17 @@ class LlmAgent(
     round.pendingLongRunningCalls += event.longRunningToolIds
     for (response in event.functionResponses()) {
       response.id?.let(round.pendingLongRunningCalls::remove)
+      response.id?.let(round.eagerResponsesDue::remove)
+      response.id?.let(round.deferredCallsDue::remove)
+    }
+    // The caller's answers go to the connection, not to this round's events.
+    context.invocationContext.liveRun?.let {
+      val sent = it.takeSentAnswers(context.nodePath)
+      round.pendingLongRunningCalls -= sent
+      round.deferredCallsDue -= sent
     }
     if (round.delegations.isNotEmpty()) {
-      return emitDelegatingStepResponse(context, event)
+      return emitDelegatingStepResponse(context, event, round)
     }
     if (finish != null) {
       when (val step = finishStepOf(event, finish, toolsByName)) {
@@ -819,13 +862,37 @@ class LlmAgent(
     round.delegations = taskDelegationsIn(event, toolsByName)
     round.deferredTransfer = deferredTransferIn(event, toolsByName)
     // A turn-based run already stops at a handoff; a live one must stop here or it runs the target.
-    round.handedOff = round.live && event.actions.transferToAgent != null
-    if (round.handedOff) {
+    val handoff = event.actions.transferToAgent?.takeIf { round.live }
+    if (handoff != null) {
       // The round ends here, so the handoff is stored even when a callback set it on a partial.
-      emitEnding(context, round, event.copy(partial = false))
+      val step = event.copy(partial = false)
+      if (round.delegations.isEmpty()) {
+        round.handedOff = true
+        emitEnding(context, round, step)
+      } else {
+        // Beside tasks it waits for their answers, as a deferred transfer_to_agent call does.
+        round.deferredHandoff = handoff
+        emitEnding(context, round, step.deferringHandoff(handoff))
+      }
       return false
     }
-    emitAuthored(context, event)
+    // A step whose other calls all defer their answers waits on the caller, as in ADK Python, so
+    // the caller sees its calls now; any other delegating step is held until the round closes.
+    val waitsOnTheCaller = round.live && callsOnlyDeferBesideTasks(event, toolsByName)
+    if (round.delegations.isNotEmpty()) {
+      round.waitsOnTheCaller = waitsOnTheCaller
+      round.deferredCallsDue += event.longRunningToolIds
+      round.eagerResponsesDue +=
+        event
+          .functionCalls()
+          .filter { toolsByName[it.name] !is TaskAgentTool && it.id !in event.longRunningToolIds }
+          .mapNotNull { it.id }
+    }
+    if (round.delegations.isNotEmpty() && !waitsOnTheCaller) {
+      emitEnding(context, round, event)
+    } else {
+      emitAuthored(context, event)
+    }
     return round.delegations.isEmpty() || hasEagerToolCalls(event, toolsByName)
   }
 
@@ -836,15 +903,38 @@ class LlmAgent(
   private suspend fun FlowCollector<Any?>.emitDelegatingStepResponse(
     context: Context,
     event: Event,
+    round: DelegationRound,
   ): Boolean {
     val branch = context.invocationContext.branch
-    if (startsModelRound(event, branch)) return false
-    // The handoff waits for the delegated tasks, as in Python, so its response comes later.
-    val withoutTransfer = withoutTransferResponses(event)
-    if (withoutTransfer.content == null || withoutTransfer.content.parts.isNotEmpty()) {
-      emitAuthored(context, withFinishTaskRejected(withoutTransfer))
+    // A saved recording is the turn's history, not the model's next step, so it goes out now.
+    if (round.live && event.content?.parts?.any { it.fileData != null } == true) {
+      emitAuthored(context, event)
+      return true
     }
-    return !isOwnStep(event, branch) || event.functionResponses().isEmpty()
+    if (startsModelRound(event, branch, round)) return false
+    // The handoff waits for the delegated tasks, as in Python, so its response comes later.
+    var withoutTransfer = withoutTransferResponses(event)
+    // So does a live handoff a callback set on the step's tool responses.
+    val handoff = withoutTransfer.actions.transferToAgent
+    val defers = round.live && handoff != null && isOwnStep(event, branch)
+    if (defers) {
+      round.deferredHandoff = handoff
+      // Stored even when a callback set it on a partial, so a resume still hands off.
+      withoutTransfer =
+        withoutTransfer.copy(partial = false).deferringHandoff(checkNotNull(handoff))
+    }
+    // The turn hands over at a handoff, so the step ends there; the tasks run before it.
+    val continues = !defers && (!isOwnStep(event, branch) || event.functionResponses().isEmpty())
+    if (withoutTransfer.content == null || withoutTransfer.content.parts.isNotEmpty()) {
+      val rejected = withFinishTaskRejected(withoutTransfer)
+      // While the step waits on the caller with nothing held, what the model says reaches it now.
+      if (round.waitsOnTheCaller && continues && round.heldEvents.isEmpty()) {
+        emitAuthored(context, rejected)
+      } else {
+        emitEnding(context, round, rejected)
+      }
+    }
+    return continues
   }
 
   /** Answers a deferred transfer [call], which hands off once this run ends. */
@@ -855,6 +945,19 @@ class LlmAgent(
     emit(transferResponseEvent(name, call))
     endRunAtHandoff(context.invocationContext)
   }
+
+  /** Hands off to [target], which a callback set beside tasks that have now answered. */
+  private suspend fun FlowCollector<Any?>.emitDeferredHandoff(context: Context, target: String) {
+    emit(Event(author = name, actions = EventActions(transferToAgent = target)))
+    endRunAtHandoff(context.invocationContext)
+  }
+
+  /** Returns this step without its handoff, recording [target] for a resume to hand off to. */
+  private fun Event.deferringHandoff(target: String): Event =
+    copy(
+      actions = actions.copy(transferToAgent = null),
+      customMetadata = customMetadata.orEmpty() + (DEFERRED_HANDOFF_KEY to target),
+    )
 
   /**
    * Returns [event] with any `finish_task` response replaced by an error, as Python does: a turn
@@ -913,31 +1016,37 @@ class LlmAgent(
 
   /**
    * Answers the delegations an earlier turn left unanswered; a task resumes only its own. Pauses
-   * this run while one of those tasks waits in another invocation.
+   * this run while one of those tasks waits in another invocation; a live run, which always starts
+   * a new invocation, resumes such a task itself. Returns whether any task was answered.
    */
   private suspend fun FlowCollector<Any?>.answerPendingDelegations(
     context: Context,
     toolsByName: Map<String, BaseTool>,
     ownScopeOnly: Boolean,
-  ) {
+  ): Boolean {
     val scope = if (ownScopeOnly) context.isolationScope else null
     val events = context.session.events
     val liveEvents = applyRewinds(events)
     val invocationId = context.invocationContext.invocationId
+    val live = context.invocationContext.liveRun != null
     val (waiting, runnable) =
       unresolvedTaskDelegations(events, name, toolsByName, scope).partition {
-        taskWaitsInAnotherInvocation(liveEvents, it, invocationId)
+        !live && taskWaitsInAnotherInvocation(liveEvents, it, invocationId)
       }
     for (call in runnable) emitTaskResponse(context, call)
     if (waiting.isNotEmpty()) throw NodeInterruptedException()
+    return runnable.isNotEmpty()
   }
 
   /**
-   * Whether another round may start once this round's tasks have answered. A long-running call of
-   * the round that is still unanswered pauses the turn, and so does reaching [maxSteps].
+   * Whether another round may start once this round's tasks have answered. A turn-based round's
+   * long-running call that is still unanswered pauses the turn, and so do reaching [maxSteps] and a
+   * live caller closing the queue. A live round goes on with such a call left for the caller to
+   * answer on its next connection, as ADK Python re-enters its live run after a delegation.
    */
   private fun canStartNextRound(round: DelegationRound, agentContext: InvocationContext): Boolean {
-    if (round.pendingLongRunningCalls.isNotEmpty()) return false
+    if (!round.live && round.pendingLongRunningCalls.isNotEmpty()) return false
+    if (agentContext.liveRequestQueue?.isClosed == true) return false
     val stepCap = maxSteps ?: return true
     return stepsTaken(agentContext) < stepCap
   }
@@ -968,10 +1077,26 @@ class LlmAgent(
   /**
    * Whether [event] starts a new model round on [branch] rather than finishing the current step.
    */
-  private fun startsModelRound(event: Event, branch: String?): Boolean =
+  private fun startsModelRound(event: Event, branch: String?, round: DelegationRound): Boolean =
     isOwnStep(event, branch) &&
-      event.content?.role == Role.MODEL &&
+      isModelContent(event, round) &&
       event.functionCalls().none { it.name == FunctionCall.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME }
+
+  /**
+   * Whether [event] holds the model's content. Gemini Live sends the model's audio with no role, so
+   * in a live [round] with no deferred call unanswered and no tool response still due, content
+   * without a role and without tool answers counts too; before that, it does not end the step.
+   */
+  private fun isModelContent(event: Event, round: DelegationRound): Boolean {
+    val content = event.content ?: return false
+    if (content.role == Role.MODEL) return true
+    return round.live &&
+      round.deferredCallsDue.isEmpty() &&
+      round.eagerResponsesDue.isEmpty() &&
+      content.role == null &&
+      content.parts.isNotEmpty() &&
+      event.functionResponses().isEmpty()
+  }
 
   /** Whether [event] is this agent's own step on [branch], not one from a run on a sub-branch. */
   private fun isOwnStep(event: Event, branch: String?): Boolean =

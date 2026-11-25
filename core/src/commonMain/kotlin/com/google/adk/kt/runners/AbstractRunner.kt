@@ -20,6 +20,7 @@ import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.AgentModeOverride
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
+import com.google.adk.kt.agents.DEFERRED_HANDOFF_KEY
 import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
@@ -883,8 +884,8 @@ abstract class AbstractRunner : Runner {
    * [runLive] only after an event that ends a turn ([endsLiveTurn]). A live run drops an event with
    * inline audio, video or image from an agent root or a live model connection, while a node-rooted
    * run ([fromNodeRoot]) stores its other events whole, as [runAsync] does, and, from a live model,
-   * an event with any actions, function calls or function responses, minus its inline media; its
-   * append and flush time out if the session service hangs.
+   * an event with any actions, function calls, function responses or deferred handoff, minus its
+   * inline media; its append and flush time out if the session service hangs.
    */
   private suspend fun store(
     context: InvocationContext,
@@ -901,9 +902,9 @@ abstract class AbstractRunner : Runner {
       // A turn whose media stays out of the session is still flushed.
       if (!event.hasInlineMedia() || (fromNodeRoot && !fromLiveModel)) {
         liveRun.append(event)
-      } else if (fromNodeRoot && (event.actions != EventActions() || event.callsOrAnswers())) {
+      } else if (fromNodeRoot && (event.actions != EventActions() || event.mattersWithoutMedia())) {
         // Any of its actions, such as a handoff a resume reads, are still stored without the media.
-        // So are its tool calls and answers, which history and the calls' answers rely on.
+        // So are its tool calls and answers and a deferred handoff, which history and resumes need.
         liveRun.append(event.withoutInlineMedia())
       }
       if (event.endsLiveTurn()) liveRun.flush()
@@ -912,8 +913,10 @@ abstract class AbstractRunner : Runner {
     }
   }
 
-  private fun Event.callsOrAnswers(): Boolean =
-    functionCalls().isNotEmpty() || functionResponses().isNotEmpty()
+  private fun Event.mattersWithoutMedia(): Boolean =
+    functionCalls().isNotEmpty() ||
+      functionResponses().isNotEmpty() ||
+      customMetadata?.containsKey(DEFERRED_HANDOFF_KEY) == true
 
   /** Warns, as ADK Python does, that a transfer may lack context while a transcription is off. */
   private fun warnIfTransferLacksTranscription(runConfig: RunConfig) {

@@ -1710,4 +1710,17 @@ class InvocationContextTest {
     assertEquals("root.other", copied.branch)
     assertEquals("inv-1", copied.invocationId)
   }
+
+  @Test
+  fun withoutLiveRun_sharesCancelledNodesAndTopLevelRunIds() {
+    val data = ContextFrameworkData()
+    val copy = data.withoutLiveRun()
+
+    copy.cancelledNodePaths["wf@1/target@1"] = Unit
+    val first = data.nextTopLevelRunId("", "agent")
+    val second = copy.nextTopLevelRunId("", "agent")
+
+    assertTrue("wf@1/target@1" in data.cancelledNodePaths)
+    assertEquals(listOf("1", "2"), listOf(first, second))
+  }
 }

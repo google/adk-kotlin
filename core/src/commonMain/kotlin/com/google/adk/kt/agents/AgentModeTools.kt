@@ -267,6 +267,12 @@ internal fun taskDelegationsIn(event: Event, tools: Map<String, BaseTool>): List
 internal fun hasEagerToolCalls(event: Event, tools: Map<String, BaseTool>): Boolean =
   event.functionCalls().any { tools[it.name] !is TaskAgentTool }
 
+/** Whether [event] has calls besides its task delegations and every one is long-running. */
+internal fun callsOnlyDeferBesideTasks(event: Event, tools: Map<String, BaseTool>): Boolean {
+  val others = event.functionCalls().filter { tools[it.name] !is TaskAgentTool }
+  return others.isNotEmpty() && others.all { it.id in event.longRunningToolIds }
+}
+
 /**
  * Returns the task delegations [owner] made that have no function response yet, across the live
  * [events] left after rewinds. Without a [scope] the scan ignores isolation scopes, because a
@@ -326,6 +332,37 @@ internal fun unansweredDeferredTransfer(
     .filter { it.author == owner && (scope == null || it.isolationScope == scope) }
     .mapNotNull { deferredTransferIn(it, tools) }
     .lastOrNull { !it.id.isNullOrEmpty() && it.id !in answeredIds }
+}
+
+/**
+ * The [Event.customMetadata] key under which a live step records the handoff target a callback set
+ * beside its task delegations, so a resume hands off once those tasks answer.
+ */
+internal const val DEFERRED_HANDOFF_KEY = "adk_deferred_handoff"
+
+/**
+ * Returns the handoff target [owner]'s latest step recorded under [DEFERRED_HANDOFF_KEY], across
+ * the live [events]; null once a later handoff of [owner] follows it, or, in a turn-based run, a
+ * later model turn (live model audio has no role). A [scope] limits the events as in
+ * [unresolvedTaskDelegations].
+ */
+internal fun pendingDeferredHandoff(
+  events: List<Event>,
+  owner: String,
+  scope: String? = null,
+): String? {
+  var pending: String? = null
+  for (event in applyRewinds(events)) {
+    if (event.author != owner || (scope != null && event.isolationScope != scope)) continue
+    val recorded = event.customMetadata?.get(DEFERRED_HANDOFF_KEY) as? String
+    pending =
+      when {
+        recorded != null -> recorded
+        event.actions.transferToAgent != null || event.content?.role == Role.MODEL -> null
+        else -> pending
+      }
+  }
+  return pending
 }
 
 /** Returns [event] without its `transfer_to_agent` responses and handoff, which wait for tasks. */

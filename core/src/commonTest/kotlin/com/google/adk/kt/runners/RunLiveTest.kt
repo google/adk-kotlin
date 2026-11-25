@@ -1897,6 +1897,113 @@ class RunLiveTest {
     }
 
   @Test
+  fun runLive_singleTurnNodesTargetHandedBackToByItsTask_staysTurnBased(): Unit = runBlocking {
+    var taskCalls = 0
+    val task =
+      LlmAgent(
+        name = "t",
+        description = "Does t.",
+        mode = AgentMode.TASK,
+        model =
+          DummyModel("t") {
+            flowOf(if (taskCalls++ == 0) modelTransferToAgentResponse("planner") else finished)
+          },
+      )
+    var plannerCalls = 0
+    val planner =
+      LlmAgent(
+        name = "planner",
+        mode = AgentMode.CHAT,
+        subAgents = listOf(task),
+        model =
+          DummyModel("planner") {
+            flowOf(
+              if (plannerCalls++ == 0) {
+                modelFunctionCallResponse("t", mapOf("request" to "go"), id = "d1")
+              } else {
+                LlmResponse(content = modelMessage("done"))
+              }
+            )
+          },
+      )
+    val coordinator =
+      LlmAgent(
+        name = "coordinator",
+        model = DummyModel("coordinator") { flowOf(modelTransferToAgentResponse("planner")) },
+        mode = AgentMode.SINGLE_TURN,
+        subAgents = listOf(planner),
+      )
+
+    val events = runLiveUntilTheRootEnds(workflowRunner(coordinator))
+
+    // No model has a live connection, so a live attempt anywhere would have failed the run.
+    assertThat(events.map { it.contentText() }).contains("done")
+  }
+
+  @Test
+  fun runLive_singleTurnNodeHandsToAnAgentAboveTheRun_runsItTurnBasedUnderItsOwnRunId(): Unit =
+    runBlocking {
+      val asker =
+        LlmAgent(
+          name = "asker",
+          description = "Asks.",
+          mode = AgentMode.SINGLE_TURN,
+          model = DummyModel("asker") { flowOf(modelTransferToAgentResponse("lead")) },
+        )
+      val unusedLead =
+        LlmAgent(
+          name = "lead",
+          model = DummyModel("lead") { flowOf(paid) },
+          subAgents = listOf(asker),
+        )
+      val first = node<Any?, Any?>("first", rerunOnResume = true) { c, _ -> c.runNode(asker) }
+      val second = node<Any?, Any?>("second", rerunOnResume = true) { c, _ -> c.runNode(asker) }
+      val runner = workflowRunner(first, second)
+
+      val unused = runLiveUntilTheRootEnds(runner)
+
+      // lead's model has no live connection, so a live hop would have failed the run.
+      val leadPaths =
+        runner.storedEvents().filter { it.author == "lead" }.mapNotNull { it.nodeInfo?.path }
+      assertThat(leadPaths.toSet()).hasSize(2)
+    }
+
+  @Test
+  fun runLive_runNodeStartsASingleTurnNodeThatTransfers_runsTheTargetOnceTurnBased(): Unit =
+    runBlocking {
+      var billingCalls = 0
+      val coordinator =
+        LlmAgent(
+          name = "coordinator",
+          model = DummyModel("coordinator") { flowOf(modelTransferToAgentResponse("billing")) },
+          mode = AgentMode.SINGLE_TURN,
+          subAgents =
+            listOf(
+              LlmAgent(
+                name = "billing",
+                model =
+                  DummyModel("billing") {
+                    billingCalls++
+                    flowOf(paid)
+                  },
+              )
+            ),
+        )
+      var returned: Any? = null
+      val starter =
+        node<Any?, Any?>("starter", rerunOnResume = true) { c, _ ->
+          c.runNode(coordinator).also { returned = it }
+        }
+
+      val events = runLiveUntilTheRootEnds(workflowRunner(starter))
+
+      // billing has no live connection, so a live run would have failed it.
+      assertThat(events.map { it.contentText() }).contains("paid")
+      assertThat(billingCalls).isEqualTo(1)
+      assertThat(returned).isEqualTo("paid")
+    }
+
+  @Test
   fun runLive_workflowParallelNodesAgentTransfers_failsBeforeTheTargetRuns(): Unit = runBlocking {
     var billingCalls = 0
     val billing =
@@ -1906,6 +2013,7 @@ class RunLiveTest {
       }
 
     assertTransferFailsLive(workflowRunner(parallelNode(coordinator(billing))))
+    assertTransferFailsLive(workflowRunner(parallelNode(parallelNode(coordinator(billing)))))
     assertThat(billingCalls).isEqualTo(0)
   }
 
@@ -1932,6 +2040,45 @@ class RunLiveTest {
     val events =
       withTimeout(5.seconds) {
         starterRunner(coordinator(billing))
+          .runLive("u", "s", queue)
+          .onEach { if (it.contentText() == "paid") queue.close() }
+          .toList()
+      }
+
+    assertThat(events.map { it.contentText() }).contains("paid")
+    assertThat(billing.calls).isEqualTo(1)
+  }
+
+  @Test
+  fun runLive_rootParallelChatTransfers_followsTheTransfer(): Unit = runBlocking {
+    val billing =
+      EitherWayModel("billing", LlmResponse(content = modelMessage("paid"), turnComplete = true))
+    val queue = LiveRequestQueue()
+    val runner =
+      InMemoryRunner(app = App(appName = "app", rootNode = parallelNode(coordinator(billing))))
+        .apply { allowsLiveNodeRoot = true }
+
+    val events =
+      withTimeout(5.seconds) {
+        runner
+          .runLive("u", "s", queue)
+          .onEach { if (it.contentText() == "paid") queue.close() }
+          .toList()
+      }
+
+    assertThat(events.map { it.contentText() }).contains("paid")
+    assertThat(billing.calls).isEqualTo(1)
+  }
+
+  @Test
+  fun runLive_runNodeStartsAParallelChatThatTransfers_followsTheTransfer(): Unit = runBlocking {
+    val billing =
+      EitherWayModel("billing", LlmResponse(content = modelMessage("paid"), turnComplete = true))
+    val queue = LiveRequestQueue()
+
+    val events =
+      withTimeout(5.seconds) {
+        starterRunner(parallelNode(coordinator(billing)))
           .runLive("u", "s", queue)
           .onEach { if (it.contentText() == "paid") queue.close() }
           .toList()

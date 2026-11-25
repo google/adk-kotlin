@@ -25,6 +25,7 @@ import com.google.adk.kt.agents.ChildRuns
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.withoutLiveRun
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
@@ -81,9 +82,10 @@ private constructor(
     overrideIsolationScope: String? = null,
     openInterrupts: Set<String> = emptySet(),
     handoffOutputOf: LlmAgent? = null,
+    turnBased: Boolean = false,
   ) : this(
     node = node,
-    invocationContext = parent.invocationContext,
+    invocationContext = parent.invocationContext.let { if (turnBased) it.withoutLiveRun() else it },
     eventSink = parent.requireNodeState().eventSink,
     parent = parent,
     runId = runId,
@@ -498,10 +500,11 @@ private constructor(
       node: Node,
       root: Context,
       handoffOutputOf: LlmAgent? = null,
+      turnBased: Boolean = false,
     ): Context =
       runTopLevelHop(
         node,
-        root.invocationContext,
+        root.invocationContext.let { if (turnBased) it.withoutLiveRun() else it },
         root.requireNodeState().eventSink,
         input = null,
         handoffOutputOf = handoffOutputOf,

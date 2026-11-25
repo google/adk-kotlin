@@ -1585,6 +1585,9 @@ internal class LlmAgentTurn(
               }
           }
         sendingToConnection { connection.sendContent(toSend, input.partial) }
+        // Only once written, so a write replayed after a drop does not count as answered early. A
+        // reply that overtakes this record can still reach the round first, as speech before it.
+        if (input.answersTools) recordSentAnswers(sent)
         val handover = pendingHandover.load()
         if (handover?.answer == sent) {
           val unused = handover.written.complete(Unit)
@@ -1592,6 +1595,16 @@ internal class LlmAgentTurn(
       }
       null -> {}
     }
+  }
+
+  /**
+   * Records the calls [answers] answered for this turn's workflow node, whose round reads it to
+   * know the caller answered, since those answers reach no event it sees.
+   */
+  private fun recordSentAnswers(answers: Content) {
+    val nodePath = nodePath() ?: return
+    val ids = answers.parts.mapNotNullTo(mutableSetOf()) { it.functionResponse?.id }
+    if (ids.isNotEmpty()) liveRun().recordSentAnswers(nodePath, ids)
   }
 
   /**
