@@ -24,6 +24,8 @@ import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LlmResponse
@@ -48,6 +50,10 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Modality
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.common.truth.Truth.assertThat
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import java.util.concurrent.CopyOnWriteArrayList
@@ -392,6 +398,24 @@ class PublisherRunnerTest {
     queue.sendContent(userMessage("second"))
     assertThat(withTimeout(GUARD_TIMEOUT) { second.terminated.await() }).isNull()
     assertThat(model.connections[1].sent).contains(ContentInput(userMessage("second")))
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun runLive_workflowRoot_deliversItsNodesEventsThenCompletes(): Unit = runBlocking {
+    val greet = node<Any?, String>("greet") { _, _ -> "hello" }
+    val runner =
+      PublisherRunner.inMemory(
+        App(appName = "app", rootNode = Workflow("wf", listOf(Edge(Start, greet))))
+      )
+    runners += runner
+    val subscriber = RecordingSubscriber()
+
+    // The queue stays open: only the workflow's end completes the run.
+    runner.runLive("u", "s", LiveRequestQueue()).subscribe(subscriber)
+
+    assertThat(withTimeout(GUARD_TIMEOUT) { subscriber.terminated.await() }).isNull()
+    assertThat(subscriber.events.map { it.output }).contains("hello")
   }
 
   @Test

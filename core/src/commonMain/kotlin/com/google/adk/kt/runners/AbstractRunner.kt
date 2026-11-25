@@ -119,11 +119,6 @@ abstract class AbstractRunner : Runner {
     get() = node ?: agent
 
   /**
-   * Whether [runLive] may run a node root, which it can't do for callers yet; only tests set it.
-   */
-  internal var allowsLiveNodeRoot: Boolean = false
-
-  /**
    * Creates a runner from explicit fields, not using an [App].
    *
    * The supplied [pluginManager] is closed by [close]. Two runners sharing one manager therefore
@@ -317,9 +312,11 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Runs the agent live as [Runner.runLive] describes. Flushes [sessionService] once per turn, when
+   * Runs the root live as [Runner.runLive] describes. Flushes [sessionService] once per turn, when
    * the turn completes or hands over to another agent or step, and when the run completes or fails;
-   * each flush is bounded, so a stuck session service fails the run instead of hanging it.
+   * each flush is bounded, so a stuck session service fails the run instead of hanging it. A node
+   * root's turn-based nodes complete no live turn, so their events are flushed at a transfer or at
+   * the end of the run.
    *
    * @throws SessionNotFoundException from the flow if the session does not exist and this runner
    *   does not create missing sessions.
@@ -336,15 +333,8 @@ abstract class AbstractRunner : Runner {
     // Captured here, as in runAsync: the cold flow may be collected on another thread later.
     val parentContext = currentTelemetryContext()
     return flow {
-        // A node-rooted runner has no live path yet, where ADK Python runs `_run_node_live`.
-        if (root !is BaseAgent) {
-          if (!allowsLiveNodeRoot) {
-            throw UnsupportedOperationException("A node-rooted runner cannot run live yet")
-          }
-          // Fails, before anything connects, a graph with an agent node that can't run live yet.
-          requireRunnableLive(root)
-        }
-        // No up-front live check: `Model.connect` or the agent's runLive refuses, as in Python.
+        // Fails, before anything connects, a graph with an agent node that can't run live yet.
+        if (root !is BaseAgent) requireRunnableLive(root)
         val session = getOrCreateSession(userId, sessionId)
         runThenFlush(flush = { sessionService.boundedFlush(session.key) }) {
           val context = createLiveInvocationContext(session, runConfig)

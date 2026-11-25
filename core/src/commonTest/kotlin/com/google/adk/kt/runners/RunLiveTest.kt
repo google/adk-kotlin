@@ -1362,30 +1362,6 @@ class RunLiveTest {
     assertWithMessage("the agent should have run live").that(agent.seenContext).isNotNull()
   }
 
-  @Test
-  fun runLive_nodeRootedRunner_isRefused(): Unit = runBlocking {
-    var ran = false
-    val node =
-      object : Node {
-        override val name = "solo"
-
-        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
-          ran = true
-          emit("ran")
-        }
-      }
-    val runner = InMemoryRunner(app = App(appName = "node_app", rootNode = node))
-
-    assertFailsWith<UnsupportedOperationException> { runLiveWith(runner) }
-
-    assertWithMessage("a node-rooted runner must not run its workflow turn-based on a live run")
-      .that(ran)
-      .isFalse()
-    assertWithMessage("a refused run must not leave a session behind")
-      .that(runner.sessionService.getSession(SessionKey(runner.appName, "u", "s")))
-      .isNull()
-  }
-
   /** Records its input and the context it ran on, writes a state key, and emits [output]. */
   private class RecordingNode(override val name: String, private val output: Any?) : Node {
     var seenInput: Any? = null
@@ -1410,26 +1386,48 @@ class RunLiveTest {
     config: NodeConfig = NodeConfig(),
   ) =
     InMemoryRunner(
-        app =
-          App(
-            appName = "workflow_app",
-            rootNode =
-              Workflow(
-                name = "wf",
-                edges = (listOf<Node>(Start) + nodes).zipWithNext { from, to -> Edge(from, to) },
-                config = config,
-              ),
-            plugins = plugins,
-          ),
-        sessionService = sessionService,
-      )
-      .apply { allowsLiveNodeRoot = true }
+      app =
+        App(
+          appName = "workflow_app",
+          rootNode =
+            Workflow(
+              name = "wf",
+              edges = (listOf<Node>(Start) + nodes).zipWithNext { from, to -> Edge(from, to) },
+              config = config,
+            ),
+          plugins = plugins,
+        ),
+      sessionService = sessionService,
+    )
 
   /** Runs [runner] live on a [queue] the caller never closes, so only the root's end stops it. */
   private suspend fun runLiveUntilTheRootEnds(
     runner: InMemoryRunner,
     queue: LiveRequestQueue = LiveRequestQueue(),
   ): List<Event> = withTimeout(5.seconds) { runner.runLive("u", "s", queue).toList() }
+
+  @Test
+  fun runLive_callerTakesAWorkflowRootsFirstOutput_runsAfterRunOnce(): Unit = runBlocking {
+    var afterRuns = 0
+    val runErrors = mutableListOf<Throwable>()
+    val runner =
+      workflowRunner(
+        RecordingNode("first", "A"),
+        RecordingNode("second", "B"),
+        plugins =
+          listOf(plugin(recordRunError = { runErrors += it }, recordAfterRun = { afterRuns++ })),
+      )
+
+    // The caller stops at the first node's output, as ADK Python's early close does.
+    val first =
+      withTimeout(5.seconds) {
+        runner.runLive("u", "s", LiveRequestQueue()).first { it.output != null }
+      }
+
+    assertThat(first.output).isEqualTo("A")
+    assertWithMessage("stopping early is not a run error").that(runErrors).isEmpty()
+    assertThat(afterRuns).isEqualTo(1)
+  }
 
   @Test
   fun runLive_workflowRoot_runsToItsEndWithoutTheQueueClosing(): Unit = runBlocking {
@@ -1510,15 +1508,14 @@ class RunLiveTest {
     val failing = node<Any?, Unit>("failing") { _, _ -> throw IllegalStateException("node failed") }
     val runner =
       InMemoryRunner(
-          app =
-            App(
-              appName = "node_app",
-              rootNode = failing,
-              plugins = listOf(plugin(recordRunError = { errors += it })),
-            ),
-          sessionService = sessionService,
-        )
-        .apply { allowsLiveNodeRoot = true }
+        app =
+          App(
+            appName = "node_app",
+            rootNode = failing,
+            plugins = listOf(plugin(recordRunError = { errors += it })),
+          ),
+        sessionService = sessionService,
+      )
 
     val error = assertFailsWith<IllegalStateException> { runLiveUntilTheRootEnds(runner) }
 
@@ -2056,7 +2053,6 @@ class RunLiveTest {
     val queue = LiveRequestQueue()
     val runner =
       InMemoryRunner(app = App(appName = "app", rootNode = parallelNode(coordinator(billing))))
-        .apply { allowsLiveNodeRoot = true }
 
     val events =
       withTimeout(5.seconds) {

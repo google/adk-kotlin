@@ -269,7 +269,6 @@ private suspend fun runLiveWorkflow(
     App(appName = "app", rootNode = workflow, resumabilityConfig = resumability, plugins = plugins)
   val runner =
     InMemoryRunner(app = app, sessionService = sessionService, artifactService = artifactService)
-      .apply { allowsLiveNodeRoot = true }
   return withTimeout(30.seconds) {
     runner.runLive("user", "live", queue, runConfig).onEach(onEvent).toList()
   }
@@ -482,8 +481,7 @@ class WorkflowLiveTest {
       )
     val sessions = InMemorySessionService()
     val app = App(appName = "app", rootNode = Workflow("wf", listOf(Edge(Start, started(writer)))))
-    val runner =
-      InMemoryRunner(app = app, sessionService = sessions).apply { allowsLiveNodeRoot = true }
+    val runner = InMemoryRunner(app = app, sessionService = sessions)
     val queue = LiveRequestQueue()
     queue.sendContent(userMessage("write"))
 
@@ -1353,8 +1351,7 @@ class WorkflowLiveTest {
           rootNode = Workflow("wf", listOf(Edge(Start, started(writer)))),
           resumabilityConfig = ResumabilityConfig(isResumable = true),
         )
-      val runner =
-        InMemoryRunner(app = app, sessionService = sessions).apply { allowsLiveNodeRoot = true }
+      val runner = InMemoryRunner(app = app, sessionService = sessions)
       val queue = LiveRequestQueue()
       queue.sendContent(userMessage("go"))
       // The caller stops at the handoff, before the target runs.
@@ -1837,7 +1834,7 @@ class WorkflowLiveTest {
           rootNode = Workflow("wf", listOf(Edge(Start, started(planner)))),
           resumabilityConfig = ResumabilityConfig(isResumable = true),
         )
-      val runner = InMemoryRunner(app = app).apply { allowsLiveNodeRoot = true }
+      val runner = InMemoryRunner(app = app)
       val queue = LiveRequestQueue()
       queue.sendContent(userMessage("plan a trip"))
       // The caller stops once the task answers, before the handoff.

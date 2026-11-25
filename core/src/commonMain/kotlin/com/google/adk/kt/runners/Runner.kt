@@ -102,11 +102,15 @@ interface Runner : AutoCloseable {
   ): Iterator<Event>
 
   /**
-   * Runs the agent over a live (bidirectional streaming) connection and returns a cold [Flow] of
-   * the conversation's [Event]s, delivering inline audio, video, and image data to the caller
-   * without storing it in the session. Closing the caller-owned [liveRequestQueue] ends the run,
-   * and [RunConfig.maxLlmCalls] does not apply to a live run. A [Runner] that does not override
-   * this fails with [UnsupportedOperationException] when the flow is collected.
+   * Runs the root agent or node, such as a workflow, live and returns a cold [Flow] of the run's
+   * [Event]s, delivering a live agent's inline audio, video, and image data to the caller without
+   * storing it in the session. An agent talks over a live (bidirectional streaming) connection
+   * until the caller closes [liveRequestQueue] or the model ends the session, with no
+   * [RunConfig.maxLlmCalls] limit; a node starts with no input and runs until it ends. The returned
+   * flow fails with [UnsupportedOperationException] for a graph task agent node or a delegating
+   * task agent inside a node root, before anything connects when the root's graph holds it and
+   * otherwise when it starts, for a graph agent node's transfer unless the node is single-turn, and
+   * for a [Runner] that does not override this.
    *
    * @param userId The user ID of the session.
    * @param sessionId The session ID, fetched (or created, if the runner creates missing sessions)

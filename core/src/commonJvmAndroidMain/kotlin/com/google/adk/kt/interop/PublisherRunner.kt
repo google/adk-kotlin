@@ -91,13 +91,13 @@ class PublisherRunner private constructor(private val delegate: Runner) : AutoCl
       .asPublisher(Dispatchers.IO + callerContext(coroutineContext))
 
   /**
-   * Experimental: runs the agent over a live connection, streaming the whole conversation's events
-   * (see [Runner.runLive]). Each subscription starts its own run, which ends when
-   * [liveRequestQueue] is closed or the model ends the session, and a second one reading the same
-   * queue at once fails; cancelling the subscription closes the connection and leaves the queue
-   * open. As in [runAsync], the run and `onNext` execute on [Dispatchers.IO], not on the thread
-   * that sends to the queue, in the OpenTelemetry context current at this call, with
-   * [coroutineContext] added; hand slow work in `onNext` to your own executor.
+   * Experimental: runs the root agent or node live, streaming the whole run's events (see
+   * [Runner.runLive]). Each subscription starts its own run, which ends as [Runner.runLive]
+   * describes, and a second one reading the same queue at once fails; cancelling the subscription
+   * closes any connection and leaves the queue open. As in [runAsync], the run and `onNext` execute
+   * on [Dispatchers.IO], not on the thread that sends to the queue, in the OpenTelemetry context
+   * current at this call, with [coroutineContext] added; hand slow work in `onNext` to your own
+   * executor.
    */
   @CheckReturnValue
   @JvmOverloads
