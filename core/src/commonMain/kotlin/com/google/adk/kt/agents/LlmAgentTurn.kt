@@ -491,7 +491,11 @@ internal class LlmAgentTurn(
     // Before connecting, so a second reader usually opens no session; the sender still claims it.
     liveRun().checkNoOtherReader(agent.name)
     val request = prepareLiveSession(collector) ?: return false
-    var attempt = 0
+    // A connect with the caller's handle is already a resume, so it spends an attempt.
+    var attempt = if (resumptionHandle.load() == null) 0 else 1
+    // Reconnects that opened but completed no turn, which bound a server that keeps dropping them.
+    var idleReconnects = 0
+    var reconnected = false
     while (true) {
       liveTools?.onBeforeConnect()
       // A timeout at the last connection's end says nothing about this connection's saves.
@@ -544,11 +548,21 @@ internal class LlmAgentTurn(
         saveRecordingsAndRethrow(collector, "a server close", failure)
         return false
       }
-      // A go-away never counts against the budget; a completed turn resets it too.
-      if (result.completedATurn || goAway) attempt = 0
-      if (attempt >= MAX_RECONNECT_ATTEMPTS) failAfterExhaustedReconnects(collector, failure)
+      // Only a connect that fails to open spends an attempt; one that opens may count as idle.
+      if (result.opened) attempt = 0
+      // A go-away never counts as idle; a completed turn resets the idle count too.
+      when {
+        result.completedATurn || goAway -> idleReconnects = 0
+        reconnected && result.opened -> idleReconnects++
+      }
+      if (attempt >= MAX_RECONNECT_ATTEMPTS || idleReconnects >= MAX_RECONNECT_ATTEMPTS) {
+        failAfterExhaustedReconnects(collector, failure)
+      }
       attempt++
-      if (!waitToReconnect(attempt, freshRestart, goAway, droppedBy, queue)) {
+      reconnected = true
+      // The next reconnect's idle number; none after a refusal, which spent an attempt instead.
+      val upcomingIdle = if (result.opened) idleReconnects + 1 else 0
+      if (!waitToReconnect(attempt, upcomingIdle, freshRestart, goAway, droppedBy, queue)) {
         // A hang-up while waiting saves what both sides said, as the close above does.
         saveRecordingsAndRethrow(collector, "close", failure)
         return false
@@ -615,6 +629,7 @@ internal class LlmAgentTurn(
       // Inside the try so a drop while opening is retried; a model without live support throws.
       val opened = agent.model.connect(request)
       connection = opened
+      result.opened = true
       // The model replies only if history ends with the user; a resumed session already has it.
       if (fresh && request.contents.isNotEmpty()) sendTracedHistory(opened, request)
       collectLiveTurns(request, opened, queue, close, result).collect { event ->
@@ -737,19 +752,20 @@ internal class LlmAgentTurn(
     failure: Throwable?,
   ): Nothing {
     emitRecordingsNow(collector, "exhausted reconnects")
-    // The exhausting failure surfaces as itself; a go-away resets the count and never gets here.
+    // The exhausting failure surfaces as itself; only a clean close at the idle limit gets here.
     failure?.let { throw it }
-    error("live connection could not be resumed after $MAX_RECONNECT_ATTEMPTS attempts")
+    error("live session reconnected $MAX_RECONNECT_ATTEMPTS times without completing a turn")
   }
 
   /**
-   * Logs reconnect [attempt], or a [freshRestart] after a go-away, with [droppedBy]'s close code,
-   * and waits before it.
+   * Logs reconnect [attempt] or [idleReconnect], whichever is nearer the limit, or a [freshRestart]
+   * after a go-away, with [droppedBy]'s close code, and waits before it.
    *
    * @return false when the caller hung up while waiting, so the run ends instead.
    */
   private suspend fun waitToReconnect(
     attempt: Int,
+    idleReconnect: Int,
     freshRestart: Boolean,
     goAway: Boolean,
     droppedBy: Throwable?,
@@ -762,17 +778,20 @@ internal class LlmAgentTurn(
       val closeCode =
         (droppedBy as? GenAiApiException ?: droppedBy?.cause as? GenAiApiException)?.code
       logger.info {
-        "Reconnecting the live session (attempt $attempt of $MAX_RECONNECT_ATTEMPTS)." +
+        val count =
+          if (idleReconnect > attempt) "idle reconnect $idleReconnect" else "attempt $attempt"
+        "Reconnecting the live session ($count of $MAX_RECONNECT_ATTEMPTS)." +
           (closeCode?.let { " Close code $it." } ?: "")
       }
     }
     // Waiting before every reconnect and restart keeps a go-away-only server from spinning.
+    val wait = liveReconnectDelay(attempt, idleReconnect)
     if (goAway) {
       // A go-away still drains queued input, so a closed queue does not cut the wait short.
-      delay(liveReconnectDelay(attempt))
+      delay(wait)
       return true
     }
-    return withTimeoutOrNull(liveReconnectDelay(attempt)) { queue.closed.await() } == null
+    return withTimeoutOrNull(wait) { queue.closed.await() } == null
   }
 
   /** Saves both sides' audio so far, for [reason], and emits the recordings into [collector]. */
@@ -1005,10 +1024,11 @@ internal class LlmAgentTurn(
       connection
         .receive()
         .takeWhile { response ->
-          // Store any handle update as-is, so a withdrawn handle clears it, as ADK Python does.
-          response.liveSessionResumptionUpdate?.let {
-            resumptionHandle.store(it.newHandle?.takeIf { h -> h.isNotEmpty() })
-          }
+          // An update sent while the session can't be resumed has no handle; the last one stays.
+          response.liveSessionResumptionUpdate
+            ?.newHandle
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { resumptionHandle.store(it) }
           // A go-away warns of a close; it is not an event.
           val goAway = response.goAway
           if (goAway != null) {
@@ -2339,8 +2359,9 @@ private enum class LiveTurnsEnd {
  * @property end why the receive loop stopped; a transport drop is signalled out of band, by a
  *   thrown failure, and leaves this at [LiveTurnsEnd.CLOSED], or [LiveTurnsEnd.GO_AWAY] once a
  *   go-away's drain has started.
+ * @property opened whether the connection opened, which restarts the reconnect attempt count.
  * @property completedATurn whether the connection delivered at least one turn-complete, which marks
- *   a healthy session and resets the reconnect budget.
+ *   a healthy session and resets the idle reconnect count.
  * @property closedByCaller whether the sender drained the caller's closed queue, after which
  *   nothing is resumed.
  * @property writeFailure the error of a failed write of a turn already stored in the session, or of
@@ -2353,6 +2374,7 @@ private enum class LiveTurnsEnd {
 private class LiveAttemptResult {
   @Volatile var end: LiveTurnsEnd = LiveTurnsEnd.CLOSED
   @Volatile var droppedBy: Throwable? = null
+  @Volatile var opened: Boolean = false
   @Volatile var completedATurn: Boolean = false
   @Volatile var closedByCaller: Boolean = false
   @Volatile var writeFailure: Throwable? = null
@@ -2610,27 +2632,32 @@ private const val CONNECTION_CLOSED_STATUS = "ConnectionClosed"
 private val RECOVERABLE_CLOSE_CODES = setOf(1006, 1011)
 
 /**
- * How many reconnects in a row a live run makes before giving up.
+ * The limit on each of the two counts that end a live run's reconnects.
  *
- * Drops and clean closes count toward the limit; a go-away resets it, since ADK Python never bounds
- * one, and so does any connection that completes a turn. This bounds reconnects when a server
- * accepts connections but drops or closes them before completing a turn.
+ * A connect that fails to open spends an attempt, and any connection that opens restarts that
+ * count. A reconnect that opens but completes no turn is idle, and only a completed turn or a
+ * go-away resets that count, so a server that keeps accepting and dropping connections stops.
  */
 private const val MAX_RECONNECT_ATTEMPTS = 5
 
 private val BASE_RECONNECT_DELAY = 250.milliseconds
 
 /**
- * How long to wait before opening the next live connection: full jitter up to an exponential
- * ceiling (at most 4 s under [MAX_RECONNECT_ATTEMPTS]), so clients that lost the same server do not
- * reconnect in lockstep.
+ * How long to wait before opening the next live connection: full jitter up to a ceiling that
+ * doubles with the larger of [attempt] and [idleReconnect] (at most 4 s under
+ * [MAX_RECONNECT_ATTEMPTS]), so clients that lost the same server do not reconnect in lockstep. The
+ * idle count keeps the wait growing when every connection opens and restarts [attempt].
  *
  * Takes [random] for testing, and is `@JvmSynthetic` to stay off the Java surface.
  */
 @JvmSynthetic
-internal fun liveReconnectDelay(attempt: Int, random: Random = Random.Default): Duration {
-  // attempt is 1-based, so the first reconnect's ceiling is the base, not twice it.
-  val ceiling = BASE_RECONNECT_DELAY * (1 shl (attempt - 1))
+internal fun liveReconnectDelay(
+  attempt: Int,
+  idleReconnect: Int,
+  random: Random = Random.Default,
+): Duration {
+  // The counts are 1-based, so the first reconnect's ceiling is the base, not twice it.
+  val ceiling = BASE_RECONNECT_DELAY * (1 shl (maxOf(attempt, idleReconnect) - 1))
   return random.nextLong(0, ceiling.inWholeMilliseconds + 1).milliseconds
 }
 

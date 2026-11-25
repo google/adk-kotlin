@@ -213,8 +213,8 @@ class LlmAgentLiveReconnectTest {
 
   /**
    * Hands out one connection per connect, so a reconnect is observable. [queue] is there for a test
-   * to pass to the run and reach from its event callbacks; [brokenClose] applies to every
-   * connection.
+   * to pass to the run and reach from its event callbacks, and is closed, as by a caller hanging
+   * up, on a reconnect past a cleanly finished script; [brokenClose] applies to every connection.
    */
   private class ReconnectingLiveModel(
     private val scripts: List<ConnectionScript>,
@@ -228,14 +228,15 @@ class LlmAgentLiveReconnectTest {
     override val name = "scripted-live"
 
     /**
-     * Whether the script ends on a go-away, transport drop, auth failure, or send drop rather than
-     * a clean turn, so reconnects past the end of the script keep failing like an unrecovered
-     * outage.
+     * Whether the script ends on a go-away, transport drop, server error, auth failure, or send
+     * drop rather than a clean turn, so reconnects past the end of the script keep failing like an
+     * unrecovered outage.
      */
     private val scriptEndsMidOutage: Boolean =
       scripts.lastOrNull()?.lastOrNull()?.lastOrNull().let { last ->
         last != null &&
-          (last.goAway != null || last in setOf(DROP_MARKER, AUTH_FAILURE_MARKER, SEND_DROP_MARKER))
+          (last.goAway != null ||
+            last in setOf(DROP_MARKER, SERVER_ERROR_MARKER, AUTH_FAILURE_MARKER, SEND_DROP_MARKER))
       }
 
     private val faults = scripts.map { SendFaults(it, beforeSendDrop) }
@@ -243,19 +244,9 @@ class LlmAgentLiveReconnectTest {
     private val dummy =
       DummyLiveModel.perConnection(
         scripts.map(::stepsOf),
-        // Past a clean script, clear the handle so the run ends; past an outage, keep dropping.
+        // Past a clean script, end at once: the caller hung up; past an outage, keep dropping.
         afterScripts =
-          if (scriptEndsMidOutage) listOf(Fail(connectionDrop()))
-          else
-            listOf(
-              Respond(
-                LlmResponse(
-                  liveSessionResumptionUpdate =
-                    LiveServerSessionResumptionUpdate(newHandle = null, resumable = false)
-                )
-              ),
-              EndStream,
-            ),
+          if (scriptEndsMidOutage) listOf(Fail(connectionDrop())) else listOf(EndStream),
         onSend = { index, message ->
           if (scriptEndsMidOutage || index < scripts.size) {
             if (message is RealtimeInput) onSendRealtime()
@@ -285,6 +276,8 @@ class LlmAgentLiveReconnectTest {
         ScriptedConnection(dummy.connect(request) as DummyLiveConnection, beforeFrame, brokenClose)
       if (trailing) {
         trailingConnects++
+        // A held handle survives updates without one, so only a hang-up ends the run here.
+        queue.close()
       } else {
         checkedConnections += connection
         checkedRequests += request
@@ -310,6 +303,9 @@ class LlmAgentLiveReconnectTest {
               }
               steps += Fail(connectionDrop())
             }
+            // An internal server error (1011) is retried like a drop.
+            SERVER_ERROR_MARKER ->
+              steps += Fail(GenAiApiException(1011, "ConnectionClosed", "internal error"))
             // A refusal, not a drop: same exception family, different status, must not be retried.
             AUTH_FAILURE_MARKER ->
               steps += Fail(GenAiApiException(401, "UNAUTHENTICATED", "bad key"))
@@ -426,7 +422,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(text("after the drop"), turnComplete())),
       )
 
-    val events = runner.runLive("u", "s", LiveRequestQueue()).toList()
+    val events = runner.runLive("u", "s", model.queue).toList()
 
     assertWithMessage("a dropped socket should have been reopened")
       .that(model.connections.size)
@@ -480,7 +476,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(text("still here"), turnComplete())),
       )
 
-    val unused = runner.runLive("u", "s", LiveRequestQueue()).toList()
+    val unused = runner.runLive("u", "s", model.queue).toList()
 
     assertWithMessage("expected an original connect and one reconnect")
       .that(model.requests.size)
@@ -542,7 +538,7 @@ class LlmAgentLiveReconnectTest {
     val (runner, model) =
       runnerFor(*Array(7) { answersThenDrops }, listOf(listOf(text("done"), turnComplete())))
 
-    val unused = runner.runLive("u", "s", LiveRequestQueue()).toList()
+    val unused = runner.runLive("u", "s", model.queue).toList()
 
     assertThat(model.connections.size).isEqualTo(8)
   }
@@ -561,7 +557,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(text("done"), turnComplete())),
       )
 
-    val unused = runner.runLive("u", "s", LiveRequestQueue()).toList()
+    val unused = runner.runLive("u", "s", model.queue).toList()
 
     assertThat(model.connections.size).isEqualTo(11)
   }
@@ -636,7 +632,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(text("resumed"), turnComplete())),
       )
 
-    val unused = runner.runLive("u", "s", LiveRequestQueue()).toList()
+    val unused = runner.runLive("u", "s", model.queue).toList()
 
     assertThat(model.connections.size).isEqualTo(2)
     assertNoConnectionLeaked(model, "a reconnecting run")
@@ -650,11 +646,65 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(text("first"), turnComplete()), listOf(handleUpdate("h-late"), goAway())),
         listOf(listOf(text("resumed"), turnComplete())),
       )
-    val queue = LiveRequestQueue()
 
-    val unused = runner.runLive("u", "s", queue).toList()
+    val unused = runner.runLive("u", "s", model.queue).toList()
 
     assertThat(resumptionHandles(model)).isEqualTo(listOf(null, "h-late"))
+  }
+
+  @Test
+  fun runLive_updateWithoutAHandle_keepsTheLastHandleOffered(): Unit = runTest {
+    // While the model answers or a call runs, the server's updates offer no handle to resume from.
+    val withoutAHandle =
+      mapOf(
+        "not resumable" to LiveServerSessionResumptionUpdate(resumable = false),
+        "consumed index only" to
+          LiveServerSessionResumptionUpdate(lastConsumedClientMessageIndex = 7),
+        "empty handle" to LiveServerSessionResumptionUpdate(newHandle = "", resumable = false),
+      )
+    for ((kind, update) in withoutAHandle) {
+      val noHandle = LlmResponse(liveSessionResumptionUpdate = update)
+      val (runner, model) =
+        runnerFor(
+          dropAfter(handleUpdate("h-1"), noHandle, handleUpdate("h-2"), noHandle),
+          listOf(listOf(text("resumed"), turnComplete())),
+        )
+
+      val unused = runner.runLive("u", "s", model.queue).toList()
+
+      assertWithMessage(kind).that(resumptionHandles(model)).isEqualTo(listOf(null, "h-2"))
+    }
+  }
+
+  @Test
+  fun runLive_connectionLostWhileNotResumable_resumesFromTheLastHandle(): Unit = runTest {
+    // The model has started answering, so the last update said the session can't be resumed.
+    val interruptions =
+      mapOf(
+        "go-away" to goAway(),
+        "abnormal closure" to DROP_MARKER,
+        "internal error" to SERVER_ERROR_MARKER,
+        "clean close" to null,
+      )
+    for ((kind, interruption) in interruptions) {
+      val (runner, model) =
+        runnerFor(
+          listOf(listOfNotNull(handleUpdate("h-1"), NOT_RESUMABLE, interruption)),
+          listOf(listOf(text("resumed"), turnComplete())),
+        )
+      // An earlier turn, which a fresh session replays and a resumed one already holds.
+      val session = runner.sessionService.createSession(SessionKey(runner.appName, "u", "s"))
+      val earlier = Event(author = Role.USER, content = userMessage("Book a table for two."))
+      val unusedEvent = runner.sessionService.appendEvent(session, earlier)
+
+      val unused = runner.runLive("u", "s", model.queue).toList()
+
+      assertWithMessage(kind).that(resumptionHandles(model)).isEqualTo(listOf(null, "h-1"))
+      assertWithMessage(kind)
+        .that(model.connections[0].sentHistory.single().flatMap { it.parts }.map { it.text })
+        .contains("Book a table for two.")
+      assertWithMessage(kind).that(model.connections[1].sentHistory).isEmpty()
+    }
   }
 
   @Test
@@ -677,14 +727,30 @@ class LlmAgentLiveReconnectTest {
   }
 
   @Test
+  fun runLive_serverKeepsClosingWhileNotResumable_failsAfterTheReconnectLimit(): Unit = runTest {
+    // The kept handle resumes each close, but no turn completes, so the run must not loop forever.
+    val closesMidAnswer = listOf(listOf(handleUpdate("h-1"), text("partial"), NOT_RESUMABLE))
+    val (runner, model) = runnerFor(*Array(7) { closesMidAnswer })
+
+    val failure =
+      assertFailsWith<IllegalStateException> { runner.runLive("u", "s", model.queue).toList() }
+
+    assertThat(failure)
+      .hasMessageThat()
+      .isEqualTo("live session reconnected 5 times without completing a turn")
+    // The first connection plus the five reconnects the budget allows.
+    assertThat(model.connections.size).isEqualTo(6)
+  }
+
+  @Test
   fun runLive_dropDuringSend_doesNotPersistTheUserTurnTwice(): Unit = runTest {
     // The append precedes the write, so without the guard a replay stores the turn twice.
-    val (runner, _) =
+    val (runner, model) =
       runnerFor(
         listOf(listOf(handleUpdate("h-1"), SEND_FAILURE_MARKER, DROP_MARKER)),
         listOf(listOf(text("resumed"), turnComplete())),
       )
-    val queue = LiveRequestQueue()
+    val queue = model.queue
     queue.sendContent(userMessage("only once"))
 
     val unused = runner.runLive("u", "s", queue).toList()
@@ -702,7 +768,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(handleUpdate("h-1"), SEND_FAILURE_MARKER, DROP_MARKER)),
         listOf(listOf(text("resumed"), turnComplete())),
       )
-    val queue = LiveRequestQueue()
+    val queue = model.queue
     queue.sendRealtime(RealtimeInput.Audio(Blob(mimeType = "audio/pcm", data = byteArrayOf(7))))
 
     val unused =
@@ -758,7 +824,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(text("resumed"), turnComplete())),
       )
 
-    val unused = runner.runLive("u", "s", LiveRequestQueue()).toList()
+    val unused = runner.runLive("u", "s", model.queue).toList()
 
     assertThat(model.connections.size).isEqualTo(2)
     val resent =
@@ -769,6 +835,58 @@ class LlmAgentLiveReconnectTest {
   }
 
   @Test
+  fun runLive_dropWhileNotResumableDuringAStreamingCall_resumesAndTheStreamGoesOn(): Unit =
+    runTest {
+      // A call running in the background keeps the session unresumable; it outlives the drop.
+      val resumed = CompletableDeferred<Unit>()
+      val updateSent = CompletableDeferred<Unit>()
+      var starts = 0
+      val monitor =
+        DummyTool(name = "monitor") { _, _ ->
+          starts++
+          flow {
+            resumed.await()
+            emit("update 1")
+          }
+        }
+      val update = mapOf("result" to "update 1")
+      val model =
+        ReconnectingLiveModel(
+          listOf(
+            dropAfter(
+              handleUpdate("h-1"),
+              modelFunctionCallResponse("monitor", id = "c1"),
+              NOT_RESUMABLE,
+            ),
+            listOf(listOf(text("resumed"), turnComplete())),
+          ),
+          onSendContent = { content ->
+            if (content.parts.any { it.functionResponse?.response == update }) {
+              updateSent.complete(Unit)
+            }
+          },
+          // The stream's update reaches the resumed session before its turn ends.
+          beforeFrame = { frame ->
+            if (frame.content?.parts?.singleOrNull()?.text == "resumed") {
+              resumed.complete(Unit)
+              updateSent.await()
+            }
+          },
+        )
+      val agent = LlmAgent(name = "live_agent", model = model, tools = listOf(monitor))
+
+      val unused = InMemoryRunner(agent = agent).runLive("u", "s", model.queue).toList()
+
+      assertThat(resumptionHandles(model)).isEqualTo(listOf(null, "h-1"))
+      assertWithMessage("the stream must not start again on the resumed session")
+        .that(starts)
+        .isEqualTo(1)
+      val answers =
+        model.connections[1].sentContent.flatMap { it.parts }.mapNotNull { it.functionResponse }
+      assertThat(answers.map { it.id to it.response }).isEqualTo(listOf("c1" to update))
+    }
+
+  @Test
   fun runLive_sendCancelledByADroppedSocket_resendsTheRequestOnceAndFirst(): Unit = runTest {
     // The SDK's send fails with a cancellation after a close; only its receive reports the 1006.
     val (runner, model) =
@@ -776,7 +894,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(handleUpdate("h-1"), SEND_CANCEL_MARKER, DROP_MARKER)),
         listOf(listOf(text("resumed"), turnComplete())),
       )
-    val queue = LiveRequestQueue()
+    val queue = model.queue
     queue.sendContent(userMessage("hello"))
     queue.sendContent(userMessage("second"))
 
@@ -816,7 +934,7 @@ class LlmAgentLiveReconnectTest {
           // The drop waits for the handle, so the run resumes rather than failing.
           beforeSendDrop = { handleSeen.await() },
         )
-      val queue = LiveRequestQueue()
+      val queue = model.queue
       queue.sendContent(userMessage("card 4111"))
 
       val unused =
@@ -886,6 +1004,7 @@ class LlmAgentLiveReconnectTest {
           listOf(listOf(text("resumed"), turnComplete())),
         ),
         beforeSendDrop = { queue.sendContent(userMessage("queued")) },
+        queue = queue,
       )
     val runner = runnerFor(model)
 
@@ -905,7 +1024,7 @@ class LlmAgentLiveReconnectTest {
         listOf(listOf(handleUpdate("h-1"), SEND_FAILURE_MARKER, DROP_MARKER)),
         listOf(listOf(text("resumed"), turnComplete())),
       )
-    val queue = LiveRequestQueue()
+    val queue = model.queue
     queue.sendContent(userMessage("only once"))
 
     val unused = runner.runLive("u", "s", queue).toList()
@@ -1304,8 +1423,14 @@ class LlmAgentLiveReconnectTest {
   @Test
   fun runLive_toolCallDuringTheDrain_restartsFreshWithTheQuestionLast(): Unit = runTest {
     // A resumed session would predate the question, so the model is asked it again instead.
-    for (beforeGoAway in listOf(listOf(handleUpdate("h-1")), emptyList())) {
-      val held = "a handle held: ${beforeGoAway.isNotEmpty()}"
+    val beforeTheGoAway =
+      mapOf(
+        "a handle" to listOf(handleUpdate("h-1")),
+        // That update keeps the handle, so only the drain clearing it forces the fresh session.
+        "a handle, then an update without one" to listOf(handleUpdate("h-1"), NOT_RESUMABLE),
+        "no handle" to emptyList(),
+      )
+    for ((held, beforeGoAway) in beforeTheGoAway) {
       weatherRuns = 0
       val model =
         ReconnectingLiveModel(
@@ -1360,6 +1485,7 @@ class LlmAgentLiveReconnectTest {
               listOf(
                 handleUpdate("h-1"),
                 audio(),
+                NOT_RESUMABLE,
                 goAway(timeLeft = 5.seconds),
                 toolCall("c1"),
                 handleUpdate("h-2"),
@@ -2025,11 +2151,18 @@ class LlmAgentLiveReconnectTest {
   companion object {
     // Scripted sentinels the connection turns into failures or a stall, for tests to use.
     private val DROP_MARKER = LlmResponse(errorMessage = "__scripted_transport_drop__")
+    private val SERVER_ERROR_MARKER = LlmResponse(errorMessage = "__scripted_server_error__")
     private val SEND_FAILURE_MARKER = LlmResponse(errorMessage = "__scripted_send_failure__")
     private val AUTH_FAILURE_MARKER = LlmResponse(errorMessage = "__scripted_auth_failure__")
     private val SEND_DROP_MARKER = LlmResponse(errorMessage = "__scripted_send_drop__")
     private val SEND_CANCEL_MARKER = LlmResponse(errorMessage = "__scripted_send_cancel__")
     private val STALL_MARKER = LlmResponse(errorMessage = "__scripted_stall__")
+
+    /** The update the server sends while the model answers or a call runs: no handle to resume. */
+    private val NOT_RESUMABLE =
+      LlmResponse(
+        liveSessionResumptionUpdate = LiveServerSessionResumptionUpdate(resumable = false)
+      )
 
     private val RESUMING =
       RunConfig(live = LiveRunConfig(sessionResumption = SessionResumptionConfig()))

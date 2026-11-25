@@ -3481,8 +3481,9 @@ class LlmAgentTurnTest {
   }
 
   @Test
-  fun runLive_unresumableUpdate_dropSurfacesInsteadOfResumingAnOlderHandle() = runBlocking {
-    // A withdrawn handle is cleared, so the next drop has nothing to resume and surfaces itself.
+  fun runLive_unresumableUpdate_dropResumesFromTheLastHandle() = runBlocking {
+    // An update without a handle keeps the last one, so the next drop resumes from it.
+    val queue = LiveRequestQueue()
     val connection =
       ScriptedConn("c0") {
         emit(handleUpdate("h-old"))
@@ -3495,14 +3496,17 @@ class LlmAgentTurnTest {
         )
         throw connectionDrop()
       }
-    val model = RecordingLiveModel(connection)
+    val resumed =
+      ScriptedConn("c1") {
+        queue.close()
+        it.closed.await()
+      }
+    val model = RecordingLiveModel(connection, resumed)
     val agent = LlmAgent(name = "live_agent", model = model)
 
-    val failure =
-      assertFailsWith<GenAiApiException> { agent.runLive(liveContextFor(agent)).toList() }
+    agent.runLive(liveContextFor(agent, queue)).toList()
 
-    assertEquals(1006, failure.code)
-    assertEquals(1, model.connectCalls)
+    assertEquals("h-old", model.connectedRequests[1].liveConnectConfig.sessionResumption?.handle)
   }
 
   @Test
@@ -5703,6 +5707,100 @@ class LlmAgentTurnTest {
     assertEquals(1, events.count { it.content == refusal })
   }
 
+  /**
+   * Opens connect `n` when [opens] holds for it, playing [script] for `n`, and otherwise refuses it
+   * as a dropped socket fails an open. Records the handle each connect resumes.
+   */
+  private class RefusingLiveModel(
+    private val opens: (Int) -> Boolean,
+    private val script: suspend FlowCollector<LlmResponse>.(Int) -> Unit,
+  ) : Model {
+    override val name = "refusing-live-model"
+    val resumedHandles = mutableListOf<String?>()
+    val connects: Int
+      get() = resumedHandles.size
+
+    override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> = flow {}
+
+    override suspend fun connect(request: LlmRequest): LiveConnection {
+      resumedHandles += request.liveConnectConfig.sessionResumption?.handle
+      val number = connects
+      if (!opens(number)) {
+        throw IllegalStateException("The live session failed to open.", connectionDrop())
+      }
+      return ScriptedConn("c$number") { script(number) }
+    }
+  }
+
+  @Test
+  fun runLive_reconnectThatOpens_restartsTheAttemptCount() = runTest {
+    // Connects 1, 2 and 5 open and drop, and only the first completes a turn; the rest are refused.
+    val model =
+      RefusingLiveModel(opens = { it in setOf(1, 2, 5) }) { connect ->
+        if (connect == 1) emit(handleUpdate("h-1").copy(turnComplete = true))
+        throw connectionDrop()
+      }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<IllegalStateException> { agent.runLive(liveContextFor(agent)).toList() }
+
+    // Connect 5 opened, so the five refusals after it still fit: the fifth ends the run.
+    assertEquals("The live session failed to open.", failure.message)
+    assertEquals(10, model.connects)
+  }
+
+  @Test
+  fun runLive_callersHandleWithEveryConnectRefused_spendsAnAttemptOnTheFirstConnect() = runTest {
+    val model = RefusingLiveModel(opens = { false }) {}
+    val agent = LlmAgent(name = "live_agent", model = model)
+    val runConfig =
+      RunConfig(
+        live = LiveRunConfig(sessionResumption = SessionResumptionConfig(handle = "h-caller"))
+      )
+
+    val failure =
+      assertFailsWith<IllegalStateException> {
+        agent.runLive(liveContextFor(agent, runConfig = runConfig)).toList()
+      }
+
+    // The first connect resumes the caller's handle, so it is the first of the five attempts.
+    assertEquals("The live session failed to open.", failure.message)
+    assertEquals(List(5) { "h-caller" }, model.resumedHandles)
+  }
+
+  @Test
+  fun runLive_serverThatKeepsClosingCleanly_failsAtTheIdleLimit() = runTest {
+    // Each connection opens, offers a handle and closes with no turn, so each reconnect is idle.
+    val model = RefusingLiveModel(opens = { true }) { connect -> emit(handleUpdate("h-$connect")) }
+    val agent = LlmAgent(name = "live_agent", model = model)
+
+    val failure =
+      assertFailsWith<IllegalStateException> { agent.runLive(liveContextFor(agent)).toList() }
+
+    assertEquals("live session reconnected 5 times without completing a turn", failure.message)
+    // The first connection plus five idle reconnects, each resuming the handle before it.
+    assertEquals(listOf(null, "h-1", "h-2", "h-3", "h-4", "h-5"), model.resumedHandles)
+  }
+
+  @Test
+  fun liveReconnectDelay_attemptAndIdleCount_largerSetsTheCeiling() {
+    // Every connection that opens restarts the attempt count, so the idle count grows the wait.
+    val maxDraw =
+      object : Random() {
+        override fun nextBits(bitCount: Int) = 0
+
+        override fun nextLong(from: Long, until: Long) = until - 1
+      }
+
+    assertEquals(
+      listOf(2000L, 1000L, 4000L),
+      listOf(1 to 4, 3 to 2, 5 to 5).map { (attempt, idle) ->
+        liveReconnectDelay(attempt, idle, maxDraw).inWholeMilliseconds
+      },
+    )
+  }
+
   @Test
   fun liveReconnectDelay_eachAttempt_staysWithinADoublingCeiling() {
     // A max draw hits the ceiling, so this checks that the ceiling doubles on each attempt.
@@ -5715,13 +5813,13 @@ class LlmAgentTurnTest {
     // attempt is 1-based: the first reconnect's ceiling is the 250 ms base, not twice it.
     assertEquals(
       listOf(250L, 500L, 1000L, 2000L, 4000L),
-      (1..5).map { liveReconnectDelay(it, maxDraw).inWholeMilliseconds },
+      (1..5).map { liveReconnectDelay(it, idleReconnect = 0, maxDraw).inWholeMilliseconds },
     )
     // Full jitter: every draw stays within the ceiling across the reconnect budget.
     val random = Random(20260824)
     repeat(200) {
       for (attempt in 1..5) {
-        val delay = liveReconnectDelay(attempt, random)
+        val delay = liveReconnectDelay(attempt, idleReconnect = 0, random)
         val ceiling = (250L shl (attempt - 1)).milliseconds
         assertTrue(delay in 0.milliseconds..ceiling, "attempt $attempt drew $delay, above $ceiling")
       }
@@ -5737,14 +5835,14 @@ class LlmAgentTurnTest {
 
         override fun nextLong(from: Long, until: Long) = from
       }
-    assertEquals(0L, liveReconnectDelay(3, zeroDraw).inWholeMilliseconds)
+    assertEquals(0L, liveReconnectDelay(3, idleReconnect = 0, zeroDraw).inWholeMilliseconds)
     val fixedDraw =
       object : Random() {
         override fun nextBits(bitCount: Int) = 0
 
         override fun nextLong(from: Long, until: Long) = 123L
       }
-    assertEquals(123L, liveReconnectDelay(3, fixedDraw).inWholeMilliseconds)
+    assertEquals(123L, liveReconnectDelay(3, idleReconnect = 0, fixedDraw).inWholeMilliseconds)
   }
 
   @Test
@@ -5756,7 +5854,7 @@ class LlmAgentTurnTest {
 
         override fun nextLong(from: Long, until: Long) = until - 1
       }
-    assertEquals(4000L, liveReconnectDelay(5, maxDraw).inWholeMilliseconds)
+    assertEquals(4000L, liveReconnectDelay(5, idleReconnect = 0, maxDraw).inWholeMilliseconds)
   }
 
   @Test
