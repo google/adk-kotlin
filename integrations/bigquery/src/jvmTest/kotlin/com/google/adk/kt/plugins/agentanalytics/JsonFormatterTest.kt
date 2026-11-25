@@ -156,6 +156,54 @@ class JsonFormatterTest {
   }
 
   @Test
+  fun truncate_nonPositiveBudget_returnsEmptyWithoutThrowing() {
+    for (budget in listOf(0, -1, -10, Int.MIN_VALUE)) {
+      assertEquals("", JsonFormatter.truncate("", budget))
+      assertEquals("", JsonFormatter.truncate("abc", budget))
+      assertEquals("", JsonFormatter.truncate("é😀", budget))
+    }
+  }
+
+  @Test
+  fun truncate_loneUtf16Surrogates_replacedWithReplacementCharWithinAndAboveBudget() {
+    assertEquals("\uFFFD", JsonFormatter.truncate("\uD800", NO_LIMIT))
+    assertEquals("\uFFFD", JsonFormatter.truncate("\uDC00", NO_LIMIT))
+    assertEquals("\uFFFD\uFFFD", JsonFormatter.truncate("\uDC00\uD800", NO_LIMIT))
+    assertEquals("hi\uFFFDbye", JsonFormatter.truncate("hi\uD800bye", NO_LIMIT))
+    assertEquals("\uFFFD😀", JsonFormatter.truncate("\uD800\uD83D\uDE00", NO_LIMIT))
+
+    // Each \uFFFD takes 3 UTF-8 bytes (21 > 19); budget 19 minus 14-byte marker allows 1 char.
+    val truncated = JsonFormatter.truncate("\uD800".repeat(7), 19)
+    assertEquals("\uFFFD...[TRUNCATED]", truncated)
+    assertTrue(truncated.toByteArray(Charsets.UTF_8).size <= 19)
+
+    // When lone surrogate pushes an otherwise short string past budget (20 > 19), it truncates.
+    val mixed = JsonFormatter.truncate("\uD800" + "a".repeat(17), 19)
+    assertEquals("\uFFFDaa...[TRUNCATED]", mixed)
+    assertEquals(19, mixed.toByteArray(Charsets.UTF_8).size)
+  }
+
+  @Test
+  fun truncate_validSurrogatePair_preservedUnbrokenWithinAndAboveBudget() {
+    val emojis = "😀".repeat(5)
+    assertEquals(emojis, JsonFormatter.truncate(emojis, 20))
+    assertEquals("😀...[TRUNCATED]", JsonFormatter.truncate(emojis, 19))
+    assertEquals("...[TRUNCATED]", JsonFormatter.truncate(emojis, 17))
+  }
+
+  @Test
+  fun sanitizeText_and_smartTruncate_replaceLoneUtf16Surrogates() {
+    assertEquals(SanitizedText("ok\uFFFD", true), JsonFormatter.sanitizeText("ok\uD800", 100))
+    val mapResult = JsonFormatter.smartTruncate(mapOf("msg" to "bad\uDC00text"), 100)
+    assertEquals("bad\uFFFDtext", mapResult.node["msg"].asText())
+    assertTrue(mapResult.isTruncated)
+
+    val keyOnlyResult = JsonFormatter.smartTruncate(mapOf("k\uD800" to 1), 100)
+    assertEquals(1, keyOnlyResult.node["k\uFFFD"].asInt())
+    assertTrue(keyOnlyResult.isTruncated)
+  }
+
+  @Test
   fun sanitizeText_reportsRedactionAndTruncationAsChanges() {
     assertEquals(SanitizedText("plain", false), JsonFormatter.sanitizeText("plain", 100))
     assertEquals(
