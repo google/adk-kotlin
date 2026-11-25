@@ -39,6 +39,7 @@ internal object MetadataKeys {
   const val PARTIAL = "adk_partial"
   const val CUSTOM = "adk_custom_metadata"
   const val ERROR_CODE = "adk_error_code"
+  const val CITATION = "adk_citation_metadata"
   const val IS_LONG_RUNNING = "adk_is_long_running"
   const val TYPE = "adk_type"
   const val AUTHOR = "adk_author"
@@ -215,6 +216,23 @@ internal fun Event.updateEventMetadata(
     errorCode = decodeErrorCode(metadata[MetadataKeys.ERROR_CODE]),
   )
 }
+
+/**
+ * Returns whether [metadata] has an event field, as ADK Python counts them: a grounding, usage,
+ * custom or citation metadata object, or an error code that is not JSON null. A JSON string is read
+ * first. Citation metadata is not read into the event.
+ */
+internal fun hasEventFields(metadata: Map<String, Any?>): Boolean =
+  OBJECT_FIELD_KEYS.any { readMetadataValue(metadata[it]) is Map<*, *> } ||
+    readMetadataValue(metadata[MetadataKeys.ERROR_CODE]) != null
+
+private val OBJECT_FIELD_KEYS =
+  listOf(MetadataKeys.GROUNDING, MetadataKeys.USAGE, MetadataKeys.CUSTOM, MetadataKeys.CITATION)
+
+/** Returns [value], with a JSON string read into its value first. */
+@OptIn(FrameworkInternalApi::class)
+private fun readMetadataValue(value: Any?): Any? =
+  if (value is String) SchemaUtils.readJsonOrText(value) else value
 
 /**
  * Returns the error code [value] holds, or null if it holds none. A JSON string is decoded first,
