@@ -26,7 +26,7 @@ import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.applyRewinds
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.normalizeBySchema
-import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
+import com.google.adk.kt.processors.OUT_OF_TURN_ANSWER_KEY
 import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
@@ -260,18 +260,15 @@ internal fun taskDelegationsIn(event: Event, tools: Map<String, BaseTool>): List
 }
 
 /**
- * Whether [event] calls anything that answers in the same model step: any call but a
- * [TaskAgentTool] delegation, including toolset tools and `transfer_to_agent`, which [tools] does
- * not hold.
+ * Returns the ids of [event]'s calls that its model step waits for: every call but a
+ * [TaskAgentTool] delegation, whether it answers in the step, from the background or through the
+ * caller, including toolset tools and `transfer_to_agent`, which [tools] does not hold.
  */
-internal fun hasEagerToolCalls(event: Event, tools: Map<String, BaseTool>): Boolean =
-  event.functionCalls().any { tools[it.name] !is TaskAgentTool }
-
-/** Whether [event] has calls besides its task delegations and every one is long-running. */
-internal fun callsOnlyDeferBesideTasks(event: Event, tools: Map<String, BaseTool>): Boolean {
-  val others = event.functionCalls().filter { tools[it.name] !is TaskAgentTool }
-  return others.isNotEmpty() && others.all { it.id in event.longRunningToolIds }
-}
+internal fun waitedCallIds(event: Event, tools: Map<String, BaseTool>): Set<String> =
+  event
+    .functionCalls()
+    .filter { tools[it.name] !is TaskAgentTool }
+    .mapNotNullTo(mutableSetOf()) { it.id }
 
 /**
  * Returns the task delegations [owner] made that have no function response yet, across the live
@@ -407,10 +404,10 @@ internal fun taskWaitsInAnotherInvocation(
   invocationId: String,
 ): Boolean {
   val callId = call.id ?: return false
-  // A stopped stream's final answer can follow the task's finish_task answer, so it is skipped.
+  // An out-of-turn answer can follow the task's finish_task answer, so it is skipped.
   val latest =
     liveEvents.lastOrNull {
-      it.isolationScope == callId && it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) != true
+      it.isolationScope == callId && it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) != true
     } ?: return false
   // A finished task replays its output even if its answer was never recorded.
   return latest.invocationId != invocationId && !FinishTaskTool.isTerminalResponse(latest)

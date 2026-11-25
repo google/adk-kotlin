@@ -19,6 +19,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BackgroundToolCalls
 import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
@@ -42,7 +43,7 @@ import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.models.SingleCollectorLiveConnection
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
+import com.google.adk.kt.processors.OUT_OF_TURN_ANSWER_KEY
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
@@ -53,7 +54,9 @@ import com.google.adk.kt.testing.SaveHookArtifactService
 import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.nonBlockingTool
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
@@ -81,13 +84,16 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
@@ -107,6 +113,8 @@ private class LiveNodeModel(
   val requests = mutableListOf<LlmRequest>()
   /** Completes once this model first connects. */
   val connected = CompletableDeferred<Unit>()
+  /** Completes once this model connects a second time. */
+  val reconnected = CompletableDeferred<Unit>()
 
   override suspend fun connect(request: LlmRequest): LiveConnection {
     log += "$name connect"
@@ -115,6 +123,7 @@ private class LiveNodeModel(
     return LiveNodeConnection(name, turns, log, stallOn, completesTurns).also {
       connections += it
       connected.complete(Unit)
+      if (connections.size == 2) reconnected.complete(Unit)
     }
   }
 
@@ -140,6 +149,9 @@ private class LiveNodeConnection(
   var closed = false
     private set
 
+  /** How many times the agent has started reading this connection's next turn. */
+  val reads = MutableStateFlow(0)
+
   private val replies = Channel<Content>(Channel.UNLIMITED)
   private var next = 0
 
@@ -149,9 +161,11 @@ private class LiveNodeConnection(
     received.flatMap { it.parts }.mapNotNull { it.functionResponse }
 
   override fun responses(): Flow<LlmResponse> = flow {
+    reads.update { it + 1 }
     val turn = replies.receiveCatching().getOrNull() ?: return@flow
     when {
       turn === GO_AWAY -> emit(LlmResponse(goAway = LiveServerGoAway(timeLeft = null)))
+      turn === SIGNAL -> emit(LlmResponse(turnComplete = true))
       turn.role == SPOKEN ->
         emit(LlmResponse(outputTranscription = Transcription(turn.text()), partial = true))
       turn.role == Role.USER -> emit(LlmResponse(inputTranscription = Transcription(turn.text())))
@@ -183,16 +197,21 @@ private class LiveNodeConnection(
   }
 
   private fun answer() {
-    // A server sends what it heard with the turn after it, and a go-away right after a turn.
+    // A server sends what it heard with the turn after it, and a go-away or signal right after.
     do {
       val turn = turns.getOrNull(next++) ?: return
       val unused = replies.trySend(turn)
-    } while (turn.role == Role.USER || turns.getOrNull(next) === GO_AWAY)
+    } while (
+      turn.role == Role.USER || turns.getOrNull(next).let { it === GO_AWAY || it === SIGNAL }
+    )
   }
 }
 
 /** A script entry that sends a go-away without a resumption handle, so the agent reconnects. */
 private val GO_AWAY = modelMessage("(server going away)")
+
+/** A script entry that sends a bare turn-complete signal right after the turn before it. */
+private val SIGNAL = modelMessage("(turn complete)")
 
 /** The role of a script entry the model speaks; see [spoke]. */
 private const val SPOKEN = "spoken"
@@ -254,6 +273,9 @@ private fun audio() =
     parts = listOf(Part(inlineData = Blob(mimeType = "audio/pcm;rate=24000", data = ByteArray(8)))),
   )
 
+/** A short audio chunk without a role, as Gemini Live sends the model's speech. */
+private fun roleLessAudio() = audio().copy(role = null)
+
 /** The function calls and answers in [author]'s events, in order, as "call x" and "answer x". */
 private fun List<Event>.functionSteps(author: String): List<String> =
   filter { it.author == author }
@@ -266,9 +288,19 @@ private fun List<Event>.functionSteps(author: String): List<String> =
 private fun booker(model: LiveNodeModel) =
   LlmAgent(name = "booker", model = model, description = "Books trips.", mode = AgentMode.TASK)
 
-/** A chat agent on [model] that delegates to [tasks]. */
-private fun planner(model: LiveNodeModel, vararg tasks: LlmAgent) =
-  LlmAgent(name = "planner", model = model, subAgents = tasks.toList(), mode = AgentMode.CHAT)
+/** A chat agent on [model] that delegates to [tasks] and calls [tools]. */
+private fun planner(
+  model: LiveNodeModel,
+  vararg tasks: LlmAgent,
+  tools: List<BaseTool> = listOf(),
+) =
+  LlmAgent(
+    name = "planner",
+    model = model,
+    subAgents = tasks.toList(),
+    tools = tools,
+    mode = AgentMode.CHAT,
+  )
 
 /**
  * Runs [workflow] live as an app's root on [queue] with [runConfig], [sessionService] and
@@ -524,14 +556,82 @@ class WorkflowLiveTest {
     // Assert: the stopped stream's answer is in the task's scope, where its call is.
     val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
     val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-    val finalAnswer = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+    val finalAnswer = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
     assertNotNull(call.isolationScope)
     assertEquals(call.isolationScope, finalAnswer.isolationScope)
     // The caller receives the answer too, not only the session.
     assertEquals(
       listOf(finalAnswer.id),
-      events.filter { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }.map { it.id },
+      events.filter { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }.map { it.id },
     )
+  }
+
+  @Test
+  fun taskNode_startedByRunNode_finishingWithABackgroundCallRunning_stopsTheCallAndFinishes() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: the task calls a tool that never answers, beside its finish_task.
+      val stopped = CompletableDeferred<Unit>()
+      val lookup =
+        nonBlockingTool("lookup") {
+          try {
+            awaitCancellation()
+          } finally {
+            stopped.complete(Unit)
+          }
+        }
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("lookup", emptyMap())),
+          Part(functionCall = FunctionCall("finish_task", mapOf("result" to "memo"))),
+        )
+      val writer =
+        LlmAgent(
+          name = "writer",
+          model = LiveNodeModel("writer", listOf(listOf(turn))),
+          tools = listOf(lookup),
+          mode = AgentMode.TASK,
+        )
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("write"))
+
+      val events = runLiveWorkflow(Workflow("wf", listOf(Edge(Start, started(writer)))), queue)
+
+      // Assert: the round's end stopped the call, and the task still finished.
+      assertEquals(mapOf("result" to "memo"), events.mapNotNull { it.output }.single())
+      assertTrue(stopped.isCompleted)
+    }
+  }
+
+  @Test
+  fun taskNode_startedByRunNode_freshRestartWhileABackgroundCallRuns_keepsTheCall() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: a go-away with no handle follows the call, so the task restarts while it runs.
+      val model =
+        LiveNodeModel(
+          "writer",
+          listOf(
+            listOf(modelFunctionCall("lookup", id = "b1"), GO_AWAY),
+            listOf(finishTask("result" to "memo")),
+          ),
+        )
+      val lookup =
+        nonBlockingTool("lookup") {
+          model.reconnected.await()
+          "found"
+        }
+      val writer =
+        LlmAgent(name = "writer", model = model, tools = listOf(lookup), mode = AgentMode.TASK)
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("write"))
+
+      val events = runLiveWorkflow(Workflow("wf", listOf(Edge(Start, started(writer)))), queue)
+
+      // Assert: the new session opened with the running call, which its answer then paired.
+      assertEquals(mapOf("result" to "memo"), events.mapNotNull { it.output }.single())
+      val history = model.requests[1].contents.flatMap { it.parts }
+      assertEquals(listOf("lookup"), history.mapNotNull { it.functionCall?.name })
+      assertEquals(listOf("lookup"), model.connections[1].receivedResponses().map { it.name })
+    }
   }
 
   @Test
@@ -579,13 +679,13 @@ class WorkflowLiveTest {
     val unused =
       withTimeout(30.seconds) {
         runner.runLive("user", "live", queue).first {
-          it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true
+          it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true
         }
       }
 
     // Assert: both streams are still recorded as stopped.
     val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
-    val records = stored.filter { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+    val records = stored.filter { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
     assertEquals(
       listOf("first_monitor", "second_monitor"),
       records.flatMap { it.functionResponses() }.map { it.name }.sorted(),
@@ -792,7 +892,7 @@ class WorkflowLiveTest {
       // Written straight to the session, the answer still carries the task's scope, as its call
       // does.
       val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-      val finalAnswer = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+      val finalAnswer = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
       assertNotNull(call.isolationScope)
       assertEquals(call.isolationScope, finalAnswer.isolationScope)
     }
@@ -826,7 +926,7 @@ class WorkflowLiveTest {
       // Assert: the failed round stores the stop under the task's node, where its call is.
       val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
       val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-      val stop = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+      val stop = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
       val path = assertNotNull(call.nodeInfo?.path)
       assertEquals(path, stop.nodeInfo?.path)
     }
@@ -1552,6 +1652,49 @@ class WorkflowLiveTest {
   }
 
   @Test
+  fun taskNode_startedByRunNode_backgroundAnswerTransfer_endsTheTaskAndRunsTheTarget() {
+    runTest(BackgroundToolCalls) {
+      // Arrange: the live task calls a background tool whose answer hands the user to a helper.
+      val log = mutableListOf<String>()
+      val helperModel = LiveNodeModel("helper", listOf(listOf(modelMessage("helped"))), log = log)
+      val helper = LlmAgent(name = "helper", model = helperModel, description = "Helps.")
+      val routerModel =
+        LiveNodeModel("router", listOf(listOf(modelFunctionCall("route", emptyMap()))), log = log)
+      val router =
+        LlmAgent(
+          name = "router",
+          model = routerModel,
+          subAgents = listOf(helper),
+          tools = listOf(nonBlockingTool("route", transferTo = "helper") { "routed" }),
+          mode = AgentMode.TASK,
+        )
+      val sessions = InMemorySessionService()
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("help me"))
+
+      // Act: the user hangs up once the helper has answered.
+      val events =
+        runLiveWorkflow(
+          Workflow("wf", listOf(Edge(Start, started(router)))),
+          queue,
+          resumable = true,
+          sessionService = sessions,
+        ) { event ->
+          if (event.contentText() == "helped") queue.close()
+        }
+
+      // Assert: the round ends at the answer, the helper runs once, and nothing waits on time.
+      assertEquals(listOf("router connect", "router close", "helper connect", "helper close"), log)
+      assertEquals(emptyList(), routerModel.connections.single().receivedResponses())
+      assertEquals(1, events.count { it.author == "router" && it.actions.endOfAgent })
+      val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
+      val answers = stored.flatMap { it.functionResponses() }.filter { it.name == "route" }
+      assertEquals(listOf(mapOf("result" to "routed")), answers.map { it.response })
+      assertEquals(0L, testScheduler.currentTime)
+    }
+  }
+
+  @Test
   fun taskNodes_startedByRunNode_firstFinishesBeforeSendingATakenInput_dropsIt() = runBlocking {
     // Arrange: the first task finishes on "first start" while its sender holds "first end" unsent.
     val log = mutableListOf<String>()
@@ -2191,6 +2334,444 @@ class WorkflowLiveTest {
     )
   }
 
+  // A node records no answer for a background call its round's end stopped, so none ever comes.
+  @Test
+  fun chatNode_liveTaskDelegationWhileABackgroundCallRuns_leavesTheCallOutOfTheNextRound() {
+    runBlocking(BackgroundToolCalls) {
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))))
+      val chatModel =
+        LiveNodeModel(
+          "planner",
+          listOf(
+            listOf(
+              modelFunctionCall("lookup", id = "b1"),
+              modelFunctionCall("booker", mapOf("request" to "book a trip")),
+            ),
+            listOf(modelMessage("Booked.")),
+          ),
+        )
+      val planner =
+        LlmAgent(
+          name = "planner",
+          model = chatModel,
+          tools = listOf(nonBlockingTool("lookup") { awaitCancellation() }),
+          subAgents = listOf(booker(taskModel)),
+          mode = AgentMode.CHAT,
+        )
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("plan a trip"))
+
+      // Act: the user's next words make the chat delegate, which ends its round.
+      val events =
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue) { event ->
+          if (event.functionCalls().any { it.name == "lookup" }) {
+            queue.sendContent(userMessage("book it"))
+          }
+          if (event.contentText() == "Booked.") queue.close()
+        }
+
+      // Assert: the call is stored, but the chat's next round opens without it.
+      assertTrue(events.any { event -> event.functionCalls().any { it.name == "lookup" } })
+      val history = chatModel.requests[1].contents.flatMap { it.parts }
+      assertEquals(listOf("booker"), history.mapNotNull { it.functionCall?.name })
+    }
+  }
+
+  @Test
+  fun chatNode_liveTurnDelegatingBesideTwoBackgroundCalls_answersBothBeforeTheTask() {
+    runBlocking(BackgroundToolCalls) {
+      assertNotifyAnswersBeforeTheTask(nonBlockingTool("lookup") { "found" }, "found")
+    }
+  }
+
+  @Test
+  fun chatNode_liveTurnMixingAToolAndABackgroundCallBesideATask_waitsForTheBackgroundAnswer() {
+    runBlocking(BackgroundToolCalls) {
+      assertNotifyAnswersBeforeTheTask(DummyTool("lookup", onRun = { _, _ -> "sunny" }), "sunny")
+    }
+  }
+
+  /**
+   * Runs a chat whose one turn calls [lookup] and a background `notify` beside a task, then speaks
+   * once the lookup answers; `notify` answers only once the caller hears that, and the step must
+   * wait for it. Asserts the lookup answered with [lookupResult].
+   */
+  private suspend fun assertNotifyAnswersBeforeTheTask(lookup: BaseTool, lookupResult: String) {
+    val heard = CompletableDeferred<Unit>()
+    val turn =
+      modelMessage(
+        Part(functionCall = FunctionCall("lookup", emptyMap())),
+        Part(functionCall = FunctionCall("notify", emptyMap())),
+        Part(functionCall = FunctionCall("booker", mapOf("request" to "book"))),
+      )
+    val chatModel =
+      LiveNodeModel(
+        "planner",
+        listOf(listOf(turn, roleLessAudio()), listOf(modelMessage("Booked."))),
+      )
+    val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))))
+    val notify =
+      nonBlockingTool("notify") {
+        heard.await()
+        "sent"
+      }
+    val planner = planner(chatModel, booker(taskModel), tools = listOf(lookup, notify))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("book"))
+
+    // Act: the caller hangs up once the chat replies after the task.
+    var openWhenHeard: Boolean? = null
+    var answersWhenDelegationSeen: List<String>? = null
+    val events =
+      runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue) { event ->
+        if (
+          answersWhenDelegationSeen == null && event.functionCalls().any { it.name == "booker" }
+        ) {
+          answersWhenDelegationSeen = chatModel.connections[0].receivedResponses().map { it.name }
+        }
+        if (event.author == "planner" && event.hasAudio()) {
+          openWhenHeard = !chatModel.connections[0].closed
+          heard.complete(Unit)
+        }
+        if (event.contentText() == "Booked.") queue.close()
+      }
+
+    // Assert: the speech reached the caller while the step waited, and both calls answered first.
+    assertEquals(true, openWhenHeard)
+    // The lookup answer alone kept the call held; it went out with the speech that answer prompted.
+    assertEquals(listOf("lookup"), answersWhenDelegationSeen)
+    assertEquals(
+      listOf("call lookup", "call notify", "call booker", "answer lookup", "answer notify"),
+      events.functionSteps("planner"),
+    )
+    assertEquals(
+      listOf(mapOf("result" to lookupResult), mapOf("result" to "sent")),
+      events
+        .filter { it.author == "planner" }
+        .flatMap { it.functionResponses() }
+        .map { it.response },
+    )
+    assertEquals(
+      listOf("lookup", "notify", "booker"),
+      chatModel.connections[1].receivedResponses().map { it.name },
+    )
+  }
+
+  @Test
+  fun chatNode_earlierTurnsBackgroundAnswerDuringADelegatingStep_leavesTheStepOpen() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: an earlier turn's background call answers while the delegating turn's call runs.
+      val notifyRuns = CompletableDeferred<Unit>()
+      val heard = CompletableDeferred<Unit>()
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("notify", emptyMap())),
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book"))),
+        )
+      val chatModel =
+        LiveNodeModel(
+          "planner",
+          listOf(
+            listOf(modelFunctionCall("lookup", emptyMap()), turn, roleLessAudio()),
+            listOf(modelMessage("Booked.")),
+          ),
+        )
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))))
+      val lookup =
+        nonBlockingTool("lookup") {
+          notifyRuns.await()
+          "found"
+        }
+      val notify =
+        nonBlockingTool("notify") {
+          notifyRuns.complete(Unit)
+          heard.await()
+          "sent"
+        }
+      val planner = planner(chatModel, booker(taskModel), tools = listOf(lookup, notify))
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("look it up"))
+
+      // Act: the caller asks for the booking once it sees the lookup.
+      val events =
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue) { event ->
+          if (event.functionCalls().any { it.name == "lookup" }) {
+            queue.sendContent(userMessage("book it"))
+          }
+          if (event.author == "planner" && event.hasAudio()) heard.complete(Unit)
+          if (event.contentText() == "Booked.") queue.close()
+        }
+
+      // Assert: the earlier answer left the step open, so its own call answered before the task.
+      assertEquals(
+        listOf("call lookup", "call notify", "call booker", "answer lookup", "answer notify"),
+        events.functionSteps("planner"),
+      )
+    }
+  }
+
+  @Test
+  fun chatNode_liveTurnWithALongRunningAndABackgroundCallBesideATask_waitsOnTheCallerAfterward() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: one chat turn calls a long-running and a quick background tool, and delegates.
+      val log = mutableListOf<String>()
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("approve", emptyMap())),
+          Part(functionCall = FunctionCall("notify", emptyMap())),
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book"))),
+        )
+      // approve's answer gets a silent reply, so the audio follows both answers.
+      val silent = Content(role = null, parts = emptyList())
+      val chatModel =
+        LiveNodeModel(
+          "planner",
+          listOf(listOf(turn, silent, roleLessAudio()), listOf(modelMessage("Booked."))),
+          log,
+        )
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))), log)
+      val approve = DummyTool(name = "approve", isLongRunning = true, onRun = { _, _ -> Unit })
+      val planner =
+        planner(
+          chatModel,
+          booker(taskModel),
+          tools = listOf(approve, nonBlockingTool("notify") { "sent" }),
+        )
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("book"))
+
+      // Act: the caller answers the long-running call as soon as it sees it.
+      val events =
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue) { event ->
+          if (event.contentText() == "Booked.") queue.close()
+          event
+            .functionCalls()
+            .firstOrNull { it.name == "approve" }
+            ?.let { call ->
+              val answer =
+                FunctionResponse(id = call.id, name = "approve", response = mapOf("ok" to true))
+              queue.sendContent(
+                Content(role = Role.USER, parts = listOf(Part(functionResponse = answer)))
+              )
+            }
+        }
+
+      // Assert: the chat's own connection got the answer, not the task's, before the task ran.
+      assertEquals(
+        listOf("approve", "notify"),
+        chatModel.connections[0].receivedResponses().map { it.name },
+      )
+      assertEquals(emptyList(), taskModel.connections.single().receivedResponses())
+      assertEquals(
+        listOf(
+          "planner connect",
+          "planner close",
+          "booker connect",
+          "booker close",
+          "planner connect",
+          "planner close",
+        ),
+        log,
+      )
+      assertEquals(
+        listOf("call approve", "call notify", "call booker", "answer notify"),
+        events.functionSteps("planner"),
+      )
+    }
+  }
+
+  @Test
+  fun chatNode_callerAnsweringABackgroundCallItself_stillWaitsForTheCallsOwnAnswer() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: notify answers only once the caller has heard the chat speak twice.
+      val heardTwice = CompletableDeferred<Unit>()
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("lookup", emptyMap())),
+          Part(functionCall = FunctionCall("notify", emptyMap())),
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book"))),
+        )
+      val chatModel =
+        LiveNodeModel(
+          "planner",
+          listOf(listOf(turn, roleLessAudio(), roleLessAudio()), listOf(modelMessage("Booked."))),
+        )
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))))
+      val notify =
+        nonBlockingTool("notify") {
+          heardTwice.await()
+          "sent"
+        }
+      val lookup = nonBlockingTool("lookup") { "found" }
+      val planner = planner(chatModel, booker(taskModel), tools = listOf(lookup, notify))
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("book"))
+
+      // Act: on first hearing the chat, the caller answers notify itself.
+      var notifyId: String? = null
+      var heard = 0
+      val events =
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue) { event ->
+          event.functionCalls().firstOrNull { it.name == "notify" }?.let { notifyId = it.id }
+          if (event.author == "planner" && event.hasAudio()) {
+            heard++
+            if (heard == 1) {
+              val answer =
+                FunctionResponse(id = notifyId, name = "notify", response = mapOf("by" to "caller"))
+              queue.sendContent(
+                Content(role = Role.USER, parts = listOf(Part(functionResponse = answer)))
+              )
+            } else {
+              heardTwice.complete(Unit)
+            }
+          }
+          if (event.contentText() == "Booked.") queue.close()
+        }
+
+      // Assert: the caller's answer left the step open; notify's own answer ended it.
+      assertEquals(
+        listOf("call lookup", "call notify", "call booker", "answer lookup", "answer notify"),
+        events.functionSteps("planner"),
+      )
+      assertEquals(
+        listOf(mapOf("result" to "found"), mapOf("result" to "sent")),
+        events
+          .filter { it.author == "planner" }
+          .flatMap { it.functionResponses() }
+          .map { it.response },
+      )
+    }
+  }
+
+  @Test
+  fun chatNode_liveSignalWhileADelegatingStepWaits_keepsTheStepHeld() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: a bare turn-complete signal arrives while the step waits for its background call.
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("notify", emptyMap())),
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book"))),
+        )
+      val chatModel =
+        LiveNodeModel("planner", listOf(listOf(turn, SIGNAL), listOf(modelMessage("Booked."))))
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))))
+      val notify =
+        nonBlockingTool("notify") {
+          // The chat reads on only once it has handled the signal.
+          chatModel.connections[0].reads.first { it >= 3 }
+          "sent"
+        }
+      val planner = planner(chatModel, booker(taskModel), tools = listOf(notify))
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("book"))
+
+      // Act: the caller hangs up once the chat replies after the task.
+      var chatClosedWhenDelegationSeen: Boolean? = null
+      val events =
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue) { event ->
+          if (event.functionCalls().any { it.name == "booker" }) {
+            chatClosedWhenDelegationSeen = chatModel.connections[0].closed
+          }
+          if (event.contentText() == "Booked.") queue.close()
+        }
+
+      // Assert: the signal did not release the delegation before the chat's connection closed.
+      assertEquals(true, chatClosedWhenDelegationSeen)
+      assertEquals(
+        listOf("call notify", "call booker", "answer notify"),
+        events.functionSteps("planner"),
+      )
+    }
+  }
+
+  @Test
+  fun chatNode_liveStepEndingWithAToolAnswerStillQueued_keepsTheAnswerFromTheTask() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: the chat's sender stalls on "hold", so the plain tool's answer stays queued.
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("lookup", emptyMap())),
+          Part(functionCall = FunctionCall("notify", emptyMap())),
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book"))),
+        )
+      val chatModel =
+        LiveNodeModel(
+          "planner",
+          listOf(listOf(turn), listOf(modelMessage("Booked."))),
+          stallOn = "hold",
+        )
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))))
+      val lookup = DummyTool("lookup", onRun = { _, _ -> "sunny" })
+      val notify =
+        nonBlockingTool("notify") {
+          // The chat reads on only once the turn has queued the plain tool's answer.
+          chatModel.connections[0].reads.first { it >= 2 }
+          "sent"
+        }
+      val planner = planner(chatModel, booker(taskModel), tools = listOf(lookup, notify))
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("book"))
+      queue.sendContent(userMessage("hold"))
+
+      // Act: the background answer ends the step while the plain tool's answer waits to be sent.
+      val events =
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue) { event ->
+          if (event.contentText() == "Booked.") queue.close()
+        }
+
+      // Assert: no later connection got the queued answer again; the chat's next one has it once.
+      assertEquals(
+        listOf("call lookup", "call notify", "call booker", "answer lookup", "answer notify"),
+        events.functionSteps("planner"),
+      )
+      assertEquals(emptyList(), taskModel.connections.single().receivedResponses())
+      assertEquals(
+        listOf("lookup", "notify", "booker"),
+        chatModel.connections[1].receivedResponses().map { it.name },
+      )
+    }
+  }
+
+  @Test
+  fun chatNode_startedByRunNode_liveTransferBesideATaskAndABackgroundCall_handsOverAfterTheTask() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: one chat turn delegates, transfers, and calls a background tool that runs on.
+      val log = mutableListOf<String>()
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))), log)
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book a trip"))),
+          Part(functionCall = FunctionCall("transfer_to_agent", mapOf("agent_name" to "support"))),
+          Part(functionCall = FunctionCall("notify", emptyMap())),
+        )
+      val chatModel = LiveNodeModel("planner", listOf(listOf(turn)), log)
+      val supportModel = LiveNodeModel("support", listOf(listOf(modelMessage("Hi, support."))), log)
+      val support = LlmAgent(name = "support", model = supportModel, description = "Helps.")
+      val notify = nonBlockingTool("notify") { awaitCancellation() }
+      val planner = planner(chatModel, booker(taskModel), support, tools = listOf(notify))
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("plan a trip"))
+
+      val unused =
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, started(planner)))), queue) { event ->
+          if (event.contentText() == "Hi, support.") queue.close()
+        }
+
+      // Assert: the transfer still ends the step, so the task runs before support talks.
+      assertEquals(
+        listOf(
+          "planner connect",
+          "planner close",
+          "booker connect",
+          "booker close",
+          "support connect",
+          "support close",
+        ),
+        log,
+      )
+    }
+  }
+
   @Test
   fun chatNode_startedByRunNode_liveTransferBesideATaskDelegation_handsOverOnceTheTaskAnswers() =
     runBlocking {
@@ -2239,6 +2820,65 @@ class WorkflowLiveTest {
         events.last { it.author == "support" && it.content != null }.contentText(),
       )
     }
+
+  @Test
+  fun chatNode_startedByRunNode_backgroundAnswerTransferBesideATask_handsOverOnceTheTaskAnswers() {
+    runTest(BackgroundToolCalls) {
+      // Arrange: one chat turn delegates the booking and calls a tool that hands over to support.
+      val log = mutableListOf<String>()
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))), log)
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("route", emptyMap())),
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book a trip"))),
+        )
+      val chatModel = LiveNodeModel("planner", listOf(listOf(turn)), log)
+      val supportModel = LiveNodeModel("support", listOf(listOf(modelMessage("Hi, support."))), log)
+      val support = LlmAgent(name = "support", model = supportModel, description = "Helps.")
+      val planner =
+        LlmAgent(
+          name = "planner",
+          model = chatModel,
+          subAgents = listOf(booker(taskModel), support),
+          tools = listOf(nonBlockingTool("route", transferTo = "support") { "routed" }),
+          mode = AgentMode.CHAT,
+        )
+      val sessions = InMemorySessionService()
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("plan a trip"))
+
+      val events =
+        runLiveWorkflow(
+          Workflow("wf", listOf(Edge(Start, started(planner)))),
+          queue,
+          sessionService = sessions,
+        ) { event ->
+          if (event.contentText() == "Hi, support.") queue.close()
+        }
+
+      // Assert: the task runs first, then the chat hands over once, and nothing waits on time.
+      assertEquals(
+        listOf(
+          "planner connect",
+          "planner close",
+          "booker connect",
+          "booker close",
+          "support connect",
+          "support close",
+        ),
+        log,
+      )
+      assertEquals(emptyList(), chatModel.connections.single().receivedResponses())
+      val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
+      val answers = stored.flatMap { it.functionResponses() }.filter { it.name == "route" }
+      assertEquals(listOf(mapOf("result" to "routed")), answers.map { it.response })
+      assertEquals(
+        "Hi, support.",
+        events.last { it.author == "support" && it.content != null }.contentText(),
+      )
+      assertEquals(0L, testScheduler.currentTime)
+    }
+  }
 
   @Test
   fun chatNode_startedByRunNode_liveToolCallbackTransferBesideATask_handsOverAfterTheTask() =

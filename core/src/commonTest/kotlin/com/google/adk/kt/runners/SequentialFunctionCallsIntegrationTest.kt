@@ -150,6 +150,39 @@ class SequentialFunctionCallsIntegrationTest {
   }
 
   /**
+   * A run whose tool fails leaves its call unanswered in the session. The next run's request leaves
+   * that call out, since a model can reject a call that has no response.
+   */
+  @Test
+  fun runAsync_callLeftUnansweredByAFailedRun_isLeftOutOfTheNextRequest() {
+    runBlocking {
+      val requests = mutableListOf<LlmRequest>()
+      val model =
+        DummyModel("scripted-model") { request ->
+          requests += request
+          if (requests.size == 1) {
+            flowOf(modelFunctionCallResponse("lookup", id = "call_0"))
+          } else {
+            flowOf(LlmResponse(content = modelMessage("Hi again.")))
+          }
+        }
+      val lookup = DummyTool(name = "lookup", onRun = { _, _ -> error("lookup failed") })
+      val runner =
+        InMemoryRunner(agent = LlmAgent(name = "test-agent", model = model, tools = listOf(lookup)))
+
+      val failed = runCatching {
+        runner.runAsync("user1", "session1", newMessage = userMessage("look it up")).toList()
+      }
+      runner.runAsync("user1", "session1", newMessage = userMessage("hello")).toList()
+
+      assertTrue(failed.isFailure)
+      val history = requests.last().contents.flatMap { it.parts }
+      assertEquals(listOf("look it up", "hello"), history.mapNotNull { it.text })
+      assertTrue(history.none { it.functionCall != null })
+    }
+  }
+
+  /**
    * Parallel function calls in one turn: the model returns two `FunctionCall`s in a single
    * response, both writing to session state. Verifies both tools execute, both state mutations are
    * persisted, and the merged function-response event carries both responses.

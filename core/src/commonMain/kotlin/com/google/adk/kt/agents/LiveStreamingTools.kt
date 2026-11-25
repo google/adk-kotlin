@@ -21,6 +21,8 @@ package com.google.adk.kt.agents
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.processors.OUT_OF_TURN_ANSWER_KEY
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
@@ -31,6 +33,8 @@ import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.CoroutineContext
 import kotlin.jvm.JvmSynthetic
+import kotlin.jvm.Volatile
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -47,6 +51,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -109,8 +114,8 @@ internal inline fun <T> AtomicReference<T>.mutate(transform: (T) -> T) {
 }
 
 /**
- * The streaming tools one agent's live run started, each collected in the background until it ends,
- * is stopped, or the run ends or hands the conversation over.
+ * Runs one agent's live streams and non-blocking calls in the background until each finishes, a
+ * stream is stopped, or the run ends or hands the conversation over.
  *
  * Each [Event] a tool emits reaches only the caller, and the tool waits until the caller has
  * handled it before continuing; every other value reaches the model as a function response to the
@@ -128,7 +133,7 @@ internal class LiveStreamingTools(
       coroutineContext.minusKey(Job) +
         SupervisorJob() +
         CoroutineExceptionHandler { _, e ->
-          logger.warn { "A streaming tool failed with ${e::class.simpleName}, not reported." }
+          logger.warn { "A live tool failed with ${e::class.simpleName}, not reported." }
         }
     )
 
@@ -141,7 +146,13 @@ internal class LiveStreamingTools(
   // Failed calls' ids, whose failure answers the next stop must not discard.
   private val kept = AtomicReference<Set<String>>(emptySet())
 
-  // Calls answered as pending that stopped, ended or never started; the next stopAll answers them.
+  // Background answers queued and not yet taken off the queue.
+  private val queuedAnswers = AtomicReference<List<QueuedAnswer>>(emptyList())
+
+  // Every call run in the background, finished or not, since its answer may not be stored yet.
+  private val backgroundIds = AtomicReference<Set<String>>(emptySet())
+
+  // Calls the next stopAll owes a final answer: stopped, ended or never started.
   private val owed = AtomicReference<List<StreamingCall>>(emptyList())
 
   // Calls whose stream failed, so their final answer says so.
@@ -152,12 +163,23 @@ internal class LiveStreamingTools(
   private val events =
     Channel<ToolEvent>(Channel.UNLIMITED, onUndeliveredElement = { undelivered.store(it) })
 
-  /** One function call to a streaming tool, and the coroutine collecting what it emits. */
+  /**
+   * Whether the run's current turn has a handover pending, in which case [onAnswersQueued] starts
+   * no stream, since it would only reach the next agent. Each live turn points it at its own
+   * handover when its session starts.
+   */
+  @Volatile var handingOver: () -> Boolean = { false }
+
+  /**
+   * One function call to a streaming tool, or to a non-blocking tool running [inBackground], and
+   * the coroutine running it.
+   */
   private class StreamingCall(
     val tool: BaseTool,
     val callId: String,
     val args: Map<String, Any?>,
     val job: Job,
+    val inBackground: Boolean = false,
   ) {
     val toolName: String
       get() = tool.name
@@ -172,7 +194,8 @@ internal class LiveStreamingTools(
      * Whether a call to [toolName] with [args], under any id, repeats this one while it streams.
      */
     fun isRepeatedBy(toolName: String, args: Map<String, Any?>): Boolean =
-      toolName == this.toolName &&
+      !inBackground &&
+        toolName == this.toolName &&
         args == this.args &&
         // Not yet started still counts: a call in the same response starts once answered.
         !job.isCompleted &&
@@ -274,15 +297,56 @@ internal class LiveStreamingTools(
     )
 
   /**
+   * Runs call [callId] to the non-blocking [tool] in the background, where [execute] runs its tool
+   * pipeline. Its answer reaches the caller, then the model; a failure is answered with an error on
+   * a copy of [errorEvent]. A stream it returns starts only if the run is not [handingOver] when
+   * the answer arrives; `stop_streaming` leaves the call itself running.
+   */
+  // Only the launched coroutine reads errorEvent, and the state it shares here is atomic.
+  @Suppress("UnsafeCoroutineCrossing")
+  fun runInBackground(
+    tool: BaseTool,
+    callId: String,
+    errorEvent: Event,
+    execute: suspend () -> Event?,
+  ) {
+    // Lazy, so the call is listed before it can finish and leave the list.
+    val job =
+      scope.launch(start = CoroutineStart.LAZY) {
+        val answer =
+          try {
+            execute()
+          } catch (e: Throwable) {
+            // An Error is answered too: rethrown, it would only be logged and leave the call open.
+            val error = failureAnswer(tool, callId, e)
+            dropFailedStream(callId)
+            // Stamped when the call fails, as a successful answer is when it arrives.
+            errorEvent.copy(content = error, timestamp = Clock.System.now().toEpochMilliseconds())
+          }
+        if (answer != null) deliver(answer)
+      }
+    val call = StreamingCall(tool, callId, emptyMap(), job, inBackground = true)
+    active.mutate { calls -> calls + call }
+    kept.mutate { ids -> ids - callId }
+    backgroundIds.mutate { ids -> ids + callId }
+    job.invokeOnCompletion {
+      finished.mutate { ids -> ids + callId }
+      active.mutate { calls -> calls - call }
+    }
+    job.start()
+  }
+
+  /**
    * Starts the streams whose pending answers [content] carries, now that those answers are queued
    * ahead of anything the streams send. Cancels them instead when the queue is closed, since nobody
-   * would hear them, or when [mayStart] is false, as during a handover.
+   * would hear them, or while the run is [handingOver].
    */
-  fun onAnswersQueued(content: Content, mayStart: Boolean = true) {
+  fun onAnswersQueued(content: Content) {
     val ids = content.parts.mapNotNullTo(mutableSetOf()) { it.functionResponse?.id }
     for (call in active.load()) {
-      if (call.callId !in ids) continue
-      if (mayStart && !queue.isClosed) {
+      // A background call delivering its own answer is not a stream to start or stop.
+      if (call.inBackground || call.callId !in ids) continue
+      if (!handingOver() && !queue.isClosed) {
         call.job.start()
       } else {
         call.job.cancel()
@@ -298,13 +362,22 @@ internal class LiveStreamingTools(
    * failure answer shares it with any stream still running or ending under it.
    */
   fun onCallFailed(callId: String) {
+    dropFailedStream(callId)
+    kept.mutate { ids -> ids + callId }
+  }
+
+  private fun dropFailedStream(callId: String) {
     for (call in active.load()) {
       call.repeatIds.mutate { ids -> ids - callId }
       // A started stream under the id belongs to an earlier call.
-      if (call.callId == callId && !call.job.isActive) call.job.cancel()
+      if (call.callId == callId && !call.inBackground && !call.job.isActive) call.job.cancel()
     }
-    kept.mutate { ids -> ids + callId }
   }
+
+  /**
+   * The ids of the calls [runInBackground] has run, which a history keeps until they are answered.
+   */
+  fun backgroundCallIds(): Set<String> = backgroundIds.load()
 
   /** Waits for the next event a tool sent the caller, taking an undelivered one first. */
   suspend fun nextEvent(): ToolEvent = undelivered.exchange(null) ?: events.receive()
@@ -319,7 +392,11 @@ internal class LiveStreamingTools(
    * answers were never queued and never will be, so a repeat of one starts a new stream.
    */
   fun onBeforeConnect() {
-    for (call in active.load()) {
+    val current = active.load()
+    // A stream whose background call has not answered yet starts once that answer is queued.
+    val answeredLater = current.filter { it.inBackground }.mapTo(mutableSetOf()) { it.callId }
+    for (call in current) {
+      if (call.callId in answeredLater) continue
       // Its pending answer may already be stored, so stopAll still owes it a final answer.
       if (!call.job.isActive && !call.job.isCompleted && !call.job.isCancelled) {
         owed.mutate { calls -> calls + call }
@@ -336,9 +413,9 @@ internal class LiveStreamingTools(
 
   /**
    * Cancels every running call and waits for them as [stopAll] does, keeping their final answers
-   * for the next [stopAll].
+   * for the next [stopAll]. The queued answers to [keepAnswersTo] still reach the model.
    */
-  suspend fun stopRunning(): Unit =
+  suspend fun stopRunning(keepAnswersTo: Set<String> = emptySet()): Unit =
     withContext(NonCancellable) {
       val running = active.exchange(emptyList())
       // Before cancelling: a replaced call, or one stop_streaming ended, needs no stopped answer.
@@ -350,21 +427,26 @@ internal class LiveStreamingTools(
       }
       // Their values may still be queued, behind an answer whose write dropped the connection.
       val stale = finished.exchange(emptyList()) + running.map { it.callId }
-      queue.discardAnswersTo(stale - kept.exchange(emptySet()))
+      queue.discardAnswersTo(stale - kept.exchange(emptySet()) - keepAnswersTo)
     }
 
   /**
-   * Cancels every streaming call this run started and waits up to [STOP_TIMEOUT] for them when the
-   * live run ends or hands over, even if the caller is cancelled.
+   * Cancels every call this run started and waits up to [STOP_TIMEOUT] for them when the live run
+   * ends or hands over, even if the caller is cancelled.
    *
-   * @return one final answer per call stopped, ended or never started, and per repeat of one told
-   *   it was already running.
+   * @return the [FinalAnswers] owed.
    */
-  suspend fun stopAll(): List<Content> {
+  suspend fun stopAll(): FinalAnswers {
     stopRunning()
-    // An id owed twice is answered once, by the first call that owes it.
+    // The caller records a stream's answer once its call was answered, a background call's if not.
+    val (background, streams) = owed.exchange(emptyList()).partition { it.inBackground }
+    return FinalAnswers(streams = finalAnswers(streams), background = finalAnswers(background))
+  }
+
+  /** One final answer per id [calls] owe, from the first call that owes it. */
+  private fun finalAnswers(calls: List<StreamingCall>): List<Content> {
     val callById: Map<String, StreamingCall> = buildMap {
-      for (call in owed.exchange(emptyList())) {
+      for (call in calls) {
         for (callId in listOf(call.callId) + call.repeatIds.load()) {
           getOrPut(callId) { call }
         }
@@ -375,20 +457,21 @@ internal class LiveStreamingTools(
     }
   }
 
-  /** Why [call]'s stream ended: stopped by the run, finished, or failed. */
+  /** Why [call] ended: a background call was stopped; a stream was stopped, finished, or failed. */
   private fun finalStatus(call: StreamingCall): String =
     when {
+      call.inBackground -> backgroundStoppedStatus(call.toolName)
       call.job.isCancelled -> stoppedStatus(call.toolName)
       call.callId in failed.load() -> failedStatus(call.toolName)
       else -> finishedStatus(call.toolName)
     }
 
   /**
-   * Stops every streaming call, closes the run's input ([closeInput]), and releases the scope.
+   * Stops every call, closes the run's input ([closeInput]), and releases the scope.
    *
    * @return what [stopAll] returns.
    */
-  suspend fun close(): List<Content> {
+  suspend fun close(): FinalAnswers {
     val stopped = stopAll()
     closeInput()
     events.close()
@@ -424,8 +507,8 @@ internal class LiveStreamingTools(
         call.job.cancel()
         return false
       }
-      // A call id answered twice must not stream twice; the newer call wins.
-      val (sameId, others) = calls.partition { it.callId == callId }
+      // An id answered twice streams once, from the newer call; a background call is not replaced.
+      val (sameId, others) = calls.partition { it.callId == callId && !it.inBackground }
       if (active.compareAndSet(calls, others + call)) {
         stale = sameId
         break
@@ -466,19 +549,79 @@ internal class LiveStreamingTools(
       }
     } catch (e: Throwable) {
       // Exceptions and TODO()'s NotImplementedError reach the model unless stopped.
-      if ((e is Error && e !is NotImplementedError) || !currentCoroutineContext().isActive) throw e
+      if (e is Error && e !is NotImplementedError) throw e
+      val error = failureAnswer(tool, callId, e)
       failed.mutate { ids -> ids + callId }
-      reportFailure(tool, callId, e)
+      queue.sendContent(error)
     } finally {
       context.liveInputSource = null
       closeInputOf(context)
     }
   }
 
-  private fun reportFailure(tool: BaseTool, callId: String, e: Throwable) {
-    // The exception's text is left out: it can carry the user's or the model's data.
-    logger.warn { "Streaming tool ${tool.name} failed (${e::class.simpleName})." }
-    queue.sendContent(internalErrorContent(tool, callId))
+  /**
+   * Logs [e]'s class and returns the error answer to call [callId] to [tool]. Rethrows [e] instead
+   * when the call was cancelled.
+   */
+  private suspend fun failureAnswer(tool: BaseTool, callId: String, e: Throwable): Content {
+    if (!currentCoroutineContext().isActive) throw e
+    logger.warn { "Live tool ${tool.name} failed (${e::class.simpleName})." }
+    return internalErrorContent(tool, callId)
+  }
+
+  /** Hands a background call's [answer] to the caller and, once the caller has it, to the model. */
+  private suspend fun deliver(answer: Event) {
+    // A stopped call is owed a stopped answer, so its own late one must not reach the caller.
+    currentCoroutineContext().ensureActive()
+    val content = answer.content ?: return
+    val request = LiveRequest(ContentInput(content))
+    // A background answer can land after later turns, which the next run's history must keep.
+    val marked = answer.customMetadata.orEmpty() + (OUT_OF_TURN_ANSWER_KEY to true)
+    val delivered = ToolEvent(answer.copy(customMetadata = marked))
+    val job = currentCoroutineContext().job
+    val queued = CompletableDeferred<Unit>()
+    // Queued once the caller has it, so a restart then finds it, unless a stop came first.
+    delivered.handled.invokeOnCompletion { cause ->
+      try {
+        if (cause != null || !job.isActive) return@invokeOnCompletion
+        // Tracked before it is queued, so the sender taking it always finds the entry.
+        val queuedAnswer = QueuedAnswer(answer.id, request)
+        queuedAnswers.mutate { answers -> answers + queuedAnswer }
+        queue.enqueue(request)
+        // A stop since the check may have queued its discard ahead of the answer.
+        if (!job.isActive) {
+          queuedAnswers.mutate { answers -> answers - queuedAnswer }
+          queue.discardRequests(listOf(request))
+        }
+      } finally {
+        queued.complete(Unit)
+      }
+    }
+    // Stored before the model hears it, as an answer in the call's turn would be.
+    if (!events.trySend(delivered).isSuccess) return
+    // Waits for the handler too, so a stream the call returned starts after its answer is queued.
+    queued.await()
+    onAnswersQueued(content)
+  }
+
+  /**
+   * Drops the queued background answers whose events a fresh session's history holds, by their
+   * [heldEventIds]; the others stay tracked, so a later fresh session can still drop them.
+   */
+  fun discardQueuedAnswers(heldEventIds: Set<String>) {
+    var held = emptyList<QueuedAnswer>()
+    queuedAnswers.mutate { answers ->
+      val (inHistory, others) = answers.partition { it.eventId in heldEventIds }
+      held = inHistory
+      others
+    }
+    queue.discardRequests(held.map { it.request })
+  }
+
+  /** Stops tracking a background answer once the sender takes [request] off the queue. */
+  fun onRequestTaken(request: LiveRequest) {
+    if (queuedAnswers.load().none { it.request === request }) return
+    queuedAnswers.mutate { answers -> answers.filterNot { it.request === request } }
   }
 
   private suspend fun sendToCaller(tool: BaseTool, callId: String, event: Event) {
@@ -513,7 +656,7 @@ internal class LiveStreamingTools(
 
   /** Stops every running call of [toolName] and returns the status message for the model. */
   private suspend fun stop(toolName: String): String {
-    val running = active.load().filter { it.toolName == toolName }
+    val running = active.load().filter { it.toolName == toolName && !it.inBackground }
     if (running.isEmpty()) return "No active streaming function named $toolName found"
     if (!cancelAndAwait(running)) return "The task is not cancelled yet for $toolName."
     return "Successfully stopped streaming function $toolName"
@@ -532,16 +675,24 @@ internal class LiveStreamingTools(
     val stopped = withTimeoutOrNull(STOP_TIMEOUT) { calls.map { it.job }.joinAll() } != null
     for (call in calls) {
       if (!call.job.isCompleted) {
-        logger.warn { "Streaming tool ${call.toolName} ignored cancellation." }
+        logger.warn { "Live tool ${call.toolName} ignored cancellation." }
       }
     }
     return stopped
   }
 
+  private class QueuedAnswer(val eventId: String, val request: LiveRequest)
+
   /** An event a tool sent the caller, and the signal that the caller has handled it. */
   class ToolEvent(val event: Event) {
     val handled = CompletableDeferred<Unit>()
   }
+
+  /**
+   * The final answers a stop owes: [streams] to streaming calls and their repeats, and [background]
+   * to background calls stopped before they answered.
+   */
+  data class FinalAnswers(val streams: List<Content>, val background: List<Content>)
 
   companion object {
     private val logger = LoggerFactory.getLogger(LiveStreamingTools::class)
@@ -562,6 +713,10 @@ internal class LiveStreamingTools(
     /** The answer recorded for a call to [toolName], or a repeat of one, whose stream failed. */
     private fun failedStatus(toolName: String) =
       "$toolName stopped streaming after an error; no more updates will arrive."
+
+    /** The answer recorded for a background call to [toolName] that the run stopped. */
+    private fun backgroundStoppedStatus(toolName: String) =
+      "$toolName was stopped when its live session ended; its result will not arrive."
 
     /** The answer a call that starts a streaming tool gets at once. */
     private const val PENDING_STATUS =
