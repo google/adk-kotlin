@@ -107,10 +107,10 @@ interface Runner : AutoCloseable {
    * storing it in the session. An agent talks over a live (bidirectional streaming) connection
    * until the caller closes [liveRequestQueue] or the model ends the session, with no
    * [RunConfig.maxLlmCalls] limit; a node starts with no input and runs until it ends. The returned
-   * flow fails with [UnsupportedOperationException] for a graph task agent node or a delegating
-   * task agent inside a node root, before anything connects when the root's graph holds it and
-   * otherwise when it starts, for a graph agent node's transfer unless the node is single-turn, and
-   * for a [Runner] that does not override this.
+   * flow fails with [UnsupportedOperationException] for a task agent inside a node root that
+   * delegates to task sub-agents (before anything connects when the root's graph holds it,
+   * otherwise when it starts), for a graph agent node's transfer unless the node is single-turn,
+   * and for a [Runner] that does not override this.
    *
    * @param userId The user ID of the session.
    * @param sessionId The session ID, fetched (or created, if the runner creates missing sessions)
@@ -121,7 +121,7 @@ interface Runner : AutoCloseable {
    * @throws com.google.adk.kt.sessions.SessionNotFoundException from the flow if the session does
    *   not exist and the runner does not create missing sessions.
    * @throws IllegalStateException from the flow if another live connection is reading
-   *   [liveRequestQueue].
+   *   [liveRequestQueue], or if a live node of the run starts while another one is connected.
    */
   @ExperimentalLiveApi
   fun runLive(

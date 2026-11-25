@@ -208,9 +208,8 @@ internal fun validateChatAgentWiring(edges: List<Edge>) {
 }
 
 /**
- * Rejects, before a live run of [root] connects, an agent in its graph that can't run live yet: a
- * task node, or a task agent that delegates to task sub-agents. It walks nested workflows and
- * parallel nodes too.
+ * Rejects, before a live run of [root] connects, a task agent in its graph that delegates to task
+ * sub-agents, which can't run live yet. It walks nested workflows and parallel nodes too.
  */
 internal fun requireRunnableLive(root: Node) {
   for (agent in graphAgents(root)) {
@@ -219,12 +218,6 @@ internal fun requireRunnableLive(root: Node) {
         it is LlmAgent && it.defaultMode() == AgentMode.TASK && it.delegatesToTasks
       }
     if (delegating != null) throw unsupportedLiveTaskDelegation(delegating.name)
-    if (agent.defaultMode() == AgentMode.TASK) {
-      throw UnsupportedOperationException(
-        "Task agent node '${agent.name}' cannot run live yet; start it with runNode or from a" +
-          " chat node instead."
-      )
-    }
   }
 }
 

@@ -1706,9 +1706,17 @@ class RunLiveTest {
   private suspend fun runTurnBased(runner: InMemoryRunner): List<Event> =
     runner.runAsync("u", "s", newMessage = userMessage("go")).toList()
 
+  /** A live-only model that finishes a task at once with "done", so a turn-based call fails. */
+  private fun liveTaskModel(name: String) = DummyLiveModel(listOf(Respond(finished)), name)
+
   @Test
-  fun runLive_workflowTaskAgentNode_failsBeforeRunning(): Unit = runBlocking {
-    assertFailsBeforeRunningLive(workflowRunner(taskAgent("writer")), "writer")
+  fun runLive_workflowTaskAgentNode_runsItLive(): Unit = runBlocking {
+    val model = liveTaskModel("writer")
+
+    val events = runLiveUntilTheRootEnds(workflowRunner(taskAgent("writer", model = model)))
+
+    assertThat(events.mapNotNull { it.output }).containsExactly(mapOf("result" to "done"))
+    assertThat(model.connections).hasSize(1)
   }
 
   @Test
@@ -1732,30 +1740,51 @@ class RunLiveTest {
   }
 
   @Test
-  fun runLive_taskAgentNodeInANestedWorkflowsParallelNode_failsBeforeRunning(): Unit = runBlocking {
-    val inner = Workflow("inner", listOf(Edge(Start, parallelNode(taskAgent("writer")))))
+  fun runLive_taskAgentNodeInANestedWorkflowsParallelNode_runsItLive(): Unit = runBlocking {
+    val model = liveTaskModel("writer")
+    val inner =
+      Workflow("inner", listOf(Edge(Start, parallelNode(taskAgent("writer", model = model)))))
 
-    assertFailsBeforeRunningLive(workflowRunner(inner), "writer")
+    val events = runLiveUntilTheRootEnds(workflowRunner(inner))
+
+    assertThat(events.mapNotNull { it.output }).contains(listOf(mapOf("result" to "done")))
+    assertThat(model.connections).hasSize(1)
   }
 
   @Test
-  fun runLive_runNodeStartsAWorkflowWithATaskAgentNode_failsBeforeTheTaskRuns(): Unit =
+  fun runLive_delegatingTaskInANestedWorkflowsParallelNode_failsBeforeRunning(): Unit =
     runBlocking {
-      var modelCalls = 0
-      val model =
-        DummyModel("writer") {
-          modelCalls++
-          flowOf(finished)
-        }
-      val inner = Workflow("inner", listOf(Edge(Start, taskAgent("writer", model = model))))
+      val inner = Workflow("inner", listOf(Edge(Start, parallelNode(booker()))))
+
+      assertFailsBeforeRunningLive(workflowRunner(inner), "booker")
+    }
+
+  @Test
+  fun runLive_runNodeStartsAWorkflowWithATaskAgentNode_runsTheTaskLive(): Unit = runBlocking {
+    val model = liveTaskModel("writer")
+    val inner = Workflow("inner", listOf(Edge(Start, taskAgent("writer", model = model))))
+
+    val events = runLiveUntilTheRootEnds(starterRunner(inner))
+
+    assertThat(events.mapNotNull { it.output }).contains(mapOf("result" to "done"))
+    assertThat(model.connections).hasSize(1)
+  }
+
+  @Test
+  fun runLive_runNodeStartsAWorkflowWithADelegatingTask_failsBeforeItsNodesRun(): Unit =
+    runBlocking {
+      val prep = RecordingNode("prep", "ready")
+      val inner = Workflow("inner", listOf(Edge(Start, prep), Edge(prep, booker())))
 
       val failure =
         assertFailsWith<UnsupportedOperationException> {
           runLiveUntilTheRootEnds(starterRunner(inner))
         }
 
-      assertThat(failure).hasMessageThat().contains("'writer' cannot run live yet")
-      assertThat(modelCalls).isEqualTo(0)
+      assertThat(failure)
+        .hasMessageThat()
+        .isEqualTo("Task agent 'booker' cannot run live yet: it delegates to task sub-agents.")
+      assertThat(prep.seenContext).isNull()
     }
 
   @Test
@@ -2085,22 +2114,32 @@ class RunLiveTest {
   }
 
   @Test
-  fun runLive_runNodeStartsAParallelNodeOfATask_failsBeforeTheTaskRuns(): Unit = runBlocking {
-    var modelCalls = 0
-    val model =
-      DummyModel("writer") {
-        modelCalls++
-        flowOf(finished)
-      }
+  fun runLive_runNodeStartsAParallelNodeOfATask_runsItLive(): Unit = runBlocking {
+    val model = liveTaskModel("writer")
 
-    val failure =
-      assertFailsWith<UnsupportedOperationException> {
-        runLiveUntilTheRootEnds(starterRunner(parallelNode(taskAgent("writer", model = model))))
-      }
+    val events =
+      runLiveUntilTheRootEnds(starterRunner(parallelNode(taskAgent("writer", model = model))))
 
-    assertThat(failure).hasMessageThat().contains("'writer' cannot run live yet")
-    assertThat(modelCalls).isEqualTo(0)
+    assertThat(events.mapNotNull { it.output }).contains(listOf(mapOf("result" to "done")))
+    assertThat(model.connections).hasSize(1)
   }
+
+  @Test
+  fun runLive_runNodeStartsAParallelNodeOfAChatWithADelegatingTask_failsBeforeItConnects(): Unit =
+    runBlocking {
+      val model = DummyLiveModel(listOf(Respond(LlmResponse(content = modelMessage("hi")))))
+      val planner = LlmAgent(name = "planner", model = model, subAgents = listOf(booker()))
+
+      val failure =
+        assertFailsWith<UnsupportedOperationException> {
+          runLiveUntilTheRootEnds(starterRunner(parallelNode(planner)))
+        }
+
+      assertThat(failure)
+        .hasMessageThat()
+        .isEqualTo("Task agent 'booker' cannot run live yet: it delegates to task sub-agents.")
+      assertThat(model.connections).isEmpty()
+    }
 
   @Test
   fun runAsync_runNodeStartsAParallelNodeOfATask_runsTurnBased(): Unit = runBlocking {

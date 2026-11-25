@@ -61,8 +61,10 @@ import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.LiveServerGoAway
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.types.Transcription
+import com.google.adk.kt.types.Type
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -133,6 +135,8 @@ private class LiveNodeConnection(
   private val completesTurns: Boolean,
 ) : SingleCollectorLiveConnection() {
   val received = mutableListOf<Content>()
+  /** The realtime audio sent to this connection, each chunk's bytes read as text. */
+  val receivedAudio = mutableListOf<String>()
   var closed = false
     private set
 
@@ -168,6 +172,7 @@ private class LiveNodeConnection(
   }
 
   override suspend fun sendRealtime(input: RealtimeInput) {
+    if (input is RealtimeInput.Audio) receivedAudio += input.blob.data?.decodeToString().orEmpty()
     answer()
   }
 
@@ -204,6 +209,22 @@ private fun finishTask(vararg args: Pair<String, Any?>) =
 /** A script that acknowledges each of [heard], then calls `finish_task` with [result]. */
 private fun ackThenFinish(vararg heard: String, result: String): List<Content> =
   heard.map { modelMessage("Acknowledged: $it") } + finishTask("result" to result)
+
+/** Realtime audio whose bytes spell [text]. */
+private fun audioSaying(text: String) =
+  RealtimeInput.Audio(Blob("audio/pcm", data = text.encodeToByteArray()))
+
+/** `Start -> intake -> classify`, where classify routes RETRY back to intake and DONE to `done`. */
+private fun retryLoop(intake: Node, classify: Node) =
+  Workflow(
+    "wf",
+    listOf(
+      Edge(Start, intake),
+      Edge(intake, classify),
+      Edge(classify, intake, Route.Tag("RETRY")),
+      Edge(classify, CaptureInput("done"), Route.Tag("DONE")),
+    ),
+  )
 
 /** The non-empty text of each event. */
 private fun List<Event>.replies(): List<String> =
@@ -1558,6 +1579,445 @@ class WorkflowLiveTest {
     val connections = leftModel.connections + rightModel.connections
     assertEquals(1, connections.size)
     assertTrue(connections.single().closed)
+  }
+
+  @Test
+  fun taskNode_inTheGraph_runsLiveAndHandsItsFinishArgumentsOn() = runBlocking {
+    // Arrange: the task asks once, then finishes on the user's second message.
+    val model =
+      LiveNodeModel(
+        "writer",
+        listOf(listOf(modelMessage("Which topic?"), finishTask("result" to "memo"))),
+      )
+    val writer = LlmAgent(name = "writer", model = model, mode = AgentMode.TASK)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("write"))
+    queue.sendContent(userMessage("about live"))
+
+    // Act: the queue stays open, so only the task's finish ends the node.
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, writer), Edge(writer, CaptureInput("capture")))),
+        queue,
+      )
+
+    assertEquals(
+      listOf(mapOf("result" to "memo"), mapOf("received" to mapOf("result" to "memo"))),
+      events.mapNotNull { it.output },
+    )
+    assertEquals(listOf("write", "about live"), model.connections.single().receivedTexts())
+    assertTrue(model.connections.single().closed)
+  }
+
+  @Test
+  fun taskNodes_inTheGraphAroundAPlainNode_eachReadsOnlyItsOwnInput() = runBlocking {
+    // Arrange: each task acknowledges every input but its last, and finishes on the last.
+    val log = mutableListOf<String>()
+    val firstModel =
+      LiveNodeModel("first", listOf(ackThenFinish("first start", result = "first")), log = log)
+    val secondModel =
+      LiveNodeModel("second", listOf(ackThenFinish("plain", result = "second")), log = log)
+    val first = LlmAgent(name = "first", model = firstModel, mode = AgentMode.TASK)
+    val plain = CaptureInput("plain")
+    val second = LlmAgent(name = "second", model = secondModel, mode = AgentMode.TASK)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("first start"))
+    queue.sendContent(userMessage("first end"))
+
+    // Act: the caller speaks to the second task while the plain node is still emitting its output.
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, first), Edge(first, plain), Edge(plain, second))),
+        queue,
+      ) { event ->
+        if (event.output == mapOf("received" to mapOf("result" to "first"))) {
+          queue.sendRealtime(audioSaying("second end"))
+        }
+      }
+
+    // Assert: the plain node's output is the second task's opening turn.
+    assertEquals(
+      listOf(
+        mapOf("result" to "first"),
+        mapOf("received" to mapOf("result" to "first")),
+        mapOf("result" to "second"),
+      ),
+      events.mapNotNull { it.output },
+    )
+    assertEquals(
+      listOf("first start", "first end"),
+      firstModel.connections.single().receivedTexts(),
+    )
+    val secondConnection = secondModel.connections.single()
+    assertEquals(listOf("""{"received":{"result":"first"}}"""), secondConnection.receivedTexts())
+    assertEquals(listOf("second end"), secondConnection.receivedAudio)
+    assertEquals(listOf("first connect", "first close", "second connect", "second close"), log)
+  }
+
+  @Test
+  fun taskNode_inANestedWorkflow_runsLive() = runBlocking {
+    val model = LiveNodeModel("inner_task", listOf(ackThenFinish("inner start", result = "inner")))
+    val task = LlmAgent(name = "inner_task", model = model, mode = AgentMode.TASK)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("inner start"))
+    queue.sendContent(userMessage("inner end"))
+
+    val events =
+      runLiveWorkflow(
+        Workflow("outer", listOf(Edge(Start, Workflow("inner", listOf(Edge(Start, task)))))),
+        queue,
+      )
+
+    assertEquals(listOf(mapOf("result" to "inner")), events.mapNotNull { it.output })
+    assertEquals(listOf("Acknowledged: inner start"), events.replies())
+    assertEquals(listOf("inner start", "inner end"), model.connections.single().receivedTexts())
+  }
+
+  @Test
+  fun taskNodes_inANestedWorkflowAndAfterIt_eachReadsOnlyItsOwnInput() = runBlocking {
+    // Arrange: a task in a nested workflow, then a plain node, then a task in the outer workflow.
+    val innerModel =
+      LiveNodeModel("inner_task", listOf(ackThenFinish("inner start", result = "inner")))
+    val outerModel = LiveNodeModel("outer_task", listOf(ackThenFinish("prep", result = "outer")))
+    val inner =
+      Workflow(
+        "inner",
+        listOf(
+          Edge(Start, LlmAgent(name = "inner_task", model = innerModel, mode = AgentMode.TASK))
+        ),
+      )
+    val prep = node<Any?, String>("prep") { _, _ -> "prep" }
+    val outerTask = LlmAgent(name = "outer_task", model = outerModel, mode = AgentMode.TASK)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("inner start"))
+    queue.sendContent(userMessage("inner end"))
+
+    // Act: the outer task's message is sent only once the plain node has run.
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, inner), Edge(inner, prep), Edge(prep, outerTask))),
+        queue,
+      ) { event ->
+        if (event.output == "prep") queue.sendContent(userMessage("outer end"))
+      }
+
+    assertEquals(
+      listOf(mapOf("result" to "inner"), "prep", mapOf("result" to "outer")),
+      events.mapNotNull { it.output },
+    )
+    assertEquals(
+      listOf("inner start", "inner end"),
+      innerModel.connections.single().receivedTexts(),
+    )
+    assertEquals(listOf("prep", "outer end"), outerModel.connections.single().receivedTexts())
+  }
+
+  @Test
+  fun taskNode_reenteredByACappedRetryEdge_runsLiveAgainOnTheRetryInputAlone() = runBlocking {
+    // Arrange: intake's first request is unclear, so classify sends it back once, at most.
+    val log = mutableListOf<String>()
+    val model =
+      LiveNodeModel(
+        "intake",
+        listOf(
+          listOf(finishTask("result" to "um")),
+          listOf(modelMessage("Sorry, what was it?"), finishTask("result" to "move my visit")),
+        ),
+        log = log,
+      )
+    val intake = LlmAgent(name = "intake", model = model, mode = AgentMode.TASK)
+    var asks = 0
+    val classify =
+      node<Any?, Any?>("classify") { context, input ->
+        val said = (input as Map<*, *>)["result"].toString()
+        if ("move" !in said && ++asks < 2) {
+          context.routes = listOf(Route.Tag("RETRY"))
+          "Not understood. Ask again."
+        } else {
+          context.routes = listOf(Route.Tag("DONE"))
+          said
+        }
+      }
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hello"))
+    val handle = SessionResumptionConfig(handle = "h-1")
+
+    // Act: the caller answers the second run of intake only once classify has sent it back.
+    val events =
+      runLiveWorkflow(
+        retryLoop(intake, classify),
+        queue,
+        runConfig = RunConfig(live = LiveRunConfig(sessionResumption = handle)),
+      ) { event ->
+        if (event.output == "Not understood. Ask again.") {
+          queue.sendContent(userMessage("move my visit"))
+        }
+      }
+
+    assertEquals(
+      listOf(
+        mapOf("result" to "um"),
+        "Not understood. Ask again.",
+        mapOf("result" to "move my visit"),
+        "move my visit",
+        mapOf("received" to "move my visit"),
+      ),
+      events.mapNotNull { it.output },
+    )
+    // Assert: each run talked on its own connection, the second one without the first one's turns.
+    assertEquals(listOf("intake connect", "intake close", "intake connect", "intake close"), log)
+    assertEquals(listOf("hello"), model.connections[0].receivedTexts())
+    assertEquals(
+      listOf("Not understood. Ask again.", "move my visit"),
+      model.connections[1].receivedTexts(),
+    )
+    // Each run has its own path and scope, and only the first session resumes the caller's.
+    assertEquals(
+      setOf("wf@1/intake@1", "wf@1/intake@2").map { it to it }.toSet(),
+      events.filter { it.author == "intake" }.map { it.nodeInfo?.path to it.isolationScope }.toSet(),
+    )
+    assertEquals(
+      listOf("h-1", null),
+      model.requests.map { it.liveConnectConfig.sessionResumption?.handle },
+    )
+  }
+
+  @Test
+  fun taskNode_reenteredUntilTheRetryCap_endsThroughTheExitEdge() = runBlocking {
+    // Arrange: intake never hears a clear request, so classify sends it back twice, then gives up.
+    val model = LiveNodeModel("intake", List(3) { listOf(finishTask("result" to "um")) })
+    val intake = LlmAgent(name = "intake", model = model, mode = AgentMode.TASK)
+    var asks = 0
+    val classify =
+      node<Any?, Any?>("classify") { context, _ ->
+        val retry = ++asks < 3
+        context.routes = listOf(Route.Tag(if (retry) "RETRY" else "DONE"))
+        if (retry) "Ask again." else "out of scope"
+      }
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("hello"))
+
+    val events = runLiveWorkflow(retryLoop(intake, classify), queue)
+
+    val um = mapOf("result" to "um")
+    assertEquals(
+      listOf(
+        um,
+        "Ask again.",
+        um,
+        "Ask again.",
+        um,
+        "out of scope",
+        mapOf("received" to "out of scope"),
+      ),
+      events.mapNotNull { it.output },
+    )
+    assertEquals(
+      listOf(listOf("hello"), listOf("Ask again."), listOf("Ask again.")),
+      model.connections.map { it.receivedTexts() },
+    )
+    assertTrue(model.connections.all { it.closed })
+  }
+
+  @Test
+  fun taskNode_inTheGraph_callerHangsUpBeforeItFinishes_endsTheRunWithoutAnOutput() = runBlocking {
+    val model = LiveNodeModel("writer", listOf(listOf(modelMessage("Which topic?"))))
+    val writer = LlmAgent(name = "writer", model = model, mode = AgentMode.TASK)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("write"))
+
+    // Act: the caller hangs up on the task's question.
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, writer), Edge(writer, CaptureInput("capture")))),
+        queue,
+      ) { event ->
+        if (event.contentText() == "Which topic?") queue.close()
+      }
+
+    // Assert: the task produced no output, so the next node never ran.
+    assertEquals(emptyList(), events.mapNotNull { it.output })
+    assertTrue(model.connections.single().closed)
+  }
+
+  @Test
+  fun taskNode_inTheGraph_nextResumableRunAfterAHangUp_restartsTheGraph() = runBlocking {
+    // Arrange: the caller hangs up on the task's question, then calls again on the same session.
+    val model =
+      LiveNodeModel(
+        "writer",
+        listOf(listOf(modelMessage("Which topic?")), listOf(finishTask("result" to "cats"))),
+      )
+    val writer = LlmAgent(name = "writer", model = model, mode = AgentMode.TASK)
+    var prepRuns = 0
+    val prep =
+      node<Any?, Any?>("prep") { _, _ ->
+        prepRuns++
+        "go"
+      }
+    val workflow =
+      Workflow(
+        "wf",
+        listOf(Edge(Start, prep), Edge(prep, writer), Edge(writer, CaptureInput("capture"))),
+      )
+    val sessions = InMemorySessionService()
+    val firstCall = LiveRequestQueue()
+    firstCall.sendContent(userMessage("write"))
+    val firstEvents =
+      runLiveWorkflow(workflow, firstCall, resumable = true, sessionService = sessions) { event ->
+        if (event.contentText() == "Which topic?") firstCall.close()
+      }
+    assertEquals(listOf("go"), firstEvents.mapNotNull { it.output })
+    val secondCall = LiveRequestQueue()
+    secondCall.sendContent(userMessage("cats"))
+
+    val events = runLiveWorkflow(workflow, secondCall, resumable = true, sessionService = sessions)
+
+    // Assert: the new invocation runs the graph from its start, and the task finishes this time.
+    assertEquals(2, prepRuns)
+    assertEquals(
+      listOf("go", mapOf("result" to "cats"), mapOf("received" to mapOf("result" to "cats"))),
+      events.mapNotNull { it.output },
+    )
+    assertEquals(0, events.count { it.author == "writer" && it.actions.endOfAgent })
+    // A task's scope is its node path, so a new call on the session continues its conversation.
+    assertEquals(
+      listOf("go", "write", "Which topic?", "cats"),
+      model.connections[1].receivedTexts(),
+    )
+  }
+
+  @Test
+  fun taskNode_inAParallelNodeOverTwoItems_secondItemFailsBeforeItConnects() = runBlocking {
+    // Arrange: the first item cannot finish without input, so it keeps the run's live node.
+    val model = LiveNodeModel("writer", listOf(emptyList()))
+    val writer = parallelNode(LlmAgent(name = "writer", model = model, mode = AgentMode.TASK))
+    val items = node<Any?, List<String>>("items") { _, _ -> listOf("a", "b") }
+
+    val failure =
+      assertFailsWith<IllegalStateException> {
+        runLiveWorkflow(
+          Workflow("wf", listOf(Edge(Start, items), Edge(items, writer))),
+          LiveRequestQueue(),
+        )
+      }
+
+    // Assert: a live run runs one live node at a time, so only the first item connected.
+    assertContains(failure.message.orEmpty(), "one live node at a time")
+    assertTrue(model.connections.single().closed)
+  }
+
+  @Test
+  fun taskNode_inAParallelNodeWithOneWorker_runsEachItemLiveInTurn() = runBlocking {
+    val model =
+      LiveNodeModel(
+        "writer",
+        listOf(listOf(finishTask("result" to "A")), listOf(finishTask("result" to "B"))),
+      )
+    val task = LlmAgent(name = "writer", model = model, mode = AgentMode.TASK)
+    val writer = parallelNode(task, maxParallelWorkers = 1)
+    val items = node<Any?, List<String>>("items") { _, _ -> listOf("a", "b") }
+
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, items), Edge(items, writer))),
+        LiveRequestQueue(),
+      )
+
+    val (a, b) = listOf(mapOf("result" to "A"), mapOf("result" to "B"))
+    assertEquals(listOf(listOf("a", "b"), a, b, listOf(a, b)), events.mapNotNull { it.output })
+    assertEquals(listOf(listOf("a"), listOf("b")), model.connections.map { it.receivedTexts() })
+    assertTrue(model.connections.all { it.closed })
+  }
+
+  @Test
+  fun taskNodes_aroundARouter_routeOnTheFirstTasksCheckedOutput() = runBlocking {
+    // Arrange: confirm first finishes without its answer, hears the error, and answers again.
+    val log = mutableListOf<String>()
+    val confirmModel =
+      LiveNodeModel(
+        "confirm",
+        listOf(listOf(finishTask(), finishTask("answer" to "YES"))),
+        log = log,
+      )
+    val answer = Schema(type = Type.STRING, enum = listOf("YES", "NO"))
+    val confirm =
+      LlmAgent(
+        name = "confirm",
+        model = confirmModel,
+        mode = AgentMode.TASK,
+        outputSchema =
+          Schema(
+            type = Type.OBJECT,
+            properties = mapOf("answer" to answer),
+            required = listOf("answer"),
+          ),
+      )
+    val route =
+      node<Any?, Any?>("route") { context, input ->
+        context.routes = listOf(Route.Tag((input as Map<*, *>)["answer"].toString()))
+        "slot 2"
+      }
+    val bookModel =
+      LiveNodeModel("book", listOf(listOf(finishTask("result" to "booked"))), log = log)
+    val book = LlmAgent(name = "book", model = bookModel, mode = AgentMode.TASK)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("yes"))
+
+    val events =
+      runLiveWorkflow(
+        Workflow(
+          "wf",
+          listOf(
+            Edge(Start, confirm),
+            Edge(confirm, route),
+            Edge(route, book, Route.Tag("YES")),
+            Edge(route, CaptureInput("kept"), Route.Tag("NO")),
+          ),
+        ),
+        queue,
+      )
+
+    // Assert: only the rejected call was answered, and the router took YES from the checked output.
+    val answers = confirmModel.connections.single().receivedResponses()
+    assertEquals(listOf("finish_task"), answers.map { it.name })
+    assertContains(answers.single().response["error"].toString(), "validation errors")
+    assertEquals(
+      listOf(mapOf("answer" to "YES"), "slot 2", mapOf("result" to "booked")),
+      events.mapNotNull { it.output },
+    )
+    assertEquals(listOf("slot 2"), bookModel.connections.single().receivedTexts())
+    assertEquals(listOf("confirm connect", "confirm close", "book connect", "book close"), log)
+  }
+
+  @Test
+  fun taskNode_inTheGraph_liveTransfer_failsOnceItsConnectionCloses() = runBlocking {
+    // Arrange: the task hands the user to a chat sub-agent, which a graph node can't run live yet.
+    val log = mutableListOf<String>()
+    val helperModel = LiveNodeModel("helper", listOf(listOf(modelMessage("helped"))), log = log)
+    val routerModel =
+      LiveNodeModel(
+        "router",
+        listOf(listOf(modelFunctionCall("transfer_to_agent", mapOf("agent_name" to "helper")))),
+        log = log,
+      )
+    val router =
+      LlmAgent(
+        name = "router",
+        model = routerModel,
+        subAgents = listOf(LlmAgent(name = "helper", model = helperModel, description = "Helps.")),
+        mode = AgentMode.TASK,
+      )
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("help me"))
+
+    val failure =
+      assertFailsWith<UnsupportedOperationException> {
+        runLiveWorkflow(Workflow("wf", listOf(Edge(Start, router))), queue)
+      }
+
+    assertEquals("Agent node 'router' cannot transfer in a live run yet.", failure.message)
+    assertEquals(listOf("router connect", "router close"), log)
   }
 
   @Test
