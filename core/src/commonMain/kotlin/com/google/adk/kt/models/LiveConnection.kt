@@ -19,6 +19,7 @@ package com.google.adk.kt.models
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Tool
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -63,6 +64,18 @@ interface LiveConnection : AutoCloseable {
   suspend fun sendRealtime(input: RealtimeInput)
 
   /**
+   * Replaces the session's system instruction or tools for the rest of this connection: a null
+   * [systemInstruction] keeps the current one while one with no parts removes it, and null [tools]
+   * keep the current tools while an empty list removes them. Implementations reject an update that
+   * sets neither with [IllegalArgumentException]; the default throws
+   * [UnsupportedOperationException]. An update can invalidate the model's prefix cache, and a model
+   * that does not accept one can end the session, which [receive] reports.
+   */
+  suspend fun sendContextUpdate(systemInstruction: Content? = null, tools: List<Tool>? = null) {
+    throw UnsupportedOperationException(CONTEXT_UPDATES_UNSUPPORTED_MESSAGE)
+  }
+
+  /**
    * The model's responses for the current turn, completing when the turn ends; collect it again for
    * the next turn. A collection that completes with no response means the connection has ended.
    * Unlike [Model.generateContent], where each collection makes its own request, every collection
@@ -92,6 +105,9 @@ internal const val CONCURRENT_COLLECTION_MESSAGE =
   "LiveConnection.receive() allows one collector at a time, because the underlying transport is " +
     "a single channel of frames: a second concurrent collector would take an arbitrary " +
     "subset of them from the first."
+
+internal const val CONTEXT_UPDATES_UNSUPPORTED_MESSAGE =
+  "This live connection does not support context updates."
 
 /**
  * Base for [LiveConnection] implementations that enforces the single-collector contract of

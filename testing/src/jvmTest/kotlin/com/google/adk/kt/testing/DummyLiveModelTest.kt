@@ -24,6 +24,10 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.types.Blob
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Tool
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.milliseconds
@@ -273,6 +277,53 @@ class DummyLiveModelTest {
   }
 
   @Test
+  fun sendContextUpdate_recordsEachUpdateInOrderWithOtherSends(): Unit = runBlocking {
+    val connection = DummyLiveConnection(emptyList())
+    val lookup = FunctionDeclaration(name = "lookup", description = "Looks up a value.")
+    val tools = listOf(Tool(functionDeclarations = listOf(lookup)))
+    val brief = Content(parts = listOf(Part(text = "Be brief.")))
+
+    connection.sendContent(userMessage("hi"))
+    connection.sendContextUpdate(systemInstruction = brief, tools = tools)
+
+    assertThat(connection.sent)
+      .containsExactly(
+        ContentInput(userMessage("hi")),
+        DummyLiveConnection.ContextUpdate(systemInstruction = brief, tools = tools),
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun sendContextUpdate_instructionWithNoParts_recordsIt(): Unit = runBlocking {
+    val connection = DummyLiveConnection(emptyList())
+
+    connection.sendContextUpdate(systemInstruction = Content())
+
+    assertThat(connection.sent)
+      .containsExactly(DummyLiveConnection.ContextUpdate(systemInstruction = Content()))
+  }
+
+  @Test
+  fun sendContextUpdate_emptyToolsOnly_recordsThem(): Unit = runBlocking {
+    val connection = DummyLiveConnection(emptyList())
+
+    connection.sendContextUpdate(tools = emptyList())
+
+    assertThat(connection.sent)
+      .containsExactly(DummyLiveConnection.ContextUpdate(tools = emptyList()))
+  }
+
+  @Test
+  fun sendContextUpdate_nothingToChange_throwsAndKeepsNothing(): Unit = runBlocking {
+    val connection = DummyLiveConnection(emptyList())
+
+    assertFailsWith<IllegalArgumentException> { connection.sendContextUpdate() }
+
+    assertThat(connection.sent).isEmpty()
+  }
+
+  @Test
   fun connect_calledTwice_keepsEachRequestAndConnectionInOrder(): Unit = runBlocking {
     val model = DummyLiveModel(listOf(text("a")))
     val requests =
@@ -398,6 +449,20 @@ class DummyLiveModelTest {
     model.connect(LlmRequest()).sendHistory(history)
 
     assertThat(seen).containsExactly(history)
+  }
+
+  @Test
+  fun perConnection_onSend_runsForAContextUpdateToo(): Unit = runBlocking {
+    val seen = mutableListOf<Any>()
+    val model =
+      DummyLiveModel.perConnection(
+        listOf(listOf(DummyLiveStep.EndStream)),
+        onSend = { _, message -> seen += message },
+      )
+
+    model.connect(LlmRequest()).sendContextUpdate(tools = emptyList())
+
+    assertThat(seen).containsExactly(DummyLiveConnection.ContextUpdate(tools = emptyList()))
   }
 
   @Test

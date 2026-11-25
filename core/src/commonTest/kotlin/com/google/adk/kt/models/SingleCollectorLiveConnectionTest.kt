@@ -42,7 +42,7 @@ private val GUARD_TIMEOUT = 10.seconds
 
 /**
  * Covers the single-collector contract of [LiveConnection.receive]: concurrent collection is
- * rejected, sequential collection is not.
+ * rejected, sequential collection is not. Also covers what [LiveConnection] does by default.
  */
 class SingleCollectorLiveConnectionTest {
 
@@ -140,5 +140,17 @@ class SingleCollectorLiveConnectionTest {
 
     // `first()`: this source never completes. `cancelAndJoin`: the `finally` runs after `cancel`.
     assertEquals(response("one"), connection.receive().first())
+  }
+
+  @Test
+  fun sendContextUpdate_notOverridden_throwsUnsupportedOperationException() = runBlocking {
+    val connection = FlowLiveConnection(flowOf())
+
+    val error =
+      assertFailsWith<UnsupportedOperationException> {
+        connection.sendContextUpdate(tools = emptyList())
+      }
+
+    assertEquals(CONTEXT_UPDATES_UNSUPPORTED_MESSAGE, error.message)
   }
 }

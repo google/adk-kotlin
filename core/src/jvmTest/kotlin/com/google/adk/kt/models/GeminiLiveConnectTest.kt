@@ -31,10 +31,14 @@ import com.google.adk.kt.types.SpeechConfig
 import com.google.adk.kt.types.Tool
 import com.google.auth.oauth2.AccessToken
 import com.google.auth.oauth2.GoogleCredentials
+import com.google.genai.kotlin.types.Content as SdkContent
 import com.google.genai.kotlin.types.HttpOptions
+import com.google.genai.kotlin.types.LiveClientContextUpdate as GenAiLiveClientContextUpdate
+import com.google.genai.kotlin.types.LiveClientContextUpdateTools as GenAiLiveClientContextUpdateTools
 import com.google.genai.kotlin.types.LiveConnectConfig as GenAiLiveConnectConfig
 import com.google.genai.kotlin.types.LiveServerMessage as SdkLiveServerMessage
 import com.google.genai.kotlin.types.LiveServerSetupComplete as SdkLiveServerSetupComplete
+import com.google.genai.kotlin.types.Part as SdkPart
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Date
@@ -700,6 +704,35 @@ class GeminiLiveConnectTest {
     assertTrue(
       instruction.parts.orEmpty().any { it.text == "be brief" },
       "the instruction reached the connect but without its text: $instruction",
+    )
+  }
+
+  @Test
+  fun connect_thenContextUpdate_sendsTheUpdateOnTheOpenSession() = runBlocking {
+    val updates = mutableListOf<GenAiLiveClientContextUpdate>()
+    val handle =
+      object : LiveSessionHandle by ParkingHandle() {
+        override suspend fun sendContextUpdate(contextUpdate: GenAiLiveClientContextUpdate) {
+          updates += contextUpdate
+        }
+      }
+    val connection = geminiReturning(handle).connect(requestWithAgentConfig())
+
+    connection.sendContextUpdate(
+      systemInstruction = Content(parts = listOf(Part(text = "be thorough"))),
+      tools = emptyList(),
+    )
+    connection.closeSession()
+
+    assertEquals(
+      listOf(
+        GenAiLiveClientContextUpdate(
+          systemInstruction =
+            SdkContent(role = "system", parts = listOf(SdkPart(text = "be thorough"))),
+          tools = GenAiLiveClientContextUpdateTools(emptyList()),
+        )
+      ),
+      updates,
     )
   }
 

@@ -20,16 +20,24 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Tool
 import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.types.ActivityEnd as SdkActivityEnd
 import com.google.genai.kotlin.types.ActivityStart as SdkActivityStart
 import com.google.genai.kotlin.types.Blob as SdkBlob
 import com.google.genai.kotlin.types.Content as SdkContent
+import com.google.genai.kotlin.types.FunctionDeclaration as SdkFunctionDeclaration
 import com.google.genai.kotlin.types.FunctionResponse as SdkFunctionResponse
+import com.google.genai.kotlin.types.LiveClientContextUpdate as SdkLiveClientContextUpdate
+import com.google.genai.kotlin.types.LiveClientContextUpdateTools as SdkLiveClientContextUpdateTools
 import com.google.genai.kotlin.types.LiveServerMessage as SdkLiveServerMessage
+import com.google.genai.kotlin.types.Part as SdkPart
+import com.google.genai.kotlin.types.Tool as SdkTool
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
@@ -44,6 +52,8 @@ class GeminiLiveSendTest {
     val calls = mutableListOf<String>()
     val sentTurns = mutableListOf<List<SdkContent>>()
     val sentAudio = mutableListOf<SdkBlob>()
+    val sentContextUpdates = mutableListOf<SdkLiveClientContextUpdate>()
+    var failContextUpdates: Throwable? = null
 
     override fun receive(): Flow<SdkLiveServerMessage> = emptyFlow()
 
@@ -69,6 +79,12 @@ class GeminiLiveSendTest {
       calls.add(
         "toolResponse(${functionResponses.joinToString { "${it.name}#${it.id ?: "no-id"}" }})"
       )
+    }
+
+    override suspend fun sendContextUpdate(contextUpdate: SdkLiveClientContextUpdate) {
+      failContextUpdates?.let { throw it }
+      sentContextUpdates.add(contextUpdate)
+      calls.add("contextUpdate")
     }
 
     override suspend fun closeSession() {
@@ -182,5 +198,146 @@ class GeminiLiveSendTest {
 
     // Name and id, not a count: every branch of the send path makes exactly one call.
     assertThat(session.calls).containsExactly("toolResponse(GetWeather#call-1)")
+  }
+
+  @Test
+  fun sendContextUpdate_instruction_sendsItAsSystemContent(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+
+    connection.sendContextUpdate(
+      systemInstruction = Content(parts = listOf(Part(text = "Be brief.")))
+    )
+
+    assertThat(session.sentContextUpdates)
+      .containsExactly(
+        SdkLiveClientContextUpdate(
+          systemInstruction =
+            SdkContent(role = "system", parts = listOf(SdkPart(text = "Be brief.")))
+        )
+      )
+  }
+
+  @Test
+  fun sendContextUpdate_instructionWithAFile_sendsEveryPartAsSystemContent(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+    val rules =
+      Part(fileData = FileData(fileUri = "gs://b/rules.pdf", mimeType = "application/pdf"))
+
+    connection.sendContextUpdate(
+      systemInstruction =
+        Content(role = "user", parts = listOf(Part(text = "Follow these."), rules))
+    )
+
+    val sent = session.sentContextUpdates.single().systemInstruction
+    assertThat(sent?.role).isEqualTo("system")
+    assertThat(sent?.parts.orEmpty().map { it.text ?: it.fileData?.fileUri })
+      .containsExactly("Follow these.", "gs://b/rules.pdf")
+      .inOrder()
+  }
+
+  @Test
+  fun sendContextUpdate_instructionWithNoParts_sendsItWithNoParts(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+
+    connection.sendContextUpdate(systemInstruction = Content())
+
+    assertThat(session.sentContextUpdates)
+      .containsExactly(
+        SdkLiveClientContextUpdate(
+          systemInstruction = SdkContent(role = "system", parts = listOf())
+        )
+      )
+  }
+
+  @Test
+  fun sendContextUpdate_vertexAi_dropsPartMetadata(): Unit = runBlocking {
+    val session = RecordingSession()
+    val connection = GeminiLiveConnection(session, modelVersion = MODEL, vertexAi = true)
+
+    connection.sendContextUpdate(
+      systemInstruction =
+        Content(parts = listOf(Part(text = "Be brief.", partMetadata = mapOf("meta" to "data"))))
+    )
+
+    assertThat(session.sentContextUpdates)
+      .containsExactly(
+        SdkLiveClientContextUpdate(
+          systemInstruction =
+            SdkContent(role = "system", parts = listOf(SdkPart(text = "Be brief.")))
+        )
+      )
+  }
+
+  @Test
+  fun sendContextUpdate_instructionAndTools_sendsBothInOneUpdate(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+    val lookup = FunctionDeclaration(name = "lookup", description = "Looks up a value.")
+
+    connection.sendContextUpdate(
+      systemInstruction = Content(parts = listOf(Part(text = "Be brief."))),
+      tools = listOf(Tool(functionDeclarations = listOf(lookup))),
+    )
+
+    assertThat(session.sentContextUpdates)
+      .containsExactly(
+        SdkLiveClientContextUpdate(
+          systemInstruction =
+            SdkContent(role = "system", parts = listOf(SdkPart(text = "Be brief."))),
+          tools =
+            SdkLiveClientContextUpdateTools(
+              listOf(
+                SdkTool(
+                  functionDeclarations =
+                    listOf(
+                      SdkFunctionDeclaration(name = "lookup", description = "Looks up a value.")
+                    )
+                )
+              )
+            ),
+        )
+      )
+  }
+
+  @Test
+  fun sendContextUpdate_emptyTools_sendsAnEmptyListThatRemovesTheTools(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+
+    connection.sendContextUpdate(tools = emptyList())
+
+    assertThat(session.sentContextUpdates)
+      .containsExactly(
+        SdkLiveClientContextUpdate(tools = SdkLiveClientContextUpdateTools(emptyList()))
+      )
+  }
+
+  @Test
+  fun sendContextUpdate_nothingToChange_throwsWithoutSending(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+
+    assertFailsWith<IllegalArgumentException> { connection.sendContextUpdate() }
+
+    assertThat(session.calls).isEmpty()
+  }
+
+  @Test
+  fun sendContextUpdate_anyModelName_isLeftToTheServer(): Unit = runBlocking {
+    // No model-name check: a model that takes no updates rejects one on the session.
+    val (connection, session) = connectionOn("gemini-2.5-flash-native-audio")
+
+    connection.sendContextUpdate(tools = emptyList())
+
+    assertThat(session.calls).containsExactly("contextUpdate")
+  }
+
+  @Test
+  fun sendContextUpdate_sessionFails_throwsTheSessionsError(): Unit = runBlocking {
+    val (connection, session) = connectionOn(MODEL)
+    val closed = IllegalStateException("connection closed")
+    session.failContextUpdates = closed
+
+    val error =
+      assertFailsWith<IllegalStateException> { connection.sendContextUpdate(tools = emptyList()) }
+
+    assertThat(error).isSameInstanceAs(closed)
   }
 }

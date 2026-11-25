@@ -19,11 +19,13 @@ package com.google.adk.kt.interop
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.CONCURRENT_COLLECTION_MESSAGE
+import com.google.adk.kt.models.CONTEXT_UPDATES_UNSUPPORTED_MESSAGE
 import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.models.singleCollectorFlow
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Tool
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
@@ -66,6 +68,10 @@ abstract class BaseFutureLiveConnection : LiveConnection {
 
   final override suspend fun sendRealtime(input: RealtimeInput) {
     sendRealtimeAsync(input).await()
+  }
+
+  final override suspend fun sendContextUpdate(systemInstruction: Content?, tools: List<Tool>?) {
+    sendContextUpdateAsync(systemInstruction, tools).await()
   }
 
   // Requests one response at a time, so a collection that stops early loses at most one.
@@ -119,6 +125,20 @@ abstract class BaseFutureLiveConnection : LiveConnection {
 
   /** Sends one chunk of media, an activity signal, or the end of the audio stream. */
   protected abstract fun sendRealtimeAsync(input: RealtimeInput): CompletableFuture<Void?>
+
+  /**
+   * Replaces the session's system instruction or tools as [LiveConnection.sendContextUpdate]
+   * describes, rejecting an update that sets neither with [IllegalArgumentException]. Override it
+   * if your model accepts updates; the default fails the future with
+   * [UnsupportedOperationException].
+   */
+  protected open fun sendContextUpdateAsync(
+    systemInstruction: Content?,
+    tools: List<Tool>?,
+  ): CompletableFuture<Void?> =
+    CompletableFuture<Void?>().apply {
+      completeExceptionally(UnsupportedOperationException(CONTEXT_UPDATES_UNSUPPORTED_MESSAGE))
+    }
 
   /**
    * Returns a publisher of the current model turn's remaining responses that completes at the end

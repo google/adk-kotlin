@@ -24,6 +24,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Tool
 import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlin.time.Duration
@@ -201,8 +202,8 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
 
   /**
    * All messages sent to this connection in order: a `List<Content>` from [sendHistory], a
-   * [ContentInput] from [sendContent], or a [RealtimeInput] from [sendRealtime]. Sends made after
-   * [closeSession] are still recorded.
+   * [ContentInput] from [sendContent], a [RealtimeInput] from [sendRealtime], or a [ContextUpdate]
+   * from [sendContextUpdate]. Sends made after [closeSession] are still recorded.
    */
   val sent: List<Any>
     get() = sentState.value
@@ -282,6 +283,14 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
 
   override suspend fun sendRealtime(input: RealtimeInput) = record(input)
 
+  override suspend fun sendContextUpdate(systemInstruction: Content?, tools: List<Tool>?) {
+    // LiveConnection's contract: an update must set a field.
+    require(systemInstruction != null || tools != null) {
+      "A context update needs a system instruction or tools."
+    }
+    record(ContextUpdate(systemInstruction, tools))
+  }
+
   override suspend fun closeSession() {
     closedState.value = true
     changes.update { it + 1 }
@@ -292,8 +301,8 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
     changes.update { it + 1 }
   }
 
-  // sendHistory, sendContent and sendRealtime resolve to these more specific overloads, so [onSend]
-  // runs after each record. Each passes an Any-typed value so it reaches record(Any), not itself.
+  // Each send resolves to one of these more specific overloads, so [onSend] runs after each record.
+  // Each passes an Any-typed value so it reaches record(Any), not itself.
   private suspend fun record(history: List<Content>) {
     val message: Any = history
     record(message)
@@ -310,6 +319,12 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
     val message: Any = input
     record(message)
     onSend(input)
+  }
+
+  private suspend fun record(update: ContextUpdate) {
+    val message: Any = update
+    record(message)
+    onSend(update)
   }
 
   /** Returns the index of the matching message, or null when the connection closed first. */
@@ -344,6 +359,19 @@ internal constructor(private val steps: List<DummyLiveStep>, private val timeout
       is List<*> -> "history"
       is ContentInput -> "content"
       is RealtimeInput -> "realtime input"
+      is ContextUpdate -> "context update"
       else -> message::class.simpleName ?: "?"
     }
+
+  /**
+   * A [sendContextUpdate] call as [sent] records it.
+   *
+   * @property systemInstruction The new instruction, or null to keep the current one; one with no
+   *   parts removes it.
+   * @property tools The new tools, or null to keep the current ones; an empty list removes them.
+   */
+  @ExperimentalLiveApi
+  data class ContextUpdate
+  @JvmOverloads
+  constructor(val systemInstruction: Content? = null, val tools: List<Tool>? = null)
 }

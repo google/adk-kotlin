@@ -21,6 +21,7 @@ package com.google.adk.kt.interop
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.models.CONCURRENT_COLLECTION_MESSAGE
+import com.google.adk.kt.models.CONTEXT_UPDATES_UNSUPPORTED_MESSAGE
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.testing.modelMessage
@@ -28,7 +29,9 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Tool
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
 import java.util.concurrent.CancellationException
@@ -80,11 +83,13 @@ class BaseFutureLiveConnectionTest {
     turns: List<Flow<LlmResponse>> = emptyList(),
     private val onReceive: (() -> Publisher<LlmResponse>)? = null,
     private val sendThrows: Throwable? = null,
+    private val acceptsContextUpdates: Boolean = true,
   ) : BaseFutureLiveConnection() {
     private val remainingTurns = ArrayDeque(turns)
     val histories = mutableListOf<List<Content>>()
     val contents = mutableListOf<SentContent>()
     val realtimeInputs = mutableListOf<RealtimeInput>()
+    val contextUpdates = mutableListOf<Pair<Content?, List<Tool>?>>()
     var receiveCalls = 0
     var closeCalls = 0
 
@@ -103,6 +108,16 @@ class BaseFutureLiveConnectionTest {
     override fun sendRealtimeAsync(input: RealtimeInput): CompletableFuture<Void?> {
       if (sendThrows != null) throw sendThrows
       realtimeInputs.add(input)
+      return sendResult
+    }
+
+    override fun sendContextUpdateAsync(
+      systemInstruction: Content?,
+      tools: List<Tool>?,
+    ): CompletableFuture<Void?> {
+      if (!acceptsContextUpdates) return super.sendContextUpdateAsync(systemInstruction, tools)
+      if (sendThrows != null) throw sendThrows
+      contextUpdates.add(systemInstruction to tools)
       return sendResult
     }
 
@@ -309,6 +324,74 @@ class BaseFutureLiveConnectionTest {
     assertThat(pending.isCancelled).isTrue()
     assertThat(send.isCancelled).isTrue()
   }
+
+  @Test
+  fun sendContextUpdate_futureCompletes_forwardsInstructionAndTools(): Unit = runBlocking {
+    val connection = RecordingConnection()
+    val lookup = FunctionDeclaration(name = "lookup", description = "Looks up a value.")
+    val tools = listOf(Tool(functionDeclarations = listOf(lookup)))
+    val instruction = Content(parts = listOf(Part(text = "Be brief.")))
+
+    connection.sendContextUpdate(systemInstruction = instruction, tools = tools)
+
+    assertThat(connection.contextUpdates).containsExactly(instruction to tools)
+  }
+
+  @Test
+  fun sendContextUpdate_toolsOnly_forwardsANullInstruction(): Unit = runBlocking {
+    val connection = RecordingConnection()
+
+    connection.sendContextUpdate(tools = emptyList())
+
+    assertThat(connection.contextUpdates).containsExactly(null to emptyList<Tool>())
+  }
+
+  @Test
+  fun sendContextUpdate_futureFailsExceptionally_throwsCause(): Unit = runBlocking {
+    val failed = CompletableFuture<Void?>().apply { completeExceptionally(IOException("rejected")) }
+    val connection = RecordingConnection(sendResult = failed)
+
+    val error = assertFailsWith<IOException> { connection.sendContextUpdate(tools = emptyList()) }
+
+    assertThat(error).hasMessageThat().isEqualTo("rejected")
+  }
+
+  @Test
+  fun sendContextUpdate_hookThrows_rethrows(): Unit = runBlocking {
+    val connection = RecordingConnection(sendThrows = IOException("not connected"))
+
+    val error = assertFailsWith<IOException> { connection.sendContextUpdate(tools = emptyList()) }
+
+    assertThat(error).hasMessageThat().isEqualTo("not connected")
+  }
+
+  @Test
+  fun sendContextUpdate_callerCancelled_cancelsFuture(): Unit = runBlocking {
+    val pending = CompletableFuture<Void?>()
+    val connection = RecordingConnection(sendResult = pending)
+    val send =
+      launch(start = CoroutineStart.UNDISPATCHED) {
+        connection.sendContextUpdate(tools = emptyList())
+      }
+
+    send.cancelAndJoin()
+
+    assertThat(pending.isCancelled).isTrue()
+    assertThat(send.isCancelled).isTrue()
+  }
+
+  @Test
+  fun sendContextUpdate_hookNotOverridden_throwsUnsupportedOperationException(): Unit =
+    runBlocking {
+      val connection = RecordingConnection(acceptsContextUpdates = false)
+
+      val error =
+        assertFailsWith<UnsupportedOperationException> {
+          connection.sendContextUpdate(tools = emptyList())
+        }
+
+      assertThat(error).hasMessageThat().isEqualTo(CONTEXT_UPDATES_UNSUPPORTED_MESSAGE)
+    }
 
   @Test
   fun receive_collectedPerTurn_subscribesFreshPublisherEachTime(): Unit = runBlocking {

@@ -24,6 +24,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.types.fromGenaiSdk
 import com.google.adk.kt.types.toGenaiSdk
@@ -33,6 +34,8 @@ import com.google.genai.kotlin.types.ActivityStart as GenAiActivityStart
 import com.google.genai.kotlin.types.Blob as GenAiBlob
 import com.google.genai.kotlin.types.Content as GenAiContent
 import com.google.genai.kotlin.types.FunctionResponse as GenAiFunctionResponse
+import com.google.genai.kotlin.types.LiveClientContextUpdate as GenAiLiveClientContextUpdate
+import com.google.genai.kotlin.types.LiveClientContextUpdateTools as GenAiLiveClientContextUpdateTools
 import com.google.genai.kotlin.types.LiveServerMessage as GenAiLiveServerMessage
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
@@ -82,6 +85,11 @@ internal interface LiveSessionHandle {
 
   suspend fun sendToolResponse(functionResponses: List<GenAiFunctionResponse>)
 
+  /** Defaults to throwing, so a test handle that does not expect an update fails loudly on one. */
+  suspend fun sendContextUpdate(contextUpdate: GenAiLiveClientContextUpdate) {
+    error("This session handle does not send context updates.")
+  }
+
   suspend fun closeSession()
 
   /**
@@ -124,6 +132,10 @@ internal class SdkLiveSessionHandle(private val session: LiveSession) : LiveSess
 
   override suspend fun sendToolResponse(functionResponses: List<GenAiFunctionResponse>) {
     session.sendToolResponse(functionResponses)
+  }
+
+  override suspend fun sendContextUpdate(contextUpdate: GenAiLiveClientContextUpdate) {
+    session.sendContextUpdate(contextUpdate)
   }
 
   override suspend fun closeSession() {
@@ -539,6 +551,21 @@ internal class GeminiLiveConnection(
       RealtimeInput.ActivityStart -> session.sendRealtimeInput(activityStart = GenAiActivityStart())
       RealtimeInput.ActivityEnd -> session.sendRealtimeInput(activityEnd = GenAiActivityEnd())
     }
+  }
+
+  // No model-name check: a model that rejects updates closes the session, and receive() throws.
+  override suspend fun sendContextUpdate(systemInstruction: Content?, tools: List<Tool>?) {
+    require(systemInstruction != null || tools != null) {
+      "A context update needs a system instruction or tools."
+    }
+    session.sendContextUpdate(
+      GenAiLiveClientContextUpdate(
+        // The system role, as the instruction set up at connect time has.
+        systemInstruction = systemInstruction?.copy(role = Role.SYSTEM)?.forBackend()?.toGenaiSdk(),
+        // The wrapper is what tells "no tools" apart from "keep the current tools".
+        tools = tools?.let { GenAiLiveClientContextUpdateTools(it.map(Tool::toGenaiSdk)) },
+      )
+    )
   }
 
   /** The observable close: the caller ended the conversation, or the run handed the agent over. */
