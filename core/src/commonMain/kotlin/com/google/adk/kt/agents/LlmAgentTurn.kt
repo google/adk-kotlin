@@ -90,6 +90,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
@@ -812,7 +813,7 @@ internal class LlmAgentTurn(
     val emittingOther = AtomicBoolean(false)
     return channelFlow {
         val deliver: suspend (Event) -> Unit = { event -> handOver(Delivery(event)) }
-        val saves = RecordingSaves(this, deliver)
+        val saves = RecordingSaves(this, deliver, liveRun(), nodePath())
         recordingSaves.store(saves)
         // With resumption on, a drain waits for the handle sent after the turn.
         val drain = GoAwayDrain(resuming = request.liveConnectConfig.sessionResumption != null)
@@ -1318,9 +1319,10 @@ internal class LlmAgentTurn(
           )
         )
       }
-      emitEvent(event)
-      // Cut-off audio is left out; audio on a turnComplete response is flushed with this turn.
+      // Before the emit, which a handoff can end the turn at; cut-off audio is left out.
       if (!response.interrupted) cacheModelAudio(event)
+      liveRun().markLiveModelMedia(nodePath(), event)
+      emitEvent(event)
       sendToolResponse(queue, event)
     }
     val heard = response.inputTranscription
@@ -1700,11 +1702,14 @@ internal class LlmAgentTurn(
    * then leaves a still-running save to finish detached: its artifact still lands in the store, but
    * its event is dropped, so nothing is delivered after the run moved on. A store that ignores
    * cancellation can leave such detached saves running across reconnects until it returns; a
-   * cancellable one is cancelled when this connection's scope ends.
+   * cancellable one is cancelled when this connection's scope ends, unless a workflow node's round
+   * ended it: the saves it cut off then go to [LiveRun.strandSaves] for that round to finish.
    */
   private class RecordingSaves(
     private val scope: CoroutineScope,
     private val deliver: suspend (Event) -> Unit,
+    private val liveRun: LiveRun,
+    private val nodePath: String?,
   ) {
     // Saves run here, detached from [scope], so a store that ignores cancellation cannot hold the
     // run open past [finish]; the dispatcher is [scope]'s, the job an independent supervisor.
@@ -1712,6 +1717,8 @@ internal class LlmAgentTurn(
     // The delivery jobs, children of [scope] so [finish] can bound them; read once [finish]
     // stopped.
     private val jobs = mutableListOf<Job>()
+    // Set once a delivery cut off by a workflow node's round left its save to that round.
+    private val stranded = AtomicBoolean(false)
     // Completed by [finish] when it gives up waiting, so a delivery job stops waiting for a save
     // still running and emits only what that save has already stored.
     private val cutOff = CompletableDeferred<Unit>()
@@ -1720,7 +1727,8 @@ internal class LlmAgentTurn(
       // Cancel the detached saves whenever this connection's scope ends, including the abnormal
       // exits that skip [finish] (a caller cancel, a collector or sender failure), so no save
       // outlives the run; a cancellable store then stops and frees its taken audio.
-      scope.coroutineContext.job.invokeOnCompletion { saveScope.cancel() }
+      // Saves left to a workflow node's round instead stay running; that round cancels them.
+      scope.coroutineContext.job.invokeOnCompletion { if (!stranded.load()) saveScope.cancel() }
     }
 
     // The caches lock, writes go to the artifact service, and taken audio never changes. Each save
@@ -1732,17 +1740,33 @@ internal class LlmAgentTurn(
       val saved = AtomicReference(emptyList<Event>())
       // Detached, so a stuck save never blocks the run.
       val write = cache.launchSave(saveScope, taken, saved)
-      jobs += scope.launch {
-        // Wait for the save, unless [finish] cuts the wait short first.
-        select {
-          write.onJoin {}
-          cutOff.onAwait {}
+      // Undispatched, so the finally below runs even if the scope ends before the job is started.
+      jobs +=
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+          var delivered = false
+          try {
+            // Wait for the save, unless [finish] cuts the wait short first.
+            select {
+              write.onJoin {}
+              cutOff.onAwait {}
+            }
+            // A later turn's save can finish first; its recordings still wait for this one.
+            previous?.join()
+            // All of it on a normal finish, what was stored so far on a cut-off.
+            for (recording in saved.load()) deliver(recording)
+            delivered = true
+          } finally {
+            // A workflow node's round ends its turn by cancelling it, so a delivery cut off there
+            // leaves its save to that round, before this scope ends and the round reads it.
+            if (!delivered && nodePath != null) {
+              stranded.store(true)
+              liveRun.strandSaves(
+                nodePath,
+                listOf(StrandedSave(write, saved) { saveScope.cancel() }),
+              )
+            }
+          }
         }
-        // A later turn's save can finish first; its recordings still wait for this one.
-        previous?.join()
-        // All of it on a normal finish, what was stored so far on a cut-off.
-        for (recording in saved.load()) deliver(recording)
-      }
     }
 
     /** Whether recordings can still be started here; false once this connection's scope ended. */

@@ -31,6 +31,7 @@ import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.BeforeToolCallback
 import com.google.adk.kt.callbacks.OnModelErrorCallback
 import com.google.adk.kt.callbacks.OnToolErrorCallback
+import com.google.adk.kt.callbacks.runOnEventCallbacksPipeline
 import com.google.adk.kt.describesOnlyObjects
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.applyRewinds
@@ -64,9 +65,14 @@ import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.adk.kt.workflow.WorkflowConfigurationException
 import com.google.adk.kt.workflow.isValidNodeName
 import com.google.adk.kt.workflow.unsupportedLiveTaskDelegation
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmStatic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.emitAll
@@ -74,6 +80,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * LLM-based Agent.
@@ -486,15 +493,28 @@ class LlmAgent(
         val events = if (liveRun != null) runLive(roundContext) else runAsync(agentContext)
         emitAll(
           events.transformWhile { event ->
+            if (round.live && event.content?.parts?.any { it.fileData != null } == true) {
+              round.recordingIds += event.id
+            }
             emitRoundEvent(context, event, round, finish, toolsByName)
           }
         )
         // Only now has a live round's connection closed; see DelegationRound.heldEvents.
+        // Recordings first, so the finishing response stays last and carries the output write.
+        if (liveRun != null) emitRecordings(context, agentContext, liveRun, round)
+        round.finishOutput?.let { context.updateState(checkNotNull(outputKey), it) }
         for (event in round.heldEvents) emitAuthored(context, event)
         if (liveRun != null) emitFinalAnswers(context, liveRun)
       } finally {
         // A round that failed, or whose caller stopped collecting, emits nothing more.
-        if (liveRun != null) recordDeferredFinalAnswers(context, liveRun)
+        if (liveRun != null) {
+          val appendsBefore = liveRun.appendCount
+          if (!round.recordingsOut) storeAbandonedRecordings(context, agentContext, liveRun, round)
+          recordDeferredFinalAnswers(context, liveRun)
+          liveRun.forgetLiveModelMediaMarks(context.nodePath)
+          // One flush for what was stored above, since the runner skips its own on a cancel.
+          if (liveRun.appendCount != appendsBefore) flushQuietly(liveRun)
+        }
       }
       if (round.handedOff) endRunAtHandoff(agentContext)
       if (round.delegations.isEmpty()) return@flow
@@ -528,6 +548,21 @@ class LlmAgent(
      * caller sends on seeing them reaches the next live reader.
      */
     val heldEvents = mutableListOf<Event>()
+
+    /** A live task's output for its `outputKey`, written once its round's recordings are out. */
+    var finishOutput: Any? = null
+
+    /** The ids of the recordings a live round's turn handed it, so none is emitted twice. */
+    val recordingIds = mutableSetOf<String>()
+
+    /** The recordings a live round saved once its connection closed, or null until it saves. */
+    var recordings: List<Event>? = null
+
+    /** Whether [recordings] are out; until then, a round that ends stores its audio itself. */
+    var recordingsOut = false
+
+    /** The ids of [recordings] the runner took, which the abandoned store then skips. */
+    val recordingsHandedOn = mutableSetOf<String>()
   }
 
   /** Emits [event], which ends [round], or holds it until a live round's connection closes. */
@@ -592,6 +627,143 @@ class LlmAgent(
     context.eventAuthor = name
   }
 
+  /**
+   * Saves the recordings a live [round] left once its connection closed and emits them. They are
+   * kept on [round] first, so a caller that stops mid-emission leaves them to the abandoned store.
+   */
+  private suspend fun FlowCollector<Any?>.emitRecordings(
+    context: Context,
+    agentContext: InvocationContext,
+    liveRun: LiveRun,
+    round: DelegationRound,
+  ) {
+    for (event in saveUnsavedRecordings(context, agentContext, liveRun, round)) {
+      emitAuthored(context, event)
+      // Only once the emit returns, so one a cancel cut short is left to the abandoned store.
+      round.recordingsHandedOn += event.id
+    }
+    round.recordingsOut = true
+  }
+
+  /**
+   * Saves the audio a live round left unsaved when it ends, so the next live reader does not claim
+   * it as its own, and waits for the saves its turn started but the round's end cut off. Both share
+   * one time limit; a recording saved within it is kept, unless [round] already passed it on.
+   */
+  private suspend fun saveUnsavedRecordings(
+    context: Context,
+    agentContext: InvocationContext,
+    liveRun: LiveRun,
+    round: DelegationRound,
+  ): List<Event> {
+    // Not cancellable, since the audio is taken first; a cancel then leaves it on the round.
+    val recordings =
+      withContext(NonCancellable) {
+        collectRecordings(context, agentContext, liveRun, round, "a live node's round")
+      }
+    round.recordings = recordings
+    currentCoroutineContext().ensureActive()
+    return recordings
+  }
+
+  /**
+   * Saves the audio a live [round] left cached and waits for the saves its turns left stranded, all
+   * within one time limit, returning the recordings saved by then in the order they were spoken.
+   * [where] names the moment in the log.
+   */
+  // Only the async save reads cache and taken after they are made; round stays on this coroutine.
+  @OptIn(ExperimentalAtomicApi::class)
+  @Suppress("UnsafeCoroutineCrossing")
+  private suspend fun collectRecordings(
+    context: Context,
+    agentContext: InvocationContext,
+    liveRun: LiveRun,
+    round: DelegationRound,
+    where: String,
+  ): List<Event> = coroutineScope {
+    // The caches hold audio only when saveLiveBlob is set and the run has an artifact service.
+    val cache = AudioCacheManager(agentContext.forAgent(this@LlmAgent))
+    val taken = cache.take(flushUserAudio = true, flushModelAudio = true)
+    val unsaved = async { cache.writeWithin(taken, where = "the end of $where") }
+    val stranded = liveRun.takeStrandedSaves(context.nodePath)
+    try {
+      val timeout = AudioCacheManager.SAVE_TIMEOUT
+      if (withTimeoutOrNull(timeout) { for (save in stranded) save.write.join() } == null) {
+        logger.error { "Dropped live audio still saving at the end of $where after $timeout." }
+      }
+    } finally {
+      for (save in stranded) save.cancel()
+    }
+    // Earlier turns' recordings first, in the order they were spoken.
+    stranded.flatMap { it.saved.load() }.filter { it.id !in round.recordingIds } + unsaved.await()
+  }
+
+  /**
+   * Stores the audio of a live [round] that failed or was cancelled, since it emits nothing more:
+   * the recordings it saved, or else its earlier turns' stranded saves and its unsaved audio, which
+   * the next live reader would otherwise claim. Events already stored or taken by the runner are
+   * skipped, a failure is logged, and the caller flushes.
+   */
+  private suspend fun storeAbandonedRecordings(
+    context: Context,
+    agentContext: InvocationContext,
+    liveRun: LiveRun,
+    round: DelegationRound,
+  ) {
+    withContext(NonCancellable) {
+      try {
+        val stored = context.session.events.mapTo(mutableSetOf()) { it.id }
+        val recordings =
+          round.recordings
+            ?: collectRecordings(
+              context,
+              agentContext,
+              liveRun,
+              round,
+              "an abandoned live node round",
+            )
+        val runMetadata = agentContext.runConfig?.customMetadata.orEmpty()
+        // The node runner's context, closest to the runner's, without this agent's mode override.
+        val pluginContext = context.invocationContext
+        for (event in recordings) {
+          if (event.id in stored || event.id in round.recordingsHandedOn) continue
+          // Scoped, tagged and passed through the plugins as the node runner and runner would.
+          val scoped =
+            event.copy(
+              isolationScope = event.isolationScope ?: context.isolationScope,
+              nodeInfo = (event.nodeInfo ?: NodeInfo()).copy(path = context.nodePath),
+              customMetadata = (runMetadata + event.customMetadata.orEmpty()).ifEmpty { null },
+            )
+          val callbacks = pluginContext.pluginManager.onEventCallbacks
+          val processed = runOnEventCallbacksPipeline(callbacks, pluginContext, scoped)
+          // Merged again, as the runner does, in case a plugin dropped the run's metadata.
+          liveRun.append(
+            processed.copy(
+              customMetadata = (runMetadata + processed.customMetadata.orEmpty()).ifEmpty { null }
+            )
+          )
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.warn { "Storing an abandoned live round's audio failed (${e::class.simpleName})." }
+      }
+    }
+  }
+
+  /** Flushes what a round's end stored straight to [liveRun], logging rather than throwing. */
+  private suspend fun flushQuietly(liveRun: LiveRun) {
+    withContext(NonCancellable) {
+      try {
+        liveRun.flush()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.warn { "Flushing a live round's last events failed (${e::class.simpleName})." }
+      }
+    }
+  }
+
   /** The `finish_task` tool of a task run and the arguments of its latest call. */
   private class FinishState(val tool: FinishTaskTool) {
     var args: Map<String, Any?>? = null
@@ -625,7 +797,13 @@ class LlmAgent(
         }
         is FinishStep.Done -> {
           val key = outputKey?.takeIf { it.isNotEmpty() }
-          if (key != null && step.output != null) context.updateState(key, step.output)
+          if (key != null && step.output != null) {
+            if (round.live) {
+              round.finishOutput = step.output
+            } else {
+              context.updateState(key, step.output)
+            }
+          }
           emitEnding(context, round, event.copy(output = step.output))
           return false
         }

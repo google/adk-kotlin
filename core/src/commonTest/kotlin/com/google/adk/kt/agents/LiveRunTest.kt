@@ -19,9 +19,13 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.types.Blob
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
@@ -165,5 +169,44 @@ class LiveRunTest {
     first.join()
 
     assertThat(next.text()).isEqualTo("next")
+  }
+
+  @Test
+  fun forgetLiveModelMediaMarks_ofAnotherNode_keepsThisNodesMark() {
+    val liveRun = testInvocationContext().openLiveRun(LiveRequestQueue())
+    val audio = Blob(mimeType = "audio/pcm;rate=24000", data = ByteArray(8))
+    val speech =
+      Event(
+        author = "writer",
+        content = Content(role = "model", parts = listOf(Part(inlineData = audio))),
+      )
+    liveRun.markLiveModelMedia("wf@1/writer@1", speech)
+
+    // Another live node's round ends, say on a failure, while the writer's speech is still in
+    // flight.
+    liveRun.forgetLiveModelMediaMarks("wf@1/other@1")
+
+    assertThat(liveRun.takeLiveModelMediaMark(speech)).isTrue()
+  }
+
+  @Test
+  fun takeLiveModelMediaMark_takesEachMarkOnceAndKeepsTheNodesOthers() {
+    val liveRun = testInvocationContext().openLiveRun(LiveRequestQueue())
+    val audio = Blob(mimeType = "audio/pcm;rate=24000", data = ByteArray(8))
+    fun speech() =
+      Event(
+        author = "writer",
+        content = Content(role = "model", parts = listOf(Part(inlineData = audio))),
+      )
+    val first = speech()
+    val second = speech()
+    liveRun.markLiveModelMedia("wf@1/writer@1", first)
+    liveRun.markLiveModelMedia("wf@1/writer@1", second)
+
+    assertThat(liveRun.takeLiveModelMediaMark(first)).isTrue()
+
+    // Taken once, the first mark is gone; the second, from the same node, stays until taken.
+    assertThat(liveRun.takeLiveModelMediaMark(first)).isFalse()
+    assertThat(liveRun.takeLiveModelMediaMark(second)).isTrue()
   }
 }

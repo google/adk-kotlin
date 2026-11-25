@@ -24,15 +24,44 @@ import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService
+import com.google.adk.kt.types.Part
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmSynthetic
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+
+/** Whether this event carries audio, video or image inline rather than as an artifact reference. */
+@JvmSynthetic
+internal fun Event.hasInlineMedia(): Boolean = content?.parts?.any { it.isInlineMedia() } == true
+
+/** This event without its inline audio, video and image parts, and without content if none stay. */
+@JvmSynthetic
+internal fun Event.withoutInlineMedia(): Event {
+  val content = content ?: return this
+  val parts = content.parts.filterNot { it.isInlineMedia() }
+  return copy(content = if (parts.isEmpty()) null else content.copy(parts = parts))
+}
+
+private fun Part.isInlineMedia(): Boolean {
+  val mimeType = inlineData?.mimeType ?: return false
+  return listOf("audio/", "video/", "image/").any { mimeType.startsWith(it, ignoreCase = true) }
+}
+
+/**
+ * A recording save that a live node's turn started and its round cut off by ending the turn: its
+ * [write], the recordings it has [saved] so far, and how to [cancel] it.
+ */
+internal class StrandedSave(
+  val write: Job,
+  val saved: AtomicReference<List<Event>>,
+  val cancel: () -> Unit,
+)
 
 /**
  * State shared across every context derived from a live run's root: the caller's [requestQueue] and
@@ -95,9 +124,72 @@ internal class LiveRun(
     }
   }
 
+  /** The recording saves live node turns left running when cut off, by the node's path. */
+  private val strandedSaves = AtomicReference(emptyMap<String, List<StrandedSave>>())
+
+  /**
+   * Leaves [saves], which a turn of the live node at [nodePath] left running when its round ended
+   * it, for that round to wait for, emit and cancel.
+   */
+  fun strandSaves(nodePath: String, saves: List<StrandedSave>) {
+    strandedSaves.mutate { it + (nodePath to it[nodePath].orEmpty() + saves) }
+  }
+
+  /** Takes the saves [strandSaves] left for the node at [nodePath]. */
+  fun takeStrandedSaves(nodePath: String): List<StrandedSave> {
+    while (true) {
+      val stranded = strandedSaves.load()
+      val taken = stranded[nodePath] ?: return emptyList()
+      if (strandedSaves.compareAndSet(stranded, stranded - nodePath)) return taken
+    }
+  }
+
+  /**
+   * The ids of events with inline media that a live model connection produced, not yet stored, by
+   * the path of the live node whose turn produced them.
+   */
+  private val liveModelMedia = AtomicReference(emptyMap<String, Set<String>>())
+
+  /**
+   * Marks [event], which a live model connection produced for the node at [nodePath], if it carries
+   * inline media, so the runner keeps that media out of the session even when a workflow node
+   * relays the event.
+   */
+  fun markLiveModelMedia(nodePath: String?, event: Event) {
+    // Outside a node the runner drops such media anyway. A partial too: a round may store it whole,
+    // as a copy with the same id.
+    if (nodePath == null || !event.hasInlineMedia()) return
+    liveModelMedia.mutate { it + (nodePath to it[nodePath].orEmpty() + event.id) }
+  }
+
+  /**
+   * Forgets the marks left for the node at [nodePath], once its round has emitted all it will, so a
+   * mark on an event its round dropped does not stay; other nodes' marks stay.
+   */
+  fun forgetLiveModelMediaMarks(nodePath: String) {
+    liveModelMedia.mutate { it - nodePath }
+  }
+
+  /** Whether [markLiveModelMedia] marked [event], forgetting the mark. */
+  fun takeLiveModelMediaMark(event: Event): Boolean {
+    while (true) {
+      val marked = liveModelMedia.load()
+      val (key, ids) = marked.entries.firstOrNull { event.id in it.value } ?: return false
+      val rest = ids - event.id
+      val next = if (rest.isEmpty()) marked - key else marked + (key to rest)
+      if (liveModelMedia.compareAndSet(marked, next)) return true
+    }
+  }
+
   /** Whether [append] stores events; a run without a session service drops them. */
   val storesEvents: Boolean
     get() = sessionService != null
+
+  private val appends = AtomicReference(0)
+
+  /** How many events [append] has stored, so a caller can tell whether it stored any. */
+  val appendCount: Int
+    get() = appends.load()
 
   /** Returns the next request from [requestQueue] for [agent], one reader at a time. */
   suspend fun receiveRequest(agent: String): LiveRequest? = requestQueue.receiveRequest(agent)
@@ -119,6 +211,7 @@ internal class LiveRun(
     withContext(NonCancellable) {
       withTimeoutOrNull(LIVE_SESSION_TIMEOUT) {
         val unused = sessionService.appendEvent(session, event)
+        appends.mutate { it + 1 }
       } ?: error("A live session append did not finish in $LIVE_SESSION_TIMEOUT.")
     }
   }

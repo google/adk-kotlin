@@ -29,9 +29,11 @@ import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.boundedFlush
 import com.google.adk.kt.agents.findAgent
+import com.google.adk.kt.agents.hasInlineMedia
 import com.google.adk.kt.agents.openLiveRun
 import com.google.adk.kt.agents.runsAsTool
 import com.google.adk.kt.agents.signalsTaskCompleted
+import com.google.adk.kt.agents.withoutInlineMedia
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
@@ -878,10 +880,11 @@ abstract class AbstractRunner : Runner {
 
   /**
    * Appends a non-partial [event] to the session: [runAsync] flushes after each final response, and
-   * [runLive] only after an event that ends a turn ([endsLiveTurn]). A live run on an agent root
-   * drops an event that carries inline audio, video or image, while a node-rooted run
-   * ([fromNodeRoot]) stores it whole, as [runAsync] does; its append and flush time out if the
-   * session service hangs.
+   * [runLive] only after an event that ends a turn ([endsLiveTurn]). A live run drops an event with
+   * inline audio, video or image from an agent root or a live model connection, while a node-rooted
+   * run ([fromNodeRoot]) stores its other events whole, as [runAsync] does, and, from a live model,
+   * an event with any actions, function calls or function responses, minus its inline media; its
+   * append and flush time out if the session service hangs.
    */
   private suspend fun store(
     context: InvocationContext,
@@ -889,16 +892,28 @@ abstract class AbstractRunner : Runner {
     liveRun: LiveRun?,
     fromNodeRoot: Boolean,
   ) {
+    // Taken before the checks below, so a partial spends its mark and a marked event whose media a
+    // plugin removed drops it.
+    val fromLiveModel = liveRun?.takeLiveModelMediaMark(event) == true
     // A partial event is superseded by its whole, so it is never stored, as in ADK Python.
     if (event.partial) return
     if (liveRun != null) {
-      // An agent's inline media stays out of the session, but a turn it ends is still flushed.
-      if (fromNodeRoot || !event.hasInlineMedia()) liveRun.append(event)
+      // A turn whose media stays out of the session is still flushed.
+      if (!event.hasInlineMedia() || (fromNodeRoot && !fromLiveModel)) {
+        liveRun.append(event)
+      } else if (fromNodeRoot && (event.actions != EventActions() || event.callsOrAnswers())) {
+        // Any of its actions, such as a handoff a resume reads, are still stored without the media.
+        // So are its tool calls and answers, which history and the calls' answers rely on.
+        liveRun.append(event.withoutInlineMedia())
+      }
       if (event.endsLiveTurn()) liveRun.flush()
     } else {
       appendAndFlushIfFinal(context, event)
     }
   }
+
+  private fun Event.callsOrAnswers(): Boolean =
+    functionCalls().isNotEmpty() || functionResponses().isNotEmpty()
 
   /** Warns, as ADK Python does, that a transfer may lack context while a transcription is off. */
   private fun warnIfTransferLacksTranscription(runConfig: RunConfig) {
@@ -920,13 +935,6 @@ abstract class AbstractRunner : Runner {
    */
   private fun Event.endsLiveTurn(): Boolean =
     turnComplete || actions.transferToAgent != null || signalsTaskCompleted()
-
-  /** Whether a part carries audio, video or image inline rather than as an artifact reference. */
-  private fun Event.hasInlineMedia(): Boolean =
-    content?.parts?.any { part ->
-      val mimeType = part.inlineData?.mimeType ?: return@any false
-      listOf("audio/", "video/", "image/").any { mimeType.startsWith(it, ignoreCase = true) }
-    } == true
 
   /**
    * Handles new user content by running plugins and appending events to the session.

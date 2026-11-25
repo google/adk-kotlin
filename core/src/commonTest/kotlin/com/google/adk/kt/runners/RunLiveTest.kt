@@ -2021,6 +2021,29 @@ class RunLiveTest {
     assertThat(failure).hasMessageThat().isEqualTo("Only agents can request an agent transfer.")
   }
 
+  @Test
+  fun runLive_pluginRewritesALiveTasksAudio_storesTheRewrite(): Unit = runBlocking {
+    val audio = Part(inlineData = Blob(mimeType = "audio/pcm", data = ByteArray(4)))
+    val finish = Part(functionCall = FunctionCall("finish_task", mapOf("result" to "done")))
+    val spoken = LlmResponse(content = modelMessage(audio, finish))
+    val scrubbing =
+      object : Plugin {
+        override val name = "scrubbing"
+
+        override suspend fun onEvent(invocationContext: InvocationContext, event: Event): Event =
+          withAudioAsReference(event)
+      }
+    val runner =
+      workflowRunner(
+        starterNode(taskAgent("writer", model = EitherWayModel("writer", spoken))),
+        plugins = listOf(scrubbing),
+      )
+
+    val unused = runLiveUntilTheRootEnds(runner)
+
+    assertThat(runner.storedEvents().map { it.content }).contains(audioReference())
+  }
+
   private val paid = LlmResponse(content = modelMessage("paid"))
 
   /** Asserts that running [runner] live fails at the coordinator's transfer. */
@@ -2036,10 +2059,11 @@ class RunLiveTest {
   private fun booker() = taskAgent("booker", taskAgent("payer"))
 
   /** A runner whose workflow's function node starts [node] with runNode and returns its output. */
-  private fun starterRunner(node: Node) =
-    workflowRunner(
-      node<Any?, Any?>("starter", rerunOnResume = true) { context, _ -> context.runNode(node) }
-    )
+  private fun starterRunner(node: Node) = workflowRunner(starterNode(node))
+
+  /** A function node that starts [node] with runNode and returns its output. */
+  private fun starterNode(node: Node): Node =
+    node<Any?, Any?>("starter", rerunOnResume = true) { context, _ -> context.runNode(node) }
 
   /** A model that answers with a transfer to `billing`. */
   private fun transferringModel() =
