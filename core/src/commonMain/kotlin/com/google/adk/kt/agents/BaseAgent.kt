@@ -336,9 +336,12 @@ abstract class BaseAgent(
    * The agent's own work on a live connection.
    *
    * Unsupported by default: most agent types have no live behavior, and an agent that cannot run
-   * live should say so rather than silently producing nothing.
+   * live should say so rather than silently producing nothing. A [LiveRequestQueue] has one live
+   * reader at a time, so an agent that runs others live must run them one after another.
    *
    * @throws UnsupportedOperationException when collected, unless the agent type overrides it.
+   * @throws IllegalStateException when collected, if another live agent still reads the same
+   *   [LiveRequestQueue].
    */
   @ExperimentalLiveApi
   protected open fun runLiveImpl(context: InvocationContext): Flow<Event> = flow {

@@ -116,6 +116,8 @@ interface Runner : AutoCloseable {
    * @return The run's events.
    * @throws com.google.adk.kt.sessions.SessionNotFoundException from the flow if the session does
    *   not exist and the runner does not create missing sessions.
+   * @throws IllegalStateException from the flow if another live connection is reading
+   *   [liveRequestQueue].
    */
   @ExperimentalLiveApi
   fun runLive(

@@ -27,14 +27,19 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmOverloads
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
  * The input side of a live conversation: everything the user sends reaches the agent through one of
  * these, from any thread and without suspending, so audio can be pushed from a microphone callback
- * or a UI handler without a coroutine.
+ * or a UI handler without a coroutine. One live connection reads a queue at a time, so give each
+ * concurrent live run its own.
  *
  * The cost is an unbounded queue: a producer faster than the agent grows it without limit, an entry
  * per audio chunk spoken.
@@ -60,6 +65,9 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
    */
   private val receiving = Mutex()
 
+  /** The coroutine that last claimed this queue by reading it with an agent name. */
+  private val reader = AtomicReference<Job?>(null)
+
   /**
    * Completed by [close], so the live flow can see the caller hang up directly rather than wait for
    * a pending receive to drain, as ADK Python reads `live_request_queue.closed`.
@@ -81,16 +89,59 @@ class LiveRequestQueue @ExperimentalLiveApi constructor() : AutoCloseable {
 
   /**
    * Returns the next request in send order, or null after [close] once every request sent before it
-   * has been returned, skipping the answers [discardAnswersTo] dropped. Calls run one at a time, so
-   * a caller can cancel one and start the next without waiting, and a request the cancelled call
-   * had already taken is returned by the next one. A returned request never has [LiveRequest.close]
-   * set, and one whose [LiveRequest.input] is null carries only a [LiveRequest.stateDelta], which
-   * may be empty.
+   * has been returned, skipping the answers [discardAnswersTo] dropped. Calls run one at a time: a
+   * call that is already cancelled takes nothing, and a request taken by a call cancelled while it
+   * waited is returned by the next one. A returned request never has [LiveRequest.close] set, and
+   * one whose [LiveRequest.input] is null carries only a [LiveRequest.stateDelta], which may be
+   * empty.
    */
   internal suspend fun receiveRequest(): LiveRequest? = receiving.withLock { nextKeptRequest() }
 
+  /**
+   * Returns the next request, as [receiveRequest] does, for the calling coroutine, this queue's
+   * reader until it stops. A queue has one reader at a time, whichever run reads it: two reading at
+   * once would each get part of the input, so the second one fails instead, naming its [agent].
+   *
+   * The reader is the calling coroutine's own [Job], so every read of one connection must come from
+   * its reading coroutine itself.
+   *
+   * @throws IllegalStateException if another reader of this queue is still active; no request is
+   *   taken.
+   */
+  internal suspend fun receiveRequest(agent: String): LiveRequest? {
+    claimReader(agent, currentCoroutineContext().job)
+    return receiveRequest()
+  }
+
+  /**
+   * Fails, naming [agent], if another reader of this queue is already reading, so that case opens
+   * no connection; [receiveRequest] still claims the reader.
+   */
+  internal suspend fun checkNoOtherReader(agent: String) {
+    currentCoroutineContext().ensureActive()
+    check(reader.load()?.isActive != true) { otherReaderMessage(agent) }
+  }
+
+  private fun claimReader(agent: String, job: Job) {
+    // A cancelled caller stops, rather than failing as a second reader would.
+    job.ensureActive()
+    while (true) {
+      val current = reader.load()
+      if (current === job) return
+      // A cancelled reader counts as gone, since the next one may start before it finishes.
+      check(current == null || !current.isActive) { otherReaderMessage(agent) }
+      if (reader.compareAndSet(current, job)) return
+    }
+  }
+
+  private fun otherReaderMessage(agent: String) =
+    "Live agent '$agent' found another reader already reading its LiveRequestQueue; " +
+      "live agents that share a queue must read it one at a time."
+
   private suspend fun nextKeptRequest(): LiveRequest? {
     while (true) {
+      // A queued request returns without suspending, so check for cancellation here.
+      currentCoroutineContext().ensureActive()
       val request = redelivery.exchange(null) ?: channel.receiveCatching().getOrNull()
       val passed = discards.load().find { it.mark === request }
       when {

@@ -26,6 +26,7 @@ import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -38,6 +39,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -349,6 +351,22 @@ class LiveRequestQueueTest {
     queue.close()
 
     assertEquals(listOf("one", "two"), queue.receiveAll().map { it.text() })
+  }
+
+  @Test
+  fun receiveRequest_calledByACancelledReceiver_leavesTheRequestForTheNextOne() = runBlocking {
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("queued"))
+
+    // A queued request is returned without suspending, so only a check stops this receiver.
+    val receiver = launch {
+      cancel()
+      assertFailsWith<CancellationException> { queue.receiveRequest() }
+    }
+    receiver.join()
+    queue.close()
+
+    assertEquals(listOf("queued"), queue.receiveAll().map { it.text() })
   }
 
   @Test

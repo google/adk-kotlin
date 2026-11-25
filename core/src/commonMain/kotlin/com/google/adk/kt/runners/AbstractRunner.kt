@@ -320,6 +320,8 @@ abstract class AbstractRunner : Runner {
    *
    * @throws SessionNotFoundException from the flow if the session does not exist and this runner
    *   does not create missing sessions.
+   * @throws IllegalStateException from the flow if another live connection is reading
+   *   [liveRequestQueue].
    */
   @ExperimentalLiveApi
   override fun runLive(

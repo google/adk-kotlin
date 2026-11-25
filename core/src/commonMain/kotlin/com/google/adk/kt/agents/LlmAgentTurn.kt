@@ -486,6 +486,8 @@ internal class LlmAgentTurn(
     if (context.isEndOfInvocation) return false
 
     val queue = liveRun().requestQueue
+    // Before connecting, so a second reader usually opens no session; the sender still claims it.
+    liveRun().checkNoOtherReader(agent.name)
     val request = prepareLiveSession(collector) ?: return false
     var attempt = 0
     while (true) {
@@ -884,7 +886,7 @@ internal class LlmAgentTurn(
           while (true) {
             // Left in the queue, so a restart, transfer or block after the drain still gets it.
             if (drain.isDraining) return@launch
-            val liveRequest = queue.receiveRequest() ?: break
+            val liveRequest = liveRun().receiveRequest(agent.name) ?: break
             // Held until the write returns, so a cancellation in between re-sends it.
             val pending = PendingSend(liveRequest, persisted = false, screened = null)
             pendingRequest.store(pending)

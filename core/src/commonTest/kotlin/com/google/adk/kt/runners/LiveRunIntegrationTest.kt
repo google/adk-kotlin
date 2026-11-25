@@ -18,6 +18,8 @@
 
 package com.google.adk.kt.runners
 
+import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequest
 import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
@@ -76,6 +78,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -90,6 +94,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 
@@ -239,6 +244,38 @@ class LiveRunIntegrationTest {
       pinger.cancel()
     }
   }
+
+  /** A custom agent whose live run lets all its [readers] read the run's input at once. */
+  private class AllReading(private val readers: List<LlmAgent>) :
+    BaseAgent("all_reading", subAgents = readers) {
+    override fun runAsyncImpl(context: InvocationContext): Flow<Event> = emptyFlow()
+
+    override fun runLiveImpl(context: InvocationContext): Flow<Event> = channelFlow {
+      for (reader in readers) launch { reader.runLive(context).collect { send(it) } }
+    }
+  }
+
+  @Test
+  fun runLive_customAgentRunningTwoLiveAgentsAtOnce_failsInsteadOfSplittingTheInput(): Unit =
+    runBlocking {
+      fun reader(name: String) =
+        LlmAgent(
+          name = name,
+          model =
+            DummyLiveModel.perConnection(listOf(listOf(AwaitSent("any input") { true })), name),
+        )
+      val runner = InMemoryRunner(agent = AllReading(listOf(reader("left"), reader("right"))))
+
+      // Bounded, so splitting the input instead of failing ends on a timeout, not a hang.
+      val failure =
+        withTimeout(10.seconds) {
+          assertFailsWith<IllegalStateException> {
+            runner.runLive(USER_ID, SESSION_ID, LiveRequestQueue()).toList()
+          }
+        }
+
+      assertThat(failure).hasMessageThat().contains("already reading its LiveRequestQueue")
+    }
 
   @Test
   fun runLive_spokenTurn_emitsTheTurnsContentAndCompletesWhenTheQueueCloses(): Unit = runBlocking {

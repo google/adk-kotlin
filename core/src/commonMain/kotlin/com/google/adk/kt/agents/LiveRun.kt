@@ -14,8 +14,11 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalLiveApi::class)
+
 package com.google.adk.kt.agents
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.sessions.Session
@@ -51,6 +54,12 @@ internal class LiveRun(
   /** Whether [append] stores events; a run without a session service drops them. */
   val storesEvents: Boolean
     get() = sessionService != null
+
+  /** Returns the next request from [requestQueue] for [agent], one reader at a time. */
+  suspend fun receiveRequest(agent: String): LiveRequest? = requestQueue.receiveRequest(agent)
+
+  /** Fails, naming [agent], if another reader of [requestQueue] is already reading. */
+  suspend fun checkNoOtherReader(agent: String) = requestQueue.checkNoOtherReader(agent)
 
   /**
    * Appends [event] to the session, bounded by [LIVE_SESSION_TIMEOUT] so a hung session service

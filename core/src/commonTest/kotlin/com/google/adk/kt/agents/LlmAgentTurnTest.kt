@@ -108,12 +108,15 @@ import com.google.genai.kotlin.GenAiApiException
 import kotlin.random.Random
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
@@ -981,6 +984,35 @@ class LlmAgentTurnTest {
       mapOf<String, Any?>("status" to "pending"),
       events.flatMap { it.functionResponses() }.single().response,
     )
+  }
+
+  @Test
+  fun runLive_anotherConnectionIsReadingTheRunsInput_failsWithoutTakingARequest() = runBlocking {
+    val model =
+      RecordingLiveModel(RecordingLiveConnection(listOf(turnComplete()), untilClosed = true))
+    val agent = LlmAgent(name = "LiveAgent", description = "Answers live.", model = model)
+    val queue = LiveRequestQueue()
+    val context = liveContextFor(agent, queue)
+    // Another live connection is already waiting on the run's input.
+    val other =
+      async(start = CoroutineStart.UNDISPATCHED) {
+        checkNotNull(context.liveRun).receiveRequest("other")
+      }
+    try {
+      val failure =
+        withTimeout(10.seconds) {
+          assertFailsWith<IllegalStateException> { agent.runLive(context).toList() }
+        }
+      queue.sendContent(userMessage("hello"))
+
+      assertThat(failure).hasMessageThat().contains("already reading its LiveRequestQueue")
+      assertThat(assertIs<ContentInput>(checkNotNull(other.await()).input).content.text())
+        .isEqualTo("hello")
+      // It fails before it connects, so it opens no model session.
+      assertThat(model.connectCalls).isEqualTo(0)
+    } finally {
+      other.cancel()
+    }
   }
 
   @Test
