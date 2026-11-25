@@ -1140,6 +1140,78 @@ class A2aConvertersTest {
   }
 
   @Test
+  fun clientEventToEvent_withOnlyUnconvertibleArtifactPartAndErrorCode_keepsEvent() {
+    val result =
+      unconvertibleArtifactUpdate(append = false, lastChunk = true, artifactErrorCode = "SAFETY")
+        .toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.content).isNull()
+    assertThat(result.partial).isFalse()
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertibleAppendedLastChunkAndErrorCode_isFinal() {
+    val result =
+      unconvertibleArtifactUpdate(append = true, lastChunk = true, artifactErrorCode = "SAFETY")
+        .toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.partial).isFalse()
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertibleMidStreamChunkAndErrorCode_isPartial() {
+    val result =
+      unconvertibleArtifactUpdate(append = true, lastChunk = false, artifactErrorCode = "SAFETY")
+        .toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.partial).isTrue()
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertibleArtifactPartAndErrorCodeOnUpdate_returnsNull() {
+    // As in ADK Python, only the artifact's own error code keeps an event with no content.
+    val result =
+      unconvertibleArtifactUpdate(append = false, lastChunk = true, updateErrorCode = "SAFETY")
+        .toAdkEvent(invocationContext)
+
+    assertThat(result).isNull()
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertiblePartsAndErrorCodeInWorkingStatusUpdate_keepsEvent() {
+    val event =
+      statusUpdateWithParts(
+        TaskState.TASK_STATE_WORKING,
+        invalidBase64Part(),
+        messageMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+      )
+
+    val result = event.toAdkEvent(invocationContext)
+
+    assertNotNull(result)
+    assertThat(result.errorCode).isEqualTo("SAFETY")
+    assertThat(result.content).isNull()
+    assertThat(result.turnComplete).isFalse()
+  }
+
+  @Test
+  fun clientEventToEvent_withOnlyUnconvertiblePartsAndErrorCodeOnWorkingStatusUpdate_returnsNull() {
+    // As in ADK Python, only the status message's own error code keeps an event with no content.
+    val event =
+      statusUpdateWithParts(
+        TaskState.TASK_STATE_WORKING,
+        invalidBase64Part(),
+        updateMetadata = mapOf(MetadataKeys.ERROR_CODE to "SAFETY"),
+      )
+
+    assertThat(event.toAdkEvent(invocationContext)).isNull()
+  }
+
+  @Test
   fun clientEventToEvent_withMessageEvent_returnsEvent() {
     val a2aMessage =
       Message.builder()
@@ -2542,6 +2614,31 @@ class A2aConvertersTest {
           artifact("artifact-2", mapOf(MetadataKeys.ERROR_CODE to "SAFETY")),
         ),
     )
+
+  /** An artifact update for task-1 whose only part does not convert. */
+  private fun unconvertibleArtifactUpdate(
+    append: Boolean,
+    lastChunk: Boolean,
+    artifactErrorCode: String? = null,
+    updateErrorCode: String? = null,
+  ): TaskUpdateEvent {
+    val artifact =
+      Artifact.builder()
+        .artifactId("artifact-1")
+        .parts(listOf(invalidBase64Part()))
+        .metadata(artifactErrorCode?.let { mapOf(MetadataKeys.ERROR_CODE to it) } ?: emptyMap())
+        .build()
+    val update =
+      TaskArtifactUpdateEvent.builder()
+        .append(append)
+        .lastChunk(lastChunk)
+        .contextId("context-1")
+        .artifact(artifact)
+        .taskId("task-1")
+        .metadata(updateErrorCode?.let { mapOf(MetadataKeys.ERROR_CODE to it) } ?: emptyMap())
+        .build()
+    return TaskUpdateEvent(peerTask(TaskState.TASK_STATE_WORKING), update)
+  }
 
   /** An artifact with one text part and [metadata]. */
   private fun artifact(id: String, metadata: Map<String, Any>) =
