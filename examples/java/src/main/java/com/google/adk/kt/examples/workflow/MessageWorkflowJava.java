@@ -16,23 +16,21 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
+import com.google.adk.kt.interop.InteropContextView;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.types.Blob;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Part;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.workflow.FunctionNode;
+import com.google.adk.kt.workflow.NodeBody;
 import com.google.adk.kt.workflow.Workflow;
-import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code message} workflow sample: nodes send the user a text message, a
@@ -44,14 +42,9 @@ public final class MessageWorkflowJava {
   public static Workflow create() {
     return Workflow.builder()
         .name("message")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(
-                        new SendString(),
-                        new SendMultimodal(),
-                        new MultipleMessages(),
-                        new StreamSentence()))
+        .edges(g ->
+            g.fromStart()
+                .chain(sendString(), sendMultimodal(), multipleMessages(), streamSentence()))
         .build();
   }
 
@@ -84,93 +77,89 @@ public final class MessageWorkflowJava {
           + "7fz/z+ZQtapwmrJc8QklmjBIgZJgIZMiAIl9KYbhjx4fgwosbNxgMrF0+4uhgHnYDM6"
           + "AzQHJeg5HYtyHFfgy2AztN/5tZWfrBtVzkl4DzfQkEPd+cEkAAAAASUVORK5CYII=";
 
-  /** A user-facing message from a node, with {@code parts} as its content. */
-  private static Event message(Part... parts) {
-    return Event.builder().content(new Content(Role.MODEL, List.of(parts))).build();
+  /** A user-facing message from a node, with {@code text} as its content. */
+  private static Event message(String text) {
+    return Event.builder().content(Content.fromText(Role.MODEL, text)).build();
   }
 
-  private static Part text(String text) {
-    return Part.builder().text(text).build();
+  /** A node that takes any input, sends messages from {@code body}, and outputs nothing. */
+  private static FunctionNode<Object, Object> node(String name, NodeBody<Object, Object> body) {
+    return FunctionNodes.of(name, Object.class, Object.class, body);
   }
 
-  /** Publishes {@code event}, then waits {@code pause} before completing. */
-  private static Flux<Object> thenPause(Event event, Duration pause) {
-    return Mono.<Object>just(event).concatWith(Mono.<Object>empty().delaySubscription(pause));
+  /** Sends one message with {@code emit}; a returned value would be the node's output instead. */
+  private static FunctionNode<Object, Object> sendString() {
+    return node(
+        "send_string",
+        (ctx, input) -> {
+          InteropContextView.of(ctx)
+              .emit(Content.fromText(Role.MODEL, "#1 This is a simple string message."));
+          return null;
+        });
   }
 
-  private static final class SendString extends BasePublisherNode {
-    SendString() {
-      super("send_string");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Mono.just(message(text("#1 This is a simple string message.")));
-    }
-  }
-
-  private static final class SendMultimodal extends BasePublisherNode {
-    SendMultimodal() {
-      super("send_multimodal");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Blob image = new Blob("image/png", null, Base64.getDecoder().decode(RED_SQUARE_PNG));
-      return Mono.just(
-          message(
-              text("#2 Here is a multi-modal message with an inline image (red square):"),
-              Part.builder().inlineData(image).build()));
-    }
+  private static FunctionNode<Object, Object> sendMultimodal() {
+    return node(
+        "send_multimodal",
+        (ctx, input) -> {
+          Blob image = new Blob("image/png", null, Base64.getDecoder().decode(RED_SQUARE_PNG));
+          String text = "#2 Here is a multi-modal message with an inline image (red square):";
+          InteropContextView.of(ctx)
+              .emit(
+                  new Content(
+                      Role.MODEL,
+                      List.of(
+                          Part.builder().text(text).build(),
+                          Part.builder().inlineData(image).build())));
+          return null;
+        });
   }
 
   /** Sends complete messages one after another from the same node. */
-  private static final class MultipleMessages extends BasePublisherNode {
-    MultipleMessages() {
-      super("multiple_messages");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      return Flux.just("#3 Multiple messages", "Processing step 1...", "Processing step 2...")
-          .concatMap(step -> thenPause(message(text(step)), Duration.ofSeconds(1)))
-          .concatWith(Mono.just(message(text("Done processing."))));
-    }
+  private static FunctionNode<Object, Object> multipleMessages() {
+    return node(
+        "multiple_messages",
+        (ctx, input) -> {
+          InteropContextView view = InteropContextView.of(ctx);
+          for (String step :
+              List.of("#3 Multiple messages", "Processing step 1...", "Processing step 2...")) {
+            view.emit(message(step));
+            Thread.sleep(1000);
+          }
+          view.emit(message("Done processing."));
+          return null;
+        });
   }
 
   /**
    * Streams a sentence in partial chunks, which clients display but the session does not store, so
    * the node then sends the whole sentence once as a complete message.
    */
-  private static final class StreamSentence extends BasePublisherNode {
-    StreamSentence() {
-      super("stream_sentence");
-    }
+  private static FunctionNode<Object, Object> streamSentence() {
+    return node(
+        "stream_sentence",
+        (ctx, input) -> {
+          InteropContextView view = InteropContextView.of(ctx);
+          view.emit(message("#4 Starting to stream..."));
+          String sentence =
+              """
+              This is a streaming message sent in chunks.
 
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      String sentence =
-          """
-          This is a streaming message sent in chunks.
+              You can stream in markdown as well. For example, the table below:
 
-          You can stream in markdown as well. For example, the table below:
-
-          | Header 1 | Header 2 |
-          |----------|----------|
-          | Cell 1   | Cell 2   |
-          | Cell 3   | Cell 4   |\
-          """;
-      List<Event> chunks = new ArrayList<>();
-      for (int start = 0; start < sentence.length(); start += 5) {
-        String chunk = sentence.substring(start, Math.min(start + 5, sentence.length()));
-        chunks.add(message(text(chunk)).toBuilder().partial(true).build());
-      }
-      return Flux.<Object>just(message(text("#4 Starting to stream...")))
-          .concatWith(
-              Flux.fromIterable(chunks)
-                  .concatMap(chunk -> thenPause(chunk, Duration.ofMillis(200))))
-          .concatWith(Mono.just(message(text(sentence))));
-    }
+              | Header 1 | Header 2 |
+              |----------|----------|
+              | Cell 1   | Cell 2   |
+              | Cell 3   | Cell 4   |\
+              """;
+          for (int start = 0; start < sentence.length(); start += 5) {
+            String chunk = sentence.substring(start, Math.min(start + 5, sentence.length()));
+            view.emit(message(chunk).toBuilder().partial(true).build());
+            Thread.sleep(200);
+          }
+          view.emit(message(sentence));
+          return null;
+        });
   }
 
   private MessageWorkflowJava() {}

@@ -16,20 +16,20 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
+import com.google.adk.kt.interop.InteropContextView;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.RetryConfig;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.concurrent.ThreadLocalRandom;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code retry} workflow sample: a weather lookup fails at random, and its
@@ -42,7 +42,7 @@ public final class RetryWorkflowJava {
   public static Workflow create() {
     return Workflow.builder()
         .name("retry")
-        .edges(g -> g.fromStart().chain(new GetWeather(), new ReportWeather()))
+        .edges(g -> g.fromStart().chain(getWeather(), reportWeather()))
         .build();
   }
 
@@ -69,45 +69,35 @@ public final class RetryWorkflowJava {
   }
 
   /** A mock weather lookup that fails 70% of the time, retried with exponential backoff. */
-  private static final class GetWeather extends BasePublisherNode {
-    GetWeather() {
-      super(
-          "get_weather",
-          NodeConfig.builder()
-              .retryConfig(RetryConfig.builder().maxAttempts(5).initialDelayMillis(1000).build())
-              .build());
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Event attempt =
-          Event.builder()
-              .content(
-                  Content.fromText(
-                      Role.MODEL, "Getting weather... attempt " + context.getAttemptCount()))
-              .build();
-      if (ThreadLocalRandom.current().nextDouble() < 0.7) {
-        return Mono.<Object>just(attempt)
-            .concatWith(Mono.error(new HttpException(500, "Internal Server Error")));
-      }
-      return Flux.just(attempt, "sunny");
-    }
+  private static FunctionNode<Object, String> getWeather() {
+    return FunctionNodes.builder(Object.class, String.class)
+        .name("get_weather")
+        .config(
+            NodeConfig.builder()
+                .retryConfig(RetryConfig.builder().maxAttempts(5).initialDelayMillis(1000).build())
+                .build())
+        .body((ctx, input) -> {
+          String attempt = "Getting weather... attempt " + ctx.getAttemptCount();
+          InteropContextView.of(ctx).emit(Content.fromText(Role.MODEL, attempt));
+          if (ThreadLocalRandom.current().nextDouble() < 0.7) {
+            throw new HttpException(500, "Internal Server Error");
+          }
+          return "sunny";
+        })
+        .build();
   }
 
   /** Reports the weather the lookup returned. */
-  private static final class ReportWeather extends BasePublisherNode {
-    ReportWeather() {
-      super("report_weather");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      Event report =
-          Event.builder()
-              .content(Content.fromText(Role.MODEL, "The weather is " + nodeInput))
-              .build();
-      return Mono.just(report);
-    }
+  private static FunctionNode<String, Object> reportWeather() {
+    return FunctionNodes.of(
+        "report_weather",
+        String.class,
+        Object.class,
+        (ctx, weather) -> {
+          InteropContextView.of(ctx)
+              .emit(Content.fromText(Role.MODEL, "The weather is " + weather));
+          return null;
+        });
   }
 
   /** A mock API's error response. */

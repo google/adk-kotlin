@@ -17,33 +17,27 @@
 package com.google.adk.kt.examples.workflow;
 
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.events.EventActions;
-import com.google.adk.kt.interop.BasePublisherNode;
 import com.google.adk.kt.interop.FunctionNodes;
+import com.google.adk.kt.interop.InteropContextView;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.models.Gemini;
 import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
-import com.google.adk.kt.types.Schema;
-import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.JoinNode;
 import com.google.adk.kt.workflow.Node;
-import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code nested_workflow} sample: for the year the user names, a nested
@@ -66,13 +60,12 @@ public final class NestedWorkflowJava {
 
     return Workflow.builder()
         .name("nested_workflow")
-        .edges(
-            g ->
-                g.fromStart()
-                    .then(new ProcessInput())
-                    .then(findFamousPerson, findHistoricalEventAgent(model))
-                    .joinTo(new JoinNode("join_for_aggregation"))
-                    .then(aggregateResults()))
+        .edges(g ->
+            g.fromStart()
+                .then(processInput())
+                .then(findFamousPerson, findHistoricalEventAgent(model))
+                .joinTo(new JoinNode("join_for_aggregation"))
+                .then(aggregateResults()))
         .build();
   }
 
@@ -97,44 +90,31 @@ public final class NestedWorkflowJava {
 
   private static final Pattern YEAR = Pattern.compile("\\b\\d{4}\\b");
 
-  /** An input schema under which a node receives its input, such as a message, as text. */
-  private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
-
-  /** Sends the year from the user's message as a state change, and fails the run if none. */
-  private static final class ProcessInput extends BasePublisherNode {
-    ProcessInput() {
-      super(
-          "process_input",
-          "",
-          /* rerunOnResume= */ false,
-          /* waitForOutput= */ false,
-          NodeConfig.builder().build(),
-          TEXT_INPUT);
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message, which TEXT_INPUT reads as text.
-      Matcher year = YEAR.matcher((String) nodeInput);
-      if (!year.find()) {
-        Event reply =
-            Event.builder()
-                .content(
-                    Content.fromText(
-                        Role.MODEL, "Please provide a valid 4-digit year (e.g., 1955)."))
-                .build();
-        return Mono.<Object>just(reply)
-            .concatWith(Mono.error(new IllegalArgumentException("Invalid year format.")));
-      }
-      return Mono.just(
-          Event.builder()
-              .actions(
-                  EventActions.builder()
-                      // The framework adds to a state delta, so it must be mutable.
-                      .stateDelta(new HashMap<>(Map.of("year", year.group())))
-                      .build())
-              .build());
-    }
+  /** Sends the year from the user's message as a state change, and fails the run without one. */
+  private static FunctionNode<String, Object> processInput() {
+    return FunctionNodes.of(
+        "process_input",
+        // START hands the first node the user's message, which a String input receives as text.
+        String.class,
+        Object.class,
+        (ctx, text) -> {
+          InteropContextView view = InteropContextView.of(ctx);
+          Matcher year = YEAR.matcher(text);
+          if (!year.find()) {
+            view.emit(
+                Content.fromText(Role.MODEL, "Please provide a valid 4-digit year (e.g., 1955)."));
+            throw new IllegalArgumentException("Invalid year format.");
+          }
+          view.emit(
+              Event.builder()
+                  .actions(
+                      EventActions.builder()
+                          // The framework adds to a state delta, so it must be mutable.
+                          .stateDelta(new HashMap<>(Map.of("year", year.group())))
+                          .build())
+                  .build());
+          return null;
+        });
   }
 
   private static LlmAgent findNameAgent(Model model) {
@@ -170,23 +150,22 @@ public final class NestedWorkflowJava {
   }
 
   /** Combines both branches' answers, which the join passes on keyed by branch name. */
-  private static FunctionNode<Map<String, String>, Event> aggregateResults() {
+  private static FunctionNode<Map<String, String>, Object> aggregateResults() {
     return FunctionNodes.of(
         "aggregate_results",
         new TypeReference<Map<String, String>>() {},
-        Event.class,
-        (ctx, answers) ->
-            Event.builder()
-                .content(
-                    Content.fromText(
-                        Role.MODEL,
-                        "# Year: "
-                            + ctx.getState().get("year")
-                            + "\n\n## Famous Person Bio:\n\n"
-                            + answers.get("find_famous_person")
-                            + "\n\n## Historical Event:\n\n"
-                            + answers.get("find_historical_event")))
-                .build());
+        Object.class,
+        (ctx, answers) -> {
+          String message =
+              "# Year: "
+                  + ctx.getState().get("year")
+                  + "\n\n## Famous Person Bio:\n\n"
+                  + answers.get("find_famous_person")
+                  + "\n\n## Historical Event:\n\n"
+                  + answers.get("find_historical_event");
+          InteropContextView.of(ctx).emit(Content.fromText(Role.MODEL, message));
+          return null;
+        });
   }
 
   private NestedWorkflowJava() {}

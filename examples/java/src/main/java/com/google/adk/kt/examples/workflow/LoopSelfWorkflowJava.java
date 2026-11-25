@@ -16,27 +16,22 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
 import com.google.adk.kt.events.EventActions;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
+import com.google.adk.kt.interop.InteropContextView;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
-import com.google.adk.kt.types.Schema;
-import com.google.adk.kt.types.Type;
-import com.google.adk.kt.workflow.Node;
-import com.google.adk.kt.workflow.NodeConfig;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * A port of adk-python's {@code loop_self} workflow sample: the user picks a number from 0 to 10,
@@ -46,15 +41,14 @@ public final class LoopSelfWorkflowJava {
 
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
-    Node guessNumber = new GuessNumber();
+    FunctionNode<Object, Object> guessNumber = guessNumber();
 
     return Workflow.builder()
         .name("loop_self")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(new ValidateInput(), guessNumber)
-                    .route(r -> r.on("guessed_wrong").then(guessNumber)))
+        .edges(g ->
+            g.fromStart()
+                .chain(validateInput(), guessNumber)
+                .route(r -> r.on("guessed_wrong").then(guessNumber)))
         .build();
   }
 
@@ -71,68 +65,55 @@ public final class LoopSelfWorkflowJava {
     }
   }
 
-  /** An input schema under which a node receives its input, such as a message, as text. */
-  private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
-
   /** Sends the user's number as a state change, and fails the run if it is out of range. */
-  private static final class ValidateInput extends BasePublisherNode {
-    ValidateInput() {
-      super(
-          "validate_input",
-          "",
-          /* rerunOnResume= */ false,
-          /* waitForOutput= */ false,
-          NodeConfig.builder().build(),
-          TEXT_INPUT);
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message, which TEXT_INPUT reads as text.
-      int number = Integer.parseInt(((String) nodeInput).trim());
-      if (number < 0 || number > 10) {
-        Event message =
-            Event.builder()
-                .content(Content.fromText(Role.MODEL, "Please provide a number between 0 and 10."))
-                .build();
-        return Mono.<Object>just(message)
-            .concatWith(Mono.error(new IllegalArgumentException("Invalid input.")));
-      }
-      return Mono.just(
-          Event.builder()
-              .actions(
-                  EventActions.builder()
-                      // The framework adds to a state delta, so it must be mutable.
-                      .stateDelta(new HashMap<>(Map.of("target_number", number)))
-                      .build())
-              .build());
-    }
+  private static FunctionNode<String, Object> validateInput() {
+    return FunctionNodes.of(
+        "validate_input",
+        // START hands the first node the user's message, which a String input receives as text.
+        String.class,
+        Object.class,
+        (ctx, text) -> {
+          InteropContextView view = InteropContextView.of(ctx);
+          int number = Integer.parseInt(text.trim());
+          if (number < 0 || number > 10) {
+            view.emit(Content.fromText(Role.MODEL, "Please provide a number between 0 and 10."));
+            throw new IllegalArgumentException("Invalid input.");
+          }
+          view.emit(
+              Event.builder()
+                  .actions(
+                      EventActions.builder()
+                          // The framework adds to a state delta, so it must be mutable.
+                          .stateDelta(new HashMap<>(Map.of("target_number", number)))
+                          .build())
+                  .build());
+          return null;
+        });
   }
 
   /** Guesses a number, and sends a route back to itself when the guess is wrong. */
-  private static final class GuessNumber extends BasePublisherNode {
-    GuessNumber() {
-      super("guess_number");
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      int guess = ThreadLocalRandom.current().nextInt(0, 11);
-      Event guessing =
-          Event.builder()
-              .content(Content.fromText(Role.MODEL, "Guessing " + guess + "..."))
-              .build();
-      if (guess == ((Number) context.getState().get("target_number")).intValue()) {
-        Event correct = Event.builder().content(Content.fromText(Role.MODEL, "Correct!")).build();
-        return Flux.just(guessing, correct);
-      }
-      Event wrong =
-          Event.builder()
-              .actions(
-                  EventActions.builder().route(List.of(new Route.Tag("guessed_wrong"))).build())
-              .build();
-      return Flux.just(guessing, wrong);
-    }
+  private static FunctionNode<Object, Object> guessNumber() {
+    return FunctionNodes.of(
+        "guess_number",
+        Object.class,
+        Object.class,
+        (ctx, input) -> {
+          InteropContextView view = InteropContextView.of(ctx);
+          int guess = ThreadLocalRandom.current().nextInt(0, 11);
+          view.emit(Content.fromText(Role.MODEL, "Guessing " + guess + "..."));
+          if (guess == ((Number) ctx.getState().get("target_number")).intValue()) {
+            view.emit(Content.fromText(Role.MODEL, "Correct!"));
+          } else {
+            view.emit(
+                Event.builder()
+                    .actions(
+                        EventActions.builder()
+                            .route(List.of(new Route.Tag("guessed_wrong")))
+                            .build())
+                    .build());
+          }
+          return null;
+        });
   }
 
   private LoopSelfWorkflowJava() {}
