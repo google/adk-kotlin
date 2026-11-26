@@ -25,8 +25,11 @@ import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.RealtimeInput
+import com.google.adk.kt.sessions.GetSessionConfig
 import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.sessions.SessionService
 import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
 import com.google.adk.kt.testing.DummyLiveStep.Respond
@@ -64,6 +67,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.logging.Handler
 import java.util.logging.LogRecord
 import java.util.logging.Logger
@@ -90,6 +94,11 @@ private const val CANCEL_APP = "cancel_app"
 private const val REJECTED_REQUEST_LOG = "Rejecting a live request"
 private const val TOO_BIG_LOG = "A live client sent a message over"
 private const val RUN_FAILED_LOG = "Live run failed"
+private const val SESSION_LOAD_FAILED_LOG = "Loading the session for a live run failed"
+
+// A session whose read fails in the store, with a message that must reach neither client nor log.
+private const val UNREADABLE_SESSION = "unreadable"
+private const val STORE_DETAILS = "jdbc:secret://db.internal/password=hunter2"
 
 private const val AUDIO_FRAME = """{"blob":{"mime_type":"audio/pcm","data":"AQID"}}"""
 
@@ -110,6 +119,24 @@ private class TeeOutputStream(private val first: OutputStream, private val secon
   override fun write(b: ByteArray, off: Int, len: Int) {
     first.write(b, off, len)
     second.write(b, off, len)
+  }
+}
+
+/** A store failure whose message carries details a client or log must not see. */
+private class StoreFailure : Exception(STORE_DETAILS)
+
+/**
+ * Reads from [delegate] and counts reads in [reads], except that reading [UNREADABLE_SESSION]
+ * fails, as a store that is down.
+ */
+private class UnreadableSessionService(private val delegate: SessionService) :
+  SessionService by delegate {
+  val reads = AtomicInteger()
+
+  override suspend fun getSession(key: SessionKey, config: GetSessionConfig?): Session? {
+    reads.incrementAndGet()
+    if (key.id == UNREADABLE_SESSION) throw StoreFailure()
+    return delegate.getSession(key, config)
   }
 }
 
@@ -187,6 +214,7 @@ class LiveRoutesSocketTest {
   private val runStarted = CompletableFuture<Unit>()
   private val runCancelled = CompletableFuture<Unit>()
   private val sessions = InMemorySessionService()
+  private val sessionStore = UnreadableSessionService(sessions)
   private var port = 0
   private var server: EmbeddedServer<*, *>? = null
   private val clients = mutableListOf<SocketClient>()
@@ -246,7 +274,7 @@ class LiveRoutesSocketTest {
                     },
                 ),
               ),
-            sessionService = sessions,
+            sessionService = sessionStore,
             artifactService = InMemoryArtifactService(),
             avatarConfig = SERVER_AVATAR,
           )
@@ -443,9 +471,23 @@ class LiveRoutesSocketTest {
   }
 
   @Test
-  fun runLive_unknownSession_closesWithProtocolError() {
+  fun runLive_unknownSession_closesWithProtocolErrorWithoutCreatingIt() {
     assertThat(connect(IDLE_APP, session = "nope").closeReason())
       .isEqualTo(CloseReason(CloseReason.Codes.PROTOCOL_ERROR, "Session not found"))
+    awaitLiveCallEnd()
+
+    assertThat(runBlocking { sessions.getSession(SessionKey(IDLE_APP, "u", "nope")) }).isNull()
+  }
+
+  @Test
+  fun runLive_knownSession_readsItOnce() {
+    val client = connect(ONE_SHOT_APP)
+
+    assertThat(client.nextFrame()).contains("done")
+    assertThat(client.closeReason().code).isEqualTo(CloseReason.Codes.NORMAL.code)
+    awaitLiveCallEnd()
+
+    assertThat(sessionStore.reads.get()).isEqualTo(1)
   }
 
   @Test
@@ -549,5 +591,20 @@ class LiveRoutesSocketTest {
     client.abort()
 
     runCancelled.get(TIMEOUT.inWholeMilliseconds, TimeUnit.MILLISECONDS)
+  }
+
+  @Test
+  fun runLive_sessionStoreFails_closesWithAFixedReasonAndLogsOnlyTheType() {
+    val closeReason = connect(MODEL_APP, session = UNREADABLE_SESSION).closeReason()
+    awaitLiveCallEnd()
+
+    assertThat(closeReason)
+      .isEqualTo(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Session could not be loaded"))
+    assertThat(model.connectRequests).isEmpty()
+    val log = serverLog.toString()
+    assertThat(log).contains(SESSION_LOAD_FAILED_LOG)
+    assertThat(log).contains(StoreFailure::class.simpleName)
+    assertThat(log).doesNotContain(STORE_DETAILS)
+    assertThat(log).doesNotContain(RUN_FAILED_LOG)
   }
 }
