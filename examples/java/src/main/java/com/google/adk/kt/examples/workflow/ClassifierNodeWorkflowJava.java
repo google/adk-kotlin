@@ -35,7 +35,6 @@ import com.google.adk.kt.types.Role;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Workflow;
 import java.text.NumberFormat;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -142,11 +141,7 @@ public final class ClassifierNodeWorkflowJava {
         (ctx, ticket) ->
             Event.builder()
                 .output(ticket)
-                .actions(
-                    EventActions.builder()
-                        // The framework adds to a state delta, so it must be mutable.
-                        .stateDelta(new HashMap<>(Map.of("ticket", ticket)))
-                        .build())
+                .actions(EventActions.builder().stateDelta(Map.of("ticket", ticket)).build())
                 .build());
   }
 

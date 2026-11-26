@@ -27,7 +27,6 @@ import com.google.adk.kt.types.Role;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
@@ -82,10 +81,7 @@ public final class LoopSelfWorkflowJava {
           view.emit(
               Event.builder()
                   .actions(
-                      EventActions.builder()
-                          // The framework adds to a state delta, so it must be mutable.
-                          .stateDelta(new HashMap<>(Map.of("target_number", number)))
-                          .build())
+                      EventActions.builder().stateDelta(Map.of("target_number", number)).build())
                   .build());
           return null;
         });

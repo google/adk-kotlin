@@ -33,7 +33,6 @@ import com.google.adk.kt.types.Type;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.ParallelWorkers;
 import com.google.adk.kt.workflow.Workflow;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -98,11 +97,7 @@ public final class ParallelWorkerWorkflowJava {
         Event.class,
         (ctx, topic) ->
             Event.builder()
-                .actions(
-                    EventActions.builder()
-                        // The framework adds to a state delta, so it must be mutable.
-                        .stateDelta(new HashMap<>(Map.of("topic", topic)))
-                        .build())
+                .actions(EventActions.builder().stateDelta(Map.of("topic", topic)).build())
                 .build());
   }
 

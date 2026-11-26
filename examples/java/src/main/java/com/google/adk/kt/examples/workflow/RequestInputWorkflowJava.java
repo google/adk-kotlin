@@ -35,7 +35,6 @@ import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.RequestInput;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import reactor.core.publisher.Flux;
@@ -147,8 +146,7 @@ public final class RequestInputWorkflowJava {
             Event.builder()
                 .actions(
                     EventActions.builder()
-                        // The framework adds to a state delta, so it must be mutable.
-                        .stateDelta(new HashMap<>(Map.of("complaint", complaint, "feedback", "")))
+                        .stateDelta(Map.of("complaint", complaint, "feedback", ""))
                         .build())
                 .build());
   }
@@ -220,8 +218,7 @@ public final class RequestInputWorkflowJava {
       case "approve" -> EventActions.builder().route(List.of(new Route.Tag("approved"))).build();
       default -> {
         yield EventActions.builder()
-            // The framework adds to a state delta, so it must be mutable.
-            .stateDelta(new HashMap<>(Map.of("feedback", answer)))
+            .stateDelta(Map.of("feedback", answer))
             .route(List.of(new Route.Tag("revise")))
             .build();
       }

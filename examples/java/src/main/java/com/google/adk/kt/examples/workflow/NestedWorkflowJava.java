@@ -33,7 +33,6 @@ import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.JoinNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Workflow;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -107,11 +106,7 @@ public final class NestedWorkflowJava {
           }
           view.emit(
               Event.builder()
-                  .actions(
-                      EventActions.builder()
-                          // The framework adds to a state delta, so it must be mutable.
-                          .stateDelta(new HashMap<>(Map.of("year", year.group())))
-                          .build())
+                  .actions(EventActions.builder().stateDelta(Map.of("year", year.group())).build())
                   .build());
           return null;
         });

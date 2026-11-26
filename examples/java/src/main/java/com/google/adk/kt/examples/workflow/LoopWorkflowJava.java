@@ -33,7 +33,6 @@ import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
 import com.google.adk.kt.workflow.Route;
 import com.google.adk.kt.workflow.Workflow;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import reactor.core.publisher.Flux;
@@ -92,11 +91,7 @@ public final class LoopWorkflowJava {
         Event.class,
         (ctx, topic) ->
             Event.builder()
-                .actions(
-                    EventActions.builder()
-                        // The framework adds to a state delta, so it must be mutable.
-                        .stateDelta(new HashMap<>(Map.of("topic", topic)))
-                        .build())
+                .actions(EventActions.builder().stateDelta(Map.of("topic", topic)).build())
                 .build());
   }
 

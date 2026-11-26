@@ -25,7 +25,6 @@ import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
 import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Workflow;
-import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import reactor.core.publisher.Flux;
@@ -92,9 +91,7 @@ public final class StateWorkflowJava {
             Event.builder()
                 .actions(
                     EventActions.builder()
-                        // The framework adds to a state delta, so it must be mutable.
-                        .stateDelta(
-                            new HashMap<>(Map.of("uppercased_text", text.toUpperCase(Locale.ROOT))))
+                        .stateDelta(Map.of("uppercased_text", text.toUpperCase(Locale.ROOT)))
                         .build())
                 .build());
   }
