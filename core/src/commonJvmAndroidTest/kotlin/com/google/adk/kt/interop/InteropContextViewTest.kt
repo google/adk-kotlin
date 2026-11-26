@@ -28,6 +28,8 @@ import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthCredential
 import com.google.adk.kt.auth.AuthScheme
+import com.google.adk.kt.auth.CredentialKey
+import com.google.adk.kt.auth.InMemoryCredentialService
 import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.memory.MemoryEntry
@@ -959,6 +961,29 @@ class InteropContextViewTest {
     } finally {
       runThread.shutdownNow()
     }
+  }
+
+  @Test
+  fun credentialCalls_reachTheCredentialService() = runBlocking {
+    // Arrange
+    val authConfig =
+      AuthConfig(
+        AuthScheme.ApiKey(name = "X-Key", location = AuthScheme.ApiKey.Location.HEADER),
+        credentialKey = CredentialKey("key"),
+      )
+    val credential = AuthCredential.ApiKey(Secret("sk-saved"))
+    val invocationContext =
+      testInvocationContext().copy(credentialService = InMemoryCredentialService())
+    val view = InteropContextView.of(Context(invocationContext))
+
+    // Act
+    val beforeSave = view.loadCredential(authConfig).await()
+    view.saveCredential(authConfig, credential).await()
+    val afterSave = view.loadCredential(authConfig).await()
+
+    // Assert
+    assertNull(beforeSave)
+    assertEquals(credential, afterSave)
   }
 
   @Test

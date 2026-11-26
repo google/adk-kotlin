@@ -121,6 +121,25 @@ private constructor(private val context: Context, private val coroutineContext: 
   }
 
   /**
+   * Calls [Context.loadCredential]. The future completes with `null` if the credential service
+   * holds no credential for [authConfig], and fails if the invocation has no credential service.
+   */
+  @ExperimentalAuthApi
+  fun loadCredential(authConfig: AuthConfig): CompletableFuture<AuthCredential?> = call {
+    context.loadCredential(authConfig)
+  }
+
+  /**
+   * Calls [Context.saveCredential]. The future fails if the invocation has no credential service.
+   */
+  @ExperimentalAuthApi
+  fun saveCredential(authConfig: AuthConfig, credential: AuthCredential): CompletableFuture<Void?> =
+    call {
+      context.saveCredential(authConfig, credential)
+      null
+    }
+
+  /**
    * Calls [Context.runNode] with the options in [config]; the future completes with the child's
    * output, or `null` when it has none. Catch only failures you handle, such as
    * [DynamicNodeFailedException][com.google.adk.kt.workflow.DynamicNodeFailedException]: when

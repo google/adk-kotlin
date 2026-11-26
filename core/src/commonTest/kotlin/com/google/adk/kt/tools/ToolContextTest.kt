@@ -18,7 +18,10 @@ package com.google.adk.kt.tools
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.CredentialService
+import com.google.adk.kt.auth.InMemoryCredentialService
 import com.google.adk.kt.auth.Secret
+import com.google.adk.kt.auth.SessionStateCredentialService
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.testing.DummyArtifactService
@@ -149,6 +152,66 @@ class ToolContextTest {
   }
 
   @Test
+  fun loadCredential_noCredentialService_throwsException() = runBlocking {
+    val exception =
+      assertFailsWith<IllegalStateException> { testToolContext().loadCredential(API_KEY_CONFIG) }
+
+    assertEquals(
+      "credentialService not configured on invocation; cannot load a credential.",
+      exception.message,
+    )
+  }
+
+  @Test
+  fun loadCredential_savedInThisContext_returnsIt() = runBlocking {
+    // The session-state service sees a pending save only through the context that made it.
+    val service = SessionStateCredentialService()
+    val context = credentialContext(service)
+    val saved = AuthCredential.ApiKey(Secret("sk-user"))
+    service.saveCredential(API_KEY_CONFIG.copy(exchangedAuthCredential = saved), context)
+
+    assertEquals(saved, context.loadCredential(API_KEY_CONFIG))
+  }
+
+  @Test
+  fun loadCredential_savedThroughAnotherContext_returnsIt() = runBlocking {
+    // The in-memory service keeps credentials outside session state, so only it links the contexts.
+    val service = InMemoryCredentialService()
+    val credential = AuthCredential.ApiKey(Secret("sk-user"))
+    credentialContext(service).saveCredential(API_KEY_CONFIG, credential)
+
+    assertEquals(credential, credentialContext(service).loadCredential(API_KEY_CONFIG))
+  }
+
+  @Test
+  fun saveCredential_noCredentialService_throwsException() = runBlocking {
+    val credential = AuthCredential.ApiKey(Secret("sk-user"))
+
+    val exception =
+      assertFailsWith<IllegalStateException> {
+        testToolContext().saveCredential(API_KEY_CONFIG, credential)
+      }
+
+    assertEquals(
+      "credentialService not configured on invocation; cannot save a credential.",
+      exception.message,
+    )
+  }
+
+  @Test
+  fun saveCredential_withService_savesTheGivenCredentialThroughThisContext() = runBlocking {
+    val service = SessionStateCredentialService()
+    val context = credentialContext(service)
+    val config =
+      API_KEY_CONFIG.copy(exchangedAuthCredential = AuthCredential.ApiKey(Secret("sk-old")))
+    val credential = AuthCredential.ApiKey(Secret("sk-user"))
+
+    context.saveCredential(config, credential)
+
+    assertEquals(credential, service.loadCredential(API_KEY_CONFIG, context))
+  }
+
+  @Test
   fun listArtifacts_returnsFilenames() = runTest {
     val artifactService =
       DummyArtifactService(
@@ -204,5 +267,9 @@ class ToolContextTest {
 
   private companion object {
     val API_KEY_CONFIG = testApiKeyConfig(rawKey = "sk-123")
+
+    /** A tool context whose invocation has [service] as its credential service. */
+    fun credentialContext(service: CredentialService): ToolContext =
+      testToolContext(testInvocationContext().copy(credentialService = service))
   }
 }

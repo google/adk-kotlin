@@ -21,6 +21,7 @@ import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
+import com.google.adk.kt.auth.CredentialService
 import com.google.adk.kt.callbacks.BeforeToolCallbacksResult
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.callbacks.runAfterToolCallbacksPipeline
@@ -190,8 +191,12 @@ data class InvocationContext(
    * go-forward field; once [agent] is removed it holds the running unit for every invocation.
    * Readonly.
    */
-  // Last, so positional calls and `componentN` keep their 1.1.0 order.
+  // After the 1.1.0 fields, so positional calls and `componentN` keep their order.
   val node: Node? = null,
+
+  /** Where tools load and save credentials across invocations, or null if the runner has none. */
+  // After the 1.5.0 fields, for the same reason as [node].
+  @property:ExperimentalAuthApi val credentialService: CredentialService? = null,
 ) {
 
   /**
@@ -239,6 +244,54 @@ data class InvocationContext(
     pluginManager = pluginManager,
     invocationCostManager = invocationCostManager,
     node = null,
+  )
+
+  /**
+   * The 1.5.0 constructor, which had no [credentialService]. Stays visible as the 1.1.0 one does.
+   */
+  constructor(
+    session: Session,
+    runConfig: RunConfig? = null,
+    agent: BaseAgent,
+    branch: String? = null,
+    invocationId: String = "e-" + Uuid.random(),
+    artifactService: ArtifactService? = null,
+    memoryService: MemoryService? = null,
+    sessionService: SessionService? = null,
+    resumabilityConfig: ResumabilityConfig? = null,
+    eventsCompactionConfig: EventsCompactionConfig? = null,
+    contextCacheConfig: ContextCacheConfig? = null,
+    userContent: Content? = null,
+    agentStates: MutableMap<String, TypedData> = concurrentMutableMapOf(),
+    endOfAgents: MutableMap<String, Boolean> = concurrentMutableMapOf(),
+    extraTools: MutableMap<String, BaseTool> = concurrentMutableMapOf(),
+    frameworkData: ContextFrameworkData = ContextFrameworkData(),
+    isEndOfInvocation: Boolean = false,
+    pluginManager: PluginManager = PluginManager(),
+    invocationCostManager: InvocationCostManager = InvocationCostManager(),
+    node: Node? = null,
+  ) : this(
+    session = session,
+    runConfig = runConfig,
+    agent = agent,
+    branch = branch,
+    invocationId = invocationId,
+    artifactService = artifactService,
+    memoryService = memoryService,
+    sessionService = sessionService,
+    resumabilityConfig = resumabilityConfig,
+    eventsCompactionConfig = eventsCompactionConfig,
+    contextCacheConfig = contextCacheConfig,
+    userContent = userContent,
+    agentStates = agentStates,
+    endOfAgents = endOfAgents,
+    extraTools = extraTools,
+    frameworkData = frameworkData,
+    isEndOfInvocation = isEndOfInvocation,
+    pluginManager = pluginManager,
+    invocationCostManager = invocationCostManager,
+    node = node,
+    credentialService = null,
   )
 
   init {
