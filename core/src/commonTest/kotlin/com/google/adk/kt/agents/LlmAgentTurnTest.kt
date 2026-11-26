@@ -20,6 +20,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.ArtifactService
@@ -106,6 +107,7 @@ import com.google.adk.kt.types.TurnCompleteReason
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceActivityType
+import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.GenAiApiException
 import kotlin.random.Random
@@ -1476,6 +1478,72 @@ class LlmAgentTurnTest {
       assertFailsWith<ScriptedTurnFailure> { agent.runLive(liveContextFor(agent)).toList() }
 
     assertEquals("the turn failed", error.message)
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun runLive_streamPausingItsNodeAfterTheTurnFailed_keepsTheTurnsFailure(): Unit = runBlocking {
+    // Arrange: the turn fails, then the stream pauses its node once the connection closes.
+    val answered = CompletableDeferred<Unit>()
+    val call = Part(functionCall = FunctionCall("monitor", id = "c1"))
+    val connection =
+      ScriptedConn("c") {
+        emit(LlmResponse(content = Content(Role.MODEL, listOf(call))))
+        answered.await()
+        throw ScriptedTurnFailure()
+      }
+    connection.onSendContent = { content ->
+      if (content.parts.any { it.functionResponse != null }) answered.complete(Unit)
+    }
+    val monitor =
+      DummyTool(name = "monitor") { _, _ ->
+        flow<String> {
+          withContext(NonCancellable) { connection.closed.await() }
+          throw NodeInterruptedException()
+        }
+      }
+    val agent =
+      LlmAgent(name = "LiveAgent", model = RecordingLiveModel(connection), tools = listOf(monitor))
+
+    // Assert: the run ends with its own failure, not the pause that landed as it stopped.
+    assertFailsWith<ScriptedTurnFailure> { agent.runLive(liveContextFor(agent)).toList() }
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun runLive_streamPausingItsNodeBeforeAReconnect_pausesWithoutReconnecting(): Unit = runBlocking {
+    // Arrange: a resumable drop whose close waits until the stream has paused its node.
+    val answered = CompletableDeferred<Unit>()
+    val paused = CompletableDeferred<Unit>()
+    val call = Part(functionCall = FunctionCall("monitor", id = "c1"))
+    val connection =
+      ScriptedConn("c") {
+        emit(handleUpdate("h-1"))
+        emit(LlmResponse(content = Content(Role.MODEL, listOf(call))))
+        answered.await()
+        throw connectionDrop()
+      }
+    connection.onSendContent = { content ->
+      if (content.parts.any { it.functionResponse != null }) answered.complete(Unit)
+    }
+    connection.onClose = { paused.await() }
+    val monitor =
+      DummyTool(name = "monitor") { _, _ ->
+        flow<String> {
+          try {
+            connection.closed.await()
+            throw NodeInterruptedException()
+          } finally {
+            paused.complete(Unit)
+          }
+        }
+      }
+    val model = RecordingLiveModel(connection)
+    val agent = LlmAgent(name = "LiveAgent", model = model, tools = listOf(monitor))
+
+    // Assert: the pause ends the run before the drop's reconnect opens another connection.
+    assertFailsWith<NodeInterruptedException> { agent.runLive(liveContextFor(agent)).toList() }
+    assertEquals(1, model.connectCalls)
   }
 
   @Test
