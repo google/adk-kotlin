@@ -43,6 +43,9 @@ dependencies {
   implementation(libs.google.ai.edge.litertlm.jvm)
   // The Chat Completions Vertex and MCP demos get access tokens from the auth library directly.
   implementation(libs.google.auth.oauth2.http)
+  // LiveWorkflowJava marks an optional record field with JSpecify's @Nullable, which the workflow
+  // reads at run time to accept a missing value.
+  implementation(libs.jspecify)
   implementation(libs.opentelemetry.sdk)
   implementation(project(":google-adk-kotlin-integrations-anthropic"))
   implementation(project(":google-adk-kotlin-integrations-bigquery"))
@@ -82,5 +85,13 @@ tasks.register<JavaExec>("runLiveServerJava") {
   group = "application"
   description = "Serves a live agent and the bundled dev UI on localhost."
   mainClass.set("com.google.adk.kt.examples.live.LiveServerMainJava")
+  classpath = sourceSets["main"].runtimeClasspath
+}
+
+// e.g. GOOGLE_CLOUD_PROJECT=... ./gradlew :google-adk-kotlin-examples-java:runLiveWorkflowJava
+tasks.register<JavaExec>("runLiveWorkflowJava") {
+  group = "application"
+  description = "Serves a workflow of live agents and the bundled dev UI on localhost."
+  mainClass.set("com.google.adk.kt.examples.live.LiveWorkflowJava")
   classpath = sourceSets["main"].runtimeClasspath
 }

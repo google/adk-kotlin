@@ -115,3 +115,11 @@ tasks.register<JavaExec>("runLiveServer") {
   mainClass.set("com.google.adk.kt.examples.live.LiveServerMainKt")
   classpath = sourceSets["main"].runtimeClasspath
 }
+
+// e.g. GOOGLE_CLOUD_PROJECT=... ./gradlew :google-adk-kotlin-examples:runLiveWorkflow
+tasks.register<JavaExec>("runLiveWorkflow") {
+  group = "application"
+  description = "Serves a workflow of live agents and the bundled dev UI on localhost."
+  mainClass.set("com.google.adk.kt.examples.live.LiveWorkflowKt")
+  classpath = sourceSets["main"].runtimeClasspath
+}

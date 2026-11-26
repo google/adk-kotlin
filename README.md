@@ -397,12 +397,27 @@ doesn't work with this agent: typed text reaches the model as a regular,
 non-live request, and `gemini-3.8-live` accepts only live sessions. To use a
 port other than `8080`, add `--args="--port 9000"` to the Gradle command.
 
-`LiveAgentDemoJava` and `LiveServerMainJava` are the Java ports of
-`LiveAgentDemo` and `LiveServerMain` and take the same settings:
+`LiveWorkflow` serves a workflow of live agents the same way. Each agent is a
+task that talks until it is done: the first confirms you are John Doe and the
+second checks your date of birth (July 12th, 1985), each passing its result to
+the next, and the third tells you about your appointment. If your date of birth
+does not match after two tries, a closing agent ends the call without sharing
+it. To start it:
+
+```shell
+./gradlew :google-adk-kotlin-examples:runLiveWorkflow
+```
+
+Then pick `workflow` in the dev UI, click the microphone button, and say hello.
+
+`LiveAgentDemoJava`, `LiveServerMainJava` and `LiveWorkflowJava` are the Java
+ports of `LiveAgentDemo`, `LiveServerMain` and `LiveWorkflow` and take the same
+settings:
 
 ```shell
 ./gradlew :google-adk-kotlin-examples-java:runLiveAgentDemoJava
 ./gradlew :google-adk-kotlin-examples-java:runLiveServerJava
+./gradlew :google-adk-kotlin-examples-java:runLiveWorkflowJava
 ```
 
 ## 📂 Examples
