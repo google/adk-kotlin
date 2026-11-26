@@ -560,29 +560,58 @@ private constructor(
  * body, so a single-threaded or small bounded one can hang the run. Bound a fan-out with the
  * `maxParallelWorkers` of `parallelOf`, or pass a bounded dispatcher when bodies wait for nothing.
  *
- * Cancelling the node, for example on its timeout, interrupts the thread and waits for the body to
- * return. A body that ignores the interrupt, or waits in `join()`, keeps the node, its timeout and
- * the run going until it returns. A `CancellationException` the body throws without such a cancel
- * fails the node. A failure wrapped in a `CompletionException` or `ExecutionException`, as `join()`
- * and `get()` throw, fails the node with its cause, which error events and [RetryConfig] name, so a
- * child's pause from `InteropContextView.runNode` makes the node wait. `input` arrives as the
- * node's input type, in JSON form on an untyped port (a whole number as a `Long`, a fraction as a
- * `Double`, an object as a `Map`), or as a [Content] message, and may be a predecessor's own
- * collection, so the body must not mutate it.
+ * ### Input
  *
- * Return `null` for no output, a value of the output type, or an [Event] to emit as it is (an
- * `Event` with content sends a message, and an output goes in the return value, not in the
- * `Event`). Send messages before the output with `InteropContextView.of(ctx).emit(e)`, which waits
- * until each non-partial one is stored, run a child node with `runNodeBlocking` of the same view,
- * and ask the user with [requestInput]. A body rerun after a pause runs from the top again and
- * sends its events again, as does a retry. If an invocation is cancelled after an emitted event was
- * stored but before the body returned, resuming that invocation without a new user message reruns
- * the body only if the node is the app's root node, a `parallelOf` or `parallelNode` item, or a
- * child run through `runNode`, and sets neither `rerunOnResume` nor `waitForOutput`. Otherwise the
- * body does not run on that resume: a `waitForOutput` node waits for a new user message as a
- * workflow or root node (or as a `runNode` child with `raiseOnWait`), and any other node counts as
- * finished without an output, so its successors, its `runNode` caller, or its parallel output slot
- * get `null`.
+ * `input` arrives as the node's input type, as a [Content] message, or in JSON form on an untyped
+ * port. On an untyped port, whole numbers arrive as `Long`, fractions as `Double`, and objects as
+ * `Map`. Do not mutate `input`, because it may be a predecessor's own collection.
+ *
+ * ### Return values and actions
+ *
+ * Return `null` for no output, a value of the output type, or an [Event] to emit as-is. An [Event]
+ * with content sends a message. Return node outputs directly instead of putting them on an [Event].
+ *
+ * While the body runs, you can also:
+ * - Send messages or events before returning with `InteropContextView.of(ctx).emit(e)`. This call
+ *   waits until each non-partial event is stored.
+ * - Run one child node with `runNodeBlocking`, or several in parallel with `runNode`, on the same
+ *   view.
+ * - Ask the user for input with [requestInput].
+ *
+ * ### Cancellation and timeouts
+ *
+ * Cancelling the node, such as when its timeout expires, interrupts the body's thread and waits for
+ * the body to return. It also cancels every future created through `InteropContextView.of(ctx)`,
+ * unless you passed a custom `Job` to `of`.
+ * - Waiting in `join()` on a `runNode` future from `InteropContextView.of(ctx)` respects the node's
+ *   timeout. That future cancels with the node.
+ * - Some futures do not cancel with the node, such as an external `CompletableFuture` or a view
+ *   with a custom `Job`. Calling `join()` on them, or ignoring interrupts, keeps the node, its
+ *   timeout, and the run open until the wait finishes. Call `get()` on those futures so
+ *   cancellation interrupts the wait.
+ * - Throwing `CancellationException` when the node was not cancelled fails the node.
+ *
+ * ### Exceptions, futures, and child pauses
+ *
+ * Let `CompletionException` and `ExecutionException` from `join()` or `get()` propagate out of the
+ * body. The runtime unwraps them so error events and [RetryConfig] see the underlying cause, and so
+ * a paused child from `InteropContextView.runNode` makes this node wait.
+ *
+ * The runtime does not unwrap other wrapper exceptions. Reactor's `block()` and RxJava's
+ * `blockingGet()` wrap a child's pause in a `RuntimeException`, which fails the node instead of
+ * pausing it. Wait on a `CompletableFuture` instead, such as `mono.toFuture().get()` or
+ * `single.toCompletionStage().toCompletableFuture().get()`.
+ *
+ * ### Reruns and resume behavior
+ *
+ * A body rerun after a pause runs from the top again and sends its events again, as does a retry.
+ * If an invocation is cancelled after an emitted event was stored but before the body returned,
+ * resuming that invocation without a new user message reruns the body only if the node is the app's
+ * root node, a `parallelOf` or `parallelNode` item, or a child run through `runNode`, and sets
+ * neither `rerunOnResume` nor `waitForOutput`. Otherwise the body does not run on that resume: a
+ * `waitForOutput` node waits for a new user message as a workflow or root node (or as a `runNode`
+ * child with `raiseOnWait`), and any other node counts as finished without an output, so its
+ * successors, its `runNode` caller, or its parallel output slot get `null`.
  */
 @AdkJavaInteropApi
 @ExperimentalWorkflowApi

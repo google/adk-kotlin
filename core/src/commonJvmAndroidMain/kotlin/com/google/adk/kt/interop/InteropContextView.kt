@@ -181,11 +181,14 @@ private constructor(private val context: Context, private val coroutineContext: 
   }
 
   /**
-   * Runs [node] as [runNodeBlocking] with a [RunNodeConfig] does, with the default options. A child
-   * that takes no input runs with `runNodeBlocking(node, null)`.
+   * Runs [node] with the default [RunNodeConfig] and returns its output, or `null` if it produces
+   * none.
    *
-   * @throws IllegalArgumentException if [nodeInput] is a [RunNodeConfig], which belongs in the
-   *   three-argument overload
+   * Pass `null` for [nodeInput] when the child takes no input. Otherwise this behaves like the
+   * three-argument [runNodeBlocking] overload, which lists all requirements and exceptions.
+   *
+   * @throws IllegalArgumentException if [nodeInput] is a [RunNodeConfig]; pass options to the
+   *   three-argument overload instead
    */
   @CanIgnoreReturnValue
   @ExperimentalWorkflowApi
@@ -197,24 +200,39 @@ private constructor(private val context: Context, private val coroutineContext: 
   }
 
   /**
-   * Runs [node] as a child of this node's Java `FunctionNode` body, as [runNode] does, and returns
-   * its output or `null`, blocking the calling thread but not the workflow, so a dispatcher passed
-   * to `FunctionNodes` needs a free thread for the child's own body. The calling node must set
-   * `rerunOnResume(true)`, and to run several children at once, call this from helper threads with
-   * a run ID each and wait for them before the body returns. When [node] asks for input, the call
-   * throws an internal [Throwable] that `catch (Exception e)` lets through so that this node waits
-   * too, while `catch (Throwable t)` or a future's `ExecutionException` would swallow it.
+   * Runs [node] as a child of the current Java `FunctionNode` body and blocks until it finishes.
+   * Returns the child's output, or `null` if it produces none.
    *
-   * @param config the options of [runNode], such as the run ID
-   * @throws com.google.adk.kt.workflow.DynamicNodeFailedException if [node] fails; its `error` is
-   *   the child's failure
-   * @throws IllegalStateException outside a running Java body, or for a reason [Context.runNode]
-   *   lists
-   * @throws IllegalArgumentException for a reason [Context.runNode] lists
-   * @throws CancellationException if the node was cancelled, or if the waiting thread is
-   *   interrupted, which cancels this call's run of [node] and waits for it to stop; the thread
-   *   stays interrupted, and one interrupted before the call still gets the result of a [node] that
-   *   has ended by the time the call waits
+   * Rules and behavior:
+   * - **Setup:** Build the calling node with `rerunOnResume(true)`.
+   * - **Threading:** This call blocks the calling thread, not the workflow. If you pass a custom
+   *   dispatcher to `FunctionNodes`, make sure it has a free thread for the child's body too.
+   * - **Running children in parallel:** Prefer calling [runNode] for each child from the body's
+   *   thread and waiting for the returned futures before the body returns. This avoids extra
+   *   waiting threads and numbers run IDs in call order.
+   * - **Concurrent calls:** If multiple threads call `runNodeBlocking` at the same time, set an
+   *   explicit run ID in [config] for each call. Otherwise, auto-numbered IDs depend on thread
+   *   timing.
+   * - **Child pauses for user input:** If [node] pauses for input, this method throws an internal
+   *   [Throwable] rather than an `Exception`. A `catch (Exception e)` block lets it through so the
+   *   calling node pauses cleanly. A `catch (Throwable t)` block catches it: the node still waits
+   *   for the child, but first emits your fallback as its output.
+   * - **Waiting on futures:** If you wait on a [runNode] future, or run `runNodeBlocking` inside
+   *   another future, let `ExecutionException` and `CompletionException` propagate. The runtime
+   *   unwraps them so the calling node pauses cleanly. Catching `Exception` around `get()` or
+   *   `join()` catches that wrapper: the node still waits for the child, but first emits your
+   *   fallback as its output.
+   *
+   * @param config run options matching [runNode], such as an explicit run ID
+   * @throws com.google.adk.kt.workflow.DynamicNodeFailedException if [node] fails; its `error`
+   *   property holds the child's failure
+   * @throws IllegalStateException if called outside a running Java body, or for any reason listed
+   *   on [Context.runNode]
+   * @throws IllegalArgumentException for any reason listed on [Context.runNode]
+   * @throws CancellationException if the calling node is cancelled or the waiting thread is
+   *   interrupted. Interrupting the thread cancels this call's run of [node], waits for it to stop,
+   *   and leaves the thread's interrupt flag set. If the thread was already interrupted before the
+   *   call, a [node] that finishes before the call blocks still returns its result.
    */
   @CanIgnoreReturnValue
   @ExperimentalWorkflowApi
