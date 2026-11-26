@@ -76,7 +76,10 @@ import kotlinx.coroutines.flow.flow
  * the tool runs again.
  *
  * **Errors.** An exception the tool throws fails the node, and the retry policy in `config`
- * applies. A retry runs the tool again, so a tool with side effects should be safe to repeat. A
+ * applies. State and artifact changes the tool made before it threw ride the node's error event.
+ * Under a workflow state schema, a write through [Context.updateState] that the schema rejects
+ * throws inside the tool; a delta written into the tool's actions directly is checked when the node
+ * merges it. A retry runs the tool again, so a tool with side effects should be safe to repeat. A
  * tool may instead report a problem, such as a missing required parameter, by returning an error
  * map for a model to read. In a graph no model reads it: the error map becomes the node's output
  * and reaches the next node like any other value. A tool that returns a [Flow] fails the node as if
@@ -125,16 +128,22 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
         toolConfirmation = context.confirmationAnswer(name),
       )
     toolContext.resumeInputs = context.resumeInputs
+    toolContext.toolNodeStateSchema = context.effectiveStateSchema
     // As in a turn outside a live run, a returned Flow fails the node. A Java tool that overrides
     // `run` itself can return null.
-    val result: Any? = DEFAULT_TOOL_RUNNER(tool, toolContext, args)
-    // Only the tool's deltas carry over; a node can't honor its other actions, such as a transfer.
-    context.mergeEventActions(
-      EventActions(
-        stateDelta = toolContext.actions.stateDelta,
-        artifactDelta = toolContext.actions.artifactDelta,
-      )
-    )
+    val result: Any? =
+      try {
+        DEFAULT_TOOL_RUNNER(tool, toolContext, args)
+      } catch (thrown: Throwable) {
+        // A failed tool's deltas ride the node's error event, and its own error stays the failure.
+        try {
+          mergeToolDeltas(context, toolContext.actions)
+        } catch (mergeError: Exception) {
+          thrown.addSuppressed(mergeError)
+        }
+        throw thrown
+      }
+    mergeToolDeltas(context, toolContext.actions)
     val requested = toolContext.actions.requestedToolConfirmations[functionCallId]
     when {
       requested != null ->
@@ -145,6 +154,15 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
       result == Unit || result == null -> emit(Event())
       else -> emit(result)
     }
+  }
+
+  /**
+   * Merges the tool's deltas into [context]; a node can't honor its other actions, such as a
+   * transfer. Artifacts go first, so a state delta the schema rejects cannot drop them.
+   */
+  private fun mergeToolDeltas(context: Context, actions: EventActions) {
+    context.mergeEventActions(EventActions(artifactDelta = actions.artifactDelta))
+    context.mergeEventActions(EventActions(stateDelta = actions.stateDelta))
   }
 
   /** Reads the tool's arguments from [nodeInput]; [asNode] lists the accepted shapes. */

@@ -23,7 +23,10 @@ import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
+import com.google.adk.kt.callbacks.BeforeAgentCallback
+import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
@@ -47,11 +50,14 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -115,6 +121,17 @@ private fun runToolAfter(
   val source = Emitter("source", input)
   val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, tool)))
   workflow.runAsync(context).toList()
+}
+
+/** A state schema that declares one key, the integer `count`. */
+private val COUNT_SCHEMA =
+  Schema(type = Type.OBJECT, properties = mapOf("count" to Schema(type = Type.INTEGER)))
+
+/** Runs [tool] as a node on [input], in a workflow whose state schema is [COUNT_SCHEMA]. */
+private fun underCountSchema(tool: BaseTool, input: Map<String, Any?> = emptyMap()): Workflow {
+  val source = Emitter("source", input)
+  val edges = listOf(Edge(Start, source), Edge(source, tool.asNode()))
+  return Workflow(name = "wf", edges = edges, stateSchema = COUNT_SCHEMA)
 }
 
 /** The session the artifact tests run in. */
@@ -462,6 +479,176 @@ class ToolNodeTest {
     val event = events.single { it.nodeInfo?.path == "wf@1/saver@1" }
     assertEquals("saved", event.output)
     assertEquals(mapOf("report.txt" to 3), event.actions.artifactDelta.toMap())
+  }
+
+  @Test
+  fun run_underStateSchema_checksEachWriteWhenTheToolMakesIt() {
+    // Arrange
+    val tool =
+      DummyTool(name = "writer") { context, _ ->
+        context.updateState("count", "3")
+        mapOf("seen" to context.state["count"])
+      }
+    val workflow = underCountSchema(tool)
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert: the tool reads back the converted value, which the output event carries.
+    val event = session.events.single { it.nodeInfo?.path == "wf@1/writer@1" }
+    assertEquals(mapOf("seen" to 3L), event.output)
+    assertEquals(mapOf<String, Any>("count" to 3L), event.actions.stateDelta.toMap())
+    assertEquals(3L, session.state["count"])
+  }
+
+  @Test
+  fun run_underStateSchema_undeclaredWriteThrowsInToolAndErrorEventKeepsEarlierChanges() {
+    // Arrange
+    var savedVersion: Int? = null
+    var otherWrite: Result<Unit>? = null
+    val tool =
+      DummyTool(name = "writer") { context, _ ->
+        savedVersion = context.saveArtifact("f.txt", Part(text = "v1"))
+        context.updateState("count", "3")
+        val write = runCatching { context.updateState("other", 1) }
+        otherWrite = write
+        write.getOrThrow()
+      }
+    val workflow = underCountSchema(tool)
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    val undeclared = "validation error: state key 'other' is not declared"
+    val writeError = assertIs<IllegalArgumentException>(otherWrite?.exceptionOrNull())
+    assertContains(writeError.message.orEmpty(), undeclared)
+    assertContains(assertIs<IllegalArgumentException>(run.failure).message.orEmpty(), undeclared)
+    val errorEvent = run.session.events.single { it.errorCode != null }
+    assertEquals("wf@1/writer@1", errorEvent.nodeInfo?.path)
+    assertEquals(mapOf<String, Any>("count" to 3L), errorEvent.actions.stateDelta.toMap())
+    val version = assertNotNull(savedVersion)
+    assertEquals(mapOf("f.txt" to version), errorEvent.actions.artifactDelta.toMap())
+    assertTrue(run.session.events.none { "other" in it.actions.stateDelta })
+    assertEquals(3L, run.session.state["count"])
+    assertFalse("other" in run.session.state)
+  }
+
+  @Test
+  fun run_underStateSchema_agentToolCopiesUndeclaredKey_errorEventKeepsTheChildsArtifact() {
+    // Arrange
+    val model =
+      DummyModel("model") { flowOf(LlmResponse(content = Content.fromText(Role.MODEL, "done"))) }
+    val child =
+      LlmAgent(
+        name = "summarizer",
+        model = model,
+        outputKey = "summary",
+        beforeAgentCallbacks =
+          listOf(
+            BeforeAgentCallback { callbackContext ->
+              val unused = callbackContext.saveArtifact("f.txt", Part(text = "v1"))
+              CallbackChoice.Continue(EventActions())
+            }
+          ),
+      )
+    val workflow = underCountSchema(AgentTool(child), mapOf("request" to "Summarize."))
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert: AgentTool copies the child's state delta unchecked, so the node rejects `summary`.
+    val undeclared = "validation error: state key 'summary' is not declared"
+    assertContains(assertIs<IllegalArgumentException>(run.failure).message.orEmpty(), undeclared)
+    val errorEvent = run.session.events.single { it.errorCode != null }
+    assertEquals("wf@1/summarizer@1", errorEvent.nodeInfo?.path)
+    assertEquals(setOf("f.txt"), errorEvent.actions.artifactDelta.keys)
+    assertTrue(errorEvent.actions.stateDelta.isEmpty())
+    assertFalse("summary" in run.session.state)
+  }
+
+  @Test
+  fun run_underStateSchema_toolThrowsAfterUncheckedUndeclaredWrite_failsWithItsOwnException() {
+    // Arrange
+    val toolError = IllegalStateException("db down")
+    val tool =
+      DummyTool(name = "writer") { context, _ ->
+        val unused = context.saveArtifact("f.txt", Part(text = "v1"))
+        context.actions.stateDelta["other"] = 1
+        throw toolError
+      }
+    val workflow = underCountSchema(tool)
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert: the rejected merge is suppressed, and the artifact still reaches the error event.
+    // Coroutine stack-trace tooling may copy the error or attach traces, so read `toolError`.
+    val undeclared = "validation error: state key 'other' is not declared"
+    assertEquals("db down", assertIs<IllegalStateException>(run.failure).message)
+    val mergeError =
+      toolError.suppressedExceptions.filterIsInstance<IllegalArgumentException>().single()
+    assertContains(mergeError.message.orEmpty(), undeclared)
+    val errorEvent = run.session.events.single { it.errorCode != null }
+    assertEquals("IllegalStateException", errorEvent.errorCode)
+    assertEquals(setOf("f.txt"), errorEvent.actions.artifactDelta.keys)
+    assertTrue(errorEvent.actions.stateDelta.isEmpty())
+    assertFalse("other" in run.session.state)
+  }
+
+  @Test
+  fun run_withoutStateSchema_toolThrows_errorEventKeepsTheToolsChanges() {
+    // Arrange
+    var savedVersion: Int? = null
+    val tool =
+      DummyTool(name = "writer") { context, _ ->
+        savedVersion = context.saveArtifact("f.txt", Part(text = "v1"))
+        context.updateState("n", 1)
+        error("boom")
+      }
+    val source = Emitter("source", emptyMap<String, Any?>())
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, tool.asNode())))
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertEquals("boom", assertIs<IllegalStateException>(run.failure).message)
+    val errorEvent = run.session.events.single { it.errorCode != null }
+    assertEquals("wf@1/writer@1", errorEvent.nodeInfo?.path)
+    assertEquals(mapOf<String, Any>("n" to 1), errorEvent.actions.stateDelta.toMap())
+    val version = assertNotNull(savedVersion)
+    assertEquals(mapOf("f.txt" to version), errorEvent.actions.artifactDelta.toMap())
+    assertEquals(1, run.session.state["n"])
+  }
+
+  @Test
+  fun run_toolOverrunsNodeTimeout_errorEventKeepsTheToolsChanges() {
+    // Arrange: the timeout leaves the tool ample time to make its writes before it blocks.
+    var savedVersion: Int? = null
+    val tool =
+      DummyTool(name = "slow") { context, _ ->
+        savedVersion = context.saveArtifact("f.txt", Part(text = "v1"))
+        context.updateState("n", 1)
+        delay(30.seconds)
+        "late"
+      }
+    val source = Emitter("source", emptyMap<String, Any?>())
+    val node = tool.asNode(config = NodeConfig(timeout = 1.seconds))
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, node)))
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertIs<NodeTimeoutException>(run.failure)
+    val errorEvent = run.session.events.single { it.errorCode != null }
+    assertEquals("wf@1/slow@1", errorEvent.nodeInfo?.path)
+    assertEquals("NodeTimeoutException", errorEvent.errorCode)
+    assertEquals(mapOf<String, Any>("n" to 1), errorEvent.actions.stateDelta.toMap())
+    val version = assertNotNull(savedVersion)
+    assertEquals(mapOf("f.txt" to version), errorEvent.actions.artifactDelta.toMap())
   }
 
   @Test

@@ -325,14 +325,17 @@ open class Context(
 
   /**
    * The state schema in force here: this node's own [Node.stateSchema], or the nearest ancestor's.
-   * Null off-graph, so a callback or tool context validates nothing.
+   * Off-graph it is [toolNodeStateSchema], so a callback or a model-called tool validates nothing.
    */
   @OptIn(ExperimentalWorkflowApi::class)
-  private val effectiveStateSchema: Schema?
+  internal val effectiveStateSchema: Schema?
     get() {
-      val ns = nodeState ?: return null
+      val ns = nodeState ?: return toolNodeStateSchema
       return ns.node.stateSchema ?: parent?.effectiveStateSchema
     }
+
+  /** The state schema of the tool node running this tool context's tool, checked at each write. */
+  internal var toolNodeStateSchema: Schema? = null
 
   /**
    * Merges the given event actions into the current event actions, replacing [actions] with the
