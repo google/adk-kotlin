@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalLiveApi::class)
+@file:OptIn(ExperimentalLiveApi::class, ExperimentalWorkflowApi::class)
 
 package com.google.adk.kt.webserver.routes
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.artifacts.InMemoryArtifactService
 import com.google.adk.kt.events.Event
@@ -41,6 +43,10 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.webserver.AdkServerConfig
 import com.google.adk.kt.webserver.adkApiModule
 import com.google.adk.kt.webserver.loaders.InMemoryAppLoader
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.common.truth.Truth.assertThat
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.hooks.ResponseSent
@@ -89,6 +95,12 @@ private const val IDLE_APP = "idle_app"
 private const val ONE_SHOT_APP = "one_shot_app"
 private const val FAILING_APP = "failing_app"
 private const val CANCEL_APP = "cancel_app"
+private const val WORKFLOW_APP = "workflow_app"
+private const val CHAT_NODE_APP = "chat_node_app"
+
+/** Every app the server serves, each with the session `s` of user `u`. */
+private val APPS =
+  listOf(MODEL_APP, IDLE_APP, ONE_SHOT_APP, FAILING_APP, CANCEL_APP, WORKFLOW_APP, CHAT_NODE_APP)
 
 // Lines the route logs, checked in the captured server log.
 private const val REJECTED_REQUEST_LOG = "Rejecting a live request"
@@ -101,12 +113,20 @@ private const val UNREADABLE_SESSION = "unreadable"
 private const val STORE_DETAILS = "jdbc:secret://db.internal/password=hunter2"
 
 private const val AUDIO_FRAME = """{"blob":{"mime_type":"audio/pcm","data":"AQID"}}"""
+private const val CLOSE_FRAME = """{"close":true}"""
 
 private val INVALID_REQUEST = CloseReason(CloseReason.Codes.NOT_CONSISTENT, "Invalid live request")
 
 private val SERVER_AVATAR = AvatarConfig(avatarName = "server-avatar")
 
 private val http = HttpClient.newHttpClient()
+
+/** A workflow of two turn-based nodes: one greets, the next shouts the greeting. */
+private fun greetingWorkflow(): Workflow {
+  val greet = node<Any?, String>("greet") { _, _ -> "hello" }
+  val shout = node<String, String>("shout") { _, greeting -> greeting.uppercase() }
+  return Workflow(name = "greeting_flow", edges = listOf(Edge(Start, greet), Edge(greet, shout)))
+}
 
 /** Copies every byte to both [first] and [second]. */
 private class TeeOutputStream(private val first: OutputStream, private val second: OutputStream) :
@@ -242,6 +262,18 @@ class LiveRoutesSocketTest {
           AdkServerConfig(
             appLoader =
               InMemoryAppLoader(
+                App(appName = WORKFLOW_APP, rootNode = greetingWorkflow()),
+                App(
+                  appName = CHAT_NODE_APP,
+                  rootNode =
+                    Workflow(
+                      name = "chat_flow",
+                      edges =
+                        listOf(
+                          Edge(Start, LlmAgent(name = "chat", model = model, mode = AgentMode.CHAT))
+                        ),
+                    ),
+                ),
                 App(appName = MODEL_APP, rootAgent = LlmAgent(name = "model_agent", model = model)),
                 App(appName = IDLE_APP, rootAgent = StubLiveAgent("idle_agent")),
                 App(
@@ -299,7 +331,7 @@ class LiveRoutesSocketTest {
     System.setErr(PrintStream(TeeOutputStream(stderr, serverLog), true))
     Logger.getLogger("").addHandler(julCapture)
     runBlocking {
-      for (app in listOf(MODEL_APP, IDLE_APP, ONE_SHOT_APP, FAILING_APP, CANCEL_APP)) {
+      for (app in APPS) {
         sessions.createSession(SessionKey(app, "u", "s"), null)
       }
     }
@@ -575,6 +607,40 @@ class LiveRoutesSocketTest {
 
     assertThat(client.nextFrame()).contains("done")
     assertThat(client.closeReason().code).isEqualTo(CloseReason.Codes.NORMAL.code)
+  }
+
+  @Test
+  fun runLive_workflowApp_sendsEachNodesOutputAndClosesNormallyWhenTheGraphEnds() {
+    val client = connect(WORKFLOW_APP)
+
+    val greeted = client.nextFrameContaining("\"output\":\"hello\"")
+    val shouted = client.nextFrameContaining("\"output\":\"HELLO\"")
+
+    assertThat(greeted).contains("\"path\":\"greeting_flow@1/greet@1\"")
+    assertThat(shouted).contains("\"path\":\"greeting_flow@1/shout@1\"")
+    // The client sends nothing, so the graph's end is what ends the run.
+    assertThat(client.closeReason().code).isEqualTo(CloseReason.Codes.NORMAL.code)
+    val session = runBlocking { sessions.getSession(SessionKey(WORKFLOW_APP, "u", "s")) }
+    assertThat(session?.events?.mapNotNull { it.output })
+      .containsExactly("hello", "HELLO")
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_workflowAppWithAChatNode_talksLiveUntilTheClientCloses() {
+    val client = connect(CHAT_NODE_APP)
+
+    client.sendText(AUDIO_FRAME)
+    val reply = client.nextFrameContaining("heard you")
+    client.sendText(CLOSE_FRAME)
+
+    assertThat(reply).contains("\"path\":\"chat_flow@1/chat@1\"")
+    val connection = model.connections.single()
+    val audio = connection.sent.filterIsInstance<RealtimeInput.Audio>().single()
+    assertThat(audio.blob.data).isEqualTo(byteArrayOf(1, 2, 3))
+    // The close ends the chat node, and with it the graph and the run.
+    assertThat(client.closeReason().code).isEqualTo(CloseReason.Codes.NORMAL.code)
+    assertThat(connection.isClosed).isTrue()
   }
 
   @Test
