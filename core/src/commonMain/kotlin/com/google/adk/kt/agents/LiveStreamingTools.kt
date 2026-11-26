@@ -27,6 +27,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.NodeInterruptedException
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.CoroutineContext
@@ -49,6 +50,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -59,6 +61,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 private val STOP_STREAMING_ARGS =
   mapOf("stop_streaming" to "function_name", "stopStreaming" to "functionName")
+
+private const val ERROR_KEY = "error"
 
 /**
  * Wraps [value] in a user [Content] carrying a [FunctionResponse] for [tool] and [callId], with the
@@ -84,6 +88,18 @@ private fun functionResponseContent(tool: BaseTool, callId: String, value: Any?)
       ),
   )
 }
+
+/**
+ * Tells the model that its live call [callId] to [tool] failed. The exception's text is left out:
+ * it can carry the user's or the model's data.
+ */
+@JvmSynthetic
+internal fun internalErrorContent(tool: BaseTool, callId: String): Content =
+  functionResponseContent(
+    tool,
+    callId,
+    mapOf(ERROR_KEY to "Invoking `${tool.name}()` failed with an internal error."),
+  )
 
 /** Replaces the value with [transform] of it, retrying when another thread got there first. */
 @JvmSynthetic
@@ -129,6 +145,12 @@ internal class LiveStreamingTools(
 
   // Calls whose stream failed, so their final answer says so.
   private val failed = AtomicReference<Set<String>>(emptySet())
+
+  // Calls whose stream paused its node, which stopped them as a run's end does.
+  private val paused = AtomicReference<Set<String>>(emptySet())
+
+  // The first pause a stream's node raised, which pauses the run as an inline one does.
+  private val pause = CompletableDeferred<NodeInterruptedException>()
 
   // An event whose hand-off was cancelled after it left the channel; taken first next time.
   private val undelivered = AtomicReference<ToolEvent?>(null)
@@ -274,8 +296,35 @@ internal class LiveStreamingTools(
     }
   }
 
-  /** Waits for the next event a tool sent the caller, taking an undelivered one first. */
-  suspend fun nextEvent(): ToolEvent = undelivered.exchange(null) ?: events.receive()
+  /**
+   * Drops what call [callId] set up before it failed, since it is answered with the failure: its
+   * stream never starts, and as a repeat it waits for no stream's final answer.
+   */
+  fun onCallFailed(callId: String) {
+    for (call in active.load()) {
+      call.repeatIds.mutate { ids -> ids - callId }
+      if (call.callId == callId) call.job.cancel()
+    }
+    // It never streamed, so a stop must not discard the failure answer queued for it next.
+    finished.mutate { ids -> ids - callId }
+  }
+
+  /**
+   * Waits for the next event a tool sent the caller, taking an undelivered one first. Once a tool
+   * has paused its node, throws that pause instead, after the events sent before.
+   */
+  suspend fun nextEvent(): ToolEvent =
+    undelivered.exchange(null)
+      ?: select {
+        // First, so an event that is waiting goes out before the pause.
+        events.onReceive { it }
+        pause.onAwait { throw it }
+      }
+
+  /** Throws the pause of a tool that paused its node, if one did. */
+  suspend fun throwIfPaused() {
+    if (pause.isCompleted) throw pause.await()
+  }
 
   /** Puts back an event whose hand-off to the caller never reached it. */
   fun putBack(event: ToolEvent) {
@@ -342,10 +391,10 @@ internal class LiveStreamingTools(
     }
   }
 
-  /** Why [call]'s stream ended: stopped by the run, finished, or failed. */
+  /** Why [call]'s stream ended: stopped by the run or its node's pause, finished, or failed. */
   private fun finalStatus(call: StreamingCall): String =
     when {
-      call.job.isCancelled -> stoppedStatus(call.toolName)
+      call.job.isCancelled || call.callId in paused.load() -> stoppedStatus(call.toolName)
       call.callId in failed.load() -> failedStatus(call.toolName)
       else -> finishedStatus(call.toolName)
     }
@@ -430,6 +479,10 @@ internal class LiveStreamingTools(
           queue.sendContent(functionResponseContent(tool, callId, value))
         }
       }
+    } catch (e: NodeInterruptedException) {
+      paused.mutate { ids -> ids + callId }
+      // Kept even for a stream being stopped, since its node already records the pause.
+      pause.complete(e)
     } catch (e: Throwable) {
       // Exceptions and TODO()'s NotImplementedError reach the model unless stopped.
       if ((e is Error && e !is NotImplementedError) || !currentCoroutineContext().isActive) throw e
@@ -444,8 +497,7 @@ internal class LiveStreamingTools(
   private fun reportFailure(tool: BaseTool, callId: String, e: Throwable) {
     // The exception's text is left out: it can carry the user's or the model's data.
     logger.warn { "Streaming tool ${tool.name} failed (${e::class.simpleName})." }
-    val error = mapOf(ERROR_KEY to "Invoking `${tool.name}()` failed with an internal error.")
-    queue.sendContent(functionResponseContent(tool, callId, error))
+    queue.sendContent(internalErrorContent(tool, callId))
   }
 
   private suspend fun sendToCaller(tool: BaseTool, callId: String, event: Event) {
@@ -514,7 +566,6 @@ internal class LiveStreamingTools(
     private val logger = LoggerFactory.getLogger(LiveStreamingTools::class)
     private val STOP_TIMEOUT = 1.seconds
     private const val STATUS_KEY = "status"
-    private const val ERROR_KEY = "error"
 
     /**
      * The answer recorded, when the run ends or hands over, for a call to [toolName], or a repeat

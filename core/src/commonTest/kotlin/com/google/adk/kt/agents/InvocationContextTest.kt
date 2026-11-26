@@ -52,8 +52,15 @@ import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1446,6 +1453,56 @@ class InvocationContextTest {
     assertEquals(mapOf("temp" to 21), responses["call_1"]!!.response)
     assertNotNull(responses["call_2"]!!.response["error"])
   }
+
+  @Test
+  fun handleFunctionCallsWith_liveCallCancelledByTheCaller_propagatesWithoutAnAnswer(): Unit =
+    runBlocking {
+      val started = CompletableDeferred<Unit>()
+      val hanging =
+        DummyTool(name = "tool") { _, _ ->
+          started.complete(Unit)
+          awaitCancellation()
+        }
+      val context = testInvocationContext(agent = LlmAgent(name = "agent", model = DummyModel("m")))
+      val failed = mutableListOf<String>()
+      var answer: Event? = null
+
+      val call = launch {
+        answer =
+          context.handleFunctionCallsWith(
+            listOf(FunctionCall(name = "tool", id = "c1")),
+            mapOf("tool" to hanging),
+            onCallFailed = { failed += it },
+          )
+      }
+      started.await()
+      call.cancelAndJoin()
+
+      assertThat(call.isCancelled).isTrue()
+      assertThat(answer).isNull()
+      assertThat(failed).isEmpty()
+    }
+
+  @Test
+  fun handleFunctionCallsWith_liveCallTimedOutByAnOuterScope_propagatesWithoutAnAnswer(): Unit =
+    runBlocking {
+      val hanging = DummyTool(name = "tool") { _, _ -> awaitCancellation() }
+      val context = testInvocationContext(agent = LlmAgent(name = "agent", model = DummyModel("m")))
+      val failed = mutableListOf<String>()
+
+      assertFailsWith<TimeoutCancellationException> {
+        withTimeout(50.milliseconds) {
+          context.handleFunctionCallsWith(
+            listOf(FunctionCall(name = "tool", id = "c1")),
+            mapOf("tool" to hanging),
+            onCallFailed = { failed += it },
+          )
+        }
+      }
+
+      // An outer timeout cancels the call, so it is not answered as the tool's own failure.
+      assertThat(failed).isEmpty()
+    }
 
   @Test
   fun handleFunctionCalls_sequentialModeToolThrows_abortsRemaining(): Unit = runBlocking {

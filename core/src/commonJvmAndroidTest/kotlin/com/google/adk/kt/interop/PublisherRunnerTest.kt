@@ -32,6 +32,7 @@ import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.runners.Runner
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
@@ -416,6 +417,38 @@ class PublisherRunnerTest {
 
     assertThat(withTimeout(GUARD_TIMEOUT) { subscriber.terminated.await() }).isNull()
     assertThat(subscriber.events.map { it.output }).contains("hello")
+  }
+
+  @Test
+  fun runLive_toolThrows_completesAndStoresTheCallWithAnErrorAnswer(): Unit = runBlocking {
+    val error = mapOf("error" to "Invoking `check_calendar()` failed with an internal error.")
+    val script =
+      listOf(
+        AwaitSent("the user's turn") { it is ContentInput },
+        DummyLiveStep.Respond(modelFunctionCallResponse("check_calendar", id = "c1")),
+        AwaitSent("the error answer") { message ->
+          message is ContentInput &&
+            message.content.parts.any { it.functionResponse?.response == error }
+        },
+        turnCompleteStep(),
+      )
+    val model = DummyLiveModel(script)
+    val tool =
+      DummyTool(name = "check_calendar", declares = true) { _, _ ->
+        throw RuntimeException("calendar unavailable")
+      }
+    val runner = runnerFor(model, listOf(tool))
+
+    // Fails unless the run ends with onComplete rather than onError.
+    runToCompletion(runner)
+
+    model.connections.single().assertAllWaitsMet()
+    val kotlinRunner = runner.asKotlinRunner()
+    val stored =
+      kotlinRunner.sessionService.getSession(SessionKey(kotlinRunner.appName, "u", "s"))!!.events
+    assertThat(stored.flatMap { it.functionCalls() }.map { it.id }).containsExactly("c1")
+    assertThat(stored.flatMap { it.functionResponses() }.map { it.id to it.response })
+      .containsExactly("c1" to error)
   }
 
   @Test

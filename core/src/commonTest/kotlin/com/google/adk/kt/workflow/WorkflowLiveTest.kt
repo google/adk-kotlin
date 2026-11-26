@@ -26,6 +26,7 @@ import com.google.adk.kt.agents.LiveRunConfig
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
+import com.google.adk.kt.agents.SingleTurnAgentTool
 import com.google.adk.kt.agents.taskWaitsInAnotherInvocation
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -140,6 +141,9 @@ private class LiveNodeConnection(
   var closed = false
     private set
 
+  /** Completes once the agent starts closing this connection. */
+  val closing = CompletableDeferred<Unit>()
+
   private val replies = Channel<Content>(Channel.UNLIMITED)
   private var next = 0
 
@@ -179,6 +183,7 @@ private class LiveNodeConnection(
   override suspend fun closeSession() {
     log += "$name close"
     closed = true
+    closing.complete(Unit)
     replies.cancel()
   }
 
@@ -295,6 +300,16 @@ private suspend fun runLiveWorkflow(
   }
 }
 
+/** A single-turn helper whose long-running `approve` call pauses it, and so its caller's node. */
+private fun pausingHelper() =
+  LlmAgent(
+    name = "helper",
+    description = "Checks.",
+    mode = AgentMode.SINGLE_TURN,
+    model = DummyModel("helper") { flowOf(modelFunctionCallResponse("approve", id = "a1")) },
+    tools = listOf(DummyTool(name = "approve", isLongRunning = true, onRun = { _, _ -> Unit })),
+  )
+
 /**
  * A node that starts [task] with runNode on its own input, the task's output standing as its own.
  */
@@ -397,6 +412,43 @@ class WorkflowLiveTest {
     assertEquals(mapOf("result" to "memo"), events.mapNotNull { it.output }.single())
     queue.close()
     assertNull(queue.receiveRequest())
+  }
+
+  @Test
+  fun taskNode_startedByRunNode_toolThrows_answersTheModelWithAnErrorAndFinishes() = runBlocking {
+    // Arrange: the task calls a tool that throws, then finishes once it hears the error.
+    val model =
+      LiveNodeModel(
+        "booker",
+        listOf(listOf(modelFunctionCall("check_calendar", id = "c1"), finishTask("result" to "x"))),
+      )
+    val calendar =
+      DummyTool(name = "check_calendar", declares = true) { _, _ ->
+        throw RuntimeException("calendar unavailable")
+      }
+    val task =
+      LlmAgent(name = "booker", model = model, mode = AgentMode.TASK, tools = listOf(calendar))
+    val sessionService = InMemorySessionService()
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("book"))
+
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, started(task)))),
+        queue,
+        sessionService = sessionService,
+      )
+
+    // Assert: the model heard the error, the task finished, and the call kept its answer.
+    val error = mapOf("error" to "Invoking `check_calendar()` failed with an internal error.")
+    val heard = model.connections.single().receivedResponses()
+    assertEquals(listOf("c1" to error), heard.map { it.id to it.response })
+    assertEquals(mapOf("result" to "x"), events.mapNotNull { it.output }.single())
+    val stored = assertNotNull(sessionService.getSession(SessionKey("app", "user", "live"))).events
+    val calls = stored.flatMap { it.functionCalls() }.filter { it.name == "check_calendar" }
+    val answers = stored.flatMap { it.functionResponses() }.filter { it.name == "check_calendar" }
+    assertEquals(listOf("c1"), calls.map { it.id })
+    assertEquals(listOf("c1" to error), answers.map { it.id to it.response })
   }
 
   @Test
@@ -2756,6 +2808,122 @@ class WorkflowLiveTest {
 
     // Assert: the paused round's speech reaches the caller as the chat's recording.
     assertEquals(listOf("planner"), events.recordings().map { it.author })
+  }
+
+  @Test
+  fun chatNode_liveStreamPausingItsNode_pausesTheRunWithoutAnErrorAnswer() = runBlocking {
+    // Arrange: the chat's stream sends a value, then runs a single-turn helper that pauses.
+    val log = mutableListOf<String>()
+    // The model replies to each input in turn, so only an error answer brings the last reply.
+    val chatModel =
+      LiveNodeModel(
+        "planner",
+        listOf(
+          listOf(
+            modelFunctionCall("watch", emptyMap()),
+            modelMessage("Watching."),
+            modelMessage("Noted."),
+            modelMessage("It failed."),
+          )
+        ),
+        log,
+      )
+    val helper = SingleTurnAgentTool(pausingHelper())
+    val watch =
+      DummyTool("watch") { context, _ ->
+        flow {
+          emit("started")
+          emit(helper.run(context, mapOf("request" to "check")))
+        }
+      }
+    val planner =
+      LlmAgent(name = "planner", model = chatModel, tools = listOf(watch), mode = AgentMode.CHAT)
+    val sessions = InMemorySessionService()
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("watch it"))
+    // With a handle, a turn that dropped the pause would reconnect rather than end the run.
+    val handle = SessionResumptionConfig(handle = "h-1")
+
+    val unused =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, planner))),
+        queue,
+        runConfig = RunConfig(live = LiveRunConfig(sessionResumption = handle)),
+        sessionService = sessions,
+      ) { event ->
+        if (event.contentText() == "It failed.") queue.close()
+      }
+
+    // Assert: the pause ended the run with no error sent, and the stream's call is closed.
+    assertFalse(queue.isClosed)
+    assertEquals(
+      emptyList(),
+      chatModel.connections.single().receivedResponses().filter { "error" in it.response },
+    )
+    val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
+    assertEquals(listOf("call approve"), stored.functionSteps("helper"))
+    assertEquals(
+      "watch stopped streaming when its live session ended; no more updates will arrive.",
+      stored.flatMap { it.functionResponses() }.last { it.name == "watch" }.response["status"],
+    )
+    assertEquals(listOf("planner connect", "planner close"), log)
+  }
+
+  @Test
+  fun chatNode_liveStreamPausingAsADelegationEndsTheRound_stillPausesTheRun() = runBlocking {
+    // Arrange: the model delegates once it hears the stream is pending; the stream then pauses.
+    val log = mutableListOf<String>()
+    val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))), log)
+    val chatModel =
+      LiveNodeModel(
+        "planner",
+        listOf(
+          listOf(
+            modelFunctionCall("watch", emptyMap()),
+            modelFunctionCall("booker", mapOf("request" to "book")),
+          ),
+          listOf(modelMessage("Booked.")),
+        ),
+        log,
+      )
+    val helper = SingleTurnAgentTool(pausingHelper())
+    val watch =
+      DummyTool("watch") { context, _ ->
+        flow {
+          // Paused only as the round closes, after the turn has stopped reading tool events.
+          val answer =
+            withContext(NonCancellable) {
+              chatModel.connections.first().closing.await()
+              helper.run(context, mapOf("request" to "check"))
+            }
+          emit(answer)
+        }
+      }
+    val planner =
+      LlmAgent(
+        name = "planner",
+        model = chatModel,
+        subAgents = listOf(booker(taskModel)),
+        tools = listOf(watch),
+        mode = AgentMode.CHAT,
+      )
+    val sessions = InMemorySessionService()
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("watch and book"))
+
+    val unused =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, planner))),
+        queue,
+        sessionService = sessions,
+      ) { event ->
+        if (event.contentText() == "Booked.") queue.close()
+      }
+
+    // Assert: the pause wins over the round's end, so the task never ran.
+    val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
+    assertEquals(listOf("call approve"), stored.functionSteps("helper"))
+    assertEquals(listOf("planner connect", "planner close"), log)
   }
 
   @Test

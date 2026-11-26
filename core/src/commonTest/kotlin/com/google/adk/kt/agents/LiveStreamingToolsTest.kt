@@ -19,6 +19,8 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
@@ -34,8 +36,10 @@ import com.google.adk.kt.types.FunctionResponseScheduling.SILENT
 import com.google.adk.kt.types.FunctionResponseScheduling.WHEN_IDLE
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
+import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
@@ -166,6 +170,22 @@ class LiveStreamingToolsTest {
   }
 
   @Test
+  fun onCallFailed_thenStopRunning_keepsTheQueuedFailureAnswer(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+    val tool = DummyTool(name = "monitor") { _, _ -> flow<String> { awaitCancellation() } }
+    val unused = tools.run(tool, streamingToolContext("c1"), emptyMap())
+
+    tools.onCallFailed("c1")
+    queue.sendContent(internalErrorContent(tool, "c1"))
+    tools.stopRunning()
+    queue.close()
+
+    assertThat(queue.nextAnswers(1).map { it.id }).containsExactly("c1")
+    assertThat(tools.close()).isEmpty()
+  }
+
+  @Test
   fun onBeforeConnect_cancelsAStreamThatNeverStarted_closeStillReturnsItsFinalAnswer() {
     runBlocking {
       val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
@@ -279,6 +299,55 @@ class LiveStreamingToolsTest {
             mapOf(
               "status" to "ticker stopped streaming after an error; no more updates will arrive."
             )
+        )
+    }
+  }
+
+  @OptIn(ExperimentalWorkflowApi::class)
+  @Test
+  fun nextEvent_streamPausesItsNode_throwsThePauseAfterTheEventSentBefore() {
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+      val pause = NodeInterruptedException()
+      val sending = CompletableDeferred<Unit>()
+      val paused = CompletableDeferred<Unit>()
+      val message = Event(content = Content(Role.MODEL, listOf(Part(text = "checking"))))
+      val monitor =
+        DummyTool(name = "monitor") { _, _ ->
+          flow {
+            sending.complete(Unit)
+            emit(message)
+          }
+        }
+      val approve =
+        DummyTool(name = "approve") { _, _ ->
+          flow<String> {
+            try {
+              throw pause
+            } finally {
+              paused.complete(Unit)
+            }
+          }
+        }
+      tools.startStream(monitor, "c1")
+      tools.startStream(approve, "c2")
+      // On this single-threaded loop, both streams have run by now: one sent, one paused.
+      sending.await()
+      paused.await()
+
+      // Assert: the model gets nothing for the pause, and the caller gets the message first.
+      queue.close()
+      assertWithMessage("a paused stream sent an answer").that(queue.receiveRequest()).isNull()
+      assertThat(tools.nextEvent().event.content?.text()).isEqualTo("checking")
+      val thrown =
+        assertFailsWith<NodeInterruptedException> { withTimeout(5.seconds) { tools.nextEvent() } }
+      assertThat(thrown).isSameInstanceAs(pause)
+      val closed = tools.close().flatMap { it.parts }.mapNotNull { it.functionResponse }
+      assertThat(closed.single { it.id == "c2" }.response)
+        .containsExactly(
+          "status",
+          "approve stopped streaming when its live session ended; no more updates will arrive.",
         )
     }
   }

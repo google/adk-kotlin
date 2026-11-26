@@ -20,6 +20,9 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.callbacks.AfterToolCallback
+import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LlmRequest
@@ -36,6 +39,7 @@ import com.google.adk.kt.testing.audioFrame
 import com.google.adk.kt.testing.inputTranscription
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.storedEvents
 import com.google.adk.kt.testing.turnCompleteStep
 import com.google.adk.kt.testing.userMessage
@@ -46,16 +50,23 @@ import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlin.test.Test
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Covers the live turn loop: sends reach the connection, responses become events, close ends it.
@@ -132,6 +143,66 @@ class LlmAgentLiveTest {
       message.content.parts.any { part ->
         part.functionResponse.let { it != null && it.id == callId && it.response == response }
       }
+  }
+
+  /** A tool the model can call that always throws, as one whose backend is down does. */
+  private fun failingTool(name: String = "check_calendar") =
+    DummyTool(name = name, declares = true) { _, _ ->
+      throw RuntimeException("calendar unavailable")
+    }
+
+  /** The answer the model gets for a live call to [toolName] that threw. */
+  private fun internalError(toolName: String) =
+    mapOf("error" to "Invoking `$toolName()` failed with an internal error.")
+
+  /**
+   * A live turn on session `live-1` that calls `check_calendar` as `c1`, waits until [answered]
+   * accepts what the run sends back, then completes.
+   */
+  private fun callingTheCalendar(
+    answered: (Any) -> Boolean = answers("c1", internalError("check_calendar"))
+  ): List<DummyLiveStep> =
+    listOf(
+      Respond(
+        modelFunctionCallResponse("check_calendar", id = "c1").copy(liveSessionId = "live-1")
+      ),
+      AwaitSent("the answer to c1", answered),
+      turnCompleteStep(),
+    )
+
+  /** Runs [agent] live with [runConfig] until its first turn completes and returns its runner. */
+  private suspend fun runOneTurn(agent: LlmAgent, runConfig: RunConfig? = null): InMemoryRunner {
+    val runner = InMemoryRunner(agent = agent)
+    val unused = runUntilTurnsComplete(runner, LiveRequestQueue(), runConfig)
+    return runner
+  }
+
+  /** Runs two calls from one response, the first of which throws, in [mode]; both get answers. */
+  private suspend fun assertBothCallsAnswered(mode: ToolExecutionMode) {
+    val bothAnswered: (Any) -> Boolean = { message ->
+      answers("c1", internalError("check_calendar"))(message) &&
+        answers("c2", mapOf("result" to "3 slots"))(message)
+    }
+    val script =
+      listOf(
+        Respond(
+          modelParallelFunctionCallsResponse(
+            FunctionCall("check_calendar", id = "c1"),
+            FunctionCall("list_slots", id = "c2"),
+          )
+        ),
+        AwaitSent("both answers", bothAnswered),
+        turnCompleteStep(),
+      )
+    val model = DummyLiveModel(script)
+    val slots = DummyTool(name = "list_slots", declares = true) { _, _ -> "3 slots" }
+    val agent = LlmAgent(name = "agent", model = model, tools = listOf(failingTool(), slots))
+
+    val runner = runOneTurn(agent, RunConfig(toolExecutionMode = mode))
+
+    model.connections.single().assertAllWaitsMet()
+    assertThat(runner.storedEvents().flatMap { it.functionResponses() }.map { it.id })
+      .containsExactly("c1", "c2")
   }
 
   /** A toolset that counts how often a run lists its [tools]. */
@@ -521,6 +592,164 @@ class LlmAgentLiveTest {
       assertThat(behaviorsOf(model.connectRequests.single()))
         .containsExactly("ticker", Behavior.NON_BLOCKING)
     }
+  }
+
+  @Test
+  fun runLive_toolThrows_answersTheModelWithAnErrorAndStoresTheCallWithIt(): Unit = runBlocking {
+    val model = DummyLiveModel(callingTheCalendar())
+    val agent = LlmAgent(name = "agent", model = model, tools = listOf(failingTool()))
+
+    val runner = runOneTurn(agent)
+
+    model.connections.single().assertAllWaitsMet()
+    val stored = runner.storedEvents()
+    assertThat(stored.flatMap { it.functionCalls() }.map { it.id }).containsExactly("c1")
+    val answer = stored.single { it.functionResponses().isNotEmpty() }
+    assertThat(answer.functionResponses().map { it.id to it.response })
+      .containsExactly("c1" to internalError("check_calendar"))
+    assertThat(answer.liveSessionId).isEqualTo("live-1")
+    assertThat(stored.mapNotNull { it.errorCode }).isEmpty()
+  }
+
+  @Test
+  fun runLive_toolCallsTodo_answersTheModelWithAnError(): Unit = runBlocking {
+    val model = DummyLiveModel(callingTheCalendar())
+    val unfinished = DummyTool(name = "check_calendar", declares = true) { _, _ -> TODO() }
+    val agent = LlmAgent(name = "agent", model = model, tools = listOf(unfinished))
+
+    val unused = runOneTurn(agent)
+
+    model.connections.single().assertAllWaitsMet()
+  }
+
+  @Test
+  fun runLive_toolsOwnTimeoutFires_answersTheModelWithAnError(): Unit = runBlocking {
+    val model = DummyLiveModel(callingTheCalendar())
+    val slow =
+      DummyTool(name = "check_calendar", declares = true) { _, _ ->
+        withTimeout(1.milliseconds) { awaitCancellation() }
+      }
+    val agent = LlmAgent(name = "agent", model = model, tools = listOf(slow))
+
+    val unused = runOneTurn(agent)
+
+    model.connections.single().assertAllWaitsMet()
+  }
+
+  @Test
+  fun runLive_oneOfTwoParallelCallsThrows_answersBoth(): Unit = runBlocking {
+    assertBothCallsAnswered(ToolExecutionMode.PARALLEL)
+  }
+
+  @Test
+  fun runLive_oneOfTwoSequentialCallsThrows_answersBoth(): Unit = runBlocking {
+    assertBothCallsAnswered(ToolExecutionMode.SEQUENTIAL)
+  }
+
+  @Test
+  fun runLive_toolThrowsAndAnErrorCallbackAnswers_theModelGetsTheCallbacksAnswer(): Unit =
+    runBlocking {
+      val fallback = mapOf("result" to "calendar unknown")
+      val model = DummyLiveModel(callingTheCalendar(answers("c1", fallback)))
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model = model,
+          tools = listOf(failingTool()),
+          onToolErrorCallbacks =
+            listOf(OnToolErrorCallback { _, _, _, _ -> CallbackChoice.Break(fallback) }),
+        )
+
+      val unused = runOneTurn(agent)
+
+      model.connections.single().assertAllWaitsMet()
+    }
+
+  @Test
+  fun runLive_toolThrows_afterToolCallbacksDoNotRewriteTheErrorAnswer(): Unit = runBlocking {
+    val model = DummyLiveModel(callingTheCalendar())
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(failingTool()),
+        afterToolCallbacks = listOf(AfterToolCallback { _, _, _, _ -> mapOf("rewritten" to true) }),
+      )
+
+    val unused = runOneTurn(agent)
+
+    model.connections.single().assertAllWaitsMet()
+  }
+
+  @Test
+  fun runLive_streamingToolWhoseAfterToolCallbackThrows_neverStreams(): Unit = runBlocking {
+    val started = CompletableDeferred<Unit>()
+    val watch =
+      DummyTool(name = "check_calendar", declares = true) { _, _ ->
+        flow {
+          started.complete(Unit)
+          emit("tick")
+        }
+      }
+    val model = DummyLiveModel(callingTheCalendar())
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(watch),
+        afterToolCallbacks = listOf(AfterToolCallback { _, _, _, _ -> throw RuntimeException("x") }),
+      )
+    val queue = LiveRequestQueue()
+
+    val unused =
+      InMemoryRunner(agent = agent)
+        .runLive("u", "s", queue)
+        .onEach { event ->
+          if (event.turnComplete) {
+            // Long enough for a started stream to run, so a stream that never ran never started.
+            withTimeoutOrNull(500.milliseconds) { started.await() }
+            queue.close()
+          }
+        }
+        .toList()
+
+    model.connections.single().assertAllWaitsMet()
+    assertThat(started.isCompleted).isFalse()
+  }
+
+  @Test
+  fun runLive_repeatOfAStreamingCallFails_getsOnlyTheErrorAnswer(): Unit = runBlocking {
+    val pending =
+      mapOf("status" to "The function is running asynchronously and the results are pending.")
+    val script =
+      listOf(
+        Respond(modelFunctionCallResponse("ticker", id = "c1")),
+        AwaitSent("the pending answer", answers("c1", pending)),
+        Respond(modelFunctionCallResponse("ticker", id = "c2")),
+        AwaitSent("the repeat's error answer", answers("c2", internalError("ticker"))),
+        turnCompleteStep(),
+      )
+    val model = DummyLiveModel(script)
+    val ticker =
+      DummyTool(name = "ticker", declares = true) { _, _ -> flow<String> { awaitCancellation() } }
+    val failTheRepeat = AfterToolCallback { context, _, _, result ->
+      if (context.functionCallId == "c2") throw RuntimeException("x")
+      result
+    }
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model = model,
+        tools = listOf(ticker),
+        afterToolCallbacks = listOf(failTheRepeat),
+      )
+
+    val runner = runOneTurn(agent)
+
+    model.connections.single().assertAllWaitsMet()
+    val repeatAnswers =
+      runner.storedEvents().flatMap { it.functionResponses() }.filter { it.id == "c2" }
+    assertThat(repeatAnswers.map { it.response }).containsExactly(internalError("ticker"))
   }
 
   @Test

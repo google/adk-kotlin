@@ -75,6 +75,7 @@ import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.SessionResumptionConfig
 import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.workflow.BranchPath
+import com.google.adk.kt.workflow.NodeInterruptedException
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.genai.kotlin.GenAiApiException
 import kotlin.concurrent.atomics.AtomicBoolean
@@ -445,7 +446,7 @@ internal class LlmAgentTurn(
         LiveStreamingTools(queue, agent.name, context.invocationId, currentCoroutineContext())
       }
     var turn = LlmAgentTurn(agent, context, requestProcessors, responseProcessors, tools)
-    var ended = false
+    var failure: Throwable? = null
     try {
       // Restarting in a loop keeps repeated restarts from nesting flows.
       while (turn.runLiveSession(this) && !turn.context.isEndOfInvocation) {
@@ -453,30 +454,42 @@ internal class LlmAgentTurn(
       }
       // Each restart runs on a copy, so an invocation one of them ended has to end here too.
       if (turn.context.isEndOfInvocation) context.isEndOfInvocation = true
-      ended = true
+    } catch (e: Throwable) {
+      failure = e
+      throw e
     } finally {
-      finishLiveRun(tools, ended)
+      finishLiveRun(tools, failure)
     }
   }
 
   /**
    * Stops the run's streaming [tools] however the run ended, recording each call it stops. After a
-   * normal end ([ended]), it first hands the caller what the tools sent.
+   * normal end, with no [failure], it first hands the caller what the tools sent. Unless a failure
+   * or a cancellation ended the run, a stream's pause then pauses it.
    */
-  @Suppress("SuspendInFinally") // close and the record run under NonCancellable.
+  // close and the record run under NonCancellable; a recorded pause throws without suspending.
+  @Suppress("SuspendInFinally")
   private suspend fun FlowCollector<Event>.finishLiveRun(
     tools: LiveStreamingTools?,
-    ended: Boolean,
+    failure: Throwable?,
   ) {
     if (tools == null) return
+    var end = failure
     try {
-      if (ended) {
+      if (failure == null) {
         tools.stopRunning()
         // Emitted first, so the session stores them before the `finally` records the answers.
         for (event in tools.drainEvents()) emit(event)
       }
+    } catch (e: Throwable) {
+      end = e
+      throw e
     } finally {
       recordFinalAnswers(tools.close())
+      // A caller that stops reading, as a node round does at a step's end, does not cancel the run.
+      if ((end == null || end is CancellationException) && currentCoroutineContext().isActive) {
+        tools.throwIfPaused()
+      }
     }
   }
 
@@ -496,6 +509,8 @@ internal class LlmAgentTurn(
     val request = prepareLiveSession(collector) ?: return false
     var attempt = 0
     while (true) {
+      // A stream that paused between connections pauses the run before another one opens.
+      liveTools?.throwIfPaused()
       liveTools?.onBeforeConnect()
       // A timeout at the last connection's end says nothing about this connection's saves.
       storeTimedOut = false
@@ -823,6 +838,8 @@ internal class LlmAgentTurn(
         // A transport drop the sender saw, kept so it surfaces after the saves finish instead of
         // cancelling the scope and its in-flight saves; read once the sender has joined below.
         var sendDrop: Throwable? = null
+        // A stream's pause, thrown once the saves finish, as an in-turn call's pause is.
+        var toolPause: NodeInterruptedException? = null
         val receiver = async {
           try {
             receiveTurns(request, connection, queue, result, drain) { event ->
@@ -858,7 +875,8 @@ internal class LlmAgentTurn(
               } catch (e: CancellationException) {
                 // A stopped or failed attempt still stores the turn, unless the caller left an
                 // answer untaken: that answer is not stored, and the turn must not go before it.
-                if (!this@channelFlow.isActive && answerTaken.load()?.isCompleted != false) {
+                val ended = !this@channelFlow.isActive || toolPause != null
+                if (ended && answerTaken.load()?.isCompleted != false) {
                   storeQuietly(pending)
                 }
                 throw e
@@ -915,7 +933,14 @@ internal class LlmAgentTurn(
           } else {
             launch {
               while (true) {
-                val next = liveTools.nextEvent()
+                val next =
+                  try {
+                    liveTools.nextEvent()
+                  } catch (e: NodeInterruptedException) {
+                    toolPause = e
+                    receiver.cancel()
+                    break
+                  }
                 val delivery = Delivery(next.event, next.handled)
                 try {
                   send(delivery)
@@ -945,7 +970,7 @@ internal class LlmAgentTurn(
         try {
           receiver.await()
         } catch (e: CancellationException) {
-          // Only the sender or a drain's deadline cancels the receiver; a scope cancel throws.
+          // Only the sender, a drain's deadline or a stream's pause cancels it; else, rethrow.
           ensureActive()
           // A receiver stopped that way never saw whether a call followed, so the words go out.
           releaseHeldOutput(request, queue, deliver)
@@ -957,6 +982,7 @@ internal class LlmAgentTurn(
         // Recordings still saving go out before a transfer, restart, reconnect or the run's end.
         if (!saves.finish()) storeTimedOut = true
         recordingSaves.store(null)
+        toolPause?.let { throw it }
         // Surfaced after the saves, so a send-side drop fails or resumes as a receive-side one
         // does.
         sendDrop?.let { throw it }
@@ -2296,7 +2322,13 @@ internal class LlmAgentTurn(
         ?.let { calls ->
           // A live run runs tools through its streaming tools, so a returned Flow streams.
           val runner: ToolRunner = if (liveTools == null) DEFAULT_TOOL_RUNNER else liveTools::run
-          context.handleFunctionCallsWith(calls, tools, toolRunner = runner)
+          // A failed live call gets an error answer, so it cannot end the conversation.
+          context.handleFunctionCallsWith(
+            calls,
+            tools,
+            toolRunner = runner,
+            onCallFailed = if (liveTools == null) null else liveTools::onCallFailed,
+          )
         }
         // A live answer names the session its call came from, as in ADK Python.
         ?.copy(liveSessionId = actionEvent.liveSessionId)
