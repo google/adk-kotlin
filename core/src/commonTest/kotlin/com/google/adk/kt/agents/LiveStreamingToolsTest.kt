@@ -166,6 +166,22 @@ class LiveStreamingToolsTest {
   }
 
   @Test
+  fun onCallFailed_thenStopRunning_keepsTheQueuedFailureAnswer(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+    val tool = DummyTool(name = "monitor") { _, _ -> flow<String> { awaitCancellation() } }
+    val unused = tools.run(tool, streamingToolContext("c1"), emptyMap())
+
+    tools.onCallFailed("c1")
+    queue.sendContent(internalErrorContent(tool, "c1"))
+    tools.stopRunning()
+    queue.close()
+
+    assertThat(queue.nextAnswers(1).map { it.id }).containsExactly("c1")
+    assertThat(tools.close()).isEmpty()
+  }
+
+  @Test
   fun onBeforeConnect_cancelsAStreamThatNeverStarted_closeStillReturnsItsFinalAnswer() {
     runBlocking {
       val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
@@ -573,5 +589,30 @@ class LiveStreamingToolsTest {
         )
         .containsExactly("c1" to WHEN_IDLE)
     }
+  }
+
+  @Test
+  fun relay_streamedValueAndFailureAnswer_areQueuedAsTheAgentsOwn(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+    val tool =
+      DummyTool(name = "ticker") { _, _ ->
+        flow {
+          emit("tick")
+          error("secret detail")
+        }
+      }
+    val requests =
+      try {
+        tools.startStream(tool, "c1")
+        withTimeout(10.seconds) {
+          listOf(checkNotNull(queue.receiveRequest()), checkNotNull(queue.receiveRequest()))
+        }
+      } finally {
+        withContext(NonCancellable) { tools.close() }
+      }
+
+    // Both answers carry the call's id, but neither counts as the caller answering it.
+    assertThat(requests.map { queue.takeOwnAnswer(it) }).containsExactly(true, true)
   }
 }

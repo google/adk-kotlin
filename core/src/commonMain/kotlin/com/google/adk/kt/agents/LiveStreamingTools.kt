@@ -60,6 +60,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 private val STOP_STREAMING_ARGS =
   mapOf("stop_streaming" to "function_name", "stopStreaming" to "functionName")
 
+private const val ERROR_KEY = "error"
+
 /**
  * Wraps [value] in a user [Content] carrying a [FunctionResponse] for [tool] and [callId], with the
  * tool's [BaseTool.responseScheduling]. `Unit` becomes `{"result": null}`, and a [FunctionResponse]
@@ -84,6 +86,18 @@ private fun functionResponseContent(tool: BaseTool, callId: String, value: Any?)
       ),
   )
 }
+
+/**
+ * Tells the model that its live call [callId] to [tool] failed. The exception's text is left out:
+ * it can carry the user's or the model's data.
+ */
+@JvmSynthetic
+internal fun internalErrorContent(tool: BaseTool, callId: String): Content =
+  functionResponseContent(
+    tool,
+    callId,
+    mapOf(ERROR_KEY to "Invoking `${tool.name}()` failed with an internal error."),
+  )
 
 /** Replaces the value with [transform] of it, retrying when another thread got there first. */
 @JvmSynthetic
@@ -274,6 +288,19 @@ internal class LiveStreamingTools(
     }
   }
 
+  /**
+   * Drops what call [callId] set up before it failed, since it is answered with the failure: its
+   * stream never starts, and as a repeat it waits for no stream's final answer.
+   */
+  fun onCallFailed(callId: String) {
+    for (call in active.load()) {
+      call.repeatIds.mutate { ids -> ids - callId }
+      if (call.callId == callId) call.job.cancel()
+    }
+    // It never streamed, so a stop must not discard the failure answer queued for it next.
+    finished.mutate { ids -> ids - callId }
+  }
+
   /** Waits for the next event a tool sent the caller, taking an undelivered one first. */
   suspend fun nextEvent(): ToolEvent = undelivered.exchange(null) ?: events.receive()
 
@@ -427,7 +454,7 @@ internal class LiveStreamingTools(
           sendToCaller(tool, callId, value)
         } else {
           // Not partial: Kotlin never sends a partial tool answer, and the wire ignores it anyway.
-          queue.sendContent(functionResponseContent(tool, callId, value))
+          queue.sendOwnAnswer(functionResponseContent(tool, callId, value))
         }
       }
     } catch (e: Throwable) {
@@ -444,8 +471,7 @@ internal class LiveStreamingTools(
   private fun reportFailure(tool: BaseTool, callId: String, e: Throwable) {
     // The exception's text is left out: it can carry the user's or the model's data.
     logger.warn { "Streaming tool ${tool.name} failed (${e::class.simpleName})." }
-    val error = mapOf(ERROR_KEY to "Invoking `${tool.name}()` failed with an internal error.")
-    queue.sendContent(functionResponseContent(tool, callId, error))
+    queue.sendOwnAnswer(internalErrorContent(tool, callId))
   }
 
   private suspend fun sendToCaller(tool: BaseTool, callId: String, event: Event) {
@@ -514,7 +540,6 @@ internal class LiveStreamingTools(
     private val logger = LoggerFactory.getLogger(LiveStreamingTools::class)
     private val STOP_TIMEOUT = 1.seconds
     private const val STATUS_KEY = "status"
-    private const val ERROR_KEY = "error"
 
     /**
      * The answer recorded, when the run ends or hands over, for a call to [toolName], or a repeat

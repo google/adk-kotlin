@@ -1314,6 +1314,11 @@ internal class NodeExecutionState(
     }
   }
 
+  /** Stops this activation waiting on [ids], which have been answered. */
+  fun removeInterruptIds(ids: Collection<String>) {
+    interruptIdsRef.mutate { it - ids }
+  }
+
   /** Returns the next run ID for a dynamically dispatched child named [name]. */
   fun nextChildRunId(name: String): String = childRunIds.next(name)
 

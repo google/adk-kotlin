@@ -400,6 +400,43 @@ class WorkflowLiveTest {
   }
 
   @Test
+  fun taskNode_startedByRunNode_toolThrows_answersTheModelWithAnErrorAndFinishes() = runBlocking {
+    // Arrange: the task calls a tool that throws, then finishes once it hears the error.
+    val model =
+      LiveNodeModel(
+        "booker",
+        listOf(listOf(modelFunctionCall("check_calendar", id = "c1"), finishTask("result" to "x"))),
+      )
+    val calendar =
+      DummyTool(name = "check_calendar", declares = true) { _, _ ->
+        throw RuntimeException("calendar unavailable")
+      }
+    val task =
+      LlmAgent(name = "booker", model = model, mode = AgentMode.TASK, tools = listOf(calendar))
+    val sessionService = InMemorySessionService()
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("book"))
+
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, started(task)))),
+        queue,
+        sessionService = sessionService,
+      )
+
+    // Assert: the model heard the error, the task finished, and the call kept its answer.
+    val error = mapOf("error" to "Invoking `check_calendar()` failed with an internal error.")
+    val heard = model.connections.single().receivedResponses()
+    assertEquals(listOf("c1" to error), heard.map { it.id to it.response })
+    assertEquals(mapOf("result" to "x"), events.mapNotNull { it.output }.single())
+    val stored = assertNotNull(sessionService.getSession(SessionKey("app", "user", "live"))).events
+    val calls = stored.flatMap { it.functionCalls() }.filter { it.name == "check_calendar" }
+    val answers = stored.flatMap { it.functionResponses() }.filter { it.name == "check_calendar" }
+    assertEquals(listOf("c1"), calls.map { it.id })
+    assertEquals(listOf("c1" to error), answers.map { it.id to it.response })
+  }
+
+  @Test
   fun taskNode_startedByRunNode_reconnectInsideItsRound_hearsTheUsersEarlierTurns() = runBlocking {
     // Arrange: the server sends a go-away right after the task's question, so the task reconnects.
     val log = mutableListOf<String>()
@@ -3107,7 +3144,7 @@ class WorkflowLiveTest {
           resumable = true,
           sessionService = sessions,
         ) { event ->
-          if (event.author == "booker" && event.output != null) queue.close()
+          if (event.contentText() == "Hi, support.") queue.close()
           event
             .functionCalls()
             .firstOrNull { it.name == "approve" }
@@ -3121,9 +3158,19 @@ class WorkflowLiveTest {
         }
       }
 
-    // Assert: the turn did not hand over before the task, and the handoff is stored for later,
-    // though a callback set it on a partial transcription.
-    assertEquals(listOf("planner connect", "planner close", "booker connect", "booker close"), log)
+    // Assert: the turn handed over only once the task answered, and the handoff is stored, though a
+    // callback set it on a partial transcription.
+    assertEquals(
+      listOf(
+        "planner connect",
+        "planner close",
+        "booker connect",
+        "booker close",
+        "support connect",
+        "support close",
+      ),
+      log,
+    )
     val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
     assertEquals(
       listOf("support"),
@@ -3395,5 +3442,280 @@ class WorkflowLiveTest {
       }
 
     assertEquals(listOf("planner connect", "planner close", "booker connect", "booker close"), log)
+  }
+
+  @Test
+  fun taskNode_inTheGraph_longRunningCallAnsweredLive_handsItsOutputOn() = runBlocking {
+    val (model, events) = runTaskWithALongRunningCallAnsweredLive(wrap = { it }, resumable = false)
+
+    // Assert: the caller's answer reached the task's connection, and its output the next node.
+    assertEquals(listOf("approve"), model.connections.single().receivedResponses().map { it.name })
+    assertEquals(
+      listOf(mapOf("result" to "approved"), mapOf("received" to mapOf("result" to "approved"))),
+      events.mapNotNull { it.output },
+    )
+  }
+
+  @Test
+  fun taskNode_inTheGraph_longRunningCallAnsweredLiveResumably_endsTheWorkflow() = runBlocking {
+    val (_, events) = runTaskWithALongRunningCallAnsweredLive(wrap = { it }, resumable = true)
+
+    assertEquals(
+      listOf(mapOf("result" to "approved"), mapOf("received" to mapOf("result" to "approved"))),
+      events.mapNotNull { it.output },
+    )
+    assertEquals(listOf("wf"), events.filter { it.actions.endOfAgent }.map { it.author })
+  }
+
+  @Test
+  fun taskNode_startedByRunNode_longRunningCallAnsweredLive_handsItsOutputOn() = runBlocking {
+    val (model, events) =
+      runTaskWithALongRunningCallAnsweredLive(wrap = ::started, resumable = false)
+
+    assertEquals(listOf("approve"), model.connections.single().receivedResponses().map { it.name })
+    assertEquals(
+      listOf(mapOf("result" to "approved"), mapOf("received" to mapOf("result" to "approved"))),
+      events.mapNotNull { it.output },
+    )
+  }
+
+  @Test
+  fun taskNode_startedByRunNode_longRunningCallAnsweredLiveResumably_endsTheWorkflow() =
+    runBlocking {
+      val (_, events) = runTaskWithALongRunningCallAnsweredLive(wrap = ::started, resumable = true)
+
+      assertEquals(
+        listOf(mapOf("result" to "approved"), mapOf("received" to mapOf("result" to "approved"))),
+        events.mapNotNull { it.output },
+      )
+      assertEquals(listOf("wf"), events.filter { it.actions.endOfAgent }.map { it.author })
+    }
+
+  @Test
+  fun taskNode_inTheGraph_oneOfTwoLongRunningCallsAnsweredLive_keepsWaitingOnTheOther() =
+    runBlocking {
+      // Arrange: the task asks to approve two items in one turn, then finishes.
+      val bothItems =
+        modelMessage(
+          Part(functionCall = FunctionCall("approve", mapOf("item" to "memo"))),
+          Part(functionCall = FunctionCall("approve", mapOf("item" to "draft"))),
+        )
+      val model =
+        LiveNodeModel("writer", listOf(listOf(bothItems, finishTask("result" to "approved"))))
+      val writer = approvingTask(model)
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("write"))
+
+      // Act: the caller answers only the memo's call.
+      val events =
+        runLiveWorkflow(
+          Workflow("wf", listOf(Edge(Start, writer), Edge(writer, CaptureInput("capture")))),
+          queue,
+          resumable = true,
+        ) { event ->
+          answerApprovals(event, queue) { it.args["item"] == "memo" }
+        }
+
+      // Assert: the draft's open call keeps the task waiting, so its output goes no further.
+      assertEquals(
+        listOf("approve"),
+        model.connections.single().receivedResponses().map { it.name },
+      )
+      assertEquals(listOf(mapOf("result" to "approved")), events.mapNotNull { it.output })
+      assertFalse(events.any { it.actions.endOfAgent })
+    }
+
+  @Test
+  fun chatNode_longRunningCallAnsweredLiveResumably_endsTheWorkflow() = runBlocking {
+    // Arrange: the chat asks for approval, then speaks once it has the answer.
+    val model =
+      LiveNodeModel(
+        "planner",
+        listOf(listOf(modelFunctionCall("approve", mapOf("item" to "trip")), modelMessage("Done."))),
+      )
+    val planner =
+      LlmAgent(
+        name = "planner",
+        model = model,
+        tools = listOf(DummyTool(name = "approve", isLongRunning = true, onRun = { _, _ -> Unit })),
+        mode = AgentMode.CHAT,
+      )
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("plan"))
+
+    // Act: the caller answers the call, and hangs up once the chat speaks.
+    val events =
+      runLiveWorkflow(Workflow("wf", listOf(Edge(Start, planner))), queue, resumable = true) { event
+        ->
+        if (event.contentText() == "Done.") queue.close()
+        answerApprovals(event, queue)
+      }
+
+    // Assert: with its call answered, the chat ends the workflow as one that made no call does.
+    assertEquals(listOf("approve"), model.connections.single().receivedResponses().map { it.name })
+    assertEquals(listOf("wf"), events.filter { it.actions.endOfAgent }.map { it.author })
+  }
+
+  @Test
+  fun taskNode_inTheGraph_longRunningToolsOwnFirstResult_keepsItWaitingOnTheCaller() = runBlocking {
+    // Arrange: the tool answers "pending" itself, and the caller never answers the call.
+    val model =
+      LiveNodeModel(
+        "writer",
+        listOf(
+          listOf(
+            modelFunctionCall("approve", mapOf("item" to "memo")),
+            finishTask("result" to "approved"),
+          )
+        ),
+      )
+    val writer = approvingTask(model, firstResult = mapOf("status" to "pending"))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("write"))
+
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, writer), Edge(writer, CaptureInput("capture")))),
+        queue,
+        resumable = true,
+      )
+
+    // Assert: the tool's own answer reached the model, but the call still waits on the caller.
+    assertEquals(listOf("approve"), model.connections.single().receivedResponses().map { it.name })
+    assertEquals(listOf(mapOf("result" to "approved")), events.mapNotNull { it.output })
+    assertFalse(events.any { it.actions.endOfAgent })
+  }
+
+  @Test
+  fun taskNode_inTheGraph_callerAnswersAfterTheToolsOwnFirstResult_handsItsOutputOn() =
+    runBlocking {
+      // Arrange: the tool answers "pending" itself, and the model finishes once both answers came.
+      val model =
+        LiveNodeModel(
+          "writer",
+          listOf(
+            listOf(
+              modelFunctionCall("approve", mapOf("item" to "memo")),
+              modelMessage("Waiting for approval."),
+              finishTask("result" to "approved"),
+            )
+          ),
+        )
+      val writer = approvingTask(model, firstResult = mapOf("status" to "pending"))
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("write"))
+
+      // Act: the caller answers the call as well.
+      val events =
+        runLiveWorkflow(
+          Workflow("wf", listOf(Edge(Start, writer), Edge(writer, CaptureInput("capture")))),
+          queue,
+          resumable = true,
+        ) { event ->
+          answerApprovals(event, queue)
+        }
+
+      // Assert: the caller's answer, not the tool's, stopped the task waiting.
+      assertEquals(
+        listOf("approve", "approve"),
+        model.connections.single().receivedResponses().map { it.name },
+      )
+      assertEquals(
+        listOf(mapOf("result" to "approved"), mapOf("received" to mapOf("result" to "approved"))),
+        events.mapNotNull { it.output },
+      )
+      assertEquals(listOf("wf"), events.filter { it.actions.endOfAgent }.map { it.author })
+    }
+
+  @Test
+  fun taskNode_inTheGraph_longRunningStreamsOwnValue_keepsItWaitingOnTheCaller() = runBlocking {
+    // Arrange: the tool streams a value itself, and the caller never answers the call.
+    val model =
+      LiveNodeModel(
+        "writer",
+        listOf(
+          listOf(
+            modelFunctionCall("approve", mapOf("item" to "memo")),
+            modelMessage("Waiting for approval."),
+            finishTask("result" to "approved"),
+          )
+        ),
+      )
+    val writer = approvingTask(model, firstResult = flowOf(mapOf("progress" to 50)))
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("write"))
+
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, writer), Edge(writer, CaptureInput("capture")))),
+        queue,
+        resumable = true,
+      )
+
+    // Assert: the stream's pending answer and its value reached the model; the call still waits.
+    assertEquals(
+      listOf("approve", "approve"),
+      model.connections.single().receivedResponses().map { it.name },
+    )
+    assertEquals(listOf(mapOf("result" to "approved")), events.mapNotNull { it.output })
+    assertFalse(events.any { it.actions.endOfAgent })
+  }
+}
+
+/**
+ * Runs `Start -> first -> capture` live, resumable if [resumable], where [wrap] makes `first` from
+ * a `writer` task. The task calls the long-running `approve` tool, which the caller answers on the
+ * queue, then finishes. Returns the task's model and the events.
+ */
+private suspend fun runTaskWithALongRunningCallAnsweredLive(
+  wrap: (LlmAgent) -> Node,
+  resumable: Boolean,
+): Pair<LiveNodeModel, List<Event>> {
+  val model =
+    LiveNodeModel(
+      "writer",
+      listOf(
+        listOf(
+          modelFunctionCall("approve", mapOf("item" to "memo")),
+          finishTask("result" to "approved"),
+        )
+      ),
+    )
+  val first = wrap(approvingTask(model))
+  val queue = LiveRequestQueue()
+  queue.sendContent(userMessage("write"))
+  val events =
+    runLiveWorkflow(
+      Workflow("wf", listOf(Edge(Start, first), Edge(first, CaptureInput("capture")))),
+      queue,
+      resumable = resumable,
+    ) { event ->
+      answerApprovals(event, queue)
+    }
+  return model to events
+}
+
+/**
+ * A `writer` task on [model] whose long-running `approve` tool returns [firstResult]; `Unit` leaves
+ * the answer to the caller.
+ */
+private fun approvingTask(model: LiveNodeModel, firstResult: Any = Unit) =
+  LlmAgent(
+    name = "writer",
+    model = model,
+    tools =
+      listOf(DummyTool(name = "approve", isLongRunning = true, onRun = { _, _ -> firstResult })),
+    mode = AgentMode.TASK,
+  )
+
+/** Answers on [queue], as a live caller does, each `approve` call in [event] that [which] picks. */
+private fun answerApprovals(
+  event: Event,
+  queue: LiveRequestQueue,
+  which: (FunctionCall) -> Boolean = { true },
+) {
+  for (call in event.functionCalls().filter { it.name == "approve" && which(it) }) {
+    val answer = FunctionResponse(id = call.id, name = "approve", response = mapOf("ok" to true))
+    queue.sendContent(Content(role = Role.USER, parts = listOf(Part(functionResponse = answer))))
   }
 }
