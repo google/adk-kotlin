@@ -282,7 +282,7 @@ private const val BUILDER = "a FunctionNodes.builder node"
  * `java.time` values travel as ISO-8601 strings, and scalars follow the typed-port coercion table
  * with the exceptions listed on [FunctionNodes].
  */
-private val MAPPER: ObjectMapper =
+internal val MAPPER: ObjectMapper =
   JsonMapper.builder()
     .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
     .addModule(JavaTimeModule())
@@ -618,8 +618,7 @@ private fun createsFromObject(instantiator: ValueInstantiator): Boolean =
 private fun requireConcrete(type: JavaType, what: String) {
   val problem =
     when {
-      runCatching { MAPPER.serializerProviderInstance.findTypeSerializer(type) }.getOrNull() !=
-        null -> "is polymorphic (@JsonTypeInfo)"
+      isPolymorphic(type) -> "is polymorphic (@JsonTypeInfo)"
       type.isAbstract && !type.isEnumType && !type.isPrimitive && !hasBeanCreator(type) ->
         "is an interface or abstract class without a Jackson creator"
       else -> return
@@ -637,6 +636,10 @@ private fun requireConcrete(type: JavaType, what: String) {
       "$problem. $fix"
   )
 }
+
+/** Whether Jackson writes a type id for [type] (`@JsonTypeInfo`). */
+internal fun isPolymorphic(type: JavaType): Boolean =
+  runCatching { MAPPER.serializerProviderInstance.findTypeSerializer(type) }.getOrNull() != null
 
 /** Whether Jackson creates [type] as a bean through a creator, such as an AutoValue factory. */
 private fun hasBeanCreator(type: JavaType): Boolean {
@@ -657,7 +660,7 @@ private fun requireKeyReadable(type: JavaType, what: String) {
   }
 }
 
-private fun deserializationContext(): DefaultDeserializationContext =
+internal fun deserializationContext(): DefaultDeserializationContext =
   (MAPPER.deserializationContext as DefaultDeserializationContext).createDummyInstance(
     MAPPER.deserializationConfig
   )
