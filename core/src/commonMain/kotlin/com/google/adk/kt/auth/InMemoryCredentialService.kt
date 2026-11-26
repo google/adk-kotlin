@@ -25,14 +25,16 @@ import com.google.adk.kt.collections.concurrentMutableMapOf
  * session of a user shares them. It keeps each credential as saved, client secret included, and
  * loses them all when the process exits.
  */
-@ExperimentalAuthApi
-class InMemoryCredentialService : CredentialService {
+@OptIn(ExperimentalAuthApi::class)
+class InMemoryCredentialService @ExperimentalAuthApi constructor() : CredentialService {
 
   private val credentials = concurrentMutableMapOf<UserCredentialKey, AuthCredential>()
 
+  @ExperimentalAuthApi
   override suspend fun loadCredential(authConfig: AuthConfig, context: Context): AuthCredential? =
     credentials[context.userCredentialKey(authConfig)]
 
+  @ExperimentalAuthApi
   override suspend fun saveCredential(authConfig: AuthConfig, context: Context) {
     val key = context.userCredentialKey(authConfig)
     val credential = authConfig.exchangedAuthCredential

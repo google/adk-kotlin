@@ -560,6 +560,38 @@ open class Context(
   }
 
   /**
+   * Returns the credential the invocation's credential service holds for [authConfig], or null if
+   * it holds none. Unlike [getAuthResponse], which reads the app's sign-in reply from [state], it
+   * asks the invocation's credential service.
+   *
+   * @throws IllegalStateException if the invocation has no credential service.
+   */
+  @ExperimentalAuthApi
+  suspend fun loadCredential(authConfig: AuthConfig): AuthCredential? {
+    val service =
+      checkNotNull(invocationContext.credentialService) {
+        "credentialService not configured on invocation; cannot load a credential."
+      }
+    return service.loadCredential(authConfig, this)
+  }
+
+  /**
+   * Saves [credential] as [authConfig]'s credential in the invocation's credential service, so a
+   * later invocation can load it. It takes the credential rather than reading the config's
+   * exchanged credential, so a config without one can't erase the stored credential.
+   *
+   * @throws IllegalStateException if the invocation has no credential service.
+   */
+  @ExperimentalAuthApi
+  suspend fun saveCredential(authConfig: AuthConfig, credential: AuthCredential) {
+    val service =
+      checkNotNull(invocationContext.credentialService) {
+        "credentialService not configured on invocation; cannot save a credential."
+      }
+    service.saveCredential(authConfig.copy(exchangedAuthCredential = credential), this)
+  }
+
+  /**
    * The live run that started this tool call's stream, set while that stream runs; null otherwise.
    */
   @Volatile internal var liveInputSource: LiveStreamingTools? = null

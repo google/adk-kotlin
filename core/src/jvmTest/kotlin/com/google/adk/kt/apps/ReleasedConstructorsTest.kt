@@ -25,6 +25,7 @@ import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.artifacts.ArtifactService
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
@@ -75,6 +76,7 @@ import com.google.adk.kt.types.UrlContext
 import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceConfig
+import com.google.adk.kt.workflow.Node
 import com.google.adk.kt.workflow.NodeInfo
 import java.io.ByteArrayOutputStream
 import java.net.URLClassLoader
@@ -276,6 +278,34 @@ class ReleasedConstructorsTest {
   }
 
   @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun invocationContext_releasedNodeConstructor_stillLinksAndLeavesCredentialServiceUnset() {
+    // Arrange: the 1.5.0 call `InvocationContext(session, agent = agent, node = agent)`.
+    val session = testSession()
+    val agent = DummyAgent(name = "root")
+    val parameters = RELEASED_CONTEXT_PARAMETERS + Node::class.java
+    val allDefaulted = (1 shl parameters.size) - 1
+    // Bit i of the mask marks parameter i as defaulted.
+    val mask = allDefaulted and (1 or (1 shl 2) or (1 shl 19)).inv()
+    val arguments = arrayOfNulls<Any>(parameters.size)
+    arguments[0] = session
+    arguments[2] = agent
+    arguments[16] = false
+    arguments[19] = agent
+    val constructor =
+      InvocationContext::class
+        .java
+        .getConstructor(*parameters, Int::class.java, DefaultConstructorMarker::class.java)
+
+    // Act
+    val context = constructor.newInstance(*arguments, mask, null)
+
+    // Assert
+    assertSame(agent, context.node)
+    assertNull(context.credentialService)
+  }
+
+  @Test
   fun invocationContext_javaSourceWrittenAgainstTheReleasedApi_compiles() {
     // Arrange
     val session = testSession()
@@ -303,6 +333,13 @@ class ReleasedConstructorsTest {
                 new HashMap<>(), new HashMap<>(), new HashMap<>(), frameworkData, false,
                 pluginManager, new InvocationCostManager());
           }
+
+          public static InvocationContext createWithNode(Session session, BaseAgent agent) {
+            return new InvocationContext(
+                session, null, agent, null, "inv-1", null, null, null, null, null, null, null,
+                new HashMap<>(), new HashMap<>(), new HashMap<>(), new ContextFrameworkData(),
+                false, new PluginManager(), new InvocationCostManager(), agent);
+          }
         }
         """,
       )
@@ -318,12 +355,17 @@ class ReleasedConstructorsTest {
           PluginManager::class.java,
         )
         .invoke(null, session, agent, ContextFrameworkData(), PluginManager()) as InvocationContext
+    val withNode =
+      caller
+        .getMethod("createWithNode", Session::class.java, BaseAgent::class.java)
+        .invoke(null, session, agent) as InvocationContext
 
     // Assert
     assertSame(agent, context.agent)
     assertEquals("b", context.branch)
     assertEquals("inv-1", context.invocationId)
     assertNull(context.node)
+    assertSame(agent, withNode.node)
   }
 
   @Test

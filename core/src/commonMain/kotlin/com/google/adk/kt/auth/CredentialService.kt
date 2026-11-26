@@ -22,20 +22,21 @@ import com.google.adk.kt.annotations.ExperimentalAuthApi
 /**
  * Stores the credentials tools obtain, such as a user's OAuth2 tokens, so that later invocations
  * can reuse them instead of asking the user to sign in again. A failure of the underlying store
- * propagates as an exception.
+ * propagates as an exception. Implementing or calling a service requires
+ * `@OptIn(ExperimentalAuthApi::class)`; holding one does not.
  */
-@ExperimentalAuthApi
 interface CredentialService {
 
   /**
    * Returns the credential stored under [authConfig]'s [AuthConfig.credentialKey] for [context], or
    * null if there is none.
    */
+  @ExperimentalAuthApi
   suspend fun loadCredential(authConfig: AuthConfig, context: Context): AuthCredential?
 
   /**
    * Stores [authConfig]'s [AuthConfig.exchangedAuthCredential] under its [AuthConfig.credentialKey]
    * for [context]. If that credential is null, a later [loadCredential] returns null.
    */
-  suspend fun saveCredential(authConfig: AuthConfig, context: Context)
+  @ExperimentalAuthApi suspend fun saveCredential(authConfig: AuthConfig, context: Context)
 }
