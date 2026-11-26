@@ -4976,6 +4976,11 @@ class LlmAgentTurnTest {
       assertSpeechKeepsTheConnectionsOrder(
         afterModelCallbacks = listOf(AfterModelCallback { _, response -> response })
       )
+      // A finished reply waits only to see whether a call follows; without one, its order holds.
+      assertSpeechKeepsTheConnectionsOrder(
+        afterModelCallbacks = emptyList(),
+        output = LlmResponse(outputTranscription = Transcription("ok", finished = true)),
+      )
     }
 
   /**
@@ -4983,14 +4988,16 @@ class LlmAgentTurnTest {
    * "hi" comes after the output, once, and is screened once.
    */
   private suspend fun assertSpeechKeepsTheConnectionsOrder(
-    afterModelCallbacks: List<AfterModelCallback>
+    afterModelCallbacks: List<AfterModelCallback>,
+    output: LlmResponse =
+      LlmResponse(content = modelMessage("ok"), outputTranscription = Transcription("ok")),
   ) {
     val queue = LiveRequestQueue()
     var screens = 0
     val conn =
       ScriptedConn("parent") {
         emit(inputTranscription("hi", finished = false))
-        emit(LlmResponse(content = modelMessage("ok"), outputTranscription = Transcription("ok")))
+        emit(output)
         emit(LlmResponse(inputTranscription = Transcription("hi", finished = true)))
         emit(turnComplete())
         queue.close()
@@ -5017,6 +5024,75 @@ class LlmAgentTurnTest {
     val output = events.indexOfFirst { it.outputTranscription != null }
     assertTrue(output in 0 until events.indexOf(finished.single()))
     assertEquals(1, screens)
+  }
+
+  @Test
+  fun runLive_finishedReplyThenACallAfterUnfinishedSpeech_storesTheSpeechFirstAndScreensItOnce():
+    Unit = runBlocking {
+    // The call needs the speech stored before the words that led to it; the later copy is skipped.
+    val queue = LiveRequestQueue()
+    var screens = 0
+    val conn =
+      ScriptedConn("parent") {
+        emit(inputTranscription("hi", finished = false))
+        emit(LlmResponse(outputTranscription = Transcription("ok", finished = true)))
+        emit(modelFunctionCallResponse("lookup"))
+        emit(LlmResponse(inputTranscription = Transcription("hi", finished = true)))
+        emit(turnComplete())
+        queue.close()
+        it.closed.await()
+      }
+    val agent =
+      LlmAgent(
+        name = "parent",
+        model = RecordingLiveModel(conn),
+        tools = listOf(DummyTool("lookup")),
+        beforeModelCallbacks =
+          listOf(
+            BeforeModelCallback { _, request ->
+              if (request.contents.any { c -> c.parts.any { it.text == "hi" } }) screens++
+              CallbackChoice.Continue(request)
+            }
+          ),
+      )
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    val finished = events.filter { it.inputTranscription?.finished == true }
+    assertEquals(listOf("hi"), finished.map { it.inputTranscription?.text })
+    val reply = events.indexOfFirst { it.outputTranscription?.finished == true }
+    val call = events.indexOfFirst { it.functionCalls().isNotEmpty() }
+    assertTrue(events.indexOf(finished.single()) in 0 until reply && reply < call)
+    assertEquals(1, screens)
+  }
+
+  @Test
+  fun runLive_finishedReplyThenACallAfterBlockedSpeech_keepsNeitherTheReplyNorTheCall() = runTest {
+    val queue = LiveRequestQueue()
+    val conn =
+      ScriptedConn("parent") {
+        emit(inputTranscription("hi", finished = false))
+        emit(LlmResponse(outputTranscription = Transcription("ok", finished = true)))
+        emit(modelFunctionCallResponse("lookup"))
+        it.closed.await()
+      }
+    val model =
+      RecordingLiveModel(conn, ScriptedConn("restarted") { it.closed.await() }) { n ->
+        if (n == 2) queue.close()
+      }
+    val agent =
+      LlmAgent(
+        name = "parent",
+        model = model,
+        tools = listOf(DummyTool("lookup")),
+        beforeModelCallbacks = listOf(slowScreening(block = true)),
+      )
+
+    val events = agent.runLive(liveContextFor(agent, queue)).toList()
+
+    assertEquals(2, model.connectCalls)
+    assertTrue(events.none { it.outputTranscription?.finished == true })
+    assertTrue(events.none { it.functionCalls().isNotEmpty() })
   }
 
   @Test

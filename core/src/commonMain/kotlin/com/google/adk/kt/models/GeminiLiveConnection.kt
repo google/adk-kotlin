@@ -252,8 +252,9 @@ internal class GeminiLiveConnection(
    * Input transcription chunks seen since the last flush; [outputTranscript] is its output twin.
    *
    * The server sends a transcription in pieces and does not reliably mark the last one, so the
-   * aggregate is rebuilt here and flushed on a signal that the turn is over. Touched only from the
-   * receive path, which the single-collector contract keeps to one coroutine at a time.
+   * aggregate is rebuilt here and flushed on a signal that the turn is over; the output aggregate
+   * is also flushed at a tool call. Touched only from the receive path, which the single-collector
+   * contract keeps to one coroutine at a time.
    */
   private var inputTranscript = StringBuilder()
   private var outputTranscript = StringBuilder()
@@ -347,7 +348,7 @@ internal class GeminiLiveConnection(
                 )
               )
             }
-            if (response.outputTranscription.finished == true) {
+            if (response.outputTranscription.finished == true && outputTranscript.isNotEmpty()) {
               emit(outputTranscriptResponse())
             }
           }
@@ -417,7 +418,9 @@ internal class GeminiLiveConnection(
       heldInterrupted?.let { emit(it) }
       // Emitted after the loop so usage leads; the call carries and clears the turn's grounding.
       message.toolCall?.functionCalls?.let { calls ->
+        // Finished before the call, transcript last, so the user's speech can still go first.
         if (modelText.isNotEmpty()) emit(buildFullTextResponse())
+        if (outputTranscript.isNotEmpty()) emit(outputTranscriptResponse())
         emit(
           LlmResponse(
             content =

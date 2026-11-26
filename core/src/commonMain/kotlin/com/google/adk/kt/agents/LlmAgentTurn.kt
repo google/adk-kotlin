@@ -223,7 +223,10 @@ internal class LlmAgentTurn(
   /** Speech stored ahead of a tool call, so the connection's own finished copy is skipped. */
   @Volatile private var storedInput: String? = null
 
-  /** The model's words a drain holds until it sees whether a tool call follows, in order. */
+  /**
+   * The model's words held, in order, until it is clear whether a tool call follows: during a
+   * drain, or while the user is still speaking.
+   */
   private val heldOutput = mutableListOf<LlmResponse>()
 
   /**
@@ -1067,6 +1070,10 @@ internal class LlmAgentTurn(
     if (response.turnComplete == true) {
       result.completedATurn = true
     }
+    // Words held for the user's speech go out first, unless this is the call they wait for.
+    if (!drain.isDraining && response.content?.hasFunctionCall() != true) {
+      releaseHeldOutput(request, queue, emitEvent)
+    }
     storedInput?.let { stored ->
       val rest = response.finishedInputAfter(stored) ?: return@let
       storedInput = null
@@ -1103,17 +1110,27 @@ internal class LlmAgentTurn(
       if (response.endsModelTurn() || response.interrupted) {
         releaseHeldOutput(request, queue, emitEvent)
       }
+    } else if (
+      unfinishedInput.isNotEmpty() &&
+        response.outputTranscription?.finished == true &&
+        response.isStoredModelOutput()
+    ) {
+      // If a call follows, the speech goes before these words, so they wait for one response.
+      heldOutput += response
+      return null
     }
-    // Store and screen the speech before any tool runs.
+    // Store and screen the speech before any tool runs, and before the words held for it.
     if (unfinishedInput.isNotEmpty() && response.content?.hasFunctionCall() == true) {
       val speech = unfinishedInput
       unfinishedInput = ""
-      // A blocked question runs no tool; the turn ends and starts over.
+      // A blocked question runs no tool and keeps no reply; the turn ends and starts over.
       if (emitAsFinishedInput(request, speech, response, queue, emitEvent)) {
+        heldOutput.clear()
         return LiveTurnsEnd.BLOCKED
       }
       storedInput = storedInput.orEmpty() + speech
     }
+    if (!drain.isDraining) releaseHeldOutput(request, queue, emitEvent)
     // The speech is screened only once it is finished, so a transfer set meanwhile waits.
     val holdTransfer: ((String) -> Unit)? =
       if (unfinishedInput.isEmpty() && storedInput == null) null

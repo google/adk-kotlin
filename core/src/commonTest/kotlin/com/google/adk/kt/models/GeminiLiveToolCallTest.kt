@@ -14,9 +14,35 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalLiveApi::class, ExperimentalWorkflowApi::class)
+
 package com.google.adk.kt.models
 
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BaseAgent
+import com.google.adk.kt.agents.LiveRequestQueue
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
+import com.google.adk.kt.callbacks.AfterModelCallback
+import com.google.adk.kt.callbacks.BeforeModelCallback
+import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.SessionKey
+import com.google.adk.kt.testing.DummyLiveModel
+import com.google.adk.kt.testing.DummyLiveStep
+import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.TaskCompletedTool.Companion.TASK_COMPLETED_TOOL_NAME
+import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
+import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.GroundingMetadata
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.node
 import com.google.common.truth.Truth.assertThat
 import com.google.genai.kotlin.types.ActivityEnd as SdkActivityEnd
 import com.google.genai.kotlin.types.ActivityStart as SdkActivityStart
@@ -36,10 +62,13 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonPrimitive
 
 private const val MODEL = "gemini-live-test"
 private const val GEMINI_25_LIVE = "gemini-2.5-flash-live"
@@ -48,7 +77,8 @@ private const val GEMINI_25_LIVE = "gemini-2.5-flash-live"
  * Tests when a live connection hands a tool call to its caller.
  *
  * Each tool call is delivered as its frame arrives, carrying the turn's grounding, so a caller can
- * answer it without waiting for the turn to complete.
+ * answer it without waiting for the turn to complete. The `runLive` tests check what a run then
+ * stores of the speech around the call.
  */
 class GeminiLiveToolCallTest {
 
@@ -434,10 +464,6 @@ class GeminiLiveToolCallTest {
   @Test
   fun receive_inputTranscriptionAcrossTwoTurns_aggregatesEachSeparately(): Unit = runBlocking {
     // The input transcript must reset at each turn's flush; otherwise turn 2 carries turn 1's text.
-    fun inputFrame(text: String) =
-      SdkLiveServerMessage(
-        serverContent = SdkLiveServerContent(inputTranscription = SdkTranscription(text = text))
-      )
     val connection =
       GeminiLiveConnection(
         ParkingSession(
@@ -730,4 +756,491 @@ class GeminiLiveToolCallTest {
 
     assertThat(responses.single { it.turnComplete == true }.groundingMetadata).isNull()
   }
+
+  private fun outputFrame(text: String?, finished: Boolean? = null) =
+    SdkLiveServerMessage(
+      serverContent =
+        SdkLiveServerContent(
+          outputTranscription = SdkTranscription(text = text, finished = finished)
+        )
+    )
+
+  private fun inputFrame(text: String?, finished: Boolean? = null) =
+    SdkLiveServerMessage(
+      serverContent =
+        SdkLiveServerContent(
+          inputTranscription = SdkTranscription(text = text, finished = finished)
+        )
+    )
+
+  /** Each response as one line: a tool call, a transcription chunk or aggregate, or turn end. */
+  private fun timeline(responses: List<LlmResponse>): List<String> =
+    responses.mapNotNull { response ->
+      val output = response.outputTranscription
+      val input = response.inputTranscription
+      when {
+        toolNamesOf(response).isNotEmpty() -> "call:" + toolNamesOf(response).joinToString()
+        output != null -> (if (output.finished == true) "said:" else "saying:") + output.text
+        input != null -> (if (input.finished == true) "heard:" else "hearing:") + input.text
+        response.turnComplete == true -> "turnComplete"
+        else -> null
+      }
+    }
+
+  @Test
+  fun receive_speechThenToolCall_finishesTheSpeechBeforeTheCall(): Unit = runBlocking {
+    // A handover stops reading at the call, before the server marks the speech finished.
+    val responses =
+      collect(
+        GEMINI_25_LIVE,
+        listOf(outputFrame("One "), outputFrame("moment."), toolCallFrame("t")),
+      )
+
+    assertThat(timeline(responses))
+      .containsExactly("saying:One ", "saying:moment.", "said:One moment.", "call:t")
+      .inOrder()
+  }
+
+  @Test
+  fun receive_userAndModelSpeechThenToolCall_leavesTheUsersSpeechToTheTurn(): Unit = runBlocking {
+    // The caller finishes the user's speech itself, so its finished copy still follows the call.
+    val responses =
+      collect(
+        GEMINI_25_LIVE,
+        listOf(
+          inputFrame("Book a table"),
+          outputFrame("One moment."),
+          toolCallFrame("t"),
+          turnCompleteFrame(),
+        ),
+      )
+
+    assertThat(timeline(responses))
+      .containsExactly(
+        "hearing:Book a table",
+        "saying:One moment.",
+        "said:One moment.",
+        "call:t",
+        "heard:Book a table",
+        "turnComplete",
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun receive_speechOnBothSidesOfACall_finishesEachPartOnce(): Unit = runBlocking {
+    val responses =
+      collect(
+        GEMINI_25_LIVE,
+        listOf(
+          outputFrame("Let me check."),
+          toolCallFrame("lookup"),
+          outputFrame(" It's sunny."),
+          turnCompleteFrame(),
+        ),
+      )
+
+    assertThat(timeline(responses))
+      .containsExactly(
+        "saying:Let me check.",
+        "said:Let me check.",
+        "call:lookup",
+        "saying: It's sunny.",
+        "said: It's sunny.",
+        "turnComplete",
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun receive_endMarkerAfterTheCall_addsNoEmptyTranscription(): Unit = runBlocking {
+    // The server's own end marker can arrive after the call, once the speech is finished.
+    val responses =
+      collect(
+        GEMINI_25_LIVE,
+        listOf(
+          outputFrame("One moment."),
+          toolCallFrame("t"),
+          outputFrame(text = null, finished = true),
+          turnCompleteFrame(),
+        ),
+      )
+
+    assertThat(timeline(responses))
+      .containsExactly("saying:One moment.", "said:One moment.", "call:t", "turnComplete")
+      .inOrder()
+  }
+
+  @Test
+  fun receive_finishedChunkAfterTheCall_finishesOnlyTheRest(): Unit = runBlocking {
+    val responses =
+      collect(
+        GEMINI_25_LIVE,
+        listOf(outputFrame("One "), toolCallFrame("t"), outputFrame("moment.", finished = true)),
+      )
+
+    assertThat(timeline(responses))
+      .containsExactly("saying:One ", "said:One ", "call:t", "saying:moment.", "said:moment.")
+      .inOrder()
+  }
+
+  @Test
+  fun receive_toolCallWithNothingSaid_addsNoTranscription(): Unit = runBlocking {
+    val responses = collect(GEMINI_25_LIVE, listOf(toolCallFrame("t"), turnCompleteFrame()))
+
+    assertThat(timeline(responses)).containsExactly("call:t", "turnComplete").inOrder()
+  }
+
+  /** A live model whose one connection replays [frames], then stays open like a real socket. */
+  private class ScriptedLiveModel(private val frames: List<SdkLiveServerMessage>) : Model {
+    override val name = GEMINI_25_LIVE
+
+    override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+      throw UnsupportedOperationException("Live only.")
+
+    override suspend fun connect(request: LlmRequest): LiveConnection =
+      GeminiLiveConnection(ParkingSession(frames), modelVersion = name)
+  }
+
+  /** A tool call with an id and arguments, which a runner needs to answer it. */
+  private fun callFrame(name: String, args: Map<String, String> = emptyMap()) =
+    SdkLiveServerMessage(
+      toolCall =
+        SdkLiveServerToolCall(
+          functionCalls =
+            listOf(
+              SdkFunctionCall(
+                id = "call-$name",
+                name = name,
+                args = args.mapValues { JsonPrimitive(it.value) },
+              )
+            )
+        )
+    )
+
+  private val helper =
+    LlmAgent(
+      name = "helper",
+      description = "Helps.",
+      model = DummyLiveModel(listOf(DummyLiveStep.EndStream)),
+    )
+
+  /** What [runner] stored, one line per event: who spoke or heard what, and the calls. */
+  private suspend fun storedTimeline(runner: InMemoryRunner): List<String> =
+    runner.sessionService
+      .getSession(SessionKey(runner.appName, "u", "s"))
+      ?.events
+      .orEmpty()
+      .mapNotNull { event ->
+        when {
+          event.functionCalls().isNotEmpty() -> "call:" + event.functionCalls().single().name
+          event.functionResponses().isNotEmpty() ->
+            "answer:" + event.functionResponses().single().name
+          event.outputTranscription != null ->
+            "${event.author} said:${event.outputTranscription.text}"
+          event.inputTranscription != null -> "user said:${event.inputTranscription.text}"
+          else -> null
+        }
+      }
+
+  private suspend fun runLiveAndStore(agent: BaseAgent, endOnTurnComplete: Boolean = false) =
+    InMemoryRunner(agent = agent).also { runner ->
+      val queue = LiveRequestQueue()
+      runner
+        .runLive("u", "s", queue)
+        .onEach { if (endOnTurnComplete && it.turnComplete) queue.close() }
+        .onCompletion { queue.close() }
+        .toList()
+    }
+
+  @Test
+  fun runLive_speechBeforeATransfer_isStoredBeforeTheCall(): Unit = runBlocking {
+    val router =
+      LlmAgent(
+        name = "router",
+        model =
+          ScriptedLiveModel(
+            listOf(
+              inputFrame("I need help."),
+              outputFrame("One moment."),
+              callFrame(TRANSFER_TO_AGENT_TOOL_NAME, mapOf("agent_name" to "helper")),
+            )
+          ),
+        subAgents = listOf(helper),
+      )
+
+    val runner = runLiveAndStore(router)
+
+    assertThat(storedTimeline(runner))
+      .containsExactly(
+        "user said:I need help.",
+        "router said:One moment.",
+        "call:transfer_to_agent",
+        "answer:transfer_to_agent",
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_speechBeforeTaskCompleted_isStoredBeforeTheNextStep(): Unit = runBlocking {
+    val step1 =
+      LlmAgent(
+        name = "step1",
+        description = "s",
+        model =
+          ScriptedLiveModel(listOf(outputFrame("All done."), callFrame(TASK_COMPLETED_TOOL_NAME))),
+      )
+    val step2 =
+      LlmAgent(
+        name = "step2",
+        description = "s",
+        model = ScriptedLiveModel(listOf(outputFrame("Next."), turnCompleteFrame())),
+      )
+
+    val runner =
+      runLiveAndStore(
+        SequentialAgent("sequence", subAgents = listOf(step1, step2)),
+        endOnTurnComplete = true,
+      )
+
+    assertThat(storedTimeline(runner))
+      .containsExactly(
+        "step1 said:All done.",
+        "call:task_completed",
+        "answer:task_completed",
+        "step2 said:Next.",
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_speechAroundAnOrdinaryToolCall_isStoredInTwoPartsInSpokenOrder(): Unit = runBlocking {
+    val lookup = DummyTool(name = "lookup", declares = true) { _, _ -> "sunny" }
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          ScriptedLiveModel(
+            listOf(
+              outputFrame("Let me check."),
+              callFrame("lookup"),
+              outputFrame(" It's sunny."),
+              turnCompleteFrame(),
+            )
+          ),
+        tools = listOf(lookup),
+      )
+
+    val runner = runLiveAndStore(agent, endOnTurnComplete = true)
+
+    assertThat(storedTimeline(runner))
+      .containsExactly(
+        "agent said:Let me check.",
+        "call:lookup",
+        "answer:lookup",
+        "agent said: It's sunny.",
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_userSpeechBeforeAReplyAndACall_isStoredOnce(): Unit = runBlocking {
+    // The connection finishes the user's speech after the call; that copy is not stored again.
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          ScriptedLiveModel(
+            listOf(
+              inputFrame("I need help."),
+              outputFrame("Let me check."),
+              callFrame("lookup"),
+              inputFrame(text = null, finished = true),
+              turnCompleteFrame(),
+            )
+          ),
+        tools = listOf(DummyTool(name = "lookup", declares = true)),
+      )
+
+    val runner = runLiveAndStore(agent, endOnTurnComplete = true)
+
+    assertThat(storedTimeline(runner))
+      .containsExactly(
+        "user said:I need help.",
+        "agent said:Let me check.",
+        "call:lookup",
+        "answer:lookup",
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_callbackTransferHeldForTheUsersSpeech_yieldsToATransferCall(): Unit = runBlocking {
+    // The callback's transfer waits for the user's speech to be screened; the call's transfer wins.
+    val screened = mutableListOf<String>()
+    val fallback =
+      LlmAgent(
+        name = "fallback",
+        description = "Takes over.",
+        model = DummyLiveModel(listOf(DummyLiveStep.EndStream)),
+      )
+    val router =
+      LlmAgent(
+        name = "router",
+        model =
+          ScriptedLiveModel(
+            listOf(
+              inputFrame("I need help."),
+              outputFrame("One moment."),
+              callFrame(TRANSFER_TO_AGENT_TOOL_NAME, mapOf("agent_name" to "helper")),
+            )
+          ),
+        subAgents = listOf(helper, fallback),
+        beforeModelCallbacks =
+          listOf(
+            BeforeModelCallback { _, request ->
+              request.contents.flatMap { it.parts }.mapNotNullTo(screened) { it.text }
+              CallbackChoice.Continue(request)
+            }
+          ),
+        afterModelCallbacks =
+          listOf(
+            AfterModelCallback { context, response ->
+              context.actions.transferToAgent = "fallback"
+              response
+            }
+          ),
+      )
+
+    val runner = runLiveAndStore(router)
+
+    assertThat(screened).containsExactly("I need help.")
+    assertThat(storedTimeline(runner))
+      .containsExactly(
+        "user said:I need help.",
+        "router said:One moment.",
+        "call:transfer_to_agent",
+        "answer:transfer_to_agent",
+      )
+      .inOrder()
+    val events = runner.sessionService.getSession(SessionKey(runner.appName, "u", "s"))?.events
+    assertThat(events.orEmpty().mapNotNull { it.actions.transferToAgent }).containsExactly("helper")
+  }
+
+  @Test
+  fun runLive_speechBeforeATransfer_leavesTheRequestFirstForAnIncludeContentsNoneTarget(): Unit =
+    runBlocking {
+      val targetModel = DummyLiveModel(listOf(DummyLiveStep.EndStream))
+      val target =
+        LlmAgent(
+          name = "target",
+          description = "Helps.",
+          model = targetModel,
+          includeContents = LlmAgent.IncludeContents.NONE,
+        )
+      val router =
+        LlmAgent(
+          name = "router",
+          model =
+            ScriptedLiveModel(
+              listOf(
+                inputFrame("I need help with my booking."),
+                outputFrame("One moment."),
+                callFrame(TRANSFER_TO_AGENT_TOOL_NAME, mapOf("agent_name" to "target")),
+              )
+            ),
+          subAgents = listOf(target),
+        )
+
+      val unused = runLiveAndStore(router)
+
+      val history = targetModel.connections.first().sent.first { it is List<*> } as List<*>
+      assertThat(history.filterIsInstance<Content>().first().parts.map { it.text })
+        .containsExactly("I need help with my booking.")
+    }
+
+  @Test
+  fun runLive_speechBeforeFinishTaskInATaskNode_isStoredBeforeTheCall(): Unit = runBlocking {
+    val writer =
+      LlmAgent(
+        name = "writer",
+        description = "Writes.",
+        model =
+          ScriptedLiveModel(
+            listOf(outputFrame("One moment."), callFrame("finish_task", mapOf("result" to "done")))
+          ),
+        mode = AgentMode.TASK,
+      )
+    val start =
+      node<Any?, Any?>("start_writer", rerunOnResume = true) { context, input ->
+        context.runNode(writer, nodeInput = input, useAsOutput = true)
+      }
+    val app = App(appName = "app", rootNode = Workflow("wf", listOf(Edge(Start, start))))
+    val runner = InMemoryRunner(app = app)
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("go"))
+
+    withTimeout(30_000) { runner.runLive("u", "s", queue).onCompletion { queue.close() }.toList() }
+
+    assertThat(storedTimeline(runner))
+      .containsExactly("writer said:One moment.", "call:finish_task", "answer:finish_task")
+      .inOrder()
+  }
+
+  @Test
+  fun runLive_finishedReplyWithoutACallWhileTheUserSpeaks_isStoredInTheConnectionsOrder(): Unit =
+    runBlocking {
+      // Only a call moves the user's speech ahead of the model's words.
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model =
+            ScriptedLiveModel(
+              listOf(
+                inputFrame("Book a table"),
+                outputFrame("Sure.", finished = true),
+                inputFrame(" for two"),
+                outputFrame(" Done."),
+                turnCompleteFrame(),
+              )
+            ),
+        )
+
+      val runner = runLiveAndStore(agent, endOnTurnComplete = true)
+
+      assertThat(storedTimeline(runner))
+        .containsExactly("agent said:Sure.", "user said:Book a table for two", "agent said: Done.")
+        .inOrder()
+    }
+
+  @Test
+  fun runLive_thoughtAndSpeechBeforeATransfer_storesTheUsersSpeechBeforeTheAgentsWords(): Unit =
+    runBlocking {
+      // The thought's full text comes before the call too; it must not release the agent's words.
+      val router =
+        LlmAgent(
+          name = "router",
+          model =
+            ScriptedLiveModel(
+              listOf(
+                inputFrame("I need help."),
+                thoughtFrame("The user needs help."),
+                outputFrame("One moment."),
+                callFrame(TRANSFER_TO_AGENT_TOOL_NAME, mapOf("agent_name" to "helper")),
+              )
+            ),
+          subAgents = listOf(helper),
+        )
+
+      val runner = runLiveAndStore(router)
+
+      assertThat(storedTimeline(runner))
+        .containsExactly(
+          "user said:I need help.",
+          "router said:One moment.",
+          "call:transfer_to_agent",
+          "answer:transfer_to_agent",
+        )
+        .inOrder()
+    }
 }

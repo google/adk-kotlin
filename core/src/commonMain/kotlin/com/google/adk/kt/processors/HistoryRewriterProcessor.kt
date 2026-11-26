@@ -429,8 +429,9 @@ internal class HistoryRewriterProcessor {
   /**
    * Returns the suffix of [events] that belongs to the current turn under [IncludeContents.NONE],
    * as ADK Python's `_get_current_turn_contents` does. The turn starts at the latest user input or
-   * event presented as another agent's reply, skipping transfers and posted-back results and
-   * reaching back to the call such a result answers. Returns an empty list if nothing can start it.
+   * event presented as another agent's reply, skipping transfers, the speech right before them, and
+   * posted-back results, and reaching back to the call such a result answers. Returns an empty list
+   * if nothing can start it.
    */
   private fun getCurrentTurnEvents(
     events: List<Event>,
@@ -454,7 +455,8 @@ internal class HistoryRewriterProcessor {
         unmatchedResultIds.isNotEmpty() ||
           isSubmittedResult ||
           isDirectTransfer(events[i]) ||
-          isStreamFinalAnswer(events[i])
+          isStreamFinalAnswer(events[i]) ||
+          isSpeechBeforeOwnTransfer(events, i)
       ) {
         continue
       }
@@ -522,6 +524,22 @@ internal class HistoryRewriterProcessor {
   private fun isDirectTransfer(event: Event): Boolean =
     event.actions.transferToAgent != null ||
       event.functionCalls().any { it.name == TransferToAgentTool.TRANSFER_TO_AGENT_TOOL_NAME }
+
+  /**
+   * Whether the event at [index] is speech its author gave right before their own
+   * `transfer_to_agent` call. A live agent's words are stored apart from that call, and a turn
+   * started on them would drop the user input that led to the transfer, as one started on the call
+   * would.
+   */
+  private fun isSpeechBeforeOwnTransfer(events: List<Event>, index: Int): Boolean {
+    val event = events[index]
+    if (transcriptionKind(event) != TranscriptionKind.OUTPUT) return false
+    val next =
+      events.subList(index + 1, events.size).firstOrNull {
+        it.author == event.author && (it.functionCalls().isNotEmpty() || hasContent(it))
+      } ?: return false
+    return isDirectTransfer(next)
+  }
 
   /**
    * Returns where the transcription run that ends at [end] starts, so the current turn keeps all of

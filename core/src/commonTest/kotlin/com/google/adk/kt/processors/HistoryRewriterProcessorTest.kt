@@ -951,6 +951,37 @@ class HistoryRewriterProcessorTest {
     )
   }
 
+  @Test
+  fun rewrite_includeContentsNone_otherAgentsSpeechBeforeItsTransfer_doesNotStartTheTurn() {
+    val call = modelFunctionCall("transfer_to_agent", mapOf("agent_name" to "booking"), "t1")
+    val events =
+      listOf(
+        heard("Book a table."),
+        spoken("One moment.", author = "router"),
+        Event(author = "router", content = call),
+        Event(
+          author = "router",
+          content = userFunctionResponse("transfer_to_agent", "t1"),
+          actions = EventActions(transferToAgent = "booking"),
+        ),
+      )
+
+    val contents = rewrite(events, agentName = "booking", includeContents = IncludeContents.NONE)
+
+    assertEquals(
+      listOf(
+        listOf("Book a table."),
+        listOf("For context:", "[router] said: One moment."),
+        listOf(
+          "For context:",
+          "[router] called tool `transfer_to_agent` with parameters: {\"agent_name\":\"booking\"}",
+        ),
+        listOf("For context:", "[router] `transfer_to_agent` tool returned result: {}"),
+      ),
+      texts(contents),
+    )
+  }
+
   // A posted-back result continues its call's turn, even across a later user message.
   @Test
   fun rewrite_includeContentsNone_submittedResult_reachesBackToItsCall() {
