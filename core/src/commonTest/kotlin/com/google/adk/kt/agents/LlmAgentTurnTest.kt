@@ -88,10 +88,12 @@ import com.google.adk.kt.tools.TaskCompletedTool.Companion.TASK_COMPLETED_TOOL_N
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
+import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.GroundingMetadata
 import com.google.adk.kt.types.InteractionStatus
 import com.google.adk.kt.types.LiveServerGoAway
@@ -1058,6 +1060,43 @@ class LlmAgentTurnTest {
     val events = agent.runLive(liveContextFor(agent)).toList()
 
     assertEquals("live-1", events.single { it.functionResponses().isNotEmpty() }.liveSessionId)
+  }
+
+  @Test
+  fun runLive_toolWithAResponseScheduling_answersWithIt() {
+    runBlocking {
+      val whenIdle =
+        object : FunctionTool("my_function", "Answers when idle.") {
+          // Blocking, so its call is answered inline, before the turn ends.
+          override val behavior = Behavior.BLOCKING
+          override val responseScheduling = FunctionResponseScheduling.WHEN_IDLE
+
+          override fun declaration() = null
+
+          override suspend fun execute(context: ToolContext, args: Map<String, Any?>): Any =
+            mapOf("response" to "done")
+        }
+      val connection = RecordingLiveConnection(toolCallTurn())
+      val agent =
+        LlmAgent(
+          name = "LiveAgent",
+          model = RecordingLiveModel(connection),
+          tools = listOf(whenIdle),
+        )
+
+      val events = agent.runLive(liveContextFor(agent)).toList()
+
+      val sent = connection.sentContent.flatMap { it.parts }.mapNotNull { it.functionResponse }
+      assertEquals(
+        listOf(mapOf("response" to "done") to FunctionResponseScheduling.WHEN_IDLE),
+        sent.map { it.response to it.scheduling },
+      )
+      val answer = events.single { it.functionResponses().isNotEmpty() }
+      assertEquals(
+        listOf(FunctionResponseScheduling.WHEN_IDLE),
+        answer.functionResponses().map { it.scheduling },
+      )
+    }
   }
 
   @Test

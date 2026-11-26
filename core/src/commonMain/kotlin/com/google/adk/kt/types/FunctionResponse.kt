@@ -17,6 +17,7 @@
 package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.EncodeDefault
@@ -28,21 +29,26 @@ import kotlinx.serialization.Serializable
  * @property name The name of the function.
  * @property response The response from the function.
  * @property id The unique identifier for this function response.
+ * @property scheduling When a live model reacts to this response to a non-blocking call.
  */
 @Serializable
-data class FunctionResponse(
+data class FunctionResponse
+@JvmOverloads
+constructor(
   val name: String,
   // Always emit response (even empty {}) to match the genai/Python golden shape.
   @EncodeDefault(EncodeDefault.Mode.ALWAYS)
   val response: Map<String, @Contextual Any?> = emptyMap(),
   val id: String? = null,
+  val scheduling: FunctionResponseScheduling? = null,
 ) {
   /**
    * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
    * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
    * changes whenever a property is added.
    */
-  @AdkJavaInteropApi fun toBuilder(): Builder = Builder().name(name).response(response).id(id)
+  @AdkJavaInteropApi
+  fun toBuilder(): Builder = Builder().name(name).response(response).id(id).scheduling(scheduling)
 
   /**
    * Fluent builder for [FunctionResponse], provided primarily for Java callers. Any property left
@@ -54,6 +60,7 @@ data class FunctionResponse(
     private var name: String? = null
     private var response: Map<String, Any?> = emptyMap()
     private var id: String? = null
+    private var scheduling: FunctionResponseScheduling? = null
 
     fun name(name: String): Builder = apply { this.name = name }
 
@@ -61,11 +68,16 @@ data class FunctionResponse(
 
     fun id(id: String?): Builder = apply { this.id = id }
 
+    fun scheduling(scheduling: FunctionResponseScheduling?): Builder = apply {
+      this.scheduling = scheduling
+    }
+
     fun build(): FunctionResponse =
       FunctionResponse(
         name = checkNotNull(name) { "FunctionResponse.Builder requires name to be set." },
         response = response,
         id = id,
+        scheduling = scheduling,
       )
   }
 

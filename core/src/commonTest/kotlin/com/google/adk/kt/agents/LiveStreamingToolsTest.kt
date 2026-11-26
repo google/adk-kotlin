@@ -19,13 +19,19 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyModel
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.FunctionResponseScheduling.INTERRUPT
+import com.google.adk.kt.types.FunctionResponseScheduling.SILENT
+import com.google.adk.kt.types.FunctionResponseScheduling.WHEN_IDLE
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
@@ -38,6 +44,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -73,10 +80,26 @@ class LiveStreamingToolsTest {
     )
 
   /** Starts [tool]'s stream for [callId], as a run does once the pending answer is queued. */
-  private suspend fun LiveStreamingTools.startStream(tool: DummyTool, callId: String) {
+  private suspend fun LiveStreamingTools.startStream(tool: BaseTool, callId: String) {
     val unused = run(tool, streamingToolContext(callId), emptyMap())
     onAnswersQueued(answerTo(callId))
   }
+
+  /** A tool named `monitor` whose answers default to [WHEN_IDLE], running [onRun]. */
+  private class ScheduledTool(private val onRun: () -> Any) : BaseTool("monitor", "A tool.") {
+    override val responseScheduling = WHEN_IDLE
+
+    override fun declaration(): FunctionDeclaration? = null
+
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = onRun()
+  }
+
+  /** The function responses in the next [count] requests sent to the model on this queue. */
+  private suspend fun LiveRequestQueue.nextAnswers(count: Int): List<FunctionResponse> =
+    (1..count).flatMap {
+      val request = checkNotNull(receiveRequest()) { "queue closed before answer $it" }
+      (request.input as ContentInput).content.parts.mapNotNull { part -> part.functionResponse }
+    }
 
   @Test
   fun onAnswersQueued_mayNotStart_neverStartsTheStream() {
@@ -432,6 +455,123 @@ class LiveStreamingToolsTest {
         }
 
       assertWithMessage("the stop should end once its caller is cancelled").that(joined).isNotNull()
+    }
+  }
+
+  @Test
+  fun relay_plainValue_carriesTheToolsScheduling() {
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+
+      val sent =
+        try {
+          tools.startStream(ScheduledTool { flowOf("tick") }, "c1")
+          queue.nextAnswers(1)
+        } finally {
+          withContext(NonCancellable) { tools.close() }
+        }
+
+      assertThat(sent.map { it.response to it.scheduling })
+        .containsExactly(mapOf("result" to "tick") to WHEN_IDLE)
+    }
+  }
+
+  @Test
+  fun relay_functionResponseValue_overridesOnlyTheToolsScheduling() {
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+      val silent =
+        FunctionResponse(name = "other", response = mapOf("n" to 1), id = "x", scheduling = SILENT)
+      val unscheduled = FunctionResponse(name = "other", response = mapOf("n" to 2))
+
+      val sent =
+        try {
+          tools.startStream(ScheduledTool { flowOf(silent, unscheduled) }, "c1")
+          queue.nextAnswers(2)
+        } finally {
+          withContext(NonCancellable) { tools.close() }
+        }
+
+      // The call it answers stays the run's to name.
+      assertThat(sent)
+        .containsExactly(
+          FunctionResponse(
+            name = "monitor",
+            response = mapOf("n" to 1),
+            id = "c1",
+            scheduling = SILENT,
+          ),
+          FunctionResponse(
+            name = "monitor",
+            response = mapOf("n" to 2),
+            id = "c1",
+            scheduling = WHEN_IDLE,
+          ),
+        )
+        .inOrder()
+    }
+  }
+
+  @Test
+  fun relay_toolWithoutAScheduling_sendsEachValuesOwn() {
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+      val interrupt =
+        FunctionResponse(name = "monitor", response = mapOf("n" to 1), scheduling = INTERRUPT)
+      val tool = DummyTool(name = "monitor") { _, _ -> flowOf(interrupt, "tick") }
+
+      val sent =
+        try {
+          tools.startStream(tool, "c1")
+          queue.nextAnswers(2)
+        } finally {
+          withContext(NonCancellable) { tools.close() }
+        }
+
+      assertThat(sent.map { it.response to it.scheduling })
+        .containsExactly(mapOf("n" to 1) to INTERRUPT, mapOf("result" to "tick") to null)
+        .inOrder()
+    }
+  }
+
+  @Test
+  fun relay_streamFails_errorAnswerCarriesTheToolsScheduling() {
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+
+      val sent =
+        try {
+          tools.startStream(ScheduledTool { flow<String> { error("secret") } }, "c1")
+          queue.nextAnswers(1)
+        } finally {
+          withContext(NonCancellable) { tools.close() }
+        }
+
+      assertThat(sent.map { it.response.keys to it.scheduling })
+        .containsExactly(setOf("error") to WHEN_IDLE)
+    }
+  }
+
+  @Test
+  fun close_finalAnswers_carryTheToolsScheduling() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      val tool = ScheduledTool { flow<String> { awaitCancellation() } }
+
+      tools.startStream(tool, "c1")
+      val closed = tools.close()
+
+      assertThat(
+          closed
+            .flatMap { it.parts }
+            .mapNotNull { it.functionResponse }
+            .map { it.id to it.scheduling }
+        )
+        .containsExactly("c1" to WHEN_IDLE)
     }
   }
 }

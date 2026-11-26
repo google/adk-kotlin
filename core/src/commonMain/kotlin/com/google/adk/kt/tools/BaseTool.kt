@@ -21,6 +21,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.FunctionResponseScheduling
 
 /**
  * Abstract base class for defining and executing tools.
@@ -54,13 +55,23 @@ abstract class BaseTool(
   /**
    * How a live run declares this tool to the model: [Behavior.NON_BLOCKING] lets the model keep the
    * conversation going while a call is pending, [Behavior.BLOCKING] makes it wait for the response,
-   * and `null` or [Behavior.UNSPECIFIED] leaves the tool's declaration as it is. Override it with
-   * [Behavior.NON_BLOCKING] on a tool whose [run] returns a Flow; a tool that doesn't stream still
-   * runs to completion before the live run reads the model's next message. A
-   * [com.google.adk.kt.annotations.Tool] function returning a Flow, or a `BasePublisherTool`, is
-   * declared non-blocking without it.
+   * and [Behavior.UNSPECIFIED], or `null` without a [responseScheduling], leaves the tool's
+   * declaration as it is. Override it with [Behavior.NON_BLOCKING] on a tool whose [run] returns a
+   * Flow; a tool that doesn't stream still runs to completion before the live run reads the model's
+   * next message. A [com.google.adk.kt.annotations.Tool] function returning a Flow, or a
+   * `BasePublisherTool`, is declared non-blocking without it.
    */
   @ExperimentalLiveApi open val behavior: Behavior? = null
+
+  /**
+   * When a live model reacts to this tool's responses: [FunctionResponseScheduling.SILENT] only
+   * adds them to its context, [FunctionResponseScheduling.WHEN_IDLE] reacts once the model is idle,
+   * and [FunctionResponseScheduling.INTERRUPT] reacts at once. A streaming tool can choose
+   * differently for one value by emitting a [com.google.adk.kt.types.FunctionResponse] that sets
+   * `scheduling`. With a `null` [behavior], a tool that sets it is declared non-blocking in a live
+   * run.
+   */
+  @ExperimentalLiveApi open val responseScheduling: FunctionResponseScheduling? = null
 
   /** Returns the underlying function declaration. */
   abstract fun declaration(): FunctionDeclaration?

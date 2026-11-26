@@ -61,11 +61,12 @@ private val STOP_STREAMING_ARGS =
   mapOf("stop_streaming" to "function_name", "stopStreaming" to "functionName")
 
 /**
- * Wraps [value] in a user [Content] carrying a [FunctionResponse] for [toolName] and [callId]. A
- * [FunctionResponse] [value] contributes only its payload, since the call it answers is not the
- * tool's to choose, and `Unit` becomes `{"result": null}`.
+ * Wraps [value] in a user [Content] carrying a [FunctionResponse] for [tool] and [callId], with the
+ * tool's [BaseTool.responseScheduling]. `Unit` becomes `{"result": null}`, and a [FunctionResponse]
+ * [value] contributes its payload and, when set, its own scheduling; its name and id are replaced,
+ * since the call it answers is not the tool's to choose.
  */
-private fun functionResponseContent(toolName: String, callId: String, value: Any?): Content {
+private fun functionResponseContent(tool: BaseTool, callId: String, value: Any?): Content {
   val payload = if (value is FunctionResponse) value.response else value
   return Content(
     role = Role.USER,
@@ -74,9 +75,10 @@ private fun functionResponseContent(toolName: String, callId: String, value: Any
         Part(
           functionResponse =
             FunctionResponse(
-              name = toolName,
+              name = tool.name,
               response = toFinalResponseMap(payload.takeUnless { it === Unit }),
               id = callId,
+              scheduling = (value as? FunctionResponse)?.scheduling ?: tool.responseScheduling,
             )
         )
       ),
@@ -135,11 +137,14 @@ internal class LiveStreamingTools(
 
   /** One function call to a streaming tool, and the coroutine collecting what it emits. */
   private class StreamingCall(
-    val toolName: String,
+    val tool: BaseTool,
     val callId: String,
     val args: Map<String, Any?>,
     val job: Job,
   ) {
+    val toolName: String
+      get() = tool.name
+
     // Repeats told this call is running need a final answer too when this stream is stopped.
     val repeatIds = AtomicReference<List<String>>(emptyList())
 
@@ -333,7 +338,7 @@ internal class LiveStreamingTools(
       }
     }
     return callById.map { (callId, call) ->
-      functionResponseContent(call.toolName, callId, mapOf(STATUS_KEY to finalStatus(call)))
+      functionResponseContent(call.tool, callId, mapOf(STATUS_KEY to finalStatus(call)))
     }
   }
 
@@ -375,7 +380,7 @@ internal class LiveStreamingTools(
     // Waits for its pending answer to be queued, so the model hears that first.
     val job = scope.launch(start = CoroutineStart.LAZY) { relay(tool, callId, context, stream) }
     // A copy, so a caller changing its map cannot change what later calls are compared with.
-    val call = StreamingCall(tool.name, callId, args.toMap(), job)
+    val call = StreamingCall(tool, callId, args.toMap(), job)
     val stale: List<StreamingCall>
     while (true) {
       val calls = active.load()
@@ -422,7 +427,7 @@ internal class LiveStreamingTools(
           sendToCaller(tool, callId, value)
         } else {
           // Not partial: Kotlin never sends a partial tool answer, and the wire ignores it anyway.
-          queue.sendContent(functionResponseContent(tool.name, callId, value))
+          queue.sendContent(functionResponseContent(tool, callId, value))
         }
       }
     } catch (e: Throwable) {
@@ -440,7 +445,7 @@ internal class LiveStreamingTools(
     // The exception's text is left out: it can carry the user's or the model's data.
     logger.warn { "Streaming tool ${tool.name} failed (${e::class.simpleName})." }
     val error = mapOf(ERROR_KEY to "Invoking `${tool.name}()` failed with an internal error.")
-    queue.sendContent(functionResponseContent(tool.name, callId, error))
+    queue.sendContent(functionResponseContent(tool, callId, error))
   }
 
   private suspend fun sendToCaller(tool: BaseTool, callId: String, event: Event) {

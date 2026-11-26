@@ -19,6 +19,7 @@ import com.google.genai.kotlin.types.Behavior as GenAiBehavior
 import com.google.genai.kotlin.types.BlockedReason as GenAiBlockedReason
 import com.google.genai.kotlin.types.FinishReason as GenAiFinishReason
 import com.google.genai.kotlin.types.FunctionCallingConfigMode as GenAiFunctionCallingConfigMode
+import com.google.genai.kotlin.types.FunctionResponseScheduling as GenAiFunctionResponseScheduling
 import com.google.genai.kotlin.types.HarmBlockMethod as GenAiHarmBlockMethod
 import com.google.genai.kotlin.types.HarmBlockThreshold as GenAiHarmBlockThreshold
 import com.google.genai.kotlin.types.HarmCategory as GenAiHarmCategory
@@ -204,3 +205,16 @@ internal fun GenAiBehavior.toKt(): Behavior =
 
 /** Converts an ADK [Behavior] to a [GenAiBehavior] for the GenAI SDK. */
 internal fun Behavior.toGenaiSdk(): GenAiBehavior = GenAiBehavior(this.name)
+
+/**
+ * Converts a [GenAiFunctionResponseScheduling] from the GenAI SDK to an ADK
+ * [FunctionResponseScheduling]. The SDK models enums as `value class` wrappers, so unknown values
+ * map to [FunctionResponseScheduling.SCHEDULING_UNSPECIFIED].
+ */
+internal fun GenAiFunctionResponseScheduling.toKt(): FunctionResponseScheduling =
+  runCatching { FunctionResponseScheduling.valueOf(this.value) }
+    .getOrDefault(FunctionResponseScheduling.SCHEDULING_UNSPECIFIED)
+
+/** Converts an ADK [FunctionResponseScheduling] to a [GenAiFunctionResponseScheduling]. */
+internal fun FunctionResponseScheduling.toGenaiSdk(): GenAiFunctionResponseScheduling =
+  GenAiFunctionResponseScheduling(this.name)

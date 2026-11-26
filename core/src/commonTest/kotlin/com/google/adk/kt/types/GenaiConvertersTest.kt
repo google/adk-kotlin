@@ -50,6 +50,20 @@ class GenaiConvertersTest {
   }
 
   @Test
+  fun functionResponse_withScheduling_carriesItBothWays() {
+    val adkFunctionResponse =
+      FunctionResponse(name = "myFunction", scheduling = FunctionResponseScheduling.SILENT)
+
+    val genaiFunctionResponse = adkFunctionResponse.toGenaiSdk()
+
+    assertEquals(
+      com.google.genai.kotlin.types.FunctionResponseScheduling.SILENT,
+      genaiFunctionResponse.scheduling,
+    )
+    assertEquals(adkFunctionResponse, genaiFunctionResponse.fromGenaiSdk())
+  }
+
+  @Test
   fun functionResponse_toGenaiSdk_preservesTopLevelNullValue() {
     // A top-level `null` response value reaches the GenAI SDK as JsonNull, not dropped.
     val adkFunctionResponse =

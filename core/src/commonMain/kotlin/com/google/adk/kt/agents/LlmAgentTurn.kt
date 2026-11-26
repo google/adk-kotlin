@@ -2692,9 +2692,19 @@ private fun ContentInput.contentWithRole(): Content =
 @OptIn(FrameworkInternalApi::class)
 private fun liveBehavior(tool: BaseTool): Behavior? =
   when {
-    tool.isStreaming || tool.behavior == Behavior.NON_BLOCKING -> Behavior.NON_BLOCKING
+    tool.isStreaming || isNonBlocking(tool) -> Behavior.NON_BLOCKING
     tool.behavior == Behavior.BLOCKING -> Behavior.BLOCKING
     else -> null
+  }
+
+/**
+ * Whether [tool] is non-blocking in a live run: a set [BaseTool.behavior] decides, and otherwise a
+ * [BaseTool.responseScheduling] makes it so, since only a non-blocking call's answer is scheduled.
+ */
+private fun isNonBlocking(tool: BaseTool): Boolean =
+  when (val behavior = tool.behavior) {
+    null -> tool.responseScheduling != null
+    else -> behavior == Behavior.NON_BLOCKING
   }
 
 /**

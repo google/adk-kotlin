@@ -22,6 +22,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FileData
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Tool
 import com.google.common.truth.Truth.assertThat
@@ -31,6 +32,7 @@ import com.google.genai.kotlin.types.Blob as SdkBlob
 import com.google.genai.kotlin.types.Content as SdkContent
 import com.google.genai.kotlin.types.FunctionDeclaration as SdkFunctionDeclaration
 import com.google.genai.kotlin.types.FunctionResponse as SdkFunctionResponse
+import com.google.genai.kotlin.types.FunctionResponseScheduling as SdkFunctionResponseScheduling
 import com.google.genai.kotlin.types.LiveClientContextUpdate as SdkLiveClientContextUpdate
 import com.google.genai.kotlin.types.LiveClientContextUpdateTools as SdkLiveClientContextUpdateTools
 import com.google.genai.kotlin.types.LiveServerMessage as SdkLiveServerMessage
@@ -52,6 +54,7 @@ class GeminiLiveSendTest {
     val calls = mutableListOf<String>()
     val sentTurns = mutableListOf<List<SdkContent>>()
     val sentAudio = mutableListOf<SdkBlob>()
+    val sentSchedulings = mutableListOf<SdkFunctionResponseScheduling?>()
     val sentContextUpdates = mutableListOf<SdkLiveClientContextUpdate>()
     var failContextUpdates: Throwable? = null
 
@@ -75,6 +78,7 @@ class GeminiLiveSendTest {
     }
 
     override suspend fun sendToolResponse(functionResponses: List<SdkFunctionResponse>) {
+      sentSchedulings.addAll(functionResponses.map { it.scheduling })
       // Names and ids tell responses apart; results are user data, so they are not recorded.
       calls.add(
         "toolResponse(${functionResponses.joinToString { "${it.name}#${it.id ?: "no-id"}" }})"
@@ -339,5 +343,29 @@ class GeminiLiveSendTest {
       assertFailsWith<IllegalStateException> { connection.sendContextUpdate(tools = emptyList()) }
 
     assertThat(error).isSameInstanceAs(closed)
+  }
+
+  @Test
+  fun sendContent_toolResponses_carryTheirScheduling() {
+    runBlocking {
+      val (connection, session) = connectionOn(MODEL)
+      val silent =
+        FunctionResponse(name = "f", id = "c1", scheduling = FunctionResponseScheduling.SILENT)
+
+      connection.sendContent(
+        Content(
+          role = "user",
+          parts =
+            listOf(
+              Part(functionResponse = silent),
+              Part(functionResponse = FunctionResponse(name = "g", id = "c2")),
+            ),
+        )
+      )
+
+      assertThat(session.sentSchedulings)
+        .containsExactly(SdkFunctionResponseScheduling.SILENT, null)
+        .inOrder()
+    }
   }
 }

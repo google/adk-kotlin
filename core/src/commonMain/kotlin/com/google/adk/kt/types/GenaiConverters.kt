@@ -308,6 +308,7 @@ internal fun GenAiFunctionResponse.fromGenaiSdk(): FunctionResponse =
     name = name ?: "",
     response = response?.mapValues { it.value.toAny() } ?: emptyMap(),
     id = id,
+    scheduling = scheduling?.toKt(),
   )
 
 /** Converts an ADK [FunctionResponse] to a [GenAiFunctionResponse] for the GenAI SDK. */
@@ -316,6 +317,7 @@ internal fun FunctionResponse.toGenaiSdk(): GenAiFunctionResponse =
     name = name,
     response = response.mapValues { it.value.toJsonElement() },
     id = id,
+    scheduling = scheduling?.toGenaiSdk(),
   )
 
 // --- GenerateContentConfig ---

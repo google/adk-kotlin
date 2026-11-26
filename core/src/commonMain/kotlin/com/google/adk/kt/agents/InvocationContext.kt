@@ -17,6 +17,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.artifacts.ArtifactService
@@ -817,6 +818,7 @@ data class InvocationContext(
     this[TelemetryAttributes.GCP_VERTEX_AGENT_TOOL_CALL_ARGS] = capturedJson { toTraceJson(args) }
   }
 
+  @OptIn(ExperimentalLiveApi::class)
   private fun buildResponseEvent(
     tool: BaseTool,
     toolResult: Any?,
@@ -838,6 +840,8 @@ data class InvocationContext(
                     name = tool.name,
                     response = toFinalResponseMap(toolResult),
                     id = toolContext.functionCallId,
+                    // Stamped outside live runs too, so a tool's answers look the same in history.
+                    scheduling = tool.responseScheduling,
                   )
               )
             ),

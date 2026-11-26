@@ -318,7 +318,11 @@ class FunctionToolProcessorTest {
     val tool = LongRunningToolTool()
 
     assertThat(tool.isLongRunning).isTrue()
-    assertThat(tool.description).contains("NOTE: This tool performs a long-running operation.")
+    assertThat(tool.description)
+      .endsWith(
+        "\n\nNOTE: This is a long-running operation. Do not call this tool again if it has " +
+          "already returned some intermediate or pending status."
+      )
   }
 
   @Test

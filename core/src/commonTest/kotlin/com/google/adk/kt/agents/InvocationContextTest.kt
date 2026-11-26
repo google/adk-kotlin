@@ -46,6 +46,7 @@ import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.common.truth.Truth.assertThat
@@ -348,6 +349,32 @@ class InvocationContextTest {
       assertNotNull(functionResponse)
       assertEquals(shortCircuitResponse, functionResponse!!.response)
     }
+
+  @Test
+  fun executeSingleFunctionCall_toolWithResponseScheduling_stampsItOnTheAnswer() {
+    runBlocking {
+      val scheduled =
+        object : BaseTool("scheduled", "A tool.") {
+          @OptIn(ExperimentalLiveApi::class)
+          override val responseScheduling = FunctionResponseScheduling.SILENT
+
+          override fun declaration() = null
+
+          override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = "done"
+        }
+      val tools = mapOf("scheduled" to scheduled, "plain" to DummyTool("plain"))
+      val context = testInvocationContext()
+
+      val scheduledAnswer =
+        checkNotNull(context.executeSingleFunctionCall(FunctionCall("scheduled", id = "c1"), tools))
+      val plainAnswer =
+        checkNotNull(context.executeSingleFunctionCall(FunctionCall("plain", id = "c2"), tools))
+
+      assertThat(scheduledAnswer.functionResponses().single().scheduling)
+        .isEqualTo(FunctionResponseScheduling.SILENT)
+      assertThat(plainAnswer.functionResponses().single().scheduling).isNull()
+    }
+  }
 
   @Test
   fun setAgentState_withNewState_updatesMap() {

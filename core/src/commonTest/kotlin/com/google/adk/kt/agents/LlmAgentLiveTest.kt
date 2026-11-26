@@ -47,6 +47,7 @@ import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Part
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
@@ -98,13 +99,17 @@ class LlmAgentLiveTest {
     return runUntilTurnsComplete(runnerFor(DummyLiveModel(script)), LiveRequestQueue(), runConfig)
   }
 
-  /** A tool whose [behavior], [isStreaming] and declared behavior each test chooses. */
+  /**
+   * A tool whose [behavior], [isStreaming], declared behavior and [responseScheduling] each test
+   * chooses.
+   */
   @OptIn(FrameworkInternalApi::class)
   private class DeclaredTool(
     name: String,
     override val behavior: Behavior? = null,
     override val isStreaming: Boolean = false,
     private val declared: Behavior? = null,
+    override val responseScheduling: FunctionResponseScheduling? = null,
   ) : BaseTool(name, "A tool.") {
     override fun declaration(): FunctionDeclaration =
       FunctionDeclaration(name, description, behavior = declared)
@@ -463,6 +468,33 @@ class LlmAgentLiveTest {
   }
 
   @Test
+  fun runLive_toolWithResponseScheduling_isDeclaredNonBlockingUnlessItsBehaviorIsSet() {
+    runBlocking {
+      val silent = FunctionResponseScheduling.SILENT
+      val behaviors =
+        liveDeclaredBehaviors(
+          DeclaredTool("scheduled", responseScheduling = silent),
+          DeclaredTool("blocking", behavior = Behavior.BLOCKING, responseScheduling = silent),
+          DeclaredTool(
+            "unspecified",
+            behavior = Behavior.UNSPECIFIED,
+            declared = Behavior.BLOCKING,
+            responseScheduling = silent,
+          ),
+        )
+
+      assertThat(behaviors)
+        .isEqualTo(
+          mapOf(
+            "scheduled" to Behavior.NON_BLOCKING,
+            "blocking" to Behavior.BLOCKING,
+            "unspecified" to Behavior.BLOCKING,
+          )
+        )
+    }
+  }
+
+  @Test
   fun runLive_flowToolDeclaringNonBlocking_isDeclaredNonBlockingAndStreamsItsValues() {
     runBlocking {
       val pending =
@@ -506,6 +538,7 @@ class LlmAgentLiveTest {
           DeclaredTool("marked", isStreaming = true, declared = Behavior.BLOCKING),
           DeclaredTool("non_blocking", behavior = Behavior.NON_BLOCKING),
           DeclaredTool("blocking", behavior = Behavior.BLOCKING, declared = Behavior.NON_BLOCKING),
+          DeclaredTool("scheduled", responseScheduling = FunctionResponseScheduling.SILENT),
         )
 
       val unused =
@@ -520,6 +553,7 @@ class LlmAgentLiveTest {
             "marked" to Behavior.BLOCKING,
             "non_blocking" to null,
             "blocking" to Behavior.NON_BLOCKING,
+            "scheduled" to null,
           )
         )
     }

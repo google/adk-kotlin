@@ -49,6 +49,7 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.ContextWindowCompressionConfig
 import com.google.adk.kt.types.FinishReason
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.GoogleMaps
 import com.google.adk.kt.types.GoogleSearch
 import com.google.adk.kt.types.GroundingMetadata
@@ -168,6 +169,26 @@ class ReleasedConstructorsTest {
       .getConstructor(ReplicatedVoiceConfig::class.java, PrebuiltVoiceConfig::class.java)
     AudioTranscriptionConfig::class.java.getConstructor()
     AudioTranscriptionConfig::class.java.getConstructor(list, list, boolean, boolean)
+  }
+
+  @Test
+  fun functionResponse_releasedFullConstructor_stillLinksAndLeavesSchedulingUnset() {
+    // Arrange: the released `FunctionResponse(name, response, id)`, before `scheduling` was added.
+    val response = mapOf("result" to "ok")
+
+    // Act
+    val functionResponse =
+      FunctionResponse::class
+        .java
+        .getConstructor(String::class.java, Map::class.java, String::class.java)
+        .newInstance("getWeather", response, "call-1")
+
+    // Assert
+    assertEquals(
+      FunctionResponse(name = "getWeather", response = response, id = "call-1"),
+      functionResponse,
+    )
+    assertNull(functionResponse.scheduling)
   }
 
   @Test

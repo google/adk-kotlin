@@ -126,11 +126,12 @@ abstract class FunctionTool(
     const val SOURCE_METHOD_METADATA_KEY = "adk_tool_source_method"
 
     /**
-     * A standard note appended to the description of long-running tools. This signals to the
-     * generation engine that the tool will yield a pending state.
+     * A standard note appended to the description of long-running tools. It tells the model not to
+     * call the tool again once it has returned an intermediate or pending status.
      */
     const val LONG_RUNNING_OPERATION_NOTE =
-      "NOTE: This tool performs a long-running operation. The tool will emit a pending state and wait for an external system to complete execution before returning final results."
+      "NOTE: This is a long-running operation. Do not call this tool again if it has already " +
+        "returned some intermediate or pending status."
 
     /** Map key under which confirmation-related error placeholders are returned. */
     const val ERROR_KEY: String = "error"

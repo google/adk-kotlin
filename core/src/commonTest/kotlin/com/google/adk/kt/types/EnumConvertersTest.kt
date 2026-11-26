@@ -20,6 +20,7 @@ import com.google.genai.kotlin.types.Behavior as SdkBehavior
 import com.google.genai.kotlin.types.BlockedReason as SdkBlockedReason
 import com.google.genai.kotlin.types.FinishReason as SdkFinishReason
 import com.google.genai.kotlin.types.FunctionCallingConfigMode as SdkFunctionCallingConfigMode
+import com.google.genai.kotlin.types.FunctionResponseScheduling as SdkFunctionResponseScheduling
 import com.google.genai.kotlin.types.HarmBlockMethod as SdkHarmBlockMethod
 import com.google.genai.kotlin.types.Language as SdkLanguage
 import com.google.genai.kotlin.types.ModelRoutingPreference as SdkModelRoutingPreference
@@ -118,6 +119,24 @@ class EnumConvertersTest {
   }
 
   @Test
+  fun functionResponseScheduling_roundTripsThroughTheSdkConstants() {
+    val sdkValues =
+      mapOf(
+        FunctionResponseScheduling.SCHEDULING_UNSPECIFIED to
+          SdkFunctionResponseScheduling.SCHEDULING_UNSPECIFIED,
+        FunctionResponseScheduling.SILENT to SdkFunctionResponseScheduling.SILENT,
+        FunctionResponseScheduling.WHEN_IDLE to SdkFunctionResponseScheduling.WHEN_IDLE,
+        FunctionResponseScheduling.INTERRUPT to SdkFunctionResponseScheduling.INTERRUPT,
+      )
+
+    assertEquals(FunctionResponseScheduling.entries.toSet(), sdkValues.keys)
+    for ((value, sdkValue) in sdkValues) {
+      assertEquals(sdkValue, value.toGenaiSdk())
+      assertEquals(value, sdkValue.toKt())
+    }
+  }
+
+  @Test
   fun toKt_unknownSdkValue_fallsBackToDefault() {
     // An SDK value with no matching ADK constant degrades to the catch-all (or null for `Type`)
     // rather than throwing.
@@ -141,6 +160,10 @@ class EnumConvertersTest {
       SdkPartMediaResolutionLevel("UNRECOGNIZED").toKt(),
     )
     assertEquals(Behavior.UNSPECIFIED, SdkBehavior("UNRECOGNIZED").toKt())
+    assertEquals(
+      FunctionResponseScheduling.SCHEDULING_UNSPECIFIED,
+      SdkFunctionResponseScheduling("UNRECOGNIZED").toKt(),
+    )
   }
 
   @Test

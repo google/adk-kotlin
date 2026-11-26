@@ -55,6 +55,7 @@ class BaseToolTest {
     assertTrue(tool.customMetadata.isEmpty())
     assertFalse(tool.isStreaming)
     assertNull(tool.behavior)
+    assertNull(tool.responseScheduling)
   }
 
   @Test

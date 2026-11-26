@@ -17,8 +17,12 @@
 package com.google.adk.kt.types
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.serialization.adkJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlinx.serialization.SerializationException
 
 class FunctionResponseTest {
 
@@ -30,9 +34,49 @@ class FunctionResponseTest {
         name = "getWeather",
         response = mapOf("temperature" to 21, "note" to null),
         id = "call_1",
+        scheduling = FunctionResponseScheduling.WHEN_IDLE,
       )
 
     assertEquals(response.copy(), response.toBuilder().build())
     assertEquals(response.copy(id = "call_2"), response.toBuilder().id("call_2").build())
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun serialization_writesSchedulingByItsWireNameOnlyWhenSet() {
+    val unscheduled = FunctionResponse(name = "f", id = "c1")
+    val silent = unscheduled.copy(scheduling = FunctionResponseScheduling.SILENT)
+
+    val silentJson = adkJson.encodeToString(FunctionResponse.serializer(), silent)
+
+    assertEquals(
+      """{"name":"f","response":{},"id":"c1"}""",
+      adkJson.encodeToString(FunctionResponse.serializer(), unscheduled),
+    )
+    assertEquals("""{"name":"f","response":{},"id":"c1","scheduling":"SILENT"}""", silentJson)
+    assertEquals(silent, adkJson.decodeFromString(FunctionResponse.serializer(), silentJson))
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun decode_withUnknownScheduling_readsUnspecified() {
+    val decoded =
+      adkJson.decodeFromString(
+        FunctionResponse.serializer(),
+        """{"name":"f","response":{},"scheduling":"SOMETHING_NEW"}""",
+      )
+
+    assertEquals(FunctionResponseScheduling.SCHEDULING_UNSPECIFIED, decoded.scheduling)
+  }
+
+  @OptIn(FrameworkInternalApi::class)
+  @Test
+  fun decode_withNonStringScheduling_fails() {
+    assertFailsWith<SerializationException> {
+      adkJson.decodeFromString(
+        FunctionResponse.serializer(),
+        """{"name":"f","response":{},"scheduling":1}""",
+      )
+    }
   }
 }
