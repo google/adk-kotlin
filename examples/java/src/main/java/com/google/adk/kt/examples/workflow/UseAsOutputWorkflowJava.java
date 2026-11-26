@@ -35,8 +35,8 @@ import reactor.core.publisher.Flux;
 
 /**
  * A port of adk-python's {@code use_as_output} workflow sample: a node runs an agent with {@link
- * InteropContextView#runNode} and {@code useAsOutput} set, so the agent's summary becomes the
- * node's own output and flows on to the next node.
+ * InteropContextView#runNodeBlocking} and {@code useAsOutput} set, so the agent's summary becomes
+ * the node's own output and flows on to the next node.
  */
 public final class UseAsOutputWorkflowJava {
 
@@ -83,7 +83,7 @@ public final class UseAsOutputWorkflowJava {
         .body((ctx, text) -> {
           // The summary is already this node's output, so returning it emits no second output.
           RunNodeConfig config = RunNodeConfig.builder().useAsOutput(true).build();
-          return (String) InteropContextView.of(ctx).runNode(summarizer, text, config).join();
+          return (String) InteropContextView.of(ctx).runNodeBlocking(summarizer, text, config);
         })
         .build();
   }

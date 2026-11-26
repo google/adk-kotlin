@@ -16,11 +16,10 @@
 
 package com.google.adk.kt.examples.workflow;
 
-import com.google.adk.kt.agents.Context;
 import com.google.adk.kt.agents.LlmAgent;
 import com.google.adk.kt.apps.App;
 import com.google.adk.kt.events.Event;
-import com.google.adk.kt.interop.BasePublisherNode;
+import com.google.adk.kt.interop.FunctionNodes;
 import com.google.adk.kt.interop.InteropContextView;
 import com.google.adk.kt.interop.PublisherRunner;
 import com.google.adk.kt.interop.RunNodeConfig;
@@ -29,14 +28,11 @@ import com.google.adk.kt.models.Model;
 import com.google.adk.kt.models.VertexCredentials;
 import com.google.adk.kt.types.Content;
 import com.google.adk.kt.types.Role;
-import com.google.adk.kt.types.Schema;
-import com.google.adk.kt.types.Type;
+import com.google.adk.kt.workflow.FunctionNode;
 import com.google.adk.kt.workflow.Node;
-import com.google.adk.kt.workflow.NodeConfig;
 import com.google.adk.kt.workflow.Workflow;
 import java.util.Arrays;
 import java.util.List;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -54,7 +50,7 @@ public final class DynamicFanOutFanInWorkflowJava {
   public static Workflow create(Model model) {
     return Workflow.builder()
         .name("dynamic_fan_out_fan_in")
-        .edges(g -> g.fromStart().then(new Orchestrator(generatorAgent(model))))
+        .edges(g -> g.fromStart().then(orchestrator(generatorAgent(model))))
         .build();
   }
 
@@ -77,55 +73,48 @@ public final class DynamicFanOutFanInWorkflowJava {
     }
   }
 
-  /** An input schema under which a node receives its input, such as a message, as text. */
-  private static final Schema TEXT_INPUT = Schema.builder().type(Type.STRING).build();
+  /** Returns the node that runs {@code generator} once per topic and tabulates the headlines. */
+  private static FunctionNode<String, Object> orchestrator(Node generator) {
+    return FunctionNodes.builder(String.class, Object.class)
+        .name("orchestrator")
+        // Runs other nodes, so it reruns on resume to collect a paused child's output.
+        .rerunOnResume(true)
+        .body((ctx, input) -> {
+          // START hands the node the user's message, which a String input receives as text.
+          List<String> topics =
+              Arrays.stream(input.split(","))
+                  .map(String::trim)
+                  .filter(topic -> !topic.isEmpty())
+                  .toList();
+          InteropContextView view = InteropContextView.of(ctx);
+          view.emit(
+              Content.fromText(Role.MODEL, "Processing " + topics.size() + " topics in parallel."));
+          // Fans out: each run gets its own sub-branch, so it sees only its own topic.
+          List<Object> headlines =
+              Flux.range(0, topics.size())
+                  // Starts every run at once; flatMapSequential otherwise runs 256 at most.
+                  .flatMapSequential(
+                      i -> headline(view, generator, topics.get(i), i + 1), Integer.MAX_VALUE)
+                  .collectList()
+                  // get() rather than block(), which would turn a child's pause into a failure.
+                  .toFuture()
+                  .get();
+          // Fans in: one table row per topic.
+          view.emit(Content.fromText(Role.MODEL, headlineTable(topics, headlines)));
+          return null;
+        })
+        .build();
+  }
 
-  /** Runs the generator once per topic and tabulates the headlines. */
-  private static final class Orchestrator extends BasePublisherNode {
-    private final Node generator;
-
-    Orchestrator(Node generator) {
-      // Runs other nodes, so it reruns on resume to collect a paused child's output.
-      super(
-          "orchestrator",
-          "",
-          /* rerunOnResume= */ true,
-          /* waitForOutput= */ false,
-          NodeConfig.builder().build(),
-          TEXT_INPUT);
-      this.generator = generator;
-    }
-
-    @Override
-    protected Publisher<Object> runNodeJava(Context context, Object nodeInput) {
-      // START hands the first node the user's message, which TEXT_INPUT reads as text.
-      List<String> topics =
-          Arrays.stream(((String) nodeInput).split(","))
-              .map(String::trim)
-              .filter(topic -> !topic.isEmpty())
-              .toList();
-      InteropContextView view = InteropContextView.of(context);
-      // Fans out: each run gets its own sub-branch, so it sees only its own topic.
-      Mono<Event> tableMessage =
-          Flux.range(0, topics.size())
-              // Starts every run at once; flatMapSequential otherwise runs at most 256 at a time.
-              .flatMapSequential(i -> headline(view, topics.get(i), i + 1), Integer.MAX_VALUE)
-              .collectList()
-              // Fans in: one table row per topic.
-              .map(headlines -> message(headlineTable(topics, headlines)));
-      return Flux.concat(
-          Mono.just(message("Processing " + topics.size() + " topics in parallel.")), tableMessage);
-    }
-
-    /**
-     * Runs the generator on the topic numbered {@code index}, publishing "" if it has no output.
-     */
-    private Mono<Object> headline(InteropContextView view, String topic, int index) {
-      // Matches the Kotlin example's run IDs; a run ID must contain a non-digit.
-      RunNodeConfig config =
-          RunNodeConfig.builder().runId("topic_" + index).useSubBranch(true).build();
-      return Mono.fromFuture(() -> view.runNode(generator, topic, config)).defaultIfEmpty("");
-    }
+  /**
+   * Runs {@code generator} on the topic numbered {@code index}, publishing "" if it has no output.
+   */
+  private static Mono<Object> headline(
+      InteropContextView view, Node generator, String topic, int index) {
+    // Matches the Kotlin example's run IDs; a run ID must contain a non-digit.
+    RunNodeConfig config =
+        RunNodeConfig.builder().runId("topic_" + index).useSubBranch(true).build();
+    return Mono.fromFuture(() -> view.runNode(generator, topic, config)).defaultIfEmpty("");
   }
 
   private static String headlineTable(List<String> topics, List<Object> headlines) {
@@ -135,11 +124,6 @@ public final class DynamicFanOutFanInWorkflowJava {
       table.append("| " + topics.get(i) + " | " + headlines.get(i) + " |\n");
     }
     return table.toString();
-  }
-
-  /** A message from the node, which is not its output. */
-  private static Event message(String text) {
-    return Event.builder().content(Content.fromText(Role.MODEL, text)).build();
   }
 
   private static LlmAgent generatorAgent(Model model) {
