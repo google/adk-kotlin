@@ -41,7 +41,9 @@ sealed interface AuthScheme {
    * @property description A description of the scheme.
    */
   @ExperimentalAuthApi
-  data class ApiKey(val name: String, val location: Location, val description: String? = null) :
+  data class ApiKey
+  @JvmOverloads
+  constructor(val name: String, val location: Location, val description: String? = null) :
     AuthScheme {
     override val type: String
       get() = "apiKey"
@@ -113,7 +115,9 @@ sealed interface AuthScheme {
    * @property description A description of the scheme.
    */
   @ExperimentalAuthApi
-  data class Http(
+  data class Http
+  @JvmOverloads
+  constructor(
     val scheme: String,
     val bearerFormat: String? = null,
     val description: String? = null,
@@ -180,11 +184,10 @@ sealed interface AuthScheme {
    * @property description A description of the scheme.
    */
   @ExperimentalAuthApi
-  data class OAuth2(
-    val flows: Flows,
-    val issuerUrl: String? = null,
-    val description: String? = null,
-  ) : AuthScheme {
+  data class OAuth2
+  @JvmOverloads
+  constructor(val flows: Flows, val issuerUrl: String? = null, val description: String? = null) :
+    AuthScheme {
     override val type: String
       get() = "oauth2"
 
@@ -206,7 +209,9 @@ sealed interface AuthScheme {
      * @property authorizationCode The authorization code flow.
      */
     @ExperimentalAuthApi
-    data class Flows(
+    data class Flows
+    @JvmOverloads
+    constructor(
       val implicit: Flow.Implicit? = null,
       val password: Flow.Password? = null,
       val clientCredentials: Flow.ClientCredentials? = null,
@@ -280,7 +285,9 @@ sealed interface AuthScheme {
        * @property scopes The scopes to request, each mapped to its description.
        */
       @ExperimentalAuthApi
-      data class Implicit(
+      data class Implicit
+      @JvmOverloads
+      constructor(
         val authorizationUrl: String,
         override val refreshUrl: String? = null,
         override val scopes: Map<String, String> = emptyMap(),
@@ -337,7 +344,9 @@ sealed interface AuthScheme {
        * @property scopes The scopes to request, each mapped to its description.
        */
       @ExperimentalAuthApi
-      data class Password(
+      data class Password
+      @JvmOverloads
+      constructor(
         val tokenUrl: String,
         override val refreshUrl: String? = null,
         override val scopes: Map<String, String> = emptyMap(),
@@ -392,7 +401,9 @@ sealed interface AuthScheme {
        * @property scopes The scopes to request, each mapped to its description.
        */
       @ExperimentalAuthApi
-      data class ClientCredentials(
+      data class ClientCredentials
+      @JvmOverloads
+      constructor(
         val tokenUrl: String,
         override val refreshUrl: String? = null,
         override val scopes: Map<String, String> = emptyMap(),
@@ -448,7 +459,9 @@ sealed interface AuthScheme {
        * @property scopes The scopes to request, each mapped to its description.
        */
       @ExperimentalAuthApi
-      data class AuthorizationCode(
+      data class AuthorizationCode
+      @JvmOverloads
+      constructor(
         val authorizationUrl: String,
         val tokenUrl: String,
         override val refreshUrl: String? = null,
@@ -581,8 +594,9 @@ sealed interface AuthScheme {
    * @property description A description of the scheme.
    */
   @ExperimentalAuthApi
-  data class OpenIdConnectUrl(val openIdConnectUrl: String, val description: String? = null) :
-    AuthScheme {
+  data class OpenIdConnectUrl
+  @JvmOverloads
+  constructor(val openIdConnectUrl: String, val description: String? = null) : AuthScheme {
     override val type: String
       get() = "openIdConnect"
 
@@ -640,7 +654,9 @@ sealed interface AuthScheme {
    * @property description A description of the scheme.
    */
   @ExperimentalAuthApi
-  data class OpenIdConnect(
+  data class OpenIdConnect
+  @JvmOverloads
+  constructor(
     val authorizationEndpoint: String,
     val tokenEndpoint: String,
     val userinfoEndpoint: String? = null,

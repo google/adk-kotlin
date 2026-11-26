@@ -43,7 +43,7 @@ sealed interface AuthCredential {
    * @property apiKey The key, if the credential carries one.
    */
   @ExperimentalAuthApi
-  data class ApiKey(val apiKey: Secret? = null) : AuthCredential {
+  data class ApiKey @JvmOverloads constructor(val apiKey: Secret? = null) : AuthCredential {
     /**
      * Returns a [Builder] initialized with this instance's properties, primarily for Java callers.
      * Prefer it over `copy` from Java: `copy` takes every property positionally, so its signature
@@ -83,7 +83,9 @@ sealed interface AuthCredential {
    * @property additionalHeaders Extra headers to send with the request. Their values are secret.
    */
   @ExperimentalAuthApi
-  data class Http(
+  data class Http
+  @JvmOverloads
+  constructor(
     val scheme: String,
     val credentials: Credentials,
     val additionalHeaders: Map<String, Secret>? = null,
@@ -109,7 +111,9 @@ sealed interface AuthCredential {
      * @property token The token, for schemes such as `bearer`.
      */
     @ExperimentalAuthApi
-    data class Credentials(
+    data class Credentials
+    @JvmOverloads
+    constructor(
       val username: String? = null,
       val password: Secret? = null,
       val token: Secret? = null,
@@ -234,7 +238,9 @@ sealed interface AuthCredential {
    *   leaves the choice to the token exchange.
    */
   @ExperimentalAuthApi
-  data class OAuth2(
+  data class OAuth2
+  @JvmOverloads
+  constructor(
     val variant: Variant = Variant.OAUTH2,
     val clientId: String? = null,
     val clientSecret: Secret? = null,
@@ -470,7 +476,9 @@ sealed interface AuthCredential {
    *   empty.
    */
   @ExperimentalAuthApi
-  data class ServiceAccount(
+  data class ServiceAccount
+  @JvmOverloads
+  constructor(
     val serviceAccountCredential: Credential? = null,
     val scopes: List<String>? = null,
     val useDefaultCredential: Boolean = false,
@@ -516,7 +524,9 @@ sealed interface AuthCredential {
      * @property universeDomain The Google Cloud universe domain, such as `googleapis.com`.
      */
     @ExperimentalAuthApi
-    data class Credential(
+    data class Credential
+    @JvmOverloads
+    constructor(
       val type: String = "",
       val projectId: String,
       val privateKeyId: Secret,

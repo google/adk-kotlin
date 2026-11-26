@@ -18,6 +18,7 @@ package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 
 /**
@@ -39,6 +40,7 @@ import kotlin.jvm.JvmStatic
 @OptIn(ExperimentalAuthApi::class)
 data class AuthConfig
 @ExperimentalAuthApi
+@JvmOverloads
 constructor(
   @ExperimentalAuthApi val authScheme: AuthScheme,
   @ExperimentalAuthApi val rawAuthCredential: AuthCredential? = null,
