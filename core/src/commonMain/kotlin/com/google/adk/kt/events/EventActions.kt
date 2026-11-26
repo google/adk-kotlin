@@ -171,27 +171,28 @@ constructor(
    * changes whenever a property is added. The mutable maps are copied, not shared.
    */
   @AdkJavaInteropApi
-  fun toBuilder(): Builder {
-    val snapshot = snapshot()
-    return Builder()
-      .skipSummarization(snapshot.skipSummarization)
-      .stateDelta(snapshot.stateDelta)
-      .artifactDelta(snapshot.artifactDelta)
-      .transferToAgent(snapshot.transferToAgent)
-      .escalate(snapshot.escalate)
-      .endOfAgent(snapshot.endOfAgent)
-      .requestedToolConfirmations(snapshot.requestedToolConfirmations)
-      .rewindBeforeInvocationId(snapshot.rewindBeforeInvocationId)
-      .route(snapshot.route)
-      .agentState(snapshot.agentState)
-      .compaction(snapshot.compaction)
-      .requestedAuthConfigs(snapshot.requestedAuthConfigs)
-  }
+  fun toBuilder(): Builder =
+    Builder()
+      .skipSummarization(skipSummarization)
+      .stateDelta(stateDelta)
+      .artifactDelta(artifactDelta)
+      .transferToAgent(transferToAgent)
+      .escalate(escalate)
+      .endOfAgent(endOfAgent)
+      .requestedToolConfirmations(requestedToolConfirmations)
+      .rewindBeforeInvocationId(rewindBeforeInvocationId)
+      .route(route)
+      .agentState(agentState)
+      .compaction(compaction)
+      .requestedAuthConfigs(requestedAuthConfigs)
 
   /**
    * Fluent builder for [EventActions], provided primarily for Java callers. Any property left unset
-   * falls back to the same default as the constructor.
+   * falls back to the same default as the constructor. The map setters and [build] copy the maps,
+   * because the runtime writes into them: a read-only map such as Java's `Map.of(...)` works, the
+   * caller's map is never changed, and each built [EventActions] has its own maps.
    */
+  @AdkJavaInteropApi
   @Suppress("ScopeReceiverThis") // Java-style builder for Java interop.
   class Builder {
     private var skipSummarization: Boolean = false
@@ -213,11 +214,11 @@ constructor(
     }
 
     fun stateDelta(stateDelta: MutableMap<String, @Contextual Any>): Builder = apply {
-      this.stateDelta = stateDelta
+      this.stateDelta = concurrentMutableMapOf<String, Any>().apply { putAll(stateDelta) }
     }
 
     fun artifactDelta(artifactDelta: MutableMap<String, Int>): Builder = apply {
-      this.artifactDelta = artifactDelta
+      this.artifactDelta = concurrentMutableMapOf<String, Int>().apply { putAll(artifactDelta) }
     }
 
     fun transferToAgent(transferToAgent: String?): Builder = apply {
@@ -230,7 +231,12 @@ constructor(
 
     fun requestedToolConfirmations(
       requestedToolConfirmations: MutableMap<String, ToolConfirmation>
-    ): Builder = apply { this.requestedToolConfirmations = requestedToolConfirmations }
+    ): Builder = apply {
+      this.requestedToolConfirmations =
+        concurrentMutableMapOf<String, ToolConfirmation>().apply {
+          putAll(requestedToolConfirmations)
+        }
+    }
 
     fun rewindBeforeInvocationId(rewindBeforeInvocationId: String?): Builder = apply {
       this.rewindBeforeInvocationId = rewindBeforeInvocationId
@@ -245,24 +251,26 @@ constructor(
     @ExperimentalAuthApi
     fun requestedAuthConfigs(requestedAuthConfigs: MutableMap<String, AuthConfig>): Builder =
       apply {
-        this.requestedAuthConfigs = requestedAuthConfigs
+        this.requestedAuthConfigs =
+          concurrentMutableMapOf<String, AuthConfig>().apply { putAll(requestedAuthConfigs) }
       }
 
     fun build(): EventActions =
       EventActions(
-        skipSummarization = skipSummarization,
-        stateDelta = stateDelta,
-        artifactDelta = artifactDelta,
-        transferToAgent = transferToAgent,
-        escalate = escalate,
-        endOfAgent = endOfAgent,
-        requestedToolConfirmations = requestedToolConfirmations,
-        rewindBeforeInvocationId = rewindBeforeInvocationId,
-        route = route,
-        agentState = agentState,
-        compaction = compaction,
-        requestedAuthConfigs = requestedAuthConfigs,
-      )
+          skipSummarization = skipSummarization,
+          stateDelta = stateDelta,
+          artifactDelta = artifactDelta,
+          transferToAgent = transferToAgent,
+          escalate = escalate,
+          endOfAgent = endOfAgent,
+          requestedToolConfirmations = requestedToolConfirmations,
+          rewindBeforeInvocationId = rewindBeforeInvocationId,
+          route = route,
+          agentState = agentState,
+          compaction = compaction,
+          requestedAuthConfigs = requestedAuthConfigs,
+        )
+        .snapshot()
   }
 
   companion object {

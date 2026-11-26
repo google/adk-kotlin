@@ -275,6 +275,84 @@ class EventActionsTest {
     assertTrue(original.requestedAuthConfigs.isEmpty())
   }
 
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_doesNotShareTheCallersMaps() {
+    val stateDelta = mutableMapOf<String, Any>("k" to "v")
+    val artifactDelta = mutableMapOf("f" to 1)
+    val confirmations = mutableMapOf("c" to ToolConfirmation(confirmed = true))
+    val authConfigs = mutableMapOf("a" to AUTH_CONFIG)
+
+    val built =
+      EventActions.builder()
+        .stateDelta(stateDelta)
+        .artifactDelta(artifactDelta)
+        .requestedToolConfirmations(confirmations)
+        .requestedAuthConfigs(authConfigs)
+        .build()
+    built.stateDelta["k2"] = "v2"
+    built.artifactDelta["f2"] = 2
+    built.requestedToolConfirmations["c2"] = ToolConfirmation(confirmed = false)
+    built.requestedAuthConfigs["a2"] = AUTH_CONFIG
+
+    assertEquals(mapOf<String, Any>("k" to "v"), stateDelta)
+    assertEquals(mapOf("f" to 1), artifactDelta)
+    assertEquals(mapOf("c" to ToolConfirmation(confirmed = true)), confirmations)
+    assertEquals(mapOf("a" to AUTH_CONFIG), authConfigs)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_ignoresChangesToTheCallersMapsAfterTheSetters() {
+    val stateDelta = mutableMapOf<String, Any>("k" to "v")
+    val artifactDelta = mutableMapOf("f" to 1)
+    val confirmations = mutableMapOf("c" to ToolConfirmation(confirmed = true))
+    val authConfigs = mutableMapOf("a" to AUTH_CONFIG)
+    val builder =
+      EventActions.builder()
+        .stateDelta(stateDelta)
+        .artifactDelta(artifactDelta)
+        .requestedToolConfirmations(confirmations)
+        .requestedAuthConfigs(authConfigs)
+
+    stateDelta["late"] = "x"
+    artifactDelta["late"] = 9
+    confirmations["late"] = ToolConfirmation(confirmed = false)
+    authConfigs["late"] = AUTH_CONFIG
+    val built = builder.build()
+
+    assertEquals(mapOf<String, Any>("k" to "v"), built.stateDelta)
+    assertEquals(mapOf("f" to 1), built.artifactDelta)
+    assertEquals(mapOf("c" to ToolConfirmation(confirmed = true)), built.requestedToolConfirmations)
+    assertEquals(mapOf("a" to AUTH_CONFIG), built.requestedAuthConfigs)
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  fun builder_buildTwice_givesEachEventItsOwnMaps() {
+    val builder =
+      EventActions.builder()
+        .stateDelta(mutableMapOf<String, Any>("k" to "v"))
+        .artifactDelta(mutableMapOf("f" to 1))
+        .requestedToolConfirmations(mutableMapOf("c" to ToolConfirmation(confirmed = true)))
+        .requestedAuthConfigs(mutableMapOf("a" to AUTH_CONFIG))
+
+    val first = builder.build()
+    val second = builder.build()
+    first.stateDelta["k2"] = "v2"
+    first.artifactDelta["f2"] = 2
+    first.requestedToolConfirmations["c2"] = ToolConfirmation(confirmed = false)
+    first.requestedAuthConfigs["a2"] = AUTH_CONFIG
+
+    assertEquals(mapOf<String, Any>("k" to "v"), second.stateDelta)
+    assertEquals(mapOf("f" to 1), second.artifactDelta)
+    assertEquals(
+      mapOf("c" to ToolConfirmation(confirmed = true)),
+      second.requestedToolConfirmations,
+    )
+    assertEquals(mapOf("a" to AUTH_CONFIG), second.requestedAuthConfigs)
+  }
+
   @OptIn(FrameworkInternalApi::class)
   @Test
   fun serializer_requestedAuthConfigs_writesThemAndReadsPythonsName() {

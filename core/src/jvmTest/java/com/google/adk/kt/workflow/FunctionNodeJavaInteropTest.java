@@ -2583,6 +2583,79 @@ public final class FunctionNodeJavaInteropTest {
   }
 
   @Test
+  public void emit_immutableStateDeltaAfterUpdateState_storesBothWrites() {
+    // Arrange: the runner adds the pending updateState write to the emitted event's delta.
+    FunctionNode<Content, String> writer =
+        FunctionNodes.of(
+            "writer",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              ctx.updateState("from_ctx", 1);
+              InteropContextView.of(ctx)
+                  .emit(stateDeltaEvent(ImmutableMap.<String, Object>of("from_event", 2)));
+              return "out";
+            });
+
+    // Act
+    var unused = run(workflowOf("immutable_delta_wf", writer), "go");
+
+    // Assert
+    List<Event> stored = eventsOf(sessionEvents("immutable_delta_wf"), "writer");
+    assertEquals(
+        ImmutableMap.of("from_ctx", 1, "from_event", 2),
+        stored.get(0).getActions().getStateDelta());
+  }
+
+  @Test
+  public void emit_stateDeltaAfterUpdateState_leavesTheCallersMapUnchanged() {
+    // Arrange
+    Map<String, Object> callersDelta = new HashMap<>(ImmutableMap.of("from_event", 2));
+    FunctionNode<Content, String> writer =
+        FunctionNodes.of(
+            "writer",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              ctx.updateState("from_ctx", 1);
+              InteropContextView.of(ctx).emit(stateDeltaEvent(callersDelta));
+              return "out";
+            });
+
+    // Act
+    var unused = run(workflowOf("callers_delta_wf", writer), "go");
+
+    // Assert: the stored event carries both writes, the caller's map only its own.
+    List<Event> stored = eventsOf(sessionEvents("callers_delta_wf"), "writer");
+    assertEquals(
+        ImmutableMap.of("from_ctx", 1, "from_event", 2),
+        stored.get(0).getActions().getStateDelta());
+    assertEquals(ImmutableMap.of("from_event", 2), callersDelta);
+  }
+
+  @Test
+  public void emit_immutableStateDeltaWithTempKey_storesTheEventWithoutIt() {
+    // Arrange: storing the event removes temp: keys from its delta.
+    FunctionNode<Content, String> writer =
+        FunctionNodes.of(
+            "writer",
+            Content.class,
+            String.class,
+            (ctx, content) -> {
+              InteropContextView.of(ctx)
+                  .emit(stateDeltaEvent(ImmutableMap.<String, Object>of("temp:k", 1, "kept", 2)));
+              return "out";
+            });
+
+    // Act
+    var unused = run(workflowOf("temp_delta_wf", writer), "go");
+
+    // Assert
+    List<Event> stored = eventsOf(sessionEvents("temp_delta_wf"), "writer");
+    assertEquals(ImmutableMap.of("kept", 2), stored.get(0).getActions().getStateDelta());
+  }
+
+  @Test
   public void body_interruptedWithoutACancel_failsTheNodeWithTheInterrupt() {
     // Arrange: the body interrupts itself, as a helper thread would.
     FunctionNode<Content, String> sleeper =
@@ -3665,6 +3738,11 @@ public final class FunctionNodeJavaInteropTest {
   /** A workflow that runs {@code node} from START. */
   private static Workflow workflowOf(String name, Node node) {
     return Workflow.builder().name(name).edges(g -> g.fromStart().then(node)).build();
+  }
+
+  /** An event that only writes {@code stateDelta}. */
+  private static Event stateDeltaEvent(Map<String, Object> stateDelta) {
+    return Event.builder().actions(EventActions.builder().stateDelta(stateDelta).build()).build();
   }
 
   /** Returns the events of the first run of the node named {@code name}, in order. */
