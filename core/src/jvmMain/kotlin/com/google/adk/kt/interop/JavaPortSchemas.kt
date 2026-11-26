@@ -51,15 +51,15 @@ import java.math.BigInteger
 
 /**
  * Infers the closed JSON schema of a Java port type: the keys [MAPPER] writes for an output, or
- * reads for an input; null for a type with no fixed shape, such as an abstract output, whose
- * getters do not fix the keys of the subclass value [MAPPER] writes, an input [MAPPER] reads as
- * another class through `@JsonDeserialize(as = ...)` or a builder, or one that contains itself. A
- * property takes null if it is marked nullable, has a reference type such as `AtomicReference`, or
- * has no fixed shape, unless an output's inclusion omits null, though NON_NULL still writes an
- * empty reference as null. An input requires an unaliased creator property if it is marked
- * required, or if it is neither marked nullable nor of a reference type and [MAPPER] writes it
- * under no `@JsonInclude` rule or never writes it. An input read through a delegating creator has
- * its delegate's schema.
+ * reads for an input, plus, as optional, those it writes but does not read; null for a type with no
+ * fixed shape, such as an abstract output, whose getters do not fix the keys of the subclass value
+ * [MAPPER] writes, an input [MAPPER] reads as another class through `@JsonDeserialize(as = ...)` or
+ * a builder, or one that contains itself. A property takes null if it is marked nullable, has a
+ * reference type such as `AtomicReference`, or has no fixed shape, unless an output's inclusion
+ * omits null, though NON_NULL still writes an empty reference as null. An input requires an
+ * unaliased creator property if it is marked required, or if it is neither marked nullable nor of a
+ * reference type and [MAPPER] writes it under no `@JsonInclude` rule or never writes it. An input
+ * read through a delegating creator has its delegate's schema.
  */
 internal fun inferJavaPortSchema(type: JavaType, forOutput: Boolean): Schema? {
   val inference = JavaPortSchemas(forOutput)
@@ -80,7 +80,10 @@ private val NUMBERS =
 private val CONFIG = MAPPER.serializationConfig
 private val ANNOTATIONS = CONFIG.annotationIntrospector
 
-private class JavaPortSchemas(private val forOutput: Boolean) {
+private class JavaPortSchemas(
+  private val forOutput: Boolean,
+  private val allowAbstractRoot: Boolean = false,
+) {
   /** The records and POJOs being described, to find a type that contains itself. */
   private val enclosing = mutableSetOf<JavaType>()
 
@@ -130,7 +133,9 @@ private class JavaPortSchemas(private val forOutput: Boolean) {
   /** Returns the closed schema of a record or POJO, or null if its keys are not fixed. */
   private fun describeObject(type: JavaType): Schema? {
     // Polymorphic types add subtype keys; an abstract type's getters do not fix its value's keys.
-    if (isPolymorphic(type) || !hasFixedKeys(type) || (forOutput && type.isAbstract)) return null
+    val skipAbstractOutput =
+      forOutput && type.isAbstract && (!allowAbstractRoot || enclosing.isNotEmpty())
+    if (isPolymorphic(type) || !hasFixedKeys(type) || skipAbstractOutput) return null
     val deserializer = if (forOutput) null else findBeanDeserializer(type)
     val delegate = if (forOutput) null else delegateType(deserializer)
     // A @JsonDeserialize(as = ...) or builder input reads another class, whose keys may differ.
@@ -193,6 +198,15 @@ private class JavaPortSchemas(private val forOutput: Boolean) {
               (property.isRequired || (!nullable && !mayOmit(description, property)))
           }
         if (isRequired) required += property.name
+      }
+      // Add the keys the type writes but does not read, even an abstract one, so it fits its input.
+      if (!forOutput) {
+        val written = JavaPortSchemas(forOutput = true, allowAbstractRoot = true)
+        written
+          .describe(type)
+          ?.takeUnless { written.recursive }
+          ?.properties
+          ?.forEach { (key, schema) -> properties.putIfAbsent(key, schema) }
       }
       return Schema(
         type = Type.OBJECT,
@@ -277,6 +291,9 @@ private fun usesDefaultEnumDeserializer(type: JavaType): Boolean {
 private fun findBeanDeserializer(type: JavaType): BeanDeserializerBase? =
   runCatching { deserializationContext().findRootValueDeserializer(type) }.getOrNull()
     as? BeanDeserializerBase
+
+/** Returns the type Jackson reads all of [type] as, if its delegating creator alone reads it. */
+internal fun delegateType(type: JavaType): JavaType? = delegateType(findBeanDeserializer(type))
 
 /** Returns the type Jackson reads all of [deserializer]'s type as, if its delegate alone does. */
 private fun delegateType(deserializer: BeanDeserializerBase?): JavaType? {

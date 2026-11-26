@@ -14,24 +14,32 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWorkflowApi::class)
+@file:OptIn(AdkJavaInteropApi::class, ExperimentalWorkflowApi::class)
 
 package com.google.adk.kt.interop
 
 import com.fasterxml.jackson.core.type.TypeReference
+import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.interop.JavaPortTypes.Box
 import com.google.adk.kt.interop.JavaPortTypes.Catchall
 import com.google.adk.kt.interop.JavaPortTypes.Chain
 import com.google.adk.kt.interop.JavaPortTypes.Contact
 import com.google.adk.kt.interop.JavaPortTypes.Coords
 import com.google.adk.kt.interop.JavaPortTypes.Counted
+import com.google.adk.kt.interop.JavaPortTypes.Customer
 import com.google.adk.kt.interop.JavaPortTypes.Defaults
 import com.google.adk.kt.interop.JavaPortTypes.Entry
 import com.google.adk.kt.interop.JavaPortTypes.Hidden
 import com.google.adk.kt.interop.JavaPortTypes.Hinted
 import com.google.adk.kt.interop.JavaPortTypes.Holder
 import com.google.adk.kt.interop.JavaPortTypes.Invoice
+import com.google.adk.kt.interop.JavaPortTypes.InvoiceLine
 import com.google.adk.kt.interop.JavaPortTypes.Irregular
 import com.google.adk.kt.interop.JavaPortTypes.Keywords
 import com.google.adk.kt.interop.JavaPortTypes.Label
@@ -42,38 +50,73 @@ import com.google.adk.kt.interop.JavaPortTypes.Login
 import com.google.adk.kt.interop.JavaPortTypes.Memo
 import com.google.adk.kt.interop.JavaPortTypes.Money
 import com.google.adk.kt.interop.JavaPortTypes.Note
+import com.google.adk.kt.interop.JavaPortTypes.NoteView
+import com.google.adk.kt.interop.JavaPortTypes.NoteViewImpl
+import com.google.adk.kt.interop.JavaPortTypes.NullableDraft
 import com.google.adk.kt.interop.JavaPortTypes.Order
 import com.google.adk.kt.interop.JavaPortTypes.Packed
 import com.google.adk.kt.interop.JavaPortTypes.Parsed
 import com.google.adk.kt.interop.JavaPortTypes.Pet
 import com.google.adk.kt.interop.JavaPortTypes.Plain
 import com.google.adk.kt.interop.JavaPortTypes.Point
+import com.google.adk.kt.interop.JavaPortTypes.Priced
 import com.google.adk.kt.interop.JavaPortTypes.Profile
+import com.google.adk.kt.interop.JavaPortTypes.Quote
 import com.google.adk.kt.interop.JavaPortTypes.Ref
 import com.google.adk.kt.interop.JavaPortTypes.Scalars
 import com.google.adk.kt.interop.JavaPortTypes.Serial
 import com.google.adk.kt.interop.JavaPortTypes.Shipment
+import com.google.adk.kt.interop.JavaPortTypes.Signup
+import com.google.adk.kt.interop.JavaPortTypes.Slip
 import com.google.adk.kt.interop.JavaPortTypes.Sparse
 import com.google.adk.kt.interop.JavaPortTypes.Strict
 import com.google.adk.kt.interop.JavaPortTypes.Tagged
 import com.google.adk.kt.interop.JavaPortTypes.Tags
+import com.google.adk.kt.interop.JavaPortTypes.Tally
 import com.google.adk.kt.interop.JavaPortTypes.Task
 import com.google.adk.kt.interop.JavaPortTypes.Tree
 import com.google.adk.kt.interop.JavaPortTypes.Words
+import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import com.google.adk.kt.workflow.Edge
+import com.google.adk.kt.workflow.GraphValidationException
+import com.google.adk.kt.workflow.JoinNode
+import com.google.adk.kt.workflow.Node
+import com.google.adk.kt.workflow.NodeBody
+import com.google.adk.kt.workflow.RequestInput
+import com.google.adk.kt.workflow.Start
+import com.google.adk.kt.workflow.Workflow
 import com.google.adk.kt.workflow.node
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
-/** Checks the schemas [inferJavaPortSchema] infers from Java port types. */
+/**
+ * Checks the schemas [inferJavaPortSchema] infers from Java port types, and that edges between Java
+ * and Kotlin ports build and run as those schemas say.
+ */
 class JavaPortSchemasTest {
 
   @Serializable
   data class Ticket(val id: String, val priority: Int, val score: Double, val tags: List<String>)
+
+  @Serializable data class Draft(val note: String?)
 
   @Test
   fun javaRecordAndSerializableTwin_inferTheSameSchemas() {
@@ -300,17 +343,17 @@ class JavaPortSchemasTest {
   }
 
   @Test
-  fun derivedGetter_isOnlyOnOutputSchema() {
+  fun derivedGetter_isOptionalOnInputAndRequiredOnOutput() {
     // Arrange
-    val invoice = mapOf("id" to STRING, "quantity" to INTEGER)
+    val invoice = mapOf("id" to STRING, "quantity" to INTEGER, "total" to INTEGER)
 
     // Act
     val input = inferred(Invoice::class.java, forOutput = false)
     val output = inferred(Invoice::class.java, forOutput = true)
 
-    // Assert: an input has only the keys the type reads, not the marked total it only writes.
+    // Assert: an input also takes, as optional, the marked total the type only writes.
     assertEquals(closed(invoice, listOf("id", "quantity")), input)
-    assertEquals(closed(invoice + ("total" to INTEGER), listOf("id", "quantity", "total")), output)
+    assertEquals(closed(invoice, listOf("id", "quantity", "total")), output)
   }
 
   @Test
@@ -403,16 +446,14 @@ class JavaPortSchemasTest {
   }
 
   @Test
-  fun writeOnlyAndReadOnlyProperties_areOnlyOnTheirSide() {
+  fun writeOnlyPropertyIsNotWritten_andReadOnlyOneIsOptionalOnInput() {
     // Act
     val input = inferred(Login::class.java, forOutput = false)
     val output = inferred(Login::class.java, forOutput = true)
 
     // Assert
-    assertEquals(
-      closed(mapOf("user" to STRING, "password" to STRING), listOf("user", "password")),
-      input,
-    )
+    val inputKeys = mapOf("user" to STRING, "password" to STRING, "role" to STRING)
+    assertEquals(closed(inputKeys, listOf("user", "password")), input)
     assertEquals(closed(mapOf("user" to STRING, "role" to STRING), listOf("user", "role")), output)
   }
 
@@ -687,6 +728,294 @@ class JavaPortSchemasTest {
     assertNull(viewIn)
     assertNull(builtIn)
     assertEquals(closed(mapOf("name" to STRING), listOf("name")), builtOut)
+  }
+
+  @Test
+  fun nullableKotlinField_failsIntoAJavaFieldWhenBuiltUnlessTheFieldIsNullable() {
+    // Arrange
+    val draft = node<String, Draft>("draft") { _, _ -> Draft(null) }
+    val strict =
+      FunctionNodes.of("read", JavaPortTypes.Draft::class.java, String::class.java) { _, d ->
+        "note=${d.note()}"
+      }
+    val nullable =
+      FunctionNodes.of("read", NullableDraft::class.java, String::class.java) { _, d ->
+        "note=${d.note()}"
+      }
+
+    // Act
+    val error = assertFailsWith<GraphValidationException> { chain(draft, strict) }
+    val events = runWorkflow(chain(draft, nullable))
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Schema mismatch on edge draft -> read")
+    assertEquals("note=null", events.outputOf("read"))
+  }
+
+  @Test
+  fun knownLimit_nullableKotlinOutputIntoAJavaIntegerPort_failsWhenBuilt() {
+    // Arrange
+    val length = node<String, Int?>("length") { _, text -> text.length }
+    val next =
+      FunctionNodes.of("next", Int::class.javaObjectType, Int::class.javaObjectType) { _, n ->
+        n + 1
+      }
+
+    // Act
+    val error = assertFailsWith<GraphValidationException> { chain(length, next) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Schema mismatch on edge length -> next")
+  }
+
+  @Test
+  fun javaRecordOutput_fitsItsKotlinTwinInput() {
+    // Arrange
+    val write =
+      FunctionNodes.of("write", String::class.java, NullableDraft::class.java) { _, _ ->
+        NullableDraft(null)
+      }
+    val read = node<Draft, String>("read") { _, draft -> "note=${draft.note}" }
+
+    // Act
+    val events = runWorkflow(chain(write, read))
+
+    // Assert: the Java output always writes note, which the Kotlin input requires.
+    assertEquals("note=null", events.outputOf("read"))
+  }
+
+  @Test
+  fun typesWritingKeysTheyDoNotRead_fitTheirOwnInputs() {
+    // Act: Invoice writes a marked total, Tally one allowGetters names, InvoiceLine a nested total.
+    val billed =
+      runWorkflow(
+        sameTypeWorkflow(Invoice::class.java, Invoice("a1", 2)) { "${it.id()}=${it.total}" }
+      )
+    val counted =
+      runWorkflow(
+        sameTypeWorkflow(Tally::class.java, Tally("t1", 3, 30)) { "${it.id()}=${it.total()}" }
+      )
+    val labeled =
+      runWorkflow(
+        sameTypeWorkflow(InvoiceLine::class.java, InvoiceLine("l1", Invoice("a1", 2))) {
+          it.label()
+        }
+      )
+
+    // Assert: Tally does not read its total back.
+    assertEquals("a1=20", billed.outputOf("read"))
+    assertEquals("t1=0", counted.outputOf("read"))
+    assertEquals("l1", labeled.outputOf("read"))
+  }
+
+  @Test
+  fun keyTheTargetOnlyWritesWithAnotherType_failsWhenBuilt() {
+    // Arrange: Invoice writes total as an integer it does not read, and Quote writes it as text.
+    val quote =
+      FunctionNodes.of("quote", String::class.java, Quote::class.java) { _, _ ->
+        Quote("a1", 2, "x")
+      }
+    val invoice =
+      FunctionNodes.of("invoice", Invoice::class.java, String::class.java) { _, i -> i.id() }
+
+    // Act
+    val error = assertFailsWith<GraphValidationException> { chain(quote, invoice) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Schema mismatch on edge quote -> invoice")
+  }
+
+  @Test
+  fun recordReadingACreatorKeyItNeverWrites_failsItsOwnEdgeWhenBuilt() {
+    // Act: Hidden (allowSetters) and Login (WRITE_ONLY) read keys they never write.
+    val hidden =
+      assertFailsWith<GraphValidationException> {
+        sameTypeWorkflow(Hidden::class.java, Hidden("x", "y")) { it.a() }
+      }
+    val login =
+      assertFailsWith<GraphValidationException> {
+        sameTypeWorkflow(Login::class.java, Login("ann", "pw", "admin")) { it.user() }
+      }
+
+    // Assert
+    assertContains(hidden.message.orEmpty(), "does not fit input schema")
+    assertContains(login.message.orEmpty(), "does not fit input schema")
+  }
+
+  @Test
+  fun derivedGetter_fitsItsOwnTypesInput() {
+    // Act: Priced writes total, which it does not read back.
+    val events =
+      runWorkflow(
+        sameTypeWorkflow(Priced::class.java, Priced("a1", 2, 1.5)) { "${it.id()}=${it.total}" }
+      )
+
+    // Assert
+    assertEquals(
+      mapOf("id" to "a1", "quantity" to 2L, "price" to 1.5, "total" to 3.0),
+      events.outputOf("write"),
+    )
+    assertEquals("a1=3.0", events.outputOf("read"))
+  }
+
+  @Test
+  fun knownLimit_getterAndSetterNamedApart_buildIntoTheSameTypeAndReadNull() {
+    // Arrange: Slip writes label through its getter, but its setter reads lable.
+    val slip = Slip().apply { setLable("memo") }
+
+    // Act
+    val events = runWorkflow(sameTypeWorkflow(Slip::class.java, slip) { "${it.label}" })
+
+    // Assert: the edge builds, as a type fits its own input, and the reader gets null.
+    assertEquals(mapOf("label" to "memo"), events.outputOf("write"))
+    assertEquals("null", events.outputOf("read"))
+  }
+
+  @Test
+  fun keyAnotherTypeDoesNotRead_failsWhenBuilt() {
+    // Arrange
+    val signup =
+      FunctionNodes.of("signup", String::class.java, Signup::class.java) { _, _ -> Signup("a@b.c") }
+    val customer =
+      FunctionNodes.of("customer", Customer::class.java, String::class.java) { _, c ->
+        "${c.email}"
+      }
+
+    // Act
+    val error = assertFailsWith<GraphValidationException> { chain(signup, customer) }
+
+    // Assert
+    assertContains(error.message.orEmpty(), "Customer does not read [customerEmail]")
+  }
+
+  @Test
+  fun inputReadAsAnotherClass_buildsWithoutAnEdgeCheckAndRuns() {
+    // Arrange: Jackson reads NoteView as NoteViewImpl, whose note may be null.
+    val write =
+      FunctionNodes.of("write", String::class.java, NoteViewImpl::class.java) { _, _ ->
+        NoteViewImpl("ada")
+      }
+    val read =
+      FunctionNodes.of("read", NoteView::class.java, String::class.java) { _, v ->
+        "${v.name}:${v.note}"
+      }
+
+    // Act
+    val events = runWorkflow(chain(write, read))
+
+    // Assert
+    assertEquals("ada:null", events.outputOf("read"))
+  }
+
+  @Test
+  fun resumedUseAsOutputReply_isParsedAsJsonForATypedPort() {
+    // Act: each parent gives an agent's reply as its output, then pauses before it finishes.
+    val number = resumedParentOutput(Int::class.javaObjectType, reply = "42", placeholder = 0)
+    val draft = runCatching {
+      resumedParentOutput(JavaPortTypes.Draft::class.java, "not json", JavaPortTypes.Draft("x"))
+    }
+
+    // Assert: as for a Kotlin port, the reply is parsed as JSON; text that is not JSON fails.
+    assertEquals("Long:42", number)
+    assertContains(draft.exceptionOrNull()?.message.orEmpty(), "value is not valid JSON")
+  }
+
+  /**
+   * Runs a parent typed [type] that gives an agent's [reply] as its output, then waits on a task
+   * agent, beside a node that asks the user; returns the parent's output as resumed on turn 2.
+   */
+  private fun <T : Any> resumedParentOutput(type: Class<T>, reply: String, placeholder: T): String =
+    runBlocking {
+      val writer = LlmAgent(name = "writer", model = ReplyModel(reply))
+      val task = LlmAgent(name = "task", model = ReplyModel("Any detail?"), mode = AgentMode.TASK)
+      val parent =
+        FunctionNodes.builder(Content::class.java, type)
+          .name("parent")
+          .rerunOnResume(true)
+          .body { ctx, _ ->
+            val view = InteropContextView.of(ctx)
+            view.runNodeBlocking(writer, null, RunNodeConfig.builder().useAsOutput(true).build())
+            view.runNodeBlocking(task, null, RunNodeConfig.builder().raiseOnWait(true).build())
+            placeholder
+          }
+          .build()
+      val ask =
+        FunctionNodes.of("ask", Content::class.java, String::class.java) { _, _ ->
+          NodeBody.requestInput<String>("q", "proceed?")
+        }
+      val join = JoinNode(name = "join")
+      val sink =
+        FunctionNodes.of("sink", Any::class.java, String::class.java) { _, joined ->
+          val output = (joined as Map<*, *>)["parent"]
+          "${output?.javaClass?.simpleName}:$output"
+        }
+      val edges = listOf(Edge(Start, parent), Edge(Start, ask), Edge(parent, join), Edge(ask, join))
+      val workflow = Workflow(name = "resume_wf", edges = edges + Edge(join, sink))
+      val app =
+        App(
+          appName = "resume_wf",
+          rootNode = workflow,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      val runner = InMemoryRunner(app)
+      val asked =
+        runner
+          .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
+          .toList()
+      val answer =
+        Content(
+          role = Role.USER,
+          parts =
+            listOf(
+              Part(
+                functionResponse =
+                  FunctionResponse(
+                    id = "q",
+                    name = RequestInput.FUNCTION_CALL_NAME,
+                    response = mapOf("result" to "ok"),
+                  )
+              )
+            ),
+        )
+      runner
+        .runAsync(
+          userId = "u",
+          sessionId = "s",
+          invocationId = asked.first().invocationId,
+          newMessage = answer,
+        )
+        .toList()
+        .outputOf("sink") as String
+    }
+
+  /** A model that replies with [text] to every request. */
+  private class ReplyModel(private val text: String) : Model {
+    override val name = "reply"
+
+    override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
+      flowOf(LlmResponse(content = Content.fromText(Role.MODEL, text)))
+  }
+
+  /** Returns a workflow whose `write` outputs [value] as [type] and whose `read` reads it back. */
+  private fun <T : Any> sameTypeWorkflow(type: Class<T>, value: T, read: (T) -> String): Workflow {
+    val write = FunctionNodes.of("write", String::class.java, type) { _, _ -> value }
+    val reader = FunctionNodes.of("read", type, String::class.java) { _, input -> read(input) }
+    return chain(write, reader)
+  }
+
+  /** Returns a workflow that runs [first], then [second]. */
+  private fun chain(first: Node, second: Node): Workflow =
+    Workflow(name = "wf", edges = listOf(Edge(Start, first), Edge(first, second)))
+
+  private fun List<Event>.outputOf(name: String): Any? =
+    single { it.nodeInfo?.path?.endsWith("/$name@1") == true }.output
+
+  /** Runs [workflow] once and returns its events. */
+  private fun runWorkflow(workflow: Workflow): List<Event> = runBlocking {
+    val runner = InMemoryRunner(App(appName = workflow.name, rootNode = workflow))
+    runner
+      .runAsync(userId = "u", sessionId = "s", newMessage = Content.fromText(Role.USER, "go"))
+      .toList()
   }
 
   private fun inferred(type: Class<*>, forOutput: Boolean) =

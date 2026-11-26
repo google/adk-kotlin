@@ -248,12 +248,16 @@ private fun validateStaticSchemas(edges: List<Edge>) {
   for (edge in edges) {
     val output = edge.from.outputSchema ?: continue
     val target = edge.to
-    val input =
-      (if (target is FunctionNode<*, *>) target.edgeInputSchema else target.inputSchema) ?: continue
+    val function = target as? FunctionNode<*, *>
+    val input = (if (function != null) function.edgeInputSchema else target.inputSchema) ?: continue
     if (!output.fitsInto(input)) {
+      // An explicit input schema is the user's own, so only a port type's schema gets a hint.
+      val hint =
+        function?.takeIf { it.explicitInputSchema == null }?.inputCodec?.mismatchHint(output)
       fail(
         "Schema mismatch on edge ${edge.from.name} -> ${edge.to.name}. Output schema" +
-          " ${output.toJson()} does not fit input schema ${input.toJson()}."
+          " ${output.toJson()} does not fit input schema ${input.toJson()}." +
+          hint?.let { " $it" }.orEmpty()
       )
     }
   }

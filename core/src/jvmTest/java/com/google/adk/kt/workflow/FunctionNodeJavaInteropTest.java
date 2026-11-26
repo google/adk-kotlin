@@ -28,6 +28,7 @@ import static org.junit.Assert.assertTrue;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
@@ -114,6 +115,46 @@ public final class FunctionNodeJavaInteropTest {
   record Order(String id, int quantity, double price) {}
 
   record Leave(int days, String reason) {}
+
+  record OrderRef(String id) {}
+
+  /** A class written and read through its delegating factory as an {@link OrderRef}. */
+  public static final class RefHolder {
+    final OrderRef ref;
+
+    private RefHolder(OrderRef ref) {
+      this.ref = ref;
+    }
+
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    static RefHolder of(OrderRef ref) {
+      return new RefHolder(ref);
+    }
+
+    @JsonValue
+    public OrderRef ref() {
+      return ref;
+    }
+  }
+
+  /** A class read through its delegating factory as a reference to a {@link RefHolder}. */
+  public static final class OuterHolder {
+    final RefHolder holder;
+
+    private OuterHolder(RefHolder holder) {
+      this.holder = holder;
+    }
+
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    static OuterHolder of(AtomicReference<RefHolder> holder) {
+      return new OuterHolder(holder.get());
+    }
+
+    @JsonValue
+    public RefHolder holder() {
+      return holder;
+    }
+  }
 
   /** An interface port type, which has no single JSON shape. */
   interface Decision {}
@@ -343,6 +384,99 @@ public final class FunctionNodeJavaInteropTest {
     }
   }
 
+  /** A concrete port type that a subclass extends with a field of its own. */
+  static class Tagged {
+    public String id = "t1";
+  }
+
+  static final class ColoredTagged extends Tagged {
+    public String color = "red";
+  }
+
+  /** An abstract nested value returned by {@link DerivedPoint#getExtra()}. */
+  public abstract static class Extra {
+    public abstract String getLabel();
+  }
+
+  static final class DetailedExtra extends Extra {
+    @Override
+    public String getLabel() {
+      return "a";
+    }
+
+    public String getDetail() {
+      return "b";
+    }
+  }
+
+  /** An abstract creator type (AutoValue style) with derived getters it writes but never reads. */
+  public abstract static class DerivedPoint {
+    public abstract int getX();
+
+    public int getDoubled() {
+      return getX() * 2;
+    }
+
+    public Extra getExtra() {
+      return new DetailedExtra();
+    }
+
+    @JsonCreator
+    static DerivedPoint create(@JsonProperty("x") int x) {
+      return new DerivedPointImpl(x);
+    }
+  }
+
+  static final class DerivedPointImpl extends DerivedPoint {
+    private final int x;
+
+    DerivedPointImpl(int x) {
+      this.x = x;
+    }
+
+    @Override
+    public int getX() {
+      return x;
+    }
+
+    @Override
+    public DetailedExtra getExtra() {
+      return new DetailedExtra();
+    }
+  }
+
+  /** An abstract port type whose values, each a {@link StrictViewImpl}, write a level too. */
+  @JsonDeserialize(as = StrictViewImpl.class)
+  public interface StrictView {
+    String getName();
+  }
+
+  record StrictViewImpl(String name, String level) implements StrictView {
+    @Override
+    public String getName() {
+      return name;
+    }
+  }
+
+  /** A bean that Jackson reads the secret of through its setter but never writes it. */
+  @JsonIgnoreProperties(value = "secret", allowSetters = true)
+  public static final class CredentialsBean {
+    public String user;
+    private String secret;
+
+    public String getSecret() {
+      return secret;
+    }
+
+    public void setSecret(String secret) {
+      this.secret = secret;
+    }
+  }
+
+  /** A record that Jackson reads the secret of but never writes it. */
+  @JsonIgnoreProperties(value = "secret", allowSetters = true)
+  record Credentials(String user, String secret) {}
+
   /** A class Jackson can read but not write: it has no getters. */
   public static final class Token {
     @SuppressWarnings("unused")
@@ -454,18 +588,16 @@ public final class FunctionNodeJavaInteropTest {
   @Test
   public void of_stringPort_rejectsNonTextValues() {
     // Arrange
+    // Untyped outputs pass the build-time schema check, so the port itself rejects each value.
     Supplier<FunctionNode<String, String>> shout =
         () -> FunctionNodes.of("shout", String.class, String.class, (ctx, text) -> text + "!");
-    FunctionNode<Object, Integer> number =
-        FunctionNodes.of("number", Object.class, Integer.class, (ctx, in) -> 3);
-    FunctionNode<Object, Boolean> flag =
-        FunctionNodes.of("flag", Object.class, Boolean.class, (ctx, in) -> true);
-    FunctionNode<Object, Map<String, Object>> record =
+    FunctionNode<Object, Object> number =
+        FunctionNodes.of("number", Object.class, Object.class, (ctx, in) -> 3);
+    FunctionNode<Object, Object> flag =
+        FunctionNodes.of("flag", Object.class, Object.class, (ctx, in) -> true);
+    FunctionNode<Object, Object> record =
         FunctionNodes.of(
-            "record",
-            Object.class,
-            new TypeReference<Map<String, Object>>() {},
-            (ctx, in) -> ImmutableMap.of("text", "hi"));
+            "record", Object.class, Object.class, (ctx, in) -> ImmutableMap.of("text", "hi"));
 
     // Act
     boolean numberRejected = rejected(() -> run("string_number", "go", number, shout.get()));
@@ -476,6 +608,178 @@ public final class FunctionNodeJavaInteropTest {
     assertTrue(numberRejected);
     assertTrue(booleanRejected);
     assertTrue(mapRejected);
+  }
+
+  @Test
+  public void of_stringOutputIntoIntegerPort_failsWhenBuilt() {
+    // Act
+    String error =
+        assertThrows(
+                GraphValidationException.class,
+                () -> runEdge(String.class, "3", Integer.class, n -> n))
+            .getMessage();
+
+    // Assert
+    assertTrue(error, error.contains("Schema mismatch on edge a -> b"));
+  }
+
+  @Test
+  public void of_integerOutputIntoDoublePort_buildsAndReadsTheNumber() {
+    // Act
+    Object half = runEdge(Integer.class, 3, Double.class, n -> n / 2);
+
+    // Assert
+    assertEquals(1.5, half);
+  }
+
+  @Test
+  public void of_recordIntoMapPort_buildsAndReadsItsKeys() {
+    // Arrange
+    FunctionNode<Object, Order> a =
+        FunctionNodes.of("a", Object.class, Order.class, (c, i) -> new Order("A-1", 2, 1.5));
+    FunctionNode<Map<String, Object>, Object> b =
+        FunctionNodes.of(
+            "b", new TypeReference<Map<String, Object>>() {}, Object.class, (c, m) -> m.get("id"));
+
+    // Act
+    List<Event> events = run("record_into_map", "go", a, b);
+
+    // Assert
+    assertEquals("A-1", outputOf(events, "b"));
+  }
+
+  @Test
+  public void of_recordIntoRecordWithFewerKeys_failsWhenBuiltAndNamesTheUnreadKeys() {
+    // Act
+    String unread =
+        assertThrows(
+                GraphValidationException.class,
+                () -> runEdge(Order.class, new Order("A-1", 2, 1.5), OrderRef.class, OrderRef::id))
+            .getMessage();
+
+    // Assert
+    assertTrue(unread, unread.contains("Schema mismatch on edge a -> b"));
+    assertTrue(
+        unread,
+        unread.endsWith(
+            " OrderRef does not read [quantity, price]: read each under that name, such as with"
+                + " @JsonProperty on a field, setter or creator parameter, mark a derived getter"
+                + " that writes one @JsonIgnore, set the node's input schema, or use a Map or"
+                + " Object.class port."));
+  }
+
+  @Test
+  public void of_recordMissingARequiredKey_failsWhenBuiltWithoutAHint() {
+    // Act
+    String missing =
+        assertThrows(
+                GraphValidationException.class,
+                () -> runEdge(Leave.class, new Leave(3, "trip"), OrderRef.class, OrderRef::id))
+            .getMessage();
+
+    // Assert: Leave lacks the id OrderRef requires, so naming its unread keys would not fix it.
+    assertTrue(missing, missing.contains("Schema mismatch on edge a -> b"));
+    assertFalse(missing, missing.contains("does not read"));
+  }
+
+  @Test
+  public void builder_explicitInputSchemaMismatch_givesNoHint() {
+    // Arrange
+    FunctionNode<Content, Order> a =
+        FunctionNodes.of("a", Content.class, Order.class, (ctx, m) -> new Order("A-1", 2, 1.5));
+    FunctionNode<OrderRef, Object> b =
+        FunctionNodes.builder(OrderRef.class, Object.class)
+            .name("b")
+            .inputSchema(
+                Schema.builder()
+                    .type(Type.OBJECT)
+                    .properties(ImmutableMap.of("id", Schema.builder().type(Type.STRING).build()))
+                    .required(ImmutableList.of("id"))
+                    .additionalProperties(false)
+                    .build())
+            .body((ctx, ref) -> ref.id())
+            .build();
+
+    // Act
+    String explicit =
+        assertThrows(GraphValidationException.class, () -> run("explicit", "go", a, b))
+            .getMessage();
+
+    // Assert: an explicit input schema is the user's own, even one equal to the port type's.
+    assertFalse(explicit, explicit.contains("does not read"));
+  }
+
+  @Test
+  public void of_stringOutputIntoDelegatingMapPort_failsWhenBuilt() {
+    // Act
+    String error =
+        assertThrows(
+                GraphValidationException.class,
+                () -> runEdge(String.class, "hi", Bag.class, Bag::getName))
+            .getMessage();
+
+    // Assert: Jackson reads every input through the delegating creator, so only an object fits.
+    assertTrue(error, error.contains("Schema mismatch on edge a -> b"));
+  }
+
+  @Test
+  public void of_recordIntoDelegatingMapPort_buildsAndReadsItsKeys() {
+    // Act
+    Object id =
+        runEdge(Order.class, new Order("A-1", 2, 1.5), Bag.class, bag -> bag.values.get("id"));
+
+    // Assert
+    assertEquals("A-1", id);
+  }
+
+  @Test
+  public void of_recordIntoDelegateWithFewerKeys_namesTheDelegateInTheHint() {
+    // Act
+    String unread =
+        assertThrows(
+                GraphValidationException.class,
+                () ->
+                    runEdge(
+                        Order.class, new Order("A-1", 2, 1.5), RefHolder.class, h -> h.ref.id()))
+            .getMessage();
+
+    String nested =
+        assertThrows(
+                GraphValidationException.class,
+                () ->
+                    runEdge(
+                        Order.class,
+                        new Order("A-1", 2, 1.5),
+                        OuterHolder.class,
+                        h -> h.holder.ref.id()))
+            .getMessage();
+
+    FunctionNode<Content, Order> write =
+        FunctionNodes.of("write", Content.class, Order.class, (ctx, m) -> new Order("A-1", 2, 1.5));
+    FunctionNode<AtomicReference<OrderRef>, String> readRef =
+        FunctionNodes.of(
+            "read",
+            new TypeReference<AtomicReference<OrderRef>>() {},
+            String.class,
+            (ctx, r) -> r.get().id());
+    String reference =
+        assertThrows(GraphValidationException.class, () -> run("ref_hint", "go", write, readRef))
+            .getMessage();
+
+    // Assert: Jackson reads all three inputs as an OrderRef, so OrderRef needs the keys.
+    assertTrue(unread, unread.contains(" OrderRef does not read [quantity, price]"));
+    assertTrue(nested, nested.contains(" OrderRef does not read [quantity, price]"));
+    assertTrue(reference, reference.contains(" OrderRef does not read [quantity, price]"));
+  }
+
+  @Test
+  public void of_sameTypeEdge_buildsAndRuns() {
+    // Act: a class whose creator reads the keys its getters write fits its own input.
+    Object high =
+        runEdge(SimpleRange.class, new SimpleRange(1, 9), SimpleRange.class, r -> r.high());
+
+    // Assert
+    assertEquals(9L, high);
   }
 
   @Test
@@ -558,6 +862,27 @@ public final class FunctionNodeJavaInteropTest {
     // Assert
     assertEquals("o3,o1,o2", outputOf(events, "join"));
     assertTrue(error, error.contains("maxParallelWorkers"));
+  }
+
+  @Test
+  public void parallelOf_charArrayItemPort_readsANumericMessageAsText() {
+    // Arrange
+    FunctionNode<List<char[]>, List<String>> echo =
+        FunctionNode.parallelOf(
+            FunctionNodes.of(
+                "echo", char[].class, String.class, (ctx, chars) -> new String(chars)));
+    FunctionNode<List<String>, String> join =
+        FunctionNodes.of(
+            "join",
+            new TypeReference<List<String>>() {},
+            String.class,
+            (ctx, texts) -> String.join(",", texts));
+
+    // Act
+    List<Event> events = run("parallel_chars", "123", echo, join);
+
+    // Assert: the char[] port's string schema keeps the JSON number 123 as its text.
+    assertEquals("123", outputOf(events, "join"));
   }
 
   @Test
@@ -746,6 +1071,105 @@ public final class FunctionNodeJavaInteropTest {
     // Assert
     assertEquals(saved, outputOf(events, "replay"));
     assertEquals("B-7 x2", outputOf(events, "describe"));
+  }
+
+  @Test
+  public void of_subclassValue_writesItsOwnClassAndATypedSuccessorSkipsTheExtraKey() {
+    // Act
+    ImmutableList<Object> outputs = writeThenRead(Tagged.class, new ColoredTagged(), t -> t.id);
+
+    // Assert: as in ADK Java, the port also writes the subclass's color.
+    assertEquals(ImmutableList.of(ImmutableMap.of("id", "t1", "color", "red"), "t1"), outputs);
+  }
+
+  @Test
+  public void of_abstractCreatorTypeWithDerivedGetter_acceptsItsSubclassAtBuild() {
+    // Arrange
+    FunctionNode<Content, DerivedPoint> abstractOut =
+        FunctionNodes.of(
+            "abstract_out", Content.class, DerivedPoint.class, (ctx, m) -> new DerivedPointImpl(5));
+
+    // Act: DerivedPointImpl writes {x, doubled}, which DerivedPoint's input takes as optional.
+    Object read =
+        runEdge(
+            DerivedPointImpl.class,
+            new DerivedPointImpl(5),
+            DerivedPoint.class,
+            p -> p.getX() + "/" + p.getDoubled());
+
+    // Assert: output port of an abstract type still infers no schema; input accepts doubled.
+    assertNull(abstractOut.getOutputSchema());
+    assertEquals("5/10", read);
+  }
+
+  @Test
+  public void of_abstractOutputIntoItsSubclassInput_buildsAndRuns() {
+    // Act: StrictView declares only getName(), but each value is a StrictViewImpl with a level.
+    Object level =
+        runEdge(
+            StrictView.class,
+            new StrictViewImpl("ada", "high"),
+            StrictViewImpl.class,
+            StrictViewImpl::level);
+
+    // Assert: an abstract output infers no schema, so the edge into StrictViewImpl builds.
+    assertEquals("high", level);
+  }
+
+  @Test
+  public void of_subclassValueIntoAClosedInputSchema_buildsButFailsAtRunTime() {
+    // Arrange
+    FunctionNode<Content, Tagged> write =
+        FunctionNodes.of("write", Content.class, Tagged.class, (ctx, m) -> new ColoredTagged());
+    FunctionNode<Map<String, Object>, String> strict =
+        FunctionNodes.builder(JSON_OBJECT, String.class)
+            .name("strict")
+            .inputSchema(
+                Schema.builder()
+                    .type(Type.OBJECT)
+                    .properties(ImmutableMap.of("id", Schema.builder().type(Type.STRING).build()))
+                    .additionalProperties(false)
+                    .build())
+            .body((ctx, m) -> "read")
+            .build();
+
+    // Act
+    boolean failed = rejected(() -> run("closed_schema", "go", write, strict));
+
+    // Assert: the edge fits Tagged's schema, but the value also carries the subclass's color.
+    assertTrue(failed);
+  }
+
+  @Test
+  public void of_recordThatNeverWritesACreatorProperty_failsItsOwnEdgeAtBuild() {
+    // Arrange
+    FunctionNode<Content, Credentials> write =
+        FunctionNodes.of(
+            "write", Content.class, Credentials.class, (ctx, m) -> new Credentials("ada", "s3"));
+    FunctionNode<Credentials, String> read =
+        FunctionNodes.of("read", Credentials.class, String.class, (ctx, c) -> c.secret());
+
+    // Act
+    GraphValidationException error =
+        assertThrows(GraphValidationException.class, () -> run("never_written", "go", write, read));
+
+    // Assert: as in ADK Java, the input requires the secret, which the record never writes.
+    assertTrue(error.getMessage(), error.getMessage().contains("does not fit input schema"));
+  }
+
+  @Test
+  public void of_beanThatNeverWritesASetterProperty_buildsItsOwnEdgeAndReadsNull() {
+    // Arrange
+    CredentialsBean bean = new CredentialsBean();
+    bean.user = "ada";
+    bean.setSecret("s3");
+
+    // Act
+    ImmutableList<Object> outputs =
+        writeThenRead(CredentialsBean.class, bean, CredentialsBean::getSecret);
+
+    // Assert: a setter property is optional, so the successor reads null.
+    assertEquals(ImmutableList.of(ImmutableMap.of("user", "ada"), "null"), outputs);
   }
 
   @Test
@@ -1416,11 +1840,18 @@ public final class FunctionNodeJavaInteropTest {
             .build();
     FunctionNode<String, String> notify =
         FunctionNodes.of("notify", String.class, String.class, (ctx, text) -> text);
+    // A record producer, so the edge into the record successor builds.
+    FunctionNode<Content, Leave> bookLeave =
+        FunctionNodes.builder(Content.class, Leave.class)
+            .name("book")
+            .body((ctx, content) -> new Leave(3, "trip"))
+            .requireConfirmation(true)
+            .build();
     FunctionNode<Leave, String> file =
         FunctionNodes.of(
             "file", Leave.class, String.class, (ctx, leave) -> leave.days() + " " + leave.reason());
     JavaAskSession stringSession = new JavaAskSession(book, notify, "string_reject_wf");
-    JavaAskSession recordSession = new JavaAskSession(book, file, "record_reject_wf");
+    JavaAskSession recordSession = new JavaAskSession(bookLeave, file, "record_reject_wf");
     Map<String, Object> no = ImmutableMap.of("confirmed", false);
     Content stringRejection =
         answer(confirmationId(stringSession.run(Content.fromText("user", "trip"))), no);
@@ -3675,6 +4106,20 @@ public final class FunctionNodeJavaInteropTest {
     }
   }
 
+  /**
+   * Outputs {@code value} from a node typed as {@code type} into a successor typed the same, and
+   * returns what the node wrote and, as text, what {@code read} returns on the successor's input.
+   */
+  private <T> ImmutableList<Object> writeThenRead(
+      Class<T> type, T value, Function<T, Object> read) {
+    FunctionNode<Content, T> write =
+        FunctionNodes.of("write", Content.class, type, (ctx, m) -> value);
+    FunctionNode<T, String> reader =
+        FunctionNodes.of("read", type, String.class, (ctx, in) -> String.valueOf(read.apply(in)));
+    List<Event> events = run("write_then_read", "go", write, reader);
+    return ImmutableList.of(outputOf(events, "write"), outputOf(events, "read"));
+  }
+
   private static String describe(Object value) {
     return value instanceof String ? "\"" + value + "\"" : String.valueOf(value);
   }
@@ -3941,6 +4386,13 @@ public final class FunctionNodeJavaInteropTest {
     protected CompletableFuture<ListEventsResponse> listEventsAsync(SessionKey key) {
       return delegate.listEvents(key);
     }
+  }
+
+  /** Runs node {@code a}, which outputs {@code value} as {@code out}, into {@code b} reading it. */
+  private <O, I> Object runEdge(Class<O> out, O value, Class<I> in, Function<I, Object> read) {
+    FunctionNode<Object, O> a = FunctionNodes.of("a", Object.class, out, (c, i) -> value);
+    FunctionNode<I, Object> b = FunctionNodes.of("b", in, Object.class, (c, v) -> read.apply(v));
+    return outputOf(run("edge", "go", a, b), "b");
   }
 
   /** The runners {@link #run} created, by app name, so a test can read the session back. */

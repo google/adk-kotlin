@@ -59,6 +59,7 @@ import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.fitsInto
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Schema
@@ -79,10 +80,19 @@ import kotlinx.coroutines.CoroutineDispatcher
 /**
  * Creates [FunctionNode]s from Java with a type per port. Jackson reads each input into its
  * declared type and writes each output as JSON, so records and POJOs work as ports, and a port
- * typed this way infers no schema; `Object.class` leaves a port untyped, a `Content` or `Event`
- * port passes values unchanged, and a `String` port reads a message as its text, passes null
- * through, rejects any other non-text value, and infers a string schema. To run a node on each item
- * of a list, wrap it with [FunctionNode.parallelOf].
+ * typed this way infers the schema of that JSON form, or none for a type with no fixed shape or an
+ * input Jackson reads as another class through `@JsonDeserialize(as = ...)` or a builder;
+ * `Object.class` leaves a port untyped, a `Content` or `Event` port passes values unchanged, and a
+ * `String` port reads a message as its text, passes null through, rejects any other non-text value,
+ * and infers a string schema. An edge into a typed port must fit its schema as between Kotlin
+ * ports: the source may write only keys the port type reads, or keys the port type itself writes,
+ * with a JSON type that fits (an integer also fits a number), and null only where the port type
+ * takes it, such as into a `String` port or a field marked `@Nullable`. So a bean fits its own
+ * input, even one whose getter and setter names differ by a typo, which then reads null; a creator
+ * property that a type never writes fails its own edge, as its reader would get null. A port writes
+ * a value as its own class, so a subclass value may write keys its declared type does not; a typed
+ * successor skips them, but an explicit input schema with `additionalProperties: false` rejects
+ * them at run time. To run a node on each item of a list, wrap it with [FunctionNode.parallelOf].
  *
  * Numbers, booleans, chars, enums, and text inside a record, also as primitive array elements and
  * map keys, follow the coercion rules of Kotlin ports: a value of the JSON type, the same literal
@@ -694,8 +704,28 @@ private fun reason(lookup: Result<*>): String =
 private class JacksonCodec<T>(private val type: JavaType) : PortCodec<T> {
   override val classifier: KClass<*> = type.rawClass.kotlin
 
-  // Schemas are not inferred from Java types yet.
-  override val schema: Schema? = null
+  // Only a Jackson reference type (`AtomicReference`) takes a top-level null; coerce passes any.
+  override val schema: Schema? by lazy { inferJavaPortSchema(type, forOutput = false) }
+
+  override val outputSchema: Schema? by lazy { inferJavaPortSchema(type, forOutput = true) }
+
+  override fun mismatchHint(source: Schema): String? {
+    val input = schema ?: return null
+    // Hint only when the closed input alone rejects the edge.
+    if (!source.fitsInto(input.copy(additionalProperties = null))) return null
+    val unread = source.properties?.keys.orEmpty() - input.properties.orEmpty().keys
+    if (unread.isEmpty()) return null
+    // Jackson reads a delegating type as its delegate, which then needs the keys.
+    val read =
+      generateSequence(if (type.isReferenceType) type.contentType else type) {
+          delegateType(it)?.let { d -> if (d.isReferenceType) d.contentType else d }
+        }
+        .last()
+    val name = read.rawClass.simpleName
+    return "$name does not read $unread: read each under that name, such as with @JsonProperty on" +
+      " a field, setter or creator parameter, mark a derived getter that writes one @JsonIgnore," +
+      " set the node's input schema, or use a Map or Object.class port."
+  }
 
   @Suppress("UNCHECKED_CAST")
   override fun coerce(value: Any?, what: String): T {

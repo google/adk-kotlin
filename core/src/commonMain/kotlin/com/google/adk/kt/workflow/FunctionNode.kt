@@ -79,7 +79,7 @@ private constructor(
   private val explicitRerunOnResume: Boolean?,
   waitForOutput: Boolean,
   config: NodeConfig,
-  private val explicitInputSchema: Schema?,
+  internal val explicitInputSchema: Schema?,
   private val explicitOutputSchema: Schema?,
   stateSchema: Schema?,
   internal val inputCodec: PortCodec<I>,

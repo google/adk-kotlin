@@ -167,6 +167,52 @@ final class JavaPortTypes {
     }
   }
 
+  /** A record that holds an {@link Invoice}, so it writes a nested total it does not read. */
+  record InvoiceLine(String label, Invoice invoice) {}
+
+  /** A record whose {@code total} is text, unlike {@link Invoice}'s derived one. */
+  record Quote(String id, int quantity, String total) {}
+
+  /** A record that writes a total it ignores on read, as {@code allowGetters} declares. */
+  @JsonIgnoreProperties(value = "total", allowGetters = true)
+  record Tally(String id, int quantity, int total) {}
+
+  /** A record that writes a total derived from its components, and does not read it back. */
+  record Priced(String id, int quantity, double price) {
+    public double getTotal() {
+      return quantity * price;
+    }
+  }
+
+  /** A POJO whose setter misspells the property its getter writes. */
+  public static final class Slip {
+    private String text;
+
+    public String getLabel() {
+      return text;
+    }
+
+    public void setLable(String label) {
+      text = label;
+    }
+  }
+
+  /** A record that writes a key {@link Customer} does not read. */
+  record Signup(String customerEmail) {}
+
+  /** A POJO that reads email, under that name only. */
+  public static final class Customer {
+    private String email;
+
+    public String getEmail() {
+      return email;
+    }
+
+    public void setEmail(String email) {
+      this.email = email;
+    }
+  }
+
   /** A POJO that Jackson creates from any JSON object through its delegating factory. */
   public static final class Tags {
     public List<String> values;
@@ -308,6 +354,10 @@ final class JavaPortTypes {
   record Labels(
       @JsonProperty(required = true) @JsonAlias("title") String name,
       @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> tags) {}
+
+  record Draft(String note) {}
+
+  record NullableDraft(@Nullable String note) {}
 
   /** A record whose JSON form may omit all but two keys. */
   record Sparse(
@@ -679,6 +729,33 @@ final class JavaPortTypes {
       public BuiltProfile build() {
         return new BuiltProfile(name);
       }
+    }
+  }
+
+  /** An interface whose derived note is non-null, read as an implementation that may write null. */
+  @JsonDeserialize(as = NoteViewImpl.class)
+  public interface NoteView {
+    String getName();
+
+    String getNote();
+  }
+
+  public static final class NoteViewImpl implements NoteView {
+    private final String name;
+
+    @JsonCreator
+    public NoteViewImpl(@JsonProperty("name") String name) {
+      this.name = name;
+    }
+
+    @Override
+    public String getName() {
+      return name;
+    }
+
+    @Override
+    public @Nullable String getNote() {
+      return null;
     }
   }
 

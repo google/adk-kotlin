@@ -71,6 +71,9 @@ internal interface PortCodec<T> {
    * [what], not [value].
    */
   fun encode(value: Any?, what: String): Any?
+
+  /** Returns how to fix an edge whose output [source] does not fit [schema], or null. */
+  fun mismatchHint(source: Schema): String? = null
 }
 
 /**
