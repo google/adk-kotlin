@@ -521,19 +521,20 @@ class LlmAgent(
         // Recordings first, so the finishing response stays last and carries the output write.
         if (liveRun != null) emitRecordings(context, agentContext, liveRun, round)
         round.finishOutput?.let { context.updateState(checkNotNull(outputKey), it) }
-        for (event in round.heldEvents) emitAuthored(context, event)
+        emitHeldEvents(context, round)
         if (liveRun != null) emitFinalAnswers(context, liveRun)
       } catch (e: NodeInterruptedException) {
         // A paused tool ends the round with its connection closed; the round's recordings and held
         // events go out first, so the caller gets them and the pause keeps the call that opened it.
         if (liveRun != null) emitRecordings(context, agentContext, liveRun, round)
-        for (event in round.heldEvents) emitAuthored(context, event)
+        emitHeldEvents(context, round)
         throw e
       } finally {
         // A round that failed, or whose caller stopped collecting, emits nothing more.
         if (liveRun != null) {
           val appendsBefore = liveRun.appendCount
           if (!round.recordingsOut) storeAbandonedRecordings(context, agentContext, liveRun, round)
+          storeAbandonedHeldEvents(context, agentContext, liveRun, round)
           val unused = liveRun.takeSentAnswers(context.nodePath)
           recordDeferredFinalAnswers(context, liveRun)
           liveRun.forgetLiveModelMediaMarks(context.nodePath)
@@ -586,7 +587,8 @@ class LlmAgent(
 
     /**
      * A live round's events held until its connection closes, so input the caller sends on seeing
-     * them reaches the next live reader.
+     * them reaches the next live reader. An event leaves it only once emitted, so a round that ends
+     * early stores just the rest, never one the runner chose not to store.
      */
     val heldEvents = mutableListOf<Event>()
 
@@ -613,6 +615,17 @@ class LlmAgent(
     event: Event,
   ) {
     if (round.live) round.heldEvents += event else emitAuthored(context, event)
+  }
+
+  /**
+   * Emits the events [round] held, each leaving it only once its emit returns, so those a stop cut
+   * off stay for [storeAbandonedHeldEvents].
+   */
+  private suspend fun FlowCollector<Any?>.emitHeldEvents(context: Context, round: DelegationRound) {
+    while (round.heldEvents.isNotEmpty()) {
+      emitAuthored(context, round.heldEvents.first())
+      round.heldEvents.removeAt(0)
+    }
   }
 
   /**
@@ -763,26 +776,9 @@ class LlmAgent(
               round,
               "an abandoned live node round",
             )
-        val runMetadata = agentContext.runConfig?.customMetadata.orEmpty()
-        // The node runner's context, closest to the runner's, without this agent's mode override.
-        val pluginContext = context.invocationContext
         for (event in recordings) {
           if (event.id in stored || event.id in round.recordingsHandedOn) continue
-          // Scoped, tagged and passed through the plugins as the node runner and runner would.
-          val scoped =
-            event.copy(
-              isolationScope = event.isolationScope ?: context.isolationScope,
-              nodeInfo = (event.nodeInfo ?: NodeInfo()).copy(path = context.nodePath),
-              customMetadata = (runMetadata + event.customMetadata.orEmpty()).ifEmpty { null },
-            )
-          val callbacks = pluginContext.pluginManager.onEventCallbacks
-          val processed = runOnEventCallbacksPipeline(callbacks, pluginContext, scoped)
-          // Merged again, as the runner does, in case a plugin dropped the run's metadata.
-          liveRun.append(
-            processed.copy(
-              customMetadata = (runMetadata + processed.customMetadata.orEmpty()).ifEmpty { null }
-            )
-          )
+          appendAbandoned(context, agentContext, liveRun, event)
         }
       } catch (e: CancellationException) {
         throw e
@@ -790,6 +786,84 @@ class LlmAgent(
         logger.warn { "Storing an abandoned live round's audio failed (${e::class.simpleName})." }
       }
     }
+  }
+
+  /**
+   * Stores the events a live [round] held but never handed on, since it emits nothing more, so the
+   * session keeps its tool calls and answers and a task's finish with its output write. Each is
+   * stored as the runner would store it, an event already stored is skipped, and a failure is
+   * logged.
+   */
+  private suspend fun storeAbandonedHeldEvents(
+    context: Context,
+    agentContext: InvocationContext,
+    liveRun: LiveRun,
+    round: DelegationRound,
+  ) {
+    if (round.heldEvents.isEmpty()) return
+    withContext(NonCancellable) {
+      try {
+        // The event a stop cut short may have reached the runner already.
+        val stored = context.session.events.mapTo(mutableSetOf()) { it.id }
+        for (held in round.heldEvents) {
+          if (held.partial || held.id in stored) continue
+          // Without a live model's inline media, as the runner stores a node's event.
+          val event = if (liveRun.takeLiveModelMediaMark(held)) held.storedFromLiveModel() else held
+          if (event != null) {
+            appendAbandoned(context, agentContext, liveRun, withFinishOutputWrite(round, event))
+          }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.warn {
+          "Storing ${round.heldEvents.size} held live events failed (${e::class.simpleName})."
+        }
+      }
+    }
+  }
+
+  /** Returns [event] carrying the output write of [round]'s finish when it is that finish. */
+  private fun withFinishOutputWrite(round: DelegationRound, event: Event): Event {
+    val output = round.finishOutput?.takeIf { event.output != null } ?: return event
+    val delta = (event.actions.stateDelta + (checkNotNull(outputKey) to output)).toMutableMap()
+    return event.copy(actions = event.actions.copy(stateDelta = delta))
+  }
+
+  /**
+   * Appends [event], which a round that emits nothing more could not hand on, straight to
+   * [liveRun]: scoped, tagged and passed through the plugins as the node runner and runner would.
+   */
+  private suspend fun appendAbandoned(
+    context: Context,
+    agentContext: InvocationContext,
+    liveRun: LiveRun,
+    event: Event,
+  ) {
+    val runMetadata = agentContext.runConfig?.customMetadata.orEmpty()
+    val nodeInfo = event.nodeInfo ?: NodeInfo()
+    val outputFor =
+      if (event.output != null) context.requireNodeState().outputFor else nodeInfo.outputFor
+    val delta = context.checkedStateDelta(event.actions.stateDelta)
+    val scoped =
+      event.copy(
+        actions =
+          if (delta === event.actions.stateDelta) event.actions
+          else event.actions.copy(stateDelta = delta),
+        isolationScope = event.isolationScope ?: context.isolationScope,
+        nodeInfo = nodeInfo.copy(path = context.nodePath, outputFor = outputFor),
+        customMetadata = (runMetadata + event.customMetadata.orEmpty()).ifEmpty { null },
+      )
+    // The node runner's context, closest to the runner's, without this agent's mode override.
+    val pluginContext = context.invocationContext
+    val callbacks = pluginContext.pluginManager.onEventCallbacks
+    val processed = runOnEventCallbacksPipeline(callbacks, pluginContext, scoped)
+    // Merged again, as the runner does, in case a plugin dropped the run's metadata.
+    liveRun.append(
+      processed.copy(
+        customMetadata = (runMetadata + processed.customMetadata.orEmpty()).ifEmpty { null }
+      )
+    )
   }
 
   /** Flushes what a round's end stored straight to [liveRun], logging rather than throwing. */

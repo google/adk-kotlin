@@ -20,6 +20,7 @@ package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
@@ -50,6 +51,22 @@ internal fun Event.withoutInlineMedia(): Event {
   val parts = content.parts.filterNot { it.isInlineMedia() }
   return copy(content = if (parts.isEmpty()) null else content.copy(parts = parts))
 }
+
+/**
+ * What a live run stores of a node's event from a live model: all of it if it has no inline media,
+ * else all but that media while its actions, tool calls and answers or deferred handoff still
+ * matter to history and resumes, else nothing.
+ */
+@JvmSynthetic
+internal fun Event.storedFromLiveModel(): Event? =
+  when {
+    !hasInlineMedia() -> this
+    actions != EventActions() ||
+      functionCalls().isNotEmpty() ||
+      functionResponses().isNotEmpty() ||
+      customMetadata?.containsKey(DEFERRED_HANDOFF_KEY) == true -> withoutInlineMedia()
+    else -> null
+  }
 
 private fun Part.isInlineMedia(): Boolean {
   val mimeType = inlineData?.mimeType ?: return false

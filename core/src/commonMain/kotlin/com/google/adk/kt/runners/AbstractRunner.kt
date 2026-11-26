@@ -20,7 +20,6 @@ import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.AgentModeOverride
 import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.ContextCacheConfig
-import com.google.adk.kt.agents.DEFERRED_HANDOFF_KEY
 import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
@@ -34,7 +33,7 @@ import com.google.adk.kt.agents.hasInlineMedia
 import com.google.adk.kt.agents.openLiveRun
 import com.google.adk.kt.agents.runsAsTool
 import com.google.adk.kt.agents.signalsTaskCompleted
-import com.google.adk.kt.agents.withoutInlineMedia
+import com.google.adk.kt.agents.storedFromLiveModel
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
@@ -889,24 +888,19 @@ abstract class AbstractRunner : Runner {
     // A partial event is superseded by its whole, so it is never stored, as in ADK Python.
     if (event.partial) return
     if (liveRun != null) {
+      val stored =
+        when {
+          !fromNodeRoot -> event.takeUnless { it.hasInlineMedia() }
+          fromLiveModel -> event.storedFromLiveModel()
+          else -> event
+        }
+      if (stored != null) liveRun.append(stored)
       // A turn whose media stays out of the session is still flushed.
-      if (!event.hasInlineMedia() || (fromNodeRoot && !fromLiveModel)) {
-        liveRun.append(event)
-      } else if (fromNodeRoot && (event.actions != EventActions() || event.mattersWithoutMedia())) {
-        // Any of its actions, such as a handoff a resume reads, are still stored without the media.
-        // So are its tool calls and answers and a deferred handoff, which history and resumes need.
-        liveRun.append(event.withoutInlineMedia())
-      }
       if (event.endsLiveTurn()) liveRun.flush()
     } else {
       appendAndFlushIfFinal(context, event)
     }
   }
-
-  private fun Event.mattersWithoutMedia(): Boolean =
-    functionCalls().isNotEmpty() ||
-      functionResponses().isNotEmpty() ||
-      customMetadata?.containsKey(DEFERRED_HANDOFF_KEY) == true
 
   /** Warns, as ADK Python does, that a transfer may lack context while a transcription is off. */
   private fun warnIfTransferLacksTranscription(runConfig: RunConfig) {
