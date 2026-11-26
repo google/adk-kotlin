@@ -286,7 +286,7 @@ open class Context(
    * Records a state change in [actions] `stateDelta` (copy-on-write) so it appears in [state] and
    * flushes on the next event. [State.TEMP_PREFIX] keys are never stored. Under a node's state
    * schema, a key without a colon must be declared and its value must fit, unless the value is
-   * [State.REMOVED]; the checked value is stored.
+   * [State.REMOVED] or an [AuthCredential] under an undeclared key; the checked value is stored.
    */
   fun updateState(key: String, value: Any) {
     val stored = effectiveStateSchema?.let { validateStateEntry(it, key, value) } ?: value
@@ -307,18 +307,21 @@ open class Context(
   }
 
   /**
-   * Checks one state write against [schema] and returns the value to store. Any key containing a
-   * colon passes unchecked, as in ADK Python, since ADK keeps its own `<owner>:<key>` state beside
-   * the `app:`, `user:` and `temp:` scopes. So does the removal sentinel, which stands for absence.
+   * Checks one state write against [schema] and returns the value to store. Keys containing a
+   * colon, [State.REMOVED], and [AuthCredential] values under undeclared keys pass unchecked, so
+   * ADK's scoped state and credential stores work under a state schema.
    */
+  @OptIn(ExperimentalAuthApi::class)
   private fun validateStateEntry(schema: Schema, key: String, value: Any): Any {
     if (':' in key || value === State.REMOVED) return value
-    val propertySchema =
-      requireNotNull(schema.properties?.get(key)) {
+    val propertySchema = schema.properties?.get(key)
+    if (propertySchema == null && value is AuthCredential) return value
+    val declared =
+      requireNotNull(propertySchema) {
         "validation error: state key '$key' is not declared in the state schema."
       }
     val checked =
-      ValueCoercer.coerceValue(value, propertySchema, "state key '$key'", fillDefaults = false)
+      ValueCoercer.coerceValue(value, declared, "state key '$key'", fillDefaults = false)
         .getOrThrow()
     return requireNotNull(checked) { "validation error: state key '$key' is null." }
   }

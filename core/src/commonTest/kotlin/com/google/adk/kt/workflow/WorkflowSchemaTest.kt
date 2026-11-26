@@ -22,7 +22,10 @@ import com.google.adk.kt.agents.BaseAgent
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.auth.AuthCredential
+import com.google.adk.kt.auth.Secret
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.models.LlmResponse
@@ -402,6 +405,34 @@ class WorkflowSchemaTest {
       "validation error: state key 'count' does not match its schema: the value is not"
     ) {
       runWorkflow(delta(secret, merge = true))
+    }
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun stateSchema_authCredential_passesUnderUndeclaredKeyAndChecksDeclaredKey() {
+    // Arrange
+    val credential = AuthCredential.ApiKey(Secret(secret))
+    val stateSchema =
+      Schema(type = Type.OBJECT, properties = mapOf("count" to Schema(type = Type.INTEGER)))
+    fun underSchema(node: Node) =
+      Workflow(name = "wf", edges = listOf(Edge(Start, node)), stateSchema = stateSchema)
+
+    // Act
+    val written = runWorkflow(underSchema(SchemaStateNode("n", "adk_apiKey_1234", credential)))
+    val merged =
+      runWorkflow(underSchema(SchemaDeltaNode("n", "custom_cred", credential, merge = true)))
+    val emitted =
+      runWorkflow(underSchema(SchemaDeltaNode("n", "adk_apiKey_5678", credential, merge = false)))
+
+    // Assert
+    assertEquals(credential, written.written("adk_apiKey_1234"))
+    assertEquals(credential, merged.written("custom_cred"))
+    assertEquals(credential, emitted.written("adk_apiKey_5678"))
+    assertRejects(
+      "validation error: state key 'count' does not match its schema: the value is not"
+    ) {
+      runWorkflow(underSchema(SchemaStateNode("n", "count", credential)))
     }
   }
 }
