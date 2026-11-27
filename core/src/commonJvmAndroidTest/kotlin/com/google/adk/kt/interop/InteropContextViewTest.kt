@@ -40,7 +40,9 @@ import com.google.adk.kt.testing.testInvocationContext
 import com.google.adk.kt.testing.testSession
 import com.google.adk.kt.testing.userFunctionResponse
 import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.workflow.CaptureInput
@@ -53,12 +55,18 @@ import com.google.adk.kt.workflow.NodeExecutionException
 import com.google.adk.kt.workflow.NodeTimeoutException
 import com.google.adk.kt.workflow.OutputAssigner
 import com.google.adk.kt.workflow.RequestInput
+import com.google.adk.kt.workflow.RetryConfig
 import com.google.adk.kt.workflow.Start
 import com.google.adk.kt.workflow.StubNode
+import com.google.adk.kt.workflow.TestNodeException
 import com.google.adk.kt.workflow.ThrowingNode
 import com.google.adk.kt.workflow.Workflow
+import com.google.adk.kt.workflow.asNode
 import com.google.adk.kt.workflow.node
+import com.google.adk.kt.workflow.runNodeAsApp
 import com.google.adk.kt.workflow.runWorkflow
+import com.google.adk.kt.workflow.runWorkflowAsAppCatching
+import com.google.adk.kt.workflow.toolCallingAgent
 import java.io.IOException
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
@@ -151,6 +159,28 @@ private class JavaDispatcher(
     publish(dispatch(InteropContextView.of(context, coroutineContext)))
 }
 
+/**
+ * A Java-style tool that runs [child] through a view of its context and answers with its output.
+ */
+private class JavaChildRunningTool(private val child: Node) :
+  BaseFutureTool(name = "run_child", description = "Runs a child node.") {
+  override fun declaration(): FunctionDeclaration? = null
+
+  override fun runAsync(context: ToolContext, args: Map<String, Any?>): CompletableFuture<Any> =
+    InteropContextView.of(context).runNode(child).thenApply { mapOf("result" to it) }
+}
+
+/** Like [JavaChildRunningTool], but blocks on the child with `get()`, which wraps its failure. */
+private class BlockingJavaChildRunningTool(private val child: Node) :
+  BaseFutureTool(name = "run_child", description = "Runs a child node.") {
+  override fun declaration(): FunctionDeclaration? = null
+
+  override fun runAsync(context: ToolContext, args: Map<String, Any?>): CompletableFuture<Any> =
+    CompletableFuture.supplyAsync {
+      mapOf("result" to InteropContextView.of(context).runNode(child).get(5, TimeUnit.SECONDS))
+    }
+}
+
 /** Counts its runs and produces no output. */
 private class SilentNode(override val name: String) : Node {
   var runs = 0
@@ -206,6 +236,78 @@ private class HangingMemoryService : MemoryService by DummyMemoryService() {
 }
 
 class InteropContextViewTest {
+
+  @Test
+  fun runNode_fromJavaToolOfNodeRootAgent_storesChildEventsBeforeTheResponse() {
+    // Arrange
+    val step1 = Emitter("step_1", "C")
+    val inner =
+      Workflow(
+        name = "inner_wf",
+        edges = listOf(Edge(Start, step1), Edge(step1, CaptureInput("step_2"))),
+      )
+    val agent = toolCallingAgent(JavaChildRunningTool(inner), "fc_1")
+
+    // Act
+    val session = runNodeAsApp(agent)
+
+    // Assert
+    val paths = session.events.map { it.nodeInfo?.path }
+    val step2Index = paths.indexOf("agent@1/inner_wf@1/step_2@1")
+    val responseIndex = session.events.indexOfFirst { it.functionResponses().isNotEmpty() }
+    assertTrue(step2Index in 0..<responseIndex)
+    assertEquals(
+      mapOf("result" to mapOf("received" to "C")),
+      session.events[responseIndex].functionResponses().single().response,
+    )
+  }
+
+  @Test
+  fun runNode_fromJavaToolOfToolNode_childAsksForInput_nodeWaitsThenOutputsTheAnswer() {
+    // Arrange
+    val child = Emitter("child", RequestInput(interruptId = "ask", message = "need input"))
+    val runner =
+      resumableRunner(
+        Emitter("source", null),
+        JavaChildRunningTool(child).asNode(),
+        CaptureInput("reply"),
+      )
+
+    // Act
+    val asked = runner.turn(userMessage("go"))
+    val answered = runner.turn(answerTo("ask"))
+
+    // Assert
+    assertTrue(asked.none { it.errorCode != null })
+    assertTrue(asked.none { it.nodeInfo?.path == "wf@1/reply@1" })
+    assertEquals(
+      mapOf("received" to mapOf("result" to mapOf("v" to 1L))),
+      answered.single { it.nodeInfo?.path == "wf@1/reply@1" }.output,
+    )
+  }
+
+  @Test
+  fun runNode_fromJavaToolOfRetriedToolNode_childFailsUnderGet_failsWithoutRetry() {
+    // Arrange: `get()` wraps the child's failure, which must still skip the node's retry.
+    var childRuns = 0
+    val child =
+      ThrowingNode("broken") {
+        childRuns++
+        TestNodeException("downstream 500")
+      }
+    val retry = RetryConfig(maxAttempts = 3, initialDelay = 0.milliseconds, jitter = 0.0)
+    val source = Emitter("source", null)
+    val toolNode = BlockingJavaChildRunningTool(child).asNode(config = NodeConfig(retry))
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, toolNode)))
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertEquals(1, childRuns)
+    assertIs<TestNodeException>(run.failure)
+  }
 
   @Test
   fun runNode_childOutputIsPublishedAsTheCallersOutput() {

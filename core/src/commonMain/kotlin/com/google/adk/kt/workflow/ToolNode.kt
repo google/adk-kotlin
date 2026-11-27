@@ -28,7 +28,6 @@ import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
 import com.google.adk.kt.ids.Uuid
 import com.google.adk.kt.tools.BaseTool
-import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Content
 import kotlin.jvm.JvmName
 import kotlin.jvm.JvmOverloads
@@ -75,15 +74,22 @@ import kotlinx.coroutines.flow.flow
  * random, and so is the tool's function call id, so give the request one that stays the same when
  * the tool runs again.
  *
+ * **Child nodes.** As in ADK Python, the tool runs in the node's activation, so a child it starts
+ * with [Context.runNode] is the node's child, as if the node's body started it: a paused child
+ * pauses the node, and the node's rerun once the user answers replays a child that already
+ * finished.
+ *
  * **Errors.** An exception the tool throws fails the node, and the retry policy in `config`
- * applies. State and artifact changes the tool made before it threw ride the node's error event.
- * Under a workflow state schema, a write through [Context.updateState] that the schema rejects
- * throws inside the tool; a delta written into the tool's actions directly is checked when the node
- * merges it. A retry runs the tool again, so a tool with side effects should be safe to repeat. A
- * tool may instead report a problem, such as a missing required parameter, by returning an error
- * map for a model to read. In a graph no model reads it: the error map becomes the node's output
- * and reaches the next node like any other value. A tool that returns a [Flow] fails the node as if
- * it had thrown.
+ * applies. State and artifact changes the tool made before it threw ride the node's error event. A
+ * child's failure that the tool lets through as a [DynamicNodeFailedException] is different: as for
+ * a node body, it fails the node without a retry, and, as in ADK Python, without an error event of
+ * the node's own, so the tool's changes are lost. Under a workflow state schema, a write through
+ * [Context.updateState] that the schema rejects throws inside the tool; a delta written into the
+ * tool's actions directly is checked when the node merges it. A retry runs the tool again, so a
+ * tool with side effects should be safe to repeat. A tool may instead report a problem, such as a
+ * missing required parameter, by returning an error map for a model to read. In a graph no model
+ * reads it: the error map becomes the node's output and reaches the next node like any other value.
+ * A tool that returns a [Flow] fails the node as if it had thrown.
  *
  * **Identity.** Each call returns a new node. To use one tool at several places in a graph, convert
  * it once and reuse the returned node: two conversions share the tool's name, and a graph rejects
@@ -121,27 +127,33 @@ internal class ToolNode(internal val tool: BaseTool, name: String, config: NodeC
       if (param !in args && param in state) args[param] = state[param]
     }
     val functionCallId = Uuid.random()
-    val toolContext =
-      ToolContext(
-        context.invocationContext,
-        functionCallId = functionCallId,
-        toolConfirmation = context.confirmationAnswer(name),
-      )
-    toolContext.resumeInputs = context.resumeInputs
-    toolContext.toolNodeStateSchema = context.effectiveStateSchema
+    val toolContext = context.toolContextForNode(functionCallId, context.confirmationAnswer(name))
     // As in a turn outside a live run, a returned Flow fails the node. A Java tool that overrides
     // `run` itself can return null.
     val result: Any? =
       try {
         DEFAULT_TOOL_RUNNER(tool, toolContext, args)
       } catch (thrown: Throwable) {
-        // A failed tool's deltas ride the node's error event, and its own error stays the failure.
+        // A paused child pauses this node; a Java tool may get the pause wrapped, as by `join()`.
+        val pause =
+          generateSequence(thrown) { it.cause }.firstOrNull { it is NodeInterruptedException }
+        if (pause != null) {
+          mergeToolDeltas(context, toolContext.actions)
+          throw pause
+        }
+        // A child's failure may come wrapped, as by a Java tool's `join()`; the runtime must see it
+        // to skip the retry.
+        val failure =
+          generateSequence(thrown) { it.cause }.firstOrNull { it is DynamicNodeFailedException }
+            ?: thrown
+        // A failed tool's deltas ride the node's error event (a child's failure gets none), and its
+        // own error stays the failure.
         try {
           mergeToolDeltas(context, toolContext.actions)
         } catch (mergeError: Exception) {
-          thrown.addSuppressed(mergeError)
+          failure.addSuppressed(mergeError)
         }
-        throw thrown
+        throw failure
       }
     mergeToolDeltas(context, toolContext.actions)
     val requested = toolContext.actions.requestedToolConfirmations[functionCallId]

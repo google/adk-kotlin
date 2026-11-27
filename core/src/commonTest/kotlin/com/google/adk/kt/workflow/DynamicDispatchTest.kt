@@ -14,18 +14,43 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWorkflowApi::class)
+@file:OptIn(ExperimentalLiveApi::class, ExperimentalWorkflowApi::class)
 
 package com.google.adk.kt.workflow
 
+import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.agents.LiveRequestQueue
+import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig
+import com.google.adk.kt.agents.SequentialAgent
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.apps.App
+import com.google.adk.kt.callbacks.CallbackChoice
+import com.google.adk.kt.callbacks.OnToolErrorCallback
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.EventActions
+import com.google.adk.kt.models.LlmRequest
+import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.Session
+import com.google.adk.kt.testing.DummyLiveModel
+import com.google.adk.kt.testing.DummyLiveStep
+import com.google.adk.kt.testing.DummyModel
+import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.awaitToolResponse
+import com.google.adk.kt.testing.modelFunctionCallResponse
+import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.modelParallelFunctionCallsResponse
 import com.google.adk.kt.testing.testInvocationContext
+import com.google.adk.kt.testing.userFunctionResponse
+import com.google.adk.kt.testing.userMessage
+import com.google.adk.kt.tools.AgentTool
 import com.google.adk.kt.types.Content
+import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import kotlin.reflect.KClass
@@ -34,16 +59,20 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
@@ -1605,6 +1634,1175 @@ class DynamicDispatchTest {
 
     // Assert: as when the inner workflow is a graph node, the successor gets no input.
     assertEquals("after:null", events.single { it.nodeInfo?.path == "wf@1/after@1" }.output)
+  }
+
+  @Test
+  fun runNode_fromToolCallOfRootAgent_storesChildUnderTheAgentAtRunOneBeforeTheResponse() {
+    // Arrange: the tool runs a two-step workflow whose second step reads the first's state.
+    val writer = StateWriter("writer", key = "color")
+    val reader = StateValueReader("reader", key = "color")
+    val inner =
+      Workflow(name = "inner_wf", edges = listOf(Edge(Start, writer), Edge(writer, reader)))
+    val tool = childRunningTool { context -> context.runNode(inner) }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert: the child runs as run 1 under the agent, between the call and its response.
+    val paths = session.events.map { it.nodeInfo?.path }
+    val callIndex = session.events.indexOfFirst { e -> e.functionCalls().any { it.id == "fc_1" } }
+    val writerIndex = paths.indexOf("agent@1/inner_wf@1/writer@1")
+    val readerIndex = paths.indexOf("agent@1/inner_wf@1/reader@1")
+    val responseIndex =
+      session.events.indexOfFirst { e -> e.functionResponses().any { it.id == "fc_1" } }
+    assertTrue(callIndex in 0..<writerIndex)
+    assertTrue(writerIndex < readerIndex)
+    assertTrue(readerIndex < responseIndex)
+    assertEquals(mapOf("result" to "v"), session.singleFunctionResponse())
+    assertEquals("v", session.state["color"])
+  }
+
+  @Test
+  fun runNode_fromToolCallsWithoutRunId_shareAPathSoAWorkflowReplaysTheEarlierCall() {
+    // Arrange: as in ADK Python, a tool call's child defaults to run 1.
+    var runs = 0
+    val counter = node<Any?, String>("counter") { _, _ -> "run ${++runs}" }
+    val inner = Workflow(name = "inner_wf", edges = listOf(Edge(Start, counter)))
+    val tool = childRunningTool { context -> context.runNode(inner) }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1", "fc_2"))
+
+    // Assert: the second call's workflow replays the step the first call finished.
+    assertEquals(1, runs)
+    assertEquals(
+      listOf<Any?>(mapOf("result" to "run 1"), mapOf("result" to "run 1")),
+      session.events.flatMap { it.functionResponses() }.map { it.response },
+    )
+  }
+
+  @Test
+  fun runNode_fromToolCallOfAgentStep_runsChildUnderTheStepAndOutsideItsOutput() {
+    // Arrange: the child's outputs must not become the agent step's output.
+    val step1 = Emitter("step_1", "step_1_done")
+    val inner =
+      Workflow(
+        name = "inner_wf",
+        edges = listOf(Edge(Start, step1), Edge(step1, EchoChild("step_2", "final"))),
+      )
+    val tool = childRunningTool { context -> context.runNode(inner) }
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, toolCallingAgent(tool, "fc_1"))))
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert
+    assertTrue(session.events.none { it.errorCode != null })
+    val step2 = session.events.single { it.nodeInfo?.path == "wf@1/agent@1/inner_wf@1/step_2@1" }
+    assertEquals("final:step_1_done", step2.output)
+    assertEquals("inner_wf", step2.author)
+    val response = session.events.single { it.functionResponses().isNotEmpty() }
+    assertEquals("wf@1/agent@1", response.nodeInfo?.path)
+    assertEquals(mapOf("result" to "final:step_1_done"), session.singleFunctionResponse())
+    val agentOutputs =
+      session.events.filter { it.nodeInfo?.path == "wf@1/agent@1" && it.output != null }
+    assertTrue(agentOutputs.none { it.output == "final:step_1_done" })
+  }
+
+  @Test
+  fun runNode_fromToolCallsWithSameRunId_runsChildEachTimeOnOnePath() {
+    // Arrange
+    var runs = 0
+    val counter = node<Any?, String>("counter") { _, _ -> "run ${++runs}" }
+    val tool = childRunningTool { context -> context.runNode(counter, runId = "same") }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1", "fc_2"))
+
+    // Assert: a plain node child is not replayed itself, even on a shared path.
+    assertEquals(
+      listOf<Any?>(mapOf("result" to "run 1"), mapOf("result" to "run 2")),
+      session.events.flatMap { it.functionResponses() }.map { it.response },
+    )
+    assertEquals(2, session.events.count { it.nodeInfo?.path == "agent@1/counter@same" })
+  }
+
+  @Test
+  fun runNode_fromToolCallWithPathUnsafeRunId_throws() {
+    // Arrange
+    val tool = childRunningTool { context -> context.runNode(Emitter("child", "C"), runId = "a/b") }
+
+    // Act
+    val error =
+      assertFailsWith<IllegalArgumentException> { runNodeAsApp(toolCallingAgent(tool, "fc_1")) }
+
+    // Assert
+    assertContains(error.message!!, "must not contain '/', '@', or '.'")
+  }
+
+  @Test
+  fun runNode_fromToolCallSequentialChild_singleTurnSubAgentDoesNotRunUnderTheCaller() {
+    // Arrange: the tool's child must not borrow the calling agent's node context.
+    val helper =
+      LlmAgent(
+        name = "helper",
+        model =
+          DummyModel.createSequential("model", listOf(LlmResponse(content = modelMessage("H")))),
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val worker =
+      LlmAgent(
+        name = "worker",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              modelFunctionCallResponse("helper", mapOf("request" to "go"), id = "h1"),
+              LlmResponse(content = modelMessage("Done.")),
+            ),
+          ),
+        subAgents = listOf(helper),
+      )
+    val tool = childRunningTool { context ->
+      context.runNode(SequentialAgent(name = "seq", subAgents = listOf(worker)))
+    }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert: the worker's call to the helper fails instead of running it.
+    assertTrue(session.events.none { it.nodeInfo?.path.orEmpty().startsWith("agent@1/helper") })
+    val h1 = session.events.flatMap { it.functionResponses() }.single { it.id == "h1" }
+    assertContains(h1.response.toString(), "can only run as a tool of an agent in a workflow node")
+  }
+
+  @Test
+  fun runNode_fromToolCallWithAllDigitRunId_runsTheChildUnderThatId() {
+    // Arrange: as in ADK Python, only a node activation's children need a non-digit ID.
+    val tool = childRunningTool { context -> context.runNode(Emitter("child", "C"), runId = "7") }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert
+    assertTrue(session.events.any { it.nodeInfo?.path == "agent@1/child@7" })
+    assertEquals(mapOf("result" to "C"), session.singleFunctionResponse())
+  }
+
+  @Test
+  fun runNode_fromToolCallChildFails_recordsErrorEventAndThrowsDynamicNodeFailedException() {
+    // Arrange
+    var thrownToTool: DynamicNodeFailedException? = null
+    val tool = childRunningTool { context ->
+      try {
+        context.runNode(ThrowingNode("broken") { TestNodeException("downstream 500") })
+      } catch (e: DynamicNodeFailedException) {
+        thrownToTool = e
+        throw e
+      }
+    }
+    val workflow =
+      Workflow(name = "wf", edges = listOf(Edge(Start, toolCallingAgent(tool, "fc_1"))))
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertEquals("wf@1/agent@1/broken@1", thrownToTool?.errorNodePath)
+    val cause = assertIs<TestNodeException>(run.failure)
+    assertContains(cause.message!!, "downstream 500")
+    assertTrue(
+      run.session.events.any {
+        it.nodeInfo?.path == "wf@1/agent@1/broken@1" && it.errorCode != null
+      }
+    )
+  }
+
+  @Test
+  fun runNode_fromParallelToolCalls_storesAllChildEventsBeforeMergedResponse() {
+    // Arrange
+    val toolA =
+      DummyTool(name = "tool_a") { context, _ ->
+        mapOf("a" to context.runNode(Emitter("child_a", "A")))
+      }
+    val toolB =
+      DummyTool(name = "tool_b") { context, _ ->
+        mapOf("b" to context.runNode(Emitter("child_b", "B")))
+      }
+    val parallelCalls =
+      modelParallelFunctionCallsResponse(
+        FunctionCall(name = "tool_a", args = emptyMap(), id = "fc_a"),
+        FunctionCall(name = "tool_b", args = emptyMap(), id = "fc_b"),
+      )
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(parallelCalls, LlmResponse(content = modelMessage("Done."))),
+          ),
+        tools = listOf(toolA, toolB),
+      )
+
+    // Act
+    val session = runNodeAsApp(agent)
+
+    // Assert
+    val paths = session.events.map { it.nodeInfo?.path }
+    val responseIndex = session.events.indexOfFirst { it.functionResponses().isNotEmpty() }
+    assertTrue(paths.indexOf("agent@1/child_a@1") in 0..<responseIndex)
+    assertTrue(paths.indexOf("agent@1/child_b@1") in 0..<responseIndex)
+    assertEquals(
+      listOf<Any?>(mapOf("a" to "A"), mapOf("b" to "B")),
+      session.events[responseIndex].functionResponses().map { it.response },
+    )
+  }
+
+  @Test
+  fun runNode_fromSequentialToolCallsRunningSingleTurnAgent_doesNotLeakNodeInput() {
+    // Arrange: mirrors Python's test_single_turn_node_input_does_not_leak_across_sequential_tools.
+    val workerRequests = mutableListOf<LlmRequest>()
+    var workerTurn = 0
+    val worker =
+      LlmAgent(
+        name = "worker",
+        model =
+          DummyModel("worker_model") { req ->
+            workerRequests += req
+            flowOf(LlmResponse(content = modelMessage("summary-${++workerTurn}")))
+          },
+        mode = AgentMode.SINGLE_TURN,
+      )
+    val runWorker =
+      node<String, Any?>("run_worker", rerunOnResume = true) { ctx, label ->
+        ctx.runNode(worker, nodeInput = Content.fromText(Role.USER, "INTERNAL-$label"))
+      }
+    val docWf = Workflow(name = "doc_wf", edges = listOf(Edge(Start, runWorker)))
+    val tool =
+      DummyTool(name = "the_tool") { context, args ->
+        val label = args["label"] as String
+        val out = context.runNode(docWf, nodeInput = label, runId = "run-$label")
+        mapOf("summary" to "done:$label:$out")
+      }
+    val rootRequests = mutableListOf<LlmRequest>()
+    var rootTurn = 0
+    val rootAgent =
+      LlmAgent(
+        name = "root_agent",
+        model =
+          DummyModel("root_model") { req ->
+            rootRequests += req
+            when (++rootTurn) {
+              1 -> flowOf(modelFunctionCallResponse("the_tool", mapOf("label" to "a"), id = "fc_a"))
+              2 -> flowOf(modelFunctionCallResponse("the_tool", mapOf("label" to "b"), id = "fc_b"))
+              else -> flowOf(LlmResponse(content = modelMessage("All tools completed.")))
+            }
+          },
+        tools = listOf(tool),
+      )
+
+    // Act
+    val session = runNodeAsApp(rootAgent)
+
+    // Assert
+    assertEquals(2, workerRequests.size)
+    assertTrue(workerRequests[0].contents.any { "INTERNAL-a" in it.text() })
+    assertTrue(workerRequests[1].contents.any { "INTERNAL-b" in it.text() })
+    assertEquals(3, rootRequests.size)
+    for (req in rootRequests) {
+      assertTrue(req.contents.none { "INTERNAL-" in it.text() })
+    }
+    // As in ADK Python, the worker's reply reaches the caller's history.
+    assertTrue(rootRequests[2].contents.any { "summary-1" in it.text() })
+    assertEquals(
+      listOf("fc_a"),
+      rootRequests[1].contents.flatMap { it.parts }.mapNotNull { it.functionResponse?.id },
+    )
+    assertEquals(
+      listOf<Any?>(mapOf("summary" to "done:a:summary-1"), mapOf("summary" to "done:b:summary-2")),
+      session.events.flatMap { it.functionResponses() }.map { it.response },
+    )
+  }
+
+  @Test
+  fun runNode_fromToolCallOnTaskAgent_isolatesEventsUnderChildNodePath() {
+    // Arrange
+    val task =
+      LlmAgent(
+        name = "worker",
+        model =
+          DummyModel.createSequential(
+            "task_model",
+            listOf(modelFunctionCallResponse("finish_task", mapOf("result" to "ok"), id = "ft_1")),
+          ),
+        mode = AgentMode.TASK,
+      )
+    val tool = childRunningTool { context -> context.runNode(task) }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert
+    val taskEvents = session.events.filter { it.nodeInfo?.path == "agent@1/worker@1" }
+    assertTrue(taskEvents.isNotEmpty())
+    assertTrue(taskEvents.all { it.isolationScope == "agent@1/worker@1" })
+    assertEquals(
+      mapOf("result" to mapOf("result" to "ok")),
+      session.events.flatMap { it.functionResponses() }.single { it.name == "run_child" }.response,
+    )
+  }
+
+  @Test
+  fun runNode_fromToolCallOfAgentInsideSequentialStep_runsChildUnderTheStep() {
+    // Arrange: the sequential step drives its sub-agent on the classic flow inside the node.
+    val tool = childRunningTool { context -> context.runNode(Emitter("child", "C")) }
+    val sequential =
+      SequentialAgent(name = "seq", subAgents = listOf(toolCallingAgent(tool, "fc_1")))
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, sequential)))
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert
+    val paths = session.events.map { it.nodeInfo?.path }
+    val responseIndex = session.events.indexOfFirst { it.functionResponses().isNotEmpty() }
+    assertTrue(paths.indexOf("wf@1/seq@1/child@1") in 0..<responseIndex)
+    assertEquals(mapOf("result" to "C"), session.singleFunctionResponse())
+  }
+
+  @Test
+  fun runNode_fromToolCallOfAgentStepBeforeAPause_isNotRunAgainOnResume() {
+    // Arrange: the agent step's tool runs a child, then a later step pauses for input.
+    var childRuns = 0
+    val child = node<Any?, String>("child") { _, _ -> "child ${++childRuns}" }
+    val tool = childRunningTool { context -> context.runNode(child) }
+    val agent = toolCallingAgent(tool, "fc_1")
+    val ask =
+      node<Any?, Any?>("ask", rerunOnResume = true) { ctx, _ ->
+        ctx.resumeInputs["ask_1"] ?: requestInput(interruptId = "ask_1")
+      }
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, agent), Edge(agent, ask)))
+    val runner =
+      InMemoryRunner(
+        App(
+          appName = "wf_app",
+          rootNode = workflow,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
+    fun turn(message: Content): List<Event> = runBlocking {
+      runner.runAsync(userId = "u", sessionId = "s", newMessage = message).toList()
+    }
+    val unused = turn(userMessage("go"))
+
+    // Act
+    val events =
+      turn(userFunctionResponse(RequestInput.FUNCTION_CALL_NAME, "ask_1", mapOf("v" to 1L)))
+
+    // Assert: the scan of `wf@1` replays the agent step, so neither it nor its child runs again.
+    assertEquals(1, childRuns)
+    assertTrue(events.none { it.nodeInfo?.path == "wf@1/agent@1/child@1" })
+    assertEquals(mapOf("v" to 1L), events.single { it.nodeInfo?.path == "wf@1/ask@1" }.output)
+  }
+
+  @Test
+  fun runNode_fromToolCallChildPausesAndOnToolErrorRecovers_storesNoRequestAndAgentGoesOn() {
+    // Arrange: a resumable agent whose error callback answers the failed call.
+    val tool = childRunningTool { context -> context.runNode(InterruptingChild("asks", "ask_1")) }
+    var modelCalls = 0
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel("model") { _ ->
+            if (++modelCalls == 1) {
+              flowOf(modelFunctionCallResponse("run_child", id = "fc_1"))
+            } else {
+              flowOf(LlmResponse(content = modelMessage("Recovered.")))
+            }
+          },
+        tools = listOf(tool),
+        onToolErrorCallbacks =
+          listOf(OnToolErrorCallback { _, _, _, _ -> CallbackChoice.Break(mapOf("error" to "x")) }),
+      )
+    val runner =
+      InMemoryRunner(
+        App(
+          appName = "agent_app",
+          rootNode = agent,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
+
+    // Act
+    val events = runBlocking { runner.runAsync("u", "s", newMessage = userMessage("go")).toList() }
+
+    // Assert: the pause is rejected before its request is stored, so the agent goes on.
+    assertTrue(events.none { it.longRunningToolIds.isNotEmpty() })
+    assertEquals(2, modelCalls)
+    assertTrue(events.any { it.content?.text() == "Recovered." })
+  }
+
+  @Test
+  fun runNode_fromToolCallChildEndsInvocation_callerStillAnswers() {
+    // Arrange: as in ADK Python, the child runs on a copy of the caller's invocation context.
+    val ender =
+      node<Any?, String>("ender") { ctx, _ ->
+        ctx.endInvocation()
+        "ended"
+      }
+    val tool = childRunningTool { context -> context.runNode(ender) }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert
+    assertEquals(mapOf("result" to "ended"), session.singleFunctionResponse())
+    assertTrue(session.events.any { it.content?.text() == "Done." })
+  }
+
+  @Test
+  fun runNode_fromToolCallAfterTheToolEndsTheInvocation_stillRunsTheChildAgent() {
+    // Arrange: the caller's end flag is its own, so the child agent does not exit at once.
+    var childModelCalls = 0
+    val child =
+      LlmAgent(
+        name = "child",
+        model =
+          DummyModel("model") {
+            childModelCalls++
+            flowOf(LlmResponse(content = modelMessage("Child.")))
+          },
+      )
+    val tool = childRunningTool { context ->
+      context.endInvocation()
+      context.runNode(child)
+    }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert
+    assertEquals(1, childModelCalls)
+    assertTrue(
+      session.events.any {
+        it.nodeInfo?.path == "agent@1/child@1" && it.content?.text() == "Child."
+      }
+    )
+  }
+
+  @Test
+  fun runNode_fromToolCallChildSkipsSummarization_endsTheCallersTurnWithTheResponse() {
+    // Arrange
+    val skipper =
+      object : Node {
+        override val name = "skipper"
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          context.eventActions.skipSummarization = true
+          emit("final")
+        }
+      }
+    val tool = childRunningTool { context -> context.runNode(skipper) }
+    var modelCalls = 0
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel("model") { _ ->
+            modelCalls++
+            flowOf(modelFunctionCallResponse("run_child", id = "fc_1"))
+          },
+        tools = listOf(tool),
+      )
+
+    // Act
+    val session = runNodeAsApp(agent)
+
+    // Assert
+    assertEquals(1, modelCalls)
+    val response = session.events.single { it.functionResponses().isNotEmpty() }
+    assertTrue(response.actions.skipSummarization)
+  }
+
+  @Test
+  fun runNode_fromToolCallChildFailsAndOnToolErrorRecovers_agentAnswersWithTheRecovery() {
+    // Arrange
+    var seen: Throwable? = null
+    val tool = childRunningTool { context ->
+      context.runNode(ThrowingNode("broken") { TestNodeException("downstream 500") })
+    }
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              modelFunctionCallResponse("run_child", id = "fc_1"),
+              LlmResponse(content = modelMessage("Done.")),
+            ),
+          ),
+        tools = listOf(tool),
+        onToolErrorCallbacks =
+          listOf(
+            OnToolErrorCallback { _, _, _, error ->
+              seen = error
+              CallbackChoice.Break(mapOf("error" to "recovered"))
+            }
+          ),
+      )
+
+    // Act
+    val session = runNodeAsApp(agent)
+
+    // Assert
+    assertIs<TestNodeException>(assertIs<DynamicNodeFailedException>(seen).error)
+    assertEquals(mapOf("error" to "recovered"), session.singleFunctionResponse())
+    assertTrue(session.events.any { it.content?.text() == "Done." })
+  }
+
+  @Test
+  fun runNode_fromToolCallOfClassicRootWithInvalidInput_failsAskingForTheNodePath() {
+    // Arrange: the node-path check runs before the child's input is validated.
+    val typed = node<Int, Int>("typed") { _, n -> n + 1 }
+    val tool = childRunningTool { context -> context.runNode(typed, "not_an_int") }
+    val runner =
+      InMemoryRunner(App(appName = "agent_app", rootAgent = toolCallingAgent(tool, "fc_1")))
+
+    // Act
+    val error =
+      assertFailsWith<IllegalStateException> {
+        runBlocking { runner.runAsync("u", "s", newMessage = userMessage("go")).toList() }
+      }
+
+    // Assert
+    assertContains(error.message!!, "App(rootNode = agent)")
+  }
+
+  @Test
+  fun runNode_fromToolCallOfLiveRun_failsNamingTheLiveRun() {
+    // Arrange: a live run answers a failed tool call with an error, so the tool records the
+    // failure.
+    var error: IllegalStateException? = null
+    val tool = childRunningTool { context ->
+      try {
+        context.runNode(Emitter("child", "C"))
+      } catch (e: IllegalStateException) {
+        error = e
+        throw e
+      }
+    }
+    val model =
+      DummyLiveModel(
+        steps =
+          listOf(
+            DummyLiveStep.Respond(modelFunctionCallResponse("run_child", id = "fc_1")),
+            awaitToolResponse(),
+            DummyLiveStep.EndStream,
+          )
+      )
+    val runner =
+      InMemoryRunner(
+        App(
+          appName = "agent_app",
+          rootNode = LlmAgent(name = "agent", model = model, tools = listOf(tool)),
+        )
+      )
+
+    // Act
+    val unused = runBlocking { runner.runLive("u", "s", LiveRequestQueue()).toList() }
+
+    // Assert
+    assertContains(error?.message.orEmpty(), "live run")
+  }
+
+  @Test
+  fun runNode_fromToolCallChildWithRetryPauses_isNotRetried() {
+    // Arrange: as in ADK Python, a pause is never retried.
+    var runs = 0
+    val asks =
+      object : Node {
+        override val name = "asks"
+        override val config =
+          NodeConfig(RetryConfig(maxAttempts = 3, initialDelay = Duration.ZERO, jitter = 0.0))
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          runs++
+          emit(Event(author = "", longRunningToolIds = setOf("ask_1")))
+        }
+      }
+    val inner = Workflow(name = "inner_wf", edges = listOf(Edge(Start, asks)))
+    var thrown: DynamicNodeFailedException? = null
+    val tool = childRunningTool { context ->
+      try {
+        context.runNode(inner)
+      } catch (e: DynamicNodeFailedException) {
+        thrown = e
+        "caught"
+      }
+    }
+
+    // Act
+    val unused = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert: the error names the step that paused, not the tool's child.
+    assertEquals(1, runs)
+    assertContains(thrown?.error?.message.orEmpty(), "'agent@1/inner_wf@1/asks@1' paused")
+  }
+
+  @Test
+  fun runNode_fromToolCallInRetriedWorkflowChildEndsWithoutOutputUnderRaiseOnWait_isNotRetried() {
+    // Arrange: the abort is a pause outside a node activation, so the workflow's retry skips it.
+    var runs = 0
+    val tool = childRunningTool { context ->
+      runs++
+      context.runNode(WaitingChild("waits"), raiseOnWait = true)
+    }
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, toolCallingAgent(tool, "fc_1", "fc_2", "fc_3"))),
+        config =
+          NodeConfig(RetryConfig(maxAttempts = 3, initialDelay = Duration.ZERO, jitter = 0.0)),
+      )
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertEquals(1, runs)
+    assertContains(run.failure?.message.orEmpty(), "cannot pause yet")
+  }
+
+  @Test
+  fun runNode_fromToolCallChildPausesAfterAStateChange_storesTheChange() {
+    // Arrange
+    val asks =
+      object : Node {
+        override val name = "asks"
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          context.updateState("answered", "no")
+          emit(Event(author = "", longRunningToolIds = setOf("ask_1")))
+        }
+      }
+    val tool = childRunningTool { context ->
+      try {
+        context.runNode(asks)
+      } catch (e: DynamicNodeFailedException) {
+        "caught"
+      }
+    }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert: the rejected pause's state change rides the child's error event.
+    assertEquals("no", session.state["answered"])
+    val error = session.events.single { it.nodeInfo?.path == "agent@1/asks@1" }
+    assertEquals("no", error.actions.stateDelta["answered"])
+    assertTrue(error.errorCode != null)
+  }
+
+  @Test
+  fun runNode_fromToolCallInRetriedWorkflow_rerunsAnInnerStepCancelledMidRun() {
+    // Arrange: `flaky` fails while `slow` runs, which cancels `slow` and retries the outer
+    // workflow, whose agent calls the tool again.
+    var slowRuns = 0
+    val inner = workflowWithCancellableSibling(onSlowRun = { ++slowRuns })
+    val tool = childRunningTool { context -> context.runNode(inner) }
+    val workflow =
+      Workflow(
+        name = "outer",
+        edges = listOf(Edge(Start, toolCallingAgent(tool, "fc_1", "fc_2"))),
+        config = NodeConfig(RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO)),
+      )
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert: the retry runs the cancelled step again instead of replaying its progress.
+    assertEquals(2, slowRuns)
+    assertEquals(mapOf("result" to "slow_done+flaky_done"), session.singleFunctionResponse())
+  }
+
+  @Test
+  fun runNode_fromToolCallLlmAgentChildCallsLongRunningTool_failsAndStoresNoRequest() {
+    // Arrange: the child pauses the way an agent usually does, by calling a long-running tool.
+    val approval = DummyTool(name = "wait_for_approval", isLongRunning = true) { _, _ -> Unit }
+    val child = toolCallingAgent(approval, "wait_1", name = "child")
+    var thrown: DynamicNodeFailedException? = null
+    val tool = childRunningTool { context ->
+      try {
+        context.runNode(child)
+      } catch (e: DynamicNodeFailedException) {
+        thrown = e
+        "caught"
+      }
+    }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert
+    assertContains(thrown?.error?.message.orEmpty(), "'agent@1/child@1' paused")
+    assertTrue(session.events.none { it.longRunningToolIds.isNotEmpty() })
+  }
+
+  @Test
+  fun runNode_fromToolCallChildPauses_failsTheRun() {
+    // Arrange
+    val tool = childRunningTool { context -> context.runNode(InterruptingChild("asks", "ask")) }
+
+    // Act
+    val error =
+      assertFailsWith<IllegalStateException> { runNodeAsApp(toolCallingAgent(tool, "fc_1")) }
+
+    // Assert: an uncaught pause fails the run.
+    assertContains(error.message!!, "cannot pause yet")
+  }
+
+  @Test
+  fun runNode_fromToolCallChildWhoseTaskAsksTheUser_failsTheRun() {
+    // Arrange: the child delegates to a task agent that asks a question instead of finishing.
+    val asker =
+      LlmAgent(
+        name = "asker",
+        description = "Asks the user.",
+        model =
+          DummyModel.createSequential(
+            "task_model",
+            listOf(LlmResponse(content = modelMessage("Which one?"))),
+          ),
+        mode = AgentMode.TASK,
+      )
+    val lead =
+      LlmAgent(
+        name = "lead",
+        model =
+          DummyModel.createSequential(
+            "lead_model",
+            listOf(
+              modelFunctionCallResponse("asker", mapOf("request" to "go"), id = "d1"),
+              LlmResponse(content = modelMessage("Done.")),
+            ),
+          ),
+        subAgents = listOf(asker),
+        mode = AgentMode.CHAT,
+      )
+    val tool = childRunningTool { context -> context.runNode(lead) }
+
+    // Act
+    val error =
+      assertFailsWith<IllegalStateException> { runNodeAsApp(toolCallingAgent(tool, "fc_1")) }
+
+    // Assert: the waiting task fails the call rather than giving the tool a null result.
+    assertContains(error.message!!, "cannot pause yet")
+  }
+
+  @Test
+  fun runNode_fromToolCallWithOverrideBranch_runsChildOnThatBranch() {
+    // Arrange
+    val where = node<Any?, String?>("where") { context, _ -> context.invocationContext.branch }
+    val tool = childRunningTool { context ->
+      context.runNode(where, overrideBranch = "tool_branch")
+    }
+
+    // Act
+    val session = runNodeAsApp(toolCallingAgent(tool, "fc_1"))
+
+    // Assert
+    assertEquals(mapOf("result" to "tool_branch"), session.singleFunctionResponse())
+  }
+
+  @Test
+  fun runNode_fromToolOfAgentToolInsideAgentStep_childEventsStayInTheInnerRun() {
+    // Arrange: the inner agent runs in its own invocation, so its tool must not use the outer sink.
+    val innerTool = childRunningTool { context -> context.runNode(Emitter("child", "C")) }
+    val inner = toolCallingAgent(innerTool, "inner_fc", name = "inner", mode = AgentMode.CHAT)
+    val outer =
+      LlmAgent(
+        name = "outer",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              modelFunctionCallResponse("inner", mapOf("request" to "go"), id = "fc_1"),
+              LlmResponse(content = modelMessage("Done.")),
+            ),
+          ),
+        tools = listOf(AgentTool(inner)),
+      )
+    val workflow = Workflow(name = "wf", edges = listOf(Edge(Start, outer)))
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert
+    assertTrue(session.events.none { it.nodeInfo?.path.orEmpty().endsWith("child@1") })
+    assertEquals(mapOf("result" to "Done."), session.singleFunctionResponse())
+  }
+
+  @Test
+  fun runNode_fromToolCallInRetriedWorkflowChildRequestsTransfer_failsWithoutRetry() {
+    // Arrange: as with a pause, a retrying workflow must not run the child again.
+    var helperRan = false
+    val helper =
+      LlmAgent(
+        name = "helper",
+        model =
+          DummyModel("model") {
+            helperRan = true
+            flowOf(LlmResponse(content = modelMessage("Helper.")))
+          },
+        mode = AgentMode.CHAT,
+      )
+    var childModelCalls = 0
+    val child =
+      LlmAgent(
+        name = "child",
+        model =
+          DummyModel("model") {
+            childModelCalls++
+            flowOf(modelFunctionCallResponse("transfer_to_agent", mapOf("agent_name" to "helper")))
+          },
+        subAgents = listOf(helper),
+        mode = AgentMode.CHAT,
+      )
+    val tool = childRunningTool { context -> context.runNode(child) }
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, toolCallingAgent(tool, "fc_1", "fc_2", "fc_3"))),
+        config =
+          NodeConfig(RetryConfig(maxAttempts = 3, initialDelay = Duration.ZERO, jitter = 0.0)),
+      )
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertEquals(1, childModelCalls)
+    assertFalse(helperRan)
+    assertIs<IllegalStateException>(run.failure)
+    assertContains(run.failure?.message.orEmpty(), "cannot follow handoffs yet")
+  }
+
+  @Test
+  fun runNode_fromRetriedToolNodeChildEndsWithoutOutputUnderRaiseOnWait_endsTheNodeWithoutOutput() {
+    // Arrange: the abort ends the tool node's run like a pause, so its retry skips it.
+    var runs = 0
+    val tool = childRunningTool { context ->
+      runs++
+      context.runNode(WaitingChild("waits"), raiseOnWait = true)
+    }
+    val retry = RetryConfig(maxAttempts = 3, initialDelay = Duration.ZERO, jitter = 0.0)
+    val workflow = toolNodeWorkflow(tool.asNode(config = NodeConfig(retry)))
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertEquals(1, runs)
+    assertNull(run.failure)
+    assertTrue(
+      run.session.events.none { it.nodeInfo?.path == "wf@1/run_child@1" && it.output != null }
+    )
+  }
+
+  @Test
+  fun runNode_fromToolNodeInRetriedWorkflow_rerunsAnInnerStepCancelledMidRun() {
+    // Arrange: `flaky` fails while `slow` runs, which cancels `slow` and retries the outer
+    // workflow.
+    var slowRuns = 0
+    val inner = workflowWithCancellableSibling(onSlowRun = { ++slowRuns })
+    val tool = childRunningTool { context -> context.runNode(inner) }
+    val source = Emitter("source", null)
+    val workflow =
+      Workflow(
+        name = "outer",
+        edges = listOf(Edge(Start, source), Edge(source, tool.asNode())),
+        config = NodeConfig(RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO)),
+      )
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert: the retry runs the cancelled step again instead of replaying its progress.
+    assertEquals(2, slowRuns)
+    assertEquals(
+      mapOf("result" to "slow_done+flaky_done"),
+      session.events.last { it.nodeInfo?.path == "outer@1/run_child@1" }.output,
+    )
+  }
+
+  @Test
+  fun runNode_fromToolNodeChildRequestsTransfer_followsTheHandoffUnderTheNode() {
+    // Arrange
+    var helperRan = false
+    val helper =
+      LlmAgent(
+        name = "helper",
+        model =
+          DummyModel("model") {
+            helperRan = true
+            flowOf(LlmResponse(content = modelMessage("Helper.")))
+          },
+        mode = AgentMode.CHAT,
+      )
+    var childModelCalls = 0
+    val child =
+      LlmAgent(
+        name = "child",
+        model =
+          DummyModel("model") {
+            childModelCalls++
+            flowOf(modelFunctionCallResponse("transfer_to_agent", mapOf("agent_name" to "helper")))
+          },
+        subAgents = listOf(helper),
+        mode = AgentMode.CHAT,
+      )
+    val tool = childRunningTool { context -> context.runNode(child) }
+    val workflow = toolNodeWorkflow(tool.asNode())
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert: as from a node body, a transfer to a sub-agent runs it under the agent.
+    assertNull(run.failure)
+    assertEquals(1, childModelCalls)
+    assertTrue(helperRan)
+    assertEquals(
+      listOf("wf@1/run_child@1/child@1/helper@1"),
+      run.session.events.mapNotNull { it.nodeInfo?.path }.filter { "helper" in it }.distinct(),
+    )
+  }
+
+  @Test
+  fun runNode_fromToolNodeWithoutRunIds_numbersTheChildrenUnderTheNode() {
+    // Arrange: as in ADK Python, the tool runs in the tool node's activation.
+    val tool = childRunningTool { context ->
+      listOf(context.runNode(Emitter("leaf", "a")), context.runNode(Emitter("leaf", "b")))
+    }
+    val workflow = toolNodeWorkflow(tool.asNode())
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert
+    assertEquals(
+      "a",
+      session.events.single { it.nodeInfo?.path == "wf@1/run_child@1/leaf@1" }.output,
+    )
+    assertEquals(
+      "b",
+      session.events.single { it.nodeInfo?.path == "wf@1/run_child@1/leaf@2" }.output,
+    )
+    assertEquals(
+      mapOf("result" to listOf("a", "b")),
+      session.events.last { it.nodeInfo?.path == "wf@1/run_child@1" }.output,
+    )
+  }
+
+  @Test
+  fun runNode_fromToolNodeWithAllDigitRunId_failsTheNode() {
+    // Arrange
+    val tool = childRunningTool { context -> context.runNode(Emitter("leaf", "a"), runId = "7") }
+    val workflow = toolNodeWorkflow(tool.asNode())
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertContains(run.failure?.message.orEmpty(), "must contain a non-digit character")
+  }
+
+  @Test
+  fun runNode_fromToolNodeChildAsksForInput_pausesTheNodeAndReplaysFinishedChildrenOnResume() {
+    // Arrange
+    var firstRuns = 0
+    var toolRuns = 0
+    val first =
+      node<Any?, String>("first") { _, _ ->
+        firstRuns++
+        "A"
+      }
+    val tool = childRunningTool { context ->
+      toolRuns++
+      context.updateState("tool_ran", "yes")
+      listOf(
+        context.runNode(first),
+        context.runNode(Emitter("asks", RequestInput(interruptId = "ask", message = "Why?"))),
+      )
+    }
+    val turn = resumableSession(toolNodeWorkflow(tool.asNode()))
+
+    // Act
+    val asked = turn(userMessage("go"))
+    val answered =
+      turn(userFunctionResponse(RequestInput.FUNCTION_CALL_NAME, "ask", mapOf("v" to 1L)))
+
+    // Assert: the pause keeps the tool's state change, and the rerun replays `first`.
+    assertTrue(asked.none { it.errorCode != null })
+    assertTrue(asked.any { event -> event.functionCalls().any { it.id == "ask" } })
+    assertTrue(asked.any { it.actions.stateDelta["tool_ran"] == "yes" })
+    assertEquals(2, toolRuns)
+    assertEquals(1, firstRuns)
+    assertEquals(
+      mapOf("result" to listOf("A", mapOf("v" to 1L))),
+      answered.last { it.nodeInfo?.path == "wf@1/run_child@1" }.output,
+    )
+  }
+
+  @Test
+  fun runNode_fromToolNodeThatWrapsAChildsPause_stillPausesTheNode() {
+    // Arrange: a Java tool that blocks on the child with `join()` gets the pause wrapped.
+    val tool = childRunningTool { context ->
+      try {
+        context.runNode(Emitter("asks", RequestInput(interruptId = "ask", message = "Why?")))
+      } catch (t: Throwable) {
+        throw IllegalStateException("wrapped", t)
+      }
+    }
+    val turn = resumableSession(toolNodeWorkflow(tool.asNode()))
+
+    // Act
+    val asked = turn(userMessage("go"))
+    val answered =
+      turn(userFunctionResponse(RequestInput.FUNCTION_CALL_NAME, "ask", mapOf("v" to 1L)))
+
+    // Assert
+    assertTrue(asked.none { it.errorCode != null })
+    assertEquals(
+      mapOf("result" to mapOf("v" to 1L)),
+      answered.last { it.nodeInfo?.path == "wf@1/run_child@1" }.output,
+    )
+  }
+
+  @Test
+  fun runNode_fromRetriedToolNode_childrenContinueRunNumbering() {
+    // Arrange: as for a node body, the retry's child is a new run, not a replay.
+    val seenAttempts = mutableListOf<Int>()
+    val tool = childRunningTool { context ->
+      seenAttempts += context.attemptCount
+      val output = context.runNode(Emitter("first", "A"))
+      if (seenAttempts.size == 1) throw TestNodeException("flaky")
+      output
+    }
+    val retry = RetryConfig(maxAttempts = 2, initialDelay = Duration.ZERO, jitter = 0.0)
+    val toolNode = tool.asNode(config = NodeConfig(retry))
+    val workflow = toolNodeWorkflow(toolNode)
+
+    // Act
+    val session = runWorkflowAsApp(workflow)
+
+    // Assert
+    assertEquals(listOf(1, 2), seenAttempts)
+    assertEquals(
+      listOf("wf@1/run_child@1/first@1", "wf@1/run_child@1/first@2"),
+      session.events.mapNotNull { it.nodeInfo?.path }.filter { "/first@" in it },
+    )
+    assertEquals(
+      mapOf("result" to "A"),
+      session.events.last { it.nodeInfo?.path == "wf@1/run_child@1" }.output,
+    )
+  }
+
+  @Test
+  fun runNode_fromToolNodeChildWritesUndeclaredState_failsUnderTheWorkflowStateSchema() {
+    // Arrange: the child is the tool node's child, so the workflow's state schema covers it.
+    val child =
+      node<Any?, String>("child") { context, _ ->
+        context.updateState("undeclared", "x")
+        "C"
+      }
+    val tool = childRunningTool { context -> context.runNode(child) }
+    val source = Emitter("source", null)
+    val workflow =
+      Workflow(
+        name = "wf",
+        edges = listOf(Edge(Start, source), Edge(source, tool.asNode())),
+        stateSchema =
+          Schema(type = Type.OBJECT, properties = mapOf("declared" to Schema(type = Type.STRING))),
+      )
+
+    // Act
+    val run = runWorkflowAsAppCatching(workflow)
+
+    // Assert
+    assertContains(run.failure?.message.orEmpty(), "not declared in the state schema")
+  }
+
+  private fun Session.singleFunctionResponse(): Map<String, Any?>? =
+    events.single { it.functionResponses().isNotEmpty() }.functionResponses().single().response
+
+  /**
+   * A workflow `wf` that runs [toolNode] after a step that outputs nothing, so it gets no input.
+   */
+  private fun toolNodeWorkflow(toolNode: Node): Workflow {
+    val source = Emitter("source", null)
+    return Workflow(name = "wf", edges = listOf(Edge(Start, source), Edge(source, toolNode)))
+  }
+
+  /** Returns a function that runs one turn of a resumable app whose root is [root]. */
+  private fun resumableSession(root: Node): (Content) -> List<Event> {
+    val runner =
+      InMemoryRunner(
+        App(
+          appName = "app",
+          rootNode = root,
+          resumabilityConfig = ResumabilityConfig(isResumable = true),
+        )
+      )
+    return { message -> runBlocking { runner.runAsync("u", "s", newMessage = message).toList() } }
+  }
+
+  /**
+   * A workflow whose `flaky` step fails on its first run while `slow` is still running, so the
+   * failure cancels `slow` mid-run; `join` outputs both results. [onSlowRun] counts `slow`'s runs.
+   */
+  private fun workflowWithCancellableSibling(onSlowRun: () -> Int): Workflow {
+    val slowStarted = CompletableDeferred<Unit>()
+    val slow =
+      object : Node {
+        override val name = "slow"
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          val run = onSlowRun()
+          emit(Event(content = modelMessage("progress-$run")))
+          if (run == 1) {
+            slowStarted.complete(Unit)
+            awaitCancellation()
+          }
+          emit("slow_done")
+        }
+      }
+    var flakyRuns = 0
+    val flaky =
+      node<Any?, String>("flaky") { _, _ ->
+        if (++flakyRuns == 1) {
+          slowStarted.await()
+          throw TestNodeException("transient")
+        }
+        "flaky_done"
+      }
+    val join =
+      object : Node {
+        override val name = "join"
+        override val requiresAllPredecessors = true
+
+        override fun runNode(context: Context, nodeInput: Any?): Flow<Any?> = flow {
+          val inputs = nodeInput as Map<*, *>
+          emit("${inputs["slow"]}+${inputs["flaky"]}")
+        }
+      }
+    return Workflow(
+      name = "inner_wf",
+      edges = listOf(Edge(Start, slow), Edge(Start, flaky), Edge(slow, join), Edge(flaky, join)),
+    )
   }
 
   /** Runs [workflow]'s scheduler under a root context and returns that context and its events. */

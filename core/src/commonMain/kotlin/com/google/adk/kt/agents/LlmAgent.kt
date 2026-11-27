@@ -409,6 +409,7 @@ class LlmAgent(
         nodeContext = context,
         nodePath = context.nodePath,
         isolationScope = context.isolationScope,
+        inWorkflow = context.inWorkflow,
       )
     if (mode != AgentMode.SINGLE_TURN) frameworkData.liveRun = ic.liveRun
     return ic.copy(frameworkData = frameworkData)
