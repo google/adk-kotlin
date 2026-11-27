@@ -19,6 +19,7 @@
 package com.google.adk.kt.workflow
 
 import com.google.adk.kt.agents.AgentMode
+import com.google.adk.kt.agents.BackgroundToolCalls
 import com.google.adk.kt.agents.FinishTaskTool
 import com.google.adk.kt.agents.InvocationContext
 import com.google.adk.kt.agents.LiveRequestQueue
@@ -42,7 +43,7 @@ import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.models.SingleCollectorLiveConnection
 import com.google.adk.kt.plugins.Plugin
-import com.google.adk.kt.processors.STREAM_FINAL_ANSWER_KEY
+import com.google.adk.kt.processors.OUT_OF_TURN_ANSWER_KEY
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.InMemorySessionService
 import com.google.adk.kt.sessions.SessionKey
@@ -53,6 +54,7 @@ import com.google.adk.kt.testing.SaveHookArtifactService
 import com.google.adk.kt.testing.modelFunctionCall
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
+import com.google.adk.kt.testing.nonBlockingTool
 import com.google.adk.kt.testing.userMessage
 import com.google.adk.kt.types.Blob
 import com.google.adk.kt.types.Content
@@ -88,6 +90,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
@@ -524,14 +527,50 @@ class WorkflowLiveTest {
     // Assert: the stopped stream's answer is in the task's scope, where its call is.
     val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
     val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-    val finalAnswer = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+    val finalAnswer = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
     assertNotNull(call.isolationScope)
     assertEquals(call.isolationScope, finalAnswer.isolationScope)
     // The caller receives the answer too, not only the session.
     assertEquals(
       listOf(finalAnswer.id),
-      events.filter { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }.map { it.id },
+      events.filter { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }.map { it.id },
     )
+  }
+
+  @Test
+  fun taskNode_startedByRunNode_finishingWithABackgroundCallRunning_stopsTheCallAndFinishes() {
+    runBlocking(BackgroundToolCalls) {
+      // Arrange: the task calls a tool that never answers, beside its finish_task.
+      val stopped = CompletableDeferred<Unit>()
+      val lookup =
+        nonBlockingTool("lookup") {
+          try {
+            awaitCancellation()
+          } finally {
+            stopped.complete(Unit)
+          }
+        }
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("lookup", emptyMap())),
+          Part(functionCall = FunctionCall("finish_task", mapOf("result" to "memo"))),
+        )
+      val writer =
+        LlmAgent(
+          name = "writer",
+          model = LiveNodeModel("writer", listOf(listOf(turn))),
+          tools = listOf(lookup),
+          mode = AgentMode.TASK,
+        )
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("write"))
+
+      val events = runLiveWorkflow(Workflow("wf", listOf(Edge(Start, started(writer)))), queue)
+
+      // Assert: the round's end stopped the call, and the task still finished.
+      assertEquals(mapOf("result" to "memo"), events.mapNotNull { it.output }.single())
+      assertTrue(stopped.isCompleted)
+    }
   }
 
   @Test
@@ -579,13 +618,13 @@ class WorkflowLiveTest {
     val unused =
       withTimeout(30.seconds) {
         runner.runLive("user", "live", queue).first {
-          it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true
+          it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true
         }
       }
 
     // Assert: both streams are still recorded as stopped.
     val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
-    val records = stored.filter { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+    val records = stored.filter { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
     assertEquals(
       listOf("first_monitor", "second_monitor"),
       records.flatMap { it.functionResponses() }.map { it.name }.sorted(),
@@ -792,7 +831,7 @@ class WorkflowLiveTest {
       // Written straight to the session, the answer still carries the task's scope, as its call
       // does.
       val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-      val finalAnswer = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+      val finalAnswer = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
       assertNotNull(call.isolationScope)
       assertEquals(call.isolationScope, finalAnswer.isolationScope)
     }
@@ -826,7 +865,7 @@ class WorkflowLiveTest {
       // Assert: the failed round stores the stop under the task's node, where its call is.
       val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
       val call = stored.single { event -> event.functionCalls().any { it.name == "monitor" } }
-      val stop = stored.single { it.customMetadata?.get(STREAM_FINAL_ANSWER_KEY) == true }
+      val stop = stored.single { it.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY) == true }
       val path = assertNotNull(call.nodeInfo?.path)
       assertEquals(path, stop.nodeInfo?.path)
     }
@@ -1552,6 +1591,49 @@ class WorkflowLiveTest {
   }
 
   @Test
+  fun taskNode_startedByRunNode_backgroundAnswerTransfer_endsTheTaskAndRunsTheTarget() {
+    runTest(BackgroundToolCalls) {
+      // Arrange: the live task calls a background tool whose answer hands the user to a helper.
+      val log = mutableListOf<String>()
+      val helperModel = LiveNodeModel("helper", listOf(listOf(modelMessage("helped"))), log = log)
+      val helper = LlmAgent(name = "helper", model = helperModel, description = "Helps.")
+      val routerModel =
+        LiveNodeModel("router", listOf(listOf(modelFunctionCall("route", emptyMap()))), log = log)
+      val router =
+        LlmAgent(
+          name = "router",
+          model = routerModel,
+          subAgents = listOf(helper),
+          tools = listOf(nonBlockingTool("route", transferTo = "helper") { "routed" }),
+          mode = AgentMode.TASK,
+        )
+      val sessions = InMemorySessionService()
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("help me"))
+
+      // Act: the user hangs up once the helper has answered.
+      val events =
+        runLiveWorkflow(
+          Workflow("wf", listOf(Edge(Start, started(router)))),
+          queue,
+          resumable = true,
+          sessionService = sessions,
+        ) { event ->
+          if (event.contentText() == "helped") queue.close()
+        }
+
+      // Assert: the round ends at the answer, the helper runs once, and nothing waits on time.
+      assertEquals(listOf("router connect", "router close", "helper connect", "helper close"), log)
+      assertEquals(emptyList(), routerModel.connections.single().receivedResponses())
+      assertEquals(1, events.count { it.author == "router" && it.actions.endOfAgent })
+      val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
+      val answers = stored.flatMap { it.functionResponses() }.filter { it.name == "route" }
+      assertEquals(listOf(mapOf("result" to "routed")), answers.map { it.response })
+      assertEquals(0L, testScheduler.currentTime)
+    }
+  }
+
+  @Test
   fun taskNodes_startedByRunNode_firstFinishesBeforeSendingATakenInput_dropsIt() = runBlocking {
     // Arrange: the first task finishes on "first start" while its sender holds "first end" unsent.
     val log = mutableListOf<String>()
@@ -2239,6 +2321,65 @@ class WorkflowLiveTest {
         events.last { it.author == "support" && it.content != null }.contentText(),
       )
     }
+
+  @Test
+  fun chatNode_startedByRunNode_backgroundAnswerTransferBesideATask_handsOverOnceTheTaskAnswers() {
+    runTest(BackgroundToolCalls) {
+      // Arrange: one chat turn delegates the booking and calls a tool that hands over to support.
+      val log = mutableListOf<String>()
+      val taskModel = LiveNodeModel("booker", listOf(listOf(finishTask("result" to "booked"))), log)
+      val turn =
+        modelMessage(
+          Part(functionCall = FunctionCall("route", emptyMap())),
+          Part(functionCall = FunctionCall("booker", mapOf("request" to "book a trip"))),
+        )
+      val chatModel = LiveNodeModel("planner", listOf(listOf(turn)), log)
+      val supportModel = LiveNodeModel("support", listOf(listOf(modelMessage("Hi, support."))), log)
+      val support = LlmAgent(name = "support", model = supportModel, description = "Helps.")
+      val planner =
+        LlmAgent(
+          name = "planner",
+          model = chatModel,
+          subAgents = listOf(booker(taskModel), support),
+          tools = listOf(nonBlockingTool("route", transferTo = "support") { "routed" }),
+          mode = AgentMode.CHAT,
+        )
+      val sessions = InMemorySessionService()
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("plan a trip"))
+
+      val events =
+        runLiveWorkflow(
+          Workflow("wf", listOf(Edge(Start, started(planner)))),
+          queue,
+          sessionService = sessions,
+        ) { event ->
+          if (event.contentText() == "Hi, support.") queue.close()
+        }
+
+      // Assert: the task runs first, then the chat hands over once, and nothing waits on time.
+      assertEquals(
+        listOf(
+          "planner connect",
+          "planner close",
+          "booker connect",
+          "booker close",
+          "support connect",
+          "support close",
+        ),
+        log,
+      )
+      assertEquals(emptyList(), chatModel.connections.single().receivedResponses())
+      val stored = checkNotNull(sessions.getSession(SessionKey("app", "user", "live"))).events
+      val answers = stored.flatMap { it.functionResponses() }.filter { it.name == "route" }
+      assertEquals(listOf(mapOf("result" to "routed")), answers.map { it.response })
+      assertEquals(
+        "Hi, support.",
+        events.last { it.author == "support" && it.content != null }.contentText(),
+      )
+      assertEquals(0L, testScheduler.currentTime)
+    }
+  }
 
   @Test
   fun chatNode_startedByRunNode_liveToolCallbackTransferBesideATask_handsOverAfterTheTask() =

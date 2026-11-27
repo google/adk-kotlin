@@ -30,6 +30,7 @@ import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmSynthetic
+import kotlin.jvm.Volatile
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -200,6 +201,12 @@ internal class LiveRun(
       if (liveModelMedia.compareAndSet(marked, next)) return true
     }
   }
+
+  /**
+   * The ids of the answer events the last built request's history holds, narrated or not. A call id
+   * can be answered more than once, so the answers are told apart by their events.
+   */
+  @Volatile var historyAnswerIds: Set<String> = emptySet()
 
   /** Whether [append] stores events; a run without a session service drops them. */
   val storesEvents: Boolean

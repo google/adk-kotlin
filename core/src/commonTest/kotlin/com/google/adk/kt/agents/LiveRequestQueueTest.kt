@@ -34,6 +34,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
@@ -392,6 +393,22 @@ class LiveRequestQueueTest {
 
     val received = queue.receiveAll().map { assertIs<ContentInput>(it.input).content }
     assertEquals(listOf(userFunctionResponse("monitor", "c1", mapOf("n" to 2))), received)
+  }
+
+  @Test
+  fun discardRequests_anEqualRequestQueuedEarlier_isStillReceived() {
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val earlier = LiveRequest(ContentInput(userFunctionResponse("lookup", "c1", mapOf("n" to 1))))
+      val answer = earlier.copy()
+
+      queue.enqueue(earlier)
+      queue.enqueue(answer)
+      queue.discardRequests(listOf(answer))
+      queue.close()
+
+      assertSame(earlier, queue.receiveAll().single())
+    }
   }
 }
 
