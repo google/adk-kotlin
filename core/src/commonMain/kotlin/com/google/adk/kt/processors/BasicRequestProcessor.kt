@@ -34,8 +34,8 @@ import com.google.adk.kt.types.LiveConnectConfig
  * [LlmAgent.outputSchema] that [appliesOutputSchemaDirectly] (no tools, or a model that supports a
  * response schema together with tools), the schema is applied as the request's response schema
  * (with a JSON response MIME type). Otherwise the schema is handled via the [OutputSchemaProcessor]
- * workaround. A [AgentMode.TASK] agent gets no response schema, since `finish_task` carries its
- * structured output.
+ * workaround, which an agent running live skips. A [AgentMode.TASK] agent gets no response schema,
+ * since `finish_task` carries its structured output.
  */
 internal class BasicRequestProcessor : LlmRequestProcessor {
   override suspend fun process(

@@ -445,10 +445,12 @@ internal class LlmAgentTurn(
         LiveStreamingTools(queue, agent.name, context.invocationId, currentCoroutineContext())
       }
     var turn = LlmAgentTurn(agent, context, requestProcessors, responseProcessors, tools)
+    var firstSession = true
     var ended = false
     try {
       // Restarting in a loop keeps repeated restarts from nesting flows.
-      while (turn.runLiveSession(this) && !turn.context.isEndOfInvocation) {
+      while (turn.runLiveSession(this, firstSession) && !turn.context.isEndOfInvocation) {
+        firstSession = false
         turn = turn.restartedTurn()
       }
       // Each restart runs on a copy, so an invocation one of them ended has to end here too.
@@ -483,17 +485,23 @@ internal class LlmAgentTurn(
   /**
    * Runs one live session, reconnecting it as needed, and emits its events into [collector].
    *
+   * @param firstSession whether this is the run's first session, which warns once about an
+   *   unsupported [LlmAgent.outputSchema] after its request is prepared.
    * @return whether the session must continue in a [restartedTurn]: a callback blocked the model's
    *   output or spoken input, or a go-away left no handle; the caller has handled every event by
    *   the time this returns.
    */
-  private suspend fun runLiveSession(collector: FlowCollector<Event>): Boolean {
+  private suspend fun runLiveSession(
+    collector: FlowCollector<Event>,
+    firstSession: Boolean,
+  ): Boolean {
     if (context.isEndOfInvocation) return false
 
     val queue = liveRun().requestQueue
     // Before connecting, so a second reader usually opens no session; the sender still claims it.
     liveRun().checkNoOtherReader(agent.name)
     val request = prepareLiveSession(collector) ?: return false
+    if (firstSession) agent.warnIfLiveOutputSchemaUnsupported()
     var attempt = 0
     while (true) {
       liveTools?.onBeforeConnect()

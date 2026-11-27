@@ -24,7 +24,8 @@ import kotlin.jvm.JvmStatic
  *
  * @property outputSchemaAndTools Whether the model can apply a response schema in a request that
  *   also offers tools. When false, an agent with an output schema and tools (including
- *   `transfer_to_agent`) gets its final answer through a `set_model_response` tool call instead.
+ *   `transfer_to_agent`) gets its final answer through a `set_model_response` tool call instead,
+ *   unless the agent runs live.
  */
 data class LlmCapabilities @JvmOverloads constructor(val outputSchemaAndTools: Boolean = false) {
   /**

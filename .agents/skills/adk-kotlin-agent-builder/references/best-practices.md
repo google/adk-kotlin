@@ -44,6 +44,13 @@ Adding the same agent instance to two `subAgents` lists throws. Build a fresh in
 
 Some models cannot combine a response schema with tools, and some skip their tool calls when one is set; `Model.capabilities` says which. On those models an agent with `outputSchema` and any tool answers through an internal `set_model_response` tool, which behaves differently: null optional fields are dropped, a validation failure goes back to the model as an error to retry, validation does not enforce `enum`, `format` or minimum and maximum limits, the answer does not stream as partial text, and the final event carries none of the response metadata, such as `finishReason` or `usageMetadata`, which stays on the call's event. A built-in tool such as `GoogleSearchTool` counts as a tool too, and the Gemini API rejects it beside the `set_model_response` declaration (400 INVALID_ARGUMENT). "Any tool" includes the implicit `transfer_to_agent`, which an agent gets when it has sub-agents, or a parent, unless both `disallowTransferToParent` and `disallowTransferToPeers` are set. Keep structured-output agents tool-free, and set both flags when they are sub-agents.
 
+When an agent with `outputSchema` runs live (the agent a `runLive` call starts
+or resumes, its transfer targets and `SequentialAgent` steps, or a chat or task
+node in a live workflow), the model gets neither a response schema nor
+`set_model_response` and, unless it is a task agent, the agent logs a warning;
+to capture structured data in a live session, give the agent a tool that writes
+it to session state. A task agent still reports through `finish_task`.
+
 ## Tools inherit the caller's dispatcher
 
 By default Tool calls from one model response run concurrently in the collector's context.

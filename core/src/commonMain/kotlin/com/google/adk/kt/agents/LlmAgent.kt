@@ -68,6 +68,7 @@ import com.google.adk.kt.workflow.isValidNodeName
 import com.google.adk.kt.workflow.unsupportedLiveTaskDelegation
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmStatic
+import kotlin.jvm.JvmSynthetic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -139,7 +140,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  *   `transfer_to_agent` tool when sub-agents/peers are reachable), the schema is applied directly
  *   on models that take a response schema reliably together with tools; on other models (see
  *   [Model.capabilities]), the framework falls back to a `set_model_response` tool to collect the
- *   structured output.
+ *   structured output. When the agent runs live, the model gets neither a response schema nor
+ *   `set_model_response`, and the agent logs a warning; task mode is unaffected.
  * @property outputKey The key in session state to store the final text response of the agent. When
  *   set, the agent's concatenated text output (excluding parts marked as thoughts) is written to
  *   `event.actions.stateDelta[outputKey]` on each final-response event, which the session service
@@ -284,6 +286,11 @@ class LlmAgent(
       OutputSchemaProcessor(),
     )
 
+  /** The request processors of a live run, which has no single final response to structure. */
+  private val liveBeforeTurnProcessors = systemBeforeTurnProcessors.filterNot {
+    it is OutputSchemaProcessor
+  }
+
   internal val systemAfterTurnProcessors: List<LlmResponseProcessor> =
     listOf(CodeExecutionImageProcessor())
 
@@ -342,10 +349,23 @@ class LlmAgent(
    */
   @OptIn(ExperimentalLiveApi::class)
   override fun runLiveImpl(context: InvocationContext): Flow<Event> =
-    LlmAgentTurn(this, context, systemBeforeTurnProcessors, systemAfterTurnProcessors)
+    LlmAgentTurn(this, context, liveBeforeTurnProcessors, systemAfterTurnProcessors)
       .executeLive()
       // A streaming tool's user-role message goes to the caller, never to outputKey.
       .onEach { if (it.content?.role != Role.USER) maybeSaveOutputToState(it, context) }
+
+  /** Logs a warning if this agent sets an [outputSchema] that a live session does not support. */
+  @JvmSynthetic
+  internal fun warnIfLiveOutputSchemaUnsupported() {
+    // A task agent reports its structured output through `finish_task`, which works live too.
+    if (outputSchema != null && mode != AgentMode.TASK) {
+      logger.warn {
+        "Agent $name sets outputSchema, which is not supported in live mode. To capture " +
+          "structured data during a live session, give the agent a tool that writes it to " +
+          "session state."
+      }
+    }
+  }
 
   /**
    * Runs this agent as a graph node in its [AgentMode]: a single turn on the node input, a chat

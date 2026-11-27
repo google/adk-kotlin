@@ -22,8 +22,10 @@ import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
+import com.google.adk.kt.models.LlmCapabilities
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
+import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyLiveModel
@@ -49,6 +51,8 @@ import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Part
+import com.google.adk.kt.types.Schema
+import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlin.test.Test
@@ -377,6 +381,85 @@ class LlmAgentLiveTest {
     // The request the processors built is what reaches connect, not a fresh empty one.
     assertThat(model.connectRequests.single().config.systemInstruction?.parts?.firstOrNull()?.text)
       .isEqualTo("Answer briefly.")
+  }
+
+  /**
+   * An agent with an output schema and, by default, a tool. Its model takes no response schema
+   * beside tools, as Gemini models on the Gemini API do, so a turn-based run would offer
+   * `set_model_response`.
+   */
+  private fun reporter(
+    model: DummyLiveModel,
+    outputKey: String? = null,
+    tools: List<BaseTool> = listOf(DummyTool(name = "lookup", declares = true)),
+    subAgents: List<BaseAgent> = emptyList(),
+  ) =
+    LlmAgent(
+      name = "reporter",
+      model =
+        object : Model by model {
+          override val capabilities = LlmCapabilities(outputSchemaAndTools = false)
+        },
+      tools = tools,
+      subAgents = subAgents,
+      outputSchema =
+        Schema(type = Type.OBJECT, properties = mapOf("answer" to Schema(type = Type.STRING))),
+      outputKey = outputKey,
+    )
+
+  /** The names of the functions [request] declares. */
+  private fun declaredNames(request: LlmRequest): List<String> =
+    request.config.tools.orEmpty().flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
+
+  @Test
+  fun runLive_outputSchemaWithTools_offersNoSetModelResponse(): Unit = runBlocking {
+    val model = DummyLiveModel(replyingWith("ok"))
+    val queue = LiveRequestQueue()
+    queue.close()
+
+    val unused = InMemoryRunner(agent = reporter(model)).runLive("u", "s", queue).toList()
+
+    val request = model.connectRequests.single()
+    assertThat(declaredNames(request)).containsExactly("lookup")
+    val instruction = request.config.systemInstruction?.parts.orEmpty().mapNotNull { it.text }
+    assertThat(instruction.joinToString()).doesNotContain("set_model_response")
+  }
+
+  @Test
+  fun runLive_outputSchemaWithSubAgents_offersOnlyTheTransfer(): Unit = runBlocking {
+    // A sub-agent is offered through transfer_to_agent, which counts as a tool too.
+    val model = DummyLiveModel(replyingWith("ok"))
+    val helper = LlmAgent(name = "helper", model = DummyLiveModel(emptyList()))
+    val queue = LiveRequestQueue()
+    queue.close()
+    val agent = reporter(model, tools = emptyList(), subAgents = listOf(helper))
+
+    val unused = InMemoryRunner(agent = agent).runLive("u", "s", queue).toList()
+
+    assertThat(declaredNames(model.connectRequests.single())).containsExactly("transfer_to_agent")
+  }
+
+  @Test
+  fun runLive_modelCallsSetModelResponse_savesNoStructuredAnswer(): Unit = runBlocking {
+    val script =
+      listOf(
+        Respond(modelFunctionCallResponse("set_model_response", mapOf("answer" to "42"), "c1")),
+        AwaitSent("the answer to c1") { message ->
+          message is ContentInput && message.content.parts.any { it.functionResponse?.id == "c1" }
+        },
+        turnCompleteStep(),
+      )
+    val model = DummyLiveModel(script)
+    val runner = InMemoryRunner(agent = reporter(model, outputKey = "report"))
+
+    val events = runUntilTurnsComplete(runner, LiveRequestQueue())
+
+    // The call is answered like any other, and no final answer is made from it.
+    model.connections.single().assertAllWaitsMet()
+    val agentParts =
+      events.filter { it.author == "reporter" }.flatMap { it.content?.parts.orEmpty() }
+    assertThat(agentParts.mapNotNull { it.text }).isEmpty()
+    assertThat(events.mapNotNull { it.actions.stateDelta["report"] }).isEmpty()
   }
 
   @Test

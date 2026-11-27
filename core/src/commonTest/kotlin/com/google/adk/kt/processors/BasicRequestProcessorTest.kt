@@ -148,7 +148,7 @@ class BasicRequestProcessorTest {
   @Test
   fun run_withOutputSchemaAndSubAgents_gemini2ModelOnALiveRun_doesNotSetResponseSchema() =
     runBlocking {
-      // Live runs offer transfer_to_agent too, so the schema goes to the workaround.
+      // Live runs offer transfer_to_agent too, which Gemini 2.x can't combine with a schema.
       val agent =
         LlmAgent(
           name = "parent",
