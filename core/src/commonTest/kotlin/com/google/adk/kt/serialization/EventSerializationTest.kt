@@ -49,13 +49,16 @@ import com.google.adk.kt.types.UsageMetadata
 import com.google.adk.kt.types.VoiceActivity
 import com.google.adk.kt.types.VoiceActivityType
 import com.google.adk.kt.workflow.NodeInfo
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -235,6 +238,89 @@ class EventSerializationTest {
 
     assertEquals("v", roundTripped.args["present"])
     assertNull(roundTripped.args["absent"])
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_malformedSignInRequest_isStoredAsBuiltAndEmptiedInOutput() {
+    val call = FunctionCall(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("token" to "sk-raw"))
+    val event =
+      Event(author = "agent", content = Content(parts = listOf(Part(functionCall = call))))
+
+    assertEquals(
+      """{"name":"adk_request_credential","args":{"token":"sk-raw"}}""",
+      partJson(event, "functionCall", adkSecretRevealingJson),
+    )
+    assertEquals("""{"name":"adk_request_credential","args":{}}""", partJson(event, "functionCall"))
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_malformedSignInResponse_isStoredAsBuiltAndEmptiedInOutput() {
+    val event =
+      responseEvent(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("token" to "sk-raw"))
+
+    assertEquals(
+      """{"name":"adk_request_credential","response":{"token":"sk-raw"}}""",
+      partJson(event, "functionResponse", adkSecretRevealingJson),
+    )
+    assertEquals(
+      """{"name":"adk_request_credential","response":{}}""",
+      partJson(event, "functionResponse"),
+    )
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_plainCredentialsForStorage_keepTheirSecrets() {
+    // Sessions are stored with the revealing instance, so a plain sign-in response keeps its key.
+    val credential = responseEvent("read_key", mapOf("authType" to "apiKey", "apiKey" to "sk-123"))
+    val signIn =
+      responseEvent(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("result" to "sk-1"))
+
+    assertEquals(
+      """{"name":"read_key","response":{"authType":"apiKey","apiKey":"sk-123"}}""",
+      partJson(credential, "functionResponse", adkSecretRevealingJson),
+    )
+    assertEquals(
+      """{"name":"adk_request_credential","response":{"result":"sk-1"}}""",
+      partJson(signIn, "functionResponse", adkSecretRevealingJson),
+    )
+  }
+
+  @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun freeFormValues_plainSignInRequest_encodesWithoutItsSecretAndIsStoredWithIt() {
+    val authConfig =
+      mapOf(
+        "authScheme" to mapOf("type" to "apiKey", "name" to "X-Key", "in" to "header"),
+        "exchangedAuthCredential" to mapOf("authType" to "apiKey", "apiKey" to "sk-req"),
+      )
+    val call =
+      FunctionCall(
+        name = FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME,
+        args = mapOf("functionCallId" to "call-1", "authConfig" to authConfig),
+        id = "req-1",
+      )
+    val event =
+      Event(author = "agent", content = Content(parts = listOf(Part(functionCall = call))))
+
+    val output = partJson(event, "functionCall")
+    assertFalse("sk-req" in output)
+    assertContains(output, "\"authType\":\"apiKey\"")
+    assertContains(partJson(event, "functionCall", adkSecretRevealingJson), "\"apiKey\":\"sk-req\"")
+  }
+
+  @Test
+  fun freeFormValues_plainSignInResponse_encodeWithoutItsSecret() {
+    // A bare key under no credential field, typed as a secret by the sign-in call's name.
+    val event =
+      responseEvent(FunctionCall.REQUEST_EUC_FUNCTION_CALL_NAME, mapOf("result" to "sk-1"))
+
+    assertEquals(
+      """{"name":"adk_request_credential","response":{"result":"<redacted>"}}""",
+      partJson(event, "functionResponse"),
+    )
   }
 
   @Test
@@ -691,4 +777,23 @@ class EventSerializationTest {
       }
     }
   }
+
+  private fun responseEvent(name: String, response: Map<String, Any?>): Event =
+    Event(
+      author = "user",
+      content = Content(parts = listOf(Part(functionResponse = FunctionResponse(name, response)))),
+    )
+
+  /** Returns the JSON text of [field] in [event]'s one part, as [json] writes it. */
+  private fun partJson(event: Event, field: String, json: Json = adkJson): String =
+    json
+      .encodeToJsonElement(Event.serializer(), event)
+      .jsonObject
+      .getValue("content")
+      .jsonObject
+      .getValue("parts")
+      .jsonArray
+      .single()
+      .jsonObject[field]
+      .toString()
 }

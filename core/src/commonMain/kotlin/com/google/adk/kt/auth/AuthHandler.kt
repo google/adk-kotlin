@@ -107,7 +107,7 @@ private fun AuthConfig.credentialFrom(value: Any?): AuthCredential? {
  * Returns [value] as the key or token of this config's scheme, or null for HTTP basic, which needs
  * a username and password.
  */
-private fun AuthConfig.credentialFromString(value: String): AuthCredential? =
+internal fun AuthConfig.credentialFromString(value: String): AuthCredential? =
   when (val authScheme = authScheme) {
     is AuthScheme.ApiKey -> AuthCredential.ApiKey(Secret(value))
     is AuthScheme.Http ->

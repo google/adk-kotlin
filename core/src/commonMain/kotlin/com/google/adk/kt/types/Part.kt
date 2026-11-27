@@ -51,7 +51,9 @@ class Part(
   @Serializable(with = FunctionCallSerializer::class)
   val functionCall: FunctionCall? = null,
   /** The response from a function call. */
-  @JsonNames("function_response") val functionResponse: FunctionResponse? = null,
+  @JsonNames("function_response")
+  @Serializable(with = FunctionResponseSerializer::class)
+  val functionResponse: FunctionResponse? = null,
   /** Indicates whether the part represents the model's thought process. */
   val thought: Boolean? = null,
   /** An opaque signature for the thought. */
