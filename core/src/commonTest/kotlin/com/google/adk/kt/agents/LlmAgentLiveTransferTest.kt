@@ -19,6 +19,7 @@
 package com.google.adk.kt.agents
 
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.callbacks.AfterToolCallback
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
@@ -32,10 +33,13 @@ import com.google.adk.kt.testing.DummyLiveStep.EndStream
 import com.google.adk.kt.testing.DummyLiveStep.Respond
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.awaitToolResponse
+import com.google.adk.kt.testing.goAway
 import com.google.adk.kt.testing.inputTranscription
 import com.google.adk.kt.testing.modelFunctionCallResponse
 import com.google.adk.kt.testing.modelMessage
 import com.google.adk.kt.testing.modelTransferToAgentResponse
+import com.google.adk.kt.testing.nonBlockingTool
+import com.google.adk.kt.testing.storedEvents
 import com.google.adk.kt.testing.wholeText
 import com.google.adk.kt.tools.TransferToAgentTool.Companion.TRANSFER_TO_AGENT_TOOL_NAME
 import com.google.adk.kt.types.Content
@@ -46,12 +50,14 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlin.test.Test
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -59,10 +65,16 @@ import kotlinx.coroutines.test.runTest
  *
  * If a transfer ran inside function-response handling rather than around the connection, the parent
  * would see the child's events and answer the child's tool calls on its own connection too. These
- * tests therefore check what each connection received, not only what the caller saw, and use
- * `runTest` because the handover waits on a one-second delay that virtual time skips.
+ * tests therefore check what each connection received, not only what the caller saw; tests using
+ * `runTest` skip the handover's one-second delay in virtual time.
  */
 class LlmAgentLiveTransferTest {
+
+  /** Screening the heard input "hi" suspends between queuing a turn's answers and its handover. */
+  private val slowScreening = BeforeModelCallback { _, request ->
+    if (request.contents.any { c -> c.parts.any { it.text == "hi" } }) delay(100.milliseconds)
+    CallbackChoice.Continue(request)
+  }
 
   /** A parent that immediately hands over, and the child it hands over to. */
   private data class Handover(
@@ -246,11 +258,6 @@ class LlmAgentLiveTransferTest {
               listOf(Part(functionCall = monitorCall), Part(functionCall = transfer)),
             )
         )
-    // Screening the heard input suspends between queuing the answers and the handover.
-    val slowScreening = BeforeModelCallback { _, request ->
-      if (request.contents.any { c -> c.parts.any { it.text == "hi" } }) delay(100.milliseconds)
-      CallbackChoice.Continue(request)
-    }
     val parentModel = DummyLiveModel(listOf(Respond(calls), EndStream))
     val childModel =
       DummyLiveModel(
@@ -277,6 +284,62 @@ class LlmAgentLiveTransferTest {
         .filterIsInstance<ContentInput>()
         .filter { input -> input.content.parts.any { it.functionResponse?.id == "c1" } }
     assertWithMessage("the child heard the never-started stream").that(heard).isEmpty()
+  }
+
+  @Test
+  fun runLive_backgroundCallAnswersWhileARestartedSessionTransfers_streamNeverStarts() {
+    runBlocking(BackgroundToolCalls) {
+      // Called before the restart; answers with a stream once the new session transfers.
+      val transferSeen = CompletableDeferred<Unit>()
+      var newsStarted = false
+      val news =
+        nonBlockingTool("news") {
+          transferSeen.await()
+          flow<String> {
+            newsStarted = true
+            awaitCancellation()
+          }
+        }
+      val transferAfterSpeech =
+        inputTranscription("hi", finished = true)
+          .copy(content = modelTransferToAgentResponse("weather_agent").content)
+      // A go-away with no handle restarts the turn on a new session.
+      val parentModel =
+        DummyLiveModel.perConnection(
+          listOf(
+            listOf(Respond(modelFunctionCallResponse("news", id = "c1")), Respond(goAway())),
+            listOf(Respond(transferAfterSpeech), EndStream),
+          )
+        )
+      val child =
+        LlmAgent(
+          name = "weather_agent",
+          model = DummyLiveModel(listOf(wholeText("sunny"), EndStream)),
+        )
+      val parent =
+        LlmAgent(
+          name = "router",
+          model = parentModel,
+          subAgents = listOf(child),
+          tools = listOf(news),
+          beforeModelCallbacks = listOf(slowScreening),
+        )
+
+      val events =
+        InMemoryRunner(agent = parent)
+          .runLive("u", "s", LiveRequestQueue())
+          .onEach { if (it.actions.transferToAgent != null) transferSeen.complete(Unit) }
+          .toList()
+
+      val transferAt = events.indexOfFirst { it.actions.transferToAgent != null }
+      val answerAt = events.indexOfFirst { e -> e.functionResponses().any { it.id == "c1" } }
+      assertWithMessage("the background answer should arrive during the handover")
+        .that(answerAt)
+        .isGreaterThan(transferAt)
+      assertWithMessage("a stream answered while the restarted session hands over should not start")
+        .that(newsStarted)
+        .isFalse()
+    }
   }
 
   @Test
@@ -458,5 +521,81 @@ class LlmAgentLiveTransferTest {
     assertWithMessage("the child should get no answer for the parent's call")
       .that(heard.none { it.content.parts.any { p -> p.functionResponse?.id == "c1" } })
       .isTrue()
+  }
+
+  @Test
+  fun runLive_transferWhileBackgroundCallsRun_answersEachCallOnce() {
+    runBlocking(BackgroundToolCalls) {
+      val firstHandled = CompletableDeferred<Unit>()
+      val tools =
+        listOf(
+          nonBlockingTool("first") { "done" },
+          nonBlockingTool("plain") {
+            firstHandled.await()
+            "done"
+          },
+          nonBlockingTool("ticker") {
+            firstHandled.await()
+            flow<String> { awaitCancellation() }
+          },
+          nonBlockingTool("hang") { awaitCancellation() },
+          nonBlockingTool("held") { flow<String> { awaitCancellation() } },
+        )
+      // Stops held after its stream is registered but before its pending answer is stored.
+      val hold = AfterToolCallback { _, tool, _, result ->
+        if (tool.name == "held") awaitCancellation()
+        result
+      }
+      val calls = tools.map { Part(functionCall = FunctionCall(it.name, id = it.name)) }
+      val parentModel =
+        DummyLiveModel(
+          listOf(
+            Respond(LlmResponse(content = Content(Role.MODEL, calls))),
+            Respond(modelTransferToAgentResponse("weather_agent")),
+            EndStream,
+          )
+        )
+      val child =
+        LlmAgent(
+          name = "weather_agent",
+          model = DummyLiveModel(listOf(wholeText("sunny"), EndStream)),
+        )
+      val parent =
+        LlmAgent(
+          name = "router",
+          model = parentModel,
+          subAgents = listOf(child),
+          tools = tools,
+          afterToolCallbacks = listOf(hold),
+        )
+      val runner = InMemoryRunner(agent = parent)
+
+      // A slow caller leaves the later answers queued when the transfer stops the calls.
+      val unused =
+        runner
+          .runLive("u", "s", LiveRequestQueue())
+          .onEach { event ->
+            if (event.functionResponses().any { it.id == "first" }) {
+              firstHandled.complete(Unit)
+              delay(300.milliseconds)
+            }
+          }
+          .toList()
+
+      // Each call is answered once: with its own answer, its stream's final one, or a stopped one.
+      val names = tools.map { it.name }
+      val answers =
+        runner.storedEvents().flatMap { it.functionResponses() }.filter { it.id in names }
+      assertThat(answers.map { it.id to it.response.values.single() })
+        .containsExactly(
+          "first" to "done",
+          "plain" to "done",
+          "ticker" to "The function is running asynchronously and the results are pending.",
+          "ticker" to
+            "ticker stopped streaming when its live session ended; no more updates will arrive.",
+          "hang" to "hang was stopped when its live session ended; its result will not arrive.",
+          "held" to "held was stopped when its live session ended; its result will not arrive.",
+        )
+    }
   }
 }
