@@ -27,6 +27,7 @@ import com.google.adk.kt.agents.ReadonlyContext
 import com.google.adk.kt.agents.ResumabilityConfig
 import com.google.adk.kt.agents.SequentialAgent
 import com.google.adk.kt.agents.unresolvedTaskDelegations
+import com.google.adk.kt.agents.waitedCallIds
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.apps.App
 import com.google.adk.kt.events.Event
@@ -36,6 +37,7 @@ import com.google.adk.kt.models.Model
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyTool
+import com.google.adk.kt.testing.nonBlockingTool
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.Toolset
 import com.google.adk.kt.types.Content
@@ -582,6 +584,39 @@ class LlmAgentModeTest {
     // Assert
     assertEquals(listOf("a"), scoped.map { it.id })
     assertEquals(listOf("a", "b"), unscoped.map { it.id })
+  }
+
+  /** The ids [waitedCallIds] returns for a model turn that calls [calls] with ids "1", "2", ... */
+  private fun waitedIds(tools: List<BaseTool>, vararg calls: String): Set<String> {
+    val specialist = taskAgent("specialist", ModeScriptedModel(text("unused")))
+    val agent = coordinator(ModeScriptedModel(text("unused")), listOf(specialist), tools)
+    val parts = calls.mapIndexed { i, name ->
+      Part(functionCall = FunctionCall(name, id = "${i + 1}"))
+    }
+    val turn = Event(author = agent.name, content = Content(Role.MODEL, parts))
+    return waitedCallIds(turn, agent.tools.associateBy { it.name })
+  }
+
+  @Test
+  fun waitedCallIds_regularToolBesideATask_waitsForTheTool() {
+    assertEquals(setOf("1"), waitedIds(listOf(DummyTool("echo")), "echo", "specialist"))
+  }
+
+  @Test
+  fun waitedCallIds_taskOnly_waitsForNothing() {
+    assertEquals(emptySet(), waitedIds(emptyList(), "specialist"))
+  }
+
+  @Test
+  fun waitedCallIds_longRunningToolBesideATask_waitsForTheTool() {
+    val longRunning = DummyTool("long_run", isLongRunning = true, onRun = { _, _ -> Unit })
+    assertEquals(setOf("1"), waitedIds(listOf(longRunning), "long_run", "specialist"))
+  }
+
+  @Test
+  fun waitedCallIds_backgroundToolBesideATask_waitsForTheTool() {
+    val background = nonBlockingTool("notify") { "sent" }
+    assertEquals(setOf("1"), waitedIds(listOf(background), "notify", "specialist"))
   }
 
   @Test

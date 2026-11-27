@@ -44,6 +44,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HistoryRewriterProcessorTest {
@@ -798,8 +799,9 @@ class HistoryRewriterProcessorTest {
   @Test
   fun rewrite_ownToolCallOutsideALiveSession_staysAFunctionCall() {
     val call = Event(author = "agent", content = modelFunctionCall("get_weather", id = "c1"))
+    val answer = Event(author = "user", content = userFunctionResponse("get_weather", "c1"))
 
-    val content = rewrite(listOf(call)).single()
+    val content = rewrite(listOf(call, answer)).first()
 
     assertEquals(
       "model" to "get_weather",
@@ -1058,6 +1060,89 @@ class HistoryRewriterProcessorTest {
     assertEquals(listOf("monitor", "stopped"), summaries(contents))
   }
 
+  // The kept answers' event ids decide which queued answers a fresh live session drops.
+  @Test
+  fun rewrite_narratedAnswerALaterAnswerDrops_isNotCollected() {
+    val events =
+      listOf(
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "c1")),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("lookup", id = "b1"),
+          liveSessionId = "s1",
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("lookup", "b1"),
+          liveSessionId = "s1",
+        ),
+        Event(author = "agent", content = userFunctionResponse("monitor", "c1", status("done"))),
+      )
+    val answerIds = mutableSetOf<String>()
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(events, agentName = "agent", currentBranch = null, answerIds = answerIds)
+
+    assertEquals(listOf("monitor", "done"), summaries(contents))
+    assertEquals(setOf(events[3].id), answerIds)
+  }
+
+  @Test
+  fun rewrite_reusedCallIdWhoseLaterNarratedAnswerIsDropped_collectsOnlyTheKeptAnswers() {
+    val events =
+      listOf(
+        Event(author = "agent", content = modelFunctionCall("old", id = "c1")),
+        Event(author = "agent", content = userFunctionResponse("old", "c1", status("earlier"))),
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "c2")),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("lookup", id = "c1"),
+          liveSessionId = "s1",
+        ),
+        Event(
+          author = "agent",
+          content = userFunctionResponse("lookup", "c1"),
+          liveSessionId = "s1",
+        ),
+        Event(author = "agent", content = userFunctionResponse("monitor", "c2", status("done"))),
+      )
+    val answerIds = mutableSetOf<String>()
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(events, agentName = "agent", currentBranch = null, answerIds = answerIds)
+
+    assertEquals(listOf("old", "earlier", "monitor", "done"), summaries(contents))
+    assertEquals(setOf(events[1].id, events[5].id), answerIds)
+  }
+
+  @Test
+  fun rewrite_answersMergedIntoOneEvent_collectsEachAnswersEvent() {
+    val parallelCall =
+      modelMessage(
+        Part(functionCall = FunctionCall(name = "first", id = "c1")),
+        Part(functionCall = FunctionCall(name = "second", id = "c2")),
+      )
+    val events =
+      listOf(
+        Event(author = "agent", content = parallelCall),
+        Event(author = "agent", content = userFunctionResponse("first", "c1", status("one"))),
+        Event(author = "agent", content = userFunctionResponse("second", "c2", status("two"))),
+      )
+    val answerIds = mutableSetOf<String>()
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(events, agentName = "agent", currentBranch = null, answerIds = answerIds)
+
+    assertEquals(
+      listOf("first", "second"),
+      contents.last().parts.mapNotNull { it.functionResponse?.name },
+    )
+    assertEquals(setOf(events[1].id, events[2].id), answerIds)
+  }
+
   private fun callAnsweredAgainAtTheEnd(
     recordAuthor: String = "agent",
     marked: Boolean = true,
@@ -1085,7 +1170,7 @@ class HistoryRewriterProcessorTest {
     Event(
       author = author,
       content = userFunctionResponse(name, id, status("stopped")),
-      customMetadata = mapOf(STREAM_FINAL_ANSWER_KEY to true).takeIf { marked },
+      customMetadata = mapOf(OUT_OF_TURN_ANSWER_KEY to true).takeIf { marked },
     )
 
   /** Each content's single part: its text, called function's name, or answer's status. */
@@ -1140,6 +1225,237 @@ class HistoryRewriterProcessorTest {
     val contents = rewriteAtNode(events)
 
     assertEquals(listOf("Look it up.", "lookup", "lookup"), partNames(contents))
+  }
+
+  @Test
+  fun rewrite_unansweredCall_isDroppedButAnsweredAndIdlessCallsStay() {
+    val events =
+      listOf(
+        userEvent("Look it up."),
+        Event(author = "agent", content = modelFunctionCall("lookup", id = "c1")),
+        Event(author = "user", content = userFunctionResponse("lookup", "c1")),
+        Event(author = "agent", content = modelFunctionCall("ghost", id = "c2")),
+        Event(author = "agent", content = modelFunctionCall("legacy")),
+      )
+
+    assertEquals(listOf("Look it up.", "lookup", "lookup", "legacy"), partNames(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_unansweredCallMidHistory_isDropped() {
+    val events =
+      listOf(
+        userEvent("Run slow tool"),
+        Event(author = "agent", content = modelFunctionCall("slow_tool", id = "c1")),
+        userEvent("Never mind, do this instead"),
+      )
+
+    assertEquals(
+      listOf("user" to "Run slow tool", "user" to "Never mind, do this instead"),
+      turns(rewrite(events)),
+    )
+  }
+
+  @Test
+  fun rewrite_unansweredCallBesideText_keepsTheText() {
+    val events =
+      listOf(
+        userEvent("Hello"),
+        modelPartsEvent(Part(text = "Thinking about this..."), callPart("failing_tool", "c1")),
+        userEvent("Cancel"),
+      )
+
+    assertEquals(
+      listOf("user" to "Hello", "model" to "Thinking about this...", "user" to "Cancel"),
+      turns(rewrite(events)),
+    )
+  }
+
+  // A thought alone is never sent, but a signed one is handed back.
+  @Test
+  fun rewrite_unansweredCallBesideAThought_dropsTheEventUnlessTheThoughtIsSigned() {
+    val signed = Part(text = "Signed.", thought = true, thoughtSignature = byteArrayOf(1))
+    val events =
+      listOf(
+        userEvent("Go."),
+        modelPartsEvent(Part(text = "Pondering.", thought = true), callPart("a", "c1")),
+        modelPartsEvent(signed, callPart("b", "c2")),
+      )
+
+    assertEquals(listOf("Go.", "Signed."), partNames(rewrite(events)))
+  }
+
+  @Test
+  fun rewrite_parallelCalls_dropOnlyTheUnansweredOne() {
+    val events =
+      listOf(
+        userEvent("Check both."),
+        modelPartsEvent(callPart("weather", "c1"), callPart("news", "c2")),
+        Event(author = "user", content = userFunctionResponse("weather", "c1")),
+      )
+
+    assertEquals(listOf("Check both.", "weather", "weather"), partNames(rewrite(events)))
+  }
+
+  // Gemini signs only the first call of a parallel turn and rejects the turn without that
+  // signature.
+  @Test
+  fun rewrite_droppedFirstCallOfAParallelTurn_handsItsSignatureToTheNextCallKept() {
+    val signature = byteArrayOf(1, 2, 3)
+    val signedCall =
+      Part(
+        functionCall = FunctionCall(name = "check", args = emptyMap(), id = "c1"),
+        thoughtSignature = signature,
+      )
+    val answers =
+      userFunctionResponse("ship", "c2").parts + userFunctionResponse("track", "c3").parts
+    val events =
+      listOf(
+        userEvent("Check and ship."),
+        modelPartsEvent(signedCall, callPart("ship", "c2"), callPart("track", "c3")),
+        Event(author = "user", content = Content(role = Role.USER, parts = answers)),
+      )
+
+    val calls = rewrite(events).flatMap { it.parts }.filter { it.functionCall != null }
+
+    assertEquals(listOf("ship", "track"), calls.map { it.functionCall?.name })
+    assertContentEquals(signature, calls[0].thoughtSignature)
+    assertNull(calls[1].thoughtSignature)
+  }
+
+  @Test
+  fun rewrite_droppedSignedCalls_carryOnlyTheFirstSignatureAndKeepAKeptCallsOwn() {
+    val first = byteArrayOf(1)
+    val own = byteArrayOf(2)
+    fun signedCall(name: String, id: String, signature: ByteArray) =
+      Part(
+        functionCall = FunctionCall(name = name, args = emptyMap(), id = id),
+        thoughtSignature = signature,
+      )
+    val events =
+      listOf(
+        userEvent("Go."),
+        modelPartsEvent(signedCall("a", "c1", first), callPart("b", "c2"), callPart("c", "c3")),
+        Event(author = "user", content = userFunctionResponse("c", "c3")),
+        modelPartsEvent(signedCall("d", "c4", first), signedCall("e", "c5", own)),
+        Event(author = "user", content = userFunctionResponse("e", "c5")),
+      )
+
+    val calls = rewrite(events).flatMap { it.parts }.filter { it.functionCall != null }
+
+    assertEquals(listOf("c", "e"), calls.map { it.functionCall?.name })
+    assertContentEquals(first, calls[0].thoughtSignature)
+    assertContentEquals(own, calls[1].thoughtSignature)
+  }
+
+  @Test
+  fun rewrite_pendingLongRunningCalls_stayWhileAnUnansweredOneIsDropped() {
+    val events =
+      listOf(
+        longRunningCall("long_tool", "lr_1"),
+        longRunningCall("request_euc", "auth_1"),
+        longRunningCall("request_confirmation", "confirm_1"),
+        Event(author = "agent", content = modelFunctionCall("ghost", id = "orphan_99")),
+        userEvent("interleaved message"),
+      )
+
+    assertEquals(
+      listOf("long_tool", "request_euc", "request_confirmation", "interleaved message"),
+      partNames(rewrite(events)),
+    )
+  }
+
+  // Dropped before the rearranging, the trailing call would leave c1's answer last to be moved.
+  @Test
+  fun rewrite_trailingUnansweredCall_keepsTheTurnsBeforeTheLatestAnswer() {
+    val events =
+      listOf(
+        userEvent("start async tool"),
+        Event(author = "agent", content = modelFunctionCall("async_tool", id = "c1")),
+        userEvent("while waiting, tell me a joke"),
+        Event(author = "agent", content = modelMessage("Why did the chicken cross the road?")),
+        Event(author = "user", content = userFunctionResponse("async_tool", "c1", status("done"))),
+        Event(author = "agent", content = modelFunctionCall("interrupted_tool", id = "c2")),
+      )
+
+    assertEquals(
+      listOf(
+        "start async tool",
+        "async_tool",
+        "done",
+        "while waiting, tell me a joke",
+        "Why did the chicken cross the road?",
+      ),
+      summaries(rewrite(events)),
+    )
+  }
+
+  @Test
+  fun rewrite_compactedHistoryWithAnUnansweredCall_dropsTheCall() {
+    val call = modelFunctionCall("tool", id = "unanswered-call-1")
+    val events =
+      listOf(
+        userEvent("e1", timestamp = 1L),
+        Event(author = "agent", content = call, timestamp = 2L),
+        userEvent("e3", timestamp = 3L),
+        compactionEvent(startTs = 1L, endTs = 1L, summary = "Summary safe prefix"),
+      )
+
+    assertEquals(listOf("Summary safe prefix", "e3"), partNames(rewrite(events)))
+  }
+
+  // Narration comes first, so a live session's call is context, not a call left unanswered.
+  @Test
+  fun rewrite_unansweredCallFromALiveSession_staysNarrated() {
+    val events =
+      listOf(
+        userEvent("Look it up."),
+        Event(
+          author = "agent",
+          content = modelFunctionCall("lookup", id = "c1"),
+          liveSessionId = "s1",
+        ),
+      )
+
+    assertEquals(
+      listOf(
+        listOf("Look it up."),
+        listOf("For context:", "[agent] called tool `lookup` with parameters: {}"),
+      ),
+      texts(rewrite(events)),
+    )
+  }
+
+  // A live run's background call may still be answered; a call stopped with it never will be.
+  @Test
+  fun rewrite_keptCallIds_keepOnlyTheirOwnUnansweredCalls() {
+    val events =
+      listOf(
+        userEvent("Look both up."),
+        modelPartsEvent(callPart("running", "b1"), callPart("stopped", "b2")),
+      )
+
+    val contents =
+      HistoryRewriterProcessor()
+        .rewrite(events, agentName = "agent", currentBranch = null, keptCallIds = setOf("b1"))
+
+    assertEquals(listOf("Look both up.", "running"), partNames(contents))
+  }
+
+  @Test
+  fun rewrite_outOfTurnAnswerAfterLaterTurns_keepsItsCall() {
+    val events =
+      listOf(
+        Event(author = "agent", content = modelFunctionCall("monitor", id = "c1")),
+        userEvent("Tell me a joke."),
+        Event(author = "agent", content = modelMessage("Why did the chicken cross?")),
+        finalAnswer("monitor", "c1"),
+      )
+
+    assertEquals(
+      listOf("monitor", "stopped", "Tell me a joke.", "Why did the chicken cross?"),
+      summaries(rewrite(events)),
+    )
   }
 
   @Test
@@ -1604,6 +1920,19 @@ class HistoryRewriterProcessorTest {
 
   private fun modelPartEvent(part: Part, author: String = "agent"): Event =
     Event(author = author, content = modelMessage(part))
+
+  private fun modelPartsEvent(vararg parts: Part): Event =
+    Event(author = "agent", content = Content(role = Role.MODEL, parts = parts.toList()))
+
+  private fun callPart(name: String, id: String): Part =
+    Part(functionCall = FunctionCall(name = name, args = emptyMap(), id = id))
+
+  private fun longRunningCall(name: String, id: String): Event =
+    Event(
+      author = "agent",
+      content = modelFunctionCall(name, id = id),
+      longRunningToolIds = setOf(id),
+    )
 
   /** A stored transcription of the user's speech. */
   private fun heard(text: String, timestamp: Long = 0L): Event =
