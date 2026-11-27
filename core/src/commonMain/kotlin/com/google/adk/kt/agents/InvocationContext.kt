@@ -58,6 +58,7 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.jvm.JvmSynthetic
 import kotlin.jvm.Volatile
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -611,9 +612,9 @@ data class InvocationContext(
     }
 
   /**
-   * Runs [functionCall] as [executeSingleFunctionCall] does. Given [onCallFailed], an exception
-   * that escapes the tool and its error callbacks gets an error answer instead of being thrown, and
-   * so does a timeout or cancellation the tool hit itself, which skips those callbacks.
+   * Runs [functionCall] as [executeSingleFunctionCall] does. Given [onCallFailed], an exception or
+   * a timeout that escapes the tool and its callbacks, or a cancellation from inside the call, gets
+   * an error answer instead of being thrown, unless the call itself was cancelled.
    */
   private suspend fun executeFunctionCall(
     functionCall: FunctionCall,
@@ -628,7 +629,7 @@ data class InvocationContext(
     return try {
       executeSingleFunctionCall(functionCall, tools, toolConfirmation, toolRunner)
     } catch (e: CancellationException) {
-      // The tool's own timeout or cancellation; answerFailure rethrows when the call was cancelled.
+      // A timeout or cancellation from inside the call; answerFailure rethrows an outer cancel.
       answerFailure(functionCall, tools, e, onCallFailed)
     } catch (e: Exception) {
       answerFailure(functionCall, tools, e, onCallFailed)
@@ -740,6 +741,10 @@ data class InvocationContext(
         replacement
           ?: try {
             toolRunner(tool, toolContext, currentArgs)
+          } catch (e: TimeoutCancellationException) {
+            // A timeout the tool hit itself is its failure; an outer one cancels the call.
+            if (!currentCoroutineContext().isActive) throw e
+            runErrorBaseToolCallbacks(llmAgent, tool, currentArgs, toolContext, e) ?: throw e
           } catch (e: CancellationException) {
             // CancellationException is an Exception in Kotlin; rethrow before recovery sees it.
             throw e

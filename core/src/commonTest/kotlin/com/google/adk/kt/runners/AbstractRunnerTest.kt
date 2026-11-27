@@ -78,7 +78,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -93,6 +97,8 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 
 class AbstractRunnerTest {
@@ -758,6 +764,52 @@ class AbstractRunnerTest {
 
     assertEquals("run cancelled", thrown.message)
     assertFalse(notified, "a cancelled run must not trigger onRunError")
+  }
+
+  @Test
+  fun runAsync_runTimesOut_skipsAfterRunAndNotifiesOnRunError(): Unit = runBlocking {
+    val plugin = AfterRunRecorder()
+    val agent =
+      DummyAgent("emitter") { context ->
+        emit(modelEvent("e0", invocationId = context.invocationId, author = "emitter"))
+        withTimeout(1.milliseconds) { awaitCancellation() }
+      }
+
+    val thrown =
+      assertFailsWith<TimeoutCancellationException> {
+        runnerWith(agent, plugin).runAsync("user", "s", newMessage = userMessage("go")).toList()
+      }
+
+    assertEquals(0, plugin.afterRuns)
+    val reported = plugin.runErrors.single()
+    assertTrue(reported is TimeoutCancellationException)
+    assertEquals(thrown.message, reported.message)
+  }
+
+  @Test
+  fun runAsync_timedOutByAnOuterScope_doesNotNotifyOnRunError(): Unit = runBlocking {
+    val plugin = AfterRunRecorder()
+    val hanging = DummyAgent("hanging") { awaitCancellation() }
+    val timingOutOnCancel =
+      DummyAgent("timing_out_on_cancel") {
+        try {
+          awaitCancellation()
+        } finally {
+          // A teardown timeout in a cancelled run must not be reported as a run error either.
+          withContext(NonCancellable) { withTimeout(1.milliseconds) { awaitCancellation() } }
+        }
+      }
+
+    for (agent in listOf(hanging, timingOutOnCancel)) {
+      assertFailsWith<TimeoutCancellationException> {
+        withTimeout(50.milliseconds) {
+          runnerWith(agent, plugin).runAsync("user", "s", newMessage = userMessage("go")).toList()
+        }
+      }
+    }
+
+    assertEquals(0, plugin.afterRuns)
+    assertEquals(emptyList(), plugin.runErrors)
   }
 
   @Test

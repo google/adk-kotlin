@@ -82,6 +82,7 @@ import com.google.adk.kt.workflow.requireRunnableLive
 import com.google.adk.kt.workflow.traceWorkflowEntrypoint
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.jvm.JvmOverloads
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -861,14 +862,19 @@ abstract class AbstractRunner : Runner {
   }
 
   /**
-   * Notifies `onRunError` plugins when the run itself fails, then rethrows the failure unchanged,
-   * matching ADK Python and Java. A downstream collector's error never reaches it, and cancellation
-   * is rethrown without notifying.
+   * Notifies `onRunError` plugins when the run itself fails, including a timeout inside the run,
+   * then rethrows the failure unchanged. A downstream collector's error never reaches it, and
+   * cancellation of the run is rethrown without notifying.
    */
   private fun Flow<Event>.notifyingRunError(context: InvocationContext): Flow<Event> =
     catch { error ->
-      if (error is CancellationException) throw error
-      runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
+      // A timeout inside an active run is a run failure; any other cancellation skips onRunError.
+      if (
+        error !is CancellationException ||
+          (error is TimeoutCancellationException && currentCoroutineContext().isActive)
+      ) {
+        runOnRunErrorCallbacksPipeline(pluginManager.onRunErrorCallbacks, context, error)
+      }
       throw error
     }
 

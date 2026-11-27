@@ -720,6 +720,29 @@ class LlmAgentLiveTest {
   }
 
   @Test
+  fun runLive_toolsOwnTimeoutFiresAndAnErrorCallbackAnswers_theModelGetsTheCallbacksAnswer(): Unit =
+    runBlocking {
+      val fallback = mapOf("result" to "calendar unknown")
+      val model = DummyLiveModel(callingTheCalendar(answers("c1", fallback)))
+      val slow =
+        DummyTool(name = "check_calendar", declares = true) { _, _ ->
+          withTimeout(1.milliseconds) { awaitCancellation() }
+        }
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model = model,
+          tools = listOf(slow),
+          onToolErrorCallbacks =
+            listOf(OnToolErrorCallback { _, _, _, _ -> CallbackChoice.Break(fallback) }),
+        )
+
+      val unused = runOneTurn(agent)
+
+      model.connections.single().assertAllWaitsMet()
+    }
+
+  @Test
   fun runLive_oneOfTwoCallsFails_answersBothInEitherMode(): Unit = runBlocking {
     // A tool awaiting a cancelled future fails as one that throws does.
     val cancelled = CompletableDeferred<String>().apply { cancel() }

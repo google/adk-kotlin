@@ -41,12 +41,16 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 class ReflectAndRetryToolPluginTest {
 
@@ -765,6 +769,38 @@ class ReflectAndRetryToolPluginTest {
 
     assertEquals("Still failing", thrown.message)
   }
+
+  @Test
+  fun runAsync_toolTimeoutRetriesExceeded_failsTheRunAndDropsTheInvocationsCounts(): Unit =
+    runBlocking {
+      val failingTool =
+        DummyTool(name = "failing_tool") { _, _ ->
+          withTimeout(1.milliseconds) { awaitCancellation() }
+        }
+      val model =
+        DummyModel.createSequential(
+          "mock-model",
+          listOf(
+            modelFunctionCallResponse("failing_tool", id = "call_1"),
+            modelFunctionCallResponse("failing_tool", id = "call_2"),
+            LlmResponse(content = modelMessage("Unreachable.")),
+          ),
+        )
+      val agent = LlmAgent(name = "root_agent", model = model, tools = listOf(failingTool))
+      val plugin = ReflectAndRetryToolPlugin(maxRetries = 1)
+      val runner = InMemoryRunner(agent = agent, plugins = listOf(plugin))
+      var invocationId = ""
+
+      assertFailsWith<TimeoutCancellationException> {
+        runner
+          .runAsync(userId = "user1", sessionId = "session1", newMessage = userMessage("test"))
+          .collect { invocationId = it.invocationId.orEmpty() }
+      }
+
+      assertTrue(invocationId.isNotEmpty())
+      val response = plugin.answerError(tool = failingTool, context = contextOf(invocationId))
+      assertEquals(1, response["retry_count"])
+    }
 
   @Test
   fun runAsync_agentCallbackAnswersPastTheLimit_limitHoldsUntilASuccess() = runBlocking {

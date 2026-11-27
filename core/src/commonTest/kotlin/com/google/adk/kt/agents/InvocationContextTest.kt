@@ -1427,6 +1427,139 @@ class InvocationContextTest {
   }
 
   @Test
+  fun executeSingleFunctionCall_toolsOwnTimeoutFires_errorCallbackAnswersTheCall(): Unit =
+    runBlocking {
+      val errors = mutableListOf<String>()
+      val fallback = mapOf("result" to "calendar unknown")
+      val context = contextWithErrorCallbacks(errors, answer = fallback)
+
+      val answer =
+        context.executeSingleFunctionCall(
+          FunctionCall(name = "tool", id = "c1"),
+          mapOf("tool" to timingOutTool()),
+        )
+
+      assertThat(errors)
+        .containsExactly(
+          "plugin: TimeoutCancellationException",
+          "agent: TimeoutCancellationException",
+        )
+        .inOrder()
+      assertThat(answer?.functionResponses()?.single()?.response).isEqualTo(fallback)
+    }
+
+  @Test
+  fun executeSingleFunctionCall_toolsOwnTimeoutFiresAndErrorCallbacksDecline_throwsTheTimeout():
+    Unit = runBlocking {
+    val errors = mutableListOf<String>()
+    val context = contextWithErrorCallbacks(errors)
+
+    assertFailsWith<TimeoutCancellationException> {
+      context.executeSingleFunctionCall(
+        FunctionCall(name = "tool", id = "c1"),
+        mapOf("tool" to timingOutTool()),
+      )
+    }
+
+    assertThat(errors)
+      .containsExactly(
+        "plugin: TimeoutCancellationException",
+        "agent: TimeoutCancellationException",
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun executeSingleFunctionCall_timedOutByAnOuterScope_skipsTheErrorCallbacks(): Unit =
+    runBlocking {
+      val errors = mutableListOf<String>()
+      val context = contextWithErrorCallbacks(errors)
+      val hanging = DummyTool(name = "tool") { _, _ -> awaitCancellation() }
+
+      assertFailsWith<TimeoutCancellationException> {
+        withTimeout(50.milliseconds) {
+          context.executeSingleFunctionCall(
+            FunctionCall(name = "tool", id = "c1"),
+            mapOf("tool" to hanging),
+          )
+        }
+      }
+
+      // The tool saw the outer timeout's exception, but the call was cancelled, not failed.
+      assertThat(errors).isEmpty()
+    }
+
+  @Test
+  fun executeSingleFunctionCall_cancelledByTheCaller_skipsTheErrorCallbacks(): Unit = runBlocking {
+    val errors = mutableListOf<String>()
+    val context = contextWithErrorCallbacks(errors)
+    val started = CompletableDeferred<Unit>()
+    val hanging =
+      DummyTool(name = "tool") { _, _ ->
+        started.complete(Unit)
+        awaitCancellation()
+      }
+
+    var returned = false
+    val call = launch {
+      val unused =
+        context.executeSingleFunctionCall(
+          FunctionCall(name = "tool", id = "c1"),
+          mapOf("tool" to hanging),
+        )
+      returned = true
+    }
+    started.await()
+    call.cancelAndJoin()
+
+    assertThat(returned).isFalse()
+    assertThat(errors).isEmpty()
+  }
+
+  /** A tool whose own timeout always fires. */
+  private fun timingOutTool() =
+    DummyTool(name = "tool") { _, _ -> withTimeout(1.milliseconds) { awaitCancellation() } }
+
+  /**
+   * A context whose plugin and agent each record `"<owner>: <error class>"` in [errors] when a tool
+   * fails. The plugin always declines; the agent's callback answers with [answer] when it is given.
+   */
+  private fun contextWithErrorCallbacks(
+    errors: MutableList<String>,
+    answer: Map<String, Any?>? = null,
+  ): InvocationContext {
+    val plugin =
+      object : Plugin {
+        override val name = "recorder"
+
+        override suspend fun onToolError(
+          context: ToolContext,
+          tool: BaseTool,
+          args: Map<String, Any?>,
+          error: Throwable,
+        ): CallbackChoice<Unit, Map<String, Any?>> {
+          errors += "plugin: ${error::class.simpleName}"
+          return CallbackChoice.Continue(Unit)
+        }
+      }
+    val agentCallback = OnToolErrorCallback { _, _, _, error ->
+      errors += "agent: ${error::class.simpleName}"
+      if (answer == null) CallbackChoice.Continue(Unit) else CallbackChoice.Break(answer)
+    }
+    return InvocationContext(
+      session = testSession(),
+      runConfig = null,
+      agent =
+        LlmAgent(
+          name = "agent",
+          model = DummyModel("m"),
+          onToolErrorCallbacks = listOf(agentCallback),
+        ),
+      pluginManager = PluginManager(listOf(plugin)),
+    )
+  }
+
+  @Test
   fun handleFunctionCalls_mixesKnownAndUnknownToolNames_answersBoth() = runBlocking {
     // The parallel path routes every call through the same resolution, so one bad name must not
     // take the good call down with it.
