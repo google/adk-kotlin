@@ -61,7 +61,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -530,13 +532,18 @@ data class InvocationContext(
     toolConfirmations: Map<String, ToolConfirmation>? = null,
   ): Event? = handleFunctionCallsWith(functionCalls, tools, filters, toolConfirmations.orEmpty())
 
-  /** As [handleFunctionCalls], running each resolved tool through [toolRunner]. */
+  /**
+   * As [handleFunctionCalls], running each resolved tool through [toolRunner]. Given
+   * [onCallFailed], as a live run gives it, a call that throws gets an error answer instead of
+   * failing the others, and [onCallFailed] receives its id before that answer is queued.
+   */
   internal suspend fun handleFunctionCallsWith(
     functionCalls: List<FunctionCall>,
     tools: Map<String, BaseTool>,
     filters: Set<String> = emptySet(),
     toolConfirmations: Map<String, ToolConfirmation> = emptyMap(),
     toolRunner: ToolRunner = DEFAULT_TOOL_RUNNER,
+    onCallFailed: ((callId: String) -> Unit)? = null,
   ): Event? {
     // Filter function calls
     val filteredCalls =
@@ -550,7 +557,7 @@ data class InvocationContext(
     }
 
     val functionResponseEvents =
-      executeFunctionCalls(filteredCalls, tools, toolConfirmations, toolRunner)
+      executeFunctionCalls(filteredCalls, tools, toolConfirmations, toolRunner, onCallFailed)
     if (functionResponseEvents.isEmpty()) {
       return null
     }
@@ -571,15 +578,17 @@ data class InvocationContext(
     tools: Map<String, BaseTool>,
     toolConfirmations: Map<String, ToolConfirmation>,
     toolRunner: ToolRunner,
+    onCallFailed: ((callId: String) -> Unit)?,
   ): List<Event> =
     when (runConfig?.toolExecutionMode ?: ToolExecutionMode.PARALLEL) {
       ToolExecutionMode.SEQUENTIAL ->
         functionCalls.mapNotNull { functionCall ->
-          executeSingleFunctionCall(
+          executeFunctionCall(
             functionCall,
             tools,
             toolConfirmations[functionCall.id],
             toolRunner,
+            onCallFailed,
           )
         }
       ToolExecutionMode.PARALLEL ->
@@ -587,11 +596,12 @@ data class InvocationContext(
           functionCalls
             .map { functionCall ->
               async {
-                executeSingleFunctionCall(
+                executeFunctionCall(
                   functionCall,
                   tools,
                   toolConfirmations[functionCall.id],
                   toolRunner,
+                  onCallFailed,
                 )
               }
             }
@@ -599,6 +609,65 @@ data class InvocationContext(
             .filterNotNull()
         }
     }
+
+  /**
+   * Runs [functionCall] as [executeSingleFunctionCall] does. Given [onCallFailed], an exception
+   * that escapes the tool and its error callbacks gets an error answer instead of being thrown, and
+   * so does a timeout or cancellation the tool hit itself, which skips those callbacks.
+   */
+  private suspend fun executeFunctionCall(
+    functionCall: FunctionCall,
+    tools: Map<String, BaseTool>,
+    toolConfirmation: ToolConfirmation?,
+    toolRunner: ToolRunner,
+    onCallFailed: ((callId: String) -> Unit)?,
+  ): Event? {
+    if (onCallFailed == null) {
+      return executeSingleFunctionCall(functionCall, tools, toolConfirmation, toolRunner)
+    }
+    return try {
+      executeSingleFunctionCall(functionCall, tools, toolConfirmation, toolRunner)
+    } catch (e: CancellationException) {
+      // The tool's own timeout or cancellation; answerFailure rethrows when the call was cancelled.
+      answerFailure(functionCall, tools, e, onCallFailed)
+    } catch (e: Exception) {
+      answerFailure(functionCall, tools, e, onCallFailed)
+    } catch (e: NotImplementedError) {
+      // A tool's TODO() is answered like an exception, as a failed stream's is.
+      answerFailure(functionCall, tools, e, onCallFailed)
+    }
+  }
+
+  /**
+   * Returns the error answer to [functionCall], which failed with [e], after passing its id to
+   * [onCallFailed]. Rethrows [e] when the call was cancelled or has no id to answer.
+   */
+  private suspend fun answerFailure(
+    functionCall: FunctionCall,
+    tools: Map<String, BaseTool>,
+    e: Throwable,
+    onCallFailed: (callId: String) -> Unit,
+  ): Event {
+    if (!currentCoroutineContext().isActive) throw e
+    val callId = functionCall.id ?: throw e
+    onCallFailed(callId)
+    val resolvedTool = tools[functionCall.name]
+    // No exception text or unregistered name is logged: either can carry user or model data.
+    logger.warn {
+      val failed = e::class.simpleName
+      if (resolvedTool == null) "A live tool call failed ($failed)."
+      else "Tool ${resolvedTool.name} failed in a live call ($failed)."
+    }
+    val tool = resolvedTool ?: MissingTool(functionCall.name.ifEmpty { UNNAMED_TOOL })
+    // No actions: a failed call's writes are not applied.
+    return Event(
+      id = Uuid.random(),
+      invocationId = invocationId,
+      author = agent.name,
+      content = internalErrorContent(tool, callId),
+      branch = branch,
+    )
+  }
 
   /** Emits the `execute_tool (merged)` span describing a merged parallel tool-call response. */
   private suspend fun recordMergedToolCallSpan(mergedEvent: Event) {

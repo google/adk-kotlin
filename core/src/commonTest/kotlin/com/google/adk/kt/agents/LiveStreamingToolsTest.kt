@@ -101,6 +101,18 @@ class LiveStreamingToolsTest {
       (request.input as ContentInput).content.parts.mapNotNull { part -> part.functionResponse }
     }
 
+  /** A `monitor` tool whose stream completes [started], then runs [rest]. */
+  private fun startedTool(
+    started: CompletableDeferred<Unit>,
+    rest: suspend () -> Unit = { awaitCancellation() },
+  ) =
+    DummyTool(name = "monitor") { _, _ ->
+      flow<String> {
+        started.complete(Unit)
+        rest()
+      }
+    }
+
   @Test
   fun onAnswersQueued_mayNotStart_neverStartsTheStream() {
     runBlocking {
@@ -163,6 +175,113 @@ class LiveStreamingToolsTest {
       assertThat(stopped).containsExactly("c1")
       assertThat(closed).isEmpty()
     }
+  }
+
+  @Test
+  fun onCallFailed_thenStopRunning_keepsTheQueuedFailureAnswer(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+    val tool = DummyTool(name = "monitor") { _, _ -> flow<String> { awaitCancellation() } }
+    val unused = tools.run(tool, streamingToolContext("c1"), emptyMap())
+
+    tools.onCallFailed("c1")
+    queue.sendContent(internalErrorContent(tool, "c1"))
+    tools.stopRunning()
+    queue.close()
+
+    assertThat(queue.nextAnswers(1).map { it.id }).containsExactly("c1")
+    assertThat(tools.close()).isEmpty()
+  }
+
+  @Test
+  fun onCallFailed_idOfARunningStream_leavesItRunningAndStopKeepsTheFailureAnswer(): Unit =
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+      val started = CompletableDeferred<Unit>()
+      val tool = startedTool(started)
+      tools.startStream(tool, "c1")
+      started.await()
+
+      // A later call that reused the id failed, not the stream already running under it.
+      tools.onCallFailed("c1")
+      queue.sendContent(internalErrorContent(tool, "c1"))
+      val stopped = tools.stopAll().flatMap { it.parts }.map { it.functionResponse?.id }
+      queue.close()
+
+      // Still running when stopped, so it owes a final answer.
+      assertThat(stopped).containsExactly("c1")
+      assertThat(queue.nextAnswers(1).single().response).containsKey("error")
+    }
+
+  @Test
+  fun onCallFailed_idOfAStreamThatThenEnds_thenStopRunning_keepsTheQueuedFailureAnswer(): Unit =
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+      val started = CompletableDeferred<Unit>()
+      val release = CompletableDeferred<Unit>()
+      val tool = startedTool(started) { release.await() }
+      tools.startStream(tool, "c1")
+      started.await()
+
+      tools.onCallFailed("c1")
+      queue.sendContent(internalErrorContent(tool, "c1"))
+      // The stream then ends on its own before the stop.
+      release.complete(Unit)
+      yield()
+      tools.stopRunning()
+      queue.close()
+
+      assertThat(queue.nextAnswers(1).single().response).containsKey("error")
+    }
+
+  @Test
+  fun onCallFailed_itsStreamReplacedARunningOne_thenStopRunning_keepsTheFailureAnswer(): Unit =
+    runBlocking {
+      val queue = LiveRequestQueue()
+      val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+      val started = CompletableDeferred<Unit>()
+      tools.startStream(startedTool(started), "c1")
+      started.await()
+      val newer = DummyTool(name = "watch") { _, _ -> flow<String> { awaitCancellation() } }
+
+      // The newer call's stream replaces the running one, then the newer call fails.
+      val unused = tools.run(newer, streamingToolContext("c1"), emptyMap())
+      tools.onCallFailed("c1")
+      queue.sendContent(internalErrorContent(newer, "c1"))
+      yield()
+      tools.stopRunning()
+      queue.close()
+
+      assertThat(queue.nextAnswers(1).single().response).containsKey("error")
+    }
+
+  @Test
+  fun onCallFailed_thenANewStreamUnderTheId_stopRunningDiscardsItsValues(): Unit = runBlocking {
+    val queue = LiveRequestQueue()
+    val tools = LiveStreamingTools(queue, "agent", "invocation", coroutineContext)
+    val started = CompletableDeferred<Unit>()
+    val sent = CompletableDeferred<Unit>()
+    val newer =
+      DummyTool(name = "watch") { _, _ ->
+        flow {
+          emit("tick")
+          sent.complete(Unit)
+          awaitCancellation()
+        }
+      }
+    tools.startStream(startedTool(started), "c1")
+    started.await()
+    tools.onCallFailed("c1")
+
+    // A newer stream under the id replaces the earlier one, and its values are not kept.
+    tools.startStream(newer, "c1")
+    sent.await()
+    tools.stopRunning()
+    queue.close()
+
+    assertThat(queue.receiveRequest()).isNull()
   }
 
   @Test

@@ -2304,7 +2304,13 @@ internal class LlmAgentTurn(
         ?.let { calls ->
           // A live run runs tools through its streaming tools, so a returned Flow streams.
           val runner: ToolRunner = if (liveTools == null) DEFAULT_TOOL_RUNNER else liveTools::run
-          context.handleFunctionCallsWith(calls, tools, toolRunner = runner)
+          // A failed live call gets an error answer, so it cannot end the conversation.
+          context.handleFunctionCallsWith(
+            calls,
+            tools,
+            toolRunner = runner,
+            onCallFailed = if (liveTools == null) null else liveTools::onCallFailed,
+          )
         }
         // A live answer names the session its call came from, as in ADK Python.
         ?.copy(liveSessionId = actionEvent.liveSessionId)

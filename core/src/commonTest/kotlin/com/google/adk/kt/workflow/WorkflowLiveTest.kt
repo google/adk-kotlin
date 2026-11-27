@@ -432,6 +432,43 @@ class WorkflowLiveTest {
   }
 
   @Test
+  fun taskNode_startedByRunNode_toolThrows_answersTheModelWithAnErrorAndFinishes() = runBlocking {
+    // Arrange: the task calls a tool that throws, then finishes once it hears the error.
+    val model =
+      LiveNodeModel(
+        "booker",
+        listOf(listOf(modelFunctionCall("check_calendar", id = "c1"), finishTask("result" to "x"))),
+      )
+    val calendar =
+      DummyTool(name = "check_calendar", declares = true) { _, _ ->
+        throw RuntimeException("calendar unavailable")
+      }
+    val task =
+      LlmAgent(name = "booker", model = model, mode = AgentMode.TASK, tools = listOf(calendar))
+    val sessionService = InMemorySessionService()
+    val queue = LiveRequestQueue()
+    queue.sendContent(userMessage("book"))
+
+    val events =
+      runLiveWorkflow(
+        Workflow("wf", listOf(Edge(Start, started(task)))),
+        queue,
+        sessionService = sessionService,
+      )
+
+    // Assert: the model heard the error, the task finished, and the call kept its answer.
+    val error = mapOf("error" to "Invoking `check_calendar()` failed with an internal error.")
+    val heard = model.connections.single().receivedResponses()
+    assertEquals(listOf("c1" to error), heard.map { it.id to it.response })
+    assertEquals(mapOf("result" to "x"), events.mapNotNull { it.output }.single())
+    val stored = assertNotNull(sessionService.getSession(SessionKey("app", "user", "live"))).events
+    val calls = stored.flatMap { it.functionCalls() }.filter { it.name == "check_calendar" }
+    val answers = stored.flatMap { it.functionResponses() }.filter { it.name == "check_calendar" }
+    assertEquals(listOf("c1"), calls.map { it.id })
+    assertEquals(listOf("c1" to error), answers.map { it.id to it.response })
+  }
+
+  @Test
   fun taskNode_startedByRunNode_reconnectInsideItsRound_hearsTheUsersEarlierTurns() = runBlocking {
     // Arrange: the server sends a go-away right after the task's question, so the task reconnects.
     val log = mutableListOf<String>()

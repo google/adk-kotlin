@@ -60,6 +60,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 private val STOP_STREAMING_ARGS =
   mapOf("stop_streaming" to "function_name", "stopStreaming" to "functionName")
 
+private const val ERROR_KEY = "error"
+
 /**
  * Wraps [value] in a user [Content] carrying a [FunctionResponse] for [tool] and [callId], with the
  * tool's [BaseTool.responseScheduling]. `Unit` becomes `{"result": null}`, and a [FunctionResponse]
@@ -84,6 +86,18 @@ private fun functionResponseContent(tool: BaseTool, callId: String, value: Any?)
       ),
   )
 }
+
+/**
+ * Tells the model that its live call [callId] to [tool] failed. The exception's text is left out:
+ * it can carry the user's or the model's data.
+ */
+@JvmSynthetic
+internal fun internalErrorContent(tool: BaseTool, callId: String): Content =
+  functionResponseContent(
+    tool,
+    callId,
+    mapOf(ERROR_KEY to "Invoking `${tool.name}()` failed with an internal error."),
+  )
 
 /** Replaces the value with [transform] of it, retrying when another thread got there first. */
 @JvmSynthetic
@@ -123,6 +137,9 @@ internal class LiveStreamingTools(
 
   // Calls that finished since the last stop, whose last values may still be queued.
   private val finished = AtomicReference<List<String>>(emptyList())
+
+  // Failed calls' ids, whose failure answers the next stop must not discard.
+  private val kept = AtomicReference<Set<String>>(emptySet())
 
   // Calls answered as pending that stopped, ended or never started; the next stopAll answers them.
   private val owed = AtomicReference<List<StreamingCall>>(emptyList())
@@ -274,6 +291,21 @@ internal class LiveStreamingTools(
     }
   }
 
+  /**
+   * Drops what call [callId] set up before it failed, since it is answered with the failure: its
+   * stream never starts, and as a repeat it waits for no stream's final answer. A stream already
+   * running under the same id keeps running. The next stop keeps answers to the id, since the
+   * failure answer shares it with any stream still running or ending under it.
+   */
+  fun onCallFailed(callId: String) {
+    for (call in active.load()) {
+      call.repeatIds.mutate { ids -> ids - callId }
+      // A started stream under the id belongs to an earlier call.
+      if (call.callId == callId && !call.job.isActive) call.job.cancel()
+    }
+    kept.mutate { ids -> ids + callId }
+  }
+
   /** Waits for the next event a tool sent the caller, taking an undelivered one first. */
   suspend fun nextEvent(): ToolEvent = undelivered.exchange(null) ?: events.receive()
 
@@ -317,7 +349,8 @@ internal class LiveStreamingTools(
         val unused = cancelAndAwait(running)
       }
       // Their values may still be queued, behind an answer whose write dropped the connection.
-      queue.discardAnswersTo(finished.exchange(emptyList()) + running.map { it.callId })
+      val stale = finished.exchange(emptyList()) + running.map { it.callId }
+      queue.discardAnswersTo(stale - kept.exchange(emptySet()))
     }
 
   /**
@@ -402,8 +435,9 @@ internal class LiveStreamingTools(
       finished.mutate { ids -> ids + call.callId }
       active.mutate { calls -> calls - call }
     }
-    // A new call under a failed call's id has not failed.
+    // A new call under a failed call's id has not failed, and the stop discards its answers.
     failed.mutate { ids -> ids - callId }
+    kept.mutate { ids -> ids - callId }
     // A stream that ends on its own is owed a final answer too.
     call.job.invokeOnCompletion { cause ->
       if (cause == null) owed.mutate { calls -> calls + call }
@@ -444,8 +478,7 @@ internal class LiveStreamingTools(
   private fun reportFailure(tool: BaseTool, callId: String, e: Throwable) {
     // The exception's text is left out: it can carry the user's or the model's data.
     logger.warn { "Streaming tool ${tool.name} failed (${e::class.simpleName})." }
-    val error = mapOf(ERROR_KEY to "Invoking `${tool.name}()` failed with an internal error.")
-    queue.sendContent(functionResponseContent(tool, callId, error))
+    queue.sendContent(internalErrorContent(tool, callId))
   }
 
   private suspend fun sendToCaller(tool: BaseTool, callId: String, event: Event) {
@@ -514,7 +547,6 @@ internal class LiveStreamingTools(
     private val logger = LoggerFactory.getLogger(LiveStreamingTools::class)
     private val STOP_TIMEOUT = 1.seconds
     private const val STATUS_KEY = "status"
-    private const val ERROR_KEY = "error"
 
     /**
      * The answer recorded, when the run ends or hands over, for a call to [toolName], or a repeat
