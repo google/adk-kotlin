@@ -30,7 +30,10 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.kt.models.RealtimeInput
+import com.google.adk.kt.processors.OUT_OF_TURN_ANSWER_KEY
 import com.google.adk.kt.runners.InMemoryRunner
+import com.google.adk.kt.sessions.InMemorySessionService
+import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.testing.DummyLiveModel
 import com.google.adk.kt.testing.DummyLiveStep
 import com.google.adk.kt.testing.DummyLiveStep.AwaitSent
@@ -64,6 +67,7 @@ import kotlin.test.Test
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
@@ -115,8 +119,8 @@ class LlmAgentLiveTest {
   }
 
   /**
-   * A tool whose [behavior], [isStreaming], declared behavior and [responseScheduling] each test
-   * chooses.
+   * A tool whose [behavior], [isStreaming], declared behavior, [responseScheduling] and result each
+   * test chooses.
    */
   @OptIn(FrameworkInternalApi::class)
   private class DeclaredTool(
@@ -125,11 +129,12 @@ class LlmAgentLiveTest {
     override val isStreaming: Boolean = false,
     private val declared: Behavior? = null,
     override val responseScheduling: FunctionResponseScheduling? = null,
+    private val onRun: suspend (ToolContext) -> Any = { "done" },
   ) : BaseTool(name, "A tool.") {
     override fun declaration(): FunctionDeclaration =
       FunctionDeclaration(name, description, behavior = declared)
 
-    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = "done"
+    override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any = onRun(context)
   }
 
   /** A hand-written tool that streams two ticks and declares itself non-blocking. */
@@ -140,6 +145,10 @@ class LlmAgentLiveTest {
     override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any =
       flowOf("tick 1", "tick 2")
   }
+
+  /** The answer a live run gives a streaming call at once. */
+  private val pendingAnswer =
+    mapOf("status" to "The function is running asynchronously and the results are pending.")
 
   /** Whether a message sent to the model answers [callId] with [response]. */
   private fun answers(callId: String, response: Map<String, Any?>): (Any) -> Boolean = { message ->
@@ -857,6 +866,282 @@ class LlmAgentLiveTest {
     val repeatAnswers =
       runner.storedEvents().flatMap { it.functionResponses() }.filter { it.id == "c2" }
     assertThat(repeatAnswers.map { it.response }).containsExactly(internalError("ticker"))
+  }
+
+  @Test
+  fun runLive_nonBlockingCall_isStoredThenAnsweredFromTheBackground() {
+    runBlocking(BackgroundToolCalls) {
+      val release = CompletableDeferred<Unit>()
+      val slow =
+        DeclaredTool("slow", behavior = Behavior.NON_BLOCKING) { context ->
+          release.await()
+          context.actions.stateDelta["forecast"] = "sunny"
+          "raw"
+        }
+      // Rewrites the slow tool's result, so the answer shows its callbacks ran too.
+      val checked = mapOf("result" to "checked")
+      val rewrite = AfterToolCallback { _, tool, _, result ->
+        if (tool.name == "slow") checked else result
+      }
+      val calls =
+        modelParallelFunctionCallsResponse(
+          FunctionCall("slow", id = "b1"),
+          FunctionCall("quick", id = "q1"),
+        )
+      val script =
+        listOf(
+          Respond(calls.copy(liveSessionId = "live-1")),
+          AwaitSent("the quick answer", answers("q1", mapOf("result" to "done"))),
+          AwaitSent("the slow answer", answers("b1", checked)),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      var storedWhenSent: Boolean? = null
+      // Made before the runner, so the model can read what the runner stored.
+      val sessions = InMemorySessionService()
+      // The slow call ends once the quick answer is out, so the answers arrive in order.
+      val model =
+        DummyLiveModel.perConnection(listOf(script)) { _, message ->
+          if (answers("q1", mapOf("result" to "done"))(message)) release.complete(Unit)
+          if (answers("b1", checked)(message)) {
+            val stored = sessions.getSession(SessionKey("app", "u", "s"))?.events.orEmpty()
+            storedWhenSent = stored.any { it.functionResponses().any { r -> r.id == "b1" } }
+          }
+        }
+      val tools = listOf(slow, DeclaredTool("quick"))
+      val runner =
+        InMemoryRunner(
+          agent =
+            LlmAgent(
+              name = "agent",
+              model = model,
+              tools = tools,
+              afterToolCallbacks = listOf(rewrite),
+            ),
+          appName = "app",
+          sessionService = sessions,
+        )
+
+      val events = runUntilTurnsComplete(runner, LiveRequestQueue())
+
+      model.connections.single().assertAllWaitsMet()
+      // The turn's own event answers only the quick call.
+      assertThat(events.map { e -> e.functionResponses().map { it.id } }.filter { it.isNotEmpty() })
+        .containsExactly(listOf("q1"), listOf("b1"))
+        .inOrder()
+      assertThat(storedWhenSent).isTrue()
+      // Stored as the pipeline built it: branch, live session and state change.
+      val stored = runner.storedEvents()
+      val call = stored.single { it.functionCalls().isNotEmpty() }
+      val answer = stored.single { e -> e.functionResponses().any { it.id == "b1" } }
+      assertThat(answer.branch).isEqualTo(call.branch)
+      assertThat(answer.liveSessionId).isEqualTo("live-1")
+      val session = runner.sessionService.getSession(SessionKey(runner.appName, "u", "s"))
+      assertThat(session?.state?.get("forecast")).isEqualTo("sunny")
+    }
+  }
+
+  @Test
+  fun runLive_twoNonBlockingCalls_areAnsweredSeparately() {
+    runBlocking(BackgroundToolCalls) {
+      val calls =
+        modelParallelFunctionCallsResponse(
+          FunctionCall("slow", id = "b1"),
+          FunctionCall("slow", id = "b2"),
+        )
+      val heard = mutableSetOf<String>()
+      val script =
+        listOf(
+          Respond(calls),
+          // Accepts either order, or one merged message, so a merge fails below instead of waiting.
+          AwaitSent("both answers") { message ->
+            listOf("b1", "b2").filterTo(heard) { answers(it, mapOf("result" to "done"))(message) }
+            heard.size == 2
+          },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val tools = listOf(DeclaredTool("slow", behavior = Behavior.NON_BLOCKING))
+      val runner = InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = tools))
+
+      val unused = runUntilTurnsComplete(runner, LiveRequestQueue())
+
+      model.connections.single().assertAllWaitsMet()
+      val answered =
+        clientContents(model)
+          .map { input -> input.content.parts.mapNotNull { it.functionResponse?.id } }
+          .filter { it.isNotEmpty() }
+      assertThat(answered).containsExactly(listOf("b1"), listOf("b2"))
+    }
+  }
+
+  @Test
+  fun runLive_nonBlockingCallFails_isAnsweredWithAnErrorWithoutItsText() {
+    runBlocking(BackgroundToolCalls) {
+      // It fails a while after its tool returned a Flow, so that stream must not start either.
+      val failing = DeclaredTool("lookup", behavior = Behavior.NON_BLOCKING) { flowOf("tick") }
+      val fail = AfterToolCallback { _, _, _, _ ->
+        delay(50.milliseconds)
+        error("secret")
+      }
+      val error = internalError("lookup")
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("lookup", id = "b1")),
+          AwaitSent("the error answer", answers("b1", error)),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val agent =
+        LlmAgent(
+          name = "agent",
+          model = model,
+          tools = listOf(failing),
+          afterToolCallbacks = listOf(fail),
+        )
+      val runner = InMemoryRunner(agent = agent)
+
+      val unused = runUntilTurnsComplete(runner, LiveRequestQueue())
+
+      model.connections.single().assertAllWaitsMet()
+      // The call's turn sends no answer, so the error is the only one stored.
+      val stored = runner.storedEvents()
+      assertThat(stored.flatMap { it.functionResponses() }.map { it.id to it.response })
+        .containsExactly("b1" to error)
+      // Stamped when the call failed, not when it started.
+      val call = stored.single { it.functionCalls().isNotEmpty() }
+      val answer = stored.single { it.functionResponses().isNotEmpty() }
+      assertThat(answer.timestamp - call.timestamp).isAtLeast(50L)
+    }
+  }
+
+  @Test
+  fun runLive_flowToolNotRunInBackground_streamsFromItsTurn() {
+    runBlocking(BackgroundToolCalls) {
+      val idle = flow<String> { awaitCancellation() }
+      val tools =
+        listOf(
+          DeclaredTool("marked", behavior = Behavior.NON_BLOCKING, isStreaming = true) { idle },
+          DeclaredTool("blocking", behavior = Behavior.BLOCKING) { idle },
+          // A hand-written Flow tool without a behavior streams, and keeps its declaration as is.
+          DeclaredTool("plain") { flowOf("tick") },
+        )
+      val calls =
+        modelParallelFunctionCallsResponse(
+          FunctionCall("marked", id = "m1"),
+          FunctionCall("blocking", id = "k1"),
+          FunctionCall("plain", id = "p1"),
+        )
+      val script =
+        listOf(
+          Respond(calls),
+          AwaitSent("all three pending answers at once") { message ->
+            listOf("m1", "k1", "p1").all { answers(it, pendingAnswer)(message) }
+          },
+          AwaitSent("the plain tool's value", answers("p1", mapOf("result" to "tick"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val runner = InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = tools))
+
+      val unused = runUntilTurnsComplete(runner, LiveRequestQueue())
+
+      model.connections.single().assertAllWaitsMet()
+      assertThat(behaviorsOf(model.connectRequests.single()))
+        .isEqualTo(
+          mapOf("marked" to Behavior.NON_BLOCKING, "blocking" to Behavior.BLOCKING, "plain" to null)
+        )
+    }
+  }
+
+  @Test
+  fun runLive_stopStreamingOnBackgroundTools_stopsOnlyTheirStreams() {
+    runBlocking(BackgroundToolCalls) {
+      val release = CompletableDeferred<Unit>()
+      val ticking = flow {
+        emit("tick")
+        awaitCancellation()
+      }
+      val tools =
+        listOf(
+          DeclaredTool("monitor", behavior = Behavior.NON_BLOCKING) { ticking },
+          DeclaredTool("news", behavior = Behavior.NON_BLOCKING) { ticking },
+          DeclaredTool("slow", behavior = Behavior.NON_BLOCKING) {
+            release.await()
+            "done"
+          },
+          DummyTool(name = "stop_streaming", declares = true),
+        )
+      fun stop(name: String, id: String) =
+        Respond(modelFunctionCallResponse("stop_streaming", mapOf("function_name" to name), id))
+      val stoppedMonitor = mapOf("status" to "Successfully stopped streaming function monitor")
+      val slowNotFound = mapOf("status" to "No active streaming function named slow found")
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("slow", id = "b1")),
+          Respond(modelFunctionCallResponse("monitor", id = "m1")),
+          AwaitSent("monitor's pending answer", answers("m1", pendingAnswer)),
+          AwaitSent("monitor's value", answers("m1", mapOf("result" to "tick"))),
+          Respond(modelFunctionCallResponse("news", id = "n1")),
+          AwaitSent("news's value", answers("n1", mapOf("result" to "tick"))),
+          stop("monitor", "s1"),
+          AwaitSent("monitor's stop", answers("s1", stoppedMonitor)),
+          stop("slow", "s2"),
+          AwaitSent("slow's stop", answers("s2", slowNotFound)),
+          AwaitSent("slow's answer", answers("b1", mapOf("result" to "done"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      // The slow call ends once its stop is answered, so the two answers arrive in order.
+      val model =
+        DummyLiveModel.perConnection(listOf(script)) { _, message ->
+          if (answers("s2", slowNotFound)(message)) release.complete(Unit)
+        }
+      val runner = InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = tools))
+
+      val unused = runUntilTurnsComplete(runner, LiveRequestQueue())
+
+      model.connections.single().assertAllWaitsMet()
+      // Only the stream still running when the run ends gets a final answer.
+      val stoppedNews =
+        mapOf(
+          "status" to
+            "news stopped streaming when its live session ended; no more updates will arrive."
+        )
+      val backgroundAnswers =
+        runner
+          .storedEvents()
+          .flatMap { it.functionResponses() }
+          .filter { it.id in setOf("b1", "m1", "n1") }
+      assertThat(backgroundAnswers.map { it.id to it.response })
+        .containsExactly(
+          "b1" to mapOf("result" to "done"),
+          "m1" to pendingAnswer,
+          "n1" to pendingAnswer,
+          "n1" to stoppedNews,
+        )
+    }
+  }
+
+  @Test
+  fun runLive_nonBlockingCall_isAnsweredInItsTurn() {
+    runBlocking {
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("lookup", id = "c1")),
+          AwaitSent("the answer", answers("c1", mapOf("result" to "done"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val tool = DeclaredTool("lookup", behavior = Behavior.NON_BLOCKING)
+      val runner =
+        InMemoryRunner(
+          agent = LlmAgent(name = "agent", model = DummyLiveModel(script), tools = listOf(tool))
+        )
+
+      val unused = runUntilTurnsComplete(runner, LiveRequestQueue())
+
+      // A background answer carries the out-of-turn key; one from the turn doesn't.
+      val answer = runner.storedEvents().single { it.functionResponses().isNotEmpty() }
+      assertThat(answer.customMetadata?.get(OUT_OF_TURN_ANSWER_KEY)).isNull()
+    }
   }
 
   @Test

@@ -1085,7 +1085,7 @@ class HistoryRewriterProcessorTest {
     Event(
       author = author,
       content = userFunctionResponse(name, id, status("stopped")),
-      customMetadata = mapOf(STREAM_FINAL_ANSWER_KEY to true).takeIf { marked },
+      customMetadata = mapOf(OUT_OF_TURN_ANSWER_KEY to true).takeIf { marked },
     )
 
   /** Each content's single part: its text, called function's name, or answer's status. */
