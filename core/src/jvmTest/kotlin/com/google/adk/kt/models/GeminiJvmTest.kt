@@ -23,6 +23,7 @@ import com.google.adk.kt.agents.genAiSystemName
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalContextCachingFeature
 import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.annotations.ExperimentalPrewarmingApi
 import com.google.adk.kt.runners.InMemoryRunner
 import com.google.adk.kt.testing.DummyTool
 import com.google.adk.kt.testing.modelMessage
@@ -127,6 +128,14 @@ class GeminiJvmTest {
         genAiSystemName(Gemini(name = "gemini-test", vertexCredentials = fakeVertexCredentials()))
       )
       .isEqualTo("vertex_ai")
+  }
+
+  @OptIn(ExperimentalLiveApi::class, ExperimentalPrewarmingApi::class)
+  @Test
+  fun genAiSystemName_prewarmingPool_reportsTheBackendOfTheModelItWraps() {
+    val vertex = Gemini(name = "gemini-test", vertexCredentials = fakeVertexCredentials())
+
+    PrewarmingLiveModel(vertex).use { assertThat(genAiSystemName(it)).isEqualTo("vertex_ai") }
   }
 
   @OptIn(AdkJavaInteropApi::class)

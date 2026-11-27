@@ -20,6 +20,7 @@ package com.google.adk.kt.models
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Tool
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -83,6 +84,17 @@ interface LiveConnection : AutoCloseable {
    * concurrent one with [IllegalStateException].
    */
   fun receive(): Flow<LlmResponse>
+
+  /**
+   * Completes when the session ends or the server announces that it will end the session (a
+   * go-away), without consuming any response from [receive]; returns the same job on every read, or
+   * null (the default) if the connection cannot tell. [PrewarmingLiveModel] waits on this job to
+   * drop ended spares, and keeps a spare whose connection provides none until the spare is taken or
+   * reaches its maximum age. Callers should only observe this job, since canceling it would look
+   * like a server end to every observer.
+   */
+  val serverEnding: Job?
+    get() = null
 
   /**
    * Closes the connection; collectors of [receive] complete normally.

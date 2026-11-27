@@ -84,6 +84,7 @@ class BaseFutureLiveConnectionTest {
     private val onReceive: (() -> Publisher<LlmResponse>)? = null,
     private val sendThrows: Throwable? = null,
     private val acceptsContextUpdates: Boolean = true,
+    private val serverEnd: () -> CompletableFuture<Void?>? = { null },
   ) : BaseFutureLiveConnection() {
     private val remainingTurns = ArrayDeque(turns)
     val histories = mutableListOf<List<Content>>()
@@ -129,6 +130,13 @@ class BaseFutureLiveConnectionTest {
     override fun closeSessionAsync(): CompletableFuture<Void?> {
       closeCalls++
       return onClose()
+    }
+
+    var serverEndCalls = 0
+
+    override fun serverEndingAsync(): CompletableFuture<Void?>? {
+      serverEndCalls++
+      return serverEnd()
     }
   }
 
@@ -684,5 +692,33 @@ class BaseFutureLiveConnectionTest {
     withTimeout(GUARD_TIMEOUT) { blockingClose.await() }
     withTimeout(GUARD_TIMEOUT) { closeSession.join() }
     assertThat(connection.closeCalls).isEqualTo(1)
+  }
+
+  @Test
+  fun serverEnding_noOverride_isNull() {
+    assertThat(RecordingConnection().serverEnding).isNull()
+  }
+
+  @Test
+  fun serverEnding_futureCompletes_completesTheJob() = runBlocking {
+    val serverEnd = CompletableFuture<Void?>()
+    val connection = RecordingConnection(serverEnd = { serverEnd })
+    val ending = checkNotNull(connection.serverEnding)
+    val endedBefore = ending.isCompleted
+
+    serverEnd.complete(null)
+
+    withTimeout(GUARD_TIMEOUT) { ending.join() }
+    assertThat(endedBefore).isFalse()
+    assertThat(connection.serverEnding).isSameInstanceAs(ending)
+  }
+
+  @Test
+  fun serverEnding_hookThrows_isNullAndTheHookIsNotCalledAgain() {
+    val connection = RecordingConnection(serverEnd = { throw IllegalStateException("no signal") })
+
+    assertThat(connection.serverEnding).isNull()
+    assertThat(connection.serverEnding).isNull()
+    assertThat(connection.serverEndCalls).isEqualTo(1)
   }
 }

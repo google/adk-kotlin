@@ -28,6 +28,7 @@ import com.google.adk.kt.types.Tool
 import com.google.adk.kt.types.Transcription
 import com.google.adk.kt.types.fromGenaiSdk
 import com.google.adk.kt.types.toGenaiSdk
+import com.google.genai.kotlin.GenAiApiException
 import com.google.genai.kotlin.LiveSession
 import com.google.genai.kotlin.types.ActivityEnd as GenAiActivityEnd
 import com.google.genai.kotlin.types.ActivityStart as GenAiActivityStart
@@ -162,7 +163,18 @@ internal class GeminiLiveConnection(
   pumpContext: CoroutineContext = EmptyCoroutineContext,
   // Whether the session runs on Vertex AI, where sent contents must not carry part metadata.
   private val vertexAi: Boolean = false,
-) : SingleCollectorLiveConnection() {
+) : SingleCollectorLiveConnection(), ContextUpdateRefusalSignal {
+
+  private val serverEnded = CompletableDeferred<Unit>()
+
+  override val serverEnding: Job
+    get() = serverEnded
+
+  /** The code of the error the session closed with, if it closed with one. */
+  private val closeCode = AtomicReference<Int?>(null)
+
+  override val refusedContextUpdate: Boolean
+    get() = closeCode.load() == CONTEXT_UPDATE_REFUSED_CLOSE_CODE
 
   /**
    * The id the server assigns this session, learned from the first setup-complete frame.
@@ -203,6 +215,8 @@ internal class GeminiLiveConnection(
   private val pump = pumpScope.launch {
     try {
       session.receive().collect { frame ->
+        // A go-away means the server will close the session soon.
+        if (frame.goAway != null) serverEnded.complete(Unit)
         frame.setupComplete?.let { ack ->
           ack.sessionId?.let { liveSessionId.store(it) }
           // complete() returns true only the first time, so this logs once per connection.
@@ -224,10 +238,16 @@ internal class GeminiLiveConnection(
       }
       throw e
     } catch (e: Throwable) {
+      // Recorded before the session counts as ended, so a watcher of serverEnding sees it.
+      (e as? GenAiApiException)?.let { closeCode.store(it.code) }
       // After our own close the collector ends normally; otherwise it re-throws the real failure.
       setup.completeExceptionally(e)
       if (closed.load()) frames.close() else frames.close(e)
     }
+  }
+
+  init {
+    pump.invokeOnCompletion { serverEnded.complete(Unit) }
   }
 
   /**
