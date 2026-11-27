@@ -19,6 +19,7 @@
 package com.google.adk.kt.auth
 
 import com.google.adk.kt.annotations.ExperimentalAuthApi
+import com.google.adk.kt.annotations.SecretAccess
 import com.google.adk.kt.logging.LoggerFactory
 
 private object AuthHandler
@@ -90,12 +91,15 @@ internal fun AuthConfig.needsCodeExchange(credential: AuthCredential): Boolean =
     credential.accessToken.isNullOrEmpty()
 
 /** Returns [value] as a credential for this config, or null if there is none or it is malformed. */
+@OptIn(SecretAccess::class)
 private fun AuthConfig.credentialFrom(value: Any?): AuthCredential? {
   if (value is AuthCredential) return value
   val credential =
     when {
       value is Map<*, *> -> decodeFromPlainOrNull(AuthCredentialSerializer, value)
       value is String && value.isNotEmpty() -> credentialFromString(value)
+      // A bare key or token, as session state reads one back under a credential key.
+      value is Secret && !value.isNullOrEmpty() -> credentialFromString(value.reveal())
       else -> return null
     }
   // The key isn't logged: a derived key can reveal a weak secret.

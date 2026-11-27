@@ -14,12 +14,16 @@
  * limitations under the License.
  */
 
+@file:OptIn(FrameworkInternalApi::class)
+
 package com.google.adk.kt.webserver.models
 
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
+import com.google.adk.kt.sessions.NullableStateMapSerializer
+import com.google.adk.kt.sessions.StateMapSerializer
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.Tool
-import kotlinx.serialization.Contextual
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -53,7 +57,10 @@ data class AgentRunRequest(
   @JsonNames("session_id") val sessionId: String? = null,
   @JsonNames("new_message") val newMessage: Content? = null,
   val streaming: Boolean = false,
-  @JsonNames("state_delta") val stateDelta: Map<String, @Contextual Any>? = null,
+  // A credential under an ADK credential key is read typed; a malformed one is dropped.
+  @JsonNames("state_delta")
+  @Serializable(with = StateMapSerializer::class)
+  val stateDelta: Map<String, Any>? = null,
   @JsonNames("invocation_id") val invocationId: String? = null,
 )
 
@@ -66,7 +73,8 @@ data class AgentRunRequest(
 @Serializable
 internal data class CreateSessionRequest(
   @JsonNames("session_id") val sessionId: String? = null,
-  val state: Map<String, @Contextual Any?>? = null,
+  // A credential under an ADK credential key is read typed; a malformed one is dropped.
+  @Serializable(with = NullableStateMapSerializer::class) val state: Map<String, Any?>? = null,
   val events: List<Event>? = null,
 )
 
@@ -84,7 +92,8 @@ data class SessionDto(
   val id: String?,
   val appName: String,
   val userId: String,
-  val state: Map<String, @Contextual Any>?,
+  // Written with credentials typed, so the response leaves their secrets out.
+  @Serializable(with = StateMapSerializer::class) val state: Map<String, Any>?,
   val events: List<Event>?,
   val lastUpdateTime: Long?,
 )

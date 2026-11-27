@@ -208,6 +208,21 @@ class EventSerializationTest {
   }
 
   @Test
+  @OptIn(ExperimentalAuthApi::class, SecretAccess::class)
+  fun stateDelta_credentialUnderACredentialKey_readsBackTypedAndOutputLeavesItsSecretOut() {
+    val key = "adk_oauth_credential:wf_auth:wf@1/node@1"
+    val credential = AuthCredential.OAuth2(codeVerifier = Secret("v".repeat(43)))
+    val event =
+      Event(author = "agent", actions = EventActions(stateDelta = mutableMapOf(key to credential)))
+    val stored = adkSecretRevealingJson.encodeToString(Event.serializer(), event)
+
+    val read = adkJson.decodeFromString(Event.serializer(), stored)
+
+    assertEquals(credential, read.actions.stateDelta[key])
+    assertFalse(adkJson.encodeToString(Event.serializer(), read).contains("v".repeat(43)))
+  }
+
+  @Test
   fun freeFormValues_integers_decodeAsLong() {
     val serializer = MapSerializer(String.serializer(), AnySerializer)
 

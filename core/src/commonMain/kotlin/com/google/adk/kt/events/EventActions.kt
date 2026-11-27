@@ -22,6 +22,7 @@ import com.google.adk.kt.annotations.ExperimentalAuthApi
 import com.google.adk.kt.auth.AuthConfig
 import com.google.adk.kt.auth.AuthConfigSerializer
 import com.google.adk.kt.collections.concurrentMutableMapOf
+import com.google.adk.kt.sessions.MutableStateMapSerializer
 import com.google.adk.kt.sessions.State
 import com.google.adk.kt.workflow.Route
 import com.google.adk.kt.workflow.RouteListSerializer
@@ -71,7 +72,8 @@ data class EventActions
 constructor(
   @JsonNames("skip_summarization") var skipSummarization: Boolean = false,
   @JsonNames("state_delta")
-  val stateDelta: MutableMap<String, @Contextual Any> = concurrentMutableMapOf(),
+  @Serializable(with = MutableStateMapSerializer::class)
+  val stateDelta: MutableMap<String, Any> = concurrentMutableMapOf(),
   @JsonNames("artifact_delta")
   val artifactDelta: MutableMap<String, Int> = concurrentMutableMapOf(),
   @JsonNames("transfer_to_agent") var transferToAgent: String? = null,

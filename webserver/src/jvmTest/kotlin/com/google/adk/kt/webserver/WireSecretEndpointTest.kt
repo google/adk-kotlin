@@ -63,6 +63,38 @@ class WireSecretEndpointTest {
   private val seenKeys: MutableList<String?> = mutableListOf()
 
   @Test
+  fun createSession_bareTokenUnderACredentialKey_respondsWithItRedacted() = testApplication {
+    application { adkApiModule(config()) }
+
+    val response = client.post("/apps/$APP/users/$USER/sessions") { jsonBody(TOKEN_STATE) }
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertTokensRedacted(response.bodyAsText())
+  }
+
+  @Test
+  fun getSession_bareTokenUnderACredentialKey_respondsWithItRedacted() = testApplication {
+    application { adkApiModule(config()) }
+    client.post("/apps/$APP/users/$USER/sessions/$TOKEN_SESSION") { jsonBody(TOKEN_STATE) }
+
+    val response = client.get("/apps/$APP/users/$USER/sessions/$TOKEN_SESSION")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertTokensRedacted(response.bodyAsText())
+  }
+
+  @Test
+  fun listSessions_bareTokenUnderACredentialKey_respondsWithItRedacted() = testApplication {
+    application { adkApiModule(config()) }
+    client.post("/apps/$APP/users/$USER/sessions") { jsonBody(TOKEN_STATE) }
+
+    val response = client.get("/apps/$APP/users/$USER/sessions")
+
+    assertThat(response.status).isEqualTo(HttpStatusCode.OK)
+    assertTokensRedacted(response.bodyAsText())
+  }
+
+  @Test
   fun runSse_bareKeyAnsweringTheRequestUnderAnotherName_leavesTheKeyOutOfEveryResponse() =
     testApplication {
       val bodies = answerSignIn { id ->
@@ -125,15 +157,7 @@ class WireSecretEndpointTest {
    * response JSON [answer] builds from the request's id.
    */
   private suspend fun ApplicationTestBuilder.answerSignIn(answer: (String) -> String): Bodies {
-    application {
-      adkDevModule(
-        AdkServerConfig(
-          appLoader = FakeAppLoader(APP) { signInAgent() },
-          sessionService = sessionService(),
-          artifactService = FakeArtifactService(),
-        )
-      )
-    }
+    application { adkDevModule(config()) }
     val firstTurn = client.post("/run") { jsonBody(runBody(HI)) }
     assertThat(firstTurn.status).isEqualTo(HttpStatusCode.OK)
     val request =
@@ -159,6 +183,21 @@ class WireSecretEndpointTest {
       session = session.bodyAsText(),
     )
   }
+
+  /** Checks that [body] holds both of [TOKEN_STATE]'s tokens as placeholders only. */
+  private fun assertTokensRedacted(body: String) {
+    assertThat(body).contains("\"$DERIVED_KEY\":\"<redacted>\"")
+    assertThat(body).contains("\"user:$DERIVED_KEY\":\"<redacted>\"")
+    assertThat(body).doesNotContain(SESSION_TOKEN)
+    assertThat(body).doesNotContain(USER_TOKEN)
+  }
+
+  private fun config(): AdkServerConfig =
+    AdkServerConfig(
+      appLoader = FakeAppLoader(APP) { signInAgent() },
+      sessionService = sessionService(),
+      artifactService = FakeArtifactService(),
+    )
 
   /** Holds [SESSION], since `/run` runs only on a session that exists. */
   private fun sessionService(): InMemorySessionService {
@@ -210,6 +249,16 @@ class WireSecretEndpointTest {
     const val SESSION = "session"
     const val TOOL = "read_data"
     const val SENTINEL = "secret-sentinel"
+    const val TOKEN_SESSION = "token-session"
+    const val SESSION_TOKEN = "session-scoped-token"
+    const val USER_TOKEN = "user-scoped-token"
+
+    /** A credential key in the shape ADK derives one, under which state holds a credential. */
+    const val DERIVED_KEY = "adk_apiKey_0123456789abcdef_"
+
+    /** A session-create body with a bare token under [DERIVED_KEY], unscoped and user-scoped. */
+    const val TOKEN_STATE =
+      """{"state": {"$DERIVED_KEY": "$SESSION_TOKEN", "user:$DERIVED_KEY": "$USER_TOKEN"}}"""
 
     val CONFIG: AuthConfig =
       AuthConfig(

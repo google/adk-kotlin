@@ -26,6 +26,7 @@ import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.serialization.adkJson
 import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.serialization.jsonElementToAny
+import com.google.adk.kt.sessions.MutableStateMapSerializer
 import com.google.adk.kt.sessions.Session
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
@@ -228,8 +229,8 @@ internal fun SessionDto.toAdk(appName: String, userId: String, fallbackId: Strin
     updateTime?.let { Instant.fromEpochMilliseconds(java.time.Instant.parse(it).toEpochMilli()) }
       ?: Instant.fromEpochMilliseconds(0)
   val initialState: Map<String, Any> =
-    (sessionState as? JsonObject)?.let { jsonObj ->
-      jsonObj.mapValues { (_, v) -> jsonElementToAny(v) ?: State.REMOVED }
+    (sessionState as? JsonObject)?.let {
+      adkJson.decodeFromJsonElement(MutableStateMapSerializer, it)
     } ?: emptyMap()
   return Session(
     key = SessionKey(appName, userId, sessionId),
@@ -242,11 +243,9 @@ internal fun SessionDto.toAdk(appName: String, userId: String, fallbackId: Strin
 private fun EventActionsDto.toAdk(): EventActions {
   val actions = EventActions()
   actions.skipSummarization = skipSummarization ?: false
-  (stateDelta as? JsonObject)?.let { delta ->
-    for ((key, value) in delta) {
-      actions.stateDelta[key] =
-        if (value is JsonNull) State.REMOVED else (jsonElementToAny(value) ?: State.REMOVED)
-    }
+  // A credential that doesn't decode is left out, so replaying the delta keeps the stored one.
+  (stateDelta as? JsonObject)?.let {
+    actions.stateDelta.putAll(adkJson.decodeFromJsonElement(MutableStateMapSerializer, it))
   }
   artifactDelta?.let { actions.artifactDelta.putAll(it) }
   actions.transferToAgent = transferAgent ?: transferToAgent

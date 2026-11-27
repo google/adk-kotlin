@@ -84,6 +84,28 @@ class JsonConvertersTest {
   }
 
   @Test
+  @OptIn(ExperimentalAuthApi::class)
+  fun fromStateJson_valuesUnderCredentialKeys_readsThemTyped() {
+    val decoded =
+      JsonConverters.fromStateJson(
+        """{"adk_apiKey_0123456789abcdef_": "sk-1",
+          "user:adk_apiKey_fedcba9876543210_": {"authType": "apiKey", "apiKey": "sk-2"},
+          "adk_http_0123456789abcdef_": {"authType": "unknown"},
+          "custom": "kept"}"""
+      )
+
+    assertThat(decoded)
+      .containsExactly(
+        "adk_apiKey_0123456789abcdef_",
+        Secret("sk-1"),
+        "user:adk_apiKey_fedcba9876543210_",
+        AuthCredential.ApiKey(Secret("sk-2")),
+        "custom",
+        "kept",
+      )
+  }
+
+  @Test
   fun eventToJson_doesNotMutateCaller() {
     // eventToJson serializes a copy, so the caller's REMOVED sentinel survives unchanged.
     val event =

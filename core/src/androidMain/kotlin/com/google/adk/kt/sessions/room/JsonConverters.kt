@@ -24,32 +24,35 @@ import com.google.adk.kt.auth.adkSecretRevealingJson
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.serialization.AnySerializer
 import com.google.adk.kt.serialization.adkJson
+import com.google.adk.kt.sessions.NullableStateMapSerializer
 import com.google.adk.kt.sessions.forStorage
 import kotlinx.serialization.builtins.MapSerializer
-import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.builtins.serializer
 
 /**
  * Room `@TypeConverter`s for state and event payloads stored in TEXT columns.
  *
  * Serialization goes through `kotlinx.serialization`: reads use the shared [adkJson] instance, and
- * writes keep credential secrets where ADK reads them back. State maps use a contextual
- * [AnySerializer] for their free-form values; events use the generated [Event] serializer. State
- * columns never persist the [com.google.adk.kt.sessions.State.REMOVED] sentinel (the DAO strips
- * removed keys before a map reaches [toStateJson]); the append-only event log keeps deltas
- * verbatim, and [AnySerializer] preserves the sentinel across the event round-trip.
+ * writes keep credential secrets where ADK reads them back. State maps read the credentials under
+ * ADK credential keys typed and use a contextual [AnySerializer] for other free-form values; events
+ * use the generated [Event] serializer. State columns never persist the
+ * [com.google.adk.kt.sessions.State.REMOVED] sentinel (the DAO strips removed keys before a map
+ * reaches [toStateJson]); the append-only event log keeps deltas verbatim, and [AnySerializer]
+ * preserves the sentinel across the event round-trip.
  */
 @OptIn(FrameworkInternalApi::class)
 internal object JsonConverters {
 
   private val stateSerializer = MapSerializer(String.serializer(), AnySerializer)
-  private val nullableStateSerializer = MapSerializer(String.serializer(), AnySerializer.nullable)
 
-  /** Reads a state map, dropping any keys whose JSON value is explicitly `null`. */
+  /**
+   * Reads a state map, dropping any keys whose JSON value is explicitly `null`. A credential under
+   * an ADK credential key is read typed, and a malformed one is dropped.
+   */
   @TypeConverter
   fun fromStateJson(json: String): Map<String, Any> =
     adkJson
-      .decodeFromString(nullableStateSerializer, json)
+      .decodeFromString(NullableStateMapSerializer, json)
       .filterValues { it != null }
       .mapValues { (_, v) -> v!! }
 

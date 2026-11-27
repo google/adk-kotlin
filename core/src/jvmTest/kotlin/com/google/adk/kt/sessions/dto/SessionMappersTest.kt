@@ -207,6 +207,26 @@ class SessionMappersTest {
       .isEqualTo(java.time.Instant.parse("2024-12-12T12:12:12Z").toEpochMilli())
   }
 
+  @OptIn(ExperimentalAuthApi::class, FrameworkInternalApi::class)
+  @Test
+  fun sessionDtoToAdk_credentialKeys_typesTheCredentialAndLeavesAMalformedOneOut() {
+    val dto =
+      SessionDto(
+        name = "reasoningEngines/123/sessions/sX",
+        updateTime = null,
+        sessionState =
+          adkJson.parseToJsonElement(
+            """{"adk_http_0123456789abcdef_": {"authType": "apiKey", "apiKey": "k"},
+              "adk_apiKey_0123456789abcdef_": {"authType": "unknown"}}"""
+          ) as JsonObject,
+      )
+
+    val session = dto.toAdk(appName = "123", userId = "user", fallbackId = null)
+
+    assertThat(session.state.toMap())
+      .containsExactly("adk_http_0123456789abcdef_", AuthCredential.ApiKey(Secret("k")))
+  }
+
   @Test
   fun sessionDtoToAdk_missingName_usesFallbackIdAndEpochTime() {
     val dto = SessionDto(name = null, updateTime = null, sessionState = null)
@@ -635,6 +655,30 @@ class SessionMappersTest {
     // The typed fields still store what they can.
     assertThat(dto.rawEvent).isNull()
     assertThat(dto.toAdk().content!!.parts.single().text).isEqualTo("kept")
+  }
+
+  @OptIn(ExperimentalAuthApi::class)
+  @Test
+  fun sessionEventDtoToAdk_credentialKeysInStateDelta_typesTheCredentialAndLeavesAMalformedOneOut() {
+    val dto =
+      SessionEventDto(
+        name = "sessions/s1/events/e1",
+        author = "agent",
+        timestamp = TimestampDto.fromEpochMillis(1000L),
+        actions =
+          EventActionsDto(
+            stateDelta =
+              Json.parseToJsonElement(
+                """{"adk_http_0123456789abcdef_": "tok",
+                  "adk_apiKey_0123456789abcdef_": {"authType": "unknown"}}"""
+              ) as JsonObject
+          ),
+      )
+
+    val event = dto.toAdk()
+
+    assertThat(event.actions.stateDelta)
+      .containsExactly("adk_http_0123456789abcdef_", Secret("tok"))
   }
 
   @Test
