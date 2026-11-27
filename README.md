@@ -420,6 +420,18 @@ settings:
 ./gradlew :google-adk-kotlin-examples-java:runLiveWorkflowJava
 ```
 
+`LiveParallelToolsAgent` serves a home helper with two tools, `turn_on_lights`
+and `turn_on_tv`, the same way. To start it, or its Java port
+`LiveParallelToolsAgentJava`:
+
+```shell
+./gradlew :google-adk-kotlin-examples:runLiveParallelToolsAgent
+./gradlew :google-adk-kotlin-examples-java:runLiveParallelToolsAgentJava
+```
+
+Then pick `parallel_tools_agent` in the dev UI, click the microphone button, and
+ask it to turn on the lights and the TV: the model calls both tools in one turn.
+
 ## 📂 Examples
 
 The agent snippet above is the short version. Every runnable example lives under

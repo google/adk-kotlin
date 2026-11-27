@@ -108,6 +108,14 @@ tasks.register<JavaExec>("runLiveAgentDemo") {
   standardInput = System.`in`
 }
 
+// e.g. GOOGLE_CLOUD_PROJECT=... ./gradlew :google-adk-kotlin-examples:runLiveParallelToolsAgent
+tasks.register<JavaExec>("runLiveParallelToolsAgent") {
+  group = "application"
+  description = "Serves a live agent with two tools and the bundled dev UI on localhost."
+  mainClass.set("com.google.adk.kt.examples.live.LiveParallelToolsAgentKt")
+  classpath = sourceSets["main"].runtimeClasspath
+}
+
 // e.g. GOOGLE_CLOUD_PROJECT=... ./gradlew :google-adk-kotlin-examples:runLiveServer
 tasks.register<JavaExec>("runLiveServer") {
   group = "application"
