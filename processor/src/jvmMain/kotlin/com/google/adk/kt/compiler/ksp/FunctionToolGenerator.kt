@@ -213,6 +213,29 @@ internal class FunctionToolGenerator(
           .build()
       )
     }
+    // Likewise, when set, @Tool responseScheduling becomes the tool-wide default for its responses.
+    val schedulingName =
+      enumArgName(toolAnnotation, "responseScheduling") ?: "SCHEDULING_UNSPECIFIED"
+    if (schedulingName != "SCHEDULING_UNSPECIFIED") {
+      val schedulingClass = ClassName("com.google.adk.kt.types", "FunctionResponseScheduling")
+      typeBuilder.addProperty(
+        PropertySpec.builder(
+            "responseScheduling",
+            schedulingClass.copy(nullable = true),
+            KModifier.OVERRIDE,
+          )
+          .addAnnotation(
+            AnnotationSpec.builder(ClassName("kotlin", "OptIn"))
+              .addMember(
+                "%T::class",
+                ClassName("com.google.adk.kt.annotations", "ExperimentalLiveApi"),
+              )
+              .build()
+          )
+          .initializer("%T.%L", schedulingClass, schedulingName)
+          .build()
+      )
+    }
 
     val instanceProperty = buildPrimaryConstructor(function, typeBuilder)
 

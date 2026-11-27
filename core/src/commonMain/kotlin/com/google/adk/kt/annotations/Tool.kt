@@ -17,6 +17,7 @@
 package com.google.adk.kt.annotations
 
 import com.google.adk.kt.types.Behavior
+import com.google.adk.kt.types.FunctionResponseScheduling
 
 /**
  * Annotates a function to be exposed as an executable tool by the Google ADK Kotlin. KSP will
@@ -27,9 +28,9 @@ import com.google.adk.kt.types.Behavior
  * therefore return a data class directly, unlike a hand-written [com.google.adk.kt.tools.BaseTool],
  * whose result must already be JSON-native. It may also return a [kotlinx.coroutines.flow.Flow] or
  * a Reactive Streams `Publisher`; a `Flow` or `Publisher` of `Event`, `FunctionResponse` (whose
- * `scheduling`, when set, decides when a live model reacts to that value) or `Any` passes its
- * values through unconverted. A connected live run streams each value to the model, except an
- * `Event`, which goes to the caller; anywhere else, the call fails (see
+ * `scheduling`, when set, overrides [responseScheduling] for that value) or `Any` passes its values
+ * through unconverted. A connected live run streams each value to the model, except an `Event`,
+ * which goes to the caller; anywhere else, the call fails (see
  * [com.google.adk.kt.tools.BaseTool.run]), so return a value instead.
  *
  * A streaming tool may take one experimental `Publisher<LiveRequest>` for the run's input. The
@@ -54,6 +55,12 @@ import com.google.adk.kt.types.Behavior
  *   wait for the response. Only live runs use it. A function that returns a Flow is always declared
  *   non-blocking, and one that doesn't still runs to completion before the live run reads the
  *   model's next message.
+ * @property responseScheduling Controls when a live model reacts to the tool's responses:
+ *   [FunctionResponseScheduling.SILENT] only adds them to the model's context,
+ *   [FunctionResponseScheduling.WHEN_IDLE] waits until the model is idle to react, and
+ *   [FunctionResponseScheduling.INTERRUPT] reacts immediately. Setting any of these declares the
+ *   tool non-blocking unless [behavior] specifies otherwise. The default,
+ *   [FunctionResponseScheduling.SCHEDULING_UNSPECIFIED], sets no scheduling.
  */
 @Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.RUNTIME)
@@ -63,4 +70,6 @@ annotation class Tool(
   val requireConfirmation: Boolean = false,
   val isLongRunning: Boolean = false,
   val behavior: Behavior = Behavior.UNSPECIFIED,
+  val responseScheduling: FunctionResponseScheduling =
+    FunctionResponseScheduling.SCHEDULING_UNSPECIFIED,
 )

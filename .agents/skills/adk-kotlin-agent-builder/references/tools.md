@@ -30,7 +30,12 @@ val agent = LlmAgent(name = "guide", model = model, tools = GuideService().gener
 
 - The description comes from `@Tool(description = ...)` or the KDoc summary, and parameter descriptions from `@Param` or `@param` KDoc tags.
 - Use simple types: primitives, `String`, enums, data classes, nullable versions of these, and lists or string-keyed maps of primitives, strings or data classes. Anything else, such as a list of enums, is rejected at compile time with an error naming the type; wrap it in a data class. `FunctionToolGenerator.kt` in the processor is the authority.
-- A `@Tool` function may return a `Flow<T>` of those types; a `Flow` of `Event`, `FunctionResponse` (whose `scheduling`, when set, decides when a live model reacts to that value) or `Any` passes values through unconverted. A connected live run streams each value to the model, except an `Event`, which goes to the caller; anywhere else, the call fails, so return a value instead.
+-   A `@Tool` function may return a `Flow<T>` of those types; a `Flow` of
+    `Event`, `FunctionResponse` (whose `scheduling`, when set, overrides the
+    tool's `responseScheduling` for that value) or `Any` passes values through
+    unconverted. A connected live run streams each value to the model, except an
+    `Event`, which goes to the caller; anywhere else, the call fails, so return
+    a value instead.
 - Data classes do not need `@Serializable`.
 - A return value reaches the model as `{"result": ...}`; `Unit` becomes `{}`.
 - `com.google.adk.kt.annotations.Tool` clashes by name with `com.google.adk.kt.types.Tool`; alias one when both are imported.
@@ -100,9 +105,9 @@ In a live run, `@Tool(behavior = Behavior.NON_BLOCKING)`, or overriding
 going while a call is pending; `Behavior.BLOCKING` makes it wait for the
 response. A tool that returns a `Flow` is always declared non-blocking, and a
 tool that doesn't stream still runs to completion before the live run reads the
-model's next message. Overriding `responseScheduling` on a hand-written tool
-sets when the model reacts to its answers, and with a null `behavior` it also
-declares the tool non-blocking.
+model's next message. `@Tool(responseScheduling = ...)`, or overriding
+`responseScheduling` on a hand-written tool, sets when the model reacts to its
+answers, and with no `behavior` set it also declares the tool non-blocking.
 
 ## Confirmation-gated tools
 

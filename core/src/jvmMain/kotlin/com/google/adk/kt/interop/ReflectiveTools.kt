@@ -33,6 +33,7 @@ import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
 import java.lang.reflect.InvocationTargetException
@@ -111,12 +112,17 @@ object ReflectiveTools {
     }
     val name = annotation.name.ifEmpty { method.name }
     val behavior = annotation.behavior.takeUnless { it == Behavior.UNSPECIFIED }
+    val responseScheduling =
+      annotation.responseScheduling.takeUnless {
+        it == FunctionResponseScheduling.SCHEDULING_UNSPECIFIED
+      }
     return ReflectiveTool(
       instance,
       method,
       name,
       annotation.description,
       behavior,
+      responseScheduling,
       annotation.requireConfirmation,
     )
   }
@@ -155,6 +161,7 @@ object ReflectiveTools {
     name: String,
     description: String,
     override val behavior: Behavior?,
+    override val responseScheduling: FunctionResponseScheduling?,
     requireConfirmation: Boolean,
   ) :
     FunctionTool(

@@ -51,6 +51,7 @@ import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Type
@@ -114,6 +115,12 @@ class Fixture {
 
   @Tool(description = "Declared non-blocking in a live run.", behavior = Behavior.NON_BLOCKING)
   fun slowTask(): String = "done"
+
+  @Tool(
+    description = "Answered silently in a live run.",
+    responseScheduling = FunctionResponseScheduling.SILENT,
+  )
+  fun silentTask(): String = "done"
 
   @Tool(description = "Records the thread it runs on and that thread's request id.")
   fun recordCaller(): String {
@@ -728,6 +735,15 @@ class ReflectiveToolsTest {
   fun fromMethod_toolWithABehavior_overridesIt() {
     assertEquals(Behavior.NON_BLOCKING, ReflectiveTools.fromMethod(fixture, "slowTask").behavior)
     assertNull(ReflectiveTools.fromMethod(fixture, "currentTime").behavior)
+  }
+
+  @Test
+  fun fromMethod_toolWithAResponseScheduling_overridesIt() {
+    assertEquals(
+      FunctionResponseScheduling.SILENT,
+      ReflectiveTools.fromMethod(fixture, "silentTask").responseScheduling,
+    )
+    assertNull(ReflectiveTools.fromMethod(fixture, "currentTime").responseScheduling)
   }
 
   @Test

@@ -46,6 +46,7 @@ import com.google.adk.kt.tools.FunctionTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.FunctionResponse
+import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Type
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.Flow
@@ -790,6 +791,83 @@ class FunctionToolProcessorTest {
 
   @OptIn(ExperimentalLiveApi::class)
   @Test
+  fun generate_toolWithAResponseScheduling_overridesIt() {
+    assertThat(SilentTaskTool().responseScheduling).isEqualTo(FunctionResponseScheduling.SILENT)
+    assertThat(BlockingSilentTaskTool().responseScheduling)
+      .isEqualTo(FunctionResponseScheduling.SILENT)
+    assertThat(NamedParamToolTool().responseScheduling).isNull()
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun runLive_generatedToolWithAResponseScheduling_isDeclaredNonBlockingUnlessItsBehaviorIsSet() {
+    runBlocking {
+      val model = DummyLiveModel(listOf(Respond(LlmResponse(turnComplete = true))))
+      val tools = listOf(SilentTaskTool(), BlockingSilentTaskTool())
+      val queue = LiveRequestQueue()
+      queue.close()
+
+      val unused =
+        InMemoryRunner(agent = LlmAgent(name = "agent", model = model, tools = tools))
+          .runLive("u", "s", queue)
+          .toList()
+
+      val declarations =
+        model.connectRequests.single().config.tools.orEmpty().flatMap {
+          it.functionDeclarations.orEmpty()
+        }
+      assertThat(declarations.associate { it.name to it.behavior })
+        .isEqualTo(
+          mapOf("silentTask" to Behavior.NON_BLOCKING, "blockingSilentTask" to Behavior.BLOCKING)
+        )
+    }
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun runLive_generatedToolWithAResponseScheduling_answersWithIt() {
+    runBlocking {
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("silentTask", id = "c1")),
+          AwaitSent(
+            "the silent answer",
+            answers("c1", mapOf("result" to "done"), FunctionResponseScheduling.SILENT),
+          ),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(SilentTaskTool()))
+
+      runLiveUntilTurnComplete(agent, LiveRequestQueue())
+
+      model.connections.single().assertAllWaitsMet()
+    }
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun runLive_generatedStreamingToolWithAResponseScheduling_streamsEachValueWithIt() {
+    runBlocking {
+      val whenIdle = FunctionResponseScheduling.WHEN_IDLE
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("idleTicker", id = "c1")),
+          AwaitSent("the first tick", answers("c1", mapOf("result" to "tick 1"), whenIdle)),
+          AwaitSent("the second tick", answers("c1", mapOf("result" to "tick 2"), whenIdle)),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+      val model = DummyLiveModel(script)
+      val agent = LlmAgent(name = "agent", model = model, tools = listOf(IdleTickerTool()))
+
+      runLiveUntilTurnComplete(agent, LiveRequestQueue())
+
+      model.connections.single().assertAllWaitsMet()
+    }
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
   fun runLive_generatedToolReturningAStream_isDeclaredNonBlocking() {
     runBlocking {
       val model = DummyLiveModel(listOf(Respond(LlmResponse(turnComplete = true))))
@@ -840,12 +918,21 @@ class FunctionToolProcessorTest {
   }
 
   companion object {
-    /** Matches a message that answers call [id] with exactly [response]. */
+    /**
+     * Matches a message that answers call [id] with exactly [response], and with [scheduling] when
+     * one is given.
+     */
     @OptIn(ExperimentalLiveApi::class)
-    private fun answers(id: String, response: Map<String, Any?>): (Any) -> Boolean = { message ->
+    private fun answers(
+      id: String,
+      response: Map<String, Any?>,
+      scheduling: FunctionResponseScheduling? = null,
+    ): (Any) -> Boolean = { message ->
       message is ContentInput &&
         message.content.parts.any {
-          it.functionResponse?.id == id && it.functionResponse?.response == response
+          it.functionResponse?.id == id &&
+            it.functionResponse?.response == response &&
+            (scheduling == null || it.functionResponse?.scheduling == scheduling)
         }
     }
 
@@ -1066,6 +1153,18 @@ internal fun streamTool(context: ToolContext, symbol: String): Flow<String> =
 
 /** Declared blocking in a live run. */
 @Tool(behavior = Behavior.BLOCKING) internal fun quickTask(): String = "done"
+
+/** Answers silently, so it is declared non-blocking in a live run. */
+@Tool(responseScheduling = FunctionResponseScheduling.SILENT)
+internal fun silentTask(): String = "done"
+
+/** Answers silently but stays declared blocking. */
+@Tool(behavior = Behavior.BLOCKING, responseScheduling = FunctionResponseScheduling.SILENT)
+internal fun blockingSilentTask(): String = "done"
+
+/** Streams ticks that the model reacts to once it is idle. */
+@Tool(responseScheduling = FunctionResponseScheduling.WHEN_IDLE)
+internal fun idleTicker(): Flow<String> = flowOf("tick 1", "tick 2")
 
 @Tool
 internal fun flowMapTool(): Flow<Map<String, Any>> =
