@@ -2701,7 +2701,8 @@ private fun liveBehavior(tool: BaseTool): Behavior? =
  * Whether [tool] is non-blocking in a live run: a set [BaseTool.behavior] decides, and otherwise a
  * [BaseTool.responseScheduling] makes it so, since only a non-blocking call's answer is scheduled.
  */
-private fun isNonBlocking(tool: BaseTool): Boolean =
+@JvmSynthetic
+internal fun isNonBlocking(tool: BaseTool): Boolean =
   when (val behavior = tool.behavior) {
     null -> tool.responseScheduling != null
     else -> behavior == Behavior.NON_BLOCKING
