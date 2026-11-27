@@ -1236,6 +1236,68 @@ class LlmAgentModeTest {
   }
 
   @Test
+  fun finishTask_valueOutsideTheEnum_returnsValidationErrorAndModelRetries() = runBlocking {
+    // Arrange: the node's output takes only YES or NO, and the model first finishes with MAYBE.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+        required = listOf("answer"),
+      )
+    val model =
+      ModeScriptedModel(
+        call("finish_task", mapOf("answer" to "MAYBE")),
+        call("finish_task", mapOf("answer" to "YES")),
+      )
+    val confirm = taskAgent("confirm", model, outputSchema = schema)
+    val capture = ModeCaptureNode()
+
+    // Act
+    val events = runWorkflow("confirm", Edge(Start, confirm), Edge(confirm, capture))
+
+    // Assert: the error names the rule but not the value, and the node ends with the retry.
+    val answers =
+      events
+        .flatMap { it.functionResponses() }
+        .filter { it.name == "finish_task" }
+        .map { it.response }
+    val rejection = answers.first()["error"] as String
+    assertContains(rejection, "not one of the schema's enum values")
+    assertFalse("MAYBE" in rejection)
+    assertEquals(mapOf("result" to FinishTaskTool.SUCCESS_RESULT), answers.last())
+    assertEquals(2, model.requests.size)
+    assertEquals(mapOf("answer" to "YES"), capture.received)
+  }
+
+  @Test
+  fun finishTask_branchDefaultOutsideTheEnum_returnsValidationErrorAndModelRetries() = runBlocking {
+    // Arrange: the node's output check fills the branch's default "A" before checking the enum.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+        anyOf =
+          listOf(Schema(properties = mapOf("answer" to Schema(type = Type.STRING, default = "A")))),
+      )
+    val model =
+      ModeScriptedModel(
+        call("finish_task", emptyMap()),
+        call("finish_task", mapOf("answer" to "NO")),
+      )
+    val confirm = taskAgent("confirm", model, outputSchema = schema)
+    val capture = ModeCaptureNode()
+
+    // Act
+    val events = runWorkflow("confirm", Edge(Start, confirm), Edge(confirm, capture))
+
+    // Assert
+    val firstAnswer = events.flatMap { it.functionResponses() }.first { it.name == "finish_task" }
+    assertContains(firstAnswer.response["error"] as String, "not one of the schema's enum values")
+    assertEquals(2, model.requests.size)
+    assertEquals(mapOf("answer" to "NO"), capture.received)
+  }
+
+  @Test
   fun finishTask_wholeNumberDoubleForInteger_savesALong() = runBlocking {
     // Arrange: the score arrives as 9.0, the way Gson decodes the JSON number 9.
     val worker =

@@ -380,6 +380,38 @@ class WorkflowLiveTest {
   }
 
   @Test
+  fun taskNode_startedByRunNode_finishTaskOutsideTheEnum_answersAnErrorAndTheModelRetries() =
+    runBlocking {
+      // Arrange: the output takes only YES or NO, and the first finish_task sends MAYBE.
+      val schema =
+        Schema(
+          type = Type.OBJECT,
+          properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+          required = listOf("answer"),
+        )
+      val model =
+        LiveNodeModel(
+          "confirm",
+          listOf(listOf(finishTask("answer" to "MAYBE"), finishTask("answer" to "YES"))),
+        )
+      val confirm =
+        started(
+          LlmAgent(name = "confirm", model = model, outputSchema = schema, mode = AgentMode.TASK)
+        )
+      val queue = LiveRequestQueue()
+      queue.sendContent(userMessage("confirm"))
+
+      val events = runLiveWorkflow(Workflow("wf", listOf(Edge(Start, confirm))), queue)
+
+      // Assert: the model hears the rule but not its value, and the node ends with the retry.
+      val error =
+        model.connections.single().receivedResponses().single().response["error"] as String
+      assertContains(error, "not one of the schema's enum values")
+      assertFalse("MAYBE" in error)
+      assertEquals(mapOf("answer" to "YES"), events.mapNotNull { it.output }.single())
+    }
+
+  @Test
   fun taskNode_startedByRunNode_answersOnlyAFailedFinishTaskThroughTheQueue() = runBlocking {
     // Arrange: the first finish_task lacks `result`, so the model gets an error and retries.
     val model =

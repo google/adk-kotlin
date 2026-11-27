@@ -87,11 +87,11 @@ internal class FinishTaskTool(taskAgent: LlmAgent) :
       .appendInstructions(Content(parts = listOf(Part(text = INSTRUCTION))))
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
-    // validateValue accepts null, so require the result unless its schema is nullable.
+    // validateForNode accepts null, so require the result unless its schema is nullable.
     if (resultKey != null && args[resultKey] == null && outputSchema.nullable != true) {
       return validationError("$NAME args does not contain required $resultKey")
     }
-    return SchemaUtils.validateValue(taskOutput(args), outputSchema, argumentsLabel)
+    return SchemaUtils.validateForNode(taskOutput(args), outputSchema, argumentsLabel)
       .fold(onSuccess = { SUCCESS_RESULT }, onFailure = { validationError(it.message) })
   }
 

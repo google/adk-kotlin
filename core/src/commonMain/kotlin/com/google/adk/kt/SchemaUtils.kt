@@ -414,6 +414,23 @@ object SchemaUtils {
     if (value == null) null
     else ValueCoercer.coerceValue(value, schema, what, fillDefaults = true).getOrThrow()
 
+  /**
+   * Checks [value] with [validateValue] and with the check a node runs on its input and output
+   * ([checkedValue]), and returns [validateValue]'s result or the first failure; a null passes.
+   * validateValue rejects quoted numbers and the node's check rejects values outside an enum, so a
+   * value that passes here also passes a node with this [schema].
+   */
+  internal fun validateForNode(
+    value: Any?,
+    schema: Schema,
+    argsName: String = "value",
+  ): Result<Any?> {
+    val validated = validateValue(value, schema, argsName)
+    if (validated.isFailure || value == null) return validated
+    val checked = ValueCoercer.coerceValue(value, schema, argsName, fillDefaults = true)
+    return if (checked.isFailure) checked else validated
+  }
+
   /** Whether [schema] takes a string, directly or through an `anyOf` alternative. */
   internal fun acceptsString(schema: Schema): Boolean =
     schema.type == Type.STRING || schema.anyOf.orEmpty().any { acceptsString(it) }

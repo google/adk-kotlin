@@ -1925,6 +1925,45 @@ class SchemaUtilsTest {
   }
 
   @Test
+  fun validateForNode_valueOutsideTheEnum_failsWithoutQuotingIt() {
+    val answer =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+      )
+
+    val error =
+      SchemaUtils.validateForNode(mapOf("answer" to secret), answer, "input of node 'n'")
+        .exceptionOrNull()
+
+    assertIs<IllegalArgumentException>(error)
+    assertEquals(
+      "validation error: input of node 'n' does not match its schema: " +
+        "'answer' is not one of the schema's enum values",
+      error.message,
+    )
+    assertFalse(secret in error.message.orEmpty())
+  }
+
+  @Test
+  fun validateForNode_quotedNumberForAnInteger_fails() {
+    assertTrue(SchemaUtils.validateForNode(mapOf("count" to "1"), countSchema).isFailure)
+  }
+
+  @Test
+  fun validateForNode_validValue_returnsItNormalizedWithDefaults() {
+    assertEquals(
+      mapOf<String, Any>("offset" to 2L, "limit" to 10),
+      SchemaUtils.validateForNode(mapOf("offset" to 2.0), page).getOrThrow(),
+    )
+  }
+
+  @Test
+  fun validateForNode_nullPasses() {
+    assertEquals(null, SchemaUtils.validateForNode(null, Schema(type = Type.INTEGER)).getOrThrow())
+  }
+
+  @Test
   fun parseModelOutput_jsonNullForANonNullableSchema_fails() {
     // Arrange
     val schema = Schema(type = Type.OBJECT, properties = mapOf("n" to Schema(type = Type.INTEGER)))
