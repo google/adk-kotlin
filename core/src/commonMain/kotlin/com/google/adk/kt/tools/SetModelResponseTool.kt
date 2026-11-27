@@ -16,6 +16,7 @@
 package com.google.adk.kt.tools
 
 import com.google.adk.kt.SchemaUtils
+import com.google.adk.kt.ValueCoercer
 import com.google.adk.kt.acceptsNull
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.collections.concurrentMutableMapOf
@@ -112,7 +113,11 @@ internal class SetModelResponseTool(private val outputSchema: Schema) :
   }
 
   private fun validate(args: Map<String, Any?>): Result<Unit> =
-    SchemaUtils.validateMapOnSchema(args, parameters, argsName = "Output")
+    SchemaUtils.validateMapOnSchema(args, parameters, argsName = "Output").mapCatching {
+      // Validation rejects quoted numbers; the coercer checks enums and the defaults it fills in.
+      val answer = args.normalizedBySchema(parameters)
+      ValueCoercer.coerceValue(answer, parameters, "Output", fillDefaults = true).getOrThrow()
+    }
 
   /**
    * Returns the JSON of the answer [run] validated for [functionCallId], null fields included, or

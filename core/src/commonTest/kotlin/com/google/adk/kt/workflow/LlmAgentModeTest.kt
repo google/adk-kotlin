@@ -340,6 +340,43 @@ class LlmAgentModeTest {
   }
 
   @Test
+  fun setModelResponse_valueOutsideTheEnum_returnsValidationErrorAndModelRetries() = runBlocking {
+    // Arrange: a Gemini 2.x agent with tools answers via `set_model_response`, first with MAYBE.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+        required = listOf("answer"),
+      )
+    val model =
+      ModeScriptedModel(
+        call("set_model_response", mapOf("answer" to "MAYBE")),
+        call("set_model_response", mapOf("answer" to "YES")),
+        name = "gemini-2.0-flash",
+      )
+    val agent =
+      LlmAgent(
+        name = "confirm",
+        model = model,
+        tools = listOf(DummyTool("lookup", declares = true)),
+        outputSchema = schema,
+      )
+    val capture = ModeCaptureNode()
+
+    // Act
+    val events = runWorkflow("confirm", Edge(Start, agent), Edge(agent, capture))
+
+    // Assert: the error names the rule but not the value, and the node ends with the retry.
+    val rejection =
+      events.flatMap { it.functionResponses() }.first { it.name == "set_model_response" }
+    val error = rejection.response["error"] as String
+    assertContains(error, "not one of the schema's enum values")
+    assertFalse("MAYBE" in error)
+    assertEquals(2, model.requests.size)
+    assertEquals(mapOf("answer" to "YES"), capture.received)
+  }
+
+  @Test
   fun chatMode_runInScope_seesItsOwnToolTurns() = runBlocking {
     // Arrange: a chat agent run in a scope calls a tool, then answers.
     val model = ModeScriptedModel(call("lookup", emptyMap()), text("done"))
