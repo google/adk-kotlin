@@ -62,6 +62,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -1087,16 +1088,33 @@ internal typealias ToolRunner =
   suspend (tool: BaseTool, context: ToolContext, args: Map<String, Any?>) -> Any
 
 /**
- * Calls [BaseTool.run] everywhere except a connected live run, and fails the call when the tool
- * returns a [Flow].
+ * A deferred single-value result from a framework tool, such as one returning a Java future. A
+ * connected live run streams it like any other [Flow], answering the call as pending first and
+ * calling [cancel] if the call is stopped before the value arrives. Elsewhere, the call waits for
+ * [await].
+ */
+internal class PendingToolResult(val cancel: () -> Unit = {}, val await: suspend () -> Any) :
+  Flow<Any> by flow({ emit(await()) })
+
+/**
+ * Calls [BaseTool.run] outside a connected live run, awaiting a [PendingToolResult] and failing the
+ * call if the tool returns any other [Flow].
  */
 @get:JvmSynthetic
 internal val DEFAULT_TOOL_RUNNER: ToolRunner = { tool, context, args ->
-  val result = tool.run(context, args)
-  check(result !is Flow<*>) {
-    "Only a connected live run can stream a tool's Flow; return a value instead."
+  when (val result = tool.run(context, args)) {
+    // Scheduling only applies to a live model, so keep only the payload.
+    is PendingToolResult ->
+      when (val value = result.await()) {
+        is FunctionResponse -> value.response
+        else -> value
+      }
+    is Flow<*> ->
+      throw IllegalStateException(
+        "Only a connected live run can stream a tool's Flow; return a value instead."
+      )
+    else -> result
   }
-  result
 }
 
 /**

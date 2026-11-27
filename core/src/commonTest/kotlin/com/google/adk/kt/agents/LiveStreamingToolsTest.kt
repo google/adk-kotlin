@@ -236,6 +236,52 @@ class LiveStreamingToolsTest {
   }
 
   @Test
+  fun run_repeatThatRacedPastTheRepeatCheck_cancelsItsPendingResult() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      var entered = 0
+      val bothEntered = CompletableDeferred<Unit>()
+      val cancelled = mutableListOf<String?>()
+      val tool =
+        DummyTool(name = "lookup") { context, _ ->
+          // Both calls pass the repeat check before either result is registered.
+          if (++entered == 2) bothEntered.complete(Unit)
+          bothEntered.await()
+          PendingToolResult(cancel = { cancelled.add(context.functionCallId) }) {
+            awaitCancellation()
+          }
+        }
+
+      val first = async { tools.run(tool, streamingToolContext("c1"), emptyMap()) }
+      val second = async { tools.run(tool, streamingToolContext("c2"), emptyMap()) }
+      val statuses = listOf(first.await(), second.await()).map { (it as Map<*, *>)["status"] }
+
+      assertThat(statuses.count { it.toString().contains("already running") }).isEqualTo(1)
+      assertThat(cancelled).hasSize(1)
+      val unused = tools.close()
+    }
+  }
+
+  @Test
+  fun close_pendingResultWhoseCallNeverStarted_isCancelled() {
+    runBlocking {
+      val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)
+      var cancelled = false
+      val tool =
+        DummyTool(name = "lookup") { _, _ ->
+          PendingToolResult(cancel = { cancelled = true }) { awaitCancellation() }
+        }
+      val unused = tools.run(tool, streamingToolContext("c1"), emptyMap())
+
+      // Never started: its pending answer was not queued before the run ended.
+      val closed = tools.close()
+
+      assertThat(cancelled).isTrue()
+      assertThat(closed.flatMap { it.parts }.map { it.functionResponse?.id }).containsExactly("c1")
+    }
+  }
+
+  @Test
   fun close_streamThatEndedOnItsOwn_returnsAFinishedAnswerForItAndItsRepeat() {
     runBlocking {
       val tools = LiveStreamingTools(LiveRequestQueue(), "agent", "invocation", coroutineContext)

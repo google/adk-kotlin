@@ -30,6 +30,7 @@ import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
 import com.google.adk.kt.annotations.Tool
+import com.google.adk.kt.events.Event
 import com.google.adk.kt.events.ToolConfirmation
 import com.google.adk.kt.models.ContentInput
 import com.google.adk.kt.models.LlmResponse
@@ -51,10 +52,12 @@ import com.google.adk.kt.types.Behavior
 import com.google.adk.kt.types.Content
 import com.google.adk.kt.types.FunctionCall
 import com.google.adk.kt.types.FunctionDeclaration
+import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.FunctionResponseScheduling
 import com.google.adk.kt.types.Part
 import com.google.adk.kt.types.Role
 import com.google.adk.kt.types.Type
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -66,9 +69,12 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -719,6 +725,351 @@ class ReflectiveToolsTest {
         (tool.run(testToolContext(), emptyMap()) as Flow<*>).toList(),
       )
     }
+  }
+
+  @Test
+  fun fromMethod_methodReturningAFuture_answersPendingThenItsValueUnderALiveRun() {
+    runBlocking {
+      val answer = CompletableFuture<String>()
+      // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+      class FutureFixture {
+        @Tool(description = "Looks a price up.", behavior = Behavior.NON_BLOCKING)
+        fun price(): CompletableFuture<String> = answer
+      }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("price", id = CALL_ID)),
+          // Completed only after the model gets the pending answer, so the call did not wait.
+          AwaitSent("the pending answer") { message ->
+            answers(CALL_ID, PENDING)(message).also { if (it) answer.complete("300") }
+          },
+          AwaitSent("the price", answers(CALL_ID, mapOf("result" to "300"))),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+
+      runLive(script, ReflectiveTools.fromMethod(FutureFixture(), "price"))
+    }
+  }
+
+  @Test
+  fun fromMethod_futureOfAFunctionResponse_keepsItsScheduling() {
+    runBlocking {
+      // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+      class FutureFixture {
+        @Tool(
+          description = "Checks a slot.",
+          responseScheduling = FunctionResponseScheduling.WHEN_IDLE,
+        )
+        fun check(): CompletableFuture<FunctionResponse> = CompletableFuture.supplyAsync {
+          FunctionResponse(
+            name = "check",
+            response = mapOf("available" to false),
+            scheduling = FunctionResponseScheduling.INTERRUPT,
+          )
+        }
+      }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("check", id = CALL_ID)),
+          AwaitSent("the pending answer", answers(CALL_ID, PENDING)),
+          AwaitSent("the interrupting answer") { message ->
+            message is ContentInput &&
+              message.content.parts.any {
+                val response = it.functionResponse
+                response?.id == CALL_ID &&
+                  response.response == mapOf("available" to false) &&
+                  response.scheduling == FunctionResponseScheduling.INTERRUPT
+              }
+          },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+
+      runLive(script, ReflectiveTools.fromMethod(FutureFixture(), "check"))
+    }
+  }
+
+  @Test
+  fun fromMethod_failedFuture_reportsAnErrorUnderALiveRun() {
+    runBlocking {
+      // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+      class FutureFixture {
+        @Tool(description = "Fails to look a price up.", behavior = Behavior.NON_BLOCKING)
+        fun price(): CompletableFuture<String> =
+          CompletableFuture.failedFuture(IllegalStateException("down"))
+      }
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("price", id = CALL_ID)),
+          AwaitSent("the pending answer", answers(CALL_ID, PENDING)),
+          AwaitSent(
+            "the error",
+            answers(CALL_ID, mapOf("error" to "Invoking `price()` failed with an internal error.")),
+          ),
+          Respond(LlmResponse(turnComplete = true)),
+        )
+
+      runLive(script, ReflectiveTools.fromMethod(FutureFixture(), "price"))
+    }
+  }
+
+  @Test
+  fun fromMethod_futureStillPendingWhenTheLiveRunEnds_isCancelled() {
+    val answer = CompletableFuture<String>()
+    // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+    class FutureFixture {
+      @Tool(description = "Looks a price up, never answering.", behavior = Behavior.NON_BLOCKING)
+      fun price(): CompletableFuture<String> = answer
+    }
+    val script =
+      listOf(
+        Respond(modelFunctionCallResponse("price", id = CALL_ID)),
+        AwaitSent("the pending answer", answers(CALL_ID, PENDING)),
+        Respond(LlmResponse(turnComplete = true)),
+      )
+
+    runBlocking { runLive(script, ReflectiveTools.fromMethod(FutureFixture(), "price")) }
+
+    assertTrue(answer.isCancelled)
+  }
+
+  @Test
+  fun runAsync_methodReturningAFuture_answersWithItsValueOutsideALiveRun(): Unit = runBlocking {
+    // Local, so KSP, which processes this source set in Gradle, never sees these tools.
+    class FutureFixture {
+      @Tool(description = "Looks a price up.")
+      fun price(): CompletableFuture<String> = CompletableFuture.supplyAsync { "300" }
+
+      @Tool(description = "Checks a slot.")
+      fun check(): CompletableFuture<FunctionResponse> =
+        CompletableFuture.completedFuture(
+          FunctionResponse(
+            name = "check",
+            response = mapOf("available" to true),
+            scheduling = FunctionResponseScheduling.INTERRUPT,
+          )
+        )
+
+      @Tool(description = "Answers nothing.")
+      fun nothing(): CompletableFuture<String?> = CompletableFuture.completedFuture(null)
+
+      @Tool(description = "Looks a fee up.", behavior = Behavior.NON_BLOCKING)
+      fun fee(): CompletableFuture<String> = CompletableFuture.supplyAsync { "25" }
+
+      @Tool(
+        description = "Holds a slot.",
+        responseScheduling = FunctionResponseScheduling.WHEN_IDLE,
+      )
+      fun hold(): CompletableFuture<FunctionResponse> = CompletableFuture.supplyAsync {
+        FunctionResponse(
+          name = "hold",
+          response = mapOf("held" to true),
+          scheduling = FunctionResponseScheduling.SILENT,
+        )
+      }
+
+      @Tool(description = "Answers a Unit.", behavior = Behavior.NON_BLOCKING)
+      fun unit(): CompletableFuture<Unit> = CompletableFuture.completedFuture(Unit)
+
+      @Tool(description = "Answers a Void.")
+      fun none(): CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
+
+      @Tool(description = "Answers a quote, wrapped like a single result.")
+      fun quote(): CompletableFuture<Map<String, Any>> =
+        CompletableFuture.completedFuture(mapOf("price" to 300))
+
+      @Tool(description = "Answers a map like a plain return.")
+      fun raw(): CompletableFuture<Any> = CompletableFuture.completedFuture(mapOf("price" to 300))
+    }
+    val fixture = FutureFixture()
+    val names = listOf("price", "check", "nothing", "fee", "hold", "unit", "none", "quote", "raw")
+    val agent =
+      LlmAgent(
+        name = "agent",
+        model =
+          DummyModel.createSequential(
+            "model",
+            listOf(
+              LlmResponse(
+                content =
+                  Content(
+                    Role.MODEL,
+                    names.map { Part(functionCall = FunctionCall(name = it, id = it)) },
+                  )
+              ),
+              LlmResponse(content = modelMessage("done")),
+            ),
+          ),
+        tools = names.map { ReflectiveTools.fromMethod(fixture, it) },
+      )
+
+    val events =
+      InMemoryRunner(agent = agent)
+        .runAsync(userId = "u", sessionId = "s", newMessage = userMessage("go"))
+        .toList()
+
+    assertEquals(
+      mapOf(
+        "price" to mapOf("result" to "300"),
+        "check" to mapOf("available" to true),
+        "nothing" to mapOf("result" to null),
+        "fee" to mapOf("result" to "25"),
+        "hold" to mapOf("held" to true),
+        "unit" to mapOf("result" to null),
+        "none" to mapOf("result" to null),
+        "quote" to mapOf("result" to mapOf("price" to 300)),
+        "raw" to mapOf("result" to mapOf("price" to 300)),
+      ),
+      events.flatMap { it.functionResponses() }.associate { it.name to it.response },
+    )
+  }
+
+  @Test
+  fun run_futureTheToolCancelled_failsTheCallInsteadOfCancellingIt() {
+    // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+    class FutureFixture {
+      @Tool(description = "Gives up on its own lookup.")
+      fun price(): CompletableFuture<String> = CompletableFuture<String>().also { it.cancel(false) }
+    }
+    val tool = ReflectiveTools.fromMethod(FutureFixture(), "price")
+
+    val failure = runBlocking {
+      runCatching { tool.run(testToolContext(), emptyMap()) }.exceptionOrNull()
+    }
+
+    // A CancellationException would end the run as if it were cancelled, with no tool error.
+    assertEquals(IllegalStateException::class, failure?.let { it::class })
+  }
+
+  @Test
+  fun run_callCancelledWhileAwaitingAFuture_cancelsTheFutureAndStaysCancelled() {
+    val answer = CompletableFuture<String>()
+    // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+    class FutureFixture {
+      @Tool(description = "Looks a price up, never answering.")
+      fun price(): CompletableFuture<String> = answer
+    }
+    val tool = ReflectiveTools.fromMethod(FutureFixture(), "price")
+    var thrown: Throwable? = null
+
+    runBlocking {
+      val call =
+        launch(start = CoroutineStart.UNDISPATCHED) {
+          try {
+            val unused = tool.run(testToolContext(), emptyMap())
+          } catch (e: Throwable) {
+            thrown = e
+            throw e
+          }
+        }
+      call.cancelAndJoin()
+    }
+
+    assertTrue(answer.isCancelled)
+    assertTrue(thrown is CancellationException, "expected a cancellation, got $thrown")
+  }
+
+  @Test
+  fun run_futureCompletingWithAnEvent_failsTheCall() {
+    // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+    class FutureFixture {
+      @Tool(description = "Answers with an event through Object.")
+      fun event(): CompletableFuture<Any> = CompletableFuture.completedFuture(Event())
+    }
+    val tool = ReflectiveTools.fromMethod(FutureFixture(), "event")
+
+    val failure =
+      assertFailsWith<IllegalStateException> {
+        runBlocking { tool.run(testToolContext(), emptyMap()) }
+      }
+
+    assertEquals(
+      "event completed its CompletionStage with an Event; return a Publisher to send events.",
+      failure.message,
+    )
+  }
+
+  @Test
+  fun fromMethod_futureOfAnEvent_fails() {
+    // Local, so KSP, which processes this source set in Gradle, never sees this invalid tool.
+    class BadFutureFixture {
+      @Tool(description = "Answers with an event.")
+      fun event(): CompletableFuture<Event> = CompletableFuture.completedFuture(Event())
+    }
+
+    val failure =
+      assertFailsWith<IllegalArgumentException> {
+        ReflectiveTools.fromMethod(BadFutureFixture(), "event")
+      }
+
+    assertEquals(
+      "event returns a CompletionStage<Event>; return a Publisher to send events.",
+      failure.message,
+    )
+  }
+
+  @Test
+  fun fromMethod_blockingMethodReturningAFuture_answersOnceWithItsValueUnderALiveRun() {
+    runBlocking {
+      // Local, so KSP, which processes this source set in Gradle, never sees this tool.
+      class FutureFixture {
+        @Tool(description = "Looks a price up.")
+        fun price(): CompletableFuture<String> = CompletableFuture.supplyAsync { "300" }
+      }
+      val sent = mutableListOf<Map<String, Any?>>()
+      val script =
+        listOf(
+          Respond(modelFunctionCallResponse("price", id = CALL_ID)),
+          AwaitSent("the price") { message ->
+            (message as? ContentInput)?.content?.parts?.forEach { part ->
+              part.functionResponse?.takeIf { it.id == CALL_ID }?.let { sent.add(it.response) }
+            }
+            answers(CALL_ID, mapOf("result" to "300"))(message)
+          },
+          Respond(LlmResponse(turnComplete = true)),
+        )
+
+      runLive(script, ReflectiveTools.fromMethod(FutureFixture(), "price"))
+
+      assertEquals(listOf(mapOf<String, Any?>("result" to "300")), sent)
+    }
+  }
+
+  @Test
+  fun fromMethod_methodReturningAFuture_streamsOnlyWhenNonBlocking() {
+    // Local, so KSP, which processes this source set in Gradle, never sees these tools.
+    class FutureFixture {
+      @Tool(description = "Looks a price up.")
+      fun blocking(): CompletableFuture<String> = CompletableFuture.completedFuture("300")
+
+      @Tool(description = "Looks a price up.", behavior = Behavior.NON_BLOCKING)
+      fun nonBlocking(): CompletableFuture<String> = CompletableFuture.completedFuture("300")
+
+      @Tool(
+        description = "Looks a price up.",
+        responseScheduling = FunctionResponseScheduling.WHEN_IDLE,
+      )
+      fun scheduled(): CompletableFuture<String> = CompletableFuture.completedFuture("300")
+
+      @Tool(
+        description = "Looks a price up.",
+        behavior = Behavior.BLOCKING,
+        responseScheduling = FunctionResponseScheduling.WHEN_IDLE,
+      )
+      fun forcedBlocking(): CompletableFuture<String> = CompletableFuture.completedFuture("300")
+    }
+    val fixture = FutureFixture()
+
+    assertEquals(
+      mapOf(
+        "blocking" to false,
+        "nonBlocking" to true,
+        "scheduled" to true,
+        "forcedBlocking" to false,
+      ),
+      listOf("blocking", "nonBlocking", "scheduled", "forcedBlocking").associateWith {
+        ReflectiveTools.fromMethod(fixture, it).isStreaming
+      },
+    )
   }
 
   @Test

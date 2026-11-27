@@ -389,6 +389,7 @@ internal class LiveStreamingTools(
       if (original != null) {
         original.repeatIds.mutate { ids -> ids + callId }
         call.job.cancel()
+        (stream as? PendingToolResult)?.cancel?.invoke()
         return false
       }
       // A call id answered twice must not stream twice; the newer call wins.
@@ -398,9 +399,11 @@ internal class LiveStreamingTools(
         break
       }
     }
-    call.job.invokeOnCompletion {
+    call.job.invokeOnCompletion { cause ->
       finished.mutate { ids -> ids + call.callId }
       active.mutate { calls -> calls - call }
+      // Stopping before the job starts skips the await that would cancel the result.
+      if (cause != null) (stream as? PendingToolResult)?.cancel?.invoke()
     }
     // A new call under a failed call's id has not failed.
     failed.mutate { ids -> ids - callId }

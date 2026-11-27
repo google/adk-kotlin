@@ -20,6 +20,8 @@ package com.google.adk.kt.interop
 
 import com.google.adk.kt.agents.Context
 import com.google.adk.kt.agents.LiveRequest
+import com.google.adk.kt.agents.PendingToolResult
+import com.google.adk.kt.agents.isNonBlocking
 import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
@@ -42,8 +44,12 @@ import java.lang.reflect.ParameterizedType
 import java.lang.reflect.Type as JavaType
 import java.lang.reflect.TypeVariable
 import java.lang.reflect.WildcardType
+import java.util.concurrent.CompletionStage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactive.asPublisher
 import org.reactivestreams.Publisher
@@ -58,7 +64,9 @@ import org.reactivestreams.Publisher
  * LiveRequest>`), which carries [ToolContext.liveRequests]. Like a KSP tool, the method runs in the
  * calling coroutine and keeps its context (such as MDC), so run blocking methods on a dispatcher
  * meant for blocking work, such as [PublisherRunner.runAsync]'s default; a returned Reactive
- * Streams [Publisher] acts as a returned Flow does (see [BaseTool.run]).
+ * Streams [Publisher] acts as a returned Flow does (see [BaseTool.run]), and a returned
+ * [CompletionStage] answers with its value like a plain return, which a live run sends after a
+ * pending answer when the tool is non-blocking.
  */
 @AdkJavaInteropApi
 object ReflectiveTools {
@@ -131,11 +139,12 @@ object ReflectiveTools {
     setOf(Event::class.java, FunctionResponse::class.java, Any::class.java)
 
   /**
-   * The `T` that [type] gives `Publisher<T>`, found through its supertypes as KSP does (a wildcard
-   * gives its upper bound), or null if it gives none.
+   * The `T` that [type] supplies to [container] (`Publisher<T>` by default), resolved through its
+   * supertypes as KSP does (using a wildcard's upper bound), or null if absent.
    */
-  private fun publisherElement(
+  private fun elementOf(
     type: JavaType,
+    container: Class<*> = Publisher::class.java,
     bindings: Map<TypeVariable<*>, JavaType> = emptyMap(),
   ): JavaType? {
     val raw = (if (type is ParameterizedType) type.rawType else type) as? Class<*> ?: return null
@@ -143,13 +152,13 @@ object ReflectiveTools {
       (type as? ParameterizedType)?.actualTypeArguments.orEmpty().map {
         if (it is TypeVariable<*>) bindings[it] ?: it else it
       }
-    if (raw == Publisher::class.java) {
+    if (raw == container) {
       val element = arguments.singleOrNull()
       return if (element is WildcardType) element.upperBounds.singleOrNull() else element
     }
     val scope = raw.typeParameters.zip(arguments).toMap<TypeVariable<*>, JavaType>()
     return (listOfNotNull(raw.genericSuperclass) + raw.genericInterfaces).firstNotNullOfOrNull {
-      publisherElement(it, scope)
+      elementOf(it, container, scope)
     }
   }
 
@@ -185,10 +194,23 @@ object ReflectiveTools {
     // The live input goes to the one Publisher<LiveRequest> parameter, which the model never sees.
     private val liveInputIndex: Int = findLiveInputIndex()
 
+    private val returnsFuture: Boolean =
+      CompletionStage::class.java.isAssignableFrom(method.returnType)
+
+    init {
+      // An Event only reaches the caller from a stream, so a one-value future cannot carry one.
+      require(
+        !returnsFuture ||
+          elementOf(method.genericReturnType, CompletionStage::class.java) != Event::class.java
+      ) {
+        "${method.name} returns a CompletionStage<Event>; return a Publisher to send events."
+      }
+    }
+
     // As in KSP, each published value answers like a single result unless the declared element is
     // Event, FunctionResponse or Object, which pass through unconverted.
     private val wrapsPublishedValues: Boolean =
-      when (val element = publisherElement(method.genericReturnType)) {
+      when (val element = elementOf(method.genericReturnType)) {
         is Class<*> -> element !in PASS_THROUGH_ELEMENTS
         is ParameterizedType -> true
         else -> false
@@ -204,7 +226,7 @@ object ReflectiveTools {
       }
       val index = publishers.singleOrNull() ?: return -1
 
-      val bound = publisherElement(method.genericParameterTypes[index])
+      val bound = elementOf(method.genericParameterTypes[index])
       // A subtype such as Flowable cannot hold the plain Publisher the tool is handed.
       require(
         method.parameterTypes[index] == Publisher::class.java && bound == LiveRequest::class.java
@@ -221,7 +243,9 @@ object ReflectiveTools {
 
     // Read from the declared type, so a live run can mark the tool before calling it.
     @OptIn(FrameworkInternalApi::class)
-    override val isStreaming: Boolean = Publisher::class.java.isAssignableFrom(method.returnType)
+    override val isStreaming: Boolean =
+      Publisher::class.java.isAssignableFrom(method.returnType) ||
+        (returnsFuture && isNonBlocking(this))
 
     private val bound: List<Bound> =
       method.parameters
@@ -312,6 +336,36 @@ object ReflectiveTools {
           @Suppress("UNCHECKED_CAST") // Safe: Reactive Streams never emits null.
           val values = (result as Publisher<Any>).asFlow()
           if (wrapsPublishedValues) values.map { mapOf(BaseTool.RESULT_KEY to it) } else values
+        }
+        result is CompletionStage<*> -> {
+          // Convert up front so a stopped call can always cancel what it awaits.
+          val future = result.toCompletableFuture()
+          val answer =
+            PendingToolResult(cancel = { future.cancel(false) }) {
+              val value: Any? =
+                try {
+                  future.await()
+                } catch (e: CancellationException) {
+                  // Cancelled by the tool, not by a stop, so fail the call instead of the run.
+                  currentCoroutineContext().ensureActive()
+                  throw IllegalStateException(
+                    "The future returned by tool '$name' was cancelled.",
+                    e,
+                  )
+                }
+              when (value) {
+                // Pass through so a live run sends the payload with the response's scheduling.
+                is FunctionResponse -> value
+                is Event ->
+                  throw IllegalStateException(
+                    "${method.name} completed its CompletionStage with an Event; return a" +
+                      " Publisher to send events."
+                  )
+                else -> mapOf(BaseTool.RESULT_KEY to value.takeUnless { it === Unit })
+              }
+            }
+          if (isStreaming) answer
+          else answer.await().let { (it as? FunctionResponse)?.response ?: it }
         }
         else -> mapOf(BaseTool.RESULT_KEY to result)
       }
