@@ -15,6 +15,7 @@
  */
 package com.google.adk.kt.tools
 
+import com.google.adk.kt.SchemaUtils
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.runners.InMemoryRunner
@@ -392,6 +393,134 @@ class SetModelResponseToolTest {
   }
 
   @Test
+  fun run_valueOutsideTheEnum_returnsFeedbackAndRecordsNothing() = runBlocking {
+    // Arrange
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+        required = listOf("answer"),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    // Act
+    val result = tool.run(testToolContext(functionCallId = "call_1"), mapOf("answer" to "MAYBE"))
+
+    // Assert: the feedback names the rule but not the value.
+    val error = result["error"] as String
+    assertThat(error).contains("'answer' is not one of the schema's enum values")
+    assertThat(error).doesNotContain("MAYBE")
+    assertThat(tool.validatedResponseJson("call_1")).isNull()
+  }
+
+  @Test
+  fun run_wrappedValueOutsideTheEnum_returnsFeedbackAndRecordsNothing() = runBlocking {
+    // Arrange
+    val tool = SetModelResponseTool(Schema(enum = listOf("YES", "NO")))
+
+    // Act
+    val result = tool.run(testToolContext(functionCallId = "call_1"), mapOf("response" to "MAYBE"))
+
+    // Assert
+    val error = result["error"] as String
+    assertThat(error).contains("is not one of the schema's enum values")
+    assertThat(error).doesNotContain("MAYBE")
+    assertThat(tool.validatedResponseJson("call_1")).isNull()
+  }
+
+  @Test
+  fun run_omittedFieldWithADefaultOutsideTheEnum_returnsFeedbackAndRecordsNothing() = runBlocking {
+    // Arrange: the default the node would fill in for an omitted `answer` is not an enum value.
+    val answer = Schema(type = Type.STRING, enum = listOf("YES", "NO"), default = "MAYBE")
+    val tool =
+      SetModelResponseTool(Schema(type = Type.OBJECT, properties = mapOf("answer" to answer)))
+
+    // Act
+    val result = tool.run(testToolContext(functionCallId = "call_1"), emptyMap())
+
+    // Assert
+    assertThat(result["error"] as String)
+      .contains("'answer' is not one of the schema's enum values")
+    assertThat(tool.validatedResponseJson("call_1")).isNull()
+  }
+
+  @Test
+  fun run_branchDefaultOutsideTheEnum_returnsFeedbackAndRecordsNothing() = runBlocking {
+    // Arrange: the node's output check fills the branch's default "A" before checking the enum.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+        anyOf =
+          listOf(Schema(properties = mapOf("answer" to Schema(type = Type.STRING, default = "A")))),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    // Act
+    val result = tool.run(testToolContext(functionCallId = "call_1"), emptyMap())
+
+    // Assert
+    assertThat(result["error"] as String).contains("is not one of the schema's enum values")
+    assertThat(tool.validatedResponseJson("call_1")).isNull()
+  }
+
+  @Test
+  fun run_enumDecidesTheUnionBranchThatNeedsANull_recordsTheRawArgs() = runBlocking {
+    // Arrange: only the `kind` enum tells the branches apart, and branch A requires a null `a`.
+    val schema =
+      Schema(
+        type = Type.OBJECT,
+        properties =
+          mapOf(
+            "kind" to Schema(type = Type.STRING),
+            "a" to Schema(type = Type.STRING, nullable = true),
+          ),
+        anyOf =
+          listOf(
+            Schema(
+              properties =
+                mapOf(
+                  "kind" to Schema(type = Type.STRING, enum = listOf("A")),
+                  "a" to Schema(type = Type.STRING, nullable = true),
+                ),
+              required = listOf("kind", "a"),
+            ),
+            Schema(
+              properties = mapOf("kind" to Schema(type = Type.STRING, enum = listOf("B"))),
+              required = listOf("kind"),
+            ),
+          ),
+      )
+    val tool = SetModelResponseTool(schema)
+
+    // Act
+    val result =
+      tool.run(testToolContext(functionCallId = "call_1"), mapOf("kind" to "A", "a" to null))
+
+    // Assert
+    assertThat(result).isEqualTo(mapOf("kind" to "A", "a" to null))
+    assertThat(tool.validatedResponseJson("call_1")).isEqualTo("""{"kind":"A","a":null}""")
+  }
+
+  @Test
+  fun run_enumTooComplexToCheck_throws() =
+    runBlocking<Unit> {
+      // Arrange: validation passes the first leaf, but the enum check tries every branch.
+      var nested = Schema(type = Type.STRING, enum = listOf("YES", "NO"))
+      repeat(24) { nested = Schema(anyOf = listOf(nested, nested)) }
+      val tool = SetModelResponseTool(Schema(type = Type.OBJECT, properties = mapOf("x" to nested)))
+
+      // Act
+      val failure =
+        assertFailsWith<SchemaUtils.SchemaTooComplexException> {
+          tool.run(testToolContext(), mapOf("x" to "MAYBE"))
+        }
+
+      // Assert
+      assertThat(failure).hasMessageThat().contains("union alternatives")
+    }
+
+  @Test
   fun runAsync_arraySchema_endsTurnWithTheArrayAndSavesIt() = runBlocking {
     // Arrange
     val model =
@@ -670,7 +799,7 @@ class SetModelResponseToolTest {
       )
     val tool = SetModelResponseTool(Schema(type = Type.OBJECT, additionalProperties = value))
 
-    // Act: validation does not check values under `additionalProperties`, so a wrong drop passes.
+    // Act
     val result = tool.run(testToolContext(), mapOf("k" to mapOf("a" to null)))
 
     // Assert

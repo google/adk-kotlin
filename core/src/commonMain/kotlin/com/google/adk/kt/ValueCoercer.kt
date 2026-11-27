@@ -174,8 +174,9 @@ internal class ValueCoercer private constructor(private val fillDefaults: Boolea
 
     /**
      * Checks [value] against [schema] and returns the coerced result, or a [Result.failure] whose
-     * message names [what] and parts of the schema, never the runtime value. With [fillDefaults],
-     * objects gain the defaults of the properties they lack.
+     * message names [what] and parts of the schema, never the runtime value; the failure is a
+     * [SchemaUtils.SchemaTooComplexException] if [schema] is too complex to check. With
+     * [fillDefaults], objects gain the defaults of the properties they lack.
      */
     internal fun coerceValue(
       value: Any?,
@@ -186,10 +187,13 @@ internal class ValueCoercer private constructor(private val fillDefaults: Boolea
       try {
         Result.success(ValueCoercer(fillDefaults).coerce(value, schema))
       } catch (e: IllegalArgumentException) {
+        val message = "validation error: $what does not match its schema: ${e.message}"
         Result.failure(
-          IllegalArgumentException(
-            "validation error: $what does not match its schema: ${e.message}"
-          )
+          if (e is SchemaUtils.SchemaTooComplexException) {
+            SchemaUtils.SchemaTooComplexException(message)
+          } else {
+            IllegalArgumentException(message)
+          }
         )
       }
 
