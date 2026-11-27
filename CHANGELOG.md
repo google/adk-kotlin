@@ -1,5 +1,89 @@
 # Changelog
 
+## [1.7.0](https://github.com/google/adk-kotlin/compare/v1.6.0...v1.7.0) (2026-11-27)
+
+
+### Features
+
+* **auth:** add factories for API key schemes and credentials and OAuth2 access tokens ([f36845c](https://github.com/google/adk-kotlin/commit/f36845c86667c586a823ff8edde1113d6bcd9b06))
+* **auth:** let Java leave out optional auth type arguments ([057027f](https://github.com/google/adk-kotlin/commit/057027f4de4eda157e16c84f321729945fca1cf6))
+* **bigquery:** offload binary and large text parts to Cloud Storage ([f1927c3](https://github.com/google/adk-kotlin/commit/f1927c30fa069532c33a9738e69a9dca9bb357ff))
+* fill in schema defaults for omitted properties ([6682a0a](https://github.com/google/adk-kotlin/commit/6682a0a682fd8a0ed691d36e9a3c0c63b046bbc9))
+* **litertlm:** add `Content.VideoFrames` and `VideoFrame` to LiteRT-LM Kotlin API ([c2cdbfa](https://github.com/google/adk-kotlin/commit/c2cdbfa1039950d5a41b9c4ba0c7f7520f9d43ef))
+* **live:** add LiveConnection.sendContextUpdate ([989c9c4](https://github.com/google/adk-kotlin/commit/989c9c48efcd69ed6f17c2dfa9f7d7d645599071))
+* **live:** fail a second live node before it connects ([966ff56](https://github.com/google/adk-kotlin/commit/966ff5680bcf96199154e6aa83d1eadee10dd090))
+* **live:** keep a live task's media out of the session and save its unsaved audio ([4a3716f](https://github.com/google/adk-kotlin/commit/4a3716f3d4e76fa434d7ece8cc51520cef7ae92b))
+* **live:** let tools set when the model reacts to their responses ([a4a0a33](https://github.com/google/adk-kotlin/commit/a4a0a33a91ee6adbaefb0dd7ce2963d5ca4bf513))
+* **live:** run a workflow root with Runner.runLive ([0832116](https://github.com/google/adk-kotlin/commit/0832116d8398a699d460bd0f1561c34d0f82e508))
+* **live:** run chat agent nodes live ([f02e750](https://github.com/google/adk-kotlin/commit/f02e7508795893e52ced25a4fc877049885ad9b4))
+* **live:** run graph task agent nodes live ([b750bfc](https://github.com/google/adk-kotlin/commit/b750bfc0ad2a9214d531b40f97467e27d9cf0e41))
+* **live:** run task agents live from runNode and chat nodes ([7908992](https://github.com/google/adk-kotlin/commit/7908992d3d2f056d8eb7440e57c0da8d3797cddf))
+* **live:** support response scheduling on @Tool ([d5066b3](https://github.com/google/adk-kotlin/commit/d5066b3e8fc9c514aabadd164b0fdcc65d1abaa5))
+* **runners:** add autoCreateSession and check sessions in the runner ([bb02e3d](https://github.com/google/adk-kotlin/commit/bb02e3d007556c8cd6af1d8811e13198dc96e445))
+* **tools:** add BuiltInCodeExecutionTool for Gemini's server-side code execution ([d1c5074](https://github.com/google/adk-kotlin/commit/d1c507404f73509ef5e014e23b8e10e53b08c3d8))
+* **tools:** add BuiltInCodeExecutionTool for Gemini's server-side code execution ([4d6d38a](https://github.com/google/adk-kotlin/commit/4d6d38a14fc171cd6660ec131950f5537d1fd30c))
+* **tools:** add BuiltInCodeExecutionTool for Gemini's server-side code execution ([c9959e9](https://github.com/google/adk-kotlin/commit/c9959e914a8f882d967f834c2b1594acea3f7613))
+* **workflow:** check edges into and out of Java typed ports at build time ([3b8837a](https://github.com/google/adk-kotlin/commit/3b8837a1534b6582a7cf0da6ba9e0fe773e5494b))
+* **workflow:** let a Java FunctionNode body run child nodes with InteropContextView.runNodeBlocking ([37c2eef](https://github.com/google/adk-kotlin/commit/37c2eefe36ccdf7961f3e7a4d2639d17f59264a4))
+* **workflow:** let a Java FunctionNode body send events with InteropContextView.emit ([ac59fad](https://github.com/google/adk-kotlin/commit/ac59fada7c00a87945abc373602ea73f5fb50221))
+* **workflow:** let Java pass retry exception types as Class ([5b94e6f](https://github.com/google/adk-kotlin/commit/5b94e6f478fc90d0c4308edb3d361d233c8257bc))
+* **workflow:** read numbers, booleans, chars and enums strictly in FunctionNode ports ([6f8f94b](https://github.com/google/adk-kotlin/commit/6f8f94ba43bba810184850ed96ab8e6b2b4904f4))
+
+
+### Bug Fixes
+
+* **a2a:** read a remote's error code as ADK Python does ([3a04be3](https://github.com/google/adk-kotlin/commit/3a04be31e0091206f013e985bd27717642498256))
+* **a2a:** read ADK metadata where ADK Python writes it ([17b4c0b](https://github.com/google/adk-kotlin/commit/17b4c0b2277ff14c2108cd7170fb430e45621ec7))
+* **auth:** give typed credentials in free-form values a JSON form ([3d20a31](https://github.com/google/adk-kotlin/commit/3d20a31e77b8a8aa2004a6efc211d81527fe9068))
+* **auth:** leave credential secrets out of serialized output ([d6493be](https://github.com/google/adk-kotlin/commit/d6493bedbe69b1a045e901a430111eb92766e06b))
+* **auth:** leave secrets of sign-in responses sent over HTTP out of output ([cef955b](https://github.com/google/adk-kotlin/commit/cef955b0c39d642042f1b195f44ff0b8efa32076))
+* **auth:** leave sign-in secrets out of serialized events ([9c55ab5](https://github.com/google/adk-kotlin/commit/9c55ab50699aca287f5a9be14fdf3335088325bf))
+* **auth:** write the API key scheme location as "in" ([71a4542](https://github.com/google/adk-kotlin/commit/71a4542a4efac786bee084b94a46ccecdbe60a8d))
+* copy the maps passed to EventActions.Builder ([2d377c1](https://github.com/google/adk-kotlin/commit/2d377c10f24dd03b82dd64adf4b68864b12de2e5))
+* **core:** cap JSON nesting at 1,000 levels ([9c960db](https://github.com/google/adk-kotlin/commit/9c960db7d7a6ed6266dbe44c1033244e78948c61))
+* **core:** resume confirmed calls to toolset tools ([da37cff](https://github.com/google/adk-kotlin/commit/da37cfff94dd34b5605ddf064f354f5e34ac7162))
+* fail unknown-tool runs past ReflectAndRetryToolPlugin limits ([3ef6dd5](https://github.com/google/adk-kotlin/commit/3ef6dd5b9b94a048d2e1ce7dbed7205a18e1648b))
+* **firebase:** send the response schema and penalties to Firebase ([2c7ec9d](https://github.com/google/adk-kotlin/commit/2c7ec9dcfc91e43aed933f0a4c62460cb8eced39))
+* **live:** answer a live tool call that throws with an error ([0e3f362](https://github.com/google/adk-kotlin/commit/0e3f36253fc592875e7478aa2609c9389468fab7))
+* **live:** finish the model's turn before reconnecting on a go-away ([f24169f](https://github.com/google/adk-kotlin/commit/f24169f6928e8a418d3dcb0c2e0833d852c41a03))
+* **live:** let one live connection read a LiveRequestQueue at a time ([63b4d8d](https://github.com/google/adk-kotlin/commit/63b4d8d7b68c3000878dd3d40e1315aa2c2af97f))
+* **live:** stop offering set_model_response in live runs ([96e11dd](https://github.com/google/adk-kotlin/commit/96e11dda03cf91de4c0f94efe75cf43787c59030))
+* **live:** store an agent's speech before each tool call, so a handover keeps it ([b29fe0a](https://github.com/google/adk-kotlin/commit/b29fe0a9c58391834240bde24fda7ad97fb94424))
+* mark a string enum with format=enum so Gemini Live enforces it ([bb80b83](https://github.com/google/adk-kotlin/commit/bb80b83909b229993a3d7deba51dc6f871895255))
+* **models:** request v1beta for Gemini API clients using the default SDK version ([d9cf34b](https://github.com/google/adk-kotlin/commit/d9cf34b3aa182d252ddc5c5854c08ec5203a76fc))
+* **models:** wire a per-request v1beta into Gemini for clients on the SDK default version ([39691b9](https://github.com/google/adk-kotlin/commit/39691b9236579213e9da2b649dd5ec33703e2f50))
+* run error callbacks when a tool or run times out ([c232980](https://github.com/google/adk-kotlin/commit/c2329806fb37cbfeac40e30f3fe402c218add6be))
+* strip a code fence around structured model output ([655fcc7](https://github.com/google/adk-kotlin/commit/655fcc753b216bd7d4ee8a0d0c2a8088335084a9))
+* **telemetry:** open a workflow root's invoke_workflow span around the whole turn ([6aea6b2](https://github.com/google/adk-kotlin/commit/6aea6b2ab11dfbc649b29b3f288ef7837e8adfff))
+* **telemetry:** record top_p as configured ([f86c4f1](https://github.com/google/adk-kotlin/commit/f86c4f168425c898e1cf983e145f85e4d19baa17))
+* **webserver:** stop /run and /run_sse from recreating a deleted session ([136b4f4](https://github.com/google/adk-kotlin/commit/136b4f43be7b73a7222408137efcc8da560d5121))
+* **webserver:** stop /run_live from recreating a deleted session ([43a6b88](https://github.com/google/adk-kotlin/commit/43a6b8818a72a16c7fb4c77c413db80fb1d1b19b))
+* **workflow:** check a tool node's state writes when the tool writes them ([4c015c4](https://github.com/google/adk-kotlin/commit/4c015c4b35f6be02ddf1723ea4d88488529ecbce))
+* **workflow:** fail a helper thread's InteropContextView.emit after its Java body returned ([e433b73](https://github.com/google/adk-kotlin/commit/e433b7369f24be069fd53f5377df39cf495de845))
+* **workflow:** keep a helper thread's runNodeBlocking child in the node's trace ([6a4a41b](https://github.com/google/adk-kotlin/commit/6a4a41b597c45365f102840301c9c9a9eeb1d5d5))
+* **workflow:** keep a node's message output a message after a resume ([d27dd7f](https://github.com/google/adk-kotlin/commit/d27dd7f6eec11d1bfe4e8bc0be10c668d0ea13ff))
+* **workflow:** let a task agent retry finish_task with a value outside its enum ([3e2a225](https://github.com/google/adk-kotlin/commit/3e2a225e6e109535c4fafee9879390e3379a69a4))
+* **workflow:** read an enum port's name with or without JSON quotes ([b4f7f62](https://github.com/google/adk-kotlin/commit/b4f7f62f95394b429a3a2c590ed2991a289d0c03))
+
+
+### Reverts
+
+* Revert MCP SDK version update from 2.1.0 back to 2.0.0 ([f6b9c61](https://github.com/google/adk-kotlin/commit/f6b9c61dbeea9114990e93370e83b355df7a098d))
+
+
+### Documentation
+
+* **examples:** add a live workflow example and its Java port ([34b64da](https://github.com/google/adk-kotlin/commit/34b64dabe471a09a983a380f7a3d86bc4fa8c11c))
+* **examples:** pass Map.of state deltas directly in the Java workflow samples ([948cc5e](https://github.com/google/adk-kotlin/commit/948cc5e324437c65923cd1f69d455f0c2ff94db5))
+* **examples:** port four Java workflow samples to FunctionNodes with emit ([0b041a1](https://github.com/google/adk-kotlin/commit/0b041a1888c0f7646c34fa11557d8a4f4590973c))
+* **examples:** run child nodes in three Java workflow samples as the Kotlin samples do ([47832b5](https://github.com/google/adk-kotlin/commit/47832b52c27d5541c35347ef96b31f5c53c0aa8b))
+* **examples:** send the workflow samples' state and routes as events ([a8bf644](https://github.com/google/adk-kotlin/commit/a8bf644b8c53f979b6e8e2b1df23f8021945b97e))
+* **examples:** serve the workflow samples from the example servers ([01e0792](https://github.com/google/adk-kotlin/commit/01e0792f8dbd635ae64b5d8830411929794dfd0b))
+* **examples:** write two Java orchestrators as FunctionNodes ([b071efc](https://github.com/google/adk-kotlin/commit/b071efcf553b7f5d2f53dd662aad1b3b7e826573))
+* **workflow:** document which schema fields workflow checks read ([1980a05](https://github.com/google/adk-kotlin/commit/1980a05a0ef0b792fae147e4b370bba7520b4498))
+* **workflow:** fix runNodeBlocking and NodeBody KDoc on fan-out, pauses, and join ([2b36c9e](https://github.com/google/adk-kotlin/commit/2b36c9e518dc8c62d6f8ca123ce3c731802ec817))
+* **workflow:** name the Java form in the KDoc of Kotlin-only APIs ([fe7622c](https://github.com/google/adk-kotlin/commit/fe7622c8c5c0a5d682e470f5535a3a107a18b343))
+
 ## [1.6.0](https://github.com/google/adk-kotlin/compare/v1.5.0...v1.6.0) (2026-11-17)
 
 
