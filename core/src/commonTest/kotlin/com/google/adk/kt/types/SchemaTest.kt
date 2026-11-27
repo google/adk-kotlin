@@ -24,6 +24,7 @@ import com.google.genai.kotlin.types.Type as GenAiType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 @OptIn(FrameworkInternalApi::class)
 class SchemaTest {
@@ -128,6 +129,56 @@ class SchemaTest {
     assertEquals(3L, genAiSchema.minProperties)
     assertEquals(9L, genAiSchema.maxProperties)
     assertEquals(GenAiType.INTEGER, genAiSchema.anyOf?.single()?.type)
+  }
+
+  @Test
+  fun toGenAiSchema_stringEnumWithoutFormat_marksItAsEnum() {
+    val ktSchema = Schema(type = Type.STRING, enum = listOf("YES", "NO"))
+
+    val genAiSchema = ktSchema.toGenAiSchema()
+
+    assertEquals("enum", genAiSchema.format)
+    assertEquals(listOf("YES", "NO"), genAiSchema.enum)
+  }
+
+  @Test
+  fun toGenAiSchema_nestedStringEnums_areMarkedAsEnum() {
+    val ktSchema =
+      Schema(
+        type = Type.OBJECT,
+        properties = mapOf("answer" to Schema(type = Type.STRING, enum = listOf("YES", "NO"))),
+        items = Schema(type = Type.STRING, enum = listOf("A", "B")),
+        anyOf = listOf(Schema(type = Type.STRING, enum = listOf("X", "Y"))),
+      )
+
+    val genAiSchema = ktSchema.toGenAiSchema()
+
+    assertEquals("enum", genAiSchema.properties?.get("answer")?.format)
+    assertEquals("enum", genAiSchema.items?.format)
+    assertEquals("enum", genAiSchema.anyOf?.single()?.format)
+  }
+
+  @Test
+  fun toGenAiSchema_stringWithoutEnum_leavesFormatUnset() {
+    assertNull(Schema(type = Type.STRING).toGenAiSchema().format)
+    assertNull(Schema(type = Type.STRING, enum = emptyList()).toGenAiSchema().format)
+  }
+
+  @Test
+  fun toGenAiSchema_stringEnumWithExplicitFormat_keepsIt() {
+    // An explicit format wins, even over an enum.
+    val ktSchema = Schema(type = Type.STRING, enum = listOf("YES", "NO"), format = "date-time")
+
+    assertEquals("date-time", ktSchema.toGenAiSchema().format)
+  }
+
+  @Test
+  fun toGenAiSchema_nonStringEnum_leavesFormatAlone() {
+    val intEnumWithFormat = Schema(type = Type.INTEGER, enum = listOf("1", "2"), format = "int32")
+    val intEnumWithoutFormat = Schema(type = Type.INTEGER, enum = listOf("1", "2"))
+
+    assertEquals("int32", intEnumWithFormat.toGenAiSchema().format)
+    assertNull(intEnumWithoutFormat.toGenAiSchema().format)
   }
 
   @Test

@@ -692,7 +692,8 @@ internal fun Schema.toGenAiSchema(): GenAiSchema =
     required = required,
     description = description,
     enum = enum,
-    format = format,
+    // Gemini Live enforces a STRING enum only when format is "enum"; keep any explicit format.
+    format = if (format == null && type == Type.STRING && !enum.isNullOrEmpty()) "enum" else format,
     nullable = nullable,
     default = default?.toJsonElement(),
     anyOf = anyOf?.map { it.toGenAiSchema() },
