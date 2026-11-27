@@ -20,8 +20,11 @@ package com.google.adk.kt.processors
 import com.google.adk.kt.agents.AgentMode
 import com.google.adk.kt.agents.AgentModeOverride
 import com.google.adk.kt.agents.InvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue
 import com.google.adk.kt.agents.LlmAgent
 import com.google.adk.kt.agents.LlmAgent.IncludeContents
+import com.google.adk.kt.agents.openLiveRun
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.events.Event
@@ -505,11 +508,12 @@ class ContentsProcessorTest {
               Part(text = "Planning next steps", thought = true),
             ),
         ),
+        functionResponseEvent("test_tool", "fc_123"),
       )
 
     request = processor.process(context, request)
 
-    assertThat(request.contents).hasSize(2)
+    assertThat(request.contents).hasSize(3)
     assertThat(request.contents[1].parts).hasSize(3)
     assertThat(request.contents[1].parts[1].functionCall?.name).isEqualTo("test_tool")
   }
@@ -1584,7 +1588,28 @@ class ContentsProcessorTest {
     assertThat(request.contents.map { it.parts[0].text }).isEqualTo(listOf("task"))
   }
 
+  // A live run's background call may still be answered; a turn-based run has nothing to wait for.
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun run_unansweredBackgroundCall_isKeptOnlyInALiveRun() {
+    runBlocking {
+      val events = arrayOf(userEvent("Look it up."), functionCallEvent("lookup" to "b1"))
+      val turnBased = createTestContext(*events)
+      val live = createTestContext(*events)
+      live.openLiveRun(LiveRequestQueue()).historyKeptCallIds = setOf("b1")
+
+      val turnBasedCalls = ContentsProcessor().process(turnBased, LlmRequest()).callIds()
+      val liveCalls = ContentsProcessor().process(live, LlmRequest()).callIds()
+
+      assertThat(turnBasedCalls).isEmpty()
+      assertThat(liveCalls).containsExactly("b1")
+    }
+  }
+
   // Helpers
+
+  private fun LlmRequest.callIds(): List<String?> =
+    contents.flatMap { it.parts }.mapNotNull { it.functionCall }.map { it.id }
 
   private suspend fun createTestContext(
     vararg events: Event,

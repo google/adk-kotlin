@@ -268,6 +268,8 @@ class PromptTokenCountTest {
           timestamp = 100L,
           callName = "t",
           callId = "call_1",
+          // Pending, so the prompt keeps the call though nothing answers it.
+          longRunning = true,
           args = mapOf("x" to Unserializable()),
         )
       )
