@@ -18,6 +18,7 @@ package com.google.adk.kt.compiler.ksp
 
 import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.agents.Context
+import com.google.adk.kt.annotations.Param as ParamAnnotation
 import com.google.adk.kt.annotations.Tool as ToolAnnotation
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.tools.BaseTool
@@ -27,17 +28,20 @@ import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse
 import com.google.adk.kt.types.Schema
 import com.google.adk.kt.types.Type
+import com.google.devtools.ksp.findActualType
 import com.google.devtools.ksp.getAllSuperTypes
 import com.google.devtools.ksp.getDeclaredFunctions
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.processing.KSPLogger
 import com.google.devtools.ksp.symbol.ClassKind
+import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSAnnotation
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.KSFunctionDeclaration
 import com.google.devtools.ksp.symbol.KSType
+import com.google.devtools.ksp.symbol.KSTypeAlias
 import com.google.devtools.ksp.symbol.KSTypeParameter
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
@@ -139,10 +143,7 @@ internal class FunctionToolGenerator(
       )
     }
 
-    val toolAnnotation =
-      function.annotations.firstOrNull {
-        it.shortName.asString() == ToolAnnotation::class.simpleName
-      }
+    val toolAnnotation = function.findAnnotation(TOOL_ANNOTATION_QUALIFIED_NAME)
     val isLongRunning =
       toolAnnotation?.arguments?.find { it.name?.asString() == "isLongRunning" }?.value as? Boolean
         ?: false
@@ -1169,9 +1170,8 @@ internal class FunctionToolGenerator(
 
   private fun getParamDescription(param: KSValueParameter, docString: String?): String {
     val paramName = param.name?.asString() ?: return ""
-    val paramAnnotation = param.annotations.firstOrNull { it.shortName.asString() == "Param" }
     val paramDesc =
-      paramAnnotation?.arguments?.firstOrNull { it.name?.asString() == "description" }?.value
+      paramAnnotation(param)?.arguments?.firstOrNull { it.name?.asString() == "description" }?.value
         as? String
     if (!paramDesc.isNullOrBlank()) {
       return paramDesc
@@ -1180,7 +1180,7 @@ internal class FunctionToolGenerator(
   }
 
   private fun paramAnnotation(param: KSValueParameter) =
-    param.annotations.firstOrNull { it.shortName.asString() == "Param" }
+    param.findAnnotation(PARAM_ANNOTATION_QUALIFIED_NAME)
 
   /** The explicit [com.google.adk.kt.annotations.Param.name] if set, else the Kotlin name. */
   private fun wireName(param: KSValueParameter): String {
@@ -1464,6 +1464,8 @@ internal class FunctionToolGenerator(
     private val LIST_QUALIFIED_NAMES = setOf(LIST_QUALIFIED_NAME, MUTABLE_LIST_QUALIFIED_NAME)
     private val MAP_QUALIFIED_NAMES = setOf(MAP_QUALIFIED_NAME, MUTABLE_MAP_QUALIFIED_NAME)
     private val ANY_QUALIFIED_NAME = Any::class.qualifiedName
+    private val TOOL_ANNOTATION_QUALIFIED_NAME = ToolAnnotation::class.qualifiedName!!
+    private val PARAM_ANNOTATION_QUALIFIED_NAME = ParamAnnotation::class.qualifiedName!!
     // The source text of a "\n" literal; `%S` would render a newline as a multi-line raw string.
     private const val NEWLINE_LITERAL = "\"\\n\""
     // Where generated code reads a top-level argument; nested fields read their parent's raw map.
@@ -1493,6 +1495,17 @@ internal class FunctionToolGenerator(
       MemberName("kotlinx.coroutines", "currentCoroutineContext")
     private const val PUBLISHER_QUALIFIED_NAME = "org.reactivestreams.Publisher"
     private const val LIVE_REQUEST_QUALIFIED_NAME = "com.google.adk.kt.agents.LiveRequest"
+
+    /**
+     * The annotation of class [qualifiedName] on this symbol, matched by its resolved type rather
+     * than its short name so that an import alias or a `typealias` of it still matches.
+     */
+    private fun KSAnnotated.findAnnotation(qualifiedName: String): KSAnnotation? =
+      annotations.firstOrNull {
+        val declaration = it.annotationType.resolve().declaration
+        val actual = if (declaration is KSTypeAlias) declaration.findActualType() else declaration
+        actual.qualifiedName?.asString() == qualifiedName
+      }
 
     /** Whether the class of [type] is [qualifiedName] or has it among its supertypes. */
     private fun isOrExtends(type: KSType, qualifiedName: String): Boolean {

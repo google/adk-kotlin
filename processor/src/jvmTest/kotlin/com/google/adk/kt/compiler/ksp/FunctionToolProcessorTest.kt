@@ -26,8 +26,10 @@ import com.google.adk.kt.agents.RunConfig
 import com.google.adk.kt.agents.StreamingMode
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
+import com.google.adk.kt.annotations.Param as AdkParam
 import com.google.adk.kt.annotations.Param
 import com.google.adk.kt.annotations.Requiredness
+import com.google.adk.kt.annotations.Tool as AdkTool
 import com.google.adk.kt.annotations.Tool
 import com.google.adk.kt.events.Event
 import com.google.adk.kt.models.ContentInput
@@ -513,6 +515,43 @@ class FunctionToolProcessorTest {
     val declaration = tool.declaration()!!
     assertThat(declaration.name).isEqualTo("custom_name")
     assertThat(declaration.description).isEqualTo("Custom description")
+  }
+
+  @OptIn(ExperimentalLiveApi::class)
+  @Test
+  fun generate_aliasedAnnotationImports_honorsTheirArguments() {
+    runBlocking {
+      val tool = AliasedToolTool()
+
+      val declaration = tool.declaration()!!
+      assertThat(declaration.name).isEqualTo("aliased_name")
+      assertThat(declaration.description).isEqualTo("Aliased description.")
+      assertThat(declaration.parameters?.properties?.keys).containsExactly("wire_name")
+      assertThat(declaration.parameters?.properties?.get("wire_name")?.description)
+        .isEqualTo("Aliased param.")
+      assertThat(tool.behavior).isEqualTo(Behavior.NON_BLOCKING)
+      assertThat(tool.responseScheduling).isEqualTo(FunctionResponseScheduling.SILENT)
+      val result =
+        tool.run(createDummyContext(functionCallId = "call-123"), mapOf("wire_name" to "v"))
+      assertThat((result as Map<*, *>)["error"])
+        .isEqualTo("This tool call requires confirmation, please approve or reject.")
+      assertThat(tool.execute(createDummyContext(), mapOf("wire_name" to "v")))
+        .isEqualTo(mapOf("result" to "got v"))
+    }
+  }
+
+  @Test
+  fun generate_typealiasedAnnotations_honorsTheirArguments() {
+    runBlocking {
+      val tool = TypealiasedToolTool()
+
+      val declaration = tool.declaration()!!
+      assertThat(declaration.name).isEqualTo("typealiased_name")
+      assertThat(declaration.description).isEqualTo("Typealiased description.")
+      assertThat(declaration.parameters?.properties?.keys).containsExactly("wire_name")
+      assertThat(tool.execute(createDummyContext(), mapOf("wire_name" to "v")))
+        .isEqualTo(mapOf("result" to "got v"))
+    }
   }
 
   @Test
@@ -1133,6 +1172,25 @@ class MyAwesomeService {
 fun customNamedTool(): String {
   return "Custom"
 }
+
+@AdkTool(
+  name = "aliased_name",
+  description = "Aliased description.",
+  behavior = Behavior.NON_BLOCKING,
+  responseScheduling = FunctionResponseScheduling.SILENT,
+  requireConfirmation = true,
+)
+internal fun aliasedTool(
+  @AdkParam(name = "wire_name", description = "Aliased param.") kotlinName: String
+): String = "got $kotlinName"
+
+private typealias ToolAlias = Tool
+
+private typealias ParamAlias = Param
+
+@ToolAlias(name = "typealiased_name", description = "Typealiased description.")
+internal fun typealiasedTool(@ParamAlias(name = "wire_name") kotlinName: String): String =
+  "got $kotlinName"
 
 @Tool fun namedParamTool(@Param(name = "wire_name") kotlinName: String): String = "got $kotlinName"
 
