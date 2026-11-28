@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.google.adk.kt.agents.CallbackContext
 import com.google.adk.kt.agents.Instruction
 import com.google.adk.kt.agents.LlmAgent
+import com.google.adk.kt.annotations.AdkJavaInteropApi
 import com.google.adk.kt.callbacks.BeforeModelCallback
 import com.google.adk.kt.callbacks.CallbackChoice
 import com.google.adk.kt.events.Event
@@ -85,6 +86,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TestTimeSource
 import kotlin.time.TimeSource
@@ -2019,6 +2021,163 @@ class BigQueryAgentAnalyticsPluginTest {
       assertEquals("[UPLOAD FAILED]", part["text"])
       verify(credentials).universeDomain
     }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun disabledPlugin_doesNotCreateBigQueryClientOrOffloader(): Unit = runBlocking {
+    val disabledConfig =
+      BigQueryLoggerConfig("p", "d", enabled = false, gcsBucketName = "my-bucket")
+    val disabledPlugin =
+      BigQueryAgentAnalyticsPlugin(
+        disabledConfig,
+        explicitBigQuery = null,
+        ioContext = Dispatchers.Unconfined,
+        timeSource = TimeSource.Monotonic,
+        createRowWriter = { fail("disabled plugin created a row writer") },
+        createOffloader = { fail("disabled plugin created an offloader") },
+        createBigQuery = { fail("disabled plugin created a BigQuery client") },
+      )
+
+    disabledPlugin.use {
+      it.beforeRun(invocationContext)
+      it.onUserMessage(invocationContext, userText("hi"))
+      it.afterRun(invocationContext)
+      assertEquals(emptyMap(), it.getDropStats().nonZero())
+    }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  @Suppress("CheckReturnValue")
+  fun disabledPlugin_publicConstructorAndBuilder_areNoOps(): Unit = runBlocking {
+    val disabledConfig =
+      BigQueryLoggerConfig("p", "d", enabled = false, gcsBucketName = "my-bucket")
+    val disabledPlugins =
+      listOf(
+        BigQueryAgentAnalyticsPlugin(disabledConfig),
+        BigQueryAgentAnalyticsPlugin.builder().config(disabledConfig).bigQuery(null).build(),
+      )
+
+    for (disabled in disabledPlugins) {
+      disabled.use {
+        it.beforeRun(invocationContext)
+        it.onUserMessage(invocationContext, userText("hi"))
+        it.afterRun(invocationContext)
+        assertEquals(emptyMap(), it.getDropStats().nonZero())
+      }
+    }
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun enabledPlugin_withoutExplicitClient_createsOneClientFromTheConfig(): Unit = runBlocking {
+    val enabledConfig = BigQueryLoggerConfig("p", "d")
+    val createdFrom = mutableListOf<BigQueryLoggerConfig>()
+    val offlineBigQuery = mock<BigQuery>()
+    whenever(offlineBigQuery.getTable(any<TableId>())).thenThrow(BigQueryException(503, "offline"))
+
+    BigQueryAgentAnalyticsPlugin(
+        enabledConfig,
+        explicitBigQuery = null,
+        ioContext = Dispatchers.Unconfined,
+        timeSource = TimeSource.Monotonic,
+        createRowWriter = { rowWriter },
+        createBigQuery = { config ->
+          createdFrom += config
+          offlineBigQuery
+        },
+      )
+      .use {
+        assertEquals(listOf(enabledConfig), createdFrom)
+        it.beforeRun(invocationContext)
+        assertEquals(mapOf("setup_unavailable" to 1L), it.getDropStats().nonZero())
+      }
+  }
+
+  @OptIn(AdkJavaInteropApi::class)
+  @Test
+  @Suppress("CheckReturnValue")
+  fun enabledPlugin_withExplicitClient_usesItWithoutCreatingAnother(): Unit = runBlocking {
+    whenever(mockBigQuery.getTable(any<TableId>())).thenThrow(BigQueryException(503, "offline"))
+    val explicitPlugins =
+      listOf(
+        BigQueryAgentAnalyticsPlugin(
+          config,
+          explicitBigQuery = mockBigQuery,
+          ioContext = Dispatchers.Unconfined,
+          timeSource = TimeSource.Monotonic,
+          createRowWriter = { rowWriter },
+          createBigQuery = { fail("explicit client was replaced") },
+        ),
+        BigQueryAgentAnalyticsPlugin.builder().config(config).bigQuery(mockBigQuery).build(),
+      )
+
+    for (explicit in explicitPlugins) {
+      explicit.use {
+        it.beforeRun(invocationContext)
+        assertEquals(mapOf("setup_unavailable" to 1L), it.getDropStats().nonZero())
+      }
+    }
+    verify(mockBigQuery, times(2)).getTable(any<TableId>())
+  }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun enabledPlugin_withoutExplicitClient_passesCreatedClientCredentialsToOffloader(): Unit =
+    runBlocking {
+      val createdCredentials = mock<Credentials>()
+      val createdOptions = mock<BigQueryOptions> { on { credentials } doReturn createdCredentials }
+      val createdBigQuery = mock<BigQuery> { on { options } doReturn createdOptions }
+      val offloaderCredentials = mutableListOf<Credentials?>()
+      val offloadingPlugin =
+        BigQueryAgentAnalyticsPlugin(
+          config.copy(gcsBucketName = "my-bucket"),
+          explicitBigQuery = null,
+          ioContext = Dispatchers.Unconfined,
+          timeSource = TimeSource.Monotonic,
+          createRowWriter = { rowWriter },
+          createOffloader = { credentials ->
+            offloaderCredentials += credentials
+            TestOffloader()
+          },
+          createBigQuery = { createdBigQuery },
+        )
+      val imageMessage =
+        Content(
+          role = "user",
+          parts = listOf(Part(inlineData = Blob(mimeType = "image/png", data = byteArrayOf(1)))),
+        )
+
+      offloadingPlugin.use { it.onUserMessage(invocationContext, imageMessage) }
+
+      assertSame(createdCredentials, offloaderCredentials.single())
+    }
+
+  @Test
+  @Suppress("CheckReturnValue")
+  fun onToolError_nullOrEmptyExceptionMessage_fallsBackToClassName(): Unit = runBlocking {
+    class BrokenMessageException : RuntimeException() {
+      override val message: String
+        get() = throw IllegalStateException("broken getter")
+    }
+    val callbackContext = CallbackContext(invocationContext = invocationContext)
+    val toolContext = ToolContext(invocationContext = invocationContext, functionCallId = "c1")
+
+    plugin.onRunError(invocationContext, NullPointerException())
+    plugin.onModelError(callbackContext, LlmRequest(), NullPointerException())
+    plugin.onToolError(toolContext, DummyTool("t"), emptyMap(), NullPointerException())
+    plugin.onToolError(toolContext, DummyTool("t"), emptyMap(), IllegalArgumentException(""))
+    plugin.onToolError(toolContext, DummyTool("t"), emptyMap(), BrokenMessageException())
+
+    val rows = capturedRows()
+    // Run and model errors keep the message as is, so a missing one stays null.
+    assertNull(rows.ofType("INVOCATION_ERROR")["error_message"])
+    assertNull(rows.ofType("LLM_ERROR")["error_message"])
+    assertEquals(
+      listOf("NullPointerException", "IllegalArgumentException", "BrokenMessageException"),
+      rows.filter { it["event_type"] == "TOOL_ERROR" }.map { it["error_message"] },
+    )
+  }
 
   /** Returns a plugin whose writers come from [createRowWriter], by default [writer]. */
   private fun newPlugin(

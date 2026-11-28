@@ -48,7 +48,7 @@ import kotlin.jvm.JvmStatic
  *   is logged.
  * @property viewPrefix Prefix of the view names, so `v` gives `v_llm_request`. Views are skipped if
  *   this prefix or the table's project, dataset or name has characters other than letters, digits,
- *   `_` and `-`.
+ *   `_` and `-`, apart from the `example.com:` of a domain-scoped project.
  * @property contentFormatter Called with each event's content and type; its result is logged in
  *   place of the content. If it throws, `[FORMATTER_FAILED]` is logged instead.
  * @property retryConfig How a batch of rows that fails to write is retried.
